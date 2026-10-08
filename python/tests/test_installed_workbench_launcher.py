@@ -1027,3 +1027,112 @@ def test_native_access_rejects_launcher_recovery_arguments_before_owner(
         "invalid CLI combination must not invoke native access owner"))
     assert install.main() == 1
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+@pytest.mark.parametrize("operation", ["prepare", "restore"])
+@pytest.mark.parametrize("drift", ["deleted", "invalid_json", "combination", "binding", "source"])
+def test_target_drift_during_probe_rejects_publication_without_pair_mutation(
+    tmp_path, monkeypatch, operation, drift,
+):
+    import stat
+
+    from spireagent.workbench import developer
+
+    real_load = developer.ProjectConfig.load
+    release, config, root, prepared = launcher_candidate.__wrapped__(tmp_path, monkeypatch)
+    monkeypatch.setattr(developer.ProjectConfig, "load", real_load)
+    selected = developer.ProjectConfig(tmp_path / "state", "", "", None, developer.combination())
+    config.write_text(json.dumps(selected.to_dict()))
+    prepared["developer_combination"] = selected.combination
+    snapshot = tmp_path / "target"
+    if operation == "restore":
+        target = install.prepare_launcher_target(release, config, snapshot)
+    paths = install._launcher_files(root)
+    # Make replacement observable: a false successful restore must not merely
+    # republish an identical pair and escape this regression.
+    paths[0].write_bytes(b"reviewed previous binding")
+    paths[1].write_bytes(b"reviewed previous script")
+    before = tuple((path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths)
+    original_identity = install._workbench_identity_for_source
+    probes = []
+
+    def mutate_during_probe(_directory, _binding):
+        probes.append(True)
+        if drift == "deleted":
+            config.unlink()
+        elif drift == "invalid_json":
+            config.write_text("{invalid")
+        elif drift == "combination":
+            value = selected.to_dict()
+            value["combination"] = {**selected.combination, "evidence_source_revision": "f" * 40}
+            config.write_text(json.dumps(value))
+        elif drift == "binding":
+            monkeypatch.setattr(install, "_workbench_identity_for_source", lambda path: {
+                **original_identity(path), "workbench_sha256": "e" * 64})
+        else:
+            monkeypatch.setattr(install, "status", lambda _: install.reject(
+                "prepared_source_dirty"))
+
+    monkeypatch.setattr(install, "_probe_launcher_target", mutate_during_probe)
+    with pytest.raises((BoundaryError, ValueError)):
+        if operation == "prepare":
+            install.prepare_launcher_target(release, config, snapshot)
+        else:
+            install.restore_launcher(snapshot, target["snapshot_manifest_sha256"],
+                                     *(install.sha(item[0]) for item in before))
+    assert len(probes) == 1
+    assert tuple((p.read_bytes(), stat.S_IMODE(p.stat().st_mode)) for p in paths) == before
+    if operation == "prepare":
+        assert not snapshot.exists()
+
+
+@pytest.mark.parametrize("operation", ["prepare", "restore"])
+def test_valid_config_update_during_probe_is_freshly_loaded_under_publication_locks(
+    tmp_path, monkeypatch, operation,
+):
+    from spireagent.workbench import developer
+    from spireagent.workbench.developer_server import instance_lock
+
+    real_load = developer.ProjectConfig.load
+    release, config, root, prepared = launcher_candidate.__wrapped__(tmp_path, monkeypatch)
+    selected = developer.ProjectConfig(tmp_path / "state", "", "", None, developer.combination())
+    config.write_text(json.dumps(selected.to_dict()))
+    prepared["developer_combination"] = selected.combination
+    monkeypatch.setattr(developer.ProjectConfig, "load", real_load)
+    snapshot = tmp_path / "target"
+    if operation == "restore":
+        target = install.prepare_launcher_target(release, config, snapshot)
+    paths = install._launcher_files(root)
+    before = tuple(path.read_bytes() for path in paths)
+    probes, loaded_after_probe = [], []
+
+    def valid_update(_directory, _binding):
+        probes.append(True)
+        value = selected.to_dict()
+        value["hub_url"] = "https://updated.example.invalid"
+        config.write_text(json.dumps(value))
+
+    def observed_load(path, **options):
+        current = real_load(path, **options)
+        if probes:
+            loaded_after_probe.append(current.hub_url)
+            with (pytest.raises(BoundaryError, match="already_running"),
+                  instance_lock(release / "initialize.lock")):
+                pytest.fail("release owner must remain held during revalidation")
+            if operation == "restore":
+                with (pytest.raises(BoundaryError, match="already_running"),
+                      instance_lock(root / "install.lock")):
+                    pytest.fail("pair owner must be held during final revalidation")
+        return current
+
+    monkeypatch.setattr(developer.ProjectConfig, "load", observed_load)
+    monkeypatch.setattr(install, "_probe_launcher_target", valid_update)
+    if operation == "prepare":
+        result = install.prepare_launcher_target(release, config, snapshot)
+    else:
+        result = install.restore_launcher(snapshot, target["snapshot_manifest_sha256"],
+                                          *map(install.sha, before))
+    assert result["launchable"] is True
+    assert len(probes) == 1
+    assert loaded_after_probe == ["https://updated.example.invalid"]
+    assert json.loads((snapshot / "launcher.json").read_bytes())["config_path"] == str(config)

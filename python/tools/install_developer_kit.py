@@ -1143,6 +1143,18 @@ def prepare_launcher_target(directory: Path, config_path: Path,
         return _prepare_launcher_target_locked(directory, config_path, snapshot_directory)
 
 
+def _revalidate_launcher_target(directory: Path, config_path: Path,
+                                binding_raw: bytes, open_raw: bytes) -> None:
+    """Re-read the qualified target after probing, while publication owners are held."""
+    prepared = status(directory)
+    if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
+        reject("workbench_launcher_not_in_kit")
+    binding = _launcher_binding(directory, config_path, prepared)
+    if (json_bytes(binding) != binding_raw
+            or _launcher_script(directory.resolve()).encode("utf-8") != open_raw):
+        reject("launcher_snapshot_target_mismatch")
+
+
 def _prepare_launcher_target_locked(directory: Path, config_path: Path,
                                     snapshot_directory: Path) -> dict[str, Any]:
     prepared = status(directory)
@@ -1167,6 +1179,7 @@ def _prepare_launcher_target_locked(directory: Path, config_path: Path,
             "open": {"sha256": sha(open_raw), "mode": 0o700},
         },
     }
+    _revalidate_launcher_target(directory, config_path, binding_raw, open_raw)
     manifest_sha = _publish_launcher_snapshot(
         snapshot_directory, binding_raw, open_raw, 0o600, 0o700, manifest,
         (directory, _launcher_directory()),
@@ -1339,6 +1352,7 @@ def _restore_launcher_locked(directory: Path, manifest: dict[str, Any],
         if (sha(current_binding) != expected_binding_sha256
                 or sha(current_open) != expected_open_sha256):
             reject("launcher_pair_changed")
+        _revalidate_launcher_target(directory, config_path, binding_raw, open_raw)
         _write_launcher_pair(root, binding_raw, open_raw, 0o600, 0o700)
     return {"status": "launcher_restored", "launchable": True,
             "release_directory": str(directory), "kit_sha256": directory.name}

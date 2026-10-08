@@ -197,6 +197,14 @@ and Runtime owners. Then use the bounded owner commands:
   Historical snapshots cannot be restored. Source/config/environment drift is a
   rejection, not permission to reconstruct a missing profile.
 
+Target source, config and exact binding are freshly revalidated after the bounded
+probe and immediately before publication under the existing owner locks. A
+missing/invalid config or changed source/binding rejects publication without
+replacing the current pair. Snapshots bind the config path and archived
+combination, not frozen config contents: a valid update retaining that binding is
+accepted only after the current config is loaded and validated again. Restore
+also repeats the prepared snapshot's exact binding/script comparison.
+
 These are arguments to the selected verified release's installer; they do not
 fetch a release or qualify a loaded Mod. Snapshot directories must be new private
 absolute paths outside the selected release and fixed launcher directory. Existing
