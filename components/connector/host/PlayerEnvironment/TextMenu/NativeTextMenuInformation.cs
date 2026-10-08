@@ -310,6 +310,29 @@ internal static class NativeTextMenuInformation
         SnapshotBuildResult legacy,
         NativeEntityRegistry entities, bool nativeLogical)
     {
+        NativeTextMenuInformationCapture captured = CaptureOwnedCore(legacy, entities, nativeLogical);
+        return PreserveInformationScope(legacy.Snapshot, captured, nativeLogical);
+    }
+
+    internal static NativeTextMenuInformationCapture PreserveInformationScope(PlayerEnvironmentSnapshot inherited,
+        NativeTextMenuInformationCapture captured, bool nativeLogical)
+    {
+        // A completed return can recursively capture the underlying room. That
+        // result is no longer an entered information slice and keeps its own
+        // established readiness; the old page must not reopen input over it.
+        if (!nativeLogical || captured.Page.Interaction.Stage != "native_information_page"
+            && captured.Page.Interaction.Kind != "native_information_unresolved") return captured;
+        return captured with
+        {
+            Page = NativeLogicalCapturePolicy.PreserveNativeScope(inherited, captured.Page,
+                NativeLogicalProjectionReplacement.InformationPage, nativeLogical: true)
+        };
+    }
+
+    private static NativeTextMenuInformationCapture CaptureOwnedCore(
+        SnapshotBuildResult legacy,
+        NativeEntityRegistry entities, bool nativeLogical)
+    {
         object screen = _ownedScreen!;
         string kind = _ownedKind!;
         string key = $"native_information:{legacy.Snapshot.Session.RuntimeInstanceId}:{kind}:{entities.GetId(screen, "native_page")}";
@@ -1193,32 +1216,8 @@ internal static class NativeTextMenuInformation
             || title == null || cost == null || description == null
             || upgrade == null)
             return FailClosedPage(legacy, key, "native_card_inspect_display_unresolved");
-        var surface = new JsonObject
-        {
-            ["kind"] = "inspect_card",
-            ["title"] = title.Text,
-            ["cost"] = cost.Text,
-            ["description"] = description.Text,
-            ["upgrade_preview_checked"] = upgrade.IsTicked
-        };
-        PlayerEnvironmentSnapshot page = legacy.Snapshot with
-        {
-            Status = "interactive",
-            Referents = Array.Empty<PlayerEnvironmentReferent>(),
-            Completeness = new PlayerEnvironmentCompleteness("complete",
-                "current_native_card_inspection_display",
-                "exact_native_card_inspection_controls",
-                Array.Empty<string>(), Array.Empty<string>()),
-            Interaction = legacy.Snapshot.Interaction with
-            {
-                Kind = "inspect_card", Stage = "native_information_page",
-                Prompt = title.Text,
-                ContentSchema = "sts2.player-environment/surface/inspect_card_text_menu-1",
-                Content = new PlayerEnvironmentInteractionContent(surface,
-                    new JsonObject { ["kind"] = "inspect_card" }),
-                Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
-            }
-        };
+        PlayerEnvironmentSnapshot page = ProjectCardInspectPage(legacy.Snapshot, title.Text, cost.Text,
+            description.Text, upgrade.IsTicked);
         var leaves = new List<NativeTextMenuInformationLeaf>
         {
             Leaf("return_card_inspect", "root", "return_card_inspect",
@@ -1235,6 +1234,37 @@ internal static class NativeTextMenuInformation
                 "toggle_card_upgrade_preview", "Toggle upgrade preview",
                 () => ClickCardInspectControl(screen, upgrade, "%Upgrade")));
         return new NativeTextMenuInformationCapture(page, key, leaves);
+    }
+
+    internal static PlayerEnvironmentSnapshot ProjectCardInspectPage(PlayerEnvironmentSnapshot source,
+        string title, string cost, string description, bool upgradeChecked)
+    {
+        var surface = new JsonObject
+        {
+            ["kind"] = "inspect_card",
+            ["title"] = title,
+            ["cost"] = cost,
+            ["description"] = description,
+            ["upgrade_preview_checked"] = upgradeChecked
+        };
+        return source with
+        {
+            Status = "interactive",
+            Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Completeness = new PlayerEnvironmentCompleteness("complete",
+                "current_native_card_inspection_display",
+                "exact_native_card_inspection_controls",
+                Array.Empty<string>(), Array.Empty<string>()),
+            Interaction = source.Interaction with
+            {
+                Kind = "inspect_card", Stage = "native_information_page",
+                Prompt = title,
+                ContentSchema = "sts2.player-environment/surface/inspect_card_text_menu-1",
+                Content = new PlayerEnvironmentInteractionContent(surface,
+                    new JsonObject { ["kind"] = "inspect_card" }),
+                Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
+            }
+        };
     }
 
     private static NativeInputResult ClickCardInspectControl(
