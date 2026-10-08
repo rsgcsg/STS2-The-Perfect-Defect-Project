@@ -16,6 +16,7 @@
 - [Support and compatibility](SUPPORT.md)
 - [Current status](STATUS.md)
 - [Information Closure](INFORMATION_CLOSURE.md)
+- [Native reward and merchant information](NATIVE_REWARD_MERCHANT_INFORMATION.md)
 
 ## Evidence
 

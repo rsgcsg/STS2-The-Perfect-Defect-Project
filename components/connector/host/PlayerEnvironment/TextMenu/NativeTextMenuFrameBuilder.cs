@@ -105,33 +105,17 @@ internal static class NativeTextMenuFrameBuilder
         // accidentally append combat actions from the legacy underlying room.
         if (page.Interaction.Kind == "native_map")
         {
-            if (legacy.HostObservation.Surface is MapNavigationSurface
-                && legacy.Snapshot.BoundActions.Status == "complete")
-            {
-                var referents = page.Referents.ToList();
-                foreach (PlayerEnvironmentBoundAction action in
-                         OrderLegacyTextActions(legacy.HostObservation.Surface,
-                             legacy.Snapshot.BoundActions.Actions))
-                    if (legacy.Bindings.TryGetValue(action.BoundActionId,
-                            out PlayerEnvironmentNativeBinding? binding))
-                    {
-                        leaves.Add(FromLegacy(action, binding, executeLegacy));
-                        foreach (string id in action.Arguments.Select(value => value.ReferentId)
-                                     .Concat(action.SubjectReferentId is { } subject
-                                         ? new[] { subject } : Array.Empty<string>()))
-                            if (!referents.Any(value => value.ReferentId == id)
-                                && legacy.Snapshot.Referents.FirstOrDefault(value =>
-                                    value.ReferentId == id && value.State.Visible)
-                                    is { } native)
-                                referents.Add(native);
-                    }
-                page = page with { Referents = referents };
-            }
-            return new TextMenuFrame(page, owner, leaves);
+            var map = nativeLogical ? MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance : null;
+            return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy,
+                map == null ? null : transition => NativeTextMenuInformation.ExecuteMapTransition(map, transition));
         }
+
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
+
+        if (nativeLogical && NativeLogicalCardRewardCapture.TryCapture(legacy, page, leaves, entities, executeLegacy) is { } cardReward)
+            return cardReward;
 
         if (nativeLogical && NativeLogicalGridCapture.TryCapture(legacy, page, leaves, entities) is { } logicalGrid)
             return logicalGrid.LogicalGridProof is { } proof
@@ -394,6 +378,30 @@ internal static class NativeTextMenuFrameBuilder
             page = page with { Referents = referents };
         }
         return new TextMenuFrame(page, owner, leaves);
+    }
+
+    internal static TextMenuFrame AppendMapActions(TextMenuFrame frame, SnapshotBuildResult source,
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
+        Func<Func<NativeInputResult>, NativeInputResult>? mapDeparture = null)
+    {
+        if (source.HostObservation.Surface is not MapNavigationSurface
+            || source.Snapshot.BoundActions.Status != "complete") return frame;
+        var leaves = frame.Leaves.ToList();
+        var referents = frame.Page.Referents.ToList();
+        foreach (PlayerEnvironmentBoundAction action in OrderLegacyTextActions(source.HostObservation.Surface,
+                     source.Snapshot.BoundActions.Actions))
+            if (source.Bindings.TryGetValue(action.BoundActionId, out PlayerEnvironmentNativeBinding? binding))
+            {
+                TextMenuLeaf leaf = FromLegacy(action, binding, executeLegacy);
+                leaves.Add(mapDeparture != null && binding.NativeAction.Candidate.Operation == "choose_map_node"
+                    ? leaf with { Dispatch = () => mapDeparture(leaf.Dispatch) } : leaf);
+                foreach (string id in action.Arguments.Select(value => value.ReferentId)
+                             .Concat(action.SubjectReferentId is { } subject ? new[] { subject } : Array.Empty<string>()))
+                    if (!referents.Any(value => value.ReferentId == id)
+                        && source.Snapshot.Referents.FirstOrDefault(value => value.ReferentId == id && value.State.Visible) is { } native)
+                        referents.Add(native);
+            }
+        return frame with { Page = frame.Page with { Referents = referents }, Leaves = leaves };
     }
 
     internal static IReadOnlyList<PlayerEnvironmentBoundAction> OrderLegacyTextActions(

@@ -96,6 +96,33 @@ internal sealed class PublicInformationBindings
         return Declare(id, "potion", Text(facts["name"]), Copy(facts, "definition_id", "name", "slot"));
     }
 
+    internal PlayerEnvironmentReferent? MerchantOffer(string id, string kind)
+    {
+        if (kind is not ("card" or "relic" or "potion"))
+        { Missing("merchant_kind"); return null; }
+        JsonObject? offer = Find(source.Interaction.Content.Surface[kind + "s"], "entity_id", id);
+        PlayerEnvironmentReferent? existing = Existing(id, "merchant_offer");
+        if (offer?["stocked"]?.GetValue<bool>() != true || offer["visible"]?.GetValue<bool>() != true
+            || existing == null)
+        { Missing("merchant_stock"); return null; }
+        JsonObject? model = kind == "potion" ? offer : offer[kind] as JsonObject;
+        if (model == null || string.IsNullOrWhiteSpace(Text(model["definition_id"])))
+        { Missing("merchant_model"); return null; }
+        // Offer identity is the public subject. It is not an owned inventory
+        // item; price/affordability do not determine whether its tips can open.
+        string? label = Text(model["name"]);
+        if (string.IsNullOrWhiteSpace(label)) { Missing("merchant_label"); return null; }
+        // Preserve the existing offer facts (including price and purchase state);
+        // only add this same-offer information relation with already public identity.
+        JsonObject properties = existing.Properties is JsonObject shown
+            ? (JsonObject)shown.DeepClone() : new JsonObject();
+        properties["information_model"] = Copy(model, "entity_id", "definition_id", "name");
+        properties["offer_referent_id"] = id;
+        properties["offer_kind"] = kind;
+        visible[id] = existing with { Label = label, Properties = properties };
+        return visible[id];
+    }
+
     internal PlayerEnvironmentReferent? Card(string id)
     {
         var card = Existing(id, "card_subject", "card", "playable_card", "hand");
