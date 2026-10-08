@@ -98,7 +98,10 @@
         "cancel_wait",
         "detach",
         "submit",
-        "result"
+        "result",
+        "renew",
+        "retain",
+        "release"
       ]
     },
     "support": {
@@ -244,7 +247,8 @@
         }
       },
       "catalog": [],
-      "publication_index": "11"
+      "publication_index": "11",
+      "catalog_materialized": true
     },
     "A": {
       "acquisition_id": "acquisition-A1",
@@ -349,7 +353,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": "12"
+      "publication_index": "12",
+      "catalog_materialized": true
     },
     "A_duplicate": {
       "acquisition_id": "acquisition-A2",
@@ -454,7 +459,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": null
+      "publication_index": null,
+      "catalog_materialized": true
     },
     "B": {
       "acquisition_id": "acquisition-B1",
@@ -559,7 +565,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": "13"
+      "publication_index": "13",
+      "catalog_materialized": true
     },
     "A_return": {
       "acquisition_id": "acquisition-A3",
@@ -664,7 +671,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": "14"
+      "publication_index": "14",
+      "catalog_materialized": true
     },
     "same_features_new_focus": {
       "acquisition_id": "acquisition-A4",
@@ -769,7 +777,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": "15"
+      "publication_index": "15",
+      "catalog_materialized": true
     },
     "query_current": {
       "acquisition_id": "acquisition-Q1",
@@ -874,7 +883,8 @@
           "effect_domain": "native"
         }
       ],
-      "publication_index": null
+      "publication_index": null,
+      "catalog_materialized": true
     },
     "incremental_persistent": {
       "acquisition_id": "acquisition-incremental_persistent",
@@ -957,7 +967,8 @@
         }
       },
       "catalog": null,
-      "publication_index": null
+      "publication_index": null,
+      "catalog_materialized": false
     },
     "incremental_expanded": {
       "acquisition_id": "acquisition-incremental_expanded",
@@ -1053,7 +1064,8 @@
         }
       },
       "catalog": null,
-      "publication_index": null
+      "publication_index": null,
+      "catalog_materialized": false
     },
     "incremental_expanded_duplicate": {
       "acquisition_id": "acquisition-incremental_expanded_duplicate",
@@ -1149,7 +1161,8 @@
         }
       },
       "catalog": null,
-      "publication_index": null
+      "publication_index": null,
+      "catalog_materialized": false
     },
     "core_null_persistent": {
       "acquisition_id": "acquisition-core-null-persistent",
@@ -1242,7 +1255,8 @@
         }
       },
       "catalog": [],
-      "publication_index": "1"
+      "publication_index": "1",
+      "catalog_materialized": true
     }
   },
   "cases": [

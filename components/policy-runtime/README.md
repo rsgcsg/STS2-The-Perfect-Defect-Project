@@ -5,6 +5,15 @@ lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
 
+An explicit `sts2.policy-runtime/agent-manifest-1` selects the additive
+`native-logical-v1` Agent branch through the same `--manifest` CLI and HTTP service.
+It uses the actual Connector SDK, atomic Attach/source Events, complete catalog
+assembly or declared scoped queries, strict consume/acknowledgement watermarks,
+and the shared controller/epoch/budget/Stop owner. It does not reuse text-menu
+candidate indices. See the [Agent session contract](docs/AGENT_SESSION_PROTOCOL.md)
+for current implementation limits, exact pending-request reconciliation and
+source/test evidence boundaries.
+
 The Connector supplies one complete ordered `BoundAction` catalog. A policy
 adapter receives that exact Snapshot and Read bundle, echoes the catalog digest,
 returns one score per candidate and an optional selected index, and never returns

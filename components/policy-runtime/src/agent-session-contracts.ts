@@ -203,8 +203,11 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   sessionDigest(environment.connector_artifact_sha256); sessionDigest(environment.modset_fingerprint);
   strings(environment.loaded_mod_ids);
   const methods = strings(requirements.required_methods, true);
-  const allowed = ["capabilities", "attach", "current", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "release"];
-  if (methods.some(method => !allowed.includes(method)) || ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result"].some(method => !methods.includes(method)))
+  const allowed = ["capabilities", "attach", "current", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
+  const minimum = ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
+  if (history === "full_reference") minimum.push("read", "catalog", "retain", "release");
+  else if (methods.includes("current")) minimum.push("read", "retain", "release");
+  if (methods.some(method => !allowed.includes(method)) || minimum.some(method => !methods.includes(method)))
     throw new AgentSessionError("required_methods_mismatch");
   const support = sessionObject(manifest.support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]);
   for (const [key, item] of Object.entries(support)) {

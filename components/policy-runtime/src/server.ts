@@ -42,6 +42,7 @@ export async function startPolicyRuntimeHttpServer(runtime: RuntimeServiceOwner,
       try {
         while (!closing && isDrivenMode(runtime.status().mode) && runtime.status().autonomy_budget.state === "active" && !runtime.status().tainted) {
           const result = await runtime.tick();
+          if (runtime.status().lifecycle === "stopped") { onStopped?.(); return; }
           if (result.type === "unknown" || !isDrivenMode(runtime.status().mode) || runtime.status().autonomy_budget.state !== "active") return;
           if (autoIdleMs > 0) await new Promise((resolve) => setTimeout(resolve, autoIdleMs));
           else await new Promise((resolve) => setImmediate(resolve));
@@ -76,7 +77,7 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
       json(response, 200, await runtime.readEnvironment()); return;
     }
-    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
+    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
     const denied = mutationRequestError(request);
     if (denied) { request.resume(); json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
     const runHeader = "x-sts2-policy-run-id";
@@ -91,6 +92,13 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       request.resume(); json(response, 409, { schema: HTTP_SCHEMA, error: "runtime_run_mismatch" }); return;
     }
     const body = await readBody(request, maxBodyBytes);
+    if (request.url === "/v2/reconcile") {
+      const value = strictObject(body, ["request_id"]);
+      if (typeof value.request_id !== "string" || value.request_id.trim() === "") throw new Error("request_id is invalid");
+      if (!runtime.reconcileOriginalRequest) throw new RuntimeControlPreconditionError("runtime_profile_reconcile_unsupported", 409);
+      const result = await runtime.reconcileOriginalRequest(value.request_id, controlPreconditions(request));
+      json(response, 200, { schema: HTTP_SCHEMA, ...result }); return;
+    }
     if (request.url === "/v2/mode") {
       const value = strictObject(body, ["mode"]);
       if (value.mode !== "human" && value.mode !== "shadow" && value.mode !== "one_step" && value.mode !== "auto") throw new Error("mode is invalid");
@@ -139,6 +147,10 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       }
     }
     json(response, 200, { schema: `${HTTP_SCHEMA}/tick-1`, results, status: runtime.status() });
+    if (runtime.status().lifecycle === "stopped" && onStopped) {
+      if (response.writableFinished || response.destroyed) onStopped();
+      else { response.once("finish", onStopped); response.once("close", onStopped); }
+    }
   } catch (error) {
     if (error instanceof RuntimeControlPreconditionError) {
       json(response, error.httpStatus, { schema: HTTP_SCHEMA, error: error.code }); return;

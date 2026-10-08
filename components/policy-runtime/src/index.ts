@@ -12,3 +12,6 @@ export * from "./agent-session-consumption.js";
 export * from "./agent-session-json.js";
 export * from "./agent-session-port.js";
 export * from "./agent-session-state.js";
+export * from "./agent-runtime-contracts.js";
+export * from "./agent-runtime-events.js";
+export type { NativeAgentRuntimeOptions, NativeAgentRuntimeOwner } from "./agent-native-runtime.js";

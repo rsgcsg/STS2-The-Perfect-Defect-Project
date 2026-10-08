@@ -1,16 +1,17 @@
 # Agent session protocol candidate
 
-Status: E3 source-contract candidate, 2026-10-08. Base
-`1597141bf2d829c8b24eebb83a5177398101cf39`. Await lead/independent contract
-review before production changes. This document defines no native, loaded, model
+Status: E3 native source/test integration candidate, 2026-10-08. Runtime dependency
+base `f89a5267f43ea206fe39d081f5fd5d3643953ca8` includes accepted SDK
+`651f9cbd163d177805fa641ca0f05b8dcb424877`. Independent source review and
+lead integration remain required. This document defines no native, loaded, model
 quality, Human or complete G2/V1 qualification.
 
 The [current specification](../../../docs/BASELINE_V1_SPEC.zh-CN.md), especially
 sections 2–5, and the Connector-owned
 [native profile](../../connector/docs/NATIVE_LOGICAL_PROFILE.md) govern this
 addition. [Shared synthetic cases](../contracts/fixtures/agent-session-v1.json)
-fix positive and negative examples. The native core/SDK wire dependency is not
-yet frozen; any changed field requires explicit reconciliation before coding.
+fix positive and negative examples. Changed native core/SDK fields require
+explicit reconciliation; old text-menu source contracts remain separate.
 
 ## Compatibility and owners
 
@@ -62,6 +63,14 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
   plus `required_methods`, a duplicate-free list of native methods. It contains
   no score/index/successor requirement. Runtime checks exact environment and
   advertised methods/seam versions before attaching.
+  The actual shared lifecycle minimum is `capabilities`, `attach`, `events`,
+  `await`, `cancel_wait`, `detach`, `submit`, `result`, `renew`. Full-reference
+  acquisition additionally requires `read`, `catalog`, `retain`, `release`.
+  A declared scoped `current` query requires `read`, `retain`, `release` for its
+  sealed byte transfer. Other query/structural methods are explicit requirements;
+  an undeclared child method or Act expression fails rather than using an
+  unadvertised fallback. These are transport/resource prerequisites, not strategy
+  or inference methods. Existing Policy Manifest namespaces remain unchanged.
 - `support`: duplicate-free `game_versions`, `game_commits`,
   `interaction_kinds`, `action_verbs`. An omitted required mechanism fails
   declared support; the Runtime does not filter the source catalog to fit it.
@@ -119,6 +128,14 @@ consumed/consume_ack use completion; directive uses output; query_result uses
 result; error uses `{code,message}`. A child-initiated consumed report is a
 request, not an unsolicited response; its own request namespace is validated.
 State requests use input; `state_exported`/`state_restored` use output.
+The physical `session_id` stays fixed across an idle Human/operational handoff.
+A fresh correlated parent command may carry a strictly newer owner recovery epoch
+only while no earlier Consume proposal, query or acknowledgement is pending.
+The child then binds that operational epoch without resetting or advancing W or
+its acknowledged consumption version. Regressing epochs, another physical session
+and acknowledgements from an earlier epoch fail closed. Cancellation of an active
+port call closes that child; an idle epoch change is not an implicit recovery of
+an unacknowledged call.
 
 Production Attach occurs on one game-main-thread turn. Under one source-hub
 lock, register the subscription at reserved publication N, then reserve its
@@ -141,7 +158,23 @@ A Runtime `acquisition_id` identifies one SDK-verified native capture and its
 public decoded observation, exact catalog descriptor, scope/completeness,
 capture SHA/size, generation, owner/focus/binding occurrence and known source
 cursor, if published. Releasing/expiring bytes does not rewrite old evidence.
-Unknown/expired IDs cannot be consumed or authorize a new action. An acquisition
+Unknown/expired IDs cannot be consumed or authorize a new action. Runtime-owned
+acquisition metadata includes `catalog_materialized`: true only for the SDK's
+whole verified array, false with `catalog:null` for a sealed scoped view that
+exposes the complete relation descriptor without its candidate values. Original
+source completeness is preserved; its `catalog` scope names descriptor exposure,
+not a claim that the Agent received all candidates. Full-reference always requires
+true and the whole array. Scoped canonical catalog coherence binds descriptor
+digest, count and ordering. Lazy pages/Resolve are explicit views, not another
+observation or a W advance; they cannot backfill candidate features into an earlier
+acknowledgement. The implemented scoped consumer is stateless (`state_recovery:none`).
+Opaque scoped recovery requires a registered materialization-aware InputSpec/state
+binding before qualification and is explicitly unsupported by the current factory.
+Eligible native statuses are `interactive`, `settling`, `observed`, `terminal`;
+status alone never establishes readiness, native acceptance, Commit or completion.
+Complete observed/empty-C inputs are consumed without inventing an action. Current
+source has an observed producer; terminal remains future/test support.
+An acquisition
 is registered only after complete byte assembly and the declared scope checks.
 Catalog pages are separately checked against the retained descriptor; their
 retrieval is not an observation or a W update.
@@ -367,15 +400,73 @@ Wrong package/weight, InputSpec, state format, generation or unacknowledged pref
 fails before a Model advance/native admission. A new Current view cannot recreate
 missing old history. Gap, expired source prefix or unknown outcome uses explicit
 reset/handoff; neither state restoration nor a new lease clears unknown taint or
-revalidates old catalog actions. Actual default Model numerical restore/parity is
-an STPD packet and remains unexecuted by these Runtime-only synthetic checks.
+revalidates old catalog actions. Actual numerical restore/parity remains an STPD
+packet. The separately executed initialized-Model export/OneStep interop receipt
+is recorded in [implementation status](AGENT_SESSION_IMPLEMENTATION.md); the
+Runtime-only opaque byte tests do not establish numerical restore parity.
 
 ## Implementable paths and handoff
 
-Runtime owner: add Agent contract/validators and strict bounded duplex child port;
-dispatch a native branch from the existing Runtime/CLI/server lifecycle, sharing
-controller, safety, budget and evidence helpers. Add consumption/query/wait state
-and native result classification. Legacy tests remain unchanged regression scope.
+The implemented native branch is selected by `PolicyRuntime.forAgent`; the
+existing CLI accepts it through `--manifest` and the same loopback HTTP service
+reports `agent-session-startup-1` and `agent-session-status-1`. One shared lifecycle
+owner provides serialization, epoch cancellation, wallet/deadline and Stop.
+Capabilities, existing registration and atomic Attach precede source Events.
+Every SDK-decoded source event carries a captured view or explicit missing fact.
+Its open `kind` classifies source/Await timing and does not filter input eligibility:
+full-reference consumption includes terminal and future scalar kinds, and missing/
+expired payloads record the original publication gap. Terminal kind does not
+infer task completion, win/loss, Close or reset.
+After all provided batch items and full-reference acknowledgements complete,
+`native_event_batch_received` records exactly session context plus
+`{after_cursor,next_cursor,high_watermark,retained_start_cursor,event_count}` from
+that actual SDK response. It is emitted in the same guarded phase as advancing
+the operational received cursor, before later Next/query work. A genuine empty
+global batch may advance that cursor without any Model input, W advance or new
+consumption. Intermediate full-reference ACKs precede the batch tail and use
+their individual event cursors. Gap, failed item or interrupted Consume does not
+produce a falsely completed tail. Opaque state metadata remains bound to the
+last acknowledged Model prefix; an empty operational tail does not rewrite it.
+Full-reference observations use SDK full capture/catalog assembly; scoped-query
+observations preserve an explicit descriptor-only materialization fact. Current
+is a query view and cannot replace missing historical input or advance W without
+an explicit consumption report. The factory currently accepts `gap_policy=handoff`
+only; `explicit_reset` is rejected before Attach because no reset command is
+implemented. Scoped opaque recovery is likewise explicitly unsupported.
+
+Submit uses one owning SDK dispatch. A recoverable 202 pending result releases
+control and fences mutation until explicit original-request reconciliation through
+`POST /v2/reconcile`; terminal unknown/partial delivery taints the session. An
+expired lookup remains unresolved. Human does not cancel or rewrite a POST already
+started. Stop cleans owned subscription, child and buffers even if event writing
+fails. Programmed real-process/SDK/HTTP tests are source/test evidence only. The
+separately enabled numerical interoperability test requires an external exact
+Model package and cannot be inferred from a skipped fixture or a legacy package
+smoke check.
+
+Passive subscription renewal uses one separate abortable, bounded SDK flight
+outside the Model operation queue, scheduled from half the actual remaining TTL
+with a five-second maximum cadence. It uses only the actual received cursor and
+never acquires control, emits a new view or advances W. Human keeps the passive
+subscription. Stop and initialization failure abort and await the flight before
+detach, including a bounded transport that ignores abort. Renewal failure fences
+mutation, cancels active work and releases control immediately; the existing
+operation queue records its gap/handoff before sealing. It does not retry failure.
+
+After durable `native_submission_requested`, a `native_submission_not_started`
+event has exactly session context plus `{request_id,submission_epoch,reason}` and
+closes that original intent only when the owning SDK dispatch hook never ran.
+The context epoch may reflect a subsequent Human handoff; `submission_epoch`
+binds the original intent epoch. This is not a NativeResult, Receipt, Commit or
+controller/effect claim. A started POST with an unknown outcome cannot receive
+this closure. Human after controller-acquired evidence is checked before any
+intent is constructed; Human after the intent is recorded receives this explicit
+known-not-started fact. Restore rechecks its captured authorization immediately
+after fresh-runtime validation, before closing the original idle child.
+
+Runtime owner: maintain Agent contract/validators, strict bounded duplex child
+port and native branch in the existing Runtime/CLI/server lifecycle. Legacy tests
+remain unchanged regression scope.
 
 SDK owner: export accepted native types and typed SDK methods/assembly plus atomic
 initial Attach semantics. Production Runtime import waits for its exact accepted
