@@ -63,7 +63,9 @@ export class NativeLogicalSession {
     this.#controller = controller;
   }
 
-  get subscription(): NativeLogicalSubscription | undefined { return this.#subscription; }
+  get subscription(): NativeLogicalSubscription | undefined {
+    return this.#controller.registrationClosed ? undefined : this.#subscription;
+  }
 
   async capabilities(signal?: AbortSignal) {
     const reply = await this.call("capabilities", undefined, decodeNativeLogicalCapabilities, { signal, maxResponseBytes: 1024 * 1024 });
@@ -77,6 +79,7 @@ export class NativeLogicalSession {
   }
 
   async attach(input: NativeLogicalAttachInput) {
+    this.#controller.clientIdentity(); // A final closed owner cannot reattach.
     if (this.#subscription) throw new Error("native logical session already has a subscription; detach before changing scope");
     validateNativeLogicalScope(input.eagerScope);
     const capabilities = await this.negotiated(input.signal);
@@ -239,6 +242,7 @@ export class NativeLogicalSession {
     const preSubmitSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     preSubmitSignal?.throwIfAborted();
     await this.negotiated(preSubmitSignal);
+    const originalIdentity = this.identity();
     preSubmitSignal?.throwIfAborted();
     const credentials = await this.#controller.credentials();
     preSubmitSignal?.throwIfAborted();
@@ -257,19 +261,19 @@ export class NativeLogicalSession {
     if (reply.data.request_id !== input.requestId || reply.data.snapshot_id !== input.expectedSnapshotId ||
         reply.data.action !== null && reply.data.action.action_id !== input.actionId)
       throw new Error("native logical submit returned a different request basis");
-    this.checkAttribution(reply.data.attribution);
+    this.checkAttribution(reply.data.attribution, originalIdentity);
     return { status: "terminal", result: reply }; // Never retry, poll, reinterpret partial input or infer an effect.
   }
 
   async result(requestId: string, signal?: AbortSignal): Promise<NativeLogicalResultLookup> {
-    this.identity();
+    const originalIdentity = this.identity();
     const response = await this.#environment.nativeLogicalRequest("result", { request_id: requestId },
       { signal, maxResponseBytes: 2 * 1024 * 1024 });
     if (response.statusCode === 202 && isNativeLogicalPendingLookup(response.raw))
       return { status: "pending", requestId };
     const reply = decodeNativeLogicalResult(response.raw);
     if (reply.data.request_id !== requestId) throw new Error("native logical result changed original request ID");
-    this.checkAttribution(reply.data.attribution);
+    this.checkAttribution(reply.data.attribution, originalIdentity);
     return { status: "terminal", result: reply };
   }
 
@@ -334,6 +338,7 @@ export class NativeLogicalSession {
     }
   }
   private attached(): NativeLogicalSubscription {
+    this.identity();
     if (!this.#subscription) throw new Error("native logical session has no attached subscription");
     return this.#subscription;
   }
@@ -358,9 +363,10 @@ export class NativeLogicalSession {
       throw new Error("native logical event belongs to another accepted scope or generation");
     if (item.event.payload_reference) this.checkCapture(item.event.payload_reference);
   }
-  private checkAttribution(attribution: { runtime_instance_id: string; client_session_id: string } | null): void {
-    if (attribution && (attribution.runtime_instance_id !== this.identity().runtimeInstanceId ||
-      attribution.client_session_id !== this.identity().clientSessionId)) throw new Error("native logical result belongs to another registered client");
+  private checkAttribution(attribution: { runtime_instance_id: string; client_session_id: string } | null,
+    originalIdentity = this.identity()): void {
+    if (attribution && (attribution.runtime_instance_id !== originalIdentity.runtimeInstanceId ||
+      attribution.client_session_id !== originalIdentity.clientSessionId)) throw new Error("native logical result belongs to another registered client");
   }
   private async cancelFor(subscription: NativeLogicalSubscription, waitId: string) {
     if (!/^[0-9a-f]{32}$/u.test(waitId)) throw new Error("native logical wait ID must be lowercase hexadecimal");
@@ -372,8 +378,12 @@ export class NativeLogicalSession {
   }
   private async call<T>(operation: NativeLogicalTransportOperation, body: JsonObject | undefined,
     decode: (value: unknown) => DecodedPlayerPayload<T>, options: NativeLogicalTransportOptions = {}) {
+    if (operation === "capabilities") this.#controller.clientIdentity(); // Bootstrap may be unregistered, never closed.
+    else this.identity();
     validateNativeLogicalRequest(operation, body);
     const response = await this.#environment.nativeLogicalRequest(operation, body, options);
+    if (operation === "capabilities") this.#controller.clientIdentity();
+    else this.identity(); // A late passive response cannot reopen a final closed registration.
     return { ...decode(response.raw), encodedByteCount: response.encodedByteCount };
   }
 }
