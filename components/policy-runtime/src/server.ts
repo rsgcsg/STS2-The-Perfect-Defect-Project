@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { RuntimeControlPreconditionError, type PolicyRuntime } from "./runtime.js";
+import { RuntimeControlPreconditionError } from "./runtime-owner.js";
+import type { RuntimeServiceOwner, AgentRuntimeTickResult } from "./agent-runtime-contracts.js";
 import type { RuntimeControlPreconditions, TickResult } from "./contracts.js";
 
 const HTTP_SCHEMA = "sts2.policy-runtime/http-2" as const;
@@ -24,7 +25,7 @@ export interface RunningPolicyRuntimeHttpServer {
   close(): Promise<void>;
 }
 
-export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, options: PolicyRuntimeHttpOptions = {}): Promise<RunningPolicyRuntimeHttpServer> {
+export async function startPolicyRuntimeHttpServer(runtime: RuntimeServiceOwner, options: PolicyRuntimeHttpOptions = {}): Promise<RunningPolicyRuntimeHttpServer> {
   const host = options.host ?? "127.0.0.1";
   if (!["127.0.0.1", "localhost", "::1"].includes(host)) throw new Error("Policy Runtime HTTP service is loopback-only");
   const maxBodyBytes = options.maxBodyBytes ?? 8 * 1024;
@@ -67,7 +68,7 @@ export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, optio
   } };
 }
 
-async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
+async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
   try {
     if (request.method === "GET" && request.url === "/status") { json(response, 200, { schema: HTTP_SCHEMA, status: runtime.status() }); return; }
     if (request.method === "GET" && request.url === "/v2/environment") {
@@ -119,7 +120,7 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
     const requested = requestedValue === undefined ? 1 : requestedValue;
     if (typeof requested !== "number" || !Number.isSafeInteger(requested) || requested < 1 || requested > maxAutoTicks) throw new Error(`max_ticks must be between 1 and ${maxAutoTicks}`);
     const limit = runtime.status().mode === "one_step" ? 1 : requested;
-    const results: TickResult[] = [];
+    const results: (TickResult | AgentRuntimeTickResult)[] = [];
     const expected = controlPreconditions(request);
     for (let index = 0; index < limit; index += 1) {
       try {
@@ -130,7 +131,10 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
         // A later fence failure cannot erase already executed ticks or advertise
         // the entire POST as known-unapplied. Preserve the completed prefix.
         if (!(error instanceof RuntimeControlPreconditionError) || results.length === 0) throw error;
-        results.push({ type: "not_admitted", reason: error.code, status: runtime.status() });
+        const status = runtime.status();
+        if (status.schema === "sts2.policy-runtime/agent-session-status-1")
+          results.push({ type: "not_admitted", reason: error.code, status });
+        else results.push({ type: "not_admitted", reason: error.code, status });
         break;
       }
     }

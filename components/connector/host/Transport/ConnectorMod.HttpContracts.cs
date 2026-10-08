@@ -4,6 +4,8 @@ using System.Linq;
 using System.Net;
 using System.Text.Json;
 using Godot;
+using STS2Connector.PlayerEnvironment.Protocol;
+using STS2Connector.PlayerEnvironment.NativeLogical;
 
 namespace STS2Connector;
 
@@ -39,9 +41,13 @@ public static partial class ConnectorMod
         try
         {
             string body = request.ContentEncoding.GetString(bytes);
-            return JsonSerializer.Deserialize<T>(body, _jsonOptions);
+            T? parsed = JsonSerializer.Deserialize<T>(body, _jsonOptions);
+            // Legacy callers keep their serializer. The opted-in native action
+            // uses the same strict UTF-8/shape decoder as its query family.
+            return parsed is PlayerEnvironmentActionRequest { InputProfile: NativeLogicalContract.Profile }
+                ? NativeLogicalDecoder.Decode<T>(bytes) : parsed;
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or NativeLogicalException)
         {
             SendApiError(
                 response,

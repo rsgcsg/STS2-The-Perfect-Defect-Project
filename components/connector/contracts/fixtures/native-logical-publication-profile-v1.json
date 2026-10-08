@@ -1,0 +1,115 @@
+{
+  "schema": "sts2.player-environment/native-logical-publication-profile-golden-1",
+  "profile_id": "native-logical-publication-profile-v1",
+  "contract_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+  "cases": [
+    {
+      "case_id": "exact_fixed_target",
+      "advertised_change": null,
+      "expected": "supported"
+    },
+    {
+      "case_id": "missing_required_seam",
+      "advertised_change": {
+        "remove": "native_reward_catalog"
+      },
+      "expected": "required_seam_missing"
+    },
+    {
+      "case_id": "bootstrap_only",
+      "advertised_change": {
+        "keep_only": "connector_initial_observation"
+      },
+      "expected": "required_seam_missing"
+    },
+    {
+      "case_id": "sampled_required_seam",
+      "advertised_change": {
+        "source_seam": "native_reward_input_availability",
+        "coverage": "sampled"
+      },
+      "expected": "coverage_insufficient"
+    },
+    {
+      "case_id": "unsupported_required_seam",
+      "advertised_change": {
+        "source_seam": "native_information_owner",
+        "coverage": "unsupported"
+      },
+      "expected": "coverage_insufficient"
+    },
+    {
+      "case_id": "wrong_required_version",
+      "advertised_change": {
+        "source_seam": "native_owner_ready",
+        "version": "2"
+      },
+      "expected": "required_seam_version_mismatch"
+    },
+    {
+      "case_id": "duplicate_advertised_seam",
+      "advertised_change": {
+        "duplicate": "native_target_focus"
+      },
+      "expected": "invalid_declaration"
+    },
+    {
+      "case_id": "extra_unsupported_family",
+      "advertised_change": {
+        "add": {
+          "source_seam": "other_native_exposures",
+          "version": "1",
+          "coverage": "unsupported"
+        }
+      },
+      "expected": "supported"
+    },
+    {
+      "case_id": "captured_source_missing",
+      "source_outcome": {
+        "publication_index": "7",
+        "capture_ref": null,
+        "missing_reason": "source_capture_incomplete"
+      },
+      "expected": "accounted_missing_not_full_input"
+    },
+    {
+      "case_id": "capacity_source_missing",
+      "source_outcome": {
+        "publication_index": "8",
+        "capture_ref": null,
+        "missing_reason": "encoding_capacity_exceeded"
+      },
+      "expected": "accounted_missing_not_full_input"
+    },
+    {
+      "case_id": "complete_observed_empty_catalog",
+      "observation": {
+        "status": "observed",
+        "completeness": "complete",
+        "catalog_count": 0
+      },
+      "expected": "consume_public_view_then_await_no_readiness_inference"
+    },
+    {
+      "case_id": "terminal_event_separate_status",
+      "event_kind": "terminal",
+      "observation_status": "observed",
+      "expected": "no_commit_successor_or_task_end_inference"
+    },
+    {
+      "case_id": "incomplete_registration",
+      "registration_state": "not_all_named_hooks_confirmed",
+      "expected": "keep_actual_sampled_or_unsupported"
+    },
+    {
+      "case_id": "source_capture_wrong_thread",
+      "source_outcome": {
+        "publication_index": "9",
+        "capture_ref": null,
+        "missing_reason": "native_capture_failed"
+      },
+      "expected": "accounted_missing_not_full_input"
+    }
+  ]
+}

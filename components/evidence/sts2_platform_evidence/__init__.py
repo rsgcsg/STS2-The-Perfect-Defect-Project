@@ -32,6 +32,11 @@ from .delivery_http import HubTransport
 from .delivery_summary import inspect_delivery_status
 from .human_summary import summarize_verified_human_bundle
 from .store import ContentAddressedStore, StoreReceipt
+from .source_session_bundle import (
+    SourceSessionBundle,
+    SourceSessionBundleVerifier,
+    verify_source_session_bundle,
+)
 from .transfer import (
     DirectoryReceiver,
     DirectoryTransferManifest,
@@ -40,6 +45,9 @@ from .transfer import (
 )
 
 __all__ = [
+    "SourceSessionBundle",
+    "SourceSessionBundleVerifier",
+    "verify_source_session_bundle",
     "CollectionProfile",
     "CollectionTool",
     "DeliveryOutbox",

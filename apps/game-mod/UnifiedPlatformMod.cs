@@ -38,6 +38,7 @@ public static class UnifiedPlatformMod
         NativeFoundationOwnerPatches.Initialize();
         ConnectorCardRewardPresentationPatches.Initialize();
         ConnectorMod.Initialize();
+        ConnectorNativeLogicalPatches.Initialize();
         RecorderMod.Initialize();
         PlatformLiveUiMod.Initialize();
         try { PlatformTaskBridge.Start(); }

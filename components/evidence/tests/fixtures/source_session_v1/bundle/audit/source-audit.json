@@ -1,0 +1,1 @@
+{"schema":"sts2.annotator/source-session-audit-1","status":"pass","session_id":"session-source-fixture","observation_count":1,"input_count":2,"gap_count":0,"source_kinds":["agent_native_ui"],"errors":[],"non_claims":["not_machine_proof_of_human_origin","not_native_coverage_qualified","not_causal_transition_proof","not_research_admission","not_g2_v1_approved"]}

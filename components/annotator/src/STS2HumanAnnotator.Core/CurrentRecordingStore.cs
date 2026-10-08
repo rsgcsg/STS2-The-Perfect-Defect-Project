@@ -49,15 +49,20 @@ public sealed class RecordingSessionStore : IDisposable
     private string _diskHealth = "healthy";
     private string? _lastError;
     private bool _closed;
+    private readonly HumanCaptureProfile? _humanCaptureProfile;
+    private readonly SourceSessionStreams? _sourceSession;
 
     private RecordingSessionStore(
         string directory,
         CurrentRecordingManifest manifest,
-        HumanCaptureProfile captureProfile)
+        HumanCaptureProfile? captureProfile,
+        SourceCaptureProfile? sourceProfile = null,
+        SourceDeclaration? initialSource = null,
+        SourceClockReference? initialClock = null)
     {
         DirectoryPath = directory;
         Manifest = manifest;
-        CaptureProfile = captureProfile;
+        _humanCaptureProfile = captureProfile;
         Directory.CreateDirectory(directory);
         if (manifest.RecoverySchemaVersion == 1)
             _ownerLease = new FileStream(Path.Combine(directory, "recording-owner.lock"),
@@ -69,7 +74,9 @@ public sealed class RecordingSessionStore : IDisposable
                 JsonSerializer.Serialize(manifest, EvidenceJson.IndentedOptions));
             WriteCreateNew(
                 Path.Combine(directory, "capture-profile.json"),
-                JsonSerializer.Serialize(captureProfile, EvidenceJson.IndentedOptions));
+                sourceProfile == null
+                    ? JsonSerializer.Serialize(captureProfile, EvidenceJson.IndentedOptions)
+                    : JsonSerializer.Serialize(sourceProfile, SourceSessionJson.Options));
             _invalidations = OpenBufferedAppend(Path.Combine(directory, "invalidations.jsonl"));
             _journal = OpenBufferedAppend(Path.Combine(directory, "run-journal.jsonl"));
             _semanticBoundaryTrace = OpenRecoverableAppend(
@@ -81,6 +88,9 @@ public sealed class RecordingSessionStore : IDisposable
             if (HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
                 _humanTextInputs = OpenBufferedAppend(Path.Combine(directory,
                     HumanTextInputObservationContract.FileName));
+            if (sourceProfile != null)
+                _sourceSession = new SourceSessionStreams(directory, manifest, sourceProfile,
+                    initialSource!, initialClock!);
             WriteCoverage();
         }
         catch
@@ -88,13 +98,77 @@ public sealed class RecordingSessionStore : IDisposable
             _invalidations?.Dispose(); _journal?.Dispose(); _semanticBoundaryTrace?.Dispose();
             _canonicalTransitions?.Dispose(); _nativeSemanticDiscriminator?.Dispose(); _ownerLease?.Dispose();
             _humanTextInputs?.Dispose();
+            _sourceSession?.Dispose();
             throw;
         }
     }
 
     public string DirectoryPath { get; }
     public CurrentRecordingManifest Manifest { get; }
-    public HumanCaptureProfile CaptureProfile { get; }
+    public HumanCaptureProfile CaptureProfile => _humanCaptureProfile
+        ?? throw new InvalidOperationException("A source profile is not a Human capture profile.");
+    public bool IsSourceSession => _sourceSession != null;
+    public SourceCaptureProfile? SourceProfile => _sourceSession?.Profile;
+    public SourceSessionStatus? GetSourceStatus() { lock (_gate) return _sourceSession?.Status; }
+
+    public static RecordingSessionStore CreateSource(string root, CurrentRecordingManifest manifest,
+        SourceCaptureProfile profile, SourceDeclaration initialSource, SourceClockReference initialClock)
+    {
+        SourceSessionStreams.ValidateProfile(profile);
+        SourceSessionContract.Validate(initialSource);
+        _ = SourceSessionContract.Index(initialClock);
+        if (manifest.Schema != SourceSessionContract.ManifestSchema || manifest.SchemaVersion != 1
+            || manifest.SourceSchemaVersion != 1 || manifest.SourceEnvironment == null
+            || manifest.CaptureProfileId != profile.ProfileId
+            || manifest.CaptureProfileSha256 != SourceSessionContract.Sha256(SourceSessionJson.Bytes(profile))
+            || manifest.TextInputSchemaVersion != null || manifest.DecisionSchemaVersion != null
+            || manifest.CloseSchemaVersion != null)
+            throw new InvalidDataException("source_manifest_invalid");
+        SourceSessionContract.ValidateEnvironment(manifest.SourceEnvironment);
+        SourceSessionContract.Identifier(manifest.SessionId);
+        SourceSessionContract.Identifier(manifest.TimelineId);
+        return new RecordingSessionStore(Path.Combine(Path.GetFullPath(root), manifest.SessionId),
+            SourceSessionJson.Copy(manifest), null, profile, initialSource, initialClock);
+    }
+
+    public SourceSegment ChangeSource(SourceDeclaration declaration, string expectedSegmentId,
+        SourceClockReference clock, RecordingLifecycleState state) =>
+        SourceWrite(source => source.ChangeSource(declaration, expectedSegmentId, clock, state));
+    public void RecordSourceBoundary(string kind, SourceClockReference clock, RecordingLifecycleState state) =>
+        SourceWrite(source => { source.Boundary(kind, clock, state); return true; });
+    public PublicCaptureReference PersistPublicCapture(FrozenPublicCapture capture) =>
+        SourceWrite(source => source.Persist(capture));
+    public PublicCatalogReference PersistPublicCatalog(FrozenPublicCatalog catalog) =>
+        SourceWrite(source => source.Persist(catalog));
+    public void AppendPublicObservation(SourceObservationPacket packet) =>
+        SourceWrite(source => { source.Observe(packet); return true; });
+    public SourceInputScope BeginSourceInput(string inputId, SourceClockReference clock,
+        PublicCaptureReference? preCapture, PublicCatalogReference? catalog, RecordingLifecycleState state) =>
+        SourceWrite(source => source.Begin(inputId, clock, preCapture, catalog, state));
+    public void CompleteSourceInput(SourceInputScope scope, SourceInputOutcome outcome) =>
+        SourceWrite(source => { source.Complete(scope, outcome); return true; });
+    public SourceInputScope BindSourceInputBasis(SourceInputScope scope, PublicCaptureReference? preCapture,
+        PublicCatalogReference? catalog) => SourceWrite(source => source.Bind(scope, preCapture, catalog));
+    public void MarkSourceAccountingFailed(string code)
+    {
+        lock (_gate)
+        {
+            _sourceSession?.MarkFailure(code);
+            MarkWriteFailureUnsafe(new IOException(code));
+        }
+    }
+    private T SourceWrite<T>(Func<SourceSessionStreams, T> write)
+    {
+        lock (_gate)
+        {
+            EnsureOpen();
+            SourceSessionStreams source = _sourceSession
+                ?? throw new InvalidOperationException("source_profile_required");
+            try { return write(source); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { source.MarkFailure("source_disk_or_capacity_failure"); MarkWriteFailureUnsafe(exception); throw; }
+        }
+    }
 
     public T Measure<T>(string phase, Func<T> operation) =>
         _performance.Measure(phase, operation);
@@ -609,6 +683,7 @@ public sealed class RecordingSessionStore : IDisposable
                 return;
             try
             {
+                _sourceSession?.PrepareClose();
                 WriteCoverage();
                 _performance.Measure("close_evidence_durable_flush", () =>
                 {
@@ -634,6 +709,8 @@ public sealed class RecordingSessionStore : IDisposable
                 _canonicalTransitions.Dispose();
                 _nativeSemanticDiscriminator.Dispose();
                 _humanTextInputs?.Dispose();
+                _sourceSession?.WriteCloseReceipt();
+                _sourceSession?.Dispose();
                 if (_humanTextInputAppendFailed)
                 {
                     _ownerLease?.Dispose();
@@ -744,6 +821,11 @@ public sealed class RecordingSessionStore : IDisposable
 
     private void WriteCoverage()
     {
+        if (_sourceSession != null)
+        {
+            _sourceSession.WriteCoverage();
+            return;
+        }
         var coverage = new CurrentCoverageSummary(
             CurrentRecordingContract.SchemaVersion,
             CurrentRecordingContract.CoverageSchema,

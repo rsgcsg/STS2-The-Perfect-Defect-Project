@@ -26,6 +26,7 @@ from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_evaluation import summary
 from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_training import _private_child
+from stpd.structured_code_scope import is_structured_model_schema
 
 SCHEMA = "stpd/local-memory-evaluation-operation-v1"
 OPERATION_FILE = "local-memory-evaluation-operation.json"
@@ -167,8 +168,8 @@ class LocalMemoryEvaluationService:
                  or not 0 <= max_settling_events <= 64)):
             raise BoundaryError("local_memory_evaluation", "invalid_settling_limit")
         owner, store, registry_path = self._selected()
-        if store.get_manifest(model_id).parameters.value().get("schema") == \
-                "stpd/structured-m2-model-v1":
+        if is_structured_model_schema(
+                store.get_manifest(model_id).parameters.value().get("schema")):
             if max_settling_events is not None:
                 raise BoundaryError("local_memory_evaluation", "structured_projection_is_fixed")
             return self._start_structured(model_id, source_id, owner, store, registry_path)

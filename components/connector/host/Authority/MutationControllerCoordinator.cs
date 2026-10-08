@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using STS2Connector.LiveHost.Contracts;
 namespace STS2Connector.Authority;
+
+internal sealed class MutationWatchCapacityException : Exception { }
 
 internal sealed class MutationControllerCoordinator
 {
@@ -20,6 +23,10 @@ internal sealed class MutationControllerCoordinator
     private readonly Dictionary<string, string> _sessionByInstance = new(StringComparer.Ordinal);
     private MutableLease? _controller;
     private long _nextGeneration;
+    private readonly Dictionary<long, Action> _controlWatches = new();
+    private long _nextWatch;
+    private Timer? _watchTimer;
+    private const int MaxControlWatches = 128;
 
     public MutationControllerCoordinator(
         string runtimeInstanceId,
@@ -155,7 +162,7 @@ internal sealed class MutationControllerCoordinator
             if (!MatchesCurrentLease(request))
                 return Rejected("controller_lease_stale", "The controller lease id or generation is no longer current.");
 
-            _controller = null;
+            RevokeController();
             return new MutationLeaseResult(
                 MutationControlContract.ProtocolVersion,
                 _runtimeInstanceId,
@@ -202,6 +209,60 @@ internal sealed class MutationControllerCoordinator
         }
     }
 
+    // This accepted return is the input-start linearization boundary. The
+    // caller retains the immutable admission, then dispatches outside _gate.
+    // A later release/expiry prevents new starts; it cannot undo this start.
+    public MutationAdmission TryBegin(MutationAuthorizationRequest request)
+    {
+        lock (_gate) return Authorize(request);
+    }
+
+    public bool TryWatch(MutationAuthorizationRequest request, Action lost, out IDisposable? watch)
+    {
+        ArgumentNullException.ThrowIfNull(lost);
+        lock (_gate)
+        {
+            if (!Authorize(request).Accepted) { watch = null; return false; }
+            if (_controlWatches.Count >= MaxControlWatches) throw new MutationWatchCapacityException();
+            long id = checked(++_nextWatch);
+            _controlWatches.Add(id, lost);
+            _watchTimer ??= new Timer(_ => { lock (_gate) ExpireController(_clock()); }, null, 25, 25);
+            watch = new ControlWatch(this, id);
+            return true;
+        }
+    }
+
+    private void RevokeController()
+    {
+        _controller = null;
+        Action[] callbacks = _controlWatches.Values.ToArray();
+        _controlWatches.Clear();
+        _watchTimer?.Dispose(); _watchTimer = null;
+        foreach (Action callback in callbacks)
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                // Cross the authority gate before invoking another owner.
+                lock (_gate) { }
+                try { callback(); } catch { /* Observer failure grants no control. */ }
+            });
+    }
+
+    private sealed class ControlWatch(MutationControllerCoordinator owner, long id) : IDisposable
+    {
+        private MutationControllerCoordinator? coordinator = owner;
+        public void Dispose()
+        {
+            var value = Interlocked.Exchange(ref coordinator, null);
+            if (value == null) return;
+            lock (value._gate)
+            {
+                value._controlWatches.Remove(id);
+                if (value._controlWatches.Count == 0)
+                { value._watchTimer?.Dispose(); value._watchTimer = null; }
+            }
+        }
+    }
+
     public MutationControlCapability Capability() => new(
         "local_coordination_active",
         RegistrationRequiredForMutation: true,
@@ -237,7 +298,7 @@ internal sealed class MutationControllerCoordinator
     private void ExpireController(DateTimeOffset now)
     {
         if (_controller != null && now >= _controller.ExpiresAt)
-            _controller = null;
+            RevokeController();
     }
 
     private MutationLeaseResult Accepted(

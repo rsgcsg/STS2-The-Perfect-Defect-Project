@@ -33,6 +33,14 @@ internal sealed record TextMenuFrame(
 
     [JsonIgnore]
     internal bool CardPlayCatalogComplete { get; init; }
+
+    // Only the new native adapter supplies this exact private membership proof.
+    // Legacy windows/public flags cannot certify a full logical action relation.
+    [JsonIgnore]
+    internal NativeLogicalGridState? LogicalGridProof { get; init; }
+
+    [JsonIgnore]
+    internal NativeLogicalDeckState? LogicalDeckProof { get; init; }
 }
 
 internal sealed record TextMenuChoice(TextMenuAction Action, TextMenuLeaf? Leaf, string? TargetCursor);
