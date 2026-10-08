@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text.Json;
 using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment.Protocol;
+using STS2Platform.NativeFoundation;
 
 namespace STS2Connector.PlayerEnvironment;
 
@@ -64,7 +65,7 @@ internal sealed class NativeLogicalExecutor(RequestNamespace requests, NativeLog
             owner.NotifyOriginalInputPrefix(request);
             owner.Publish("connector_input_start", "input_started");
             NativeInputResult input;
-            try { input = leaf.Dispatch(); }
+            try { using var nativeProtocolScope = NativeSourceInputProvider.ProtocolDispatch(request); input = leaf.Dispatch(); }
             catch { preparation.Seal(Result("unknown", "native_input_boundary_threw")); return true; }
             var stages = (input.Stages ?? Array.Empty<NativeInputStage>()).Select(s => new NativeLogicalInputStage(
                 JsonNamingPolicy.SnakeCaseLower.ConvertName(s.Stage.ToString()), s.Delivery switch

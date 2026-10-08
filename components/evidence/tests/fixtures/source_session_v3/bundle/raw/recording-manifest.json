@@ -1,0 +1,52 @@
+{
+  "schema_version": 3,
+  "schema": "sts2.annotator/source-session-manifest-3",
+  "session_id": "session-fixture",
+  "timeline_id": "timeline-fixture",
+  "created_at": "1970-01-01T00:00:00+00:00",
+  "recorder_version": "fixture",
+  "recorder_source_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "platform": "fixture-platform",
+  "capture_profile_id": "native-logical-source-v3",
+  "capture_profile_sha256": "2b1cc3724f5403d6d24a77060976c286fb56211144603b7826e1910d04a014d5",
+  "supported_families": [],
+  "non_claims": [
+    "not_machine_proof_of_human_origin",
+    "not_native_coverage_qualified",
+    "not_causal_transition_proof",
+    "not_research_admission",
+    "not_non_interference_qualified",
+    "not_g2_v1_approved"
+  ],
+  "recovery_schema_version": 1,
+  "source_schema_version": 3,
+  "source_environment": {
+    "game": {
+      "version": "fixture-game",
+      "commit": "fixture-commit",
+      "main_assembly_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "main_assembly_module_version_id": "game-mvid"
+    },
+    "connector": {
+      "product": "Connector",
+      "version": "fixture",
+      "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_digest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "module_version_id": "connector-mvid"
+    },
+    "annotator": {
+      "product": "Annotator",
+      "version": "fixture",
+      "source_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "source_digest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "module_version_id": "annotator-mvid"
+    },
+    "player_environment_protocol": "1.0.0",
+    "runtime_instance_id": "runtime-fixture",
+    "environment_fingerprint": "environment-fixture",
+    "modset_status": "fixture",
+    "modset_fingerprint": "modset-fixture"
+  }
+}

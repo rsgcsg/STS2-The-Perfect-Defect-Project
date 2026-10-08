@@ -3,14 +3,22 @@ namespace STS2HumanAnnotator.Core;
 public sealed partial class RecordingSessionStore
 {
     public bool IsSourceSessionV2 => _sourceSessionV2 != null;
+    public bool IsOrderedSourceSession => _sourceSessionV2?.Profile.ProfileId == SourceSessionContractV3.ProfileId;
     public SourceCaptureProfileV2? SourceProfileV2 => _sourceSessionV2?.Profile;
     public SourceSessionStatusV2? GetSourceStatusV2() => _sourceSessionV2?.Status;
     public static RecordingSessionStore CreateSourceV2(string root, CurrentRecordingManifest manifest,
         SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
+        => CreateSourceVersion(root, manifest, profile, initialSource, initialEpoch, 2);
+    public static RecordingSessionStore CreateSourceV3(string root, CurrentRecordingManifest manifest,
+        SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
+        => CreateSourceVersion(root, manifest, profile, initialSource, initialEpoch, 3);
+    private static RecordingSessionStore CreateSourceVersion(string root, CurrentRecordingManifest manifest,
+        SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch, int version)
     {
+        var format = SourceSessionWireFormat.ForVersion(version);
         SourceSessionStreamsV2.ValidateProfile(profile); SourceSessionContract.Validate(initialSource);
-        if (manifest.Schema != SourceSessionContractV2.ManifestSchema || manifest.SchemaVersion != 2
-            || manifest.SourceSchemaVersion != 2 || manifest.SourceEnvironment == null
+        if (manifest.Schema != format.Schema("source-session-manifest") || manifest.SchemaVersion != version
+            || manifest.SourceSchemaVersion != version || profile.ProfileId != format.ProfileId || manifest.SourceEnvironment == null
             || manifest.CaptureProfileId != profile.ProfileId || manifest.CaptureProfileSha256 != SourceSessionContractV2.ProfileDigest(profile)
             || manifest.DecisionSchemaVersion != null || manifest.TextInputSchemaVersion != null || manifest.CloseSchemaVersion != null
             || manifest.DispositionSchemaVersion != null || manifest.ContinuousSchemaVersion != null || manifest.SupportedFamilies.Count != 0
@@ -32,6 +40,7 @@ public sealed partial class RecordingSessionStore
         SourceV2.Ledger.StageBoundary(kind, position, seals, transition);
     public SourceInputTokenV2 ReserveSourceInputV2(string inputId, SourceNativePositionV2 prePosition) =>
         SourceV2.Ledger.ReserveInput(inputId, prePosition);
+    public void SealSourceInputOrderV3(SourceInputTokenV2 token, SourceBasisOrderV3 order) => SourceV2.Ledger.SetInputOrder(token, order);
     public bool IsSourceObservationPausedV2(SourceNativePositionV2 position) => SourceV2.Ledger.IsPaused(position);
     public void MarkSourceV2AccountingFailed(string code) => SourceV2.Ledger.MarkFailure(code);
 
