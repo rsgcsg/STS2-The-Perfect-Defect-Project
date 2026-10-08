@@ -32,6 +32,7 @@ from ..policy.structured_export import (
     WEIGHTS_NAME,
     load_structured_package,
 )
+from ..structured_code_scope import is_structured_model_schema, require_structured_model_package
 
 INPUT_SCHEMA = "stpd/structured-fixed-model-evaluation-input-v1"
 REPORT_SCHEMA = "stpd/structured-fixed-model-evaluation-report-v1"
@@ -82,7 +83,7 @@ def _model(store: ArtifactStore, model_id: str) -> tuple[Manifest, dict[str, Any
     manifest = store.get_manifest(model_id)
     parameters = manifest.parameters.value()
     if (manifest.kind != "model"
-            or parameters.get("schema") != "stpd/structured-m2-model-v1"
+            or not is_structured_model_schema(parameters.get("schema"))
             or {payload.role for payload in manifest.payloads} != {"package_manifest", "weights"}):
         raise BoundaryError("structured_evaluation", "structured_model_required")
     # Downloaded models need their own closed bytes, never private training payloads.
@@ -94,8 +95,7 @@ def _model(store: ArtifactStore, model_id: str) -> tuple[Manifest, dict[str, Any
         (directory / WEIGHTS_NAME).write_bytes(weights_bytes)
         metadata, model = load_structured_package(
             directory, expected_manifest_sha256=hashlib.sha256(metadata_bytes).hexdigest())
-    if parameters.get("model_id") != metadata["model_id"]:
-        raise BoundaryError("structured_evaluation", "model_artifact_binding")
+    require_structured_model_package(manifest, metadata)
     return manifest, metadata, model
 
 
