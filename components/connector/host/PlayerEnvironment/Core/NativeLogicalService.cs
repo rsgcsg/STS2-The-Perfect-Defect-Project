@@ -25,12 +25,14 @@ internal static partial class PlayerEnvironmentService
     {
         var game = EnvironmentIdentityRuntime.ReadGame();
         var host = EnvironmentIdentityRuntime.HostIdentity();
+        var publication = NativeLogical.Hub.ReadDeclaration();
         return new(PlayerEnvironmentContract.ProtocolVersion, NativeLogicalContract.CapabilitiesSchema,
             NativeLogicalContract.Profile, ToHostIdentity(host), ToGameIdentity(game), ToSessionReference(host, game),
-            NativeLogical.Hub.StreamGeneration,
+            publication.StreamGeneration,
             new[] { "capabilities", "current", "read", "catalog", "resolve", "attach", "events", "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result" },
-            new[] { "native_current_frame", "native_owner_ready", "native_target_focus", "native_card_preview", "native_inspect_preview", "native_input_callback", "connector_input_start", "native_terminal_entry" },
-            NativeLogicalService.Coverage,
+            new[] { "native_current_frame" }.Concat(publication.Coverage.Where(s => s.Coverage != "unsupported")
+                .Select(s => s.SourceSeam)).Distinct(StringComparer.Ordinal).ToArray(),
+            publication.Coverage,
             new("u64_decimal_string", "u64_decimal_string", "native_source_occurrence", "contiguous_completed_projections_not_causal_commit_order"),
             NativeLogical.Limits, new(MutationControlRuntime.Capability().RecommendedRenewalMs),
             new[] { "Coverage describes implemented source seams, not all L01-L64 obligations or runtime qualification.",
@@ -43,7 +45,7 @@ internal static partial class PlayerEnvironmentService
 
 // One native owner. Only the game thread touches current private closures;
 // the serial encoder receives detached public DTOs and private binding strings.
-internal sealed class NativeLogicalService : IDisposable
+internal sealed partial class NativeLogicalService : IDisposable
 {
     internal const string Bootstrap = "connector_initial_observation";
     internal static readonly IReadOnlyList<NativeLogicalSeamCoverage> Coverage = Array.AsReadOnly(new[]

@@ -30,6 +30,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     {
         internal string Client = client; internal NativeLogicalSubscription Value = value; internal long Deadline = deadline;
         internal readonly HashSet<string> WaitIds = new(StringComparer.Ordinal);
+        internal IReadOnlyDictionary<string, NativeLogicalSeamCoverage> AdvertisedCoverage = new Dictionary<string, NativeLogicalSeamCoverage>();
     }
     private sealed class Slot(ulong index, string seam, string phase, string sourceIndex, string kind, long deadline, string[] subscriptionIds)
     {
@@ -54,6 +55,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     private readonly Dictionary<string, Subscription> subscriptions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> seamIndices = new(StringComparer.Ordinal);
     private readonly Dictionary<string, NativeLogicalSeamCoverage> coverage;
+    private string? publicationProfileId, publicationProfileDefinitionSha256;
     private readonly Dictionary<string, Waiter> waiters = new(StringComparer.Ordinal);
     private readonly Slot?[] ring;
     private readonly Timer timer;
@@ -71,6 +73,29 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     public string StreamGeneration { get { lock (gate) return generation; } }
     public int WaiterCount { get { lock (gate) return waiters.Count; } }
     public int MetadataCount { get { lock (gate) return ring.Count(s => s is not null); } }
+    internal NativeLogicalPublicationDeclaration ReadDeclaration()
+    {
+        lock (gate)
+            return new(generation, publicationProfileId, publicationProfileDefinitionSha256,
+                Array.AsReadOnly(coverage.Values.ToArray()));
+    }
+    internal void InstallPublicationProfile(string profileId, string definitionSha256,
+        IReadOnlyList<NativeLogicalSeamCoverage> confirmedCoverage)
+    {
+        var canonical = NativeLogicalPublicationProfile.ValidateConfirmation(profileId, definitionSha256, confirmedCoverage);
+        lock (gate)
+        {
+            TickLocked();
+            // Existing accepted scopes keep their original advertised declaration. Installation never rewrites an epoch.
+            var unsupported = coverage.Values.Where(s => s.Coverage == "unsupported"
+                && !canonical.Any(t => t.SourceSeam == s.SourceSeam)).ToArray();
+            if (canonical.Count + unsupported.Length > limits.MaxSourceSeams)
+                throw new NativeLogicalException("capacity_exceeded", "Publication declaration exceeds announced seam capacity.");
+            coverage.Clear();
+            foreach (var seam in canonical.Concat(unsupported)) coverage.Add(seam.SourceSeam, seam);
+            publicationProfileId = profileId; publicationProfileDefinitionSha256 = definitionSha256;
+        }
+    }
     public NativeLogicalPublicationHub(NativeLogicalCaptureStore store,
         IEnumerable<NativeLogicalSeamCoverage> advertisedCoverage,
         Func<long>? monotonicMs = null, NativeLogicalLimits? limits = null,
@@ -115,6 +140,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
                 Array.AsReadOnly(request.EagerScope.ToArray()), Array.AsReadOnly(accepted.ToArray()), request.DeliveryMode,
                 generation, "", DateTimeOffset.UtcNow.AddMilliseconds(limits.RetentionMs));
             var subscription = new Subscription(request.ClientSessionId, value, deadline);
+            subscription.AdvertisedCoverage = new Dictionary<string, NativeLogicalSeamCoverage>(coverage, StringComparer.Ordinal);
             subscription.Value = value with { StartingCursor = Cursor(subscription, reserved) };
             subscriptions.Add(value.SubscriptionId, subscription);
             return new("attached", subscription.Value);
@@ -363,7 +389,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     private NativeLogicalGap? Gap(ulong after) => after < retainedStart - 1 ? new("retention_overflow", NativeLogicalWire.Number(after + 1), NativeLogicalWire.Number(retainedStart - 1)) : null;
     private NativeLogicalEventAvailability Event(Subscription sub, Slot slot, NativeLogicalProjectionOutcome outcome)
     {
-        string seamCoverage = sub.Value.Coverage.FirstOrDefault(c => c.SourceSeam == slot.Seam)?.Coverage ?? coverage[slot.Seam].Coverage;
+        string seamCoverage = sub.AdvertisedCoverage.TryGetValue(slot.Seam, out var accepted) ? accepted.Coverage : "unsupported";
         var value = new NativeLogicalEvent(NativeLogicalContract.EventSchema, Cursor(sub, slot.Index), generation,
             NativeLogicalWire.Number(slot.Index), slot.Kind, slot.Seam, slot.Phase, slot.SourceIndex,
             sub.Value.ScopeId, outcome.Capture?.CaptureId, outcome.MissingReason, seamCoverage, outcome.Capture);
