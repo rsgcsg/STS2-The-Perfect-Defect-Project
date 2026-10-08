@@ -17,7 +17,7 @@ public sealed record NativeLogicalSourceEpoch(string EpochId, string? PreviousEp
 public sealed record NativeLogicalSourceBoundary(NativeLogicalSourcePosition Position, string CompletedThrough,
     long EncodingDeadlineMonotonicMs);
 public sealed record NativeLogicalSourceInputPrefix(string RequestId, string ClientSessionId, string ActionId,
-    NativeLogicalSourcePosition PrePosition);
+    NativeLogicalSourcePosition PrePosition, long EncodingDeadlineMonotonicMs);
 public sealed record NativeLogicalSourceInputTerminal(string Delivery, string? Reason, IReadOnlyList<NativeLogicalInputStage> Stages);
 
 /// <summary>Passive typed sink. Prefix and native metadata callbacks must perform no I/O or native input.</summary>

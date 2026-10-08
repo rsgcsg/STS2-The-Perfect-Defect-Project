@@ -85,7 +85,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         {
             if (paused || closing || disposed || failure != null) return null;
             var token = store.ReserveSourceInputV2(prefix.RequestId, Position(prefix.PrePosition));
-            var input = new Input(token, prefix.ActionId, checked(Environment.TickCount64 + 2000));
+            var input = new Input(token, prefix.ActionId, prefix.EncodingDeadlineMonotonicMs);
             inputs.Add(token.InputId, input); return input;
         }
     }
@@ -96,6 +96,15 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             if (originalToken is not Input input || disposed || input.Complete || input.BasisBound
                 || !inputs.TryGetValue(input.Token.InputId, out var issued) || !ReferenceEquals(issued, input))
             { retainedInput?.Dispose(); return; }
+            if (Environment.TickCount64 >= input.Deadline)
+            {
+                // Deadline belongs to the original native prefix, not to when
+                // the disk worker resumes or the encoder callback arrives.
+                retainedInput?.Dispose();
+                if (!input.BasisReady)
+                { input.Missing = "source_input_basis_encoding_timeout"; input.BasisReady = true; }
+                return;
+            }
             if (input.BasisReady) { retainedInput?.Dispose(); AccountingFailed("source_input_basis_duplicate"); return; }
             input.CaptureId = captureId; input.Retention = retainedInput; input.Missing = missingReason; input.BasisReady = true;
         }
@@ -247,8 +256,15 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             ulong reserved = ulong.Parse(seal.ReservedThrough, CultureInfo.InvariantCulture);
             if (ulong.Parse(boundary.CompletedThrough, CultureInfo.InvariantCulture) >= reserved && batch.NextCursor == batch.HighWatermark)
             {
-                epoch.Final = seal with { CompletedThrough = boundary.CompletedThrough };
-                if (attachment.ReleaseEpoch(epoch.Original)) epoch.Released = true;
+                // Completion may advance between Events/Acknowledge and the
+                // fresh boundary read. Only the Hub's atomic original ack+seal
+                // check can retire this view; an older batch is not proof.
+                try
+                {
+                    if (attachment.ReleaseEpoch(epoch.Original))
+                    { epoch.Final = seal with { CompletedThrough = boundary.CompletedThrough }; epoch.Released = true; }
+                }
+                catch (NativeLogicalException error) when (error.Code == "source_epoch_not_drained") { }
             }
         }
     }

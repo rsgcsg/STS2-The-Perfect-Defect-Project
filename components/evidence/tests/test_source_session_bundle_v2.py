@@ -178,3 +178,35 @@ class SourceSessionBundleV2Tests(unittest.TestCase):
     def test_typed_receive_rejects_wrong_bundle_content_identity(self) -> None:
         status, receipt = self.receive(content_id="0" * 64)
         self.assertEqual(1, status, receipt); self.assertEqual("quarantined", receipt["status"])
+
+    def test_missing_nullable_reason_field_is_not_equivalent_to_explicit_null(self) -> None:
+        rows = self.rows("native-input-witnesses.jsonl"); del rows[0]["outcome"]["reason_code"]
+        self.write_rows("native-input-witnesses.jsonl", rows); self.reseal(); self.assert_fail("source_input_outcome_invalid")
+
+    def test_extra_recording_manifest_human_claim_is_rejected(self) -> None:
+        manifest = self.read("raw/recording-manifest.json"); manifest["human_origin_attested"] = True
+        self.write("raw/recording-manifest.json", manifest); self.reseal(); self.assert_fail("source_recording_manifest_fields_invalid")
+
+    def test_extra_environment_or_missing_artifact_field_is_rejected(self) -> None:
+        manifest = self.read("raw/recording-manifest.json"); manifest["source_environment"]["human_origin_attested"] = True
+        self.write("raw/recording-manifest.json", manifest); self.reseal(); self.assert_fail("source_environment_fields_invalid")
+
+    def test_missing_environment_artifact_product_is_rejected(self) -> None:
+        manifest = self.read("raw/recording-manifest.json"); del manifest["source_environment"]["connector"]["product"]
+        self.write("raw/recording-manifest.json", manifest); self.reseal(); self.assert_fail("source_environment_artifact_fields_invalid")
+
+    def test_missing_profile_limit_does_not_silently_use_its_default(self) -> None:
+        profile = self.read("raw/capture-profile.json"); del profile["limits"]["max_epochs"]
+        self.write("raw/capture-profile.json", profile)
+        digest = sha((self.bundle / "raw/capture-profile.json").read_bytes())
+        for name in ("raw/recording-manifest.json", "source-session-bundle-manifest.json"):
+            manifest = self.read(name); manifest["capture_profile_sha256"] = digest; self.write(name, manifest)
+        self.reseal(); self.assert_fail("source_limits_invalid")
+
+    def test_missing_transition_nullable_is_not_equivalent_to_explicit_null(self) -> None:
+        epochs = self.rows("source-attachment-epochs.jsonl"); del epochs[1]["transition"]["graceful"]
+        self.write_rows("source-attachment-epochs.jsonl", epochs); self.reseal(); self.assert_fail("source_native_transition_fields_invalid")
+
+    def test_missing_default_machine_verifiable_is_rejected(self) -> None:
+        segments = self.rows("source-segments.jsonl"); del segments[0]["declaration"]["machine_verifiable"]
+        self.write_rows("source-segments.jsonl", segments); self.reseal(); self.assert_fail("source_declaration_invalid")

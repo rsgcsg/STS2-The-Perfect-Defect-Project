@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using STS2HumanAnnotator.Core;
 using Xunit;
 
@@ -90,6 +91,63 @@ public sealed class SourceSessionV2Tests
         {
             try { Store.Dispose(); } catch (Exception) { }
             try { Directory.Delete(Root, true); } catch (IOException) { }
+        }
+    }
+
+    [Theory]
+    [InlineData("missing_reason")]
+    [InlineData("missing_machine_verifiable")]
+    [InlineData("missing_transition_nullable")]
+    [InlineData("missing_default_limit")]
+    [InlineData("extra_manifest_human_claim")]
+    [InlineData("extra_environment_field")]
+    [InlineData("missing_artifact_product")]
+    public void StrictSourceV2AuditRejectsMissingNullableDefaultsAndUnknownFieldsAfterHashRepair(string mutation)
+    {
+        using var f = new Fixture();
+        f.Store.AppendPublicObservationV2(f.Packet("title", 1, "title-continuity"));
+        var token = f.Store.ReserveSourceInputV2("input-strict", Position("title", 1));
+        var basis = f.Payload("title"); f.Store.BindSourceInputBasisV2(token, basis.Capture, basis.Catalog);
+        f.Store.CompleteSourceInputV2(token, new("exact", 1, Action, "fixture.native_input", "delivered", null, Array.Empty<SourceInputStageV2>()));
+        var launch = new SourceNativeTransitionV2("launch-strict", "launch", "RunManager.Launch.postfix",
+            "title-continuity", "title-continuity", "new", null, null);
+        f.Store.AppendSourceBoundaryV2(f.Store.AdmitSourceBoundaryV2("launch", Position("title", 1), transition: launch));
+        f.Close("title", 1, new[] { Seal("title", 1, 1) });
+        Assert.Equal("pass", SourceSessionAuditV2.Audit(f.Store.DirectoryPath).Status);
+        string changed;
+        if (mutation == "missing_reason")
+        { changed = "native-input-witnesses.jsonl"; MutateRows(changed, rows => rows[0]["outcome"]!.AsObject().Remove("reason_code")); }
+        else if (mutation == "missing_machine_verifiable")
+        { changed = "source-segments.jsonl"; MutateRows(changed, rows => rows[0]["declaration"]!.AsObject().Remove("machine_verifiable")); }
+        else if (mutation == "missing_transition_nullable")
+        { changed = "source-boundaries.jsonl"; MutateRows(changed, rows => rows[0]["transition"]!.AsObject().Remove("graceful")); }
+        else if (mutation == "missing_default_limit")
+        {
+            changed = "capture-profile.json"; var profile = Read(changed); profile["limits"]!.AsObject().Remove("max_epochs"); Write(changed, profile);
+            var manifest = Read("recording-manifest.json"); manifest["capture_profile_sha256"] = SourceSessionContract.Sha256(File.ReadAllBytes(FilePath(changed)));
+            Write("recording-manifest.json", manifest);
+        }
+        else
+        {
+            changed = "recording-manifest.json"; var manifest = Read(changed);
+            if (mutation == "extra_manifest_human_claim") manifest["human_origin_attested"] = true;
+            else if (mutation == "extra_environment_field") manifest["source_environment"]!["human_origin_attested"] = true;
+            else manifest["source_environment"]!["connector"]!.AsObject().Remove("product");
+            Write(changed, manifest);
+        }
+        if (changed.EndsWith(".jsonl", StringComparison.Ordinal))
+        {
+            var receipt = Read("source-close-receipt.json"); receipt["stream_sha256"]![changed] = SourceSessionContract.Sha256(File.ReadAllBytes(FilePath(changed)));
+            Write("source-close-receipt.json", receipt);
+        }
+        Assert.Equal("fail", SourceSessionAuditV2.Audit(f.Store.DirectoryPath).Status);
+        string FilePath(string file) => Path.Combine(f.Store.DirectoryPath, file);
+        JsonObject Read(string file) => JsonNode.Parse(File.ReadAllBytes(FilePath(file)))!.AsObject();
+        void Write(string file, JsonNode value) => File.WriteAllBytes(FilePath(file), Bytes(value));
+        void MutateRows(string file, Action<JsonObject[]> mutate)
+        {
+            var rows = File.ReadLines(FilePath(file)).Select(line => JsonNode.Parse(line)!.AsObject()).ToArray();
+            mutate(rows); File.WriteAllBytes(FilePath(file), rows.SelectMany(Bytes).ToArray());
         }
     }
 

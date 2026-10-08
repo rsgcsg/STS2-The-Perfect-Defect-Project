@@ -2,14 +2,41 @@ using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace STS2HumanAnnotator.Core;
 
 /// <summary>Integrity of original epoch/position accounting; no native origin, coverage, causality or admission promotion.</summary>
 public static class SourceSessionAuditV2
 {
-    private static readonly JsonSerializerOptions AuditJson = new(SourceSessionJson.Options)
-    { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    private static readonly JsonSerializerOptions AuditJson = StrictJson(manifest: false);
+    private static readonly JsonSerializerOptions ManifestAuditJson = StrictJson(manifest: true);
+    // Source stream DTOs always serialize nullable members explicitly. Required
+    // presence is independent of nullability and of record constructor defaults.
+    // Only the shared recording manifest retains its historical omitted-null fields.
+    private static JsonSerializerOptions StrictJson(bool manifest)
+    {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(info =>
+        {
+            if (info.Kind != JsonTypeInfoKind.Object) return;
+            foreach (var property in info.Properties)
+            {
+                bool omittedManifestExtension = manifest && info.Type == typeof(CurrentRecordingManifest)
+                    && property.Name is "decision_schema_version" or "disposition_schema_version" or "close_schema_version"
+                        or "recovery_schema_version" or "continuous_schema_version" or "text_input_schema_version";
+                bool omittedManifestGameFact = manifest && info.Type == typeof(ExactGameIdentity)
+                    && property.Name is "version" or "commit";
+                property.IsRequired = !omittedManifestExtension && !omittedManifestGameFact;
+            }
+        });
+        return new(SourceSessionJson.Options)
+        {
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            RespectNullableAnnotations = true,
+            TypeInfoResolver = resolver
+        };
+    }
     public static SourceSessionAuditResult Audit(string recordingDirectory)
     {
         string directory = Path.GetFullPath(recordingDirectory), session = "";
@@ -220,7 +247,8 @@ public static class SourceSessionAuditV2
                 using var document = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, file))); UniqueJson(document.RootElement);
                 var allowed = typeof(T).GetProperties(BindingFlags.Instance | BindingFlags.Public).Select(x => JsonNamingPolicy.SnakeCaseLower.ConvertName(x.Name)).ToHashSet(StringComparer.Ordinal);
                 Require(document.RootElement.EnumerateObject().All(x => allowed.Contains(x.Name)), "source_json_unknown_field");
-                return document.RootElement.Deserialize<T>(AuditJson) ?? throw new InvalidDataException("source_json_missing");
+                return document.RootElement.Deserialize<T>(typeof(T) == typeof(CurrentRecordingManifest) ? ManifestAuditJson : AuditJson)
+                    ?? throw new InvalidDataException("source_json_missing");
             }
             List<T> Rows<T>(string file, string schema)
             {

@@ -243,7 +243,8 @@ internal sealed partial class NativeLogicalService
         {
             AssertMainThread();
             var boundary = ReadSourceBoundary(recorder);
-            object? token = recorder.Sink?.AdmitInput(new(request.RequestId!, request.ClientSessionId!, request.BoundActionId!, boundary.Position));
+            long encodingDeadline = checked(Environment.TickCount64 + Limits.EncodingDeadlineMs);
+            object? token = recorder.Sink?.AdmitInput(new(request.RequestId!, request.ClientSessionId!, request.BoundActionId!, boundary.Position, encodingDeadline));
             bool provenanceCapacityExceeded;
             lock (sourceGate)
             {
@@ -265,9 +266,14 @@ internal sealed partial class NativeLogicalService
                 string? captureId = null; IDisposable? retention = null;
                 try
                 {
+                    if (Environment.TickCount64 >= encodingDeadline)
+                    { recorder.Sink.InputBasis(token, null, null, "source_input_basis_encoding_timeout"); return; }
                     var projection = projector.Capture(prepared.Facts, SourceScope, originalEpoch.Subscription.ScopeId,
                         prepared.Time, Environment.TickCount64 + Limits.RetentionMs, () => Environment.TickCount64, Store, SourceInputEncodingBytes);
-                    captureId = projection.Capture.CaptureId; AcceptBasis(prepared, projection.Catalog);
+                    captureId = projection.Capture.CaptureId;
+                    if (Environment.TickCount64 >= encodingDeadline)
+                    { recorder.Sink.InputBasis(token, null, null, "source_input_basis_encoding_timeout"); return; }
+                    AcceptBasis(prepared, projection.Catalog);
                     string handle = Store.Retain("source-input:" + recorder.RegistrationId, captureId);
                     retention = new SourceInputRetention(() => Store.Release("source-input:" + recorder.RegistrationId, handle));
                     recorder.Sink.InputBasis(token, captureId, retention, null); retention = null;

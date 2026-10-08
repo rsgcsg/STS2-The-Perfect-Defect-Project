@@ -94,12 +94,16 @@ public sealed class SourceNativeProducerTests
             if (earlyCallback) Owner.Publish("native_owner_ready", "early_setup");
             NativeRunLifecycleProvider.FinishSetup(invocation, Actual);
         }
-        internal NativeLogicalResult Input(string requestId)
+        internal NativeLogicalResult Input(string requestId) => SubmitInput(PrepareInput(requestId));
+        internal PlayerEnvironmentActionRequest PrepareInput(string requestId)
         {
             var current = Owner.CurrentAsync(new(client.Client.ClientSessionId, NativeLogicalProjector.ScopeFields, null)).GetAwaiter().GetResult();
             var action = Assert.Single(Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
-            var request = new PlayerEnvironmentActionRequest(requestId, current.Capture.SnapshotId, action.ActionId, client.Client.ClientSessionId,
+            return new PlayerEnvironmentActionRequest(requestId, current.Capture.SnapshotId, action.ActionId, client.Client.ClientSessionId,
                 lease.ControllerLeaseId, lease.ControllerGeneration, NativeLogicalContract.Profile);
+        }
+        internal NativeLogicalResult SubmitInput(PlayerEnvironmentActionRequest request)
+        {
             var admitted = Requests.Admit(request); Assert.Equal("admitted", admitted.Status);
             Assert.True(Owner.RunAdmitted(request));
             using var terminal = admitted.OriginalCompletion!.GetAwaiter().GetResult();
@@ -223,6 +227,60 @@ public sealed class SourceNativeProducerTests
         Assert.False(f.Store.GetSourceStatusV2()!.AccountingComplete);
         Assert.False(File.Exists(Path.Combine(f.Store.DirectoryPath, "source-close-receipt.json")));
         Assert.NotEqual(f.Attachment.InitialEpoch.Subscription.StreamGeneration, f.Owner.Hub.StreamGeneration);
+    }
+    private sealed class SignalledSink(INativeLogicalSourceSink inner) : INativeLogicalSourceSink
+    {
+        internal readonly TaskCompletionSource BasisSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Epoch(NativeLogicalSourceEpoch epoch) => inner.Epoch(epoch);
+        public void Boundary(NativeLogicalSourceTransition transition, NativeLogicalSourcePosition position) => inner.Boundary(transition, position);
+        public object? AdmitInput(NativeLogicalSourceInputPrefix prefix) => inner.AdmitInput(prefix);
+        public void InputBasis(object token, string? capture, IDisposable? retained, string? missing)
+        { try { inner.InputBasis(token, capture, retained, missing); } finally { BasisSeen.TrySetResult(); } }
+        public void InputTerminal(object token, NativeLogicalSourceInputTerminal terminal) => inner.InputTerminal(token, terminal);
+        public void AccountingFailed(string code) => inner.AccountingFailed(code);
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OriginalInputEncodingDeadlineCannotBeExtendedWhileBothEncoderAndDiskAreHeld(bool closeBeforeInputDrains)
+    {
+        using var f = new Fixture();
+        var request = f.Invoke(() => f.PrepareInput("late-original-basis"));
+        object diskGate = typeof(RecordingSessionStore).GetField("_gate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(f.Store)!;
+        object projector = typeof(NativeLogicalService).GetField("projector", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(f.Owner)!;
+        object encoderGate = typeof(NativeLogicalProjector).GetField("gate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(projector)!;
+        using var diskEntered = new ManualResetEventSlim(); using var diskRelease = new ManualResetEventSlim();
+        using var encoderEntered = new ManualResetEventSlim(); using var encoderRelease = new ManualResetEventSlim();
+        var diskHeld = Task.Run(() => { lock (diskGate) { diskEntered.Set(); diskRelease.Wait(); } });
+        var encoderHeld = Task.Run(() => { lock (encoderGate) { encoderEntered.Set(); encoderRelease.Wait(); } });
+        var sink = new SignalledSink(f.Attachment.Sink!);
+        try
+        {
+            Assert.True(diskEntered.Wait(TimeSpan.FromSeconds(2))); Assert.True(encoderEntered.Wait(TimeSpan.FromSeconds(2)));
+            var result = f.Invoke(() =>
+            {
+                f.Attachment.Sink = sink;
+                // These real metadata appends force the production disk worker
+                // to wait on the held store gate before it can expire the input.
+                f.Worker.CommandBoundary("pause"); f.Worker.CommandBoundary("resume");
+                return f.SubmitInput(request);
+            });
+            Assert.Equal("delivered", result.Delivery);
+            await Task.Delay(2200);
+            encoderRelease.Set(); await encoderHeld;
+            // This is the real original encoder callback while the disk worker
+            // still cannot drain; no simulated prefix or terminal is injected.
+            await sink.BasisSeen.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally { encoderRelease.Set(); diskRelease.Set(); await encoderHeld; await diskHeld; }
+        if (closeBeforeInputDrains) await f.Close();
+        else Assert.True(await Task.Run(() => SpinWait.SpinUntil(() => f.Store.GetSourceStatusV2()!.Inputs == 1, TimeSpan.FromSeconds(3))));
+        var input = Assert.Single(f.Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl"));
+        Assert.Equal("capture_missing", input.Outcome.MappingStatus);
+        Assert.Equal("source_input_basis_encoding_timeout", input.Outcome.ReasonCode);
+        Assert.Null(input.PreCapture); Assert.Null(input.Catalog); Assert.Equal("delivered", input.Outcome.Delivery);
+        if (!closeBeforeInputDrains) await f.Close();
+        Assert.Equal("pass", SourceSessionAuditV2.Audit(f.Store.DirectoryPath).Status);
     }
     [Fact]
     public async Task HeldDiskGateCannotBlockNativeEpochAndPauseAdmission()

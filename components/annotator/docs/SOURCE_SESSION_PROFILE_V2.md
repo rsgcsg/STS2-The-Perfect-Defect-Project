@@ -198,7 +198,11 @@ Close atomically disables new admissions and seals the current actual reserved
 position, then drains all current/retiring seals and admitted tokens off-thread.
 Original native encoder deadline (2 seconds by default) accounts missing projections;
 unfinished input tokens become unknown. No native thread waits for encoding/disk.
-Close remains Pending until exact barriers and durable streams finish. A bounded
+Close remains Pending until exact barriers and durable streams finish.
+A completed watermark read and an earlier replay batch cannot retire an epoch:
+only successful Hub release after its atomic original seal and durable-ack check
+marks that epoch final. The exact not-drained result retains the same pending
+view for its original drain; other errors still fail accounting. A bounded
 3-second barrier grace beyond the latest original encoder deadline is failure,
 not a clean close. Scope/generation/runtime mismatch, lost native witness, unsafe
 queue loss or append/disk uncertainty marks accounting failed and withholds a
@@ -259,7 +263,11 @@ under that gate. A different client's revocation cannot poison the recorder.
 Frozen public-copy admission reserves a conservative 64 times the original
 capture/catalog byte size before copying, including validation and parser scratch;
 input projection separately reserves 64 MiB scratch and at most 1 MiB encoded
-Source basis. These charges share the 128 MiB copy budget. They are finite admission
+Source basis. The Connector freezes one absolute monotonic encoding deadline at
+that original input prefix and passes it with the immutable admission. Encoder
+entry/completion and recorder basis admission check that same deadline; a held
+disk worker or a late callback cannot restart the two-second budget or promote
+late bytes to exact input evidence. These charges share the 128 MiB copy budget. They are finite admission
 limits, not a runtime memory measurement. Oversize or saturated captures produce
 an explicit original-position missing record rather than allocating and measuring
 afterward.
@@ -270,7 +278,11 @@ audit and immutable export/packing. The Tool commands are `audit-source-v2`,
 `source-session-bundle-v2` and exports `SourceSessionBundleV2`,
 `SourceSessionBundleV2Verifier`, and `verify_source_session_bundle_v2`; v1 and Human
 descriptors retain their existing readers. Packing audits its actual copied raw
-snapshot and exports those same copied bytes before content identity is sealed.
+snapshot and exports those same copied bytes before content identity is sealed. Source DTO decoding requires every stream/profile
+field, including explicit nullable members and constructor defaults; unknown
+members are rejected. The shared recording manifest retains its existing
+omitted-null extension/game fields only, with a closed manifest/environment
+field set in both C# and Python. No extra Human-origin declaration is accepted.
 The Evidence CLI exposes `verify-source-bundle-v2` and accepts the same descriptor
 for typed `receive --verify-type source-session-bundle-v2`.
 

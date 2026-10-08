@@ -58,6 +58,31 @@ def _transition(value: Any) -> dict[str, Any]:
             _require(type(value["graceful"]) is bool and value["victory"] is None, "source_native_terminal_or_cleanup_invalid")
     return value
 
+def _environment(value: Any, *, manifest: bool = False) -> dict[str, Any]:
+    value = _object(value)
+    _require(set(value) == {"game", "connector", "annotator", "player_environment_protocol", "runtime_instance_id",
+             "environment_fingerprint", "modset_status", "modset_fingerprint"}, "source_environment_fields_invalid")
+    for key in ("player_environment_protocol", "runtime_instance_id", "environment_fingerprint", "modset_status", "modset_fingerprint"):
+        _require(isinstance(value[key], str), "source_environment_fields_invalid")
+    _identifier(value["runtime_instance_id"]); _identifier(value["environment_fingerprint"])
+    for component in ("connector", "annotator"):
+        artifact = _object(value[component])
+        _require(set(artifact) == {"product", "version", "source_revision", "source_digest_sha256", "sha256", "module_version_id"}
+                 and all(isinstance(item, str) for item in artifact.values()), "source_environment_artifact_fields_invalid")
+        _require(_SHA.fullmatch(artifact["sha256"]) is not None and _SHA.fullmatch(artifact["source_digest_sha256"]) is not None
+                 and re.fullmatch(r"[a-fA-F0-9]{40}", artifact["source_revision"]) is not None, "source_environment_artifact_invalid")
+    game = _object(value["game"])
+    required = {"main_assembly_sha256", "main_assembly_module_version_id"}
+    nullable = {"version", "commit"}
+    _require(required <= set(game) <= required | nullable and (manifest or set(game) == required | nullable)
+             and all(isinstance(game[key], str) for key in required)
+             and all(game.get(key) is None or isinstance(game[key], str) for key in nullable), "source_environment_game_fields_invalid")
+    _require(_SHA.fullmatch(game["main_assembly_sha256"]) is not None, "source_environment_game_identity_invalid")
+    # Shared manifest serialization may omit these nullable game facts; stream
+    # context serialization writes null explicitly. Compare their typed values.
+    return {**value, "game": {**game, "version": game.get("version"), "commit": game.get("commit")}}
+
+
 @dataclass(frozen=True)
 class SourceSessionBundleV2:
     directory: Path
@@ -171,6 +196,15 @@ class SourceSessionBundleV2Verifier:
 def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
     _require(not (raw / "source-accounting-failure.json").exists(), "source_accounting_failed")
     recording = _object(_json((raw / "recording-manifest.json").read_bytes()))
+    required_manifest = {"schema_version", "schema", "session_id", "timeline_id", "created_at", "recorder_version",
+        "recorder_source_revision", "platform", "capture_profile_id", "capture_profile_sha256", "supported_families",
+        "non_claims", "source_schema_version", "source_environment"}
+    optional_manifest = {"decision_schema_version", "disposition_schema_version", "close_schema_version", "recovery_schema_version",
+        "continuous_schema_version", "text_input_schema_version"}
+    _require(required_manifest <= set(recording) <= required_manifest | optional_manifest, "source_recording_manifest_fields_invalid")
+    _require(all(isinstance(recording[key], str) for key in ("schema", "session_id", "timeline_id", "created_at", "recorder_version",
+        "recorder_source_revision", "platform", "capture_profile_id", "capture_profile_sha256"))
+        and all(recording.get(key) is None or type(recording[key]) is int for key in optional_manifest), "source_recording_manifest_fields_invalid")
     profile_bytes = (raw / "capture-profile.json").read_bytes()
     profile = _object(_json(profile_bytes))
     _require(recording.get("schema") == MANIFEST_SCHEMA and recording.get("schema_version") == 2
@@ -201,13 +235,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
              and limits["max_row_bytes"] >= 512 and limits["max_payload_bytes"] >= limits["max_capture_bytes"]
              and limits["max_bytes_per_stream"] >= limits["max_row_bytes"] and limits["encoding_deadline_ms"] == 2000,
              "source_limits_invalid")
-    environment = _object(recording.get("source_environment"))
-    _identifier(environment.get("runtime_instance_id")); _identifier(environment.get("environment_fingerprint"))
-    for component in ("connector", "annotator"):
-        artifact = _object(environment.get(component))
-        _require(_SHA.fullmatch(str(artifact.get("sha256"))) is not None and _SHA.fullmatch(str(artifact.get("source_digest_sha256"))) is not None
-                 and re.fullmatch(r"[a-fA-F0-9]{40}", str(artifact.get("source_revision"))) is not None, "source_environment_artifact_invalid")
-    _require(_SHA.fullmatch(str(_object(environment.get("game")).get("main_assembly_sha256"))) is not None, "source_environment_game_identity_invalid")
+    environment = _environment(recording["source_environment"], manifest=True)
     receipt = _object(_json((raw / "source-close-receipt.json").read_bytes()))
     _require(set(receipt) == {"schema", "session_id", "timeline_id", "status", "accounting_complete", "final_position",
              "sealed_epochs", "final_drains", "counts", "stream_sha256", "gap_count", "input_count", "epoch_count", "source_kinds"}
@@ -276,7 +304,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
         _require(epoch_id not in epoch_map and set(context) == {"publication_profile_id", "publication_profile_definition_sha256",
                  "scope_id", "stream_generation", "eager_scope", "seam_coverage", "environment", "game_continuity_id"}, "source_epoch_context_invalid")
         generation = _identifier(context.get("stream_generation")); _identifier(context.get("scope_id"))
-        _require(generation not in generations and context.get("environment") == environment
+        _require(generation not in generations and _environment(context.get("environment")) == environment
                  and context.get("publication_profile_id") == PUBLICATION_PROFILE_ID and context.get("publication_profile_definition_sha256") == PUBLICATION_PROFILE_SHA
                  and context.get("eager_scope") == profile["eager_scope"], "source_epoch_context_invalid")
         coverage = _object(context.get("seam_coverage")); _require(len(coverage) <= 256, "source_seam_coverage_invalid")
