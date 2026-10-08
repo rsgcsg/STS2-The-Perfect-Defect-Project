@@ -19,6 +19,13 @@ public static class NativeLogicalContract
     public const string EventBatchSchema = "sts2.player-environment/native-logical-events-1";
     public const string AwaitSchema = "sts2.player-environment/native-logical-await-1";
     public const string CapabilitiesSchema = "sts2.player-environment/native-logical-capabilities-1";
+    public const string CancelWaitSchema = "sts2.player-environment/native-logical-cancel-wait-1";
+    public const string DetachSchema = "sts2.player-environment/native-logical-detach-1";
+    public const string RenewSchema = "sts2.player-environment/native-logical-renew-1";
+    public const string CurrentSchema = "sts2.player-environment/native-logical-current-1";
+    public const string ContextSchema = "sts2.player-environment/native-logical-context-1";
+    public const string RetainSchema = "sts2.player-environment/native-logical-retain-1";
+    public const string ReleaseSchema = "sts2.player-environment/native-logical-release-1";
     public const string ResultSchema = "sts2.player-environment/native-logical-result-1";
 }
 
@@ -57,8 +64,9 @@ public sealed record NativeLogicalObservation(string ProtocolVersion, string Sch
     IReadOnlyList<PlayerEnvironmentReferent> Referents, NativeLogicalCompleteness Completeness,
     PlayerEnvironmentSessionReference Session, PlayerEnvironmentInformationPolicy InformationPolicy,
     NativeLogicalOwnerOccurrence OwnerOccurrence, NativeLogicalCatalogDescriptor Catalog);
-public sealed record NativeLogicalObservationContext(string ObservationRef, string CaptureRef,
-    string? GameContinuityId, string StreamGeneration, string? PublicationCursor);
+public sealed record NativeLogicalObservationContext(string Schema, string InputProfile,
+    string ObservationRef, string CaptureRef, string? GameContinuityId, string StreamGeneration,
+    string? PublicationCursor);
 public sealed record NativeLogicalCapture(string Schema, string CaptureId, string SnapshotId,
     string InputProfile, PlayerEnvironmentSessionReference Session, string StreamGeneration,
     string ScopeId, string CaptureOrdinal, DateTimeOffset CapturedAt, DateTimeOffset ExpiresAt,
@@ -106,3 +114,27 @@ public sealed record NativeLogicalCapabilities(string ProtocolVersion, string Sc
 
 public sealed record NativeLogicalRetentionReference(string RetentionHandleId, NativeLogicalCapture Capture,
     string ReadCursor, DateTimeOffset ExpiresAt);
+
+public sealed record NativeLogicalRenewRequest(string ClientSessionId, string SubscriptionId,
+    string ScopeId, string AfterCursor);
+public sealed record NativeLogicalRenewReply(string Schema, string InputProfile, string Status,
+    NativeLogicalSubscription? Subscription, string? NextCursor, string? HighWatermark,
+    string? RetainedStartCursor, NativeLogicalGap? Gap, string? Reason);
+public sealed record NativeLogicalCurrentRequest(string ClientSessionId, IReadOnlyList<string> EagerScope,
+    string? ExpectedSnapshotId);
+public sealed record NativeLogicalCurrentReply(string Schema, string InputProfile, string Status,
+    NativeLogicalObservationContext? Context, NativeLogicalCapture? Capture,
+    NativeLogicalRetentionReference? Retention, string? Reason);
+public sealed record NativeLogicalRetainRequest(string ClientSessionId, string CaptureId);
+public sealed record NativeLogicalRetainReply(string Schema, string InputProfile, string Status,
+    NativeLogicalRetentionReference? Retention, string? Reason);
+public sealed record NativeLogicalReleaseRequest(string ClientSessionId, string RetentionHandleId);
+public sealed record NativeLogicalReleaseReply(string Schema, string InputProfile, string Status,
+    string RetentionHandleId, bool Released, string? Reason);
+
+public sealed record NativeLogicalCancelWaitRequest(string ClientSessionId, string SubscriptionId, string WaitId);
+public sealed record NativeLogicalCancelWaitReply(string Schema, string InputProfile, string Status,
+    string SubscriptionId, string WaitId, bool Cancelled, string? Reason);
+public sealed record NativeLogicalDetachRequest(string ClientSessionId, string SubscriptionId);
+public sealed record NativeLogicalDetachReply(string Schema, string InputProfile, string Status,
+    string SubscriptionId, bool Detached, string? Reason);

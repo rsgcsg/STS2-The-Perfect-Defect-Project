@@ -75,7 +75,8 @@ remains in the task until its separate task-complete boundary.
 | --- | --- | --- |
 | capabilities | no mutation | typed capabilities/limits/implemented coverage |
 | attach | client session, requested eager scope, required seam coverage, delivery mode | immutable accepted subscription scope or explicit unsupported/capacity; no implicit fallback |
-| current | optional expected_snapshot_id, declared capture scope | fresh actual coherent capture or stale/partial/capacity; never pretend it is an earlier notice |
+| renew | client session, subscription_id, scope_id, after cursor | extend only an active subscription resource lease; preserve scope, generation, history and event cursors |
+| current | client_session_id, eager_scope, nullable expected_snapshot_id | fresh actual coherent capture or stale/partial/capacity; never pretend it is an earlier notice |
 | read | capture_id, opaque cursor, max_bytes | immutable same-capture bytes/chunks and digest; no game access |
 | catalog | catalog_ref, cursor, limit, optional structural prefix | ordered matching actions, next cursor, full-relation and filtered counts/digests; prefix is not strategy |
 | resolve | catalog_ref and complete public structural expression | unique original action handle; no-match/ambiguous/expired explicit |
@@ -83,9 +84,10 @@ remains in the task until its separate task-complete boundary.
 | result | original request_id | exact retained request outcome, never a newly submitted attempt |
 | events | subscription_id, scope_id, after cursor, bounded event/page count | immutable ordered subscription projection or explicit retention/generation gap |
 | await | wait_id, subscription_id, scope_id, after cursor, known public condition, bounded timeout, optional control_binding | inspect retained projection then atomically register; finite outcomes defined below |
-| cancel_wait | subscription_id, wait_id | cancel that client's waiter; idempotent, no native effect |
-| detach | subscription_id | end that subscription, cancel its waiters and release its pins |
-| release | capture/retention handle | idempotent immutable-content release, no effect on controller or delivered actions |
+| cancel_wait | client session, subscription_id, wait_id | cancel that client's waiter; idempotent, no native effect |
+| detach | client session, subscription_id | end that subscription, cancel its waiters and release its pins |
+| retain | client session, capture_id | own reader handle plus fresh read cursor over still-retained immutable bytes |
+| release | client session, retention_handle_id | idempotent own-handle release, no effect on controller or delivered actions |
 
 The Attach request has exactly `client_session_id`, `eager_scope`,
 `required_seams`, `delivery_mode`. `eager_scope` is an ordered, duplicate-free
@@ -101,6 +103,16 @@ subscription and returns `unsupported_scope`, `unsupported_seam`,
 `coverage_insufficient` or `capacity_exceeded`. Changing scope requires a new
 attachment; it cannot retroactively change retained events. A passive observer
 needs no controller lease. Detach cancels only its own waiters and pins.
+
+Renew requires an active, client-bound subscription and its exact scope/cursor.
+It extends the subscription resource lease by the announced retention duration;
+it never revives an expired or detached subscription, changes scope/generation,
+resets publication position or wait-ID history, renews a controller, or extends
+capture/reader/event pin leases. A retention gap remains a gap after renewal.
+Event cursors are immutable signed positions independent of that resource lease;
+each request still checks the live subscription, generation and retained-start
+watermark. Re-querying an original event after renewal preserves its original
+content and cursor. Renewal does not extend an already registered wait deadline.
 
 One source occurrence owns one reserved publication index. Each accepted scope
 gets an immutable projection of that occurrence containing its own capture
@@ -144,6 +156,39 @@ never fill the notice's missing historical values. Capability availability,
 complete requested scope and complete full-reference input are separate fields.
 Native-seam coverage is one of `complete_at_seam`, `sampled`, `unsupported`;
 capture completeness is `complete`, `partial`, `capacity_exceeded`, `failed`.
+
+The native producer supplies a required `SourceCompleteness` certificate with
+status `complete` and an empty missing list for the first pure core. Freeze and
+Current reject any other source certificate as `source_capture_incomplete`
+before creating a capture or relation. The core does not infer native/game
+completeness. Requested scope omissions create a partial view of a complete
+source; requesting all four fields cannot turn a partial native list or missing
+source field into complete input. An explicitly complete source with zero
+native actions is valid for settling or terminal observations.
+
+Current uses `native-logical-current-1`; Context uses `native-logical-context-1`,
+under the same schema prefix and profile. A `captured` Current reply requires its
+coherent Context and Capture references and a null reason; an optional retention
+reference must point to that original capture. A `partial` Current reply is an
+actual captured view with requested scope omissions: it requires joined Context
+and Capture references and `reason:scope_omission`, with the same optional
+retention join. The other statuses (`stale`, `capacity_exceeded`,
+`source_capture_incomplete`, `failed`) require null Context, Capture and
+Retention references and an explicit reason. A partial native source is a
+capture failure, never a partial successful Current view. Failures remain explicit, without
+substituting an older view. One-shot Current allocates its own immutable scope ID.
+Context's `game_continuity_id` is the actual native value or null, never a scheduling
+token. Retain returns the original immutable capture plus a fresh reader cursor
+and finite reader expiry. If the original capture cursor expires while another
+valid pin keeps the payload, read through that fresh retention cursor; never
+rewrite the original envelope. Release rejects a live foreign handle and is
+idempotent for an owned or absent handle. Renew, Retain and Release use their
+own `native-logical-{renew,retain,release}-1` reply schemas. Cancel Wait and
+Detach use `native-logical-cancel-wait-1` and `native-logical-detach-1`; their
+booleans preserve the actual owned operation. A nonpending wait is not reported
+as cancelled, absent detach is idempotently false, and a live foreign
+subscription cannot be detached. Result `retry` is exactly `never_automatic`
+for every disposition; a separately chosen fresh decision is not a retry.
 
 Only submit performs a gameplay/native interaction. Opening a deck, changing target
 focus or selecting a card is an action, not a hidden side effect of read/resolve.

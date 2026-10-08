@@ -187,6 +187,20 @@ public sealed class NativeLogicalCoreTests
         Decode<NativeLogicalCapabilities>("capabilities"); Decode<NativeLogicalObservation>("observation"); Decode<NativeLogicalCapture>("capture");
         Decode<NativeLogicalCatalogPage>("catalog_page"); Decode<NativeLogicalResolve>("resolve"); Decode<NativeLogicalAttachRequest>("attach_request"); Decode<NativeLogicalAttachReply>("attach");
         Decode<NativeLogicalEvent>("event"); Decode<NativeLogicalEventBatch>("event_batch"); Decode<NativeLogicalAwaitReply>("await"); Decode<NativeLogicalResult>("result"); Decode<NativeLogicalObservationContext>("observation_context");
+        Decode<NativeLogicalCurrentRequest>("current_request"); Decode<NativeLogicalCurrentReply>("current"); Decode<NativeLogicalCurrentReply>("current_retained"); Decode<NativeLogicalCurrentReply>("current_failed");
+        var partialCurrent = Decode<NativeLogicalCurrentReply>("current_partial"); var partialObservation = Decode<NativeLogicalObservation>("current_partial_observation");
+        var partialRead = Decode<NativeLogicalReadChunk>("current_partial_read"); byte[] partialBytes = Convert.FromBase64String(partialRead.DataBase64);
+        Assert.Equal(partialCurrent.Capture!.Sha256, NativeLogicalWire.Hash(partialBytes)); Assert.Equal(partialCurrent.Capture.ByteCount, partialBytes.Length);
+        Assert.Equal(partialCurrent.Capture.CaptureId, partialRead.CaptureId); Assert.Equal(partialCurrent.Capture.Sha256, partialRead.Sha256);
+        Assert.Equal("partial", partialCurrent.Status); Assert.Equal("scope_omission", partialCurrent.Reason);
+        Assert.False(partialObservation.Completeness.FullReferenceComplete); Assert.Equal(new[] { "interaction" }, partialObservation.Completeness.Included);
+        Assert.Equal(new[] { "persistent", "referents", "catalog" }, partialObservation.Completeness.Missing);
+        Assert.Equal(partialObservation.SnapshotId, NativeLogicalDecoder.Decode<NativeLogicalObservation>(partialBytes).SnapshotId);
+        Decode<NativeLogicalRetainRequest>("retain_request"); Decode<NativeLogicalRetainReply>("retain"); Decode<NativeLogicalRetainReply>("retain_expired");
+        Decode<NativeLogicalReleaseRequest>("release_request"); Decode<NativeLogicalReleaseReply>("release");
+        Decode<NativeLogicalRenewRequest>("renew_request"); Decode<NativeLogicalRenewReply>("renew"); Decode<NativeLogicalRenewReply>("renew_expired");
+        Decode<NativeLogicalCancelWaitRequest>("cancel_wait_request"); Decode<NativeLogicalCancelWaitReply>("cancel_wait"); Decode<NativeLogicalCancelWaitReply>("cancel_wait_not_pending");
+        Decode<NativeLogicalDetachRequest>("detach_request"); Decode<NativeLogicalDetachReply>("detach"); Decode<NativeLogicalDetachReply>("detach_absent");
         var read = Decode<NativeLogicalReadChunk>("read"); byte[] bytes = Convert.FromBase64String(read.DataBase64);
         Assert.Equal(read.TotalBytes, bytes.Length); Assert.Equal(read.Sha256, NativeLogicalWire.Hash(bytes));
         Assert.Equal("snapshot-fixture", NativeLogicalDecoder.Decode<NativeLogicalObservation>(bytes).SnapshotId);
@@ -292,6 +306,11 @@ public sealed class NativeLogicalCoreTests
                     case "capabilities": NativeLogicalDecoder.Decode<NativeLogicalCapabilities>(wire); break;
                     case "event_batch": NativeLogicalDecoder.Decode<NativeLogicalEventBatch>(wire); break;
                     case "attach_request": NativeLogicalDecoder.Decode<NativeLogicalAttachRequest>(wire); break;
+                    case "current": case "current_retained": NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(wire); break;
+                    case "retain": NativeLogicalDecoder.Decode<NativeLogicalRetainReply>(wire); break;
+                    case "renew_expired": NativeLogicalDecoder.Decode<NativeLogicalRenewReply>(wire); break;
+                    case "cancel_wait": NativeLogicalDecoder.Decode<NativeLogicalCancelWaitReply>(wire); break;
+                    case "result": NativeLogicalDecoder.Decode<NativeLogicalResult>(wire); break;
                     default: throw new InvalidOperationException("Unmapped negative fixture type.");
                 }
             }
@@ -409,6 +428,109 @@ public sealed class NativeLogicalCoreTests
         }
         var atLimit = result with { Stages = Enumerable.Repeat(result.Stages[0] with { Stage = new string('x', 128), Evidence = new string('x', 128) }, 16).ToArray() };
         Assert.Equal(16, NativeLogicalDecoder.Decode<NativeLogicalResult>(NativeLogicalWire.Encode(atLimit)).Stages.Count);
+    }
+
+    [Fact]
+    public void CurrentRetainAndReleaseUseOneStoreAndCoherentReferences()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now, new(RetentionMs: 100)); var projector = new NativeLogicalProjector();
+        var request = new NativeLogicalCurrentRequest("reader", NativeLogicalProjector.ScopeFields, null);
+        var current = projector.Current(Frame(), request, DateTimeOffset.UnixEpoch, 100, () => now, store, "actual-game-id");
+        Assert.Equal("captured", current.Status); Assert.Null(current.Reason); Assert.Null(current.Retention);
+        Assert.Equal(current.Capture!.SnapshotId, current.Context!.ObservationRef); Assert.Equal(current.Capture.CaptureId, current.Context.CaptureRef);
+        Assert.Equal("actual-game-id", current.Context.GameContinuityId); NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(NativeLogicalWire.Encode(current));
+        var repeat = projector.Current(Frame(), request, DateTimeOffset.UnixEpoch, 100, () => now, store);
+        Assert.Equal(current.Capture.SnapshotId, repeat.Capture!.SnapshotId); Assert.NotEqual(current.Capture.ScopeId, repeat.Capture.ScopeId); Assert.Null(repeat.Context!.GameContinuityId);
+        var stale = projector.Current(Frame(), request with { ExpectedSnapshotId = "old-snapshot" }, DateTimeOffset.UnixEpoch, 100, () => now, store);
+        Assert.Equal("stale", stale.Status); Assert.Null(stale.Context); Assert.Null(stale.Capture);
+        var partial = projector.Current(Frame(), request with { EagerScope = new[] { "interaction" } }, DateTimeOffset.UnixEpoch, 100, () => now, store);
+        Assert.Equal("partial", partial.Status); Assert.Equal("scope_omission", partial.Reason);
+        NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(NativeLogicalWire.Encode(partial));
+        var incomplete = projector.Current(Frame() with { SourceCompleteness = new("partial", new[] { "native_list_items" }) }, request, DateTimeOffset.UnixEpoch, 100, () => now, store);
+        Assert.Equal("source_capture_incomplete", incomplete.Status); Assert.Null(incomplete.Capture);
+        now = 50;
+        var retain = store.RetainPublic(new("reader", current.Capture.CaptureId)); Assert.Equal("retained", retain.Status);
+        Assert.Equal(current.Capture, retain.Retention!.Capture); NativeLogicalDecoder.Decode<NativeLogicalRetainReply>(NativeLogicalWire.Encode(retain));
+        now = 100; store.Sweep(); Assert.True(store.IsAvailable(current.Capture.CaptureId));
+        Assert.Throws<NativeLogicalException>(() => store.Read(current.Capture.CaptureId, current.Capture.ReadCursor));
+        Assert.True(store.Read(current.Capture.CaptureId, retain.Retention.ReadCursor).Complete);
+        Assert.Equal("cursor_mismatch", Assert.Throws<NativeLogicalException>(() => store.ReleasePublic(new("other", retain.Retention.RetentionHandleId))).Code);
+        Assert.True(store.IsAvailable(current.Capture.CaptureId));
+        var release = store.ReleasePublic(new("reader", retain.Retention.RetentionHandleId)); Assert.True(release.Released);
+        Assert.Equal(release, store.ReleasePublic(new("reader", retain.Retention.RetentionHandleId))); Assert.False(store.IsAvailable(current.Capture.CaptureId));
+        Assert.Equal("payload_expired", store.RetainPublic(new("reader", current.Capture.CaptureId)).Status);
+    }
+    [Fact]
+    public void IndexedMaximumPagesPreserveExactMemberEncodingAndFilteredIntegrity()
+    {
+        var original = Enumerable.Range(0, 10000).Select(i => Action(i) with { Label = "空\n界 🐉 café e\u0301 / " + i }).ToArray();
+        var catalog = Catalog(original); string? cursor = null; int position = 0;
+        do
+        {
+            var page = catalog.List("generation", cursor: cursor, limit: 10000, maxPageBytes: 1024 * 1024);
+            byte[] encoded = NativeLogicalWire.Encode(page); Assert.True(encoded.Length <= 1024 * 1024); Assert.NotEmpty(page.Actions);
+            Assert.Equal(original.Skip(position).Take(page.Actions.Count).Select(NativeLogicalWire.Encode), page.Actions.Select(NativeLogicalWire.Encode));
+            using var wire = JsonDocument.Parse(encoded);
+            var rowBytes = wire.RootElement.GetProperty("actions").EnumerateArray().Select(row => Encoding.UTF8.GetBytes(row.GetRawText())).ToArray();
+            Assert.Equal(page.Actions.Select(NativeLogicalWire.Encode), rowBytes);
+            var empty = page with { Actions = Array.Empty<NativeLogicalAction>() };
+            Assert.Equal(encoded.Length, NativeLogicalWire.Encode(empty).Length + rowBytes.Sum(row => row.Length) + page.Actions.Count - 1);
+            Assert.Equal(catalog.Descriptor.Digest, page.FilteredDigest); Assert.Equal(10000, page.FilteredCount);
+            position += page.Actions.Count; cursor = page.NextCursor;
+        } while (cursor is not null);
+        Assert.Equal(10000, position);
+        var filtered = catalog.List("generation", Json("{\"verb\":\"pick\"}"), limit: 10000);
+        Assert.Equal(5000, filtered.FilteredCount); Assert.Equal(NativeLogicalCatalog.Digest(original.Where(row => row.Verb == "pick")), filtered.FilteredDigest);
+        Assert.Equal(original.Where(row => row.Verb == "pick").Select(row => row.ActionId).Take(filtered.Actions.Count), filtered.Actions.Select(row => row.ActionId));
+    }
+
+    [Fact]
+    public void FreshRetainAfterOriginalCursorExpiryUsesOtherPinWithoutRewritingCapture()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now, new(RetentionMs: 100));
+        var current = new NativeLogicalProjector().Current(Frame(), new("creator", NativeLogicalProjector.ScopeFields, null), DateTimeOffset.UnixEpoch, 100, () => now, store);
+        var original = current.Capture!; now = 50;
+        var other = store.RetainPublic(new("other", original.CaptureId)).Retention!;
+        now = 100; store.Sweep(); Assert.True(store.IsAvailable(original.CaptureId));
+        Assert.Throws<NativeLogicalException>(() => store.Read(original.CaptureId, original.ReadCursor));
+        var fresh = store.RetainPublic(new("reader", original.CaptureId)); Assert.Equal("retained", fresh.Status);
+        Assert.Equal(original, fresh.Retention!.Capture); Assert.True(store.Read(original.CaptureId, fresh.Retention.ReadCursor).Complete);
+        now = 150;
+        // An expired foreign handle is absent; releasing its token cannot touch the live reader's pin.
+        Assert.True(store.ReleasePublic(new("reader", other.RetentionHandleId)).Released); Assert.True(store.IsAvailable(original.CaptureId));
+        store.ReleasePublic(new("reader", fresh.Retention.RetentionHandleId)); Assert.False(store.IsAvailable(original.CaptureId)); Assert.Equal(0, store.ChargedBytes);
+    }
+
+    [Fact]
+    public void CatalogReferenceLookupSharesExistingCaptureAndReaderLifetime()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now, new(RetentionMs: 100));
+        var captured = new NativeLogicalProjector().Capture(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 100, () => now, store);
+        string reference = captured.Catalog!.Descriptor.CatalogRef;
+        Assert.Same(captured.Catalog, store.CatalogByReference(reference));
+        Assert.Equal("generation_mismatch", store.CatalogByReference(reference).Resolve("foreign-generation", Json("{\"verb\":\"pick\",\"subject_referent_id\":\"public-card\",\"arguments\":[]}")).Status);
+        now = 50; var retention = store.RetainPublic(new("reader", captured.Capture.CaptureId)).Retention!;
+        now = 100; store.Sweep(); Assert.Same(captured.Catalog, store.CatalogByReference(reference));
+        store.ReleasePublic(new("reader", retention.RetentionHandleId));
+        Assert.Equal("expired", Assert.Throws<NativeLogicalException>(() => store.CatalogByReference(reference)).Code); Assert.Equal(0, store.ChargedBytes);
+    }
+
+    [Fact]
+    public void CurrentFailureStatesCannotHideCapturedReferencesOrOmitReasons()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
+        var sample = doc.RootElement.GetProperty("wire_samples").GetProperty("current_failed");
+        foreach (string status in new[] { "stale", "capacity_exceeded", "source_capture_incomplete", "failed" })
+        {
+            JsonNode valid = JsonNode.Parse(sample.GetRawText())!; valid["status"] = status; valid["reason"] = status;
+            var decoded = NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(valid.ToJsonString()));
+            Assert.Null(decoded.Context); Assert.Null(decoded.Capture); Assert.Null(decoded.Retention);
+            valid["reason"] = null;
+            Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(valid.ToJsonString()))).Code);
+        }
+        JsonNode partial = JsonNode.Parse(doc.RootElement.GetProperty("wire_samples").GetProperty("current_partial").GetRawText())!;
+        partial["reason"] = "source_capture_incomplete";
+        Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(partial.ToJsonString()))).Code);
     }
 
 }
