@@ -26,13 +26,14 @@ internal static class NativeTextMenuFrameBuilder
     internal static TextMenuFrame Capture(
         SnapshotBuildResult legacy,
         NativeEntityRegistry entities,
-        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
+        bool nativeLogical = false)
     {
-        TextMenuFrame frame = CaptureCore(legacy, entities, executeLegacy);
+        TextMenuFrame frame = CaptureCore(legacy, entities, executeLegacy, nativeLogical);
         frame = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
         return frame with
         {
-            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page)
+            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page, nativeLogical)
         };
     }
 
@@ -52,10 +53,11 @@ internal static class NativeTextMenuFrameBuilder
     private static TextMenuFrame CaptureCore(
         SnapshotBuildResult legacy,
         NativeEntityRegistry entities,
-        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
+        bool nativeLogical)
     {
         NativeTextMenuInformationCapture information =
-            NativeTextMenuInformation.Capture(legacy, entities);
+            NativeTextMenuInformation.Capture(legacy, entities, nativeLogical);
         var leaves = information.Leaves.Select(item => new TextMenuLeaf(
             item.Key, item.Group, item.Verb, item.Label,
             item.SubjectReferentId, item.Arguments, item.Dispatch)).ToList();
@@ -86,7 +88,7 @@ internal static class NativeTextMenuFrameBuilder
         }
 
         RunState? run = RunManager.Instance.DebugOnlyGetState();
-        if (run == null || !RunManager.Instance.IsInProgress)
+        if (!nativeLogical && (run == null || !RunManager.Instance.IsInProgress))
             return new TextMenuFrame(page with { Status = "observed" },
                 owner, Array.Empty<TextMenuLeaf>());
 
@@ -124,7 +126,7 @@ internal static class NativeTextMenuFrameBuilder
 
         if (legacy.HostObservation.Surface is PotionPopupSurface popup)
         {
-            leaves.Clear();
+            if (!nativeLogical) leaves.Clear();
             leaves.AddRange(NativeTextMenuPotions.Popup(popup, entities));
             return new TextMenuFrame(page with
             {
@@ -132,11 +134,13 @@ internal static class NativeTextMenuFrameBuilder
             }, owner, leaves);
         }
 
-        if (NativeTextMenuPotions.PendingPotion is { } pendingPotion)
+        NativePotionTargetBinding? nativePotionBinding = nativeLogical
+            ? NativeTextMenuPotions.CaptureNativeTargeting() : null;
+        if ((nativeLogical ? nativePotionBinding?.Potion : NativeTextMenuPotions.PendingPotion) is { } pendingPotion)
         {
-            leaves.Clear();
+            if (!nativeLogical) leaves.Clear();
             owner = $"potion_targeting:{RuntimeHelpers.GetHashCode(run)}:{entities.GetId(pendingPotion, "potion")}";
-            var targets = NativeTextMenuPotions.Targets();
+            var targets = NativeTextMenuPotions.Targets(nativePotionBinding);
             string potionId = entities.GetId(pendingPotion, "potion");
             var referents = page.Referents.ToList();
             if (!referents.Any(value => value.ReferentId == potionId))
@@ -153,11 +157,15 @@ internal static class NativeTextMenuFrameBuilder
                         new PlayerEnvironmentReferentState(true, true, false, true,
                             "native_visible_fact"), null, null));
                 var exactTarget = target;
+                if (nativeLogical)
+                    leaves.Add(Leaf("focus_potion_target:" + targetId, "focus_potion_target",
+                        "Focus " + target.Entity.Name, targetId,
+                        () => NativeTextMenuPotions.FocusTarget(exactTarget, nativePotionBinding)));
                 leaves.Add(Leaf("select_potion_target:" + targetId,
                     "select_potion_target", "Select " + target.Entity.Name,
-                    targetId, () => NativeTextMenuPotions.SelectTarget(exactTarget)));
+                    targetId, () => NativeTextMenuPotions.SelectTarget(exactTarget, nativePotionBinding)));
             }
-            if (NativeTextMenuPotions.MerchantTarget() is { } merchant)
+            if (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) is { } merchant)
             {
                 string merchantId = entities.GetId(merchant, "merchant_button");
                 if (!referents.Any(value => value.ReferentId == merchantId))
@@ -165,13 +173,29 @@ internal static class NativeTextMenuFrameBuilder
                         "merchant_target", "control", "Merchant",
                         new PlayerEnvironmentReferentState(true, true, false, false,
                             "native_visible_fact"), null, null));
+                if (nativeLogical)
+                    leaves.Add(Leaf("focus_foul_potion_merchant:" + merchantId,
+                        "focus_potion_target", "Focus merchant", merchantId,
+                        () => NativeTextMenuPotions.FocusMerchant(merchant, nativePotionBinding)));
                 leaves.Add(Leaf("select_foul_potion_merchant:" + merchantId,
                     "select_potion_target", "Select merchant", merchantId,
-                    () => NativeTextMenuPotions.SelectMerchant(merchant)));
+                    () => NativeTextMenuPotions.SelectMerchant(merchant, nativePotionBinding)));
+            }
+            if (nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } potionFocus)
+            {
+                string focusedId = PotionFocusId(potionFocus, entities);
+                if (!referents.Any(value => value.ReferentId == focusedId))
+                    referents.Add(new PlayerEnvironmentReferent(focusedId, "potion_target", "entity",
+                        potionFocus is NCreature creature ? creature.Entity.Name : "Merchant",
+                        new PlayerEnvironmentReferentState(true, true, false, true, "native_visible_fact"), null, null));
+                if (NativeTextMenuPotions.CanUnfocusTarget(potionFocus, nativePotionBinding))
+                    leaves.Add(Leaf("unfocus_potion_target:" + focusedId, "unfocus_potion_target",
+                    "Clear potion target focus", focusedId,
+                    () => NativeTextMenuPotions.UnfocusTarget(potionFocus, nativePotionBinding)));
             }
             leaves.Add(Leaf("cancel_potion_target:" + potionId,
                 "cancel_potion_target", "Cancel potion targeting", potionId,
-                NativeTextMenuPotions.CancelTargeting));
+                () => NativeTextMenuPotions.CancelTargeting(nativePotionBinding)));
             page = page with
             {
                 Status = "interactive",
@@ -189,13 +213,17 @@ internal static class NativeTextMenuFrameBuilder
                     {
                         ["kind"] = "potion_targeting",
                         ["potion_referent_id"] = potionId,
+                        ["focused_target_referent_id"] = nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } focusedPotionTarget
+                            ? PotionFocusId(focusedPotionTarget, entities) : null,
                         ["target_count"] = targets.Count
-                            + (NativeTextMenuPotions.MerchantTarget() == null ? 0 : 1)
+                            + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
                     }, ValidContext(page.Interaction.Content.Context,
                         "combat_potion_targeting")),
                     Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
                 }
             };
+            if (!nativeLogical && page.Interaction.Content.Surface is JsonObject potionSurface)
+                potionSurface.Remove("focused_target_referent_id");
             return new TextMenuFrame(page, owner, leaves);
         }
 
@@ -207,7 +235,7 @@ internal static class NativeTextMenuFrameBuilder
             // A native held-card operation owns input. The old combat reader
             // deliberately goes settling here; only this exact operation may
             // authorize a new stage. Never inherit old play(card,target).
-            leaves.Clear();
+            if (!nativeLogical) leaves.Clear();
             owner = $"card_play:{RuntimeHelpers.GetHashCode(run)}:{entities.GetId((object?)play ?? hand, "card_play")}";
             bool controllerHeld = play is NControllerCardPlay;
             bool mouseTargetHeld = play is NMouseCardPlay mouse
@@ -221,7 +249,7 @@ internal static class NativeTextMenuFrameBuilder
                 string cardId = entities.GetId(card, "card");
                 page = CardOperationPage(page, hand, play, card, cardId, entities,
                     NTargetManager.Instance.IsInSelection
-                        ? "card_targeting" : "card_confirm");
+                        ? "card_targeting" : "card_confirm", nativeLogical);
                 leaves.Add(Leaf("cancel_card:" + cardId, "cancel_card_play",
                     "Cancel held card", cardId,
                     () => NativeTextMenuCombat.Cancel(hand, play, card)) with
@@ -230,6 +258,14 @@ internal static class NativeTextMenuFrameBuilder
                 });
                 if (NTargetManager.Instance.IsInSelection)
                 {
+                    if (nativeLogical && NativeTextMenuCombat.FocusedTarget(hand, play, card) is { } focused
+                        && NativeTextMenuCombat.CanUnfocusTarget(hand, play, card, focused))
+                    {
+                        string focusedId = entities.GetId(focused.Entity, "creature");
+                        leaves.Add(Leaf("unfocus_target:" + focusedId, "unfocus_target",
+                            "Clear target focus", focusedId,
+                            () => NativeTextMenuCombat.UnfocusTarget(hand, play, card, focused)));
+                    }
                     foreach (NCreature target in NativeTextMenuCombat.CurrentTargets(
                                  hand, play, card))
                     {
@@ -479,9 +515,14 @@ internal static class NativeTextMenuFrameBuilder
         NCardPlay play, CardModel card) =>
         new(play, card, new Dictionary<string, object>(StringComparer.Ordinal));
 
+    private static string PotionFocusId(Node target, NativeEntityRegistry entities) =>
+        target is NCreature creature ? entities.GetId(creature.Entity, "creature")
+            : entities.GetId(target, "merchant_button");
+
     private static PlayerEnvironmentSnapshot CardOperationPage(
         PlayerEnvironmentSnapshot source, NPlayerHand hand, NCardPlay play,
-        CardModel card, string cardId, NativeEntityRegistry entities, string stage)
+        CardModel card, string cardId, NativeEntityRegistry entities, string stage,
+        bool nativeLogical)
     {
         var visible = source.Referents.ToList();
         if (!visible.Any(value => value.ReferentId == cardId))
@@ -501,6 +542,14 @@ internal static class NativeTextMenuFrameBuilder
                         "native_visible_fact"), null, null));
         }
 
+        if (nativeLogical && NativeTextMenuCombat.FocusedTarget(hand, play, card) is { } actualFocus)
+        {
+            string focusedId = entities.GetId(actualFocus.Entity, "creature");
+            if (!visible.Any(value => value.ReferentId == focusedId))
+                visible.Add(new PlayerEnvironmentReferent(focusedId, "creature", "entity", actualFocus.Entity.Name,
+                    new(true, true, false, true, "native_visible_fact"), null, null));
+        }
+
         var cardNode = play.Holder.CardNode;
         string? title = cardNode?.GetNodeOrNull<MegaLabel>("%TitleLabel")?.Text;
         string? cost = cardNode?.GetNodeOrNull<MegaLabel>("%EnergyLabel")?.Text;
@@ -515,6 +564,12 @@ internal static class NativeTextMenuFrameBuilder
             ["displayed_cost"] = cost,
             ["displayed_description"] = description
         };
+        if (nativeLogical)
+        {
+            surface["focused_target_referent_id"] = NativeTextMenuCombat.FocusedTarget(hand, play, card) is { } focused
+                ? entities.GetId(focused.Entity, "creature") : null;
+            NativeLogicalPresentation.AddCardDisplay(surface, cardNode);
+        }
         return source with
         {
             Status = displayComplete ? "interactive" : "settling",
