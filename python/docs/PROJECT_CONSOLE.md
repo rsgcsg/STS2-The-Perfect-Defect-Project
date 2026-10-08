@@ -624,7 +624,7 @@ capabilities = service.capabilities()
 operation = service.start(request)["operation"]
 status = service.status(operation["operation_id"])["operation"]
 ack = service.cancel(operation["operation_id"], operation["attempt_id"])
-# ACK remains pending until the worker returns a safe-boundary terminal receipt.
+# ACK remains pending until the parent observes actual child exit and publishes terminal state.
 # Query status first, then explicitly select the immutable checkpoint:
 resumed = service.resume(operation_id, expected_attempt_id, checkpoint_id,
                          new_intent_id, {"wall_seconds": 600})
@@ -649,22 +649,58 @@ explicit reconciliation under the released owner lock. Legacy recipes advertise
 no cancel/resume capabilities. Typed legacy requests use empty `limits` because
 the legacy subprocess recipes do not enforce the new boundary wall limit.
 
-The structured adapter enforces a cumulative wall budget at the declared
-completed TBPTT/evaluation boundary and the recipe's cumulative optimizer-update
-bound. Evaluation and a tensor call remain synchronous between those boundaries;
-this does not claim arbitrary hung-process termination. Resume must preserve
-the original limits and cannot reset an exhausted budget. A cancel request that
-races completion retains artifacts for audit and does not select them as a
-normal completed result. Indexing follows verified durable completion, so index
-failure does not permit another numerical run.
+The structured recipe runs numerical work in a fixed private child process;
+Torch imports, RNG and thread settings stay in that child. The parent alone
+writes the application journal. The child publishes immutable domain artifacts
+through a bounded NDJSON channel and holds its own OS lifecycle lock until exit.
+Parent loss does not prove the child stopped: recovery must acquire both owner
+locks before admitting a new attempt. No PID guess or stale-file deletion grants
+publication authority.
 
-Current structured source admission supports explicitly marked immutable
-`synthetic_fixture` engineering sources with an existing exact source index,
-training claim and use reservation. An ordinary Agent source JSON, capsule hash
-or `engineering_only` label cannot establish provenance. Real Agent source
-admission remains blocked until its owning trusted verifier joins immutable
-source/report records; historical S0 input meaning is unchanged. The structured
-Agent registry entry reports `structured_installation_adapter_required`: STPD
-must supply its public package verifier/installation builder before Workbench
-export/registration can offer it. These source/test seams do not complete the
-ordinary UI journey, runtime/Human qualification or final G2/V1 user acceptance.
+The parent enforces cumulative wall time across attempts, including numerical
+calls and evaluation/export. It monitors the child at up to 250ms wait intervals
+plus callback/inventory latency and can kill a hung child. Cancel records intent,
+then allows a one-second cooperative grace period before forced termination;
+pause waits for a safe numerical boundary or the wall deadline. A writer becomes
+terminal only after actual exit or proof that no child was spawned. Forced exit
+preserves the latest verified checkpoint and records an unknown domain outcome;
+application cancellation and result selection remain separate from domain completion.
+
+The optimizer-update bound, wall budget, artifact publication reservations and
+scratch boundary remain cumulative through explicit resume; total attempts are
+limited to 32. Artifact byte reservations precede immutable publication. Scratch
+monitoring counts every retained attempt directory in the operation, including
+forced attempts, with one bounded inventory that rejects symlinks and unsafe
+entries. Resume rejects exhausted retained scratch before changing the journal
+or creating another attempt. These are separate byte checks under the original
+`scratch_bytes` setting. Scratch is a monitored detection threshold, not a kernel
+or filesystem hard allocation quota: a write can overshoot between checks, after
+which the parent kills the child, retains the files for audit, and blocks further
+resume. Logs and immutable checkpoints/results are retained outside scratch;
+there is no automatic cleanup of old or orphan attempt directories. Resume cannot
+increase or reset any original limit. Checkpoint cadence accepts 1–100 completed
+boundaries and defaults to 100.
+
+A cancel request that races completion retains artifacts for audit and does not
+select them as a normal completed result, including after explicit reconciliation.
+Indexing follows verified durable completion, so index failure does not permit
+another numerical run. Unexpected numerical exceptions leave an unknown outcome
+with an actual exit receipt and bounded private diagnostic; public status does
+not expose exception text or claim domain completion.
+
+Current structured source admission supports both explicitly marked immutable
+`synthetic_fixture` engineering sources and typed E2 protocol-source partitions.
+The typed verifier must join the exact immutable original source/report records,
+accepted projection and row mappings; only TRAIN partitions may enter this
+service. Existing curation purpose, exact-source claims and operation-bound use
+reservations are required. DEV/TEST sources are rejected before journal creation
+or use reservation and do not enter training-input/model ancestry. An ordinary
+Agent source JSON, capsule hash or `engineering_only` label cannot establish
+provenance. Historical S0 input meaning is unchanged.
+
+The structured Agent registry entry still reports
+`structured_installation_adapter_required`: STPD must supply its public package
+verifier/installation builder before Workbench export/registration can offer it.
+Typed source admission and training are therefore distinct from structured model
+installation support. These source/test seams do not complete the ordinary UI
+journey, runtime/Human qualification or final G2/V1 user acceptance.

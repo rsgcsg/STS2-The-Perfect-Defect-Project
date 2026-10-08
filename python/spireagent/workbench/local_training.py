@@ -49,6 +49,7 @@ from spireagent.workbench.recipe_contracts import (
     validate_limits,
 )
 from spireagent.workbench.research_process import private_child
+from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
     STRUCTURED_RECIPE,
@@ -757,7 +758,8 @@ class LocalTrainingService:
                     if limits != value["request"]["limits"] or not limits:
                         raise BoundaryError("local_training", "cumulative_limits_must_be_preserved")
                     if (value["elapsed_seconds"] >= limits["wall_seconds"] or
-                            value.get("artifact_reserved_bytes", 0) >= limits["scratch_bytes"]):
+                            value.get("artifact_reserved_bytes", 0) >= limits["scratch_bytes"] or
+                            retained_scratch_bytes(path, value) >= limits["scratch_bytes"]):
                         raise BoundaryError("local_training", "cumulative_budget_exhausted")
                     from spireagent.workbench.recipes.structured import verify_resume_checkpoint
 

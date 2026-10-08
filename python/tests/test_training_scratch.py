@@ -107,3 +107,35 @@ child.run_child = hung
     assert set(store.manifest_ids()) == artifacts
     if inventory != "exhausted":
         assert sentinel.read_text() == "unowned"
+
+
+@pytest.mark.parametrize("inventory", ["retained_bytes", "regular_root", "missing_prior",
+                                      "wrong_current_name", "too_many_entries"])
+def test_inventory_counts_only_bounded_exact_attempt_directories(tmp_path, inventory):
+    from spireagent.workbench.training_scratch import MAX_SCRATCH_ENTRIES, retained_scratch_bytes
+
+    path = tmp_path/OPERATION_FILE
+    operation = {"attempt_id": "2"*32, "attempts": [{"attempt_id": "1"*32}],
+                 "scratch_name": "local-training-"+"2"*32+".scratch"}
+    prior = tmp_path/("local-training-"+"1"*32+".scratch")
+    current = tmp_path/operation["scratch_name"]
+    prior.mkdir()
+    current.mkdir()
+    (prior/"old").write_bytes(b"old")
+    (current/"new").write_bytes(b"newer")
+    if inventory == "retained_bytes":
+        (tmp_path/"local-training-unrelated.scratch").mkdir()
+        assert retained_scratch_bytes(path, operation) == 8
+        return
+    if inventory in {"regular_root", "missing_prior"}:
+        (prior/"old").unlink()
+        prior.rmdir()
+        if inventory == "regular_root":
+            prior.write_bytes(b"invalid root")
+    elif inventory == "wrong_current_name":
+        operation["scratch_name"] = "../unowned"
+    elif inventory == "too_many_entries":
+        for number in range(MAX_SCRATCH_ENTRIES):
+            (current/str(number)).touch()
+    with pytest.raises(BoundaryError, match="scratch_inventory_invalid"):
+        retained_scratch_bytes(path, operation)

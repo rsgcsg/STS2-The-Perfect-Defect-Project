@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import os
-import stat
 import sys
 import time
 from typing import Any
@@ -18,6 +17,7 @@ from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.research_process import private_child
+from spireagent.workbench.training_scratch import retained_scratch_bytes
 
 _private_child = private_child
 
@@ -250,15 +250,8 @@ class StructuredRecipeAdapter:
         def stop_requested() -> bool:
             with service._lock:
                 value = current()
-                scratch = path.parent/operation["scratch_name"]
-                size = 0
-                for files, item in enumerate(scratch.rglob("*"), start=1):
-                    info = item.lstat()
-                    if files > 4096 or stat.S_ISLNK(info.st_mode):
-                        raise BoundaryError("local_training", "scratch_inventory_invalid")
-                    if stat.S_ISREG(info.st_mode):
-                        size += info.st_size
-                if size > value["request"]["limits"]["scratch_bytes"]:
+                if (retained_scratch_bytes(path, value) >
+                        value["request"]["limits"]["scratch_bytes"]):
                     raise BoundaryError("local_training", "scratch_budget_exhausted")
                 if value["requested_action"] != "cancel":
                     return False
