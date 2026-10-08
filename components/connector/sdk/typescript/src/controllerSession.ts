@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonObject } from "./json.js";
 import { PlayerEnvironmentHttpError } from "./client.js";
+import { decodePlayerClientRevocation, type PlayerEnvironmentClientRevocation } from "./clientRevocation.js";
 
 interface ControlClientRecord {
   readonly client_session_id: string;
@@ -79,6 +80,9 @@ export interface EnvironmentControlClient {
   }): Promise<DecodedControlPayload<ControlLeaseResponse>>;
   /** Optional for old clients; required for explicit uncertain-release reconciliation. */
   controlSnapshot?(): Promise<DecodedControlPayload<ControlSnapshot>>;
+  /** Optional for old clients. Explicit final uncertain-acquire closure requires this route. */
+  revokeClient?(input: { runtimeInstanceId: string; clientSessionId: string }):
+    Promise<DecodedControlPayload<PlayerEnvironmentClientRevocation>>;
 }
 
 export class EnvironmentControllerSession {
@@ -95,6 +99,9 @@ export class EnvironmentControllerSession {
   private releaseOperation?: Promise<void>;
   private retiredLease?: ControlLease;
   private acquireFailed = false;
+  private acquireInFlight = false;
+  private originalClientRevoked = false;
+  private revocationOperation?: Promise<DecodedControlPayload<PlayerEnvironmentClientRevocation>>;
 
   constructor(
     private readonly environment: EnvironmentControlClient,
@@ -157,19 +164,23 @@ export class EnvironmentControllerSession {
       }
 
       this.assertControl(epoch);
+      this.acquireInFlight = true;
       try {
         const acquired = await this.environment.acquireController(this.registration.client.client_session_id);
-        this.acquireFailed = false;
+        if (epoch === this.controlEpoch && !this.releaseUncertain && !this.closed) this.acquireFailed = false;
         this.acceptLease(acquired.data, epoch, true);
       } catch (error) {
-        if (!(error instanceof ControlEpochChangedError)) {
+        if (!this.originalClientRevoked && !(error instanceof ControlEpochChangedError)) {
           // A received 4xx is an original rejection; timeout/transport/invalid
           // success has no correlated terminal acquisition proof.
-          this.acquireFailed = !(error instanceof PlayerEnvironmentHttpError &&
-            error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500);
+          if (!(epoch !== this.controlEpoch && this.releaseUncertain))
+            this.acquireFailed = !(error instanceof PlayerEnvironmentHttpError &&
+              error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500);
           if (this.acquireFailed) this.releaseUncertain = true;
         }
         throw error;
+      } finally {
+        this.acquireInFlight = false;
       }
     });
 
@@ -194,13 +205,16 @@ export class EnvironmentControllerSession {
       controller_generation: this.lease?.controller_generation ?? null,
       controller_expires_at: this.lease?.expires_at ?? null,
       controller_release_uncertain: this.releaseUncertain,
-      controller_acquire_uncertain: this.acquireFailed
+      controller_acquire_uncertain: this.acquireFailed,
+      client_session_closed: this.closed,
+      client_revoked: this.originalClientRevoked
     };
   }
 
   /** Lease-only handoff. The registration and passive subscriptions remain alive.
    * A known lease is revoked immediately, without waiting behind a pending renewal. */
   releaseControl(): Promise<void> {
+    if (this.originalClientRevoked) return Promise.resolve();
     if (this.releaseOperation) return this.releaseOperation;
     if (this.releaseUncertain && !this.lease)
       return Promise.reject(new EnvironmentControlUncertainError("Reconcile the original owner before another release or acquisition"));
@@ -218,6 +232,7 @@ export class EnvironmentControllerSession {
           // An initial acquire has no known token yet. Late credentials are
           // fenced and the actually returned lease is used only for cleanup.
           if (previous) await previous.catch(() => undefined);
+          if (this.originalClientRevoked) return;
           const retired = this.retiredLease;
           this.retiredLease = undefined;
           if (retired) await this.releaseKnown(retired);
@@ -226,6 +241,7 @@ export class EnvironmentControllerSession {
         if (this.acquireFailed) throw new EnvironmentControlUncertainError("An unidentified acquisition may still arrive; snapshot absence cannot prove it terminal");
         this.releaseUncertain = false;
       } catch (error) {
+        if (this.originalClientRevoked) return; // A stronger exact original-client ACK already proves closure.
         this.releaseUncertain = true;
         throw new EnvironmentControlUncertainError("Player Environment lease release is uncertain; no new acquisition is allowed", { cause: error });
       } finally {
@@ -237,9 +253,58 @@ export class EnvironmentControllerSession {
     return current;
   }
 
+  /** Explicit FINAL closure of the original registration after an unknown or
+   * still-pending acquisition. A failed ACK leaves the owner fenced; callers
+   * must explicitly choose any later idempotent closure attempt. */
+  revokeUncertainClient(): Promise<DecodedControlPayload<PlayerEnvironmentClientRevocation>> {
+    if (this.revocationOperation) return this.revocationOperation;
+    if (this.closed) return Promise.reject(new Error("Player Environment controller session is closed"));
+    if (!this.registration || !this.environment.revokeClient || !(this.acquireFailed || this.acquireInFlight))
+      return Promise.reject(new EnvironmentControlUncertainError("Final revocation requires the original registered uncertain-acquire owner and supported authority route"));
+    const original = { runtimeInstanceId: this.registration.runtime_instance_id,
+      clientSessionId: this.registration.client.client_session_id };
+    this.controlEpoch++;
+    this.releaseUncertain = true;
+    this.acquireFailed = true;
+    this.lease = undefined;
+    this.clearRenewal();
+    // Do not wait behind an uncertain Acquire. The direct Authority gate fences
+    // that original client before acknowledging, whichever request wins first.
+    const current = Promise.resolve().then(async () => {
+      try {
+        const response = await this.environment.revokeClient!(original);
+        const acknowledgement = decodePlayerClientRevocation(response.data);
+        if (acknowledgement.data.runtime_instance_id !== original.runtimeInstanceId ||
+            acknowledgement.data.client_session_id !== original.clientSessionId)
+          throw new Error("Final client revocation returned another original runtime/client");
+        this.originalClientRevoked = true;
+        this.closed = true;
+        this.registration = undefined;
+        this.lease = undefined;
+        this.retiredLease = undefined;
+        this.acquireFailed = false;
+        this.releaseUncertain = false;
+        this.clearRenewal();
+        return acknowledgement;
+      } catch (error) {
+        this.releaseUncertain = true;
+        this.acquireFailed = true;
+        throw new EnvironmentControlUncertainError("Original client revocation is uncertain; no acquisition, registration or automatic resume is allowed", { cause: error });
+      } finally {
+        if (this.revocationOperation === current) this.revocationOperation = undefined;
+      }
+    });
+    this.revocationOperation = current;
+    return current;
+  }
+
+  /** Local ownership is permanently closed; this does not report global control. */
+  get registrationClosed(): boolean { return this.closed; }
+
   /** One read of the actual original authority, never a retry or a new registration.
    * A still-held original client lease stays fenced until an explicit release. */
   async reconcileControl(): Promise<"released" | "still_held" | "unreconciled"> {
+    if (this.closed) throw new Error("Player Environment controller session is closed");
     if (this.releaseOperation) await this.releaseOperation.catch(() => undefined);
     if (!this.releaseUncertain) return this.lease ? "still_held" : "released";
     if (this.closed || !this.registration || !this.environment.controlSnapshot)
@@ -247,6 +312,7 @@ export class EnvironmentControllerSession {
     let result: "released" | "still_held" | "unreconciled" = "released";
     const epoch = this.controlEpoch;
     await this.serialize(async () => {
+      if (this.closed || epoch !== this.controlEpoch || this.releaseRequested) throw new ControlEpochChangedError();
       const snapshot = (await this.environment.controlSnapshot!()).data;
       if (this.closed || epoch !== this.controlEpoch || this.releaseRequested) throw new ControlEpochChangedError();
       if (snapshot.runtime_instance_id !== this.registration!.runtime_instance_id)
@@ -277,6 +343,7 @@ export class EnvironmentControllerSession {
   }
 
   private acceptLease(response: ControlLeaseResponse, epoch: number, acquired: boolean): void {
+    if (this.originalClientRevoked) throw new ControlEpochChangedError();
     if (!this.registration
         || response.runtime_instance_id !== this.registration.runtime_instance_id
         || !response.controller
@@ -348,6 +415,7 @@ export class EnvironmentControllerSession {
   }
 
   private async releaseKnown(lease: ControlLease): Promise<void> {
+    if (this.originalClientRevoked) return;
     if (!this.registration) throw new Error("Player Environment controller session was not registered");
     const response = (await this.environment.releaseController({ clientSessionId: this.registration.client.client_session_id,
       controllerLeaseId: lease.controller_lease_id, controllerGeneration: lease.controller_generation })).data;

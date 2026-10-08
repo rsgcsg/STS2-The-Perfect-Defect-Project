@@ -10,6 +10,9 @@ import { NATIVE_LOGICAL_PROFILE, NATIVE_LOGICAL_ROUTE, NATIVE_LOGICAL_MAX_RESPON
   parseNativeLogicalJson, type NativeLogicalTransportOperation, type NativeLogicalTransportOptions,
   type NativeLogicalTransportReply, validateNativeLogicalRequest, decodeNativeLogicalCurrent } from "./nativeLogical.js";
 import { assertNativeLogicalJson } from "./nativeLogicalWire.js";
+import { PLAYER_ENVIRONMENT_CLIENT_REVOCATION_ROUTE, PLAYER_ENVIRONMENT_CLIENT_REVOCATION_MAX_BYTES,
+  validatePlayerClientRevocationRequest, decodePlayerClientRevocation,
+  type PlayerEnvironmentClientRevocation } from "./clientRevocation.js";
 import {
   ORDINARY_REWARD_PAGE_PROFILE,
   decodeRewardPageCapabilities,
@@ -332,6 +335,19 @@ export class PlayerEnvironmentRestClient {
     }));
   }
 
+  async revokeClient(input: { runtimeInstanceId: string; clientSessionId: string }): Promise<DecodedPlayerPayload<PlayerEnvironmentClientRevocation>> {
+    const body = validatePlayerClientRevocationRequest({ runtime_instance_id: input.runtimeInstanceId, client_session_id: input.clientSessionId });
+    let status = 0;
+    const raw = await this.request(PLAYER_ENVIRONMENT_CLIENT_REVOCATION_ROUTE,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, false,
+      { maxResponseBytes: PLAYER_ENVIRONMENT_CLIENT_REVOCATION_MAX_BYTES, onResponseBytes() {}, onResponseStatus(value) { status = value; } });
+    if (status !== 200) throw new PlayerEnvironmentHttpError("Client revocation requires an exact HTTP 200 acknowledgement", status);
+    const reply = decodePlayerClientRevocation(raw);
+    if (reply.data.runtime_instance_id !== input.runtimeInstanceId || reply.data.client_session_id !== input.clientSessionId)
+      throw new Error("Client revocation acknowledgement does not match the original runtime/client");
+    return reply;
+  }
+
   /** The native facade shares this client's fetch/error boundary and never owns a lease. */
   async nativeLogicalRequest(operation: NativeLogicalTransportOperation, body?: JsonObject,
     options: NativeLogicalTransportOptions = {}): Promise<NativeLogicalTransportReply> {
@@ -389,7 +405,7 @@ export class PlayerEnvironmentRestClient {
     path: string,
     init: RequestInit,
     acceptReceiptOnError = false,
-    native?: NativeLogicalTransportOptions & { operation: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
+    native?: NativeLogicalTransportOptions & { operation?: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
   ): Promise<JsonObject> {
     let response: Response;
     const requestSignal = native?.signal ? AbortSignal.any([native.signal, AbortSignal.timeout(native.timeoutMs ?? this.timeoutMs)])
