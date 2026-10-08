@@ -25,7 +25,6 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..canonical import semantic_hash
-from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.structured_sequences import (
     MAX_SOURCE_BYTES,
     SOURCE_SCHEMA,
@@ -35,6 +34,17 @@ from ..fullrun.structured_sequences import (
 from ..models.structured_m2 import GRAPH_ID
 from ..models.structured_training import StructuredTrainingConfig, train_structured_model
 from ..structured_code_scope import LEGACY_SCOPE, ROOT, SCOPED_RUN_SCHEMA, TRAINING_SCOPE
+from ..structured_profiles import (
+    NATIVE_INPUT_SCHEMA,
+    NATIVE_RUN_SCHEMA,
+    NATIVE_SCOPE,
+    NATIVE_SOURCE_SCHEMA,
+    parse_dataset,
+    profile_projection,
+    qualification,
+    source_verification,
+    validate_profile,
+)
 from .checkpoint_codec import encode_checkpoint
 from .reporting import RunReporter
 
@@ -54,8 +64,10 @@ def prepare_structured_run(
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
-    if (code_scope not in {LEGACY_SCOPE, TRAINING_SCOPE}
-            or code_scope == TRAINING_SCOPE and operation_id is None):
+    native = validate_profile(dataset, code_scope)
+    scoped = code_scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    if (parse_dataset(dataset.source_bytes, code_scope) != dataset
+            or scoped and operation_id is None):
         raise BoundaryError("structured_run", "unsupported_code_scope")
     execution_parameters: dict[str, Any] = {}
     if operation_id is not None:
@@ -66,24 +78,26 @@ def prepare_structured_run(
         digest(operation_id, "structured_run.operation_id", length=32)
         torch.set_num_threads(config.cpu_threads)
         identity = execution_identity(dataset, config, code_scope=code_scope)
-        if (code_scope == TRAINING_SCOPE
+        if (scoped
                 and producer.uv_lock_sha256 != identity["code_identity"]["dependency_lock_sha256"]):
             raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
         execution_parameters = {"operation_id": operation_id, "execution_identity": identity}
+    source_info = {
+        "schema": NATIVE_SOURCE_SCHEMA if native else SOURCE_SCHEMA,
+        "source_kind": dataset.source_kind, "source_sha256": dataset.source_sha256,
+        "qualification": qualification(dataset),
+        **({"input_spec": dataset.input_spec.value(),
+            "verification_identity": source_verification(dataset),
+            "code_identity": execution_parameters["execution_identity"]["code_identity"]}
+           if native and dataset.input_spec else {}),
+    }
     if source_id is None:
         payload = store.put_payload("source", io.BytesIO(dataset.source_bytes), "application/json")
         source = Manifest(
             "dataset",
             producer,
             payloads=(payload,),
-            parameters=FrozenObject.of(
-                {
-                    "schema": SOURCE_SCHEMA,
-                    "source_kind": dataset.source_kind,
-                    "source_sha256": dataset.source_sha256,
-                    "qualification": "engineering_only",
-                }
-            ),
+            parameters=FrozenObject.of(source_info),
         )
         store.publish(source)
     else:
@@ -93,6 +107,9 @@ def prepare_structured_run(
             payload.size > MAX_SOURCE_BYTES
             or payload.sha256 != dataset.source_sha256
             or b"".join(store.read_payload(payload)) != dataset.source_bytes
+            or native and (source.kind != "dataset" or source.parameters.value() != source_info
+                           or {p.role for p in source.payloads} != {"source"}
+                           or source.parents or payload.media_type != "application/json")
         ):
             raise BoundaryError("structured_run", "source_payload_binding")
     training_input = Manifest(
@@ -102,19 +119,18 @@ def prepare_structured_run(
         (payload,),
         FrozenObject.of(
             {
-                "schema": "stpd/structured-m2-training-input-v1",
+                "schema": NATIVE_INPUT_SCHEMA if native else "stpd/structured-m2-training-input-v1",
                 "source_sha256": dataset.source_sha256,
-                "projection": {
-                    "id": INPUT_ID,
-                    "version": PROJECTION_VERSION,
-                    "I": False,
-                    "F": False,
-                },
+                "projection": profile_projection(dataset, code_scope),
+                **({"input_spec": dataset.input_spec.value(),
+                    "verification_identity": source_verification(dataset),
+                    "code_identity": execution_parameters["execution_identity"]["code_identity"]}
+                   if native and dataset.input_spec else {}),
                 "splits": {
                     split: [run.run_id for run in dataset.runs if run.split == split]
                     for split in ("train", "dev", "test")
                 },
-                "qualification": "engineering_only",
+                "qualification": qualification(dataset),
             }
         ),
     )
@@ -125,8 +141,10 @@ def prepare_structured_run(
         (Parent("training_input", training_input.artifact_id),),
         parameters=FrozenObject.of(
             {
-                "schema": "stpd/experiment-v1",
-                "purpose": "s0_agent_teacher_imitation",
+                "schema": ("stpd/native-structured-experiment-v1"
+                           if native else "stpd/experiment-v1"),
+                "purpose": ("native_synthetic_teacher_imitation"
+                            if native else "s0_agent_teacher_imitation"),
                 "graph_id": GRAPH_ID,
                 "config": asdict(config),
             }
@@ -142,7 +160,8 @@ def prepare_structured_run(
         ),
         parameters=FrozenObject.of(
             {
-                "schema": (SCOPED_RUN_SCHEMA if code_scope == TRAINING_SCOPE else
+                "schema": (NATIVE_RUN_SCHEMA if native else
+                           SCOPED_RUN_SCHEMA if code_scope == TRAINING_SCOPE else
                            "stpd/structured-m2-run-v2" if operation_id is not None else RUN_SCHEMA),
                 "config": asdict(config),
                 "source_sha256": dataset.source_sha256,

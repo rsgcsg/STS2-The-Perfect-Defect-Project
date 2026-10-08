@@ -53,6 +53,16 @@ input-boundary evidence, never native operands or Commit/effect proof. Existing
 legacy result mappers require the coordinated root repair to map partial to
 unknown where their wire cannot express partial.
 
+## E1.2 logical-list follow-up source candidate
+
+The follow-up uses explicitly approved dependent base
+`05985976b1fbd9242a9363be91f80033d97d89bc`, branch
+`codex/e1-v1-logical-grid`. [The fixed typed adapter](../NATIVE_LOGICAL_GRID_ADAPTER.md)
+records six concrete native callbacks, full native grid membership/order,
+JSON-ignored exact source proofs, Peek and inspection policies, and unresolved
+noninterference/conditional-capability gaps. The table below now distinguishes
+this source implementation from its still-pending runtime qualification.
+
 ## Complete denominator
 
 References below name owning source families, not qualified support promises.
@@ -62,15 +72,15 @@ native logical capture adapter; `Combat`/`Potions` mean their text native helper
 
 | ID | Existing source / exact native finding | Capture repair or remaining gap |
 | --- | --- | --- |
-| L01 | Information deck button and complete run-deck Read | Entry/return retained; complete logical detail bindings still pending |
+| L01 | Information deck button and complete run-deck Read | Full native deck grid/order and per-model inspect bindings added; return/sort controls preserved; runtime pending |
 | L02 | Information draw-pile button/Read | Full entered public multiset; true draw order excluded; registry identity audit separate |
 | L03 | Information discard-pile button/Read | Entered pile identity/return retained; inspection coverage pending |
 | L04 | Information exhaust-pile button/Read | Entered pile identity/return retained; inspection coverage pending |
 | L05 | Information exact map/back controls | Retained native open/back/travel; map drawing-mode audit pending |
-| L06 | Information actual card-holder focus signals | Native tips remain nonmodal; all page-specific focus coverage pending |
-| L07 | Information deck/bundle native inspect controls | Virtual deck/grid full logical inspection still binding-unimplemented |
-| L08 | Information exact inspect Upgrade tickbox | Existing native enabled toggle; Star/enchantment display added only in new capture |
-| L09 | Information inspect left/right buttons | Native list is currently allocated grid list; full logical list adapter pending |
+| L06 | Information actual card-holder focus signals | Native actual holder tips added for current selector scope; no offscreen holder fabricated; full mechanism runtime pending |
+| L07 | Information deck/bundle native inspect controls | Full deck and five valid selector request-list inspect bindings added; combat-pile empty native inspect list requires capability canary |
+| L08 | Information exact inspect Upgrade tickbox | Native toggles retained; offscreen requested upgrade presentation is explicit partial until safe native read path exists |
+| L09 | Information inspect left/right buttons | Deck inspector uses full sorted logical list; selector uses exact native request-list order; no consumer index |
 | L10 | Information relic focus/show/remove | Existing native tips; retained with actual rendered facts |
 | L11 | Information relic inspect/arrows/close | Existing exact controls; full inventory/native conditions runtime pending |
 | L12 | NPotionHolder.OnFocus/OnUnfocus show/remove tooltip independently of popup | New-profile potion focus leaf and native return; native blocking respected |
@@ -78,7 +88,7 @@ native logical capture adapter; `Combat`/`Potions` mean their text native helper
 | L14 | Information orb controls; NStarCounter.MouseEntered shows Star tip | Visible Star tip and actual counter label added; other resource families audit pending |
 | L15 | NCreature.Hitbox focus shows Entity.HoverTips separately from power/intent | Confirmed native capability, body-tip entry added; actual distinct content runtime pending |
 | L16 | Information topbar native focus/hover | Existing HP/gold/floor/Boss/map/deck entries retained |
-| L17 | NPeekButton.OnRelease toggles SetPeeking | New symmetric open/close exact control; full peeking battlefield projection/runtime pending |
+| L17 | NPeekButton.OnRelease toggles SetPeeking | Same grid task/roster/selection survives hidden holders; choice/bundle Peek returns to same child; runtime pending |
 | L18 | Information actual rendered text/card tips | Existing rendered tips retained; new current card Star/enchantment presentation added |
 | L19 | Native focus exit removes tips; creature changes refresh them | Clear-tip native action retained; typed publication trigger packet pending |
 | L20 | Combat holder Pressed starts actual controller NCardPlay | Existing native Begin retained; compound mode-input stages added |
@@ -98,17 +108,17 @@ native logical capture adapter; `Combat`/`Potions` mean their text native helper
 | L34 | Native actions/resources/turns have public changing facts | Capture values only; typed eager publication/hooks/queue cancellation separate required packet |
 | L35 | Hand selector source selects/deselects/replaces native holder | Existing source; enabled/min semantics belong to E1.1; exact-source reread pending |
 | L36 | Hand selector native confirm control | Existing source; no new confirmation rule; actual auto-complete cases pending |
-| L37 | NativeSimpleCardSelection | Existing typed controls; E1.1 owns raw-min correction; full logical grid bindings pending |
+| L37 | NativeSimpleCardSelection | Full native grid models feed concrete native callback; existing buttons own zero/min/manual semantics; runtime pending |
 | L38 | NativeGeneratedCardChoice | Existing native selection/skip; generic Peek added; opening-ready audit pending |
-| L39 | NativeCombatPileSelection | Existing typed source/choice controls; E1.1 owns raw-min correction; virtual-list audit pending |
-| L40 | NativeDeckCardSelection | Existing eligible model/binding source; complete logical selectable-grid coverage pending |
-| L41 | NativeDeckCardSelection preview confirm/cancel | Existing source; actual enabled/whole-process close conditions pending |
-| L42 | NativeDeckUpgradeSelection | Existing source; exact caller/preview conditions remain pending |
-| L43 | NativeDeckTransformSelection | Existing source; exact caller/preview conditions remain pending |
-| L44 | DeckEnchantSelectionSurfaceReader | Existing source; exact caller/preview conditions remain pending |
-| L45 | CardBundleSelectionSurfaceReader + NativeTextMenuBundle | Existing actual bundle preview/inspect/confirm/cancel; full bundle runtime pending |
+| L39 | NativeCombatPileSelection | Full filtered/sorted grid callback binding added; native displayed-count completion preserved; inspect capability canary pending |
+| L40 | NativeDeckCardSelection | Full current qualified grid model bindings added without reapplying native filter or fabricating holders |
+| L41 | NativeDeckCardSelection preview confirm/cancel | Exact current preview/confirm/cancel native controls retained with task/stage revalidation; runtime pending |
+| L42 | NativeDeckUpgradeSelection | Full qualified grid model callbacks/control binding added; actual preview text captured without future factory calls; runtime pending |
+| L43 | NativeDeckTransformSelection | Full qualified grid model callbacks/control binding added; actual preview text captured without future factory calls; runtime pending |
+| L44 | DeckEnchantSelectionSurfaceReader | Full qualified grid model callbacks/control binding added; actual preview text captured without future factory calls; runtime pending |
+| L45 | CardBundleSelectionSurfaceReader + NativeTextMenuBundle | Existing native bundle controls retained; Peek no longer loses same child/selection; full bundle runtime pending |
 | L46 | NativeBossRelicSelection | Existing typed relic/skip source; exact applicable native conditions pending |
-| L47 | ActiveInputResolver and child typed selector owners | Existing source; multilayer occurrence/child-ready publication remains pending |
+| L47 | ActiveInputResolver and child typed selector owners | Exact selector task/owner binding added; multilayer occurrence/child-ready publication remains separate pending |
 | L48 | Selector native zero/full/automatic/close behavior | E1.1/source conditions and actual transient publication remain pending |
 | L49 | MapNavigationSurfaceReader | Existing exact destination bindings; drawing-mode native capability still to audit |
 | L50 | RewardClaim + NativeTextMenuRewardPages | Existing exact rewards; new full projection avoids old 512 cap; teacher packet independent |
@@ -131,17 +141,22 @@ native logical capture adapter; `Combat`/`Potions` mean their text native helper
 
 Exact `NCardGrid` keeps logical cards in `_cards` but allocates a sliding window
 of `_cardRows`. `GetCardHolder(model)` and `CurrentlyDisplayedCardHolders` only
-address that allocated window. The current information adapter therefore cannot
-bind inspect operations for every logical member. This is **binding-unimplemented**,
-not `not_native_capability`: native scrolling reaches other members.
+address that allocated window. The prior information adapter could not bind every logical member. The follow-up
+now reads the exact full native grid roster, invokes six declared game-owned
+model callbacks, and provides full deck/request-list inspection where the native
+policy is valid. No fabricated holder or client index is introduced. Conditional
+combat-pile inspection remains unresolved; native source alone does not replace
+its required capability canary.
 
 `NCardsViewScreen.ShowCardDetail` is protected and also manages back-button and
 VisibilityChanged return wiring. Its native inspect list is
 `_grid.CurrentlyDisplayedCards`, not the whole logical list. Public
-`NInspectCardScreen.Open` accepts game-owned models/list, but substituting a full
-list requires a reviewed typed composition adapter with native source membership,
-permission and return policy. New-profile capture compares the current plain native grid list with its published
-entered-list content and allocated bindings. Missing content and missing action
+`NInspectCardScreen.Open` accepts game-owned models/list. The follow-up admits the
+full entered deck grid list with exact membership, both-mode native permission
+and native return policy. Selector inspection preserves its actual request-list
+order and mouse-only policy; combat-pile's empty request list is not replaced. New-profile capture checks full native grid/deck source proofs against its
+published entered-list content and exact private action bindings. Without that
+proof it still compares the source roster to the allocated binding window. Missing content and missing action
 bindings have distinct partial reasons; a complete deck Read cannot repair a
 missing full inspect relation. Unsupported derived grid source bindings fail
 partial. Legacy profiles retain their prior behavior.

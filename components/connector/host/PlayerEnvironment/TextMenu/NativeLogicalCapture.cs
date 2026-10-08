@@ -41,7 +41,7 @@ internal static class NativeLogicalCapture
             {
                 Page = frame.Page with
                 {
-                    Status = "visible_unsupported",
+                    Status = NativeLogicalCapturePolicy.FailureStatus(frame.Page.Status),
                     Completeness = frame.Page.Completeness with
                     {
                         Status = "partial",
@@ -51,12 +51,14 @@ internal static class NativeLogicalCapture
                 },
                 Leaves = Array.Empty<TextMenuLeaf>()
             };
-        return frame;
+        return NativeLogicalCapturePolicy.CloseIncompleteRequiredScope(frame);
     }
 
     private static TextMenuFrame AppendPeek(TextMenuFrame frame, NativeEntityRegistry entities)
     {
         if (frame.Page.Interaction.Stage == "native_information_page"
+            || frame.LogicalGridProof?.Completion.IsCompleted == true
+            || frame.LogicalGridProof?.Stage == "settling"
             || NCapstoneContainer.Instance is { InUse: true }) return frame;
         Node? owner = NOverlayStack.Instance?.Peek() as Node;
         NPeekButton? button = owner?.GetNodeOrNull<NPeekButton>("%PeekButton");
