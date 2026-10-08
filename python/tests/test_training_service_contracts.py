@@ -5,9 +5,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -16,6 +18,8 @@ from test_structured_s0 import PRODUCER, sample, source
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.inplace_curation import configured_owner
 from spireagent.workbench.local_training import OPERATION_FILE, LocalTrainingService
 from spireagent.workbench.recipe_contracts import TrainingRequest
@@ -416,3 +420,161 @@ def test_invalid_cadence_rejected_and_default_storage_cadence_is_bounded(tmp_pat
                       if item["recipe_id"] == STRUCTURED_RECIPE)
     assert descriptor["config_defaults"]["checkpoint_every_boundaries"] == 100
     assert descriptor["max_total_attempts"] == 32
+
+
+def test_typed_protocol_source_uses_original_train_rows_and_excludes_heldout_ancestry(
+    tmp_path, monkeypatch,
+):
+    from test_protocol_source import PROJECTION, closure, publish_run
+
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.managed_local_workspace import create_managed_workspace
+    from stpd.fullrun.protocol_source import publish_protocol_source_partition
+
+    state = tmp_path/"profile"
+    state.mkdir()
+    created = create_managed_workspace(state)
+    owner = created["curation_owner"]
+    store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False))
+    refs, partitions = {}, {}
+    for seed, split in enumerate(("train", "dev", "test"), start=1):
+        ref, _, _ = publish_run(store, tmp_path, str(seed), split)
+        refs[split] = ref
+        partitions[split] = publish_protocol_source_partition(store, (ref,), split, PROJECTION)
+        owner.reserve_verified_protocol_source(store, partitions[split].manifest.artifact_id)
+    service = LocalTrainingService(ProjectConfig(state, "", "", None, combination()))
+    request = TrainingRequest("1" * 32, STRUCTURED_RECIPE,
+                              partitions["train"].manifest.artifact_id, {"epochs": 1})
+    service.start(request)
+    completed = settle(service)
+    assert completed["status"] == "completed", completed
+    owner.require_verified_protocol_training_use(store, request.source_id,
+                                                completed["operation_id"])
+    ancestry = closure(store, completed["model_id"])
+    for split in ("dev", "test"):
+        assert partitions[split].manifest.artifact_id not in ancestry
+        assert refs[split].raw_id not in ancestry and refs[split].report_id not in ancestry
+    with owner.transaction() as db:
+        uses = {tuple(row) for row in db.execute("SELECT source,kind FROM curation_source_uses")}
+        assert uses == {(refs["train"].raw_id, "training")}
+        assert db.execute("SELECT count(*) FROM curation_occurrences").fetchone()[0] == 0
+
+
+def test_child_never_calls_mutable_operation_journal_writer(tmp_path, monkeypatch):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    child_script(monkeypatch, """
+import spireagent.storage.replaceable_file as journal
+def forbidden(*args, **kwargs):
+    raise AssertionError('child must not rewrite the operation journal')
+journal.write_replaceable_json = forbidden
+""")
+    service.start(request)
+    completed = settle(service)
+    assert completed["status"] == "completed", completed
+    assert completed["child_exit"]["exit_code"] == 0
+
+
+def test_artifact_reservation_exhaustion_precedes_immutable_publication(tmp_path, monkeypatch):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    request = replace(request, limits={"wall_seconds": 600, "scratch_bytes": 16 * 1024 * 1024})
+    before = set(store.manifest_ids())
+    child_script(monkeypatch, """
+from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.store import ManifestArtifactStore
+def over_budget(args, channel):
+    store = ManifestArtifactStore(LocalBlobStore(args.store, create=False))
+    fence = child.ReadOnlyAttemptFence(args.operation_file,args.operation_id,args.attempt_id,
+                                      args.remaining_seconds,store)
+    fence.channel = channel
+    channel.emit('started')
+    fence.reserve_artifact('payload',17*1024*1024)
+    raise AssertionError('publication must not become reachable')
+child.run_child = over_budget
+""")
+    service.start(request)
+    unknown = settle(service)
+    assert unknown["status"] == "interrupted_unknown", unknown
+    assert unknown["error"]["code"] == "artifact_budget_exhausted"
+    assert unknown["child_exit"]["forced"] is True
+    assert unknown["artifact_reserved_bytes"] == 0
+    assert set(store.manifest_ids()) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent-death/orphan process fixture")
+def test_surviving_orphan_child_blocks_reconciliation_without_pid_guesses(tmp_path, monkeypatch):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    pid_path = tmp_path/"owned-orphan-pid"
+    script = """
+import sys
+from pathlib import Path
+from spireagent.workbench.developer import ProjectConfig, LocalResearchWorkspaceConfig, combination
+from spireagent.workbench.local_training import LocalTrainingService
+from spireagent.workbench.recipe_contracts import TrainingRequest
+from spireagent.workbench.recipes import structured as adapter
+original = adapter._private_child
+child_script = '''import os,time,sys
+from pathlib import Path
+from spireagent.workbench.recipes import structured_child as child
+def hung(args, channel):
+    Path(sys.argv[-1]).write_text(str(os.getpid()))
+    channel.emit('started')
+    time.sleep(30)
+child.run_child = hung
+raise SystemExit(child.main(sys.argv[1:-1]))
+'''
+def launch(command,*args,**kwargs):
+    actual = [command[0],'-c',child_script,*command[3:],sys.argv[5]]
+    return original(actual,*args,**kwargs)
+adapter._private_child = launch
+config = ProjectConfig(Path(sys.argv[1]),'', '',None,combination(),
+                       LocalResearchWorkspaceConfig(Path(sys.argv[2]),Path(sys.argv[3])))
+service = LocalTrainingService(config)
+service.start(TrainingRequest('1'*32,'structured-m2-cpu-v2',sys.argv[4],{'epochs':1}))
+service._thread.join()
+"""
+    supervisor = subprocess.Popen(
+        [sys.executable, "-c", script, str(service.config.state_dir), str(owner.store_dir),
+         str(service.config.research_workspace.registry_path), request.source_id, str(pid_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ))
+    child_pid = None
+    try:
+        deadline = time.monotonic()+15
+        while not pid_path.exists():
+            assert supervisor.poll() is None, supervisor.communicate()
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        child_pid = int(pid_path.read_text())  # Exact trusted fixture child reports its own PID.
+        supervisor.kill()
+        supervisor.communicate(timeout=5)
+        operation = service.status()["operation"]
+        assert operation["status"] == "interrupted_unknown"
+        journal = (owner.path.parent/OPERATION_FILE).read_bytes()
+        with pytest.raises(BoundaryError, match="orphan_child_still_running"):
+            service.reconcile(operation["operation_id"], operation["attempt_id"])
+        assert (owner.path.parent/OPERATION_FILE).read_bytes() == journal
+        os.kill(child_pid, signal.SIGKILL)
+        child_pid = None
+        # The application relies on OS ownership, never this test's cleanup PID.
+        child_path = service._child_path(owner.path.parent/OPERATION_FILE,
+                                         json.loads(journal))
+        from spireagent.workbench.instance_lock import instance_lock
+
+        deadline = time.monotonic()+5
+        while True:
+            try:
+                with instance_lock(child_path, create=False):
+                    break
+            except BoundaryError:
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+        reconciled = service.reconcile(operation["operation_id"],
+                                       operation["attempt_id"])["operation"]
+        assert reconciled["status"] == "failed"
+        assert reconciled["error"]["code"] == "reconciled_preparation_without_run"
+        assert "child_exit" not in reconciled  # No invented orphan exit receipt.
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.communicate(timeout=5)
+        if child_pid is not None:
+            os.kill(child_pid, signal.SIGKILL)
