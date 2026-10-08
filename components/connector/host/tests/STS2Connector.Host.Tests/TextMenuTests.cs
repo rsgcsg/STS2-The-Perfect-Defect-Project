@@ -303,6 +303,33 @@ public sealed class TextMenuTests
         Assert.Null(delivered.Successor);
     }
 
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("unknown")]
+    [InlineData("unconfirmed")]
+    public void RichNativeOutcomeCannotBecomeRetryableLegacyRejection(string outcome)
+    {
+        int calls = 0;
+        var stage = new NativeInputStage(NativeInputStageKind.TargetFocus,
+            NativeInputDelivery.Delivered, "native_focus_input");
+        NativeInputResult result = outcome switch
+        {
+            "partial" => NativeInputResult.PartiallyDelivered("later_guard", "focus already delivered", stage),
+            "unknown" => NativeInputResult.Unknown("unresolved", "confirmation unresolved", stage),
+            _ => NativeInputResult.DeliveredWithoutAcceptance("focus_unconfirmed", "input was delivered", stage)
+        };
+        var executor = Executor(() => Frame(() => { calls++; return result; }));
+        var request = Request(executor.Observe(), "select", "rich-outcome");
+        var receipt = executor.Submit(request);
+        Assert.Equal("unknown", receipt.Status);
+        Assert.Equal("unknown", receipt.NativeDelivery);
+        Assert.Equal("never", receipt.Retry);
+        Assert.Null(receipt.Successor);
+        Assert.NotNull(receipt.Attribution);
+        Assert.Same(receipt, executor.Submit(request));
+        Assert.Equal(1, calls);
+    }
+
     [Fact]
     public void DuplicateOrHiddenBindingsAndUnknownGroupsAreRejected()
     {

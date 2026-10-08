@@ -116,6 +116,27 @@ storage without sharing release authority. Every subscription checks its own
 accepted seam/scope obligations; another subscriber's weaker scope cannot reduce
 them. Frozen bytes from different occurrences are never combined into one input.
 
+Production attachment also establishes an ordered initial observation. The native
+bridge executes registration and `AttachWithInitialReservation` on one asserted
+game-main-thread turn: the subscription starts after reserved index N and its
+initial observation occupies N+1, targeted to that new subscription. It freezes
+the actual requested public scope before another native callback can interleave.
+Encoding remains asynchronous and never holds the game thread or hub lock while
+waiting. Failure at that position is an explicit missing outcome. An attached
+subscription is not ready for full-reference inference until that initial capture
+is complete and validated. Bootstrap capture is advertised as its own source
+seam; it does not establish completeness of other native exposure seams.
+
+Consumers bootstrap through Events from the returned starting cursor, including
+the initial observation in publication order. A separate Current read must not
+be consumed ahead of earlier retained publications. Bootstrap neither promises
+pre-attach history nor invents a semantic change: an unchanged source retains
+its snapshot/owner occurrence. Recorder composition attaches first, initializes
+its durable source context, then activates delivery with retained replay from
+the attachment cursor; no callback-before-store race may discard the initial
+capture. Closing a passive subscriber must account for already reserved source
+positions through its close barrier, with explicit finite-time gaps on failure.
+
 Current accepts the same scope grammar, returning its scope ID. A source notice
 with `capture_ref:null` and `missing_reason:not_eager` cannot satisfy a promised
 full-reference position. A later Current call is a new current capture. It can

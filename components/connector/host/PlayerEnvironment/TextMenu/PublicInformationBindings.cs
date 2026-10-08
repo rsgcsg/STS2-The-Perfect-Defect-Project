@@ -82,6 +82,20 @@ internal sealed class PublicInformationBindings
         ?? (visible.GetValueOrDefault(id)?.Role switch
             { "enemy" => "Enemy", "companion" => "Companion", "player" => "Player", _ => "Creature" });
 
+    internal PlayerEnvironmentReferent? PublicControl(string id, string role, string label, JsonObject properties)
+    {
+        PlayerEnvironmentReferent? subject = Declare(id, role, label, properties);
+        if (subject != null) visible[id] = subject = subject with { Kind = "control" };
+        return subject;
+    }
+
+    internal PlayerEnvironmentReferent? Potion(string id)
+    {
+        JsonObject? facts = Find(Hud?["player"]?["potions"], "entity_id", id);
+        if (facts == null) { Missing("potion_subject"); return null; }
+        return Declare(id, "potion", Text(facts["name"]), Copy(facts, "definition_id", "name", "slot"));
+    }
+
     internal PlayerEnvironmentReferent? Card(string id)
     {
         var card = Existing(id, "card_subject", "card", "playable_card", "hand");

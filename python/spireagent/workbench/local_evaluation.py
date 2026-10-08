@@ -16,6 +16,7 @@ from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
 from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
 from stpd.stage1a_recipes import RECIPES
+from stpd.structured_code_scope import is_structured_model_schema
 from stpd.workers.report_schemas import (
     MEMORY_EVALUATION_PROTOCOL as MEMORY_PROTOCOL,
 )
@@ -239,7 +240,7 @@ def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str
     model = store.get_manifest(manifest.parent("model"))
     prepared = store.get_manifest(manifest.parent("evaluation_input"))
     if (model.kind != "model"
-            or model.parameters.value().get("schema") != "stpd/structured-m2-model-v1"
+            or not is_structured_model_schema(model.parameters.value().get("schema"))
             or prepared.kind != "analysis"
             or prepared.parameters.value().get("schema")
             != "stpd/structured-fixed-model-evaluation-input-v1"

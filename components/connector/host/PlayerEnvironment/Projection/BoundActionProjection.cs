@@ -65,8 +65,10 @@ internal static partial class PlayerEnvironmentService
     internal static BoundActionProjectionResult ProjectBoundActions(
             IReadOnlyList<NativeUiBoundAction> bindings,
             string interactionId,
-            IReadOnlyDictionary<string, PlayerEnvironmentReferent> visibleReferents)
+            IReadOnlyDictionary<string, PlayerEnvironmentReferent> visibleReferents,
+            int maximumActions = MaxBoundActions)
     {
+        if (maximumActions <= 0) throw new ArgumentOutOfRangeException(nameof(maximumActions));
         var actions = new List<PlayerEnvironmentBoundAction>();
         var exactBindings = new Dictionary<string, PlayerEnvironmentNativeBinding>(StringComparer.Ordinal);
         long totalCount = 0;
@@ -74,7 +76,7 @@ internal static partial class PlayerEnvironmentService
             .OrderBy(item => item.Candidate.CandidateId, StringComparer.Ordinal))
         {
             totalCount = SaturatingAdd(totalCount, CountParameterCombinations(binding.Candidate));
-            int remaining = MaxBoundActions - actions.Count;
+            int remaining = maximumActions - actions.Count;
             if (remaining <= 0)
                 continue;
             foreach (IReadOnlyDictionary<string, string> parameters in ExpandParameters(binding.Candidate, remaining))
@@ -128,7 +130,7 @@ internal static partial class PlayerEnvironmentService
                 status,
                 actions.Count,
                 totalCount,
-                MaxBoundActions,
+                maximumActions,
                 "candidate_id_then_operand_name_then_referent_id",
                 actions),
             exactBindings);

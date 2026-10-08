@@ -149,7 +149,17 @@ internal static partial class PlayerEnvironmentService
                 Receipts[requestId] = unknown;
                 return unknown;
             }
-            if (!started.Accepted)
+            if (started.LegacyDisposition == LegacyNativeInputDisposition.Unknown)
+            {
+                PlayerEnvironmentActionReceipt unknown = BuildReceipt(
+                    requestId, boundActionId, action, subjectReferentId, arguments,
+                    "unknown", "unknown", "input_delivery_unknown",
+                    "The native input has a partial, unconfirmed or unknown outcome that this legacy receipt cannot represent; never retry.",
+                    null, admission.Attribution, request.InputProfile);
+                Receipts[requestId] = unknown;
+                return unknown;
+            }
+            if (started.LegacyDisposition == LegacyNativeInputDisposition.NotDelivered)
                 return Fail(
                     started.ErrorCode ?? "native_input_rejected",
                     started.Detail ?? "The native UI rejected this exact input.");

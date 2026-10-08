@@ -110,7 +110,11 @@ internal sealed class TextMenuExecutor(
             try
             {
                 var native = choice.Leaf!.Dispatch();
-                if (!native.Accepted)
+                if (native.LegacyDisposition == NativeUi.LegacyNativeInputDisposition.Unknown)
+                    return Save(Result("unknown", choice.Action, "unknown", "input_delivery_unknown",
+                        "The native input has a partial, unconfirmed or unknown outcome that this legacy result cannot represent; never retry.",
+                        null, attribution));
+                if (native.LegacyDisposition == NativeUi.LegacyNativeInputDisposition.NotDelivered)
                     return Reject(native.ErrorCode ?? "native_input_rejected",
                         native.Detail ?? "Native execute-time validation rejected this input.");
             }

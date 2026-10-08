@@ -10,15 +10,35 @@ from spireagent.workbench.memory_recipe import MEMORY_RECIPES
 
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 STRUCTURED_RECIPE = "structured-m2-cpu-v2"
+STRUCTURED_SCOPED_RECIPE = "structured-m2-cpu-v3"
+STRUCTURED_RECIPES = frozenset({STRUCTURED_RECIPE, STRUCTURED_SCOPED_RECIPE})
 MAX_TOTAL_ATTEMPTS = 32
 DEFAULT_CHECKPOINT_CADENCE = 100
-TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, STRUCTURED_RECIPE, *MEMORY_RECIPES})
+TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *STRUCTURED_RECIPES, *MEMORY_RECIPES})
+
+
+def structured_recipe_scope(recipe_id: str) -> str:
+    from stpd.structured_code_scope import LEGACY_SCOPE, TRAINING_SCOPE
+
+    if recipe_id == STRUCTURED_RECIPE:
+        return LEGACY_SCOPE
+    if recipe_id == STRUCTURED_SCOPED_RECIPE:
+        return TRAINING_SCOPE
+    raise BoundaryError("local_training", "unsupported_structured_recipe")
+
+
+def structured_recipe_run_schema(recipe_id: str) -> str:
+    from stpd.structured_code_scope import SCOPED_RUN_SCHEMA
+
+    structured_recipe_scope(recipe_id)
+    return (SCOPED_RUN_SCHEMA if recipe_id == STRUCTURED_SCOPED_RECIPE else
+            "stpd/structured-m2-run-v2")
 
 
 def describe_recipe(recipe_id: str) -> dict[str, Any]:
     if recipe_id not in TRUSTED_RECIPES:
         raise BoundaryError("local_training", "unsupported_training_recipe")
-    structured = recipe_id == STRUCTURED_RECIPE
+    structured = recipe_id in STRUCTURED_RECIPES
     descriptor: dict[str, Any] = {
         "recipe_id": recipe_id, "placement_ids": ["local-cpu"],
         "dependencies_available": recipe_dependencies_available(recipe_id),
@@ -52,6 +72,19 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
                           legacy_v1="final_only_not_resumable")
         descriptor["config_defaults"]["checkpoint_every_boundaries"] = DEFAULT_CHECKPOINT_CADENCE
         descriptor["config_fields"]["checkpoint_every_boundaries"] = [1, 100]
+        descriptor["code_scope"] = structured_recipe_scope(recipe_id)
+        descriptor["run_schema"] = structured_recipe_run_schema(recipe_id)
+        descriptor["scoped_attempt_producer"] = recipe_id == STRUCTURED_SCOPED_RECIPE
+        from stpd.structured_code_scope import (
+            SCOPED_MODEL_SCHEMA,
+            checkpoint_schema,
+            structured_model_package_schema,
+        )
+
+        descriptor["checkpoint_schema"] = checkpoint_schema(descriptor["code_scope"])
+        descriptor["model_schema"] = (SCOPED_MODEL_SCHEMA if recipe_id == STRUCTURED_SCOPED_RECIPE
+                                      else "stpd/structured-m2-model-v2")
+        descriptor["package_schema"] = structured_model_package_schema(descriptor["model_schema"])
     else:
         descriptor["limits"] = {}
     return descriptor
@@ -62,7 +95,7 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
         raise BoundaryError("local_training", "unsupported_training_recipe")
     if not isinstance(config, dict):
         raise BoundaryError("local_training", "invalid_recipe_config")
-    if recipe_id == STRUCTURED_RECIPE:
+    if recipe_id in STRUCTURED_RECIPES:
         from dataclasses import asdict
 
         from stpd.structured_workload_contracts import StructuredTrainingConfig
@@ -85,7 +118,7 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
 def recipe_adapter(recipe_id: str) -> Any:
     # Explicit imports only: a manifest or HTTP request cannot select an import,
     # executable, path, URL, plugin or arbitrary worker.
-    if recipe_id == STRUCTURED_RECIPE:
+    if recipe_id in STRUCTURED_RECIPES:
         from spireagent.workbench.recipes.structured import StructuredRecipeAdapter
 
         return StructuredRecipeAdapter()

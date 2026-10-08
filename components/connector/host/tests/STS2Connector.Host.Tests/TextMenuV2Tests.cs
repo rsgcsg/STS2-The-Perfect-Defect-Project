@@ -251,6 +251,36 @@ public sealed class TextMenuV2Tests
             capture, _ => MutationAdmission.Allow(new MutationAttribution(
                 "runtime", "client", "instance", "test", "Test", "1", "lease", 1)), controller);
 
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("unknown")]
+    [InlineData("unconfirmed")]
+    public void RichNativeOutcomePreservesUnknownAndClearsVirtualSelection(string outcome)
+    {
+        int calls = 0;
+        var stage = new NativeInputStage(NativeInputStageKind.TargetFocus,
+            NativeInputDelivery.Delivered, "native_focus_input");
+        NativeInputResult native = outcome switch
+        {
+            "partial" => NativeInputResult.PartiallyDelivered("later_guard", "focus already delivered", stage),
+            "unknown" => NativeInputResult.Unknown("unresolved", "confirmation unresolved", stage),
+            _ => NativeInputResult.DeliveredWithoutAcceptance("focus_unconfirmed", "input was delivered", stage)
+        };
+        var executor = Executor(() => Frame(false, () => { calls++; return native; }));
+        var selected = executor.Submit(Request(executor.Observe(), "select_card", "select-rich"));
+        var request = Request(selected.Successor!, "play", "rich-outcome");
+        var result = executor.Submit(request);
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("unknown", result.NativeDelivery);
+        Assert.Equal("never", result.Retry);
+        Assert.Null(result.Successor);
+        Assert.NotNull(result.Attribution);
+        Assert.Same(result, executor.Submit(request));
+        Assert.Equal(1, calls);
+        Assert.Equal("root", executor.Observe().Menu.Cursor);
+        Assert.Empty(executor.Observe().Menu.Selection);
+    }
+
     private static PlayerEnvironmentActionRequest Request(
         TextMenuV2Snapshot snapshot, string verb, string requestId) => new(
             requestId, snapshot.SnapshotId,
