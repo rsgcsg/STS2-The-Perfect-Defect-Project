@@ -231,6 +231,8 @@ public static class NativeLogicalDecoder
         {
             if (Status() is not ("captured" or "partial" or "stale" or "capacity_exceeded" or "source_capture_incomplete" or "failed")) throw new JsonException("Unknown Current disposition.");
             if (Status() == "captured" && (Null("context") || Null("capture") || !Null("reason"))) throw new JsonException("Captured Current requires its coherent references.");
+            if (Status() == "partial" && (Null("context") || Null("capture") || value.GetProperty("reason").GetString() != "scope_omission")) throw new JsonException("Partial Current is a real requested-scope view with an explicit omission reason.");
+            if (Status() is not ("captured" or "partial") && (!Null("context") || !Null("capture") || !Null("retention") || Null("reason"))) throw new JsonException("Failed Current has no captured references and requires its explicit reason.");
             if (!Null("context") && !Null("capture")) CaptureJoin(value.GetProperty("context"), value.GetProperty("capture"));
             if (!Null("retention"))
             { if (Null("capture")) throw new JsonException("Retention requires its actual capture."); RetentionJoin(value.GetProperty("retention"), value.GetProperty("capture")); }
