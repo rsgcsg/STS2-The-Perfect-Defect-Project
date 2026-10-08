@@ -1,3 +1,5 @@
+using System;
+
 namespace STS2Connector.Authority;
 
 /// <summary>
@@ -25,6 +27,11 @@ internal static class MutationControlRuntime
 
     public static MutationAdmission Authorize(MutationAuthorizationRequest request) =>
         Coordinator.Authorize(request);
+
+    public static MutationAdmission TryBegin(MutationAuthorizationRequest request) => Coordinator.TryBegin(request);
+
+    public static bool TryWatch(MutationAuthorizationRequest request, Action lost, out IDisposable? watch) =>
+        Coordinator.TryWatch(request, lost, out watch);
 
     public static MutationControlCapability Capability() => Coordinator.Capability();
 }

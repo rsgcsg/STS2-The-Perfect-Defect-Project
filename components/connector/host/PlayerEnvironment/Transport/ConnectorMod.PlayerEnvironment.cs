@@ -22,6 +22,12 @@ public static partial class ConnectorMod
         }
         try
         {
+            if (inputProfile == NativeLogicalContract.Profile)
+            {
+                var nativeTask = RunOnMainThread(PlayerEnvironmentService.GetNativeLogicalCapabilities);
+                SendNativeLogicalJson(response, nativeTask.GetAwaiter().GetResult());
+                return;
+            }
             var task = RunOnMainThread(() => PlayerEnvironmentService.GetCapabilities(inputProfile));
             SendJson(response, task.GetAwaiter().GetResult());
         }
@@ -39,6 +45,11 @@ public static partial class ConnectorMod
         if (!PlayerEnvironmentService.IsSupportedInputProfile(inputProfile))
         {
             SendApiError(response, 400, "unsupported_input_profile", "Unsupported input profile.");
+            return;
+        }
+        if (inputProfile == NativeLogicalContract.Profile)
+        {
+            SendApiError(response, 400, "native_logical_query_required", "Use bounded POST native-logical/current for this profile.");
             return;
         }
         try
@@ -185,6 +196,23 @@ public static partial class ConnectorMod
         }
         try
         {
+            if (action.InputProfile == NativeLogicalContract.Profile)
+            {
+                var owner = PlayerEnvironmentService.NativeLogical;
+                var admission = owner.Admit(action);
+                if (admission.Status == "pending")
+                { SendApiError(response, 202, "request_pending", "The original request is queued or started; query this request ID without resubmitting."); return; }
+                NativeLogicalResult native;
+                if (admission.Result is { } existing) native = existing;
+                else
+                {
+                    try { native = RunOnMainThread(() => owner.Submit(action)).GetAwaiter().GetResult(); }
+                    catch (MainThreadQueueFullException) { native = owner.RejectQueued(action, "main_thread_queue_full"); }
+                }
+                response.StatusCode = native.Delivery is "unknown" or "partially_delivered" ? 202 : native.Delivery == "delivered" ? 200 : 409;
+                SendNativeLogicalJson(response, native);
+                return;
+            }
             if (action.InputProfile == TextMenuContract.Profile)
             {
                 var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenu(action));
@@ -349,6 +377,15 @@ public static partial class ConnectorMod
         if (!IsSafeProtocolIdentifier(requestId, 128))
         {
             SendApiError(response, 400, "invalid_request_id", "A bounded request_id is required.");
+            return;
+        }
+        if (inputProfile == NativeLogicalContract.Profile)
+        {
+            NativeLogicalResult? native = PlayerEnvironmentService.NativeLogical.Find(requestId);
+            if (native != null) { SendNativeLogicalJson(response, native); return; }
+            if (PlayerEnvironmentService.NativeLogical.IsPending(requestId))
+            { SendApiError(response, 202, "request_pending", "The original request is still in flight; query this request ID without resubmitting."); return; }
+            SendApiError(response, 404, "request_not_found", "No native-logical result exists for this request ID.");
             return;
         }
         if (inputProfile == TextMenuContract.Profile)
