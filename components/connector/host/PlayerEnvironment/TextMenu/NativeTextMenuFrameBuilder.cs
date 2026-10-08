@@ -133,6 +133,9 @@ internal static class NativeTextMenuFrameBuilder
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
 
+        if (nativeLogical && NativeLogicalCardRewardCapture.TryCapture(legacy, page, leaves, entities, executeLegacy) is { } cardReward)
+            return cardReward;
+
         if (nativeLogical && NativeLogicalGridCapture.TryCapture(legacy, page, leaves, entities) is { } logicalGrid)
             return logicalGrid.LogicalGridProof is { } proof
                 ? NativeTextMenuInformation.AppendLogicalGridInformation(logicalGrid, proof, entities) : logicalGrid;

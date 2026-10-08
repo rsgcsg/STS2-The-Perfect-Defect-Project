@@ -71,6 +71,7 @@ internal static class NativeTextMenuInformation
     private static Control? _nativeTipOwner;
     private static Control? _nativeTipSource;
     private static NativeTipEntry? _nativeTipEntry;
+    private static Func<bool>? _nativeTipSourceCurrent;
     private static string? _nativeTipGroup;
     private static bool _unresolvedTipSignal;
     private static readonly FieldInfo? ActiveHoverTipsField = typeof(NHoverTipSet)
@@ -118,6 +119,7 @@ internal static class NativeTextMenuInformation
             AddOtherTipLeaves(entities, leaves, bindings);
             if (nativeLogical) AddNativeLogicalTips(legacy.Snapshot, entities, leaves, bindings);
         }
+        if (nativeLogical) AddMerchantInformation(legacy, entities, leaves, bindings);
         if (nativeLogical && _ownedScreen is NHoverTipSet tip && _ownedKind is { } tipKind
             && IsExactOwner(tip, tipKind))
             leaves.Add(Leaf("clear_native_tip", "root", "clear_native_tip",
@@ -731,6 +733,64 @@ internal static class NativeTextMenuInformation
         return frame with { Page = bindings.Page, Leaves = leaves };
     }
 
+    internal static TextMenuFrame AppendCardRewardInformation(TextMenuFrame frame,
+        NativeCardRewardInformation state, NativeEntityRegistry entities)
+    {
+        var bindings = new PublicInformationBindings(frame.Page);
+        var information = new List<NativeTextMenuInformationLeaf>();
+        foreach (NativeRewardInformationCard card in state.Cards)
+        {
+            if (!card.FocusEnabled) continue;
+            string cardId = entities.GetId(card.Model, "card");
+            PlayerEnvironmentReferent? subject = bindings.Card(cardId);
+            if (subject == null) continue;
+            if (!NHoverTipSet.shouldBlockHoverTips)
+                AddSignalTipLeaf(entities, information, card.Holder, "card_tips",
+                    Control.SignalName.FocusEntered, subject,
+                    exactSource: () => state.CanFocus(card, entities));
+            if (card.CanInspect)
+                information.Add(new("reward_inspect:" + cardId, "root", "inspect_card",
+                    "Inspect " + subject.Label, cardId, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                    () => state.Inspect(card, entities)));
+        }
+        TextMenuFrame result = frame with
+        {
+            Page = bindings.Page,
+            Leaves = frame.Leaves.Concat(information.Select(item => new TextMenuLeaf(item.Key,
+                item.Group, item.Verb, item.Label, item.SubjectReferentId, item.Arguments, item.Dispatch))).ToArray()
+        };
+        // Opening click guards do not block native focus. A proved full current
+        // relation can therefore be interactive before select/inspect are enabled.
+        if (result.Page.Completeness.Status == "complete" && result.Page.Completeness.Missing.Count == 0
+            && result.Leaves.Count > 0)
+            result = result with { Page = result.Page with { Status = "interactive" } };
+        return result;
+    }
+
+    private static void AddMerchantInformation(SnapshotBuildResult source, NativeEntityRegistry entities,
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
+    {
+        if (source.HostObservation.Surface is not ShopInventorySurface) return;
+        if (!STS2Connector.Authority.EnvironmentIdentityRuntime.ExecutionAvailable(source.HostObservation.Game)
+            || NativeMerchantInformation.Capture() is not { } merchant)
+        { bindings.Missing("merchant_information_owner"); return; }
+        foreach (NativeMerchantInformationEntry entry in merchant.Entries)
+        {
+            if (!entry.Enabled) continue;
+            string kind = entry.Kind.ToString().ToLowerInvariant();
+            string id = entities.GetId(entry.Entry, "shop_entry");
+            PlayerEnvironmentReferent? subject = bindings.MerchantOffer(id, kind);
+            if (subject == null) continue;
+            if (!NHoverTipSet.shouldBlockHoverTips)
+                AddSignalTipLeaf(entities, leaves, entry.Slot, kind + "_tips",
+                    Control.SignalName.FocusEntered, subject, exactSource: () => merchant.Current(entry));
+            if (entry.CanInspect)
+                leaves.Add(new("merchant_inspect:" + id, "root", "inspect_" + kind,
+                    "Inspect " + subject.Label, id, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                    () => merchant.Inspect(entry)));
+        }
+    }
+
     private static void AddOtherTipLeaves(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
         PublicInformationBindings bindings, NCardGridSelectionScreen? selectorOwner = null)
@@ -917,25 +977,26 @@ internal static class NativeTextMenuInformation
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
         Control source, string group, StringName signal, PlayerEnvironmentReferent? subject,
         string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false,
-        NCardGridSelectionScreen? selectorOwner = null)
+        NCardGridSelectionScreen? selectorOwner = null, Func<bool>? exactSource = null)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
         if (subject == null) return; // Binding owner marked the required catalog partial.
         string id = entities.GetId(source, "tip_source");
         leaves.Add(PublicInformationBindings.Leaf($"show_{group}:{id}", group, $"show_{group}", subject,
-            () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner), owner, ownerLabel));
+            () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner, exactSource), owner, ownerLabel));
     }
 
     private static NativeInputResult OpenSignalTip(
         Control source, string group, StringName signal,
-        bool allowRewardOverlay, NCardGridSelectionScreen? selectorOwner = null)
+        bool allowRewardOverlay, NCardGridSelectionScreen? selectorOwner = null, Func<bool>? exactSource = null)
     {
-        if (!ConnectorMod.IsNodeVisible(source)
+        if (exactSource != null && NHoverTipSet.shouldBlockHoverTips || !ConnectorMod.IsNodeVisible(source)
             || source is NClickableControl { IsEnabled: false }
             || ActiveHoverTipsField?.GetValue(null) is not
                 Dictionary<Control, NHoverTipSet> active
-            || (selectorOwner != null ? !NativeLogicalGridState.ExactOwner(selectorOwner)
+            || (exactSource != null ? !exactSource()
+                : selectorOwner != null ? !NativeLogicalGridState.ExactOwner(selectorOwner)
                 : allowRewardOverlay ? !CanUseTopBarWithCurrentOverlay()
                 : NOverlayStack.Instance?.Peek() != null)
             || NMapScreen.Instance?.IsOpen == true)
@@ -947,10 +1008,48 @@ internal static class NativeTextMenuInformation
             return NativeInputResult.Rejected("native_tip_signal_unsupported",
                 "Only the declared native focus or mouse entry may open tips.");
         var before = active.ToDictionary(pair => pair.Key, pair => pair.Value);
-        source.EmitSignal(signal);
+        // These exact reward/merchant entry adapters change focus through the
+        // existing source's native exit, never by clearing unrelated tip nodes.
+        if (exactSource != null && _nativeTipSourceCurrent != null
+            && _nativeTipSource is { } previousSource && !ReferenceEquals(previousSource, source)
+            && _ownedScreen is NHoverTipSet previousSet && _ownedKind is { } previousKind
+            && IsExactOwner(previousSet, previousKind))
+        {
+            if (!_nativeTipSourceCurrent())
+                return NativeInputResult.Rejected("native_tip_source_changed",
+                    "The previous exact information source cannot be unfocused safely.");
+            try
+            {
+                previousSource.EmitSignal(_nativeTipEntry == NativeTipEntry.Focus
+                    ? Control.SignalName.FocusExited : Control.SignalName.MouseExited);
+            }
+            catch (Exception)
+            {
+                return NativeInputResult.Unknown("native_information_unfocus_unknown",
+                    "The previous native focus exit may have received input before throwing.");
+            }
+            if (!exactSource())
+                return NativeInputResult.Unknown("native_information_focus_source_changed_after_exit",
+                    "Native focus exit was delivered but the intended new source changed.");
+        }
+        try { source.EmitSignal(signal); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_information_focus_unknown",
+                "The native focus entry may have received input before throwing.");
+        }
         var changed = active.Where(pair =>
             !before.TryGetValue(pair.Key, out NHoverTipSet? previous)
             || !ReferenceEquals(previous, pair.Value)).ToArray();
+        // A repeated focus may be a native no-op. Only the same retained source,
+        // entry and still-rendered registry set prove reuse; equal text does not.
+        if (changed.Length == 0 && exactSource != null && _nativeTipOwner is { } knownOwner
+            && active.TryGetValue(knownOwner, out NHoverTipSet? knownSet)
+            && NativeTipReturn.CanReuse(_nativeTipSource, source, _nativeTipEntry, entry.Value,
+                _ownedScreen, knownSet, ConnectorMod.IsNodeVisible(knownSet)
+                    && ReferenceEquals(knownSet.GetParent(), NGame.Instance?.HoverTipsContainer),
+                exactSource() && (_nativeTipSourceCurrent?.Invoke() ?? false)))
+            changed = new[] { new KeyValuePair<Control, NHoverTipSet>(knownOwner, knownSet) };
         if (changed.Length != 1)
         {
             _unresolvedTipSignal = true;
@@ -970,6 +1069,7 @@ internal static class NativeTextMenuInformation
         _nativeTipOwner = owner;
         _nativeTipSource = source;
         _nativeTipEntry = entry;
+        _nativeTipSourceCurrent = exactSource;
         _nativeTipGroup = group;
         _tipContent = ReadRenderedTips(set);
         return NativeInputResult.Delivered("native focus/hover signal; exact rendered tip set");
@@ -1395,7 +1495,8 @@ internal static class NativeTextMenuInformation
                 () => ReferenceEquals(_ownedScreen, screen) && IsExactOwner(screen, kind),
                 () => source != null && entry != null
                     && ReferenceEquals(_nativeTipSource, source) && _nativeTipEntry == entry
-                    && ConnectorMod.IsLiveNode(source) && ConnectorMod.IsNodeVisible(source),
+                    && ConnectorMod.IsLiveNode(source) && ConnectorMod.IsNodeVisible(source)
+                    && (_nativeTipSourceCurrent?.Invoke() ?? true),
                 () => source!.EmitSignal(entry == NativeTipEntry.Focus
                     ? Control.SignalName.FocusExited : Control.SignalName.MouseExited),
                 () => NHoverTipSet.Remove(tipOwner), ClearOwner);
@@ -1446,6 +1547,7 @@ internal static class NativeTextMenuInformation
         _nativeTipOwner = null;
         _nativeTipSource = null;
         _nativeTipEntry = null;
+        _nativeTipSourceCurrent = null;
         _nativeTipGroup = null;
         _unresolvedTipSignal = false;
     }
