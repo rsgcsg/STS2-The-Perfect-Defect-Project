@@ -184,7 +184,8 @@ public sealed class NativeLogicalBridgeTests
             fixture.Frame.Leaves[0] with { Key = "peek", Verb = "close_peek" },
             fixture.Frame.Leaves[0] with { Key = "return", Verb = "return_card_inspect" }
         };
-        fixture.Frame = NativeLogicalCapture.Validate(new(page, "entered:" + family, leaves));
+        fixture.Frame = NativeLogicalCapture.Validate(fixture.Frame with
+            { Page = page, OwnerKey = "entered:" + family, Leaves = leaves });
         Assert.Equal(sourceReadiness, fixture.Frame.Page.Status);
         Assert.Equal("partial", fixture.Frame.Page.Completeness.Status);
         Assert.Null(fixture.Frame.Page.Persistent);
