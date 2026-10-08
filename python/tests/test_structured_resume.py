@@ -566,3 +566,171 @@ def test_invalid_optimizer_participation_inventory_is_rejected(inventory):
         StructuredTrainingEngine(data, StructuredTrainingConfig()).restore(
             encode_checkpoint(checkpoint)
         )
+
+
+def alternate_completion(tmp_path, store, result):
+    """Publish a complete immutable candidate through the real reporter into fresh slots."""
+    reporter = ObjectStoreRunReporter(store, LocalBlobStore(tmp_path / "other-report-slots"))
+    reporter.complete(result)
+    return reporter
+
+
+def test_completed_reconcile_rejects_model_training_input_parent_of_wrong_kind(tmp_path):
+    from spireagent.artifact_contracts import Parent
+
+    store, reporter, run, request = setup(tmp_path)
+    completed = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority()
+    )
+    model = store.get_manifest(completed.model_id)
+    wrong = replace(
+        model,
+        parents=tuple(
+            Parent(parent.role, run.parent("experiment"))
+            if parent.role == "training_input"
+            else parent
+            for parent in model.parents
+        ),
+    )
+    store.publish(wrong)
+    result = store.get_manifest(completed.result_id)
+    forged = replace(
+        result,
+        parents=tuple(
+            Parent(parent.role, wrong.artifact_id) if parent.role == "model" else parent
+            for parent in result.parents
+        ),
+    )
+    alternate = alternate_completion(tmp_path, store, forged)
+    with pytest.raises(BoundaryError, match="completed_model_identity_mismatch"):
+        execute_structured_workload(
+            store, alternate, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
+        )
+
+
+def corrupt_payload(store, payload):
+    from spireagent.json_boundary import decode_json
+
+    index = decode_json(store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    chunk = store.blobs.root / "objects" / "sha256" / index["chunks"][0]["sha256"]
+    raw = chunk.read_bytes()
+    chunk.write_bytes(b"X" + raw[1:])
+
+
+def test_completed_reconcile_reads_and_verifies_actual_report_blob(tmp_path):
+    store, reporter, run, request = setup(tmp_path)
+    completed = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority()
+    )
+    result = store.get_manifest(completed.result_id)
+    corrupt_payload(store, result.payload("report"))
+    with pytest.raises(BoundaryError, match="payload_chunk_integrity_failure"):
+        execute_structured_workload(
+            store, reporter, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "run_id",
+        "training_input_id",
+        "checkpoint_id",
+        "model_artifact_id",
+        "operation_id",
+        "producer",
+        "source_sha256",
+        "config",
+        "metrics",
+        "execution_identity",
+        "attempt",
+        "schema",
+    ],
+)
+def test_completed_report_content_is_bound_to_exact_result_closure(tmp_path, field):
+    import io
+
+    from spireagent.json_boundary import decode_json
+
+    store, reporter, run, request = setup(tmp_path)
+    completed = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority()
+    )
+    result = store.get_manifest(completed.result_id)
+    report = decode_json(b"".join(store.read_payload(result.payload("report"))))
+    report[field] = {} if isinstance(report[field], dict) else "0" * len(report[field])
+    changed = store.put_payload("report", io.BytesIO(json_bytes(report)), "application/json")
+    forged = replace(result, payloads=(changed,))
+    alternate = alternate_completion(tmp_path, store, forged)
+    with pytest.raises(BoundaryError, match="completed_report_binding_mismatch"):
+        execute_structured_workload(
+            store, alternate, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
+        )
+
+
+@pytest.mark.parametrize("field", ["boundary", "cursor", "phase", "optimizer_updates"])
+def test_checkpoint_manifest_metadata_must_match_verified_state_payload(tmp_path, field):
+    from spireagent.json_boundary import FrozenObject
+
+    store, reporter, run, request = setup(tmp_path)
+    paused = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl()
+    )
+    checkpoint = store.get_manifest(paused.checkpoint_id)
+    info = checkpoint.parameters.value()
+    if field == "cursor":
+        info[field]["next_step"] += 1
+    elif field == "phase":
+        info[field] = "publication"
+    else:
+        info[field] += 1
+    changed = replace(checkpoint, parameters=FrozenObject.of(info))
+    store.publish(changed)
+    with pytest.raises(BoundaryError, match="checkpoint_metadata_payload_mismatch"):
+        execute_structured_workload(
+            store,
+            reporter,
+            replace(
+                request,
+                mode="resume",
+                attempt_id="3" * 32,
+                resume_checkpoint_id=changed.artifact_id,
+            ),
+            PRODUCER,
+            authority=Authority(),
+        )
+
+
+@pytest.mark.parametrize("marker", ["run-events/", "run-completions/"])
+def test_reporter_marker_write_failure_after_manifest_never_resubmits_or_invents_terminal(
+    tmp_path, monkeypatch, marker
+):
+    store, reporter, run, request = setup(tmp_path)
+    original = store.blobs.put_if_absent
+    failed = False
+
+    def failing_marker(key, data):
+        nonlocal failed
+        if key.startswith(marker):
+            failed = True
+            raise OSError("injected lower marker write failure")
+        return original(key, data)
+
+    monkeypatch.setattr(store.blobs, "put_if_absent", failing_marker)
+    with pytest.raises(OSError, match="lower marker"):
+        execute_structured_workload(store, reporter, request, PRODUCER, authority=Authority())
+    assert failed
+    assert not store.blobs.keys(marker)
+    events = reporter.events(run.artifact_id)
+    assert not any(event.parameters.value()["kind"] == "failed" for event in events)
+    assert [event.parameters.value()["step"] for event in events] == list(range(1, len(events) + 1))
+    assert reporter.completed(run.artifact_id) is None
+    monkeypatch.setattr(store.blobs, "put_if_absent", original)
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="explicit_resume_required"):
+        execute_structured_workload(store, reporter, request, PRODUCER, authority=Authority())
+    with pytest.raises(BoundaryError, match="no_completed_result_reconcile_required"):
+        execute_structured_workload(
+            store, reporter, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
+        )
+    assert store.manifest_ids() == before

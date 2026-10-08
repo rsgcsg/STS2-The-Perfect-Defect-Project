@@ -6,7 +6,9 @@ The application owns exact attempt authority and terminal-process reconciliation
 
 from __future__ import annotations
 
+import hashlib
 import io
+import math
 import tempfile
 import time
 from dataclasses import asdict
@@ -15,11 +17,14 @@ from typing import Any
 
 import torch
 
-from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import (
     BoundaryError,
     FrozenObject,
+    decode_json,
+    digest,
     json_bytes,
+    object_fields,
 )
 from spireagent.storage.store import ArtifactStore
 
@@ -36,7 +41,13 @@ from ..models.structured_engine import (
     execution_identity,
 )
 from ..models.structured_training import StructuredTrainingConfig
-from ..policy.structured_export import export_structured_package, load_structured_package
+from ..policy.structured_export import (
+    MAX_MANIFEST_BYTES,
+    MAX_WEIGHTS_BYTES,
+    export_structured_package,
+    load_structured_package,
+)
+from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import (
     AttemptAuthority,
@@ -74,12 +85,30 @@ def _load(
 ) -> tuple[Manifest, Manifest, StructuredDataset, StructuredTrainingConfig]:
     request.validate()
     run = store.get_manifest(request.run_id)
-    info = run.parameters.value()
+    if run.parameters.value().get("schema") != RUN_SCHEMA:
+        raise BoundaryError(
+            "structured_workload", "exact_run_identity_mismatch_or_v1_not_resumable"
+        )
+    _roles(run, {"experiment", "training_input"}, set())
+    info = object_fields(
+        run.parameters.value(),
+        {
+            "schema",
+            "config",
+            "source_sha256",
+            "torch_version",
+            "partition",
+            "operation_id",
+            "execution_identity",
+        },
+        "structured_workload_run",
+    )
     if (
         run.kind != "run"
         or run.producer != producer
         or info.get("schema") != RUN_SCHEMA
         or info.get("operation_id") != request.operation_id
+        or info.get("partition") != "train"
         or run.parent("training_input") != request.training_input_id
     ):
         raise BoundaryError(
@@ -89,53 +118,156 @@ def _load(
     config.validate()
     torch.set_num_threads(config.cpu_threads)
     training = store.get_manifest(request.training_input_id)
+    _roles(training, {"source"}, {"source"})
     source = store.get_manifest(training.parent("source"))
     payload = training.payload("source")
     if (
-        training.kind != "training_input"
+        source.kind != "dataset"
+        or training.kind != "training_input"
         or training.producer != producer
         or source.payload("source") != payload
-        or payload.size > MAX_SOURCE_BYTES
+        or payload.media_type != "application/json"
     ):
         raise BoundaryError("structured_workload", "training_source_binding_mismatch")
-    raw = b"".join(store.read_payload(payload))
+    raw = _read_payload(store, payload, MAX_SOURCE_BYTES)
     dataset = parse_structured_dataset(raw)
     if (
         dataset.source_sha256 != info["source_sha256"]
         or training.parameters.value().get("source_sha256") != dataset.source_sha256
+        or source.parameters.value().get("source_sha256", dataset.source_sha256)
+        != dataset.source_sha256
+        or source.parameters.value().get("source_kind", dataset.source_kind) != dataset.source_kind
         or execution_identity(dataset, config) != info.get("execution_identity")
     ):
         raise BoundaryError("structured_workload", "source_config_code_or_runtime_changed")
+    expected_training_info = {
+        "schema": "stpd/structured-m2-training-input-v1",
+        "source_sha256": dataset.source_sha256,
+        "projection": info["execution_identity"]["projection"],
+        "splits": {
+            split: [item.run_id for item in dataset.runs if item.split == split]
+            for split in ("train", "dev", "test")
+        },
+        "qualification": "engineering_only",
+    }
+    if json_bytes(training.parameters.value()) != json_bytes(expected_training_info) or info[
+        "torch_version"
+    ] != str(torch.__version__):
+        raise BoundaryError("structured_workload", "training_input_metadata_mismatch")
     experiment = store.get_manifest(run.parent("experiment"))
+    _roles(experiment, {"training_input"}, set())
     if (
         experiment.kind != "experiment"
         or experiment.producer != producer
         or experiment.parent("training_input") != training.artifact_id
-        or experiment.parameters.value().get("config") != asdict(config)
+        or json_bytes(experiment.parameters.value())
+        != json_bytes(
+            {
+                "schema": "stpd/experiment-v1",
+                "purpose": "s0_agent_teacher_imitation",
+                "graph_id": info["execution_identity"]["graph_id"],
+                "config": asdict(config),
+            }
+        )
     ):
         raise BoundaryError("structured_workload", "experiment_binding_mismatch")
     return run, training, dataset, config
+
+
+MAX_REPORT_BYTES = 8 * 1024 * 1024
+
+
+def _read_payload(store: ArtifactStore, payload: Payload, maximum: int) -> bytes:
+    """Verify a bounded immutable payload even when the injected store is only a port."""
+    if not 0 < payload.size <= maximum:
+        raise BoundaryError("structured_workload", "payload_size_limit")
+    chunks = []
+    size = 0
+    checksum = hashlib.sha256()
+    for chunk in store.read_payload(payload):
+        size += len(chunk)
+        if size > payload.size or size > maximum:
+            raise BoundaryError("structured_workload", "payload_integrity_mismatch")
+        checksum.update(chunk)
+        chunks.append(chunk)
+    if size != payload.size or checksum.hexdigest() != payload.sha256:
+        raise BoundaryError("structured_workload", "payload_integrity_mismatch")
+    return b"".join(chunks)
+
+
+def _roles(manifest: Manifest, parents: set[str], payloads: set[str]) -> None:
+    if {parent.role for parent in manifest.parents} != parents or {
+        payload.role for payload in manifest.payloads
+    } != payloads:
+        raise BoundaryError("structured_workload", "artifact_role_inventory_mismatch")
 
 
 def _checkpoint_bytes(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
 ) -> bytes:
     saved = store.get_manifest(checkpoint_id)
-    info = saved.parameters.value()
+    parent_roles = {"run", "training_input"}
+    if any(parent.role == "previous_checkpoint" for parent in saved.parents):
+        parent_roles.add("previous_checkpoint")
+    _roles(saved, parent_roles, {"checkpoint"})
+    info = object_fields(
+        saved.parameters.value(),
+        {
+            "schema",
+            "execution_identity_sha256",
+            "boundary",
+            "cursor",
+            "phase",
+            "optimizer_updates",
+            "attempt",
+        },
+        "structured_checkpoint_manifest",
+    )
+    digest(info["attempt"], "structured_checkpoint_manifest.attempt", length=32)
     if (
         saved.kind != "checkpoint"
         or saved.producer != run.producer
         or saved.parent("run") != run.artifact_id
         or saved.parent("training_input") != training.artifact_id
-        or info.get("schema") != CHECKPOINT_SCHEMA
-        or info.get("execution_identity_sha256")
+        or info["schema"] != CHECKPOINT_SCHEMA
+        or info["execution_identity_sha256"]
         != semantic_hash(run.parameters.value()["execution_identity"])
     ):
         raise BoundaryError("structured_workload", "checkpoint_run_identity_mismatch")
+    if "previous_checkpoint" in parent_roles:
+        previous = store.get_manifest(saved.parent("previous_checkpoint"))
+        if (
+            previous.kind != "checkpoint"
+            or previous.producer != run.producer
+            or previous.parent("run") != run.artifact_id
+            or previous.parent("training_input") != training.artifact_id
+            or previous.parameters.value().get("schema") != CHECKPOINT_SCHEMA
+        ):
+            raise BoundaryError("structured_workload", "previous_checkpoint_identity_mismatch")
     payload = saved.payload("checkpoint")
-    if payload.size > MAX_CHECKPOINT_BYTES:
-        raise BoundaryError("structured_workload", "checkpoint_size_limit")
-    return b"".join(store.read_payload(payload))
+    if payload.media_type != "application/vnd.stpd.tensor-tree":
+        raise BoundaryError("structured_workload", "checkpoint_media_type_mismatch")
+    raw = _read_payload(store, payload, MAX_CHECKPOINT_BYTES)
+    state = decode_checkpoint(raw)
+    counters = object_fields(
+        state.get("counters"),
+        {"updates", "labels", "observations", "advances", "unlabelled_chunks"},
+        "structured_checkpoint_payload_counters",
+    )
+    if (
+        json_bytes({key: info[key] for key in ("boundary", "cursor", "phase", "optimizer_updates")})
+        != json_bytes(
+            {
+                "boundary": state.get("boundary"),
+                "cursor": state.get("cursor"),
+                "phase": state.get("phase"),
+                "optimizer_updates": counters["updates"],
+            }
+        )
+        or semantic_hash(state.get("identity")) != info["execution_identity_sha256"]
+    ):
+        raise BoundaryError("structured_workload", "checkpoint_metadata_payload_mismatch")
+    return raw
 
 
 def _completed(
@@ -146,12 +278,32 @@ def _completed(
     dataset: StructuredDataset,
     config: StructuredTrainingConfig,
 ) -> tuple[str, int]:
-    info = result.parameters.value()
+    _roles(result, {"run", "training_input", "checkpoint", "model"}, {"report"})
+    info = object_fields(
+        result.parameters.value(),
+        {
+            "schema",
+            "state",
+            "partition",
+            "source_sha256",
+            "qualification",
+            "attempt",
+        },
+        "structured_completed_result",
+    )
+    attempt = digest(info["attempt"], "structured_completed_result.attempt", length=32)
     if (
         result.kind != "run_result"
         or result.producer != run.producer
-        or info.get("schema") != "stpd/run-result-v1"
-        or info.get("state") != "completed"
+        or info
+        != {
+            "schema": "stpd/run-result-v1",
+            "state": "completed",
+            "partition": "train",
+            "source_sha256": dataset.source_sha256,
+            "qualification": "engineering_only",
+            "attempt": attempt,
+        }
         or result.parent("run") != run.artifact_id
         or result.parent("training_input") != training.artifact_id
     ):
@@ -161,32 +313,107 @@ def _completed(
     if engine.phase != "publication":
         raise BoundaryError("structured_workload", "completed_checkpoint_phase")
     model = store.get_manifest(result.parent("model"))
+    _roles(model, {"run", "checkpoint", "training_input"}, {"package_manifest", "weights"})
+    model_info = object_fields(
+        model.parameters.value(),
+        {
+            "schema",
+            "model_id",
+            "graph_id",
+            "qualification",
+            "attempt",
+        },
+        "structured_completed_model",
+    )
     if (
         model.kind != "model"
         or model.producer != run.producer
-        or model.parameters.value().get("schema") != MODEL_SCHEMA
+        or model_info["schema"] != MODEL_SCHEMA
+        or model_info["graph_id"] != engine.identity["graph_id"]
+        or model_info["qualification"] != "engineering_only"
+        or model_info["attempt"] != attempt
         or model.parent("run") != run.artifact_id
         or model.parent("checkpoint") != result.parent("checkpoint")
+        or model.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("structured_workload", "completed_model_identity_mismatch")
     with tempfile.TemporaryDirectory(prefix="structured-completion-") as folder:
         package = Path(folder)
-        for role, name in (("package_manifest", "model.json"), ("weights", "weights.tensor-tree")):
+        for role, name, maximum, media in (
+            ("package_manifest", "model.json", MAX_MANIFEST_BYTES, "application/json"),
+            (
+                "weights",
+                "weights.tensor-tree",
+                MAX_WEIGHTS_BYTES,
+                "application/vnd.stpd.tensor-tree",
+            ),
+        ):
             payload = model.payload(role)
-            if payload.size > MAX_CHECKPOINT_BYTES:
-                raise BoundaryError("structured_workload", "model_payload_size_limit")
-            (package / name).write_bytes(b"".join(store.read_payload(payload)))
+            if payload.media_type != media:
+                raise BoundaryError("structured_workload", "model_media_type_mismatch")
+            (package / name).write_bytes(_read_payload(store, payload, maximum))
         metadata, restored = load_structured_package(package)
         if (
-            metadata["source"]["data_sha256"] != dataset.source_sha256
-            or metadata["training"] != {"config": asdict(config), "metrics": engine.metrics()}
+            metadata["model_id"] != model_info["model_id"]
+            or metadata["source"]
+            != {
+                "source_revision": run.producer.source_revision,
+                "data_sha256": dataset.source_sha256,
+                "source_kind": dataset.source_kind,
+                "teacher_sha256": semantic_hash(dataset.teacher.value()),
+            }
+            or json_bytes(metadata["training"])
+            != json_bytes({"config": asdict(config), "metrics": engine.metrics()})
             or any(
                 not torch.equal(tensor, restored.state_dict()[name])
                 for name, tensor in engine.model.state_dict().items()
             )
         ):
             raise BoundaryError("structured_workload", "completed_export_state_mismatch")
-    return result.parent("model"), engine.updates
+    payload = result.payload("report")
+    if payload.media_type != "application/json":
+        raise BoundaryError("structured_workload", "report_media_type_mismatch")
+    raw = _read_payload(store, payload, MAX_REPORT_BYTES)
+    report = object_fields(
+        decode_json(raw),
+        {
+            "schema",
+            "producer",
+            "source_sha256",
+            "config",
+            "metrics",
+            "execution_identity",
+            "attempt",
+            "attempt_seconds",
+            "run_id",
+            "training_input_id",
+            "checkpoint_id",
+            "model_artifact_id",
+            "operation_id",
+        },
+        "structured_completed_report",
+    )
+    seconds = report["attempt_seconds"]
+    if type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0:
+        raise BoundaryError("structured_workload", "report_attempt_seconds_mismatch")
+    expected_report = {
+        "schema": "stpd/structured-m2-training-report-v2",
+        "producer": run.producer.to_dict(),
+        "source_sha256": dataset.source_sha256,
+        "config": asdict(config),
+        "metrics": engine.metrics(),
+        "execution_identity": engine.identity,
+        "attempt": attempt,
+        "attempt_seconds": seconds,
+        "run_id": run.artifact_id,
+        "training_input_id": training.artifact_id,
+        "checkpoint_id": result.parent("checkpoint"),
+        "model_artifact_id": model.artifact_id,
+        "operation_id": run.parameters.value()["operation_id"],
+    }
+    if raw != json_bytes(expected_report):
+        raise BoundaryError("structured_workload", "completed_report_binding_mismatch")
+    return model.artifact_id, engine.updates
 
 
 def execute_structured_workload(
@@ -461,12 +688,18 @@ def execute_structured_workload(
                     "model_id": metadata["model_id"],
                     "graph_id": engine.identity["graph_id"],
                     "qualification": "engineering_only",
+                    "attempt": request.attempt_id,
                 }
             ),
         )
         store.publish(model)
         report = {
             "schema": "stpd/structured-m2-training-report-v2",
+            "run_id": run.artifact_id,
+            "training_input_id": training.artifact_id,
+            "checkpoint_id": checkpoint_id,
+            "model_artifact_id": model.artifact_id,
+            "operation_id": request.operation_id,
             "producer": producer.to_dict(),
             "source_sha256": dataset.source_sha256,
             "config": asdict(config),
@@ -496,6 +729,7 @@ def execute_structured_workload(
                     "partition": "train",
                     "source_sha256": dataset.source_sha256,
                     "qualification": "engineering_only",
+                    "attempt": request.attempt_id,
                 }
             ),
         )

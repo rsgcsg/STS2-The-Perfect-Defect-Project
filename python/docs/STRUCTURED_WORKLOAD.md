@@ -43,7 +43,21 @@ attempt requires application reconciliation and an explicit checkpoint. Training
 completion is durable before evaluation. Evaluation interrupted before its
 publication may replay with fixed weights without an optimizer step; the replay
 is recorded. A final complete result is verified against its checkpoint/export
-and may be reconciled without new training.
+and may be reconciled without new training. Completion verification closes the
+exact run/training-input/experiment/checkpoint/model/result role inventory and
+producer/identity bindings. The selected checkpoint's manifest cursor, phase,
+boundary and update count must match its verified tensor payload. Its optional
+previous-checkpoint reference is checked for direct manifest identity; this
+verification does not scan all historical ancestor payloads.
+
+Every selected source, checkpoint, model package, weight and report payload is
+read within its declared bound and independently checked against declared size
+and SHA-256. Reports have an 8 MiB bound and a strict canonical schema binding
+producer, source, configuration, metrics, execution identity, operation/attempt
+and explicit run/input/checkpoint/model artifact IDs. Package contents and model
+weights match the selected checkpoint. Imported datasets retain their original
+producer; source authorization remains with the application rather than being
+rewritten to the training producer.
 
 Every worker publication asserts the injected application fence. This hook must
 use the application's existing writer exclusion mechanism; it is not a storage
