@@ -137,7 +137,7 @@ export class AgentConsumptionLedger {
         }
         if (field === "interaction") {
           const interaction = sessionObject(observation.interaction);
-          sessionText(interaction.kind); sessionText(interaction.stage);
+          sessionText(interaction.kind, 65_536); sessionText(interaction.stage, 65_536);
           sessionObject(interaction.content);
           if (!supportsProfileValue(this.manifest.support.interaction_kinds, String(interaction.kind)))
             throw new AgentSessionError("unsupported_interaction");

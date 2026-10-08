@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   supportsProfileValue, validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
@@ -71,6 +72,36 @@ describe("additive Agent manifest/consumption contract", () => {
     expect(() => supportsProfileValue(["*"], "")).toThrow("invalid_text");
     expect(() => supportsProfileValue(["*"], "\ud800")).toThrow("invalid_text");
     expect(supportsProfileValue(["end_turn"], "confirm")).toBe(false);
+  });
+  it.each(["k".repeat(257), "界".repeat(86), "k".repeat(65_536), "界".repeat(21_845) + "x"])(
+    "uses the Core public semantic field byte bound for kind and stage (%#)", semantic => {
+      const value = manifest(); value.support.interaction_kinds = ["*"];
+      const input = acquisition("core_null_persistent");
+      const interaction = input.observation.interaction as Record<string, unknown>;
+      interaction.kind = semantic; interaction.stage = semantic;
+      // This is a newly frozen synthetic capture, not a mutation of old source bytes.
+      const bytes = Buffer.from(JSON.stringify(input.observation), "utf8");
+      input.capture.byte_count = bytes.length;
+      input.capture.sha256 = createHash("sha256").update(bytes).digest("hex");
+      expect(Buffer.byteLength(semantic, "utf8")).toBeLessThanOrEqual(65_536);
+      expect(supportsProfileValue(["*"], semantic)).toBe(true);
+      const ledger = new AgentConsumptionLedger(value, "segment");
+      ledger.register(input);
+      expect(ledger.get(input.acquisition_id).observation.interaction).toEqual(interaction);
+      expect(ledger.accept(report("core_null_persistent", 1))).toMatchObject({ advanced: true, state_version: 1 });
+    });
+  it.each(["kind", "stage"])("rejects an above-bound public %s without accepting any prefix", field => {
+    const value = manifest(); value.support.interaction_kinds = ["*"];
+    const input = acquisition("core_null_persistent");
+    const semantic = "k".repeat(65_537);
+    (input.observation.interaction as Record<string, unknown>)[field] = semantic;
+    const bytes = Buffer.from(JSON.stringify(input.observation), "utf8");
+    input.capture.byte_count = bytes.length;
+    input.capture.sha256 = createHash("sha256").update(bytes).digest("hex");
+    expect(() => supportsProfileValue(["*"], semantic)).toThrow("invalid_text");
+    const ledger = new AgentConsumptionLedger(value, "segment");
+    expect(() => ledger.register(input)).toThrow("invalid_text");
+    expect(ledger.stateVersion).toBe(0); expect(ledger.byteBudget.used).toBe(0);
   });
   it.each([
     (value: AgentManifest) => { (value as unknown as Record<string, unknown>).executable = "untrusted"; },
