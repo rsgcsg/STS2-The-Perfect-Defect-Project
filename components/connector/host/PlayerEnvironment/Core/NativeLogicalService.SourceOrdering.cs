@@ -48,6 +48,11 @@ internal sealed partial class NativeLogicalService
     {
         foreach (var scope in sourceNativeFreezes) scope.Invalid = true;
     }
+    private void ObserveSourceInputPrefix()
+    {
+        if (sourceNativeFreezes.Count == 0 || sourceRecorder is not { OrderedBasis: true, Disposed: false }) return;
+        AssertMainThread(); InvalidateSourceNativeFreeze();
+    }
     internal NativeLogicalSourceBoundary ReadSourceCommandBoundary(NativeLogicalSourceRecordingAttachment original)
     {
         AssertMainThread(); InvalidateSourceNativeFreeze();

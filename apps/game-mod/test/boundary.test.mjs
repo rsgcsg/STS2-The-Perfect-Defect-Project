@@ -456,7 +456,7 @@ test("PlayerChoice continuation uses STS2 lifecycle and generated choices retain
   assert.match(generatedChoice, /NChooseACardSelectionScreen\.OnSkipButtonReleased/u);
   assert.match(runtime, /NativePlayerChoiceLineage\.Capture\(\)[\s\S]*NativeWitnessIdentity\.Get\(lineage\.ParentAction, "game_action"\)[\s\S]*lineage\.ParentActionType[\s\S]*lineage\.ParentState/u);
   assert.match(patches, /TryEnterGeneratedChoiceCardScope\(__instance, holder\)/u);
-  assert.match(patches, /TryEnterGeneratedChoiceSkipScope\(__instance\)/u);
+  assert.match(patches, /\[HarmonyArgument\(0\)\] NButton button[\s\S]*TryEnterGeneratedChoiceSkipScope\(__instance, button\)/u);
   assert.match(trace, /NativeContinuationObserved/u);
   assert.match(trace, /semantic_native_continuation_without_pause/u);
   assert.doesNotMatch(trace, /PendingDecision|AcceptedHumanActionLedger|SerializedEvidenceAdmission/u);

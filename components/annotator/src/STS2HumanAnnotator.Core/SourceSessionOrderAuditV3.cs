@@ -50,6 +50,7 @@ internal static class SourceSessionOrderAuditV3
                 Require(input.PreCapture == null && input.Catalog == null && input.Outcome.MappingStatus == "capture_missing"
                     && input.Outcome.SelectedAction == null && input.Outcome.MatchCount == 0, "source_unproven_input_has_capture");
         }
+        ValidateActorBoundaries(epochs, segments, boundaries);
         Require(Cut(epochs[0].AfterInputOrdinal) == 0 && Cut(segments[0].AfterInputOrdinal) == 0,
             "source_initial_input_fence_invalid");
         ulong previous = 0;
@@ -89,6 +90,44 @@ internal static class SourceSessionOrderAuditV3
         foreach (var drain in drains)
             Require(Cut(drain.AfterInputOrdinal) == Cut(boundaries[^1].SealedEpochs.Single(x => x.EpochId == drain.EpochId).AfterInputOrdinal),
                 "source_final_drain_input_fence_mismatch");
+    }
+    private static void ValidateActorBoundaries(IReadOnlyList<SourceAttachmentEpochV2> epochs,
+        IReadOnlyList<SourceSegmentV2> segments, IReadOnlyList<SourceBoundaryV2> boundaries)
+    {
+        static void Require(bool value, string code)
+        { if (!value) throw new InvalidDataException(code); }
+        static ulong Cut(string? value) => value == null ? throw new InvalidDataException("source_input_fence_missing")
+            : SourceSessionContractV3.Ordinal(value);
+        var epochIndex = epochs.Select((row, index) => (row.EpochId, index)).ToDictionary(x => x.EpochId, x => x.index, StringComparer.Ordinal);
+        var segmentIndex = segments.Select((row, index) => (row.SegmentId, index)).ToDictionary(x => x.SegmentId, x => x.index, StringComparer.Ordinal);
+        int Compare(SourceNativePositionV2 first, SourceNativePositionV2 second) => first.EpochId == second.EpochId
+            ? SourceSessionContractV2.Index(first).CompareTo(SourceSessionContractV2.Index(second))
+            : epochIndex[first.EpochId].CompareTo(epochIndex[second.EpochId]);
+        int actor = 0; SourceNativePositionV2? pausePosition = null; ulong pauseCut = 0;
+        foreach (var boundary in boundaries)
+        {
+            int next = segmentIndex[boundary.SegmentId];
+            Require(next >= actor, "source_boundary_actor_regressed");
+            if (pausePosition == null)
+                Require(next == actor, "source_boundary_actor_changed_outside_pause");
+            else
+            {
+                Require(Cut(boundary.AfterInputOrdinal) == pauseCut, "source_input_admitted_while_paused");
+                for (int index = actor + 1; index <= next; index++)
+                {
+                    var segment = segments[index];
+                    Require(Cut(segment.AfterInputOrdinal) == pauseCut
+                        && Compare(pausePosition, segment.BoundaryPosition) <= 0
+                        && (boundary.Kind == "epoch_transition" ? Compare(segment.BoundaryPosition, boundary.Position) < 0
+                            : Compare(segment.BoundaryPosition, boundary.Position) <= 0), "source_actor_pause_input_fence_mismatch");
+                }
+                actor = next;
+            }
+            if (boundary.Kind == "pause") { pausePosition = boundary.Position; pauseCut = Cut(boundary.AfterInputOrdinal); }
+            else if (boundary.Kind is "resume" or "close") pausePosition = null;
+            else if (boundary.Kind == "epoch_transition" && pausePosition != null) pausePosition = boundary.Position;
+        }
+        Require(actor == segments.Count - 1, "source_actor_boundary_accounting_incomplete");
     }
 }
 

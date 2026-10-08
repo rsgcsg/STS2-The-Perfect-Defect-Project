@@ -15,6 +15,33 @@ def _verify_order(epochs: list[dict[str, Any]], segments: list[dict[str, Any]],
     epoch_map = {value["epoch_id"]: (offset, value) for offset, value in enumerate(epochs)}
     segment_map = {value["segment_id"]: offset for offset, value in enumerate(segments)}
     seals = {value["epoch_id"]: value for value in boundaries[-1]["sealed_epochs"]}
+    def validate_actor_boundaries() -> None:
+        actor = 0
+        pause_point = None
+        pause_cut = 0
+        def native_point(value: dict[str, Any]) -> tuple[int, int]:
+            return epoch_map[value["epoch_id"]][0], index(value["publication_index"])
+        for boundary in boundaries:
+            next_actor = segment_map[boundary["segment_id"]]
+            _require(next_actor >= actor, "source_boundary_actor_regressed")
+            if pause_point is None:
+                _require(next_actor == actor, "source_boundary_actor_changed_outside_pause")
+            else:
+                _require(index(boundary["after_input_ordinal"]) == pause_cut, "source_input_admitted_while_paused")
+                for offset in range(actor + 1, next_actor + 1):
+                    segment = segments[offset]
+                    point, through = native_point(segment["boundary_position"]), native_point(boundary["position"])
+                    _require(index(segment["after_input_ordinal"]) == pause_cut and pause_point <= point
+                             and (point < through if boundary["kind"] == "epoch_transition" else point <= through),
+                             "source_actor_pause_input_fence_mismatch")
+                actor = next_actor
+            if boundary["kind"] == "pause":
+                pause_point, pause_cut = native_point(boundary["position"]), index(boundary["after_input_ordinal"])
+            elif boundary["kind"] in {"resume", "close"}:
+                pause_point = None
+            elif boundary["kind"] == "epoch_transition" and pause_point is not None:
+                pause_point = native_point(boundary["position"])
+        _require(actor == len(segments) - 1, "source_actor_boundary_accounting_incomplete")
     previous_point = None
     for expected, value in enumerate(sorted(inputs, key=lambda row: index(row["input_prefix_ordinal"])), 1):
         ordinal = index(value["input_prefix_ordinal"])
@@ -45,6 +72,7 @@ def _verify_order(epochs: list[dict[str, Any]], segments: list[dict[str, Any]],
                      and value["outcome"]["mapping_status"] == "capture_missing"
                      and value["outcome"]["selected_action"] is None and value["outcome"]["match_count"] == 0,
                      "source_unproven_input_has_capture")
+    validate_actor_boundaries()
     _require(index(epochs[0]["after_input_ordinal"]) == index(segments[0]["after_input_ordinal"]) == 0,
              "source_initial_input_fence_invalid")
     previous = 0

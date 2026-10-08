@@ -297,10 +297,10 @@ internal static class NativeGeneratedChoiceSkipPatch
 
     private static void Prefix(
         NChooseACardSelectionScreen __instance,
-        out PatchState __state)
+        [HarmonyArgument(0)] NButton button, out PatchState __state)
     {
         __state = new PatchState(
-            RecorderRuntime.TryEnterGeneratedChoiceSkipScope(__instance),
+            RecorderRuntime.TryEnterGeneratedChoiceSkipScope(__instance, button),
             ScreenComplete(__instance));
     }
 
@@ -773,7 +773,7 @@ internal static class NativeCombatHandConfirmPatch
             typeof(NPlayerHand).FullName,
             "OnSelectModeConfirmButtonPressed");
 
-    private static void Prefix(NPlayerHand __instance, out NativeUiScopeEntry __state)
+    private static void Prefix(NPlayerHand __instance, [HarmonyArgument(0)] NButton button, out NativeUiScopeEntry __state)
     {
         __state = RecorderRuntime.TryEnterSemanticScope(
             "native_combat_hand_confirm_ui",
@@ -781,7 +781,7 @@ internal static class NativeCombatHandConfirmPatch
             new ProcessLocalObservedAction(
                 "confirm",
                 null,
-                new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance);
+                new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance, sourceControl: button);
     }
 
     private static void Postfix(NativeUiScopeEntry __state)

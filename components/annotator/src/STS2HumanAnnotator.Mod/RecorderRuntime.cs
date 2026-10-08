@@ -1089,7 +1089,7 @@ internal static partial class RecorderRuntime
                 holder), sourceOwner: screen);
 
     internal static NativeUiScopeEntry TryEnterGeneratedChoiceSkipScope(
-        NChooseACardSelectionScreen screen) =>
+        NChooseACardSelectionScreen screen, object? sourceControl = null) =>
         TryEnterScope(
             "native_generated_card_choice_skip_ui",
             "NChooseACardSelectionScreen.OnSkipButtonReleased",
@@ -1100,7 +1100,7 @@ internal static partial class RecorderRuntime
             occurrence: GeneratedChoiceOccurrence(
                 "NChooseACardSelectionScreen.OnSkipButtonReleased",
                 "skip",
-                screen), sourceOwner: screen);
+                screen), sourceOwner: screen, sourceControl: sourceControl);
 
     internal static void ObserveGeneratedChoiceCard(CardModel card, NativeSourceInputInvocation? sourceInvocation = null)
     {
@@ -1144,10 +1144,11 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction? semanticSelection = null,
         HumanActionOccurrenceEvidence? occurrence = null,
         NCardPlay? stagedOwner = null,
-        object? sourceOwner = null)
+        object? sourceOwner = null,
+        object? sourceControl = null)
     {
         if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
-            expectedAction ?? semanticSelection, out var source)) return source;
+            expectedAction ?? semanticSelection, out var source, sourceControl: sourceControl)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (!CanOpenSemanticEvidenceWindow())
@@ -1284,10 +1285,11 @@ internal static partial class RecorderRuntime
         NativePostCommitCompletionExpectation? completionExpectation = null,
         ProcessLocalObservedAction? nativeSemanticSelection = null,
         object? nestedInputOwner = null,
-        object? sourceOwner = null)
+        object? sourceOwner = null,
+        object? sourceControl = null)
     {
         if (TryEnterSourceInputScope(nativeActionType, nativeActionType, sourceOwner ?? nestedInputOwner,
-            observed, out var source)) return source;
+            observed, out var source, sourceControl: sourceControl)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (HumanActionScope.Current != null)

@@ -64,6 +64,9 @@ public sealed class SourceSessionV3Tests
     [InlineData("missing")]
     [InlineData("noncanonical")]
     [InlineData("actor")]
+    [InlineData("coordinated_actor_cut")]
+    [InlineData("resume_actor")]
+    [InlineData("omitted_epoch_boundary")]
     [InlineData("epoch_seal")]
     [InlineData("drain")]
     [InlineData("pause")]
@@ -80,6 +83,19 @@ public sealed class SourceSessionV3Tests
         else if (mutation == "missing") inputs[1].Remove("input_prefix_ordinal");
         else if (mutation == "noncanonical") inputs[1]["input_prefix_ordinal"] = "01";
         else if (mutation == "actor") inputs[1]["segment_id"] = inputs[0]["segment_id"]!.DeepClone();
+        else if (mutation == "coordinated_actor_cut")
+        {
+            var segments = Rows("source-segments.jsonl"); segments[1]["after_input_ordinal"] = "2";
+            inputs[0]["segment_id"] = segments[0]["segment_id"]!.DeepClone(); WriteRows("source-segments.jsonl", segments);
+        }
+        else if (mutation is "resume_actor" or "omitted_epoch_boundary")
+        {
+            file = "source-boundaries.jsonl"; var rows = Rows(file);
+            if (mutation == "resume_actor") rows.Single(x => x["kind"]!.GetValue<string>() == "resume")["segment_id"] = Rows("source-segments.jsonl")[0]["segment_id"]!.DeepClone();
+            else rows = rows.Where(x => x["kind"]!.GetValue<string>() != "epoch_transition").ToArray();
+            for (int index = 0; index < rows.Length; index++) rows[index]["sequence"] = index + 1;
+            WriteRows(file, rows);
+        }
         else if (mutation == "missing_order_reason") inputs[1]["basis_order"]!.AsObject().Remove("reason_code");
         else if (mutation == "unproven_capture") inputs[1]["basis_order"] = new JsonObject { ["status"] = "unproven", ["reason_code"] = SourceSessionContractV3.OrderUnprovenReason };
         else if (mutation == "pause")
@@ -95,13 +111,62 @@ public sealed class SourceSessionV3Tests
             Write("source-close-receipt.json", receipt);
         }
         if (file == "native-input-witnesses.jsonl") WriteRows(file, inputs);
-        var repaired = Read("source-close-receipt.json"); repaired["stream_sha256"]![file] = SourceSessionContract.Sha256(File.ReadAllBytes(Path.Combine(f.Store.DirectoryPath, file)));
+        var repaired = Read("source-close-receipt.json");
+        foreach (string changed in new[] { file, "source-segments.jsonl" }.Distinct())
+        {
+            repaired["stream_sha256"]![changed] = SourceSessionContract.Sha256(File.ReadAllBytes(Path.Combine(f.Store.DirectoryPath, changed)));
+            repaired["counts"]![changed] = File.ReadLines(Path.Combine(f.Store.DirectoryPath, changed)).Count();
+        }
         Write("source-close-receipt.json", repaired);
-        Assert.Equal("fail", SourceSessionAuditV3.Audit(f.Store.DirectoryPath).Status);
+        var audit = SourceSessionAuditV3.Audit(f.Store.DirectoryPath); Assert.Equal("fail", audit.Status);
+        if (mutation == "coordinated_actor_cut") Assert.Contains("source_actor_pause_input_fence_mismatch", audit.Errors);
+        else if (mutation == "resume_actor") Assert.Contains("source_boundary_actor_changed_outside_pause", audit.Errors);
+        else if (mutation == "omitted_epoch_boundary") Assert.Contains("source_epoch_boundary_accounting_incomplete", audit.Errors);
         JsonObject Read(string name) => JsonNode.Parse(File.ReadAllBytes(Path.Combine(f.Store.DirectoryPath, name)))!.AsObject();
         void Write(string name, JsonNode value) => File.WriteAllBytes(Path.Combine(f.Store.DirectoryPath, name), Bytes(value));
         JsonObject[] Rows(string name) => File.ReadLines(Path.Combine(f.Store.DirectoryPath, name)).Select(line => JsonNode.Parse(line)!.AsObject()).ToArray();
         void WriteRows(string name, IEnumerable<JsonObject> rows) => File.WriteAllBytes(Path.Combine(f.Store.DirectoryPath, name), rows.SelectMany(Bytes).ToArray());
+    }
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void MultipleSameCutDeclarationsAndPausedEpochTurnoverPreserveOriginalPendingInput(int version)
+    {
+        using var f = new SourceSessionV2Tests.Fixture(version: version); var store = f.Store;
+        store.AppendPublicObservationV2(f.Packet("title", 1, "title-continuity"));
+        var original = store.ReserveSourceInputV2("original-pending", Position("title", 1));
+        store.AppendSourceBoundaryV2(store.AdmitSourceBoundaryV2("pause", Position("title", 1)));
+        string previous = original.SegmentId;
+        foreach (string actor in new[] { "second", "third" })
+        {
+            var segment = store.AdmitSourceDeclarationV2(new("declared_human", "actor-" + actor, "declaration-" + actor), previous, Position("title", 1));
+            store.AppendSourceDeclarationV2(segment); previous = segment.SegmentId;
+        }
+        var transition = new SourceNativeTransitionV2("setup-paused", "setup_handoff", "native.actual_setup",
+            "title-continuity", "run-continuity", "new", null, null);
+        store.AppendSourceEpochV2(store.AdmitSourceEpochV2(f.Epoch("run", "title", Seal("title", 1), transition, "run-continuity")));
+        var finalActor = store.AdmitSourceDeclarationV2(new("declared_human", "actor-fourth", "declaration-fourth"), previous, Position("run", 0));
+        store.AppendSourceDeclarationV2(finalActor);
+        store.AppendPublicObservationV2(f.Packet("run", 1, "run-continuity"));
+        store.AppendSourceBoundaryV2(store.AdmitSourceBoundaryV2("resume", Position("run", 1)));
+        store.AppendPublicObservationV2(f.Packet("run", 2, "run-continuity"));
+        var next = store.ReserveSourceInputV2("new-actor-input", Position("run", 2)); Complete(f, next); Complete(f, original);
+        f.Close("run", 2, new[] { Seal("title", 1), Seal("run", 2) });
+        var audit = version == 3 ? SourceSessionAuditV3.Audit(store.DirectoryPath) : SourceSessionAuditV2.Audit(store.DirectoryPath);
+        Assert.True(audit.Status == "pass", string.Join(",", audit.Errors));
+        var inputs = File.ReadLines(Path.Combine(store.DirectoryPath, "native-input-witnesses.jsonl"))
+            .Select(row => JsonSerializer.Deserialize<SourceNativeInputWitnessV2>(row, Json)!).ToArray();
+        Assert.Equal(original.SegmentId, inputs[1].SegmentId); Assert.Equal(finalActor.SegmentId, inputs[0].SegmentId);
+        if (version == 3)
+        {
+            Assert.Equal(new[] { "2", "1" }, inputs.Select(row => row.InputPrefixOrdinal));
+            string bundle = Path.Combine(f.Root, "paused-multiple-bundle");
+            Assert.Equal("pass", SourceSessionBundlePackerV3.Pack(store.DirectoryPath, "worker-paused", "campaign-paused", bundle, new string('e', 40)).Status);
+            string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V3_PAUSED_MULTI_GOLDEN");
+            if (!string.IsNullOrEmpty(golden))
+                foreach (string file in Directory.EnumerateFiles(bundle, "*", SearchOption.AllDirectories))
+                { string target = Path.Combine(golden, Path.GetRelativePath(bundle, file)); Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(file, target, false); }
+        }
     }
     [Fact]
     public async Task OrderedInputAndFreezeAdmissionRemainFilesystemFreeWhileDiskGateIsHeld()

@@ -33,6 +33,11 @@ public sealed class NativeSourceInputInvocation
 /// <summary>Neutral forwarding from existing typed native hooks. One original Source sink owns persistence.</summary>
 public static class NativeSourceInputProvider
 {
+    // Pure acquisition guard notification. No token, native read, allocation,
+    // disk work or declaration is created before recorder activation.
+    public static event Action? BeforePrefix;
+    public static void BeforeInputPrefix()
+    { try { BeforePrefix?.Invoke(); } catch { /* Passive guard cannot affect native input. */ } }
     internal sealed class Registration(Func<NativeSourceInputPrefix, object?> prefix,
         Action<object, string, string?> terminal) : IDisposable
     {

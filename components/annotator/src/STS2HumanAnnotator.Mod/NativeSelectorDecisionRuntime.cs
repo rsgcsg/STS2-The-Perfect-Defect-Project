@@ -13,10 +13,6 @@ internal static partial class RecorderRuntime
         ProcessLocalNativeMatch Match, CurrentDecisionFrame Pre,
         DecisionOccurrenceIdentity? Parent, string ActionId);
 
-    internal sealed record SelectorInputHandle(SelectorInput? Human, bool IsSource = false,
-        NativeSourceInputInvocation? SourceInvocation = null, object? SourceOwner = null,
-        string? SourceMechanism = null, SelectorInputHandle? PreviousSource = null);
-
     [ThreadStatic] private static SelectorInput? _selectorInput;
     [ThreadStatic] private static bool _selectorInputStaged;
     [ThreadStatic] private static object? _selectorInputOwner;
@@ -30,17 +26,13 @@ internal static partial class RecorderRuntime
         BeginSelectorInputCore(owner, mechanism, subject, operations, null);
     internal static SelectorInputHandle? BeginSelectorInputWithSourceVerb(object owner, string mechanism,
         object? subject, string sourceVerb, string[] operations) => BeginSelectorInputCore(owner, mechanism, subject, operations, sourceVerb);
+    internal static SelectorInputHandle? BeginSelectorControlInput(object owner, object originalControl,
+        string mechanism, string sourceVerb, string[] operations, string? callback) =>
+        BeginSelectorInputCore(owner, mechanism, null, operations, sourceVerb, originalControl, callback);
     private static SelectorInputHandle? BeginSelectorInputCore(object owner, string mechanism, object? subject,
-        string[] operations, string? sourceVerb)
+        string[] operations, string? sourceVerb, object? sourceControl = null, string? sourceCallback = null)
     {
-        if (IsSourceRecording)
-        {
-            var previous = sourceSelectorInput;
-            var token = IsOrderedSourceProfile ? NativeSourceInputProvider.Begin(new(sourceVerb ?? "unknown", owner, subject,
-                new Dictionary<string, object>(StringComparer.Ordinal), mechanism, mechanism)) : null;
-            var original = new SelectorInputHandle(null, true, token, owner, mechanism, previous);
-            sourceSelectorInput = original; return original;
-        }
+        if (TryBeginSourceSelectorInput(owner, mechanism, subject, sourceVerb, sourceControl, sourceCallback, out var source)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return null;
         _selectorInputStaged = true;
@@ -119,13 +111,7 @@ internal static partial class RecorderRuntime
 
     internal static void EndSelectorInput(SelectorInputHandle? handle, bool accepted, bool terminal, bool sourceAcceptanceProven = false)
     {
-        if (handle?.IsSource == true)
-        {
-            if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(handle.SourceInvocation);
-            NativeSourceInputProvider.Finish(handle.SourceInvocation);
-            if (ReferenceEquals(sourceSelectorInput, handle)) sourceSelectorInput = handle.PreviousSource;
-            return;
-        }
+        if (TryFinishSourceSelectorInput(handle, sourceAcceptanceProven)) return;
         var input = handle?.Human;
         if (input == null)
         {

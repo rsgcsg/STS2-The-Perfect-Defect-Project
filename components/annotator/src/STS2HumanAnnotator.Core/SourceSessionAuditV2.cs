@@ -162,6 +162,9 @@ public static class SourceSessionAuditV2
                 else throw new InvalidDataException("source_boundary_kind_invalid");
                 lastBoundary = row.Position;
             }
+            var epochBoundaries = boundaries.Where(x => x.Kind == "epoch_transition").ToArray();
+            Require(epochBoundaries.Length == epochRows.Count - 1 && epochRows.Skip(1).All(epoch =>
+                epochBoundaries.Count(row => row.Position.EpochId == epoch.EpochId) == 1), "source_epoch_boundary_accounting_incomplete");
             foreach (var segment in segmentRows.Skip(1)) Require(boundaries.Any(x => x.Kind == "pause" && Compare(x.Position, segment.BoundaryPosition) <= 0
                 && !boundaries.Any(y => y.Kind is "resume" or "close" && y.Sequence > x.Sequence && Compare(y.Position, segment.BoundaryPosition) < 0)), "source_change_not_paused");
             var payloads = new HashSet<string>(StringComparer.Ordinal); var captureIdentities = new Dictionary<string, PublicCaptureReferenceV2>();

@@ -50,7 +50,7 @@ public sealed class SourceNativeProducerTests
         internal readonly MutationControllerCoordinator Controller = new("runtime-fixture", enableDeadlineTimer: false);
         internal readonly MutationClientRegistrationResult client;
         private readonly MutationLease lease;
-        internal Fixture(int version = 2)
+        internal Fixture(int version = 2, Action<Fixture>? beforeInitialCapture = null)
         {
             client = Controller.Register(new("source-producer-test", "test", "Source producer", "1"));
             lease = Controller.Acquire(new(client.Client.ClientSessionId, null, null)).Controller!;
@@ -68,6 +68,7 @@ public sealed class SourceNativeProducerTests
                 Owner.Initialize();
                 Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId, NativeLogicalPublicationProfile.DefinitionSha256,
                     NativeLogicalPublicationProfile.RequiredCoverage);
+                if (beforeInitialCapture != null) OnCapture = () => beforeInitialCapture(this);
                 Attachment = Owner.AttachSource(version == 3);
                 var epoch = SourceRecordingWorkerV2.Packet(Attachment.InitialEpoch, EnvironmentIdentity);
                 var profile = new SourceCaptureProfileV2("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version,

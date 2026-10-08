@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import json
 import shutil
 import tempfile
@@ -65,6 +66,34 @@ class OrderedSource3ProducerParityTests(unittest.TestCase):
     def test_successor_epoch_cannot_rewrite_the_predecessor_input_cut(self) -> None:
         values = self.rows("source-attachment-epochs.jsonl"); values[1]["after_input_ordinal"] = "1"
         self.write_rows("source-attachment-epochs.jsonl", values); self.reseal(); self.assert_fail("source_epoch_predecessor_input_fence_mismatch")
+
+    def test_coordinated_actor_cut_and_input_actor_rewrite_cannot_move_source_change_outside_pause(self) -> None:
+        segments = self.rows("source-segments.jsonl"); values = self.rows("native-input-witnesses.jsonl")
+        segments[1]["after_input_ordinal"] = "2"; values[0]["segment_id"] = segments[0]["segment_id"]
+        self.write_rows("source-segments.jsonl", segments); self.write_rows("native-input-witnesses.jsonl", values)
+        self.reseal(); self.assert_fail("source_actor_pause_input_fence_mismatch")
+
+    def test_resume_cannot_silently_keep_the_pre_change_actor(self) -> None:
+        segments = self.rows("source-segments.jsonl"); values = self.rows("source-boundaries.jsonl")
+        values[1]["segment_id"] = segments[0]["segment_id"]
+        self.write_rows("source-boundaries.jsonl", values); self.reseal(); self.assert_fail("source_boundary_actor_changed_outside_pause")
+
+    def test_multiple_declarations_at_one_original_pause_cut_remain_valid_without_moving_pending_inputs(self) -> None:
+        segments = self.rows("source-segments.jsonl")
+        intermediate = copy.deepcopy(segments[1]); intermediate["segment_id"] = "source-segment-intermediate"
+        intermediate["declaration"]["actor_id"] = "actor-intermediate"
+        intermediate["declaration"]["declaration_id"] = "declaration-intermediate"
+        segments[1]["previous_segment_id"] = intermediate["segment_id"]
+        segments.insert(1, intermediate)
+        for offset, segment in enumerate(segments, 1): segment["sequence"] = offset
+        self.write_rows("source-segments.jsonl", segments); self.reseal()
+        result = self.verifier.verify(self.bundle); self.assertTrue(result.passed, result.findings)
+        self.assertEqual(["2", "1"], [value["input_prefix_ordinal"] for value in result.require_value().inputs])
+
+    def test_successor_epoch_requires_its_original_immutable_boundary_even_after_count_and_hash_repair(self) -> None:
+        values = [row for row in self.rows("source-boundaries.jsonl") if row["kind"] != "epoch_transition"]
+        for offset, row in enumerate(values, 1): row["sequence"] = offset
+        self.write_rows("source-boundaries.jsonl", values); self.reseal(); self.assert_fail("source_epoch_boundary_accounting_incomplete")
 
     def test_native_order_guarantee_does_not_require_terminal_disk_rows_to_be_prefix_sorted(self) -> None:
         values = list(reversed(self.rows("native-input-witnesses.jsonl")))

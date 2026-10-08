@@ -129,6 +129,7 @@ internal sealed partial class NativeLogicalService : IDisposable
         NativeDecisionOwnerReadyProvider.Observed += ObserveOwnerReady;
         NativeRunLifecycleProvider.Observed += ObserveSourceLifecycle;
         NativeRunLifecycleProvider.AccountingFailure += ObserveSourceAccountingFailure;
+        NativeSourceInputProvider.BeforePrefix += ObserveSourceInputPrefix;
     }
     private void AssertMainThread()
     {
@@ -391,6 +392,7 @@ internal sealed partial class NativeLogicalService : IDisposable
             NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;
             NativeRunLifecycleProvider.Observed -= ObserveSourceLifecycle;
             NativeRunLifecycleProvider.AccountingFailure -= ObserveSourceAccountingFailure;
+            NativeSourceInputProvider.BeforePrefix -= ObserveSourceInputPrefix;
         }
         sourceRecorder?.Dispose();
         Hub.Dispose();

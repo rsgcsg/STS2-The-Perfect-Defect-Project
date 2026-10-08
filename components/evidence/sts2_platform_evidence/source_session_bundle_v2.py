@@ -1,6 +1,7 @@
 """Independent verification of original native Source V2 epochs and durable ranges."""
 from __future__ import annotations
 import re
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -25,6 +26,31 @@ STREAMS = {
 NON_CLAIMS = ("not_machine_proof_of_human_origin", "not_native_coverage_qualified", "not_causal_transition_proof",
     "not_research_admission", "not_non_interference_qualified", "not_g2_v1_approved")
 DELIVERIES = {"rejected_before_input", "delivered", "partially_delivered", "unknown"}
+
+def _integer(value: Any, maximum: int = (1 << 63) - 1) -> int:
+    _require(type(value) is int and 0 <= value <= maximum, "source_integer_invalid")
+    return value
+
+_TIMESTAMP = re.compile(r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+    r"(?:T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})(?::(?P<second>[0-9]{2})(?:\.[0-9]{1,16})?)?"
+    r"(?P<zone>Z|[+-][0-9]{2}:[0-9]{2})?)?")
+
+def _timestamp(value: Any) -> str:
+    _require(isinstance(value, str), "source_timestamp_invalid")
+    match = _TIMESTAMP.fullmatch(value)
+    _require(match is not None, "source_timestamp_invalid")
+    try:
+        parsed = datetime(int(match["year"]), int(match["month"]), int(match["day"]),
+                 int(match["hour"] or 0), int(match["minute"] or 0), int(match["second"] or 0))
+        zone = match["zone"]
+        if zone is not None and zone != "Z":
+            hours, minutes = int(zone[1:3]), int(zone[4:6])
+            _require(hours <= 14 and minutes < 60 and (hours != 14 or minutes == 0), "source_timestamp_invalid")
+            offset = timedelta(hours=hours, minutes=minutes)
+            parsed - offset if zone[0] == "+" else parsed + offset
+    except (ValueError, OverflowError):
+        _require(False, "source_timestamp_invalid")
+    return value
 
 def _index(value: Any) -> int:
     _require(isinstance(value, str) and _INDEX.fullmatch(value) is not None and int(value) <= (1 << 64) - 1,
@@ -168,6 +194,8 @@ class SourceSessionBundleV2Verifier:
                  and set(identity) == {"schema", "session_id", "timeline_id", "capture_profile_id", "worker_id",
                  "campaign_id", "packer_source_revision", "raw_file_sha256", "export_file_sha256",
                  "audit_sha256", "source_kinds", "human_origin_attested", "non_claims"}, "source_bundle_fields_invalid")
+        _integer(bundle.get("schema_version"), (1 << 31) - 1)
+        for key in ("observation_count", "input_count", "gap_count"): _integer(bundle.get(key))
         _require(bundle.get("schema") == fmt.schema("source-session-bundle") and bundle.get("schema_version") == fmt.version
                  and bundle.get("bundle_content_id") == _sha(identity_bytes)
                  and bundle.get("content_identity") == identity, "source_bundle_identity_invalid")
@@ -198,6 +226,7 @@ class SourceSessionBundleV2Verifier:
                  and audit.get("schema") == fmt.schema("source-session-audit")
                  and audit.get("status") == "pass" and audit.get("errors") == []
                  and audit.get("non_claims") == list(NON_CLAIMS), "source_producer_audit_invalid")
+        for key in ("observation_count", "input_count", "gap_count"): _integer(audit.get(key))
         recording, observations, inputs, segments, gaps, kinds, epochs, drains, boundaries, final_ordinal = _verify_raw(raw, bundle, fmt)
         _require(bundle.get("source_kinds") == kinds and identity.get("source_kinds") == kinds
                  and audit.get("source_kinds") == kinds and audit.get("gap_count") == gaps
@@ -231,6 +260,8 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
     _require(all(isinstance(recording[key], str) for key in ("schema", "session_id", "timeline_id", "created_at", "recorder_version",
         "recorder_source_revision", "platform", "capture_profile_id", "capture_profile_sha256"))
         and all(recording.get(key) is None or type(recording[key]) is int for key in optional_manifest), "source_recording_manifest_fields_invalid")
+    _integer(recording.get("schema_version"), (1 << 31) - 1); _integer(recording.get("source_schema_version"), (1 << 31) - 1)
+    _timestamp(recording.get("created_at"))
     profile_bytes = (raw / "capture-profile.json").read_bytes()
     profile = _object(_json(profile_bytes))
     _require(recording.get("schema") == fmt.schema("source-session-manifest") and recording.get("schema_version") == fmt.version
@@ -271,6 +302,8 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
              "source_close_receipt_invalid")
     _require(set(_object(receipt.get("counts"))) == set(STREAMS) and set(_object(receipt.get("stream_sha256"))) == set(STREAMS),
              "source_close_stream_inventory_invalid")
+    for key in ("gap_count", "input_count", "epoch_count"): _integer(receipt.get(key))
+    for value in receipt["counts"].values(): _integer(value)
     fields = {
         "source-attachment-epochs.jsonl": {"schema", "sequence", "session_id", "timeline_id", "epoch_id", "previous_epoch_id",
              "context", "starting_position", "initial_position", "predecessor_seal", "transition", "recorded_at"},
@@ -299,6 +332,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
             _require(set(row) == fields[file] and row.get("schema") == schema and type(row.get("sequence")) is int
                      and row["sequence"] == len(values) + 1 and row.get("session_id") == session and row.get("timeline_id") == timeline,
                      "source_row_binding_invalid")
+            if "recorded_at" in row: _timestamp(row["recorded_at"])
             values.append(row)
         _require(receipt["counts"][file] == len(values) and receipt["stream_sha256"][file] == _sha(data), "source_stream_receipt_mismatch")
         rows[file] = values
@@ -418,6 +452,10 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
         else:
             raise SourceSessionError("source_boundary_kind_invalid")
         last_boundary = current_position
+    epoch_boundaries = [row for row in boundaries if row["kind"] == "epoch_transition"]
+    _require(len(epoch_boundaries) == len(epochs) - 1 and all(
+        sum(row["position"]["epoch_id"] == epoch["epoch_id"] for row in epoch_boundaries) == 1
+        for epoch in epochs[1:]), "source_epoch_boundary_accounting_incomplete")
     for segment in segments[1:]:
         point = position(segment["boundary_position"])
         _require(any(row["kind"] == "pause" and position(row["position"]) <= point
@@ -449,6 +487,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
             capture = _object(capture)
             _require(set(capture) == {"epoch_id", "capture_id", "snapshot_id", "scope_id", "stream_generation", "captured_at", "byte_count", "sha256", "payload_ref"}
                      and capture["epoch_id"] == required_epoch, "source_capture_reference_fields_invalid")
+            _timestamp(capture["captured_at"])
             _identifier(capture["capture_id"]); _identifier(capture["snapshot_id"]); context = epoch_map[required_epoch]["context"]
             key = (required_epoch, capture["capture_id"])
             _require(key not in capture_ids or capture_ids[key] == capture, "source_capture_identity_conflict"); capture_ids[key] = capture
