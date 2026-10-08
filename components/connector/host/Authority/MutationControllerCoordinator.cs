@@ -46,8 +46,7 @@ internal sealed partial class MutationControllerCoordinator
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         if (clientIdleTtlMs <= 0) throw new ArgumentOutOfRangeException(nameof(clientIdleTtlMs));
         _clientIdleTtlMs = clientIdleTtlMs;
-        _monotonicClock = monotonicClock ?? (clock is null ? () => Environment.TickCount64
-            : () => clock().UtcTicks / TimeSpan.TicksPerMillisecond);
+        _monotonicClock = monotonicClock ?? (() => Environment.TickCount64);
         _enableDeadlineTimer = enableDeadlineTimer;
         if (maxClientSpentRequests is <= 0 or > MaxClientSpentRequests)
             throw new ArgumentOutOfRangeException(nameof(maxClientSpentRequests));
@@ -244,7 +243,7 @@ internal sealed partial class MutationControllerCoordinator
         ArgumentNullException.ThrowIfNull(lost);
         lock (_gate)
         {
-            if (!Authorize(request).Accepted) { watch = null; return false; }
+            if (!ValidateActiveControl(request).Accepted) { watch = null; return false; }
             if (_controlWatches.Count >= MaxControlWatches) throw new MutationWatchCapacityException();
             long id = checked(++_nextWatch);
             _controlWatches.Add(id, lost);

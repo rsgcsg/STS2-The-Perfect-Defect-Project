@@ -60,6 +60,16 @@ internal sealed partial class MutationControllerCoordinator
         }
     }
 
+    internal bool IsActiveClient(string clientSessionId)
+    {
+        lock (_gate)
+        {
+            ExpireController(_clock());
+            return _clientsBySession.TryGetValue(clientSessionId, out MutableClient? client)
+                && !client.Lifetime.IsClosed;
+        }
+    }
+
     internal bool TryTouchActiveClient(string clientSessionId)
     {
         lock (_gate)

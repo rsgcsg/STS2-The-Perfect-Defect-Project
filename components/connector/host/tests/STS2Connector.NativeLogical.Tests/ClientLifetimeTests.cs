@@ -159,5 +159,59 @@ public sealed class ClientLifetimeTests
         Assert.Throws<ArgumentException>(() => authority.Register(new("A", "product", "bad\nlabel", "v1")));
         Assert.Throws<ArgumentException>(() => authority.Register(new("A", "product", "bad\ud800", "v1")));
         Assert.Empty(authority.Snapshot().Clients);
+    }    [Fact]
+    public void SuccessfulAndCapacityRejectedPassiveWatchesNeverTouchOriginalClientIdleDeadline()
+    {
+        long mono = 0; DateTimeOffset wall = DateTimeOffset.UnixEpoch;
+        var authority = new MutationControllerCoordinator("runtime", clock: () => wall,
+            monotonicClock: () => mono, clientIdleTtlMs: 100, enableDeadlineTimer: false);
+        var client = authority.Register(Registration()).Client;
+        var lease = authority.Acquire(new(client.ClientSessionId, null, null)).Controller!;
+        var authorization = new MutationAuthorizationRequest(client.ClientSessionId, lease.ControllerLeaseId, lease.ControllerGeneration);
+        var original = authority.TryAdmitRequest(authorization).Client!;
+        mono = 90; wall += TimeSpan.FromMilliseconds(90);
+        var watches = new List<IDisposable>();
+        try
+        {
+            for (int index = 0; index < 128; index++)
+            { Assert.True(authority.TryWatch(authorization, () => { }, out var watch)); watches.Add(watch!); }
+            Assert.Equal(client.LastSeenAt, authority.Snapshot().Clients.Single().LastSeenAt);
+            Assert.Throws<MutationWatchCapacityException>(() => authority.TryWatch(authorization, () => { }, out _));
+            Assert.Equal(client.LastSeenAt, authority.Snapshot().Clients.Single().LastSeenAt);
+            mono = 100; authority.TickClientDeadlines();
+            Assert.True(original.IsClosed); Assert.Null(authority.Snapshot().Controller);
+        }
+        finally { foreach (var watch in watches) watch.Dispose(); }
     }
+
+    [Fact]
+    public void SuppliedWallClockForwardAndBackwardChangesDoNotBecomeTheDefaultClientIdleClock()
+    {
+        DateTimeOffset wall = DateTimeOffset.UnixEpoch;
+        var authority = new MutationControllerCoordinator("runtime", clock: () => wall,
+            clientIdleTtlMs: 30_000, enableDeadlineTimer: false);
+        var client = authority.Register(Registration()).Client;
+        wall += TimeSpan.FromDays(366);
+        Assert.Equal(client.ClientSessionId, Assert.Single(authority.Snapshot().Clients).ClientSessionId);
+        wall -= TimeSpan.FromDays(732);
+        Assert.Equal(client.ClientSessionId, Assert.Single(authority.Snapshot().Clients).ClientSessionId);
+        Assert.Equal(client.LastSeenAt, Assert.Single(authority.Snapshot().Clients).LastSeenAt);
+    }
+
+    [Fact]
+    public async Task SuppliedWallClockRollbackCannotStopTheDefaultMonotonicDeadlineTimer()
+    {
+        DateTimeOffset wall = DateTimeOffset.UnixEpoch;
+        var authority = new MutationControllerCoordinator("runtime", clock: () => wall,
+            clientIdleTtlMs: 100);
+        var closed = new TaskCompletionSource<MutationClientClosure>(TaskCreationOptions.RunContinuationsAsynchronously);
+        authority.ClientClosed += closure => closed.TrySetResult(closure);
+        var client = authority.Register(Registration()).Client;
+        wall -= TimeSpan.FromDays(366);
+        var closure = await closed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(client.ClientSessionId, closure.ClientSessionId);
+        Assert.Equal("client_session_expired", closure.Reason);
+        Assert.Empty(authority.Snapshot().Clients);
+    }
+
 }

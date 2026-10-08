@@ -24,7 +24,8 @@ POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|
 
 An original client has a 30-minute idle deadline measured by the Host's
 monotonic clock. Valid registration or owned control operations extend it;
-invalid lease attempts and passive state/result lookups do not. Expiry permanently
+invalid lease attempts, passive control watches (including capacity denial),
+and passive state/result lookups do not. Expiry permanently
 closes that original session and revokes only its owned lease, including while
 no request or poll is arriving. Closed records remain runtime tombstones within
 the existing 4096-client capacity. A later explicit registration receives a new

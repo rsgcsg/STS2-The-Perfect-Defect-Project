@@ -36,6 +36,8 @@ internal static class MutationControlRuntime
     internal static MutationAdmission ValidateActiveControl(MutationAuthorizationRequest request) =>
         Coordinator.ValidateActiveControl(request);
 
+    internal static bool IsActiveClient(string clientSessionId) => Coordinator.IsActiveClient(clientSessionId);
+
     internal static bool TryTouchActiveClient(string clientSessionId) => Coordinator.TryTouchActiveClient(clientSessionId);
 
     internal static MutationClientRevocationResult Revoke(MutationClientRevocationRequest request) => Coordinator.Revoke(request);
