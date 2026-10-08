@@ -1,6 +1,6 @@
 import {
   AgentSessionError, NATIVE_SCOPE, sessionDigest, sessionInteger, sessionObject,
-  sessionText, validateAgentConsumption, validateAgentManifest, validateAgentScope,
+  sessionText, supportsProfileValue, validateAgentConsumption, validateAgentManifest, validateAgentScope,
   type AgentConsumeAck, type AgentManifest, type AgentPrefix,
   type AgentScope
 } from "./agent-session-contracts.js";
@@ -124,6 +124,8 @@ export class AgentConsumptionLedger {
         if (count !== value.catalog.length) throw new AgentSessionError("catalog_count_binding");
         const ids = value.catalog.map(action => sessionText(sessionObject(action).action_id, 65_536));
         if (new Set(ids).size !== ids.length) throw new AgentSessionError("duplicate_action_id");
+        if (value.catalog.some(action => !supportsProfileValue(this.manifest.support.action_verbs,
+          sessionText(sessionObject(action).verb, 65_536)))) throw new AgentSessionError("unsupported_action_verb");
         facts.catalog = stable({ digest: descriptor.digest, total_count: descriptor.total_count,
           ordering_semantics: descriptor.ordering_semantics, actions: value.catalog });
       } else {
@@ -137,7 +139,7 @@ export class AgentConsumptionLedger {
           const interaction = sessionObject(observation.interaction);
           sessionText(interaction.kind); sessionText(interaction.stage);
           sessionObject(interaction.content);
-          if (!this.manifest.support.interaction_kinds.includes(String(interaction.kind)))
+          if (!supportsProfileValue(this.manifest.support.interaction_kinds, String(interaction.kind)))
             throw new AgentSessionError("unsupported_interaction");
         }
         facts[field] = stable(observation[field]);

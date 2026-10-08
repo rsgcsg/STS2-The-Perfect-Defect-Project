@@ -1,13 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
+  supportsProfileValue, validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
 } from "../src/agent-session-contracts.js";
 import { AgentConsumptionLedger, type AgentAcquisition } from "../src/agent-session-consumption.js";
 import { AgentJsonLineFramer, encodeBoundedAgentJson } from "../src/agent-session-json.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/agent-session-v1.json", import.meta.url), "utf8")) as {
   manifest: AgentManifest; acquisitions: Record<string, AgentAcquisition>;
+  support_examples: {
+    valid: { interaction_kinds: string[]; action_verbs: string[]; kind: string; verb: string }[];
+    invalid_declarations: { field: keyof AgentManifest["support"]; values: string[] }[];
+    finite_rejections: { interaction_kinds: string[]; action_verbs: string[]; kind: string; verb: string; expected: string }[];
+  };
 };
 const clone = <T>(value: T): T => structuredClone(value);
 function manifest(incremental = false): AgentManifest {
@@ -31,6 +36,41 @@ describe("additive Agent manifest/consumption contract", () => {
   it("accepts the shared manifest without requiring scores, index or successor", () => {
     expect(validateAgentManifest(shared.manifest).adapter.protocol).toBe("sts2.policy-runtime/agent-session-ndjson-1");
     expect(shared.manifest.requirements).not.toHaveProperty("successor_required");
+  });
+  it.each(shared.support_examples.valid)("admits declared profile vocabulary without filtering a candidate", example => {
+    const value = manifest();
+    value.support.interaction_kinds = example.interaction_kinds;
+    value.support.action_verbs = example.action_verbs;
+    const input = acquisition("A");
+    (input.observation.interaction as Record<string, unknown>).kind = example.kind;
+    input.catalog![0]!.verb = example.verb;
+    const ledger = new AgentConsumptionLedger(validateAgentManifest(value), "segment");
+    ledger.register(input);
+    expect(ledger.get(input.acquisition_id).catalog).toEqual(input.catalog);
+    expect(ledger.get(input.acquisition_id).catalog).toHaveLength(1);
+    expect(ledger.accept(report("A", 1))).toMatchObject({ advanced: true, state_version: 1 });
+  });
+  it.each(shared.support_examples.invalid_declarations)("rejects mixed or game-identity support wildcards", example => {
+    const value = manifest(); value.support[example.field] = example.values;
+    expect(() => validateAgentManifest(value)).toThrow("invalid_support_wildcard");
+  });
+  it.each(shared.support_examples.finite_rejections)("rejects the whole undeclared input and preserves the prefix", example => {
+    const value = manifest();
+    value.support.interaction_kinds = example.interaction_kinds;
+    value.support.action_verbs = example.action_verbs;
+    const input = acquisition("A");
+    (input.observation.interaction as Record<string, unknown>).kind = example.kind;
+    input.catalog![0]!.verb = example.verb;
+    const ledger = new AgentConsumptionLedger(value, "segment");
+    expect(() => ledger.register(input)).toThrow(example.expected);
+    expect(ledger.stateVersion).toBe(0); expect(ledger.consumptionId).toBeNull();
+    expect(ledger.byteBudget.used).toBe(0);
+    expect(() => ledger.get(input.acquisition_id)).toThrow("unknown_acquisition");
+  });
+  it("the explicit vocabulary wildcard cannot admit malformed source strings", () => {
+    expect(() => supportsProfileValue(["*"], "")).toThrow("invalid_text");
+    expect(() => supportsProfileValue(["*"], "\ud800")).toThrow("invalid_text");
+    expect(supportsProfileValue(["end_turn"], "confirm")).toBe(false);
   });
   it.each([
     (value: AgentManifest) => { (value as unknown as Record<string, unknown>).executable = "untrusted"; },

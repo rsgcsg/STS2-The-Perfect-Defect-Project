@@ -65,6 +65,16 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
 - `support`: duplicate-free `game_versions`, `game_commits`,
   `interaction_kinds`, `action_verbs`. An omitted required mechanism fails
   declared support; the Runtime does not filter the source catalog to fit it.
+  Only `interaction_kinds` and `action_verbs` additionally reserve the explicit
+  singleton `["*"]`: it accepts every valid source value within this declared
+  native-logical-v1 profile, InputSpec and resource bounds. Mixed wildcard/value
+  arrays are invalid; game versions and commits remain finite exact pins and
+  cannot use a wildcard. Finite vocabulary arrays still reject an entire input
+  containing an undeclared kind or catalog verb. This is mechanical vocabulary
+  admission, not a claim that all native families exist, are covered or have
+  qualified runtime evidence. No catalog is filtered. This unpublished contract
+  refinement changes the exact Agent Manifest digest; old artifacts retain their
+  prior identity and evidence.
 - `limits`: positive bounded `max_message_bytes`, `max_acquisitions`,
   `max_retained_acquisition_bytes`,
   `max_pending_queries`, `max_queries_per_turn`, `max_query_bytes_per_turn`,
