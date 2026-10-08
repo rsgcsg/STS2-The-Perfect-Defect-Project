@@ -9,17 +9,18 @@ namespace STS2HumanAnnotator.Core;
 /// <summary>Integrity of original epoch/position accounting; no native origin, coverage, causality or admission promotion.</summary>
 public static class SourceSessionAuditV2
 {
-    private static readonly JsonSerializerOptions AuditJson = StrictJson(manifest: false);
-    private static readonly JsonSerializerOptions ManifestAuditJson = StrictJson(manifest: true);
     // Source stream DTOs always serialize nullable members explicitly. Required
     // presence is independent of nullability and of record constructor defaults.
     // Only the shared recording manifest retains its historical omitted-null fields.
-    private static JsonSerializerOptions StrictJson(bool manifest)
+    private static JsonSerializerOptions StrictJson(bool manifest, SourceSessionWireFormat format)
     {
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(info =>
         {
             if (info.Kind != JsonTypeInfoKind.Object) return;
+            if (!format.Ordered)
+                for (int i = info.Properties.Count - 1; i >= 0; i--)
+                    if (SourceSessionWireFormat.IsOrderMember(info.Type, info.Properties[i].Name)) info.Properties.RemoveAt(i);
             foreach (var property in info.Properties)
             {
                 bool omittedManifestExtension = manifest && info.Type == typeof(CurrentRecordingManifest)
@@ -37,8 +38,12 @@ public static class SourceSessionAuditV2
             TypeInfoResolver = resolver
         };
     }
-    public static SourceSessionAuditResult Audit(string recordingDirectory)
+    public static SourceSessionAuditResult Audit(string recordingDirectory) => AuditVersion(recordingDirectory, 2);
+    internal static SourceSessionAuditResult AuditVersion(string recordingDirectory, int version)
     {
+        var format = SourceSessionWireFormat.ForVersion(version);
+        var AuditJson = StrictJson(manifest: false, format);
+        var ManifestAuditJson = StrictJson(manifest: true, format);
         string directory = Path.GetFullPath(recordingDirectory), session = "";
         long observationCount = 0, inputCount = 0, gaps = 0;
         var kinds = new HashSet<string>(StringComparer.Ordinal); var errors = new List<string>();
@@ -49,7 +54,7 @@ public static class SourceSessionAuditV2
             var manifest = Read<CurrentRecordingManifest>("recording-manifest.json");
             var profile = Read<SourceCaptureProfileV2>("capture-profile.json"); session = manifest.SessionId;
             SourceSessionStreamsV2.ValidateProfile(profile);
-            Require(manifest.Schema == SourceSessionContractV2.ManifestSchema && manifest.SchemaVersion == 2 && manifest.SourceSchemaVersion == 2
+            Require(manifest.Schema == format.Schema("source-session-manifest") && manifest.SchemaVersion == version && manifest.SourceSchemaVersion == version
                 && manifest.SourceEnvironment != null && manifest.CaptureProfileId == profile.ProfileId
                 && manifest.CaptureProfileSha256 == SourceSessionContract.Sha256(File.ReadAllBytes(Path.Combine(directory, "capture-profile.json")))
                 && manifest.DecisionSchemaVersion == null && manifest.TextInputSchemaVersion == null && manifest.CloseSchemaVersion == null
@@ -59,19 +64,21 @@ public static class SourceSessionAuditV2
             var environment = manifest.SourceEnvironment!; SourceSessionContract.ValidateEnvironment(environment);
             using var receiptDocument = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, "source-close-receipt.json")));
             var receipt = receiptDocument.RootElement; UniqueJson(receipt);
-            Require(receipt.EnumerateObject().Select(x => x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(new[]
+            var closeFields = new HashSet<string>(new[]
             { "schema", "session_id", "timeline_id", "status", "accounting_complete", "final_position", "sealed_epochs", "final_drains",
-              "counts", "stream_sha256", "gap_count", "input_count", "epoch_count", "source_kinds" }), "source_close_fields_invalid");
+              "counts", "stream_sha256", "gap_count", "input_count", "epoch_count", "source_kinds" }, StringComparer.Ordinal);
+            if (format.Ordered) closeFields.Add("final_input_prefix_ordinal");
+            Require(receipt.EnumerateObject().Select(x => x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(closeFields), "source_close_fields_invalid");
             Require(receipt.GetProperty("counts").EnumerateObject().Select(x => x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(SourceSessionContractV2.StreamFiles)
                 && receipt.GetProperty("stream_sha256").EnumerateObject().Select(x => x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(SourceSessionContractV2.StreamFiles), "source_close_stream_inventory_invalid");
-            Require(receipt.GetProperty("schema").GetString() == SourceSessionContractV2.CloseSchema
+            Require(receipt.GetProperty("schema").GetString() == format.Schema("source-session-close")
                 && receipt.GetProperty("session_id").GetString() == session && receipt.GetProperty("timeline_id").GetString() == manifest.TimelineId
                 && receipt.GetProperty("status").GetString() == "closed" && receipt.GetProperty("accounting_complete").GetBoolean(), "source_close_receipt_invalid");
-            var epochRows = Rows<SourceAttachmentEpochV2>("source-attachment-epochs.jsonl", SourceSessionContractV2.EpochSchema);
-            var segmentRows = Rows<SourceSegmentV2>("source-segments.jsonl", SourceSessionContractV2.SegmentSchema);
-            var boundaries = Rows<SourceBoundaryV2>("source-boundaries.jsonl", SourceSessionContractV2.BoundarySchema);
-            var observations = Rows<SourcePublicObservationV2>("public-observations.jsonl", SourceSessionContractV2.ObservationSchema);
-            var inputs = Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl", SourceSessionContractV2.InputSchema);
+            var epochRows = Rows<SourceAttachmentEpochV2>("source-attachment-epochs.jsonl", format.Schema("source-attachment-epoch"));
+            var segmentRows = Rows<SourceSegmentV2>("source-segments.jsonl", format.Schema("source-segment"));
+            var boundaries = Rows<SourceBoundaryV2>("source-boundaries.jsonl", format.Schema("source-boundary"));
+            var observations = Rows<SourcePublicObservationV2>("public-observations.jsonl", format.Schema("public-observation"));
+            var inputs = Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl", format.Schema("native-input-witness"));
             observationCount = observations.Count; inputCount = inputs.Count;
             Require(epochRows.Count is > 0 && epochRows.Count <= profile.Limits.MaxEpochs && segmentRows.Count is > 0
                 && segmentRows.Count <= profile.Limits.MaxSegments && boundaries.Count is > 0
@@ -155,6 +162,9 @@ public static class SourceSessionAuditV2
                 else throw new InvalidDataException("source_boundary_kind_invalid");
                 lastBoundary = row.Position;
             }
+            var epochBoundaries = boundaries.Where(x => x.Kind == "epoch_transition").ToArray();
+            Require(epochBoundaries.Length == epochRows.Count - 1 && epochRows.Skip(1).All(epoch =>
+                epochBoundaries.Count(row => row.Position.EpochId == epoch.EpochId) == 1), "source_epoch_boundary_accounting_incomplete");
             foreach (var segment in segmentRows.Skip(1)) Require(boundaries.Any(x => x.Kind == "pause" && Compare(x.Position, segment.BoundaryPosition) <= 0
                 && !boundaries.Any(y => y.Kind is "resume" or "close" && y.Sequence > x.Sequence && Compare(y.Position, segment.BoundaryPosition) < 0)), "source_change_not_paused");
             var payloads = new HashSet<string>(StringComparer.Ordinal); var captureIdentities = new Dictionary<string, PublicCaptureReferenceV2>();
@@ -201,7 +211,9 @@ public static class SourceSessionAuditV2
             {
                 ulong index = InSeal(row.PrePosition); SourceSessionContract.Identifier(row.InputId);
                 Require(row.EpochId == row.PrePosition.EpochId && inputIds.Add(row.InputId) && segments.TryGetValue(row.SegmentId, out var segment)
-                    && Compare(segment.BoundaryPosition, row.PrePosition) <= 0 && !IsPaused(row.PrePosition), "source_input_original_binding_invalid");
+                    && Compare(segment.BoundaryPosition, row.PrePosition) <= 0
+                    && !(format.Ordered ? SourceSessionOrderAuditV3.InputIsPaused(row, boundaries) : IsPaused(row.PrePosition)),
+                    "source_input_original_binding_invalid");
                 int segmentIndex = segmentRows.FindIndex(x => x.SegmentId == row.SegmentId);
                 Require(segmentIndex + 1 == segmentRows.Count || Compare(row.PrePosition, segmentRows[segmentIndex + 1].BoundaryPosition) <= 0, "source_input_original_segment_mismatch");
                 Require((row.PreCapture == null || row.PreCapture.EpochId == row.EpochId) && (row.Catalog == null || row.Catalog.EpochId == row.EpochId), "source_input_epoch_mismatch");
@@ -234,6 +246,8 @@ public static class SourceSessionAuditV2
                 { Require(range.After <= covered && range.Through <= reserved, "source_original_durable_prefix_gap"); covered = Math.Max(covered, range.Through); }
                 Require(covered == reserved, "source_original_durable_prefix_gap");
             }
+            if (format.Ordered) SourceSessionOrderAuditV3.Validate(epochRows, segmentRows, boundaries, inputs, drains,
+                receipt.GetProperty("final_input_prefix_ordinal").GetString()!);
             foreach (string file in new[] { "semantic-boundary-trace.jsonl", "canonical-transitions.jsonl", "native-semantic-discriminator.jsonl", "invalidations.jsonl" })
                 Require(File.ReadAllBytes(Path.Combine(directory, file)).Length == 0, "source_session_contains_human_semantics");
             var payloadFiles = Directory.EnumerateFiles(directory, "*.bin", SearchOption.AllDirectories)
@@ -245,7 +259,7 @@ public static class SourceSessionAuditV2
             T Read<T>(string file)
             {
                 using var document = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, file))); UniqueJson(document.RootElement);
-                var allowed = typeof(T).GetProperties(BindingFlags.Instance | BindingFlags.Public).Select(x => JsonNamingPolicy.SnakeCaseLower.ConvertName(x.Name)).ToHashSet(StringComparer.Ordinal);
+                var allowed = format.Fields(typeof(T));
                 Require(document.RootElement.EnumerateObject().All(x => allowed.Contains(x.Name)), "source_json_unknown_field");
                 return document.RootElement.Deserialize<T>(typeof(T) == typeof(CurrentRecordingManifest) ? ManifestAuditJson : AuditJson)
                     ?? throw new InvalidDataException("source_json_missing");
@@ -253,7 +267,7 @@ public static class SourceSessionAuditV2
             List<T> Rows<T>(string file, string schema)
             {
                 byte[] bytes = File.ReadAllBytes(Path.Combine(directory, file)); Require(bytes.LongLength <= profile.Limits.MaxBytesPerStream && (bytes.Length == 0 || bytes[^1] == 10), "source_stream_bytes_invalid");
-                var rows = new List<T>(); var expected = typeof(T).GetProperties(BindingFlags.Instance | BindingFlags.Public).Select(x => JsonNamingPolicy.SnakeCaseLower.ConvertName(x.Name)).ToHashSet(StringComparer.Ordinal);
+                var rows = new List<T>(); var expected = format.Fields(typeof(T));
                 foreach (string line in File.ReadLines(Path.Combine(directory, file)))
                 {
                     Require(System.Text.Encoding.UTF8.GetByteCount(line) <= profile.Limits.MaxRowBytes && rows.Count < profile.Limits.MaxRowsPerStream, "source_row_capacity");
@@ -332,7 +346,7 @@ public static class SourceSessionAuditV2
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or JsonException or InvalidOperationException
             or KeyNotFoundException or ArgumentException or FormatException or NullReferenceException or OverflowException)
         { errors.Add(exception is InvalidDataException ? exception.Message : "source_audit_" + exception.GetType().Name); }
-        return new(SourceSessionContractV2.AuditSchema, errors.Count == 0 ? "pass" : "fail", session, observationCount, inputCount, gaps,
+        return new(format.Schema("source-session-audit"), errors.Count == 0 ? "pass" : "fail", session, observationCount, inputCount, gaps,
             kinds.Order(StringComparer.Ordinal).ToArray(), errors, SourceSessionContractV2.NonClaims);
     }
     private static ulong Index(string value) => SourceSessionContract.Index(new("generation", value));

@@ -21,6 +21,11 @@ The [source v2 attachment epoch contract](SOURCE_SESSION_PROFILE_V2.md) and its
 synthetic conformance fixture define the proposed one-lifecycle real producer
 integration. Production, native lifecycle and performance gates remain pending.
 
+The [ordered source v3 supplement](SOURCE_SESSION_PROFILE_V3.md) adds original
+input prefix ordinals, lifecycle/actor input cuts and native acquisition seals
+through the shared Source engine. Physical and runtime evidence remain separately
+required. Source2 raw meaning and strict readers are retained.
+
 The Platform root [Testing](../../../docs/TESTING.md) defines the shared
 portable versus exact-game evidence boundary. `LIVE_EVIDENCE_2026-08-22.md`
 and dated reports are evidence/history, not a current Platform identity

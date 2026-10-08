@@ -1,6 +1,7 @@
 """Independent verification of original native Source V2 epochs and durable ranges."""
 from __future__ import annotations
 import re
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -25,6 +26,31 @@ STREAMS = {
 NON_CLAIMS = ("not_machine_proof_of_human_origin", "not_native_coverage_qualified", "not_causal_transition_proof",
     "not_research_admission", "not_non_interference_qualified", "not_g2_v1_approved")
 DELIVERIES = {"rejected_before_input", "delivered", "partially_delivered", "unknown"}
+
+def _integer(value: Any, maximum: int = (1 << 63) - 1) -> int:
+    _require(type(value) is int and 0 <= value <= maximum, "source_integer_invalid")
+    return value
+
+_TIMESTAMP = re.compile(r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+    r"(?:T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})(?::(?P<second>[0-9]{2})(?:\.[0-9]{1,16})?)?"
+    r"(?P<zone>Z|[+-][0-9]{2}:[0-9]{2})?)?")
+
+def _timestamp(value: Any) -> str:
+    _require(isinstance(value, str), "source_timestamp_invalid")
+    match = _TIMESTAMP.fullmatch(value)
+    _require(match is not None, "source_timestamp_invalid")
+    try:
+        parsed = datetime(int(match["year"]), int(match["month"]), int(match["day"]),
+                 int(match["hour"] or 0), int(match["minute"] or 0), int(match["second"] or 0))
+        zone = match["zone"]
+        if zone is not None and zone != "Z":
+            hours, minutes = int(zone[1:3]), int(zone[4:6])
+            _require(hours <= 14 and minutes < 60 and (hours != 14 or minutes == 0), "source_timestamp_invalid")
+            offset = timedelta(hours=hours, minutes=minutes)
+            parsed - offset if zone[0] == "+" else parsed + offset
+    except (ValueError, OverflowError):
+        _require(False, "source_timestamp_invalid")
+    return value
 
 def _index(value: Any) -> int:
     _require(isinstance(value, str) and _INDEX.fullmatch(value) is not None and int(value) <= (1 << 64) - 1,
@@ -83,6 +109,27 @@ def _environment(value: Any, *, manifest: bool = False) -> dict[str, Any]:
     return {**value, "game": {**game, "version": game.get("version"), "commit": game.get("commit")}}
 
 
+
+@dataclass(frozen=True)
+class _SourceFormat:
+    version: int = 2
+
+    def schema(self, family: str) -> str:
+        return f"sts2.annotator/{family}-{self.version}"
+
+    @property
+    def profile_id(self) -> str:
+        return f"native-logical-source-v{self.version}"
+
+    @property
+    def streams(self) -> dict[str, str]:
+        return {key: value[:-1] + str(self.version) for key, value in STREAMS.items()}
+
+    @property
+    def fence_fields(self) -> set[str]:
+        return {"after_input_ordinal"} if self.version == 3 else set()
+
+
 @dataclass(frozen=True)
 class SourceSessionBundleV2:
     directory: Path
@@ -106,20 +153,23 @@ DESCRIPTOR = VerifierDescriptor(TYPE_ID, BUNDLE_SCHEMA, 2, SourceSessionBundleV2
 
 class SourceSessionBundleV2Verifier:
     descriptor = DESCRIPTOR
+    format = _SourceFormat(2)
+    value_type = SourceSessionBundleV2
 
     def verify(self, source: str | Path, expected: Mapping[str, object] | None = None) -> VerificationResult[SourceSessionBundleV2]:
         directory = Path(source).absolute()
         try:
             value = self._verify(directory, expected)
-            return VerificationResult(DESCRIPTOR, "pass", directory, value)
+            return VerificationResult(self.descriptor, "pass", directory, value)
         except SourceSessionError as error:
-            return VerificationResult(DESCRIPTOR, "fail", directory,
+            return VerificationResult(self.descriptor, "fail", directory,
                 findings=(VerificationFinding(error.code, str(error), error.path),))
         except (OSError, ValueError, TypeError, KeyError, OverflowError) as error:
-            return VerificationResult(DESCRIPTOR, "fail", directory,
+            return VerificationResult(self.descriptor, "fail", directory,
                 findings=(VerificationFinding("source_bundle_invalid", type(error).__name__),))
 
     def _verify(self, directory: Path, expected: Mapping[str, object] | None) -> SourceSessionBundleV2:
+        fmt = self.format
         inventory = _inventory(directory)
         checksum_path = directory / "checksums.sha256"
         declared: dict[str, str] = {}
@@ -144,7 +194,9 @@ class SourceSessionBundleV2Verifier:
                  and set(identity) == {"schema", "session_id", "timeline_id", "capture_profile_id", "worker_id",
                  "campaign_id", "packer_source_revision", "raw_file_sha256", "export_file_sha256",
                  "audit_sha256", "source_kinds", "human_origin_attested", "non_claims"}, "source_bundle_fields_invalid")
-        _require(bundle.get("schema") == BUNDLE_SCHEMA and bundle.get("schema_version") == 2
+        _integer(bundle.get("schema_version"), (1 << 31) - 1)
+        for key in ("observation_count", "input_count", "gap_count"): _integer(bundle.get(key))
+        _require(bundle.get("schema") == fmt.schema("source-session-bundle") and bundle.get("schema_version") == fmt.version
                  and bundle.get("bundle_content_id") == _sha(identity_bytes)
                  and bundle.get("content_identity") == identity, "source_bundle_identity_invalid")
         _require(bundle.get("human_origin_attested") is False and identity.get("human_origin_attested") is False,
@@ -155,7 +207,7 @@ class SourceSessionBundleV2Verifier:
         for key in ("session_id", "timeline_id", "worker_id", "campaign_id"):
             _identifier(bundle.get(key))
             _require(bundle[key] == identity.get(key), "source_identity_metadata_mismatch")
-        _require(identity.get("schema") == BUNDLE_SCHEMA and identity.get("capture_profile_id") == PROFILE_ID
+        _require(identity.get("schema") == fmt.schema("source-session-bundle") and identity.get("capture_profile_id") == fmt.profile_id
                  and re.fullmatch(r"[0-9a-fA-F]{40}", str(identity.get("packer_source_revision"))) is not None,
                  "source_packer_identity_invalid")
         raw = directory / "raw"
@@ -171,10 +223,11 @@ class SourceSessionBundleV2Verifier:
         audit = _object(_json(audit_bytes))
         _require(identity.get("audit_sha256") == _sha(audit_bytes)
                  and set(audit) == {"schema", "status", "session_id", "observation_count", "input_count", "gap_count", "source_kinds", "errors", "non_claims"}
-                 and audit.get("schema") == "sts2.annotator/source-session-audit-2"
+                 and audit.get("schema") == fmt.schema("source-session-audit")
                  and audit.get("status") == "pass" and audit.get("errors") == []
                  and audit.get("non_claims") == list(NON_CLAIMS), "source_producer_audit_invalid")
-        recording, observations, inputs, segments, gaps, kinds, epochs, drains = _verify_raw(raw, bundle)
+        for key in ("observation_count", "input_count", "gap_count"): _integer(audit.get(key))
+        recording, observations, inputs, segments, gaps, kinds, epochs, drains, boundaries, final_ordinal = _verify_raw(raw, bundle, fmt)
         _require(bundle.get("source_kinds") == kinds and identity.get("source_kinds") == kinds
                  and audit.get("source_kinds") == kinds and audit.get("gap_count") == gaps
                  and audit.get("observation_count") == len(observations)
@@ -187,13 +240,15 @@ class SourceSessionBundleV2Verifier:
         if expected is not None:
             for key, value in expected.items():
                 _require(key in bundle and bundle[key] == value, "source_expected_identity_mismatch", key)
-        return SourceSessionBundleV2(directory, _freeze(bundle), _freeze(recording),
+        additions = {"boundaries": tuple(_freeze(row) for row in boundaries),
+                     "final_input_prefix_ordinal": final_ordinal} if fmt.version == 3 else {}
+        return self.value_type(directory, _freeze(bundle), _freeze(recording),
             tuple(_freeze(row) for row in observations), tuple(_freeze(row) for row in inputs),
             tuple(_freeze(row) for row in segments), bundle["bundle_content_id"], gaps,
-            tuple(_freeze(row) for row in epochs), tuple(_freeze(row) for row in drains))
+            tuple(_freeze(row) for row in epochs), tuple(_freeze(row) for row in drains), **additions)
 
 
-def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
+def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _SourceFormat(2)) -> tuple[Any, ...]:
     _require(not (raw / "source-accounting-failure.json").exists(), "source_accounting_failed")
     recording = _object(_json((raw / "recording-manifest.json").read_bytes()))
     required_manifest = {"schema_version", "schema", "session_id", "timeline_id", "created_at", "recorder_version",
@@ -205,10 +260,12 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
     _require(all(isinstance(recording[key], str) for key in ("schema", "session_id", "timeline_id", "created_at", "recorder_version",
         "recorder_source_revision", "platform", "capture_profile_id", "capture_profile_sha256"))
         and all(recording.get(key) is None or type(recording[key]) is int for key in optional_manifest), "source_recording_manifest_fields_invalid")
+    _integer(recording.get("schema_version"), (1 << 31) - 1); _integer(recording.get("source_schema_version"), (1 << 31) - 1)
+    _timestamp(recording.get("created_at"))
     profile_bytes = (raw / "capture-profile.json").read_bytes()
     profile = _object(_json(profile_bytes))
-    _require(recording.get("schema") == MANIFEST_SCHEMA and recording.get("schema_version") == 2
-             and recording.get("source_schema_version") == 2 and recording.get("capture_profile_id") == PROFILE_ID
+    _require(recording.get("schema") == fmt.schema("source-session-manifest") and recording.get("schema_version") == fmt.version
+             and recording.get("source_schema_version") == fmt.version and recording.get("capture_profile_id") == fmt.profile_id
              and recording.get("capture_profile_sha256") == _sha(profile_bytes)
              and all(recording.get(key) is None for key in ("decision_schema_version", "text_input_schema_version",
                  "close_schema_version", "disposition_schema_version", "continuous_schema_version"))
@@ -216,11 +273,11 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
              "source_recording_manifest_invalid")
     session, timeline = _identifier(recording.get("session_id")), _identifier(recording.get("timeline_id"))
     _require(bundle.get("session_id") == session and bundle.get("timeline_id") == timeline
-             and bundle.get("capture_profile_id") == PROFILE_ID and bundle.get("capture_profile_sha256") == _sha(profile_bytes),
+             and bundle.get("capture_profile_id") == fmt.profile_id and bundle.get("capture_profile_sha256") == _sha(profile_bytes),
              "source_manifest_bundle_mismatch")
     _require(set(profile) == {"schema", "profile_id", "input_profile", "publication_profile_id",
              "publication_profile_definition_sha256", "eager_scope", "limits", "non_claims"}
-             and profile.get("schema") == PROFILE_SCHEMA and profile.get("profile_id") == PROFILE_ID
+             and profile.get("schema") == fmt.schema("source-capture-profile") and profile.get("profile_id") == fmt.profile_id
              and profile.get("input_profile") == "native-logical-v1" and profile.get("publication_profile_id") == PUBLICATION_PROFILE_ID
              and profile.get("publication_profile_definition_sha256") == PUBLICATION_PROFILE_SHA
              and profile.get("eager_scope") == ["persistent", "interaction", "referents", "catalog"]
@@ -239,11 +296,14 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
     receipt = _object(_json((raw / "source-close-receipt.json").read_bytes()))
     _require(set(receipt) == {"schema", "session_id", "timeline_id", "status", "accounting_complete", "final_position",
              "sealed_epochs", "final_drains", "counts", "stream_sha256", "gap_count", "input_count", "epoch_count", "source_kinds"}
-             and receipt.get("schema") == "sts2.annotator/source-session-close-2" and receipt.get("status") == "closed"
+             | ({"final_input_prefix_ordinal"} if fmt.version == 3 else set())
+             and receipt.get("schema") == fmt.schema("source-session-close") and receipt.get("status") == "closed"
              and receipt.get("accounting_complete") is True and receipt.get("session_id") == session and receipt.get("timeline_id") == timeline,
              "source_close_receipt_invalid")
     _require(set(_object(receipt.get("counts"))) == set(STREAMS) and set(_object(receipt.get("stream_sha256"))) == set(STREAMS),
              "source_close_stream_inventory_invalid")
+    for key in ("gap_count", "input_count", "epoch_count"): _integer(receipt.get(key))
+    for value in receipt["counts"].values(): _integer(value)
     fields = {
         "source-attachment-epochs.jsonl": {"schema", "sequence", "session_id", "timeline_id", "epoch_id", "previous_epoch_id",
              "context", "starting_position", "initial_position", "predecessor_seal", "transition", "recorded_at"},
@@ -257,8 +317,12 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
         "native-input-witnesses.jsonl": {"schema", "sequence", "session_id", "timeline_id", "input_id", "epoch_id", "segment_id",
              "pre_position", "pre_capture", "catalog", "outcome", "recorded_at"},
     }
+    if fmt.version == 3:
+        for file in ("source-attachment-epochs.jsonl", "source-segments.jsonl", "source-boundaries.jsonl"):
+            fields[file].add("after_input_ordinal")
+        fields["native-input-witnesses.jsonl"].update({"input_prefix_ordinal", "basis_order"})
     rows: dict[str, list[dict[str, Any]]] = {}
-    for file, schema in STREAMS.items():
+    for file, schema in fmt.streams.items():
         data = (raw / file).read_bytes()
         _require(len(data) <= limits["max_bytes_per_stream"] and (not data or data.endswith(b"\n")), "source_stream_bytes_invalid")
         values = []
@@ -268,6 +332,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
             _require(set(row) == fields[file] and row.get("schema") == schema and type(row.get("sequence")) is int
                      and row["sequence"] == len(values) + 1 and row.get("session_id") == session and row.get("timeline_id") == timeline,
                      "source_row_binding_invalid")
+            if "recorded_at" in row: _timestamp(row["recorded_at"])
             values.append(row)
         _require(receipt["counts"][file] == len(values) and receipt["stream_sha256"][file] == _sha(data), "source_stream_receipt_mismatch")
         rows[file] = values
@@ -287,7 +352,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
 
     def seal(value: Any) -> dict[str, Any]:
         value = _object(value)
-        _require(set(value) == {"epoch_id", "stream_generation", "reserved_through", "completed_through"}, "source_native_seal_fields_invalid")
+        _require(set(value) == {"epoch_id", "stream_generation", "reserved_through", "completed_through"} | fmt.fence_fields, "source_native_seal_fields_invalid")
         epoch_id = _identifier(value["epoch_id"])
         _require(epoch_id in epoch_map and value["stream_generation"] == epoch_map[epoch_id]["context"]["stream_generation"]
                  and _index(value["completed_through"]) <= _index(value["reserved_through"]), "source_epoch_seal_invalid")
@@ -371,6 +436,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
             if paused:
                 interval = _object(intervals[0])
                 _require(set(interval) == {"epoch_id", "stream_generation", "after_index", "through_index", "reason"}
+                         | ({"after_input_ordinal", "through_input_ordinal"} if fmt.version == 3 else set())
                          and interval["epoch_id"] == expected_epoch and interval["stream_generation"] == epoch_map[expected_epoch]["context"]["stream_generation"]
                          and interval["after_index"] == pause["publication_index"] and _index(interval["through_index"]) == expected_end
                          and _index(interval["after_index"]) <= expected_end and interval["reason"] == "recording_paused", "source_pause_interval_invalid")
@@ -386,6 +452,10 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
         else:
             raise SourceSessionError("source_boundary_kind_invalid")
         last_boundary = current_position
+    epoch_boundaries = [row for row in boundaries if row["kind"] == "epoch_transition"]
+    _require(len(epoch_boundaries) == len(epochs) - 1 and all(
+        sum(row["position"]["epoch_id"] == epoch["epoch_id"] for row in epoch_boundaries) == 1
+        for epoch in epochs[1:]), "source_epoch_boundary_accounting_incomplete")
     for segment in segments[1:]:
         point = position(segment["boundary_position"])
         _require(any(row["kind"] == "pause" and position(row["position"]) <= point
@@ -417,6 +487,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
             capture = _object(capture)
             _require(set(capture) == {"epoch_id", "capture_id", "snapshot_id", "scope_id", "stream_generation", "captured_at", "byte_count", "sha256", "payload_ref"}
                      and capture["epoch_id"] == required_epoch, "source_capture_reference_fields_invalid")
+            _timestamp(capture["captured_at"])
             _identifier(capture["capture_id"]); _identifier(capture["snapshot_id"]); context = epoch_map[required_epoch]["context"]
             key = (required_epoch, capture["capture_id"])
             _require(key not in capture_ids or capture_ids[key] == capture, "source_capture_identity_conflict"); capture_ids[key] = capture
@@ -475,10 +546,13 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
                       if value["completeness"] == "complete" else isinstance(value["missing_reason"], str) and bool(value["missing_reason"])), "source_full_reference_incomplete")
         gaps += int(value["missing_reason"] is not None or value["gap_after_index"] is not None); last_observation[epoch_id] = index
     input_ids: set[str] = set()
+    if fmt.version == 3:
+        from .source_session_order import _input_is_paused
     for value in inputs:
         epoch_id = value["epoch_id"]; point = in_seal(value["pre_position"]); input_id = _identifier(value["input_id"])
         _require(input_id not in input_ids and epoch_id == value["pre_position"]["epoch_id"] and value["segment_id"] in segment_map
-                 and not is_paused(value["pre_position"]), "source_input_original_binding_invalid"); input_ids.add(input_id)
+                 and not (_input_is_paused(value, boundaries, _index) if fmt.version == 3 else is_paused(value["pre_position"])),
+                 "source_input_original_binding_invalid"); input_ids.add(input_id)
         segment = segment_map[value["segment_id"]]; offset = segments.index(segment)
         _require(position(segment["boundary_position"]) <= point and (offset + 1 == len(segments) or point <= position(segments[offset + 1]["boundary_position"])), "source_input_original_segment_mismatch")
         outcome = _object(value["outcome"])
@@ -506,6 +580,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
     for value in drains:
         value = _object(value)
         _require(set(value) == {"epoch_id", "stream_generation", "sealed_reserved_through", "completed_through", "durable_through", "admitted_inputs_terminal"}
+                 | fmt.fence_fields
                  and value["epoch_id"] in epoch_map, "source_final_drain_fields_invalid")
         epoch_id = value["epoch_id"]; reserved = _index(seals[epoch_id]["reserved_through"])
         _require(value["stream_generation"] == epoch_map[epoch_id]["context"]["stream_generation"]
@@ -530,7 +605,12 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[Any, ...]:
     _require(receipt["epoch_count"] == len(epochs) and receipt["input_count"] == len(inputs) and receipt["gap_count"] == gaps
              and receipt["source_kinds"] == sorted(kinds) and bundle.get("gap_count") == gaps
              and bundle.get("observation_count") == len(observations) and bundle.get("input_count") == len(inputs), "source_close_summary_mismatch")
-    return recording, observations, inputs, segments, gaps, sorted(kinds), epochs, drains
+    final_ordinal = None
+    if fmt.version == 3:
+        from .source_session_order import _verify_order
+        final_ordinal = receipt["final_input_prefix_ordinal"]
+        _verify_order(epochs, segments, boundaries, inputs, drains, final_ordinal, _index)
+    return recording, observations, inputs, segments, gaps, sorted(kinds), epochs, drains, boundaries, final_ordinal
 
 
 def verify_source_session_bundle_v2(source: str | Path, expected: Mapping[str, object] | None = None) -> VerificationResult[SourceSessionBundleV2]:

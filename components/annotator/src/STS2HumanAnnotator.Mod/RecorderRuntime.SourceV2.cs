@@ -7,7 +7,7 @@ internal static partial class RecorderRuntime
 {
     private static SourceRecordingWorkerV2? _sourceWorkerV2;
     private static SourceSessionStatusV2? _lastSourceStatusV2;
-    private static bool IsSourceRecordingV2 => _activeCaptureProfileId == SourceSessionContractV2.ProfileId;
+    private static bool IsSourceRecordingV2 => _activeCaptureProfileId is SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId;
 
     private static RecordingCommandResult ExecuteSourceCommandV2(RecordingCommand command, RecordingSessionExpectation? expectedSession)
     {
@@ -38,12 +38,12 @@ internal static partial class RecorderRuntime
             {
                 if (command.Kind == RecordingCommandKind.StartNewSession)
                 {
-                    if (command.CaptureProfileId != SourceSessionContractV2.ProfileId || command.SourceDeclaration == null)
+                    if (command.CaptureProfileId is not (SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId) || command.SourceDeclaration == null)
                         throw new InvalidDataException("source_v2_profile_and_declaration_required");
                     result = RecordingLifecycleStateMachine.Apply(_lifecycle, command.Kind,
                         "session-" + Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, false);
                     result = SourceLifecycleDescription(result, command.Kind);
-                    if (result.Accepted) StartSourceSessionV2(result.Lifecycle, command.SourceDeclaration);
+                    if (result.Accepted) StartSourceSessionV2(result.Lifecycle, command.SourceDeclaration, command.CaptureProfileId!);
                 }
                 else if (!IsSourceRecordingV2 || _sourceWorkerV2 == null || _store?.IsSourceSessionV2 != true)
                     return RejectedCommand("source_v2_session_required", "There is no active source-v2 recording.");
@@ -77,29 +77,32 @@ internal static partial class RecorderRuntime
         }
         PublishCommandEvent(command, result); return result;
     }
-    private static void StartSourceSessionV2(RecordingLifecycleSnapshot lifecycle, SourceDeclaration source)
+    private static void StartSourceSessionV2(RecordingLifecycleSnapshot lifecycle, SourceDeclaration source, string profileId)
     {
         if (_configuration == null || _sourceRevision == null) throw new InvalidOperationException("source_runtime_unavailable");
-        var attachment = NativeLogicalSourceRecording.Attach();
+        int version = profileId == SourceSessionContractV3.ProfileId ? 3 : 2;
+        var format = SourceSessionWireFormat.ForVersion(version);
+        var attachment = NativeLogicalSourceRecording.Attach(version == 3);
         RecordingSessionStore? store = null;
         try
         {
             var environment = BuildEnvironment(attachment.Capabilities, attachment.ConnectorSourceDigest);
             var epoch = SourceRecordingWorkerV2.Packet(attachment.InitialEpoch, environment);
-            var profile = new SourceCaptureProfileV2(SourceSessionContractV2.ProfileSchema, SourceSessionContractV2.ProfileId,
+            var profile = new SourceCaptureProfileV2(format.Schema("source-capture-profile"), format.ProfileId,
                 "native-logical-v1", epoch.Context.PublicationProfileId, epoch.Context.PublicationProfileDefinitionSha256,
                 epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims);
-            var manifest = new CurrentRecordingManifest(2, SourceSessionContractV2.ManifestSchema, lifecycle.SessionId!,
+            var manifest = new CurrentRecordingManifest(version, format.Schema("source-session-manifest"), lifecycle.SessionId!,
                 "timeline-" + Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, RecorderMod.Version, _sourceRevision,
                 System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier, profile.ProfileId,
                 SourceSessionContractV2.ProfileDigest(profile), Array.Empty<string>(), SourceSessionContractV2.NonClaims)
-            { SourceSchemaVersion = 2, SourceEnvironment = environment, RecoverySchemaVersion = 1 };
-            store = RecordingSessionStore.CreateSourceV2(_configuration.RecordingRoot, manifest, profile, source, epoch);
+            { SourceSchemaVersion = version, SourceEnvironment = environment, RecoverySchemaVersion = 1 };
+            store = version == 3 ? RecordingSessionStore.CreateSourceV3(_configuration.RecordingRoot, manifest, profile, source, epoch)
+                : RecordingSessionStore.CreateSourceV2(_configuration.RecordingRoot, manifest, profile, source, epoch);
             var worker = new SourceRecordingWorkerV2(store, attachment, environment);
             _store = store; _sourceWorkerV2 = worker; _lastSourceStatusV2 = store.GetSourceStatusV2();
             _sourcePublicationBinding = null; _sourceAttachment = null; _sourceCloseBoundary = null;
             SessionId = manifest.SessionId; TimelineId = manifest.TimelineId; _recordingDirectory = store.DirectoryPath;
-            _sessionStartedAt = manifest.CreatedAt; _sessionClosedAt = null; _activeCaptureProfileId = SourceSessionContractV2.ProfileId;
+            _sessionStartedAt = manifest.CreatedAt; _sessionClosedAt = null; _activeCaptureProfileId = profileId;
             _sequence = 0; _journalSequence = 0; _semanticBoundaryEventSequence = 0; _humanTextInputSequence = 0;
             _humanTextInputHealthy = true; _humanTextInputPendingScopes = 0; _semanticBoundaryTraceHealthy = true;
             _closeDispositionPersistenceFailed = false; _closeProjectionPersistenceFailed = false; _closeout = RecordingCloseoutStatus.Idle;

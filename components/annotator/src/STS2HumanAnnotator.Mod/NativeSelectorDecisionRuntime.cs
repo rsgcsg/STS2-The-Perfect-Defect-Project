@@ -1,5 +1,6 @@
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
+using STS2Platform.NativeFoundation;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -18,11 +19,20 @@ internal static partial class RecorderRuntime
     [ThreadStatic] private static HumanActionOccurrenceEvidence? _selectorInputAttempt;
     [ThreadStatic] private static string? _selectorInputFailure;
     internal static bool SelectorInputOwns(object owner) => _selectorInputStaged && _selectorInputAttempt != null && ReferenceEquals(_selectorInputOwner, owner);
-    internal static bool SelectorInputActive => _selectorInputStaged;
+    internal static bool SelectorInputActive => _selectorInputStaged || SourceSelectorActive;
 
-    internal static SelectorInput? BeginSelectorInput(
-        object owner, string mechanism, object? subject, params string[] operations)
+    internal static SelectorInputHandle? BeginSelectorInput(
+        object owner, string mechanism, object? subject, params string[] operations) =>
+        BeginSelectorInputCore(owner, mechanism, subject, operations, null);
+    internal static SelectorInputHandle? BeginSelectorInputWithSourceVerb(object owner, string mechanism,
+        object? subject, string sourceVerb, string[] operations) => BeginSelectorInputCore(owner, mechanism, subject, operations, sourceVerb);
+    internal static SelectorInputHandle? BeginSelectorControlInput(object owner, object originalControl,
+        string mechanism, string sourceVerb, string[] operations, string? callback) =>
+        BeginSelectorInputCore(owner, mechanism, null, operations, sourceVerb, originalControl, callback);
+    private static SelectorInputHandle? BeginSelectorInputCore(object owner, string mechanism, object? subject,
+        string[] operations, string? sourceVerb, object? sourceControl = null, string? sourceCallback = null)
     {
+        if (TryBeginSourceSelectorInput(owner, mechanism, subject, sourceVerb, sourceControl, sourceCallback, out var source)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return null;
         _selectorInputStaged = true;
@@ -90,7 +100,7 @@ internal static partial class RecorderRuntime
                 new ProcessLocalObservedAction(matches[0].BoundAction!.Verb, subject, new Dictionary<string, object>()),
                 frame, environment, matches[0], pre, parent, actionId);
             _selectorInput = input;
-            return input;
+            return new SelectorInputHandle(input);
         }
         catch (Exception exception)
         {
@@ -99,8 +109,10 @@ internal static partial class RecorderRuntime
         }
     }
 
-    internal static void EndSelectorInput(SelectorInput? input, bool accepted, bool terminal)
+    internal static void EndSelectorInput(SelectorInputHandle? handle, bool accepted, bool terminal, bool sourceAcceptanceProven = false)
     {
+        if (TryFinishSourceSelectorInput(handle, sourceAcceptanceProven)) return;
+        var input = handle?.Human;
         if (input == null)
         {
             if (_selectorInputStaged && accepted && _selectorInputAttempt != null)

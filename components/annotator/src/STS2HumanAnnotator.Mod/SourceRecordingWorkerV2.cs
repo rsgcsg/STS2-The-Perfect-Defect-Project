@@ -16,14 +16,17 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         internal SourceNativeSealV2? Final;
         internal bool Released;
     }
-    private sealed class Input(SourceInputTokenV2 token, string actionId, long deadline)
+    private sealed class Input(SourceInputTokenV2 token, string actionId, long deadline, string mechanism)
     {
         internal readonly SourceInputTokenV2 Token = token;
         internal readonly string ActionId = actionId;
         internal readonly long Deadline = deadline;
+        internal readonly string Mechanism = mechanism;
+        internal NativeLogicalSourceBasisMapping? Mapping;
+        internal bool OrderReady;
         internal string? CaptureId, Missing;
         internal IDisposable? Retention, Budget;
-        internal bool BasisReady, BasisBound, Complete;
+        internal bool BasisReady, BasisBound, BasisCaptured, Complete;
         internal SourcePublicAction? Selected;
         internal NativeLogicalSourceInputTerminal? Terminal;
     }
@@ -39,6 +42,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
     private long closeDeadline;
     private string? failure;
     internal Task Completion { get; }
+    public bool RequiresOrderedBasis => store.IsOrderedSourceSession;
     internal SourceSessionStatusV2 Status => store.GetSourceStatusV2()!;
     internal string? SnapshotId { get; private set; }
 
@@ -85,7 +89,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         {
             if (paused || closing || disposed || failure != null) return null;
             var token = store.ReserveSourceInputV2(prefix.RequestId, Position(prefix.PrePosition));
-            var input = new Input(token, prefix.ActionId, prefix.EncodingDeadlineMonotonicMs);
+            var input = new Input(token, prefix.ActionId, prefix.EncodingDeadlineMonotonicMs, prefix.NativeMechanism);
             inputs.Add(token.InputId, input); return input;
         }
     }
@@ -107,6 +111,25 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             }
             if (input.BasisReady) { retainedInput?.Dispose(); AccountingFailed("source_input_basis_duplicate"); return; }
             input.CaptureId = captureId; input.Retention = retainedInput; input.Missing = missingReason; input.BasisReady = true;
+        }
+    }
+    public void InputFrozen(object originalToken, NativeLogicalSourceBasisOrder order)
+    {
+        lock (metadataGate)
+        {
+            if (originalToken is not Input input || disposed || input.Complete
+                || !inputs.TryGetValue(input.Token.InputId, out var issued) || !ReferenceEquals(issued, input)) return;
+            store.SealSourceInputOrderV3(input.Token, new(order.Status, order.ReasonCode)); input.OrderReady = true;
+        }
+    }
+    public void InputMapping(object originalToken, NativeLogicalSourceBasisMapping mapping)
+    {
+        lock (metadataGate)
+        {
+            if (originalToken is not Input input || disposed || input.Complete
+                || !inputs.TryGetValue(input.Token.InputId, out var issued) || !ReferenceEquals(issued, input)) return;
+            if (input.Mapping != null && input.Mapping != mapping) { AccountingFailed("source_input_mapping_changed"); return; }
+            input.Mapping = mapping;
         }
     }
     public void InputTerminal(object originalToken, NativeLogicalSourceInputTerminal terminal)
@@ -133,7 +156,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
     {
         lock (metadataGate)
         {
-            var boundary = attachment.ReadBoundary();
+            var boundary = attachment.ReadCommandBoundary();
             IReadOnlyList<SourceNativeSealV2>? seals = null;
             if (kind == "close")
             {
@@ -151,7 +174,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
     {
         lock (metadataGate)
         {
-            var row = store.AdmitSourceDeclarationV2(source, expectedSegment, Position(attachment.ReadBoundary().Position));
+            var row = store.AdmitSourceDeclarationV2(source, expectedSegment, Position(attachment.ReadCommandBoundary().Position));
             Enqueue(() => store.AppendSourceDeclarationV2(row));
         }
     }
@@ -282,7 +305,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         {
             if (!input.BasisReady && Environment.TickCount64 >= input.Deadline)
             { input.Missing = "source_input_basis_encoding_timeout"; input.BasisReady = true; }
-            if (!input.BasisReady) return;
+            if (!input.BasisReady || RequiresOrderedBasis && !input.OrderReady) return;
         }
         if (!input.BasisBound)
         {
@@ -293,9 +316,13 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 {
                     var copy = attachment.CopyFrozen(input.CaptureId); input.Budget = copy;
                     (capture, catalog) = Copies(input.Token.PrePosition.EpochId, copy.Value);
-                    var matches = SourceCatalogCodec.Decode(catalog.Catalog.Bytes).Where(x => x.ActionId == input.ActionId).ToArray();
-                    if (matches.Length != 1) throw new InvalidDataException("source_original_selected_action_membership_missing");
-                    input.Selected = matches[0];
+                    var actionId = input.Mapping?.ActionId ?? (input.ActionId.Length == 0 ? null : input.ActionId);
+                    var matches = SourceCatalogCodec.Decode(catalog.Catalog.Bytes).Where(x => x.ActionId == actionId).ToArray();
+                    if (input.Mapping?.MappingStatus == "exact" || input.Mapping == null)
+                    {
+                        if (matches.Length != 1) throw new InvalidDataException("source_original_selected_action_membership_missing");
+                        input.Selected = matches[0];
+                    }
                 }
                 catch (NativeLogicalException exception) when (exception.Code == "source_copied_payload_capacity")
                 {
@@ -304,21 +331,23 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 }
                 catch (NativeLogicalException exception) when (exception.Code is "payload_expired" or "not_captured") { input.Missing = exception.Code; }
             }
-            store.BindSourceInputBasisV2(input.Token, capture, catalog); input.BasisBound = true;
+            store.BindSourceInputBasisV2(input.Token, capture, catalog); input.BasisBound = true; input.BasisCaptured = capture != null && catalog != null;
             input.Retention?.Dispose(); input.Retention = null;
         }
         NativeLogicalSourceInputTerminal? terminal; lock (metadataGate) terminal = input.Terminal;
         if (terminal is null) return;
-        var outcome = new SourceInputOutcomeV2(input.Selected == null ? "capture_missing" : "exact", input.Selected == null ? 0 : 1,
-            input.Selected, "connector_native_logical_input", terminal.Delivery, terminal.Reason ?? input.Missing,
+        string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
+        var outcome = new SourceInputOutcomeV2(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
+            mapping == "exact" ? input.Selected : null, input.Mechanism, terminal.Delivery, terminal.Reason ?? input.Missing,
             terminal.Stages.Select(x => new SourceInputStageV2(x.Stage, x.Delivery, x.Evidence)).ToArray());
         store.CompleteSourceInputV2(input.Token, outcome); input.Complete = true; input.Budget?.Dispose(); input.Budget = null;
     }
     private void CloseInput(Input input)
     {
         if (!input.BasisBound) { store.BindSourceInputBasisV2(input.Token, null, null); input.BasisBound = true; }
-        store.CompleteSourceInputV2(input.Token, new(input.Selected == null ? "capture_missing" : "exact", input.Selected == null ? 0 : 1,
-            input.Selected, "source_session_close", "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()));
+        string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
+        store.CompleteSourceInputV2(input.Token, new(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
+            mapping == "exact" ? input.Selected : null, input.Mechanism, "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()));
         input.Complete = true; input.Retention?.Dispose(); input.Retention = null; input.Budget?.Dispose(); input.Budget = null;
     }
     public void Dispose()

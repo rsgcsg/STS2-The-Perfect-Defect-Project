@@ -129,6 +129,7 @@ internal sealed partial class NativeLogicalService : IDisposable
         NativeDecisionOwnerReadyProvider.Observed += ObserveOwnerReady;
         NativeRunLifecycleProvider.Observed += ObserveSourceLifecycle;
         NativeRunLifecycleProvider.AccountingFailure += ObserveSourceAccountingFailure;
+        NativeSourceInputProvider.BeforePrefix += ObserveSourceInputPrefix;
     }
     private void AssertMainThread()
     {
@@ -278,7 +279,7 @@ internal sealed partial class NativeLogicalService : IDisposable
             await nativeQueue(() =>
             {
                 RequireActiveClient(request.ClientSessionId);
-                SynchronizeRun(); var prepared = Prepare();
+                SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
                 // Enqueue in the same native turn as capture. A continuation
                 // on an HTTP/worker thread cannot reorder an older Current
                 // behind a later source callback and change handle identity.
@@ -333,6 +334,7 @@ internal sealed partial class NativeLogicalService : IDisposable
     }
     private void CaptureReservation(NativeLogicalPublicationReservation reservation)
     {
+        using var nativeFreeze = BeginSourceNativeFreeze();
         // No observer has acquired Current and no subscription selected this
         // position: keep the source clock without materializing a game frame.
         // A standalone Current basis still needs observed owner re-entry.
@@ -343,11 +345,15 @@ internal sealed partial class NativeLogicalService : IDisposable
         Prepared prepared;
         try { prepared = Prepare(); }
         catch { encodingAdmission.Release(); Missing("native_capture_failed"); return; }
+        bool sourceOrderProven = nativeFreeze?.Proven ?? true;
+        var sourceScope = nativeFreeze?.Epoch.Subscription.ScopeId;
         Enqueue(() =>
         {
             var outcomes = new List<NativeLogicalProjectionOutcome>();
             foreach (var subscription in reservation.Subscriptions)
             {
+                if (!sourceOrderProven && subscription.ScopeId == sourceScope)
+                { outcomes.Add(new(subscription.ScopeId, null, SourceOrderUnproven)); continue; }
                 try
                 {
                     var projection = projector.Capture(prepared.Facts, subscription.EagerScope, subscription.ScopeId,
@@ -370,7 +376,7 @@ internal sealed partial class NativeLogicalService : IDisposable
     }
     internal TextMenuLeaf? Revalidate(string expectedSnapshot, string actionId)
     {
-        SynchronizeRun(); var prepared = Prepare();
+        SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
         lock (basisGate)
         {
             if (projectedSnapshot != expectedSnapshot || projectedBasis is null || !SameFacts(projectedBasis, prepared.Facts)
@@ -386,6 +392,7 @@ internal sealed partial class NativeLogicalService : IDisposable
             NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;
             NativeRunLifecycleProvider.Observed -= ObserveSourceLifecycle;
             NativeRunLifecycleProvider.AccountingFailure -= ObserveSourceAccountingFailure;
+            NativeSourceInputProvider.BeforePrefix -= ObserveSourceInputPrefix;
         }
         sourceRecorder?.Dispose();
         Hub.Dispose();

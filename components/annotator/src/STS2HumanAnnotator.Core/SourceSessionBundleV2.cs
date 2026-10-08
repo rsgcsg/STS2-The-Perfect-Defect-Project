@@ -8,14 +8,18 @@ public static class SourceSessionBundlePackerV2
 {
     public static SourceSessionBundleResult Pack(string recordingDirectory, string workerId,
         string campaignId, string outputDirectory, string packerSourceRevision)
+        => PackVersion(recordingDirectory, workerId, campaignId, outputDirectory, packerSourceRevision, 2);
+    internal static SourceSessionBundleResult PackVersion(string recordingDirectory, string workerId,
+        string campaignId, string outputDirectory, string packerSourceRevision, int version)
     {
+        var format = SourceSessionWireFormat.ForVersion(version);
         SessionBundlePacker.ValidateIdentifier(workerId, nameof(workerId));
         SessionBundlePacker.ValidateIdentifier(campaignId, nameof(campaignId));
         if (packerSourceRevision.Length != 40 || !packerSourceRevision.All(Uri.IsHexDigit))
             throw new InvalidDataException("source_packer_revision_invalid");
         string source = Path.GetFullPath(recordingDirectory), output = Path.GetFullPath(outputDirectory);
         RejectNested(source, output);
-        SourceSessionAuditResult audit = SourceSessionAuditV2.Audit(source);
+        SourceSessionAuditResult audit = SourceSessionAuditV2.AuditVersion(source, version);
         if (audit.Status != "pass") throw new InvalidDataException("source_audit_required:" + string.Join(",", audit.Errors));
         string parent = Path.GetDirectoryName(output) ?? throw new InvalidDataException("source_bundle_parent_missing");
         Directory.CreateDirectory(parent);
@@ -25,7 +29,7 @@ public static class SourceSessionBundlePackerV2
         {
             string raw = Path.Combine(temporary, "raw");
             SessionBundlePacker.CopyDirectory(source, raw);
-            audit = SourceSessionAuditV2.Audit(raw);
+            audit = SourceSessionAuditV2.AuditVersion(raw, version);
             if (audit.Status != "pass") throw new InvalidDataException("source_copied_audit_required:" + string.Join(",", audit.Errors));
             CurrentRecordingManifest manifest = SourceSessionJson.Read<CurrentRecordingManifest>(Path.Combine(raw, "recording-manifest.json"));
             string export = Path.Combine(temporary, "export");
@@ -36,7 +40,7 @@ public static class SourceSessionBundlePackerV2
             JsonObject exportHashes = SessionBundlePacker.RecursiveChecksums(export);
             var identity = new
             {
-                schema = SourceSessionContractV2.BundleSchema, session_id = manifest.SessionId,
+                schema = format.Schema("source-session-bundle"), session_id = manifest.SessionId,
                 timeline_id = manifest.TimelineId, capture_profile_id = manifest.CaptureProfileId,
                 worker_id = workerId, campaign_id = campaignId, packer_source_revision = packerSourceRevision,
                 raw_file_sha256 = rawHashes, export_file_sha256 = exportHashes,
@@ -49,7 +53,7 @@ public static class SourceSessionBundlePackerV2
             string contentId = SourceSessionContract.Sha256(identityBytes);
             var bundle = new
             {
-                schema_version = 2, schema = SourceSessionContractV2.BundleSchema, bundle_content_id = contentId,
+                schema_version = version, schema = format.Schema("source-session-bundle"), bundle_content_id = contentId,
                 session_id = manifest.SessionId, timeline_id = manifest.TimelineId,
                 capture_profile_id = manifest.CaptureProfileId, capture_profile_sha256 = manifest.CaptureProfileSha256,
                 worker_id = workerId, campaign_id = campaignId, source_kinds = audit.SourceKinds,
@@ -73,11 +77,12 @@ public static class SourceSessionBundlePackerV2
         catch { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); throw; }
     }
 
-    public static SourceSessionAuditResult Export(string recordingDirectory, string outputDirectory)
+    public static SourceSessionAuditResult Export(string recordingDirectory, string outputDirectory) => ExportVersion(recordingDirectory, outputDirectory, 2);
+    internal static SourceSessionAuditResult ExportVersion(string recordingDirectory, string outputDirectory, int version)
     {
         string source = Path.GetFullPath(recordingDirectory), output = Path.GetFullPath(outputDirectory);
         RejectNested(source, output);
-        SourceSessionAuditResult audit = SourceSessionAuditV2.Audit(source);
+        SourceSessionAuditResult audit = SourceSessionAuditV2.AuditVersion(source, version);
         if (audit.Status != "pass") throw new InvalidDataException("source_audit_required");
         if (Directory.Exists(output)) throw new IOException("source_export_already_exists");
         string parent = Path.GetDirectoryName(output) ?? throw new InvalidDataException("source_export_parent_missing");
@@ -87,7 +92,7 @@ public static class SourceSessionBundlePackerV2
         try
         {
             SessionBundlePacker.CopyDirectory(source, snapshot);
-            audit = SourceSessionAuditV2.Audit(snapshot);
+            audit = SourceSessionAuditV2.AuditVersion(snapshot, version);
             if (audit.Status != "pass") throw new InvalidDataException("source_copied_audit_required");
             CopyExport(snapshot, temporary); Directory.Move(temporary, output);
         }
@@ -111,4 +116,14 @@ public static class SourceSessionBundlePackerV2
             || source.StartsWith(output + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new InvalidDataException("source_bundle_must_be_separate");
     }
+}
+
+/// <summary>Version-only adapter; the shared packer audits and exports actual copied original bytes.</summary>
+public static class SourceSessionBundlePackerV3
+{
+    public static SourceSessionBundleResult Pack(string recordingDirectory, string workerId, string campaignId,
+        string outputDirectory, string packerSourceRevision) => SourceSessionBundlePackerV2.PackVersion(
+            recordingDirectory, workerId, campaignId, outputDirectory, packerSourceRevision, 3);
+    public static SourceSessionAuditResult Export(string recordingDirectory, string outputDirectory) =>
+        SourceSessionBundlePackerV2.ExportVersion(recordingDirectory, outputDirectory, 3);
 }

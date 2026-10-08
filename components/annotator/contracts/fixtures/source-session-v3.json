@@ -1,0 +1,237 @@
+{
+  "schema": "sts2.annotator/source-session-v3-conformance-1",
+  "fixture_kind": "synthetic_contract_examples_not_native_history",
+  "base": "447f30084765cd662afbdb744f30479b18cbc41e",
+  "profile_id": "native-logical-source-v3",
+  "publication_profile_id": "native-logical-publication-profile-v1",
+  "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+  "wire_additions": {
+    "input": [
+      "input_prefix_ordinal",
+      "basis_order"
+    ],
+    "basis_order": [
+      "status",
+      "reason_code"
+    ],
+    "epoch": [
+      "after_input_ordinal"
+    ],
+    "segment": [
+      "after_input_ordinal"
+    ],
+    "boundary": [
+      "after_input_ordinal"
+    ],
+    "seal": [
+      "after_input_ordinal"
+    ],
+    "paused_interval": [
+      "after_input_ordinal",
+      "through_input_ordinal"
+    ],
+    "final_drain": [
+      "after_input_ordinal"
+    ],
+    "close": [
+      "final_input_prefix_ordinal"
+    ]
+  },
+  "same_watermark_inputs_in_durable_order": [
+    {
+      "sequence": 1,
+      "input_id": "input-b",
+      "segment_id": "segment-b",
+      "pre_position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "input_prefix_ordinal": "2",
+      "basis_order": {
+        "status": "native_prefix_frozen",
+        "reason_code": null
+      }
+    },
+    {
+      "sequence": 2,
+      "input_id": "input-a",
+      "segment_id": "segment-a",
+      "pre_position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "input_prefix_ordinal": "1",
+      "basis_order": {
+        "status": "native_prefix_frozen",
+        "reason_code": null
+      }
+    }
+  ],
+  "same_watermark_fences": [
+    {
+      "sequence": 1,
+      "kind": "pause",
+      "segment_id": "segment-a",
+      "position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "after_input_ordinal": "1"
+    },
+    {
+      "segment_id": "segment-b",
+      "previous_segment_id": "segment-a",
+      "boundary_position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "after_input_ordinal": "1"
+    },
+    {
+      "sequence": 2,
+      "kind": "resume",
+      "segment_id": "segment-b",
+      "position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "after_input_ordinal": "1"
+    }
+  ],
+  "paused_interval": {
+    "epoch_id": "epoch-a",
+    "stream_generation": "stream-a",
+    "after_index": "1",
+    "through_index": "1",
+    "reason": "recording_paused",
+    "after_input_ordinal": "1",
+    "through_input_ordinal": "1"
+  },
+  "successor_epoch_fence": {
+    "epoch_id": "epoch-b",
+    "previous_epoch_id": "epoch-a",
+    "starting_position": {
+      "epoch_id": "epoch-b",
+      "stream_generation": "stream-b",
+      "publication_index": "0"
+    },
+    "after_input_ordinal": "2",
+    "predecessor_seal": {
+      "epoch_id": "epoch-a",
+      "stream_generation": "stream-a",
+      "reserved_through": "1",
+      "completed_through": "1",
+      "after_input_ordinal": "2"
+    }
+  },
+  "pending_at_close": {
+    "sequence": 3,
+    "input_id": "input-c",
+    "epoch_id": "epoch-b",
+    "pre_position": {
+      "epoch_id": "epoch-b",
+      "stream_generation": "stream-b",
+      "publication_index": "1"
+    },
+    "outcome": {
+      "mapping_status": "unmapped",
+      "delivery": "unknown",
+      "reason_code": "session_closed_before_input_completion"
+    },
+    "input_prefix_ordinal": "3",
+    "basis_order": {
+      "status": "native_prefix_frozen",
+      "reason_code": null
+    }
+  },
+  "close_fence": {
+    "kind": "close",
+    "position": {
+      "epoch_id": "epoch-b",
+      "stream_generation": "stream-b",
+      "publication_index": "1"
+    },
+    "after_input_ordinal": "3",
+    "final_input_prefix_ordinal": "3"
+  },
+  "unsafe_native_acquisitions": [
+    {
+      "case": "publication_during_input_prepare",
+      "original_pre_position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "1"
+      },
+      "nested_publication": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "2"
+      },
+      "input_order": {
+        "input_prefix_ordinal": "1",
+        "basis_order": {
+          "status": "unproven",
+          "reason_code": "source_prefix_capture_order_unproven"
+        }
+      },
+      "mapping_status": "capture_missing",
+      "original_delivery": "delivered",
+      "publication_missing_reason": "source_prefix_capture_order_unproven"
+    },
+    {
+      "case": "input_during_reserved_unfrozen_publication",
+      "original_pre_position": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "2"
+      },
+      "ancestor_publication": {
+        "epoch_id": "epoch-a",
+        "stream_generation": "stream-a",
+        "publication_index": "2"
+      },
+      "input_order": {
+        "input_prefix_ordinal": "1",
+        "basis_order": {
+          "status": "unproven",
+          "reason_code": "source_prefix_capture_order_unproven"
+        }
+      },
+      "mapping_status": "capture_missing",
+      "original_delivery": "unknown",
+      "publication_missing_reason": "source_prefix_capture_order_unproven"
+    }
+  ],
+  "encoder_only_backlog": {
+    "original_pre_position": {
+      "epoch_id": "epoch-a",
+      "stream_generation": "stream-a",
+      "publication_index": "1"
+    },
+    "encoder_completed_through": "0",
+    "input_order": {
+      "input_prefix_ordinal": "1",
+      "basis_order": {
+        "status": "native_prefix_frozen",
+        "reason_code": null
+      }
+    },
+    "eligible_native_order": true
+  },
+  "strict_negative_cases": [
+    "duplicate_ordinal",
+    "missing_ordinal",
+    "noncanonical_ordinal",
+    "ordinal_outside_epoch_fences",
+    "ordinal_outside_actor_fences",
+    "input_inside_pause",
+    "changed_original_close_cut",
+    "unproven_with_exact_mapping",
+    "v3_fields_in_v2"
+  ]
+}

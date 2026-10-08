@@ -7,9 +7,13 @@ return args switch
 {
     ["audit", string directory] => Audit(directory),
     ["audit-source-v2", string directory] => AuditSourceV2(directory),
+    ["audit-source-v3", string directory] => AuditSourceV2(directory, 3),
     ["export-source-v2", string directory, string output] => ExportSourceV2(directory, output),
+    ["export-source-v3", string directory, string output] => ExportSourceV2(directory, output, 3),
     ["pack-source-v2", string directory, string worker, string campaign, string output, string revision] =>
         PackSourceV2(directory, worker, campaign, output, revision),
+    ["pack-source-v3", string directory, string worker, string campaign, string output, string revision] =>
+        PackSourceV2(directory, worker, campaign, output, revision, 3),
     ["audit-native-semantic", string directory] => AuditNativeSemantic(directory),
     ["export", string directory, string output] => Export(directory, output),
     ["export-compatibility", string directory, string output] => Export(directory, output, compatibility: true),
@@ -24,20 +28,21 @@ return args switch
     _ => Usage()
 };
 
-static int AuditSourceV2(string directory)
+static int AuditSourceV2(string directory, int version = 2)
 {
-    var audit = SourceSessionAuditV2.Audit(directory);
+    var audit = version == 3 ? SourceSessionAuditV3.Audit(directory) : SourceSessionAuditV2.Audit(directory);
     Console.WriteLine(JsonSerializer.Serialize(audit, EvidenceJson.IndentedOptions));
     return audit.Status == "pass" ? 0 : 1;
 }
-static int ExportSourceV2(string directory, string output)
+static int ExportSourceV2(string directory, string output, int version = 2)
 {
-    var result = SourceSessionBundlePackerV2.Export(directory, output);
+    var result = version == 3 ? SourceSessionBundlePackerV3.Export(directory, output) : SourceSessionBundlePackerV2.Export(directory, output);
     Console.WriteLine(JsonSerializer.Serialize(result, EvidenceJson.IndentedOptions)); return 0;
 }
-static int PackSourceV2(string directory, string worker, string campaign, string output, string revision)
+static int PackSourceV2(string directory, string worker, string campaign, string output, string revision, int version = 2)
 {
-    var result = SourceSessionBundlePackerV2.Pack(directory, worker, campaign, output, revision);
+    var result = version == 3 ? SourceSessionBundlePackerV3.Pack(directory, worker, campaign, output, revision)
+        : SourceSessionBundlePackerV2.Pack(directory, worker, campaign, output, revision);
     Console.WriteLine(JsonSerializer.Serialize(result, EvidenceJson.IndentedOptions)); return 0;
 }
 

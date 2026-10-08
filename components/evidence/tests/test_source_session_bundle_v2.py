@@ -51,7 +51,7 @@ class SourceSessionBundleV2Tests(unittest.TestCase):
     def inventory(directory: Path) -> dict[str, str]:
         return {value.relative_to(directory).as_posix(): sha(value.read_bytes()) for value in sorted(directory.rglob("*")) if value.is_file()}
 
-    def reseal(self) -> None:
+    def reseal(self, *, preserve_counts: bool = False) -> None:
         raw, export = self.bundle / "raw", self.bundle / "export"
         shutil.rmtree(export); export.mkdir()
         for file in STREAMS:
@@ -61,7 +61,8 @@ class SourceSessionBundleV2Tests(unittest.TestCase):
         receipt = self.read("raw/source-close-receipt.json")
         for file in STREAMS:
             data = (raw / file).read_bytes()
-            receipt["counts"][file] = len(data.splitlines()); receipt["stream_sha256"][file] = sha(data)
+            if not preserve_counts: receipt["counts"][file] = len(data.splitlines())
+            receipt["stream_sha256"][file] = sha(data)
         self.write("raw/source-close-receipt.json", receipt)
         identity = self.read("content-identity.json")
         identity["raw_file_sha256"] = self.inventory(raw); identity["export_file_sha256"] = self.inventory(export)
