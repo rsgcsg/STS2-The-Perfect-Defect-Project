@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonObject } from "./json.js";
 import { PlayerEnvironmentHttpError } from "./client.js";
-import { decodePlayerClientRevocation, type PlayerEnvironmentClientRevocation } from "./clientRevocation.js";
+import { decodePlayerClientRevocation, validatePlayerClientRevocationRequest, type PlayerEnvironmentClientRevocation } from "./clientRevocation.js";
 
 interface ControlClientRecord {
   readonly client_session_id: string;
@@ -261,8 +261,10 @@ export class EnvironmentControllerSession {
     if (this.closed) return Promise.reject(new Error("Player Environment controller session is closed"));
     if (!this.registration || !this.environment.revokeClient || !(this.acquireFailed || this.acquireInFlight))
       return Promise.reject(new EnvironmentControlUncertainError("Final revocation requires the original registered uncertain-acquire owner and supported authority route"));
-    const original = { runtimeInstanceId: this.registration.runtime_instance_id,
-      clientSessionId: this.registration.client.client_session_id };
+    const validated = validatePlayerClientRevocationRequest({ runtime_instance_id: this.registration.runtime_instance_id,
+      client_session_id: this.registration.client.client_session_id });
+    const originalRuntimeId = validated.runtime_instance_id as string;
+    const originalClientId = validated.client_session_id as string;
     this.controlEpoch++;
     this.releaseUncertain = true;
     this.acquireFailed = true;
@@ -272,10 +274,10 @@ export class EnvironmentControllerSession {
     // that original client before acknowledging, whichever request wins first.
     const current = Promise.resolve().then(async () => {
       try {
-        const response = await this.environment.revokeClient!(original);
+        const response = await this.environment.revokeClient!({ runtimeInstanceId: originalRuntimeId, clientSessionId: originalClientId });
         const acknowledgement = decodePlayerClientRevocation(response.data);
-        if (acknowledgement.data.runtime_instance_id !== original.runtimeInstanceId ||
-            acknowledgement.data.client_session_id !== original.clientSessionId)
+        if (acknowledgement.data.runtime_instance_id !== originalRuntimeId ||
+            acknowledgement.data.client_session_id !== originalClientId)
           throw new Error("Final client revocation returned another original runtime/client");
         this.originalClientRevoked = true;
         this.closed = true;

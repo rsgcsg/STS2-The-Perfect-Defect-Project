@@ -337,13 +337,15 @@ export class PlayerEnvironmentRestClient {
 
   async revokeClient(input: { runtimeInstanceId: string; clientSessionId: string }): Promise<DecodedPlayerPayload<PlayerEnvironmentClientRevocation>> {
     const body = validatePlayerClientRevocationRequest({ runtime_instance_id: input.runtimeInstanceId, client_session_id: input.clientSessionId });
+    const originalRuntimeId = body.runtime_instance_id;
+    const originalClientId = body.client_session_id;
     let status = 0;
     const raw = await this.request(PLAYER_ENVIRONMENT_CLIENT_REVOCATION_ROUTE,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, false,
       { maxResponseBytes: PLAYER_ENVIRONMENT_CLIENT_REVOCATION_MAX_BYTES, onResponseBytes() {}, onResponseStatus(value) { status = value; } });
     if (status !== 200) throw new PlayerEnvironmentHttpError("Client revocation requires an exact HTTP 200 acknowledgement", status);
     const reply = decodePlayerClientRevocation(raw);
-    if (reply.data.runtime_instance_id !== input.runtimeInstanceId || reply.data.client_session_id !== input.clientSessionId)
+    if (reply.data.runtime_instance_id !== originalRuntimeId || reply.data.client_session_id !== originalClientId)
       throw new Error("Client revocation acknowledgement does not match the original runtime/client");
     return reply;
   }

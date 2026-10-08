@@ -60,6 +60,28 @@ describe("strict final original-client revocation wire", () => {
       await expect(malformed.revokeClient({ runtimeInstanceId: runtime, clientSessionId: original })).rejects.toThrow();
     }
   });
+
+  it("compares a delayed ACK with the validated request scalars even if the caller mutates its input", async () => {
+    const entered = deferred<void>();
+    const proceed = deferred<void>();
+    const input = { runtimeInstanceId: runtime, clientSessionId: original };
+    let actualBody: unknown;
+    const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 1000,
+      (async (_url: string, init: RequestInit) => {
+        actualBody = JSON.parse(String(init.body));
+        entered.resolve();
+        await proceed.promise;
+        return new Response(JSON.stringify(ack({ runtime_instance_id: "foreign-runtime", client_session_id: "foreign-client" })));
+      }) as typeof fetch);
+    const pending = client.revokeClient(input);
+    const rejected = expect(pending).rejects.toThrow(/original runtime\/client/u);
+    await entered.promise;
+    input.runtimeInstanceId = "foreign-runtime";
+    input.clientSessionId = "foreign-client";
+    proceed.resolve();
+    await rejected;
+    expect(actualBody).toEqual({ runtime_instance_id: runtime, client_session_id: original });
+  });
 });
 
 type Lease = { controller_lease_id: string; controller_generation: number; client_session_id: string; expires_at: string };
@@ -282,6 +304,30 @@ describe("one existing coordinator's explicit final uncertain-acquire fence", ()
     expect(count(source, "/api/player-environment/actions")).toBe(1);
     expect(count(source, "/clients/revoke")).toBe(1);
     expect(source.controller.registrationClosed).toBe(true);
+    await source.controller.close();
+  });
+
+  it("keeps original registration and uncertainty when an injected transport mutates its argument to match a foreign ACK", async () => {
+    const source = await harness();
+    source.server.acquire = () => { throw new Error("original acquisition lost"); };
+    await expect(source.controller.credentials()).rejects.toThrow();
+    let suppliedOriginal: unknown;
+    const transport = vi.spyOn(source.client, "revokeClient").mockImplementation(async input => {
+      suppliedOriginal = { ...input };
+      input.runtimeInstanceId = "foreign-runtime";
+      input.clientSessionId = "foreign-client";
+      const foreign = ack({ runtime_instance_id: input.runtimeInstanceId, client_session_id: input.clientSessionId });
+      return { raw: foreign as JsonObject, data: foreign as any };
+    });
+    await expect(source.controller.revokeUncertainClient()).rejects.toBeInstanceOf(EnvironmentControlUncertainError);
+    expect(suppliedOriginal).toEqual({ runtimeInstanceId: runtime, clientSessionId: original });
+    expect(source.controller.clientIdentity()).toMatchObject({ runtimeInstanceId: runtime, clientSessionId: original });
+    expect(source.controller.snapshot()).toMatchObject({ registered: true, client_revoked: false,
+      client_session_closed: false, controller_acquire_uncertain: true, controller_release_uncertain: true });
+    await expect(source.controller.credentials()).rejects.toBeInstanceOf(EnvironmentControlUncertainError);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(count(source, "/controller/acquire")).toBe(1);
+    transport.mockRestore();
     await source.controller.close();
   });
 });
