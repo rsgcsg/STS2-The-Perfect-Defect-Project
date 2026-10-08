@@ -24,7 +24,8 @@ public static class PlatformCollectionHandoff
         if (before.Lifecycle.State is RecordingLifecycleState.Recording or RecordingLifecycleState.Paused
             || before.Continuous?.Armed == true)
         {
-            RecordingCommandResult result = execute(new RecordingCommand(commandId, RecordingCommandKind.Close), expectedSessionId);
+            RecordingCommandResult result = execute(
+                PlatformRecordingCommands.ForStatus(before, RecordingCommandKind.Close, commandId), expectedSessionId);
             if (!result.Accepted)
                 throw new InvalidOperationException("recording_close_rejected:" + result.Code);
         }

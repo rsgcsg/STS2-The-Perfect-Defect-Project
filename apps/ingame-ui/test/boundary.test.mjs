@@ -149,7 +149,8 @@ test("Agent Run uses only existing typed Policy Runtime status and controls", ()
 });
 
 test("Recorder controls use the typed application boundary", () => {
-  assert.match(mod, /RecordingApplicationService\.Instance\.Execute\(command\)/u);
+  assert.match(mod, /PlatformRecordingCommands\.Execute\(new\(runtime, before\.Lifecycle\.SessionId, command\)/u);
+  assert.match(mod, /owner\.QueryStatus, owner\.ExecuteForSession/u);
   assert.match(mod, /RecordingApplicationService\.Instance\.QueryStatus\(\)/u);
   assert.match(mod, /RecordingCommandKind\.StartNewSession/u);
   assert.match(mod, /RecordingLifecycleState\.Recording/u);
@@ -248,7 +249,16 @@ test("recording handoff validates expected session inside the Recorder owner loc
 test("model commands bind the observed Runtime to this game and recovery epoch", () => {
   assert.match(mod, /GetPlayerEnvironmentControlSnapshot\(\).RuntimeInstanceId/u);
   assert.match(mod, /ObserveBindingAsync\(expected, game\)/u);
-  assert.ok(mod.indexOf("binding = await _statusClient.ObserveBindingAsync") < mod.indexOf("var prepared = PlatformCollectionHandoff.Prepare"));
+  const bindingAt = mod.indexOf("binding = await _statusClient.ObserveBindingAsync");
+  const observedSessionAt = mod.lastIndexOf("var recording = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();", bindingAt);
+  const dispatchAt = mod.indexOf("var prepared = await PlatformRecordingCommands.OnMainThread", bindingAt);
+  const handoffAt = mod.indexOf("return PlatformCollectionHandoff.Prepare", dispatchAt);
+  const callbackEnd = mod.indexOf("}, STS2Connector.ConnectorMod.RunOnMainThread);", handoffAt);
+  assert.ok(observedSessionAt >= 0 && observedSessionAt < bindingAt && bindingAt < dispatchAt && dispatchAt < handoffAt && handoffAt < callbackEnd);
+  const callback = mod.slice(dispatchAt, callbackEnd);
+  assert.match(callback, /intent != Interlocked.Read\(ref _policyUiIntent\) \|\| _disposed/u);
+  assert.match(callback, /GetPlayerEnvironmentControlSnapshot\(\)\.RuntimeInstanceId != game/u);
+  assert.match(callback, /Prepare\(recording\.Lifecycle\.SessionId/u);
   assert.match(client, /X-STS2-Game-Instance-ID/u);
   assert.match(client, /X-STS2-Recovery-Epoch/u);
 });
@@ -262,6 +272,6 @@ test("unknown model commands retain a run fence while Human and Stop remain avai
   assert.match(mod, /_endTestButton.Disabled = !\(available \|\| uncertain\)/u);
   assert.match(mod, /_tickButton.Disabled = !available \|\| uncertain/u);
   assert.match(mod, /status.PolicyRuntime\?\.RunId \?\? _displayedPolicyRunId/u);
-  const preparation = mod.slice(mod.indexOf("binding = await _statusClient.ObserveBindingAsync"), mod.indexOf("var prepared = PlatformCollectionHandoff.Prepare"));
+  const preparation = mod.slice(mod.indexOf("binding = await _statusClient.ObserveBindingAsync"), mod.indexOf("return PlatformCollectionHandoff.Prepare"));
   assert.match(preparation, /intent != Interlocked.Read\(ref _policyUiIntent\) \|\| _disposed/u);
 });

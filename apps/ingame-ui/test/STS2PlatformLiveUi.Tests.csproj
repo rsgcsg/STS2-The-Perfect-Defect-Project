@@ -12,6 +12,9 @@
     <Compile Include="../PlatformLiveUiMount.cs" Link="PlatformLiveUiMount.cs" />
     <Compile Include="../PlatformLiveActionFeed.cs" Link="PlatformLiveActionFeed.cs" />
     <Compile Include="../PlatformCollectionHandoff.cs" Link="PlatformCollectionHandoff.cs" />
+    <Compile Include="../PlatformRecordingCommands.cs" Link="PlatformRecordingCommands.cs" />
+    <Compile Include="../../game-mod/PlatformTaskBridge.cs" Link="PlatformTaskBridge.cs" />
+    <Compile Include="../../../components/connector/host/MainThreadWorkQueue.cs" Link="MainThreadWorkQueue.cs" />
     <Compile Include="../PlatformPolicyCommands.cs" Link="PlatformPolicyCommands.cs" />
     <Compile Include="../PlatformPolicyBinding.cs" Link="PlatformPolicyBinding.cs" />
     <Compile Include="../PlatformPolicyTransport.cs" Link="PlatformPolicyTransport.cs" />
