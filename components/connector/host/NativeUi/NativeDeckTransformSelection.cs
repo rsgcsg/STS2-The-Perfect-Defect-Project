@@ -184,9 +184,8 @@ internal static class NativeDeckTransformSelection
                                 && previewCancel.IsEnabled
                                 && ConnectorMod.IsNodeVisible(previewCancel);
         bool canConfirm = stage == "preview"
-                          && previewConfirm.IsEnabled
-                          && ConnectorMod.IsNodeVisible(previewConfirm)
-                          && selected.Count >= prefs.MinSelect;
+                          && NativeSelectorControl.Available(previewConfirm,
+                              control => control.IsEnabled && ConnectorMod.IsNodeVisible(control));
         var surface = new DeckTransformSelectionSurface(
             SurfaceKind,
             stage,
