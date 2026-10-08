@@ -90,6 +90,10 @@
       "contract_paths": [
         "PlatformLiveContracts.cs",
         "PlatformLiveStatusClient.cs",
+        "PlatformRuntimeContracts.cs",
+        "PlatformPolicyBinding.cs",
+        "PlatformNativeWorkbenchPair.cs",
+        "PlatformRecordingCommands.cs",
         "PlatformWorkbenchOpen.cs"
       ]
     },
