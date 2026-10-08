@@ -6,18 +6,22 @@ An unfinished journal is observed as interrupted after restart, never replayed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
+import tempfile
 import threading
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Payload
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
@@ -51,7 +55,8 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
     return stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)
 
 
-def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False) -> Path:
+def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
+                 structured: bool = False) -> Path:
     state = config.state_dir
     if not _ordinary(state, directory=True):
         raise BoundaryError("local_model_export", "unsafe_export_root")
@@ -65,9 +70,10 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False) 
     if target.exists() or target.is_symlink():
         if not _ordinary(target, directory=True):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
-        names = (("model.json", "weights.tensor-tree", "tokenizer.json") if memory
+        names = (("model.json", "weights.tensor-tree") if structured else
+                 ("model.json", "weights.tensor-tree", "tokenizer.json") if memory
                  else ("model.json", "weights.safetensors", "tokenizer.json"))
-        if memory and {path.name for path in target.iterdir()} != set(names):
+        if (memory or structured) and {path.name for path in target.iterdir()} != set(names):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
         for name in names:
             if not _ordinary(target / name, directory=False):
@@ -186,6 +192,78 @@ def _verify_export(store: Any, model: Manifest, destination: Path) -> int:
     return sum(item.size for item in model.payloads)
 
 
+class _DownloadedStructuredModel:
+    """A result cache with only own payloads; never masquerades as a lineage store."""
+
+    def __init__(self, directory: Path, identity: str) -> None:
+        if not _ordinary(directory, directory=True) or not _ordinary(
+                directory / "manifest.json", directory=False):
+            raise BoundaryError("local_model_export", "unsafe_download_cache")
+        self.model = Manifest.from_bytes((directory / "manifest.json").read_bytes(), identity)
+        if not _ordinary(directory / "download.json", directory=False):
+            raise BoundaryError("local_model_export", "unsafe_download_cache")
+        receipt = json.loads((directory / "download.json").read_bytes())
+        if (not isinstance(receipt, dict)
+                or receipt.get("schema") != "stpd/result-download-v1"
+                or receipt.get("artifact_id") != identity
+                or self.model.kind != "model"
+                or self.model.parameters.value().get("schema") != "stpd/structured-m2-model-v1"):
+            raise BoundaryError("local_model_export", "structured_download_required")
+        self.directory = directory
+        self.blobs = SimpleNamespace(root=directory)
+
+    def get_manifest(self, identity: str) -> Manifest:
+        if identity != self.model.artifact_id:
+            raise BoundaryError("local_model_export", "private_ancestry_unavailable")
+        return self.model
+
+    def bytes(self, payload: Payload, *, maximum: int) -> bytes:
+        path = self.directory / (payload.sha256 + ".bin")
+        if (payload not in self.model.payloads or payload.size > maximum
+                or not _ordinary(path, directory=False) or path.stat().st_size != payload.size):
+            raise BoundaryError("local_model_export", "download_payload_invalid")
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != payload.sha256:
+            raise BoundaryError("local_model_export", "download_payload_integrity")
+        return raw
+
+
+def _structured_package(store: Any, model: Manifest, destination: Path, *,
+                        materialize: bool = False) -> int:
+    """Consume only authorized closed model bytes, without opening training ancestry."""
+    from stpd.policy.structured_export import (
+        MAX_MANIFEST_BYTES,
+        MAX_WEIGHTS_BYTES,
+        load_structured_package,
+    )
+
+    info = model.parameters.value()
+    if (model.kind != "model" or info.get("schema") != "stpd/structured-m2-model-v1"
+            or {item.role for item in model.payloads} != {"package_manifest", "weights"}):
+        raise BoundaryError("local_model_export", "structured_model_required")
+    payloads = (("package_manifest", "model.json", MAX_MANIFEST_BYTES),
+                ("weights", "weights.tensor-tree", MAX_WEIGHTS_BYTES))
+    with tempfile.TemporaryDirectory(prefix="structured-package-", dir=destination.parent) as tmp:
+        checked = Path(tmp)
+        for role, name, limit in payloads:
+            payload = model.payload(role)
+            raw = store.bytes(payload, maximum=limit)
+            (checked / name).write_bytes(raw)
+        package, _ = load_structured_package(checked)
+        if info.get("model_id") != package["model_id"]:
+            raise BoundaryError("local_model_export", "export_identity_mismatch")
+        if destination.exists() or destination.is_symlink():
+            load_structured_package(destination)
+            if any((destination / name).read_bytes() != (checked / name).read_bytes()
+                   for _, name, _ in payloads):
+                raise BoundaryError("local_model_export", "export_identity_mismatch")
+        elif materialize:
+            shutil.copytree(checked, destination)
+        else:
+            raise BoundaryError("local_model_export", "verified_export_required")
+    return sum(item.size for item in model.payloads)
+
+
 class LocalModelExport:
     """One durable slot; only explicit POST may export or reconcile it."""
 
@@ -206,6 +284,20 @@ class LocalModelExport:
         if not isinstance(selected, LocalWorkspace):
             raise BoundaryError("local_model_export", "workspace_required")
         return selected
+
+    def _source(self, identity: str) -> Any:
+        download_root = self.config.state_dir / "downloads"
+        if download_root.is_symlink():
+            raise BoundaryError("local_model_export", "unsafe_download_cache")
+        directory = download_root / identity
+        if directory.exists() or directory.is_symlink():
+            if not _ordinary(directory, directory=True) or not _ordinary(
+                    directory / "manifest.json", directory=False):
+                raise BoundaryError("local_model_export", "unsafe_download_cache")
+            cached = Manifest.from_bytes((directory / "manifest.json").read_bytes(), identity)
+            if cached.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+                return _DownloadedStructuredModel(directory, identity)
+        return self._workspace().store
 
     def _memory_owner(self, store: Any) -> Any:
         owner, selected_store, _ = LocalDatasetService(self.config)._selected()
@@ -301,8 +393,9 @@ class LocalModelExport:
             value = self._read()
             result = self._public(value)
             try:
-                selected = self._workspace()
-                root = getattr(getattr(selected.store, "blobs", None), "root", None)
+                selected = (self._source(value["model_id"])
+                            if value.get("model_type") == "structured" else self._workspace().store)
+                root = getattr(getattr(selected, "blobs", None), "root", None)
                 result["availability"] = (
                     "ready" if value["status"] == "idle" or str(root) == value["store_root"]
                     else "workspace_changed"
@@ -319,16 +412,19 @@ class LocalModelExport:
             operation = self._read()
             if operation.get("status") != "completed" or operation.get("model_id") != identity:
                 raise BoundaryError("local_model_export", "verified_export_required")
-            workspace = self._workspace()
-            root = getattr(getattr(workspace.store, "blobs", None), "root", None)
+            source = self._source(identity)
+            root = getattr(getattr(source, "blobs", None), "root", None)
             if not isinstance(root, Path) or operation["store_root"] != str(root):
                 raise BoundaryError("local_model_export", "workspace_changed")
-            model = workspace.store.get_manifest(identity)
+            model = source.get_manifest(identity)
             if model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1":
                 raise BoundaryError("local_model_export", "memory_registration_not_ready")
-            _eligible(model)
             destination = self.config.state_dir / EXPORT_ROOT / identity
-            _verify_export(workspace.store, model, destination)
+            if model.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+                _structured_package(source, model, destination)
+                return destination
+            _eligible(model)
+            _verify_export(source, model, destination)
             return destination
 
     def verified_memory_for_registration(self, model_id: object, *,
@@ -470,8 +566,7 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "export_in_progress")
             if previous["status"] == "pending" and previous["model_id"] != identity:
                 raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
-            workspace = self._workspace()
-            store = workspace.store
+            store = self._source(identity)
             root = getattr(getattr(store, "blobs", None), "root", None)
             if not isinstance(root, Path):
                 raise BoundaryError("local_model_export", "unsupported_workspace_store")
@@ -482,7 +577,8 @@ class LocalModelExport:
             require_local_models("local_model_export")
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
-            if not memory:
+            structured = model.parameters.value().get("schema") == "stpd/structured-m2-model-v1"
+            if not memory and not structured:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
             if lock_path.is_symlink() or (lock_path.exists()
@@ -496,11 +592,14 @@ class LocalModelExport:
                     raise BoundaryError("local_model_export", "export_in_progress") from error
                 raise
             try:
-                destination = _destination(self.config, identity, memory=memory)
+                destination = _destination(self.config, identity, memory=memory,
+                                           structured=structured)
                 operation = {"schema": SCHEMA_V2 if memory else SCHEMA,
                              "status": "pending",
                              "operation_id": uuid.uuid4().hex, "model_id": identity,
                              "store_root": str(root)}
+                if structured:
+                    operation.update(model_type="structured")
                 if memory:
                     assert run_id is not None
                     operation.update(model_type="memory", run_id=run_id)
@@ -572,7 +671,9 @@ class LocalModelExport:
             child_started = True
 
         try:
-            if run_id is None:
+            if model.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+                count = _structured_package(store, model, destination, materialize=True)
+            elif run_id is None:
                 from stpd.policy.token_decision import export_token_model
 
                 if not destination.exists():
