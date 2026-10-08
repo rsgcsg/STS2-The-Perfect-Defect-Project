@@ -24,7 +24,7 @@ public sealed record NativeLogicalProjectionOutcome(string ScopeId, NativeLogica
     string? MissingReason, bool CatalogNonempty = false);
 
 /// <summary>Bounded source metadata and immutable scoped projections. No native capture or dispatch occurs here.</summary>
-public sealed class NativeLogicalPublicationHub : IDisposable
+public sealed partial class NativeLogicalPublicationHub : IDisposable
 {
     private sealed class Subscription(string client, NativeLogicalSubscription value, long deadline)
     {
@@ -32,10 +32,12 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         internal readonly HashSet<string> WaitIds = new(StringComparer.Ordinal);
         internal IReadOnlyDictionary<string, NativeLogicalSeamCoverage> AdvertisedCoverage = new Dictionary<string, NativeLogicalSeamCoverage>();
     }
-    private sealed class Slot(ulong index, string seam, string phase, string sourceIndex, string kind, long deadline, string[] subscriptionIds)
+    private sealed class Slot(ulong index, string seam, string phase, string sourceIndex, string kind, long deadline,
+        string[] subscriptionIds, IReadOnlyList<string> originalScopes)
     {
         internal ulong Index = index; internal string Seam = seam, Phase = phase, SourceIndex = sourceIndex, Kind = kind;
         internal long Deadline = deadline; internal string[] Subscriptions = subscriptionIds;
+        internal readonly IReadOnlyList<string> OriginalScopes = originalScopes;
         internal bool Completed;
         internal readonly Dictionary<string, NativeLogicalProjectionOutcome> Outcomes = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal);
@@ -203,9 +205,13 @@ public sealed class NativeLogicalPublicationHub : IDisposable
                 ReleasePins(previous); retainedStart = previous.Index + 1;
                 if (high < previous.Index) high = previous.Index; // overwritten reserved interval is now an explicit gap
             }
-            string[] ids = onlySubscriptions ?? subscriptions.Keys.ToArray();
+            // A recorder observes the same original bootstrap occurrence as another attaching reader.
+            // No extra source position or later Current repair is introduced.
+            string[] ids = onlySubscriptions is null ? subscriptions.Keys.ToArray()
+                : onlySubscriptions.Concat(SelectedSourceSubscriptionIds()).Distinct(StringComparer.Ordinal).ToArray();
             ring[position] = new Slot(index, sourceSeam, phase, NativeLogicalWire.Number(source), kind,
-                checked(clock() + limits.EncodingDeadlineMs), ids);
+                checked(clock() + limits.EncodingDeadlineMs), ids,
+                Array.AsReadOnly(ids.Select(id => subscriptions[id].Value.ScopeId).ToArray()));
             AdvanceHigh(); EvaluateWaiters();
             return new(generation, NativeLogicalWire.Number(index), sourceSeam, phase,
                 NativeLogicalWire.Number(source), Array.AsReadOnly(ids.Select(id => subscriptions[id].Value).ToArray()));
@@ -217,12 +223,15 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         lock (gate)
         {
             TickLocked();
-            if (reservation.StreamGeneration != generation || !ulong.TryParse(reservation.PublicationIndex, out ulong index)) return false;
+            if (reservation.StreamGeneration != generation)
+                return CompleteRetiringSourceReservation(reservation, outcomes);
+            if (!ulong.TryParse(reservation.PublicationIndex, out ulong index)) return false;
             Slot? slot = FindSlot(index);
-            if (slot is null || slot.Completed) return false;
+            if (slot is null || slot.Completed) return CompleteRetiringSourceReservation(reservation, outcomes);
             if (outcomes.Select(o => o.ScopeId).Distinct().Count() != outcomes.Count) throw new NativeLogicalException("invalid_projection", "Duplicate scope outcomes.");
             // Validate the whole response before any pin or event state changes.
             var expectedScopes = slot.Subscriptions.Where(subscriptions.ContainsKey).Select(id => subscriptions[id].Value.ScopeId).ToHashSet(StringComparer.Ordinal);
+            expectedScopes.UnionWith(RetiringSourceScopes(reservation));
             foreach (var outcome in outcomes)
             {
                 if (!expectedScopes.Contains(outcome.ScopeId)) throw new NativeLogicalException("invalid_projection", "Outcome is not bound to an accepted projection scope.");
@@ -254,7 +263,8 @@ public sealed class NativeLogicalPublicationHub : IDisposable
                 else if (outcome.CatalogNonempty) outcome = outcome with { CatalogNonempty = false };
                 slot.Outcomes.Add(id, outcome);
             }
-            slot.Completed = true; AdvanceHigh(); EvaluateWaiters(); return true;
+            CompleteRetiringSourceReservation(reservation, outcomes);
+            slot.Completed = true; AdvanceHigh(); EvaluateWaiters(); SignalSourceProgress(); return true;
         }
     }
     public NativeLogicalEventBatch Events(string client, string subscriptionId, string scopeId, string afterCursor, int? limit = null)
@@ -360,14 +370,18 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         long now = clock();
         foreach (Waiter waiter in waiters.Values.ToArray()) FinishExpired(waiter, now);
         foreach (var pair in subscriptions.Where(s => now >= s.Value.Deadline).ToArray()) RemoveSubscription(pair.Key, "subscription_expired");
+        bool projectionsTimedOut = false;
         foreach (Slot slot in ring.OfType<Slot>())
             if (!slot.Completed && now >= slot.Deadline)
             {
                 foreach (string id in slot.Subscriptions)
                     if (subscriptions.TryGetValue(id, out var sub)) slot.Outcomes[id] = new(sub.Value.ScopeId, null, "encoding_timeout");
                 slot.Completed = true;
+                projectionsTimedOut = true;
             }
         AdvanceHigh(); EvaluateWaiters();
+        if (projectionsTimedOut) SignalSourceProgress();
+        TickRetiringSourceViews(now);
 
     }
     private void AdvanceHigh()
@@ -460,6 +474,12 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     }
     private void RemoveSubscription(string id, string status)
     {
+        if (status == "subscription_expired" && sourceRegistration?.ActiveSubscription == id)
+        {
+            sourceRegistration.Failure = "source_subscription_expired";
+            sourceRegistration.ActiveSubscription = null;
+            SignalSourceProgress();
+        }
         foreach (Waiter waiter in waiters.Values.Where(w => w.Subscription == id).ToArray())
             if (!FinishExpired(waiter, clock())) Finish(waiter, new(status, null, null, null));
         if (subscriptions.Remove(id, out var removed)) waitIdMetadataBytes -= (long)removed.WaitIds.Count * WaitIdMetadataCharge;
@@ -471,12 +491,14 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     public void ChangeGeneration() { lock (gate) ChangeGenerationLocked(); }
     private void ChangeGenerationLocked()
     {
+        RetireSourceBeforeGenerationChange();
         foreach (Waiter waiter in waiters.Values.ToArray())
             if (!FinishExpired(waiter, clock())) Finish(waiter, new("generation_changed", null, null, null));
         foreach (Slot slot in ring.OfType<Slot>()) ReleasePins(slot);
         subscriptions.Clear(); waitIdMetadataBytes = 0; seamIndices.Clear(); Array.Clear(ring); reserved = high = 0; retainedStart = 1;
         generation = NativeLogicalWire.Id("stream");
+        SignalSourceProgress();
     }
     public void Dispose()
-    { lock (gate) { if (disposed) return; ChangeGenerationLocked(); disposed = true; } timer.Dispose(); }
+    { lock (gate) { if (disposed) return; DisposeSourceRegistration(); ChangeGenerationLocked(); disposed = true; } timer.Dispose(); }
 }
