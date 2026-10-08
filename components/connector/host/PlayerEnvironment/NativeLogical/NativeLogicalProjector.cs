@@ -5,6 +5,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture;
+
 /// <summary>Input already extracted at an actual native seam; no getters or dispatch callbacks.</summary>
 public sealed record NativeLogicalSourceCompleteness(string Status, IReadOnlyList<string> Missing);
 
@@ -99,6 +101,33 @@ public sealed class NativeLogicalProjector
     {
         var projection = Freeze(frame, scope, scopeId, observedAt, retentionDeadline, clock);
         return store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt);
+    }
+    // Source owner supplies an already-frozen current frame; this performs no native getter or input.
+    public NativeLogicalCurrentReply Current(NativeLogicalPublicFrame frame,
+        NativeLogicalCurrentRequest request, DateTimeOffset observedAt, long retentionDeadline,
+        Func<long> clock, NativeLogicalCaptureStore store, string? gameContinuityId = null)
+    {
+        try
+        {
+            NativeLogicalWire.Text(request.ClientSessionId, limits.MaxMetadataFieldBytes);
+            if (gameContinuityId is not null) NativeLogicalWire.Text(gameContinuityId, limits.MaxMetadataFieldBytes);
+            string scopeId = NativeLogicalWire.Id("scope");
+            var projection = Freeze(frame, request.EagerScope, scopeId, observedAt, retentionDeadline, clock);
+            if (request.ExpectedSnapshotId is not null && request.ExpectedSnapshotId != projection.SnapshotId)
+                return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "stale", null, null, null, "stale_snapshot");
+            var sealedProjection = store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt);
+            var context = new NativeLogicalObservationContext(NativeLogicalContract.ContextSchema,
+                NativeLogicalContract.Profile, sealedProjection.Capture.SnapshotId, sealedProjection.Capture.CaptureId,
+                gameContinuityId, frame.StreamGeneration, null);
+            string status = request.EagerScope.Count == 4 ? "captured" : "partial";
+            return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, status, context,
+                sealedProjection.Capture, null, status == "partial" ? "scope_omission" : null);
+        }
+        catch (NativeLogicalException e)
+        {
+            string status = e.Code is "capacity_exceeded" or "source_capture_incomplete" ? e.Code : "failed";
+            return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, status, null, null, null, e.Code);
+        }
     }
     private void ValidateFrameScalars(NativeLogicalPublicFrame frame)
     {

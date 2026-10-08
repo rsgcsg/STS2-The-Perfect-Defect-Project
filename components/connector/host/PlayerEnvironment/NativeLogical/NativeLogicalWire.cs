@@ -92,6 +92,13 @@ public static class NativeLogicalDecoder
             [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalEventBatch)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.EventBatchSchema,
             [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalAwaitReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.AwaitSchema,
             [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalResult)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.ResultSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalObservationContext)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.ContextSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCurrentReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.CurrentSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalRenewReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.RenewSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCancelWaitReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.CancelWaitSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalDetachReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.DetachSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalRetainReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.RetainSchema,
+            [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalReleaseReply)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.ReleaseSchema,
             [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapabilities)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.CapabilitiesSchema
         };
 
@@ -171,6 +178,7 @@ public static class NativeLogicalDecoder
         if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalResult))
         {
             Delivery(value.GetProperty("delivery"));
+            if (value.GetProperty("retry").GetString() != "never_automatic") throw new JsonException("Native result never authorizes automatic retry.");
             if (value.GetProperty("stages").GetArrayLength() > STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.MaxInputStages) throw new JsonException("Too many known input stages.");
         }
         if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalInputStage))
@@ -198,5 +206,59 @@ public static class NativeLogicalDecoder
             if (!value.TryGetProperty(field.Name, out JsonElement child)) throw new JsonException("Required explicit field is missing.");
             ValidateShape(child, field.Nullability.Type, field.Nullability);
         }
+        ValidateEnvelope(value, type);
     }
+    private static void Same(JsonElement left, string leftName, JsonElement right, string rightName)
+    { if (left.GetProperty(leftName).GetString() != right.GetProperty(rightName).GetString()) throw new JsonException("Frozen reference identities differ."); }
+    private static void CaptureJoin(JsonElement reference, JsonElement capture)
+    {
+        Same(reference, "observation_ref", capture, "snapshot_id"); Same(reference, "capture_ref", capture, "capture_id");
+        Same(reference, "stream_generation", capture, "stream_generation"); Same(reference, "input_profile", capture, "input_profile");
+    }
+    private static void RetentionJoin(JsonElement retention, JsonElement capture)
+    {
+        JsonElement original = retention.GetProperty("capture");
+        foreach (string name in new[] { "capture_id", "snapshot_id", "stream_generation", "scope_id", "input_profile", "sha256", "read_cursor", "capture_ordinal", "captured_at", "expires_at" }) Same(original, name, capture, name);
+        Same(original.GetProperty("session"), "runtime_instance_id", capture.GetProperty("session"), "runtime_instance_id");
+        Same(original.GetProperty("session"), "environment_fingerprint", capture.GetProperty("session"), "environment_fingerprint");
+        if (original.GetProperty("byte_count").GetInt32() != capture.GetProperty("byte_count").GetInt32()) throw new JsonException("Frozen byte counts differ.");
+    }
+    private static void ValidateEnvelope(JsonElement value, Type type)
+    {
+        string? Status() => value.GetProperty("status").GetString();
+        bool Null(string name) => value.GetProperty(name).ValueKind == JsonValueKind.Null;
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCurrentReply))
+        {
+            if (Status() is not ("captured" or "partial" or "stale" or "capacity_exceeded" or "source_capture_incomplete" or "failed")) throw new JsonException("Unknown Current disposition.");
+            if (Status() == "captured" && (Null("context") || Null("capture") || !Null("reason"))) throw new JsonException("Captured Current requires its coherent references.");
+            if (Status() == "partial" && (Null("context") || Null("capture") || value.GetProperty("reason").GetString() != "scope_omission")) throw new JsonException("Partial Current is a real requested-scope view with an explicit omission reason.");
+            if (Status() is not ("captured" or "partial") && (!Null("context") || !Null("capture") || !Null("retention") || Null("reason"))) throw new JsonException("Failed Current has no captured references and requires its explicit reason.");
+            if (!Null("context") && !Null("capture")) CaptureJoin(value.GetProperty("context"), value.GetProperty("capture"));
+            if (!Null("retention"))
+            { if (Null("capture")) throw new JsonException("Retention requires its actual capture."); RetentionJoin(value.GetProperty("retention"), value.GetProperty("capture")); }
+        }
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalRetainReply))
+        {
+            if (Status() is not ("retained" or "payload_expired" or "capacity_exceeded")) throw new JsonException("Unknown retention disposition.");
+            if (Status() == "retained" && (Null("retention") || !Null("reason"))) throw new JsonException("Retained reply needs a fresh reader reference.");
+            if (Status() != "retained" && (!Null("retention") || Null("reason"))) throw new JsonException("Failed retention cannot fabricate a reference.");
+        }
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalReleaseReply))
+        {
+            if (Status() != "released" || !value.GetProperty("released").GetBoolean() || !Null("reason")) throw new JsonException("Release is an idempotent own-handle disposition.");
+        }
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCancelWaitReply))
+        {
+            if (Status() is not ("cancelled" or "not_pending") || value.GetProperty("cancelled").GetBoolean() != (Status() == "cancelled")) throw new JsonException("Cancellation reply must preserve the actual pending-wait disposition.");
+        }
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalDetachReply) && Status() != "detached") throw new JsonException("Unknown detach disposition.");
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalRenewReply))
+        {
+            if (Status() is not ("renewed" or "subscription_expired")) throw new JsonException("Unknown renewal disposition.");
+            if (Status() == "renewed")
+            { if (Null("subscription") || Null("next_cursor") || Null("high_watermark") || Null("retained_start_cursor") || !Null("reason")) throw new JsonException("Renewal needs its live resource and position."); }
+            else if (!Null("subscription") || !Null("next_cursor") || !Null("high_watermark") || !Null("retained_start_cursor") || !Null("gap") || Null("reason")) throw new JsonException("Expired subscriptions cannot be revived.");
+        }
+    }
+
 }

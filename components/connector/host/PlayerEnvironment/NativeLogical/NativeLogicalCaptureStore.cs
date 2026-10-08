@@ -6,6 +6,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture;
+
 /// <summary>Frozen public bytes only. Shared references charge one actual owned buffer until its last owner releases.</summary>
 public sealed class NativeLogicalCaptureStore
 {
@@ -163,6 +165,17 @@ public sealed class NativeLogicalCaptureStore
     }
     public NativeLogicalCatalog Catalog(string captureId)
     { lock (gate) { SweepLocked(); return Find(captureId).Catalog ?? throw new NativeLogicalException("not_captured", "No catalog was retained for this scope."); } }
+    public NativeLogicalCatalog CatalogByReference(string catalogRef)
+    {
+        lock (gate)
+        {
+            SweepLocked();
+            var catalog = captures.Values.Select(entry => entry.Catalog)
+                .Concat(handles.Values.Select(handle => handle.Entry.Catalog))
+                .FirstOrDefault(catalog => catalog?.Descriptor.CatalogRef == catalogRef);
+            return catalog ?? throw new NativeLogicalException("expired", "No live capture or reader handle retains this catalog reference.");
+        }
+    }
     public bool IsAvailable(string captureId)
     { lock (gate) { SweepLocked(); return TryFind(captureId) is not null; } }
     public string Retain(string clientSessionId, string captureId)
@@ -187,6 +200,23 @@ public sealed class NativeLogicalCaptureStore
             Handle value = handles[handle];
             var capture = value.Entry.Capture;
             return new(handle, capture, cursors.Create(Binding(captureId, capture.Sha256, capture.StreamGeneration, capture.ScopeId), 0, value.Deadline), DateTimeOffset.UtcNow.AddMilliseconds(limits.RetentionMs));
+        }
+    }
+    public NativeLogicalRetainReply RetainPublic(NativeLogicalRetainRequest request)
+    {
+        try { return new(NativeLogicalContract.RetainSchema, NativeLogicalContract.Profile, "retained", RetainReference(request.ClientSessionId, request.CaptureId), null); }
+        catch (NativeLogicalException e) when (e.Code is "payload_expired" or "capacity_exceeded")
+        { return new(NativeLogicalContract.RetainSchema, NativeLogicalContract.Profile, e.Code, null, e.Code); }
+    }
+    public NativeLogicalReleaseReply ReleasePublic(NativeLogicalReleaseRequest request)
+    {
+        lock (gate)
+        {
+            SweepLocked();
+            if (handles.TryGetValue(request.RetentionHandleId, out var handle) && handle.Client != request.ClientSessionId)
+                throw new NativeLogicalException("cursor_mismatch", "This retention handle belongs to another client.");
+            Release(request.ClientSessionId, request.RetentionHandleId);
+            return new(NativeLogicalContract.ReleaseSchema, NativeLogicalContract.Profile, "released", request.RetentionHandleId, true, null);
         }
     }
     public void Release(string clientSessionId, string retentionHandle)
