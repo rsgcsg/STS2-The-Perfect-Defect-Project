@@ -1,7 +1,7 @@
 """Existing bounded deterministic original-byte transport, shared without admission.
 
 Archives preserve originals; extraction grants no origin, research or use authority.
-The historical Platform bundle adapter imports these same helpers unchanged.
+The historical Platform bundle adapter delegates here with its original limits.
 """
 
 from __future__ import annotations
@@ -20,13 +20,15 @@ MAX_BYTES = 256 * 1024 * 1024
 MAX_FILES = 20000
 
 
-def archive_bundle(directory: Path) -> bytes:
+def archive_bundle(
+    directory: Path, *, max_bytes: int = MAX_BYTES, max_files: int = MAX_FILES
+) -> bytes:
     """Deterministic transport of an existing bundle; does not edit or attest it."""
     paths = sorted(directory.rglob("*"))
     if any(p.is_symlink() for p in paths):
         raise BoundaryError("source_archive", "symlink_forbidden")
     files = [p for p in paths if p.is_file()]
-    if len(files) > MAX_FILES or sum(p.stat().st_size for p in files) > MAX_BYTES:
+    if len(files) > max_files or sum(p.stat().st_size for p in files) > max_bytes:
         raise BoundaryError("source_archive", "size_limit")
     target = io.BytesIO()
     with (
@@ -42,8 +44,10 @@ def archive_bundle(directory: Path) -> bytes:
     return target.getvalue()
 
 
-def _extract(raw: bytes, directory: Path) -> None:
-    if len(raw) > MAX_BYTES:
+def _extract(
+    raw: bytes, directory: Path, *, max_bytes: int = MAX_BYTES, max_files: int = MAX_FILES
+) -> None:
+    if len(raw) > max_bytes:
         raise BoundaryError("source_archive", "size_limit")
     try:
         # Bound the entire decompressed stream, including PAX/longname headers
@@ -53,16 +57,18 @@ def _extract(raw: bytes, directory: Path) -> None:
             with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as compressed:
                 while chunk := compressed.read(1024 * 1024):
                     total_expanded += len(chunk)
-                    if total_expanded > MAX_BYTES:
+                    if total_expanded > max_bytes:
                         raise BoundaryError("source_archive", "expanded_size_limit")
                     expanded.write(chunk)
             expanded.seek(0)
-            _extract_tar(expanded, directory)
+            _extract_tar(expanded, directory, max_bytes=max_bytes, max_files=max_files)
     except (tarfile.TarError, gzip.BadGzipFile, EOFError, zlib.error) as error:
         raise BoundaryError("source_archive", "invalid_archive") from error
 
 
-def _extract_tar(expanded: Any, directory: Path) -> None:
+def _extract_tar(
+    expanded: Any, directory: Path, *, max_bytes: int = MAX_BYTES, max_files: int = MAX_FILES
+) -> None:
     # Streaming mode prevents a malicious metadata size from issuing an enormous
     # direct file read, even though the expanded archive is already disk-bounded.
     with tarfile.open(fileobj=expanded, mode="r|") as archive:
@@ -70,7 +76,7 @@ def _extract_tar(expanded: Any, directory: Path) -> None:
         total = 0
         for info in archive:
             total += info.size
-            if len(names) >= MAX_FILES or total > MAX_BYTES:
+            if len(names) >= max_files or total > max_bytes:
                 raise BoundaryError("source_archive", "size_limit")
             path = PurePosixPath(info.name)
             folded = info.name.casefold()

@@ -106,6 +106,9 @@ checkpoint/model. Verification replays each selected original archive and compar
 the projected bytes and report. Changed verifier/spec/code produces new identities;
 old report bytes are not upgraded. The ordinary projected parser proves model
 semantics, not the raw archive join; its capsule-byte metric remains false.
+The admission identity hashes a fixed local dependency inventory, including the
+native qualifier, task predicate and archive limits, plus the installed Evidence
+owner's original Source3 verifier files. Application UI changes do not alter it.
 
 The import API is `publish_ordered_source_raw` with the exact original recorder
 Producer, then `publish_ordered_source_admission` with an explicit cohort and

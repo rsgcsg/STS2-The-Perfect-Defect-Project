@@ -210,6 +210,28 @@ def test_existing_gold_original_epoch_family_stays_reserved(tmp_path):
         owner.reserve_verified_ordered_source(store, train.manifest.artifact_id)
 
 
+def test_admission_identity_covers_native_task_qualifier_and_transport_code(tmp_path):
+    for relative in sources.PROJECTION_FILES:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    original = sources.verifier_identity(tmp_path)
+    for relative in (
+        "stpd/policy/native_task.py",
+        "stpd/fullrun/native_structured_sequences.py",
+        "spireagent/storage/archives.py",
+    ):
+        target = tmp_path / relative
+        before = target.read_bytes()
+        target.write_bytes(before + b"\n# changed exact admission code\n")
+        assert sources.verifier_identity(tmp_path) != original
+        target.write_bytes(before)
+    unrelated = tmp_path / "spireagent/workbench/local_models.py"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_bytes(b"# unrelated application owner\n")
+    assert sources.verifier_identity(tmp_path) == original
+
+
 @pytest.fixture
 def completed(tmp_path):
     store, owner = setup_store(tmp_path)

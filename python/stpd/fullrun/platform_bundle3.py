@@ -20,11 +20,9 @@ from sts2_platform_evidence.human_session_bundle_v3 import (
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
 from spireagent.local_verified_bundle import VerifiedLocalBundle
+from spireagent.storage import archives
 from spireagent.storage.archives import MAX_BYTES as MAX_BYTES
 from spireagent.storage.archives import MAX_FILES as MAX_FILES
-from spireagent.storage.archives import _extract as _extract
-from spireagent.storage.archives import _extract_tar as _extract_tar
-from spireagent.storage.archives import archive_bundle as archive_bundle
 
 from ..canonical import semantic_hash
 from .contracts import (
@@ -63,6 +61,19 @@ def _load(path: Path) -> dict[str, Any]:
 
 def _lines(path: Path) -> list[dict[str, Any]]:
     return [decode_json(line) for line in path.read_bytes().splitlines() if line.strip()]
+
+
+def archive_bundle(directory: Path) -> bytes:
+    """Preserve the legacy adapter's public transport and capacity boundary."""
+    return archives.archive_bundle(directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
+
+
+def _extract(raw: bytes, directory: Path) -> None:
+    archives._extract(raw, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
+
+
+def _extract_tar(expanded: Any, directory: Path) -> None:
+    archives._extract_tar(expanded, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
 
 
 def _frame(raw: Path, ref: dict[str, Any]) -> dict[str, Any]:

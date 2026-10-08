@@ -65,6 +65,34 @@ EVIDENCE_FILES = (
     "source_session_bundle_v3.py",
     "source_session_order.py",
 )
+PROJECTION_ROOT = Path(__file__).resolve().parents[2]
+PROJECTION_FILES = (
+    "spireagent/__init__.py",
+    "spireagent/artifact_contracts.py",
+    "spireagent/encoding.py",
+    "spireagent/json_boundary.py",
+    "spireagent/storage/__init__.py",
+    "spireagent/storage/archives.py",
+    "spireagent/storage/blobs.py",
+    "spireagent/storage/store.py",
+    "stpd/__init__.py",
+    "stpd/canonical.py",
+    "stpd/ordered_source_spec.py",
+    "stpd/native_graph_spec.py",
+    "stpd/fullrun/__init__.py",
+    "stpd/fullrun/native_structured_inputs.py",
+    "stpd/fullrun/native_structured_sequences.py",
+    "stpd/fullrun/ordered_source.py",
+    "stpd/fullrun/contracts.py",
+    "stpd/fullrun/representation.py",
+    "stpd/fullrun/semantic_projection.py",
+    "stpd/fullrun/structured_inputs.py",
+    "stpd/fullrun/structured_sequences.py",
+    "stpd/fullrun/structured_tree.py",
+    "stpd/fullrun/text_menu_inputs.py",
+    "stpd/policy/__init__.py",
+    "stpd/policy/native_task.py",
+)
 
 
 def _fail(code: str) -> NoReturn:
@@ -98,7 +126,7 @@ def _api() -> Any:
     return evidence_owner
 
 
-def verifier_identity() -> dict[str, Any]:
+def verifier_identity(root: Path = PROJECTION_ROOT) -> dict[str, Any]:
     owner = Path(_api().__file__).parent
     rows = []
     for name in EVIDENCE_FILES:
@@ -106,11 +134,20 @@ def verifier_identity() -> dict[str, Any]:
         if path.is_symlink() or not path.is_file():
             _fail("source3_verifier_closure_missing")
         rows.append({"path": name, "sha256": _sha(path.read_bytes())})
+    projection = []
+    root = root.resolve()
+    for name in PROJECTION_FILES:
+        path = root / name
+        if path.is_symlink() or not path.is_file() or any(
+            parent.is_symlink() for parent in path.parents if parent != root
+        ):
+            _fail("source3_projection_closure_missing")
+        projection.append({"path": name, "sha256": _sha(path.read_bytes())})
     return {
         "schema": "stpd/source3-verifier-identity-v1",
         "type_id": "source-session-bundle-v3",
         "source_sha256": semantic_hash(rows),
-        "projection_code_sha256": _sha(Path(__file__).read_bytes()),
+        "projection_code_sha256": semantic_hash(projection),
         "supported_view_specs": [{"projection_spec": view_specs(view)[0],
                                   "target_spec": view_specs(view)[1]}
                                  for view in (DEFAULT_VIEW, PRETRAIN_VIEW)],
@@ -709,10 +746,10 @@ def publish_ordered_source_raw(
     bundle = _verified(directory)
     if bundle.recording["recorder_source_revision"] != original_producer.source_revision:
         _fail("original_recorder_producer_mismatch")
-    archive = archive_bundle(directory)
+    archive = archive_bundle(directory, max_bytes=MAX_BYTES)
     with tempfile.TemporaryDirectory(prefix="source3-import-check-") as name:
         root = Path(name)
-        _extract(archive, root)
+        _extract(archive, root, max_bytes=MAX_BYTES)
         replay = _verified(root)
         if _raw_info(replay, archive) != _raw_info(bundle, archive):
             _fail("raw_changed_during_archive")
@@ -754,7 +791,7 @@ def _replay_raw(
     archive = _bytes(store, raw, "archive", MAX_BYTES)
     with tempfile.TemporaryDirectory(prefix="source3-verified-replay-") as name:
         root = Path(name)
-        _extract(archive, root)
+        _extract(archive, root, max_bytes=MAX_BYTES)
         bundle = _verified(root)
         if (
             info != _raw_info(bundle, archive)
