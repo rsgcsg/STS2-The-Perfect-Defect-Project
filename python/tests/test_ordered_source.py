@@ -276,6 +276,25 @@ def test_ready_summary_context_is_retained_but_menu_return_has_no_N(tmp_path, vi
         parse_ordered_training_dataset(json_bytes(source))
 
 
+def test_one_original_game_across_attachment_epochs_keeps_related_group_and_resets(tmp_path):
+    bundle = contract_bundle(tmp_path)
+    later_epoch = copy.deepcopy(bundle.epochs[0])
+    later_epoch["epoch_id"] = "epoch-2"
+    bundle.epochs += (later_epoch,)
+    later_publication = copy.deepcopy(bundle.observations[0])
+    later_publication.update(sequence=3, epoch_id="epoch-2")
+    later_publication["position"]["epoch_id"] = "epoch-2"
+    for reference in ("capture", "catalog"):
+        later_publication[reference]["epoch_id"] = "epoch-2"
+    bundle.observations += (later_publication,)
+    source, _, dataset = projected(bundle, view=DEFAULT_VIEW)
+    assert len({run.run_id for run in dataset.runs}) == 2
+    assert len({run.source_group for run in dataset.runs}) == 1
+    assert all(run.steps[0].reset_before and run.steps[0].advance for run in dataset.runs)
+    assert source["runs"][0]["identity"]["related_keys"] == (
+        source["runs"][1]["identity"]["related_keys"])
+
+
 def test_pause_cut_includes_prior_input_excludes_later_same_cut(tmp_path):
     bundle = contract_bundle(tmp_path)
     bundle.boundaries = (

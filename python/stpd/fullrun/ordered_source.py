@@ -169,7 +169,10 @@ def _run_identity(bundle: Any, epoch: Mapping[str, Any]) -> tuple[str, str, list
     # never invent a launch or count it in whole-game evaluation.
     original = "game:" + continuity if continuity is not None else "epoch:" + epoch["epoch_id"]
     group = "source3:" + runtime + ":" + original
-    name = "source3:" + bundle.manifest["timeline_id"] + ":" + original
+    # Each original attachment epoch has its own replay/reset boundary. Separate
+    # view run locators must still share the original game's exposure group.
+    name = ("source3:" + bundle.manifest["timeline_id"] + ":" + original
+            + ":epoch:" + epoch["epoch_id"])
     return name, group, [group, "source3-timeline:" + bundle.manifest["timeline_id"],
                          "protocol-runtime:" + runtime]
 
