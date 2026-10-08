@@ -19,6 +19,7 @@ from ..canonical import semantic_hash
 from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.text_menu_inputs import V2_SNAPSHOT_SCHEMA
 from ..models.structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
+from ..models.structured_weights import encode_structured_weights, load_structured_weights
 from ..structured_code_scope import (
     INFERENCE_SCOPE,
     LEGACY_SCOPE,
@@ -27,7 +28,6 @@ from ..structured_code_scope import (
     exporter_runtime,
     inference_runtime,
 )
-from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 PACKAGE_SCHEMA = "stpd/structured-m2-package-v1"
 WEIGHT_SCHEMA = "stpd/structured-m2-weights-v1"
@@ -115,15 +115,8 @@ def export_structured_package(
     model.validate_parameters()
     if model.seed != 0:
         raise BoundaryError("structured_package", "unsupported_initialization_recipe")
-    raw = encode_checkpoint(
-        {
-            "schema": WEIGHT_SCHEMA,
-            "graph": GRAPH,
-            "projection": PROJECTION,
-            "seed": model.seed,
-            "state_dict": dict(model.state_dict()),
-        }
-    )
+    raw = encode_structured_weights(model, schema=WEIGHT_SCHEMA, graph=GRAPH,
+                                     projection=PROJECTION)
     if len(raw) > MAX_WEIGHTS_BYTES:
         raise BoundaryError("structured_package", "weights_size_limit")
     body = {
@@ -270,29 +263,6 @@ def load_structured_package(
         or weights["sha256"] != hashlib.sha256(raw).hexdigest()
     ):
         raise BoundaryError("structured_package", "weights_digest_mismatch")
-    decoded = object_fields(
-        decode_checkpoint(raw),
-        {"schema", "graph", "projection", "seed", "state_dict"},
-        "structured_package.payload",
-    )
-    if (
-        decoded["schema"] != WEIGHT_SCHEMA
-        or decoded["graph"] != GRAPH
-        or decoded["projection"] != PROJECTION
-        or decoded["seed"] != manifest["seed"]
-        or not isinstance(decoded["state_dict"], dict)
-    ):
-        raise BoundaryError("structured_package", "weights_identity_mismatch")
-    model = StructuredM2(seed=manifest["seed"])
-    expected = model.state_dict()
-    actual = decoded["state_dict"]
-    if set(expected) != set(actual) or any(
-        not isinstance(actual[key], torch.Tensor)
-        or actual[key].dtype != tensor.dtype
-        or actual[key].shape != tensor.shape
-        for key, tensor in expected.items()
-    ):
-        raise BoundaryError("structured_package", "state_dict_shape_or_type")
-    model.load_state_dict(actual, strict=True)
-    model.validate_parameters()
-    return manifest, model.eval()
+    model = load_structured_weights(raw, schema=WEIGHT_SCHEMA, graph=GRAPH,
+                                    projection=PROJECTION, seed=manifest["seed"])
+    return manifest, model
