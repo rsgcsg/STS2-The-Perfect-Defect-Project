@@ -1,4 +1,4 @@
-# Current project context, 2026-10-08
+# Current project context, 2026-10-09
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before using this navigation summary. Current code,
@@ -33,12 +33,36 @@ services and browser controls, and native logical capture/catalog/publication
 Core through `18af56cc`. Core renewal and strict Current envelopes passed 49
 independent portable tests; this is not REST/SDK or live-game qualification.
 
-Active integration: native bridge/SDK, full logical grid bindings, source-aware
-recording, AgentSession Runtime, direct native structured Model and five-page
-native Workbench. Independent reviews have found defects and repairs continue;
-candidate commits are not accepted merely because their own tests passed.
-One native build/train slot and one game/install owner remain. No new game,
-real-data training, installation or paid provider operation in this packet yet.
+The integration topic now contains reviewed original-client/request lifetime
+repairs (`f4f0e79b`), revocation SDK (`e5a4cf33`), native Agent Runtime
+(`5fc240c8`), native model/application and operational Evidence (`1a5779f5`),
+K1/K8 carry/reset controls (`724baa66`), immutable carrier recovery (`577731d1`)
+and installer-owned launcher recovery (`4d7de834`). Integration preserves normal
+merge provenance. Final combined gates, versions/BOM, package promotion and
+native qualification remain outstanding. The graph/application adapter-identity
+correction (`18dde413`) is also integrated after independent five-configuration
+reproduction; this remains synthetic composition evidence.
+
+Source V2 protocol candidate `ffafc395` is **not accepted**: independent review
+found two cross-language strict-schema discrepancies. Repair and physical native
+input recording remain active. Map global information, held-card dispatch,
+public combat effects/events and remaining special mechanisms are also active.
+One native build/train slot and one game/install owner remain.
+
+A newer Mod candidate was built and installed with rollback preserved, and an
+isolated official-headless Defect A0 diagnostic actually ran. It verified owned
+load/readiness and obtained the initial native observation/catalogue, then failed
+the harness's `map_navigation` versus `native_map` assumption before any
+native-logical submission. Host shutdown returned exit 0 without forced kill.
+Installed artifact `ecc2daff8ff790d2a3d2581025c22aef3890f65019630844ff31a44fd22780d2`
+is older than the current integration source; it does not qualify the newly
+merged packets. No new native-model real-data training or paid provider compute
+has run in this integration phase.
+
+Read the [data, cloud, Host and model planning update](../plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md)
+for the bounded live inventory, current data limitations and optional future
+directions. Its suggestions do not add a simulator, arbitrary save-state restore
+or all proposed model variants to the mandatory G2/V1 matrix.
 
 ## Remaining Platform non-claims
 
