@@ -320,6 +320,11 @@ public static partial class ConnectorMod
                 else
                     SendError(response, 405, "Method not allowed");
             }
+            else if (path == "/api/player-environment/clients/revoke")
+            {
+                if (request.HttpMethod == "POST") HandlePostPlayerEnvironmentClientRevocation(request, response);
+                else SendError(response, 405, "Method not allowed");
+            }
             else if (path == "/api/player-environment/controller")
             {
                 if (request.HttpMethod == "GET")

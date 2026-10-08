@@ -21,15 +21,21 @@ from torch.nn import functional as F
 from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
-from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.structured_sequences import StructuredDataset
 from ..structured_code_scope import (
     LEGACY_SCOPE,
     ROOT,
     TRAINING_SCOPE,
     checkpoint_schema,
-    code_identity,
     inference_runtime,
+)
+from ..structured_profiles import (
+    NATIVE_SCOPE,
+    NATIVE_SOURCE_SCHEMA,
+    numerical_code_identity,
+    profile_projection,
+    source_verification,
+    validate_profile,
 )
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
@@ -71,10 +77,9 @@ def execution_identity(
     config.validate()
     if torch.get_num_threads() != config.cpu_threads:
         raise BoundaryError("structured_engine", "cpu_thread_identity_mismatch")
-    if code_scope not in {LEGACY_SCOPE, TRAINING_SCOPE}:
-        raise BoundaryError("structured_engine", "unsupported_code_scope")
-    scoped = code_scope == TRAINING_SCOPE
-    identity = code_identity(TRAINING_SCOPE) if scoped else None
+    native = validate_profile(dataset, code_scope)
+    scoped = code_scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    identity = numerical_code_identity(code_scope) if scoped else None
     runtime = runtime_identity()
     if scoped:
         runtime["safetensors"] = inference_runtime(str(torch.__version__))["safetensors"]
@@ -86,7 +91,10 @@ def execution_identity(
         "source_sha256": dataset.source_sha256,
         "config": asdict(config),
         "graph_id": GRAPH_ID,
-        "projection": {"id": INPUT_ID, "version": PROJECTION_VERSION, "I": False, "F": False},
+        "projection": profile_projection(dataset, code_scope),
+        **({"input_spec": dataset.input_spec.value()} if native and dataset.input_spec else {}),
+        **({"source_schema": NATIVE_SOURCE_SCHEMA,
+            "source_verification": source_verification(dataset)} if native else {}),
         "event_order_sha256": semantic_hash(
             [
                 {

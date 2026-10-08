@@ -32,6 +32,10 @@ MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ADAPTER_ID = "stpd-native-structured-m2-agent"
 ADAPTER_VERSION = "1.0.0"
+# Reserved mechanical support under the exact native profile/InputSpec and bounds.
+# These do not declare a game version, implemented mechanism, or capture coverage.
+SUPPORTED_INTERACTION_KINDS = ("*",)
+SUPPORTED_ACTION_VERBS = ("*",)
 MAX_STATE_BYTES = 16 * 1024 * 1024
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 LIMIT_MAXIMA = {
@@ -172,7 +176,7 @@ class NativeStructuredAgent:
             {"game_versions", "game_commits", "interaction_kinds", "action_verbs"},
             "native_agent.support",
         )
-        for values in support.values():
+        for field, values in support.items():
             if (
                 not isinstance(values, list)
                 or not values
@@ -180,6 +184,9 @@ class NativeStructuredAgent:
                 or len(set(values)) != len(values)
             ):
                 raise BoundaryError("native_agent", "support_required")
+            if "*" in values and (field not in {"interaction_kinds", "action_verbs"}
+                                  or values != ["*"]):
+                raise BoundaryError("native_agent", "invalid_support_wildcard")
         if (
             manifest["schema"] != MANIFEST_SCHEMA
             or manifest["adapter"] != adapter_identity()
@@ -275,9 +282,10 @@ class NativeStructuredAgent:
         self.verify_weights()
         observation = value["observation"]
         kind = "none" if observation["interaction"] is None else observation["interaction"]["kind"]
-        if kind not in self.manifest["support"]["interaction_kinds"] or any(
-            a["verb"] not in self.manifest["support"]["action_verbs"] for a in value["catalog"]
-        ):
+        kinds, verbs = (self.manifest["support"]["interaction_kinds"],
+                        self.manifest["support"]["action_verbs"])
+        if (kinds != ["*"] and kind not in kinds
+                or verbs != ["*"] and any(a["verb"] not in verbs for a in value["catalog"])):
             raise BoundaryError("native_agent", "unsupported_whole_native_input")
         return self.scorer.propose_consume(value)
 

@@ -126,6 +126,12 @@ function strings(value: unknown, nonempty = false): string[] {
   if (new Set(result).size !== result.length) throw new AgentSessionError("duplicate_item");
   return result;
 }
+/** Mechanical vocabulary admission under one validated native profile/InputSpec.
+ * The reserved singleton is not a native mechanism coverage claim. */
+export function supportsProfileValue(declared: readonly string[], value: string): boolean {
+  sessionText(value, 65_536);
+  return declared.length === 1 && declared[0] === "*" || declared.includes(value);
+}
 function choice<T extends string>(value: unknown, options: readonly T[]): T {
   if (typeof value !== "string" || !options.includes(value as T)) throw new AgentSessionError("invalid_literal");
   return value as T;
@@ -201,7 +207,11 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   if (methods.some(method => !allowed.includes(method)) || ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result"].some(method => !methods.includes(method)))
     throw new AgentSessionError("required_methods_mismatch");
   const support = sessionObject(manifest.support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]);
-  for (const item of Object.values(support)) strings(item, true);
+  for (const [key, item] of Object.entries(support)) {
+    const values = strings(item, true);
+    if (values.includes("*") && (values.length !== 1 || key === "game_versions" || key === "game_commits"))
+      throw new AgentSessionError("invalid_support_wildcard");
+  }
   const limits = sessionObject(manifest.limits, Object.keys(AGENT_LIMIT_MAXIMA));
   for (const [key, maximum] of Object.entries(AGENT_LIMIT_MAXIMA)) sessionInteger(limits[key], true, maximum);
   const claims = sessionObject(manifest.claims, ["catalog_filtered", "creates_action_authority", "creates_native_operands", "human_origin", "causal_successor"]);
