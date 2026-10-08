@@ -29,14 +29,51 @@ public static class PlatformLiveUiMod
                 Layer = 100
             };
             var tree = (SceneTree)Engine.GetMainLoop();
+            var root = tree.Root;
             var panel = new PlatformLivePanel();
             GD.Print($"[STS2 Platform Live UI] identity {JsonSerializer.Serialize(RuntimeIdentity())}");
             layer.AddChild(panel.Root);
-            GD.Print("[STS2 Platform Live UI] adding layer to SceneTree root");
-            tree.Root.AddChild(layer);
-            panel.Mount(tree);
-            _panel = panel;
-            GD.Print("[STS2 Platform Live UI] layer added; open the Platform button. Gameplay actions are not exposed directly.");
+            PlatformLiveUiMount? mount = null;
+            mount = new PlatformLiveUiMount(
+                callback => Callable.From(callback).CallDeferred(),
+                () => GodotObject.IsInstanceValid(tree) && GodotObject.IsInstanceValid(root)
+                    && root.IsInsideTree(),
+                () =>
+                {
+                    GD.Print("[STS2 Platform Live UI] adding layer to SceneTree root");
+                    root.AddChild(layer);
+                },
+                () => layer.IsInsideTree() && panel.Root.IsInsideTree()
+                    && layer.GetParent() == root && panel.Root.GetTree() == tree,
+                () =>
+                {
+                    if (!panel.Mount(tree))
+                        throw new InvalidOperationException("Live UI panel preparation failed.");
+                },
+                () =>
+                {
+                    _panel = panel;
+                    GD.Print("[STS2 Platform Live UI] panel ready; input=launcher; visible=false; HUD=launcher");
+                    GD.Print("[STS2 Platform Live UI] layer added; open the Platform button. Gameplay actions are not exposed directly.");
+                },
+                exception => GD.PrintErr($"[STS2 Platform Live UI] deferred mount failed: {exception}"),
+                () =>
+                {
+                    if (GodotObject.IsInstanceValid(root) && mount is not null)
+                        root.TreeExiting -= mount.Cancel;
+                    panel.Dispose();
+                    if (ReferenceEquals(_panel, panel))
+                        _panel = null;
+                    if (GodotObject.IsInstanceValid(layer))
+                    {
+                        if (layer.IsInsideTree())
+                            layer.QueueFree();
+                        else
+                            layer.Free();
+                    }
+                });
+            root.TreeExiting += mount.Cancel;
+            mount.Begin();
         }
         catch (Exception exception)
         {
@@ -203,7 +240,7 @@ internal sealed class PlatformLivePanel : IDisposable
         Root.AddChild(timer);
     }
 
-    internal void Mount(SceneTree tree)
+    internal bool Mount(SceneTree tree)
     {
         try
         {
@@ -213,11 +250,12 @@ internal sealed class PlatformLivePanel : IDisposable
             Root.TreeExiting += Dispose;
             ApplyLayout();
             Root.Resized += ApplyWorkspaceBounds;
-            GD.Print("[STS2 Platform Live UI] panel ready; input=launcher; visible=false; HUD=launcher");
+            return true;
         }
         catch (Exception exception)
         {
             GD.PrintErr($"[STS2 Platform Live UI] panel mount failed: {exception}");
+            return false;
         }
     }
 
