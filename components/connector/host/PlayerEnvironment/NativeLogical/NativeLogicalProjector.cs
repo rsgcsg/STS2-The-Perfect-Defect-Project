@@ -6,11 +6,14 @@ using STS2Connector.PlayerEnvironment.Protocol;
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
 /// <summary>Input already extracted at an actual native seam; no getters or dispatch callbacks.</summary>
+public sealed record NativeLogicalSourceCompleteness(string Status, IReadOnlyList<string> Missing);
+
 public sealed record NativeLogicalPublicFrame(string StreamGeneration,
     PlayerEnvironmentSessionReference Session, NativeLogicalOwnerOccurrence OwnerOccurrence,
     string Status, PlayerEnvironmentContent? Persistent, PlayerEnvironmentInteraction Interaction,
     IReadOnlyList<PlayerEnvironmentReferent> Referents,
-    PlayerEnvironmentInformationPolicy InformationPolicy, IReadOnlyList<NativeLogicalLeaf> Leaves);
+    PlayerEnvironmentInformationPolicy InformationPolicy, IReadOnlyList<NativeLogicalLeaf> Leaves,
+    NativeLogicalSourceCompleteness SourceCompleteness);
 
 public sealed class NativeLogicalFrozenProjection
 {
@@ -41,6 +44,8 @@ public sealed class NativeLogicalProjector
         string scopeId, DateTimeOffset observedAt, long retentionDeadline, Func<long> clock,
         Func<bool>? retained = null)
     {
+        if (frame.SourceCompleteness is null || frame.SourceCompleteness.Status != "complete" || frame.SourceCompleteness.Missing is null || frame.SourceCompleteness.Missing.Count != 0)
+            throw new NativeLogicalException("source_capture_incomplete", "The native producer has not certified complete public fields and the full native relation.");
         ValidateScope(scope);
         ValidateFrameScalars(frame);
         // Freeze nested JsonNodes and mutable input collections before deriving identity.
@@ -52,7 +57,7 @@ public sealed class NativeLogicalProjector
         if (facts.Length > limits.MaxCaptureBytes) throw new NativeLogicalException("capacity_exceeded", "Public facts exceed capture capacity.");
         var keys = frame.Leaves.Select(a => a.BindingKey).ToArray();
         foreach (string key in keys) NativeLogicalWire.Text(key, limits.MaxFieldBytes);
-        string changed = NativeLogicalWire.Hash(facts) + NativeLogicalWire.Hash(NativeLogicalWire.Encode(keys));
+        string changed = NativeLogicalWire.Hash(facts) + NativeLogicalWire.Hash(NativeLogicalWire.EncodeBounded(keys, limits.MaxCaptureBytes));
         lock (gate)
         {
             if (signature != changed)

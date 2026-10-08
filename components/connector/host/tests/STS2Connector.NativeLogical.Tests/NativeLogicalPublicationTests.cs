@@ -147,6 +147,39 @@ public sealed class NativeLogicalPublicationTests
         Assert.True(hub.Complete(reservation, new[] { Missing(a), Missing(b) }));
         Assert.Equal("not_eager", hub.Events("client", a.SubscriptionId, a.ScopeId, a.StartingCursor).Events.Single().Event.MissingReason);
     }
+    [Theory]
+    [InlineData(9, "event")]
+    [InlineData(10, "timeout")]
+    [InlineData(100, "timeout")]
+    public async Task AwaitDeadlinePrecedesEncoderTimeoutThatUnblocksPublication(long eligibleAt, string expected)
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now);
+        using var hub = new NativeLogicalPublicationHub(store, new[] { CompleteSeam }, () => now, new(EncodingDeadlineMs: 100));
+        var sub = Attach(hub); var earlierPending = hub.Reserve("owner", "enter", "observation");
+        var terminal = hub.Reserve("owner", "terminal", "terminal"); hub.Complete(terminal, new[] { Missing(sub) });
+        var wait = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(1), "terminal", 10);
+        Assert.False(wait.IsCompleted);
+        now = eligibleAt;
+        if (eligibleAt < 100) hub.Complete(earlierPending, new[] { Missing(sub) }); else hub.Tick();
+        var reply = await wait; Assert.Equal(expected, reply.Status); Assert.Equal(0, hub.WaiterCount);
+        if (expected == "event") Assert.Equal("2", reply.Event!.Event.PublicationIndex); else Assert.Null(reply.Event);
+        // A new zero-wait query sees the now-eligible retained terminal without changing the old outcome.
+        var retained = await hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(2), "terminal", 0);
+        Assert.Equal("event", retained.Status); Assert.Equal("2", retained.Event!.Event.PublicationIndex);
+        now = 101; hub.Tick(); Assert.Equal(expected, (await wait).Status);
+    }
+    [Fact]
+    public async Task LateCancellationAndSubscriptionExpiryPreserveEarlierWaitDeadline()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now);
+        using var hub = new NativeLogicalPublicationHub(store, new[] { CompleteSeam }, () => now, new(RetentionMs: 60));
+        var sub = Attach(hub);
+        var shortWait = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(1), "terminal", 10);
+        var longWait = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(2), "terminal", 1000);
+        now = 100; hub.Tick(); Assert.Equal("timeout", (await shortWait).Status); Assert.Equal("subscription_expired", (await longWait).Status);
+        sub = Attach(hub); var cancellation = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(3), "terminal", 10);
+        now = 110; Assert.False(hub.CancelWait("client", sub.SubscriptionId, Id(3))); Assert.Equal("timeout", (await cancellation).Status);
+    }
     private sealed class TestControls : INativeLogicalControlDependency
     {
         private readonly object gate = new(); private bool valid = true; private readonly List<Action> callbacks = new();

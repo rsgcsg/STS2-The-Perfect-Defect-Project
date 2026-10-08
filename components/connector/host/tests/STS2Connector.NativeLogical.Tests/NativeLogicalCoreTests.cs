@@ -19,7 +19,8 @@ public sealed class NativeLogicalCoreTests
         new(owner, occurrence, binding, null, null), "interactive", new("persistent", new JsonObject { ["value"] = 1 }),
         new("interaction", "selector", "ready", "选择", "surface", new(new JsonObject { ["nested"] = new JsonArray(1, 2) }, new JsonObject { ["kind"] = "selector" }), Array.Empty<PlayerEnvironmentInteractionCapability>()),
         new[] { new PlayerEnvironmentReferent("public-card", "card", "card", "甲", new(true, true, false, false, "displayed"), "card", new JsonObject { ["name"] = "甲" }) },
-        new("fair", "current", false, "explicit"), new[] { new NativeLogicalLeaf("pick", "甲", "public-card", Array.Empty<NativeLogicalArgument>(), "native") { BindingKey = "private-leaf" } });
+        new("fair", "current", false, "explicit"), new[] { new NativeLogicalLeaf("pick", "甲", "public-card", Array.Empty<NativeLogicalArgument>(), "native") { BindingKey = "private-leaf" } },
+        new("complete", Array.Empty<string>()));
     [Theory]
     [InlineData(200)] [InlineData(500)] [InlineData(10000)]
     public void FullRelationPaginationPrefixUnionAndResolve(int count)
@@ -273,6 +274,141 @@ public sealed class NativeLogicalCoreTests
     {
         var frame = Frame(); frame.Persistent!.Content["bad"] = "\ud800";
         Assert.Throws<NativeLogicalException>(() => new NativeLogicalProjector().Freeze(frame, NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0));
+    }
+
+    [Fact]
+    public void SharedNegativeWireCasesRejectNullRequiredMembers()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
+        foreach (var fixture in doc.RootElement.GetProperty("invalid_wire_cases").EnumerateArray())
+        {
+            byte[] wire = Encoding.UTF8.GetBytes(fixture.GetProperty("wire").GetRawText());
+            void Decode()
+            {
+                switch (fixture.GetProperty("type").GetString())
+                {
+                    case "catalog_page": NativeLogicalDecoder.Decode<NativeLogicalCatalogPage>(wire); break;
+                    case "observation": NativeLogicalDecoder.Decode<NativeLogicalObservation>(wire); break;
+                    case "capabilities": NativeLogicalDecoder.Decode<NativeLogicalCapabilities>(wire); break;
+                    case "event_batch": NativeLogicalDecoder.Decode<NativeLogicalEventBatch>(wire); break;
+                    case "attach_request": NativeLogicalDecoder.Decode<NativeLogicalAttachRequest>(wire); break;
+                    default: throw new InvalidOperationException("Unmapped negative fixture type.");
+                }
+            }
+            Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(Decode).Code);
+        }
+        Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalAction[]>(Encoding.UTF8.GetBytes("[null]"))).Code);
+    }
+    [Fact]
+    public void RecursiveArrayAndDictionaryNullabilityPreservesDeclaredNullableValues()
+    {
+        var valid = new NestedCollectionWire(new[] { new[] { "required" } }, new string?[] { null, "value" },
+            new Dictionary<string, IReadOnlyList<string>> { ["key"] = new[] { "required" } },
+            new Dictionary<string, string?> { ["key"] = null });
+        byte[] original = NativeLogicalWire.Encode(valid);
+        var decoded = NativeLogicalDecoder.Decode<NestedCollectionWire>(original);
+        Assert.Null(decoded.NullableStrings[0]); Assert.Null(decoded.NullableDictionary["key"]);
+        foreach (Action<JsonNode> mutation in new Action<JsonNode>[]
+        {
+            node => node["required_arrays"]![0] = null,
+            node => node["required_arrays"]![0]![0] = null,
+            node => node["required_dictionary"]!["key"] = null,
+            node => node["required_dictionary"]!["key"]![0] = null
+        })
+        {
+            JsonNode invalid = JsonNode.Parse(original)!; mutation(invalid);
+            Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NestedCollectionWire>(Encoding.UTF8.GetBytes(invalid.ToJsonString()))).Code);
+        }
+        var observation = new NativeLogicalProjector().Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0).Observation;
+        byte[] explicitlyNullable = NativeLogicalWire.Encode(observation with { Persistent = null, Referents = new[] { observation.Referents[0] with { Label = null, Properties = null, State = observation.Referents[0].State with { Enabled = null, Focused = null } } } });
+        var nullableObservation = NativeLogicalDecoder.Decode<NativeLogicalObservation>(explicitlyNullable);
+        Assert.Null(nullableObservation.Persistent); Assert.Null(nullableObservation.Referents[0].Label);
+        Assert.Null(nullableObservation.Referents[0].State.Enabled); Assert.Null(nullableObservation.Referents[0].Properties);
+    }
+    private sealed record NestedCollectionWire(string[][] RequiredArrays, string?[] NullableStrings,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> RequiredDictionary,
+        IReadOnlyDictionary<string, string?> NullableDictionary);
+
+    [Fact]
+    public void ProducerCompletenessCertificatePrecedesAllRequestedScopeAndRetention()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
+        var projector = new NativeLogicalProjector(); var store = new NativeLogicalCaptureStore(() => 0);
+        var original = projector.Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0);
+        foreach (var fixture in doc.RootElement.GetProperty("source_completeness_cases").EnumerateArray())
+        {
+            var certificate = NativeLogicalDecoder.Decode<NativeLogicalSourceCompleteness>(Encoding.UTF8.GetBytes(fixture.GetProperty("certificate").GetRawText()));
+            var frame = Frame() with { SourceCompleteness = certificate, Leaves = Array.Empty<NativeLogicalLeaf>(), Status = fixture.GetProperty("observation_status").GetString()! };
+            if (!fixture.GetProperty("accepted").GetBoolean())
+            {
+                // Malformed public content would fail another gate if the source certificate were skipped.
+                frame.Persistent!.Content["bad"] = "\ud800";
+                foreach (var scope in new[] { NativeLogicalProjector.ScopeFields, (IReadOnlyList<string>)new[] { "interaction" } })
+                {
+                    Assert.Equal("source_capture_incomplete", Assert.Throws<NativeLogicalException>(() => projector.Freeze(frame, scope, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0)).Code);
+                    Assert.Equal("source_capture_incomplete", Assert.Throws<NativeLogicalException>(() => projector.Capture(frame, scope, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0, store)).Code);
+                }
+                Assert.Equal(0, store.ChargedBytes); Assert.Equal(0, store.ChargedBuffers);
+                Assert.Equal(original.SnapshotId, projector.Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0).SnapshotId);
+            }
+            else
+            {
+                var captured = projector.Capture(frame, NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0, store);
+                var exported = store.ExportFrozen(captured.Capture.CaptureId);
+                var observation = NativeLogicalDecoder.Decode<NativeLogicalObservation>(exported.CopyCaptureBytes());
+                Assert.True(observation.Completeness.FullReferenceComplete); Assert.Equal("complete", observation.Catalog.Status);
+                Assert.Equal(0, observation.Catalog.TotalCount); Assert.Empty(captured.Catalog!.Actions);
+                Assert.Equal(frame.Status, observation.Status); store.ReleaseCapture(captured.Capture.CaptureId);
+                // Re-establish the original current frame before the next source-certificate negative.
+                original = projector.Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0);
+            }
+        }
+    }
+
+    [Fact]
+    public void PrivateBindingKeysRespectAggregateCaptureBudgetBeforeIdentityChanges()
+    {
+        var limits = new NativeLogicalLimits(MaxCaptureBytes: 4096, MaxFieldBytes: 1024);
+        var projector = new NativeLogicalProjector(limits);
+        var original = projector.Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0);
+        var frame = Frame() with
+        {
+            Leaves = Enumerable.Range(0, 20).Select(i => new NativeLogicalLeaf("pick", "甲", "public-card", Array.Empty<NativeLogicalArgument>(), "native")
+                { BindingKey = new string('x', 1000) + i }).ToArray()
+        };
+        Assert.True(NativeLogicalWire.EncodeBounded(frame, limits.MaxCaptureBytes).Length < limits.MaxCaptureBytes);
+        Assert.All(frame.Leaves, leaf => Assert.True(Encoding.UTF8.GetByteCount(leaf.BindingKey) <= limits.MaxFieldBytes));
+        Assert.Equal("capacity_exceeded", Assert.Throws<NativeLogicalException>(() => projector.Freeze(frame, NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0)).Code);
+        Assert.Equal(original.SnapshotId, projector.Freeze(Frame(), NativeLogicalProjector.ScopeFields, "scope", DateTimeOffset.UnixEpoch, 120000, () => 0).SnapshotId);
+    }
+    [Fact]
+    public void ResultStagesPreserveKnownFactsWithFiniteBoundedWireFields()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
+        byte[] sample = Encoding.UTF8.GetBytes(doc.RootElement.GetProperty("wire_samples").GetProperty("result").GetRawText());
+        var result = NativeLogicalDecoder.Decode<NativeLogicalResult>(sample);
+        Assert.Equal("partially_delivered", result.Delivery); Assert.Equal("unknown", result.Execution);
+        Assert.Equal(new[] { "focus", "confirm" }, result.Stages.Select(stage => stage.Stage));
+        Assert.Equal("delivered", result.Stages[0].Delivery); Assert.Equal("rejected_before_input", result.Stages[1].Delivery);
+        var empty = NativeLogicalDecoder.Decode<NativeLogicalResult>(NativeLogicalWire.Encode(result with { Stages = Array.Empty<NativeLogicalInputStage>() }));
+        Assert.Empty(empty.Stages); Assert.Equal("unknown", empty.Execution);
+        foreach (Action<JsonNode> mutate in new Action<JsonNode>[]
+        {
+            node => node.AsObject().Remove("stages"),
+            node => node["stages"] = null,
+            node => node["stages"] = new JsonArray((JsonNode?)null),
+            node => node["stages"] = JsonSerializer.SerializeToNode(Enumerable.Repeat(result.Stages[0], 17), NativeLogicalWire.Options),
+            node => node["stages"]![0]!["stage"] = new string('界', 43),
+            node => node["stages"]![0]!["evidence"] = new string('x', 129),
+            node => node["stages"]![0]!["delivery"] = "accepted",
+            node => node["stages"]![0]!["evidence"] = null
+        })
+        {
+            JsonNode malformed = JsonNode.Parse(sample)!; mutate(malformed);
+            Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalResult>(Encoding.UTF8.GetBytes(malformed.ToJsonString()))).Code);
+        }
+        var atLimit = result with { Stages = Enumerable.Repeat(result.Stages[0] with { Stage = new string('x', 128), Evidence = new string('x', 128) }, 16).ToArray() };
+        Assert.Equal(16, NativeLogicalDecoder.Decode<NativeLogicalResult>(NativeLogicalWire.Encode(atLimit)).Stages.Count);
     }
 
 }

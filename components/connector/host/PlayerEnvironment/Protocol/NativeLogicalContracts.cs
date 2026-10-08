@@ -7,6 +7,8 @@ namespace STS2Connector.PlayerEnvironment.Protocol;
 public static class NativeLogicalContract
 {
     public const string Profile = "native-logical-v1";
+    public const int MaxInputStages = 16;
+    public const int MaxStageFieldBytes = 128;
     public const string ObservationSchema = "sts2.player-environment/native-logical-observation-1";
     public const string CaptureSchema = "sts2.player-environment/native-logical-capture-1";
     public const string EventSchema = "sts2.player-environment/native-logical-event-1";
@@ -87,9 +89,11 @@ public sealed record NativeLogicalEventBatch(IReadOnlyList<NativeLogicalEventAva
 public sealed record NativeLogicalControlBinding(string ControllerLeaseId, long ControllerGeneration);
 public sealed record NativeLogicalAwaitReply(string Status, NativeLogicalEventAvailability? Event,
     NativeLogicalGap? Gap, string? Reason, string Schema = NativeLogicalContract.AwaitSchema);
+public sealed record NativeLogicalInputStage(string Stage, string Delivery, string Evidence);
 public sealed record NativeLogicalResult(string ProtocolVersion, string Schema, string InputProfile,
     string RequestId, string SnapshotId, NativeLogicalAction? Action, string Delivery,
-    string Execution, string Effect, string Cancel, string? Reason, string Retry,
+    string Execution, string Effect, string Cancel, IReadOnlyList<NativeLogicalInputStage> Stages,
+    string? Reason, string Retry,
     NativeLogicalObservationContext? ObservedFrame, PlayerEnvironmentAttribution? Attribution);
 
 public sealed record NativeLogicalSourceClock(string PublicationIndexEncoding, string SourceIndexEncoding,

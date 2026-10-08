@@ -95,7 +95,7 @@ public static class NativeLogicalDecoder
             [typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapabilities)] = STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.CapabilitiesSchema
         };
 
-    private sealed record Field(string Name, Type Type, bool RequiredNonNull);
+    private sealed record Field(string Name, System.Reflection.NullabilityInfo Nullability);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, Field[]> fields = new();
     public static T Decode<T>(ReadOnlySpan<byte> utf8)
     {
@@ -108,7 +108,7 @@ public static class NativeLogicalDecoder
             if (value is null) throw new JsonException("Missing object.");
             return value;
         }
-        catch (Exception e) when (e is JsonException or InvalidOperationException or EncoderFallbackException or KeyNotFoundException || e is NativeLogicalException native && native.Code == "invalid_expression")
+        catch (Exception e) when (e is JsonException or InvalidOperationException or EncoderFallbackException or KeyNotFoundException || e is NativeLogicalException native && native.Code is "invalid_expression" or "capacity_exceeded")
         { throw new NativeLogicalException("invalid_wire", "Wire fields, scalar strings and required shape must match the declared contract."); }
     }
     private static void ValidateJson(JsonElement value)
@@ -122,29 +122,63 @@ public static class NativeLogicalDecoder
             { if (!seen.Add(field.Name)) throw new JsonException("Duplicate field."); NativeLogicalWire.Text(field.Name, int.MaxValue); ValidateJson(field.Value); }
         }
     }
+    private static void Delivery(JsonElement value)
+    {
+        if (value.GetString() is not ("not_started" or "rejected_before_input" or "delivered" or "partially_delivered" or "unknown"))
+            throw new JsonException("Unknown input delivery disposition.");
+    }
     private static void U64(JsonElement value, string name)
     {
         string text = value.GetProperty(name).GetString()!;
         if (text.Length == 0 || text.Length > 1 && text[0] == '0' || !ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out _)) throw new JsonException("Source indexes are canonical decimal U64 strings.");
     }
-    private static void ValidateShape(JsonElement value, Type type)
+    private static void ValidateShape(JsonElement value, Type type, System.Reflection.NullabilityInfo? nullability = null)
     {
-        if (value.ValueKind == JsonValueKind.Null) return; // Nullable values are checked by the field metadata below.
         Type? nullable = Nullable.GetUnderlyingType(type);
-        if (nullable is not null) { ValidateShape(value, nullable); return; }
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            if (nullable is null && nullability?.ReadState != System.Reflection.NullabilityState.Nullable)
+                throw new JsonException("A required record, collection member or scalar is null.");
+            return;
+        }
+        if (nullable is not null) { ValidateShape(value, nullable, nullability); return; }
         if (type == typeof(JsonElement) || typeof(System.Text.Json.Nodes.JsonNode).IsAssignableFrom(type)) return;
         if (type == typeof(string) || type.IsValueType) return; // The serializer checks scalar numeric/string ranges.
+        if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(Dictionary<,>)
+            || type.GetGenericTypeDefinition() == typeof(IDictionary<,>)
+            || type.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)))
+        {
+            if (value.ValueKind != JsonValueKind.Object) throw new JsonException("Expected dictionary object.");
+            Type[] arguments = type.GetGenericArguments();
+            if (arguments[0] != typeof(string)) throw new JsonException("Wire dictionary keys must be strings.");
+            var elementNullability = nullability?.GenericTypeArguments.Length == 2 ? nullability.GenericTypeArguments[1] : null;
+            foreach (var field in value.EnumerateObject()) ValidateShape(field.Value, arguments[1], elementNullability);
+            return;
+        }
         if (type.IsArray || type.IsGenericType && typeof(System.Collections.IEnumerable).IsAssignableFrom(type))
         {
             if (value.ValueKind != JsonValueKind.Array) throw new JsonException("Expected array.");
             Type element = type.IsArray ? type.GetElementType()! : type.GetGenericArguments()[0];
-            foreach (var child in value.EnumerateArray()) ValidateShape(child, element);
+            var elementNullability = type.IsArray ? nullability?.ElementType
+                : nullability?.GenericTypeArguments.Length == 1 ? nullability.GenericTypeArguments[0] : null;
+            foreach (var child in value.EnumerateArray()) ValidateShape(child, element, elementNullability);
             return;
         }
         if (value.ValueKind != JsonValueKind.Object) throw new JsonException("Expected record object.");
         if (schemas.TryGetValue(type, out string? schema) && (!value.TryGetProperty("schema", out var encodedSchema) || encodedSchema.GetString() != schema)) throw new JsonException("Unknown profile schema.");
         if (value.TryGetProperty("input_profile", out var profile) && profile.GetString() != STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.Profile) throw new JsonException("Unknown input profile.");
         if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalAction) && value.GetProperty("kind").GetString() != "native_input") throw new JsonException("Unknown action kind.");
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalResult))
+        {
+            Delivery(value.GetProperty("delivery"));
+            if (value.GetProperty("stages").GetArrayLength() > STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.MaxInputStages) throw new JsonException("Too many known input stages.");
+        }
+        if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalInputStage))
+        {
+            NativeLogicalWire.Text(value.GetProperty("stage").GetString()!, STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.MaxStageFieldBytes);
+            NativeLogicalWire.Text(value.GetProperty("evidence").GetString()!, STS2Connector.PlayerEnvironment.Protocol.NativeLogicalContract.MaxStageFieldBytes);
+            Delivery(value.GetProperty("delivery"));
+        }
         if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalEvent)) { U64(value, "publication_index"); U64(value, "source_index"); }
         if (type == typeof(STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture)) U64(value, "capture_ordinal");
         Field[] shape = fields.GetOrAdd(type, t =>
@@ -155,16 +189,14 @@ public static class NativeLogicalDecoder
             {
                 var ignore = (JsonIgnoreAttribute?)Attribute.GetCustomAttribute(property, typeof(JsonIgnoreAttribute));
                 if (ignore?.Condition == JsonIgnoreCondition.Always) continue;
-                result.Add(new(JsonNamingPolicy.SnakeCaseLower.ConvertName(property.Name), property.PropertyType,
-                    context.Create(property).ReadState == System.Reflection.NullabilityState.NotNull));
+                result.Add(new(JsonNamingPolicy.SnakeCaseLower.ConvertName(property.Name), context.Create(property)));
             }
             return result.ToArray();
         });
         foreach (var field in shape)
         {
             if (!value.TryGetProperty(field.Name, out JsonElement child)) throw new JsonException("Required explicit field is missing.");
-            if (child.ValueKind == JsonValueKind.Null && field.RequiredNonNull) throw new JsonException("Non-null field is null.");
-            ValidateShape(child, field.Type);
+            ValidateShape(child, field.Nullability.Type, field.Nullability);
         }
     }
 }

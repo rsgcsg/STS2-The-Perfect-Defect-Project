@@ -283,6 +283,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         lock (gate)
         {
             if (!waiters.TryGetValue(Key(subscriptionId, waitId), out Waiter? waiter) || waiter.Client != client) return false;
+            if (FinishExpired(waiter, clock())) return false;
             Finish(waiter, new("cancelled", null, null, reason)); return true;
         }
     }
@@ -299,6 +300,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     {
         if (disposed) throw new ObjectDisposedException(nameof(NativeLogicalPublicationHub));
         long now = clock();
+        foreach (Waiter waiter in waiters.Values.ToArray()) FinishExpired(waiter, now);
         foreach (var pair in subscriptions.Where(s => now >= s.Value.Deadline).ToArray()) RemoveSubscription(pair.Key, "subscription_expired");
         foreach (Slot slot in ring.OfType<Slot>())
             if (!slot.Completed && now >= slot.Deadline)
@@ -308,7 +310,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
                 slot.Completed = true;
             }
         AdvanceHigh(); EvaluateWaiters();
-        foreach (Waiter waiter in waiters.Values.Where(w => now >= w.Deadline).ToArray()) Finish(waiter, new("timeout", null, null, null));
+
     }
     private void AdvanceHigh()
     { while (high < reserved && FindSlot(high + 1) is { Completed: true }) high++; }
@@ -349,10 +351,24 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         }
         return null;
     }
+    private bool FinishExpired(Waiter waiter, long now)
+    {
+        if (subscriptions.TryGetValue(waiter.Subscription, out var subscription)
+            && now >= subscription.Deadline && subscription.Deadline < waiter.Deadline)
+        { Finish(waiter, new("subscription_expired", null, null, null)); return true; }
+        if (now >= waiter.Deadline)
+        { Finish(waiter, new("timeout", null, null, null)); return true; }
+        if (subscriptions.TryGetValue(waiter.Subscription, out subscription) && now >= subscription.Deadline)
+        { Finish(waiter, new("subscription_expired", null, null, null)); return true; }
+        return false;
+    }
     private void EvaluateWaiters()
     {
         foreach (Waiter waiter in waiters.Values.ToArray())
+        {
+            if (FinishExpired(waiter, clock())) continue;
             if (subscriptions.TryGetValue(waiter.Subscription, out var sub) && Inspect(sub, waiter.After, waiter.Condition) is { } reply) Finish(waiter, reply);
+        }
     }
     private static string Key(string subscription, string waitId) => subscription + ":" + waitId;
     private void Finish(Waiter waiter, NativeLogicalAwaitReply reply)
@@ -386,7 +402,8 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     }
     private void RemoveSubscription(string id, string status)
     {
-        foreach (Waiter waiter in waiters.Values.Where(w => w.Subscription == id).ToArray()) Finish(waiter, new(status, null, null, null));
+        foreach (Waiter waiter in waiters.Values.Where(w => w.Subscription == id).ToArray())
+            if (!FinishExpired(waiter, clock())) Finish(waiter, new(status, null, null, null));
         if (subscriptions.Remove(id, out var removed)) waitIdMetadataBytes -= (long)removed.WaitIds.Count * WaitIdMetadataCharge;
         foreach (Slot slot in ring.OfType<Slot>())
         { if (slot.Pins.Remove(id, out string? pin)) store.Release("hub:" + id, pin); slot.Outcomes.Remove(id); }
@@ -396,7 +413,8 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     public void ChangeGeneration() { lock (gate) ChangeGenerationLocked(); }
     private void ChangeGenerationLocked()
     {
-        foreach (Waiter waiter in waiters.Values.ToArray()) Finish(waiter, new("generation_changed", null, null, null));
+        foreach (Waiter waiter in waiters.Values.ToArray())
+            if (!FinishExpired(waiter, clock())) Finish(waiter, new("generation_changed", null, null, null));
         foreach (Slot slot in ring.OfType<Slot>()) ReleasePins(slot);
         subscriptions.Clear(); waitIdMetadataBytes = 0; seamIndices.Clear(); Array.Clear(ring); reserved = high = 0; retainedStart = 1;
         generation = NativeLogicalWire.Id("stream");

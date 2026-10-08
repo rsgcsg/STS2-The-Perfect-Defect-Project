@@ -476,13 +476,25 @@
         "effect_domain": "native"
       },
       "delivery": "partially_delivered",
-      "execution": "native_rejected",
+      "execution": "unknown",
       "effect": "not_observed",
       "cancel": "too_late",
       "reason": "confirmation_rejected_after_native_focus",
       "retry": "never_automatic",
       "observed_frame": null,
-      "attribution": null
+      "attribution": null,
+      "stages": [
+        {
+          "stage": "focus",
+          "delivery": "delivered",
+          "evidence": "native_focus_observed"
+        },
+        {
+          "stage": "confirm",
+          "delivery": "rejected_before_input",
+          "evidence": "native_callback_declined"
+        }
+      ]
     },
     "capabilities": {
       "protocol_version": "1.0.0",
@@ -589,5 +601,428 @@
       ]
     }
   },
-  "wire_fixture_note": "Fixed opaque fixture tokens demonstrate shape only; HMAC cursor authorization is tested independently in C#."
+  "wire_fixture_note": "Fixed opaque fixture tokens demonstrate shape only; HMAC cursor authorization is tested independently in C#.",
+  "invalid_wire_cases": [
+    {
+      "name": "null_catalog_action",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          null
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    },
+    {
+      "name": "null_public_referent",
+      "type": "observation",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          null
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "null_completeness_scope_field",
+      "type": "observation",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            null
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "null_supported_method",
+      "type": "capabilities",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-capabilities-1",
+        "input_profile": "native-logical-v1",
+        "host": {
+          "id": "host-fixture",
+          "name": "fixture",
+          "version": "fixture",
+          "runtime_instance_id": "runtime-fixture",
+          "host_kind": "fixture",
+          "implementation": {
+            "source_revision": null,
+            "module_version_id": null,
+            "artifact_sha256": null
+          }
+        },
+        "game": {
+          "version": null,
+          "commit": null,
+          "branch": null,
+          "main_assembly_hash": null,
+          "compatibility": {
+            "status": "fixture",
+            "observation_allowed": true,
+            "detail": "synthetic source conformance"
+          },
+          "modset": {
+            "status": "fixture",
+            "fingerprint": "fixture",
+            "scope": "fixture",
+            "loaded_mod_ids": [],
+            "detail": "synthetic source conformance"
+          }
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "supported_methods": [
+          null
+        ],
+        "implemented_mechanisms": [
+          "finite_materialized_catalog",
+          "frozen_capture",
+          "scoped_publication",
+          "atomic_await"
+        ],
+        "capture_coverage": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "source_clock": {
+          "publication_index_encoding": "u64_decimal_string",
+          "source_index_encoding": "u64_decimal_string",
+          "source_position_meaning": "native_source_occurrence",
+          "publication_meaning": "contiguous_completed_projections_not_causal_commit_order"
+        },
+        "limits": {
+          "max_actions": 65536,
+          "max_capture_bytes": 67108864,
+          "max_retained_bytes": 536870912,
+          "max_events": 2048,
+          "retention_ms": 120000,
+          "max_read_bytes": 1048576,
+          "max_encoded_read_bytes": 2097152,
+          "max_page_bytes": 1048576,
+          "max_wait_ms": 30000,
+          "max_subscriptions": 64,
+          "max_client_subscriptions": 4,
+          "max_waiters": 128,
+          "max_client_waiters": 4,
+          "max_captures": 256,
+          "max_retention_handles": 1024,
+          "max_client_retention_handles": 64,
+          "encoding_deadline_ms": 2000,
+          "max_field_bytes": 65536,
+          "max_cursor_length": 1024,
+          "max_wait_ids_per_subscription": 65536,
+          "max_wait_id_metadata_bytes": 67108864,
+          "max_source_seams": 256,
+          "max_metadata_field_bytes": 128,
+          "max_in_flight_catalog_reads": 128
+        },
+        "control_policy": {
+          "recommended_renewal_ms": 1000
+        },
+        "non_claims": [
+          "synthetic_source_conformance_only",
+          "no_native_coverage_qualification"
+        ]
+      }
+    },
+    {
+      "name": "null_event_projection",
+      "type": "event_batch",
+      "wire": {
+        "events": [
+          null
+        ],
+        "next_cursor": "opaque-event-fixture-next",
+        "high_watermark": "opaque-event-fixture-next",
+        "retained_start_cursor": "opaque-event-fixture-start",
+        "gap": null,
+        "schema": "sts2.player-environment/native-logical-events-1"
+      }
+    },
+    {
+      "name": "null_required_seam",
+      "type": "attach_request",
+      "wire": {
+        "client_session_id": "client-fixture",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "required_seams": [
+          null
+        ],
+        "delivery_mode": "full_reference"
+      }
+    },
+    {
+      "name": "null_ordered_argument",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          {
+            "action_id": "action-a",
+            "kind": "native_input",
+            "verb": "选择",
+            "label": "空 / 🐉 / café / é",
+            "subject_referent_id": null,
+            "arguments": [
+              null
+            ],
+            "effect_domain": "native"
+          }
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    },
+    {
+      "name": "null_required_argument_role",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          {
+            "action_id": "action-a",
+            "kind": "native_input",
+            "verb": "选择",
+            "label": "空 / 🐉 / café / é",
+            "subject_referent_id": null,
+            "arguments": [
+              {
+                "role": null,
+                "referent_id": "public"
+              }
+            ],
+            "effect_domain": "native"
+          }
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    }
+  ],
+  "source_completeness_cases": [
+    {
+      "name": "partial_native_list",
+      "certificate": {
+        "status": "partial",
+        "missing": [
+          "native_list_items"
+        ]
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "missing_public_field_despite_complete_status",
+      "certificate": {
+        "status": "complete",
+        "missing": [
+          "interaction.preview"
+        ]
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "failed_source",
+      "certificate": {
+        "status": "failed",
+        "missing": []
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "complete_empty_settling",
+      "certificate": {
+        "status": "complete",
+        "missing": []
+      },
+      "observation_status": "settling",
+      "accepted": true
+    },
+    {
+      "name": "complete_empty_terminal",
+      "certificate": {
+        "status": "complete",
+        "missing": []
+      },
+      "observation_status": "terminal",
+      "accepted": true
+    }
+  ]
 }
