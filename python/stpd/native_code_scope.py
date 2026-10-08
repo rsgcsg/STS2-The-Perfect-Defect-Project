@@ -27,7 +27,6 @@ PATHS = tuple(
             "stpd/models/native_structured_scorer.py",
             "stpd/policy/native_structured_export.py",
             "stpd/policy/native_agent.py",
-            "stpd/policy/native_task.py",
         }
     )
 )
