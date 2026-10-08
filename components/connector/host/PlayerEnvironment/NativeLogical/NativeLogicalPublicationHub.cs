@@ -32,10 +32,12 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
         internal readonly HashSet<string> WaitIds = new(StringComparer.Ordinal);
         internal IReadOnlyDictionary<string, NativeLogicalSeamCoverage> AdvertisedCoverage = new Dictionary<string, NativeLogicalSeamCoverage>();
     }
-    private sealed class Slot(ulong index, string seam, string phase, string sourceIndex, string kind, long deadline, string[] subscriptionIds)
+    private sealed class Slot(ulong index, string seam, string phase, string sourceIndex, string kind, long deadline,
+        string[] subscriptionIds, IReadOnlyList<string> originalScopes)
     {
         internal ulong Index = index; internal string Seam = seam, Phase = phase, SourceIndex = sourceIndex, Kind = kind;
         internal long Deadline = deadline; internal string[] Subscriptions = subscriptionIds;
+        internal readonly IReadOnlyList<string> OriginalScopes = originalScopes;
         internal bool Completed;
         internal readonly Dictionary<string, NativeLogicalProjectionOutcome> Outcomes = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal);
@@ -208,7 +210,8 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
             string[] ids = onlySubscriptions is null ? subscriptions.Keys.ToArray()
                 : onlySubscriptions.Concat(SelectedSourceSubscriptionIds()).Distinct(StringComparer.Ordinal).ToArray();
             ring[position] = new Slot(index, sourceSeam, phase, NativeLogicalWire.Number(source), kind,
-                checked(clock() + limits.EncodingDeadlineMs), ids);
+                checked(clock() + limits.EncodingDeadlineMs), ids,
+                Array.AsReadOnly(ids.Select(id => subscriptions[id].Value.ScopeId).ToArray()));
             AdvanceHigh(); EvaluateWaiters();
             return new(generation, NativeLogicalWire.Number(index), sourceSeam, phase,
                 NativeLogicalWire.Number(source), Array.AsReadOnly(ids.Select(id => subscriptions[id].Value).ToArray()));

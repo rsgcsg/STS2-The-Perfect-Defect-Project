@@ -98,7 +98,16 @@ public sealed partial class NativeLogicalPublicationHub
         lock (gate)
         {
             TickLocked(); var owner = GetSourceRegistration(registrationId);
-            if (SourceViewFor(owner, subscriptionId) is { } old) return SourceBoundary(old);
+            if (SourceViewFor(owner, subscriptionId) is { } old)
+            {
+                if (close)
+                {
+                    if (owner.ActiveSubscription is not null)
+                        throw new NativeLogicalException("source_close_epoch_mismatch", "Close must seal the actual active source epoch.");
+                    owner.CloseRequested = true; SignalSourceProgress();
+                }
+                return SourceBoundary(old);
+            }
             return SourceBoundary(RetireSourceLocked(owner, SourceActive(owner, subscriptionId), close));
         }
     }
@@ -116,7 +125,8 @@ public sealed partial class NativeLogicalPublicationHub
         {
             bool selected = original.Subscriptions.Contains(sub.Value.SubscriptionId);
             var copy = new Slot(original.Index, original.Seam, original.Phase, original.SourceIndex, original.Kind,
-                original.Deadline, selected ? new[] { sub.Value.SubscriptionId } : Array.Empty<string>()) { Completed = original.Completed };
+                original.Deadline, selected ? new[] { sub.Value.SubscriptionId } : Array.Empty<string>(), original.OriginalScopes)
+                { Completed = original.Completed };
             if (original.Outcomes.Remove(sub.Value.SubscriptionId, out var outcome)) copy.Outcomes.Add(sub.Value.SubscriptionId, outcome);
             if (original.Pins.Remove(sub.Value.SubscriptionId, out var pin)) copy.Pins.Add(sub.Value.SubscriptionId, pin);
             view.Slots.Add(copy.Index, copy);
@@ -164,7 +174,7 @@ public sealed partial class NativeLogicalPublicationHub
         if (originalViews.Length == 0) return false;
         if (outcomes.Select(o => o.ScopeId).Distinct(StringComparer.Ordinal).Count() != outcomes.Count)
             throw new NativeLogicalException("invalid_projection", "Duplicate original scope outcomes.");
-        var originalScopes = reservation.Subscriptions.Select(s => s.ScopeId).ToHashSet(StringComparer.Ordinal);
+        var originalScopes = originalViews.SelectMany(view => view.Slots[index].OriginalScopes).ToHashSet(StringComparer.Ordinal);
         foreach (var outcome in outcomes)
             if (!originalScopes.Contains(outcome.ScopeId))
                 throw new NativeLogicalException("invalid_projection", "Outcome is outside the original reservation scopes.");

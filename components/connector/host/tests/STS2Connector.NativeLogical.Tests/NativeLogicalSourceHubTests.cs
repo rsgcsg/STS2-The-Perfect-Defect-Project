@@ -99,12 +99,41 @@ public sealed class NativeLogicalSourceHubTests
         using var f = new Fixture(); var source = f.Attach(); f.Hub.ChangeGeneration();
         Assert.Equal("invalid_projection", Assert.Throws<NativeLogicalException>(() => f.Hub.Complete(source.InitialReservation,
             new[] { new NativeLogicalProjectionOutcome("foreign_scope", null, "fixture_missing") })).Code);
+        var forged = source.InitialReservation with { Subscriptions = new[] { source.Subscription with { ScopeId = "foreign_scope" } } };
+        Assert.Equal("invalid_projection", Assert.Throws<NativeLogicalException>(() => f.Hub.Complete(forged,
+            new[] { new NativeLogicalProjectionOutcome("foreign_scope", null, "fixture_missing") })).Code);
         Assert.Equal("invalid_projection", Assert.Throws<NativeLogicalException>(() => f.Missing(
             source.InitialReservation with { SourcePhase = "invented_phase" })).Code);
         Assert.Equal("0", f.Hub.ReadSourceBoundary(source.RegistrationId, source.Subscription.SubscriptionId).CompletedThrough);
         Assert.Empty(f.Hub.SourceEvents(source.RegistrationId, source.Subscription.SubscriptionId,
             source.Subscription.StartingCursor).Events);
         Assert.True(f.Missing(source.InitialReservation));
+    }
+
+    [Fact]
+    public void ClosingAnAlreadyRetiringEpochWithoutSuccessorPreventsReopeningItsRegistration()
+    {
+        using var f = new Fixture(); var source = f.Attach(); f.Hub.ChangeGeneration();
+        var seal = f.Hub.SealSource(source.RegistrationId, source.Subscription.SubscriptionId, close: true);
+        Assert.Equal(source.Subscription.StreamGeneration, seal.StreamGeneration);
+        Assert.Equal("source_closing", Assert.Throws<NativeLogicalException>(() => f.Next(source.RegistrationId)).Code);
+        Assert.True(f.Missing(source.InitialReservation));
+        var batch = f.Hub.SourceEvents(source.RegistrationId, source.Subscription.SubscriptionId, source.Subscription.StartingCursor);
+        f.Hub.AcknowledgeSource(source.RegistrationId, source.Subscription.SubscriptionId, batch.NextCursor);
+        Assert.True(f.Hub.ReleaseSourceEpoch(source.RegistrationId, source.Subscription.SubscriptionId));
+        Assert.Equal("source_closing", Assert.Throws<NativeLogicalException>(() => f.Next(source.RegistrationId)).Code);
+    }
+
+    [Fact]
+    public void ClosingAnOlderRetiringEpochCannotConcealAnAdmittingCurrentEpoch()
+    {
+        using var f = new Fixture(); var source = f.Attach(); f.Hub.ChangeGeneration(); var current = f.Next(source.RegistrationId);
+        Assert.Equal("source_close_epoch_mismatch", Assert.Throws<NativeLogicalException>(() =>
+            f.Hub.SealSource(source.RegistrationId, source.Subscription.SubscriptionId, close: true)).Code);
+        Assert.Equal(current.Subscription.SubscriptionId,
+            f.Hub.ReadSourceBoundary(source.RegistrationId, current.Subscription.SubscriptionId).SubscriptionId);
+        f.Hub.SealSource(source.RegistrationId, current.Subscription.SubscriptionId, close: true);
+        Assert.Equal("source_closing", Assert.Throws<NativeLogicalException>(() => f.Next(source.RegistrationId)).Code);
     }
 
     [Fact]
