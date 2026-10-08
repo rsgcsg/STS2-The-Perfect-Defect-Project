@@ -95,8 +95,18 @@ and changes no action authority. Its boolean acknowledges source accounting only
 it is not complete input, readiness, dispatch acceptance, effects or Commit.
 The fixed JSON contract and four-encoding resource bound are unchanged.
 
-Repair validation so far: 34 focused Host tests, 84 Mod tests and exact native
-compilation passed. New tests pin the actual Close delegate target and body,
+Repair code candidate: `dbb1ca160b96ffbdc92c787a8c39dffaf5de7f3d`, based on
+unmerged review head `bbfed107e4d3c759353c082bea2026ab13ad84fc`.
+34 focused Host tests and 84 Mod tests passed, with zero skips/failures. Exact
+native compilation and clean Release packaging passed with zero warnings/errors.
+Build provenance records the clean code candidate, compiled source digest
+`e91c276d9ae876bd389da6eae13f5fdcc800df42579e28ad8a209a6bd45723bc`,
+artifact SHA-256
+`710527eab63257741a691b46b47a7e397cc0447aaa2c11cc6b227b4084b4588f`,
+and MVID `a9b8b2bc-d145-4b66-9ff7-d7e846f4dcae`. The shared Service owner
+independently accepted the narrow PublishTracked diff. Full packet independent
+re-review remains pending; the prior full Host count below is historical and was
+not rerun for this bounded repair. New tests pin the actual Close delegate target and body,
 exercise reward/combat/map native ordering, deck and subscriber-changed-owner
 exactly-once behavior, original missing/no recapture, stale/mount/visibility,
 wrong/nested context, replacement/reopening, exceptions and scope expiration.
