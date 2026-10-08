@@ -1808,7 +1808,7 @@ def test_offline_runtime_install_binds_explicit_selection_to_separate_slot(
                                   selection=entry["id"], runtime_archive=archive)
     assert calls == [((service.directory / "text-menu-v1", pin, service._connector_pin()),
                       {"archive": archive})]
-    # The original offline CLI stays pinned to rc.6 when no selection was given.
+    # Without a selection, the offline CLI uses the shipped primary Runtime pin.
     # It cannot infer a new Runtime profile from archive contents.
     calls.clear()
     local_model_cli.model_command(service.config, "install-runtime", runtime_archive=archive)

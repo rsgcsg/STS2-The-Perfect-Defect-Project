@@ -42,7 +42,8 @@ private-refresh history is promoted into a new fair-player profile.
 Current versions/BOM are checked; package promotion and full runtime gates remain
 pending. Runtime rc24 installed-package checks `2c40d6d8` are integrated, with
 319 passing tests and two explicitly skipped numerical tests. Its clean archive
-and default application pin still require sealing/verification. One native
+is sealed, and the primary offline pin matches a verified isolated install;
+existing-user installation and real model execution remain separate. One native
 build/train slot and one game/install owner remain.
 
 ## Installed evidence and next execution
@@ -68,7 +69,7 @@ post-exit owner locks are released. This is train-only engineering evidence, wit
 no Human, held-out quality, Model/game, all-family, 200/500 or whole-game qualification.
 The separate lock-cleanup correction does not rewrite or repeat this attempt.
 
-Immediate path: seal/pin Runtime → register/load the actual exported model →
+Immediate path: install the sealed Runtime → register/load the actual exported model →
 Model/Runtime native canary → minimum Human check → larger collection/training.
 The reviewed indexed-corpus packet `358fcda5` stays unmerged through this first
 flat-model loop to preserve its inference code identity. Its source/test acceptance

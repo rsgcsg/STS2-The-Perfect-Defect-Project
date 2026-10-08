@@ -2,14 +2,27 @@
   "schema": "stpd/local-policy-registry-v1",
   "runtime_package": {
     "package": "@rsgcsg/sts2-policy-runtime",
-    "version": "0.1.0-rc.6",
-    "release_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/releases/download/candidate/stage1a-runtime-rc6-20260919/rsgcsg-sts2-policy-runtime-0.1.0-rc.6.tgz",
-    "source_revision": "9701b7530a94422fd8d7ae9296d3aee88fbdc4b3",
-    "component_tree_revision": "6049093fccf9b828d9b8ca3dbbb5cc9cc56e30a3",
-    "release_asset_sha256": "16e1caec78bfaefe5ab0635a8888c6d945325dfa3acb6f8d979a376ad05abdc8",
-    "package_content_sha256": "aab8ec8870d78b4568bf95acdc0bd2cdcb557108a961e5808bf6b81c8ddfd0fe",
-    "dependency_content_sha256": {
-      "zod": "5ef21d43720938cb893b5232d83fb47b5091053fd8ebbffd8cfb24eccb51a617"
+    "version": "0.1.0-rc.24",
+    "source_revision": "2c40d6d82096d53e1b2c117724b20d221e349d99",
+    "component_tree_revision": "994293876563fa6c7a5d938eafb482b981119aa4",
+    "release_asset_sha256": "75e750d84a2c4cb3abc3438f350a6f4063ca62154ec3545839f421d83986db2b",
+    "package_content_sha256": "dd668d5cc26b00cd04269d0b2372238a9f1e6d511161c42c198c334064baaf0b",
+    "dependency_layout": "bundled_source_candidate",
+    "bundled_connector_pin": {
+      "mode": "bundled_source_candidate",
+      "name": "@rsgcsg/sts2-connector-client",
+      "version": "1.3.0-rc.7",
+      "source_revision": "8d9745eeccf802c34bca9500274eb8bac4fe6ab4",
+      "component_tree_revision": "5a196c8b234fb7239098b556209840cd0b2f3cd9",
+      "component_source_digest_sha256": "760169926287bc91c7e4951ff6ce40c597701b4b3c2a1a11050e4c50630dbf95",
+      "public_contract_digest_sha256": "2686a41c8c8a8b3e24ec99076bdd1c637163a2eb550c8002abe441f8be8d0fc7",
+      "bundle_sha256": "354c983d74688570e369cc5b70b1c7562bf659e02875ae2d08530b16c67bd774",
+      "transitive_zod": {
+        "version": "3.25.76",
+        "url": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
+        "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
+        "bundle_sha256": "d94d782d24fb4840a8bfdf57cb4ad1aa6dcbb570d052b16681bbaa7633ceb3c4"
+      }
     }
   },
   "policies": [

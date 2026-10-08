@@ -446,6 +446,15 @@ installed native Agent-session Evidence verifier. It reads capabilities without
 attaching or acquiring a controller. The native lane uses the existing primary
 Runtime installation pin; it does not choose an executable from model bytes.
 
+The current primary pin is the sealed rc.24 candidate with bundled Connector SDK
+rc.7. It currently supports explicit offline archive installation; no download URL
+is declared before publication. Automatic download therefore remains unavailable.
+The independent public Host/SDK tools and three text Runtime profiles retain their
+own pins. Before upgrading an existing primary slot, stop/reconcile its predecessor
+with the original package and preserve the old archive/pin outside that slot; the
+primary installer does not retain a rollback generation. A pin update does not
+upgrade an existing installation or qualify a model/game run.
+
 Native status keeps its Agent/directive/result namespace. A pending original
 request exposes one explicit `models.reconcile` recovery action through the same
 Runtime HTTP client. The selected request, Runtime run, game instance and current
