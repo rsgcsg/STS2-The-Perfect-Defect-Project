@@ -18,28 +18,40 @@ public sealed class NativeLogicalBridgeTests
         internal int Captures, Dispatches;
         internal NativeInputResult Outcome = NativeInputResult.Delivered("legacy_acceptance");
         internal Action? OnDispatch, OnPrepared;
-        internal readonly MutationControllerCoordinator Controller = new("runtime");
+        internal readonly MutationControllerCoordinator Controller;
         internal readonly MutationClientRegistrationResult Client;
         internal readonly MutationLease Lease;
+        internal readonly string ReaderId;
         internal readonly MainThreadWorkQueue Queue = new();
-        internal readonly ConcurrentDictionary<string, string> Fingerprints = new(StringComparer.Ordinal);
+        internal readonly RequestNamespace Requests;
         internal readonly NativeLogicalService Owner;
-        internal Fixture()
+        internal Fixture(Func<long>? monotonicClock = null, int clientIdleMs = 30 * 60 * 1000)
         {
+            Controller = new("runtime", monotonicClock: monotonicClock,
+                clientIdleTtlMs: clientIdleMs, enableDeadlineTimer: false);
+            ReaderId = Controller.Register(new("bridge-reader", "test", "Bridge reader", "1")).Client.ClientSessionId;
             Client = Controller.Register(new("bridge-test", "test", "Bridge test", "1"));
             Lease = Controller.Acquire(new(Client.Client.ClientSessionId, null, null)).Controller!;
             Frame = MakeFrame(() => { Dispatches++; OnDispatch?.Invoke(); return Outcome; });
-            Owner = new(() => { Captures++; return Frame; }, () => "run", new object(), Fingerprints,
-                (work, cancellation) => Queue.Enqueue(() => { var value = work(); OnPrepared?.Invoke(); return value; }, cancellation), () => true, Controller.TryBegin);
+            Requests = new("runtime", Controller.ValidateActiveControl, Controller.TryAdmitRequest, Controller.TryBegin,
+                enableTimer: false);
+            Controller.ClientClosed += Requests.ClientClosed;
+            Owner = new(() => { Captures++; return Frame; }, () => "run", Requests,
+                (work, cancellation) => Queue.Enqueue(() => { var value = work(); OnPrepared?.Invoke(); return value; }, cancellation), () => true, clientActive: Controller.IsActiveClient);
             Owner.Initialize();
         }
         internal NativeLogicalCurrentReply Current()
         {
-            var task = Owner.CurrentAsync(new("reader", NativeLogicalProjector.ScopeFields, null));
+            var task = Owner.CurrentAsync(new(ReaderId, NativeLogicalProjector.ScopeFields, null));
             Queue.Drain(1);
             return task.GetAwaiter().GetResult();
         }
-        public void Dispose() => Owner.Dispose();
+        internal NativeLogicalResult Submit(PlayerEnvironmentActionRequest request) =>
+            RequestTestDriver.Submit<NativeLogicalResult>(Requests, request, Owner.RunAdmitted);
+        internal bool IsPending(string id) { var result = Requests.Find(id, NativeLogicalContract.Profile); result.Reply?.Dispose(); return result.Status == "pending"; }
+        internal NativeLogicalResult? Find(string id)
+        { var result = Requests.Find(id, NativeLogicalContract.Profile); return result.Reply is { } bytes ? RequestTestDriver.Decode<NativeLogicalResult>(bytes) : null; }
+        public void Dispose() { Owner.Dispose(); Requests.Dispose(); }
     }
     [Fact]
     public async Task NoConsumerSourceNoticesKeepTheirClockWithoutCapturingOrEncodingFrames()
@@ -48,11 +60,11 @@ public sealed class NativeLogicalBridgeTests
         fixture.Owner.Publish("native_target_focus", "no_consumer");
         fixture.Owner.Publish("native_card_preview", "no_consumer");
         Assert.Equal(0, fixture.Captures); Assert.Equal(0, fixture.Queue.PendingCount);
-        var attached = fixture.Owner.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var attached = fixture.Owner.Attach(new(fixture.ReaderId, NativeLogicalProjector.ScopeFields,
             new[] { NativeLogicalService.Coverage[0] }, "full_reference"));
         Assert.Equal(1, fixture.Captures);
         var sub = attached.Subscription!;
-        var next = await fixture.Owner.Hub.AwaitAsync("reader", sub.SubscriptionId, sub.ScopeId,
+        var next = await fixture.Owner.Hub.AwaitAsync(fixture.ReaderId, sub.SubscriptionId, sub.ScopeId,
             sub.StartingCursor, "00000000000000000000000000000003", "any_event", 2000);
         Assert.Equal("event", next.Status); Assert.Equal("3", next.Event!.Event.PublicationIndex);
         Assert.NotNull(next.Event.Event.CaptureRef);
@@ -77,7 +89,7 @@ public sealed class NativeLogicalBridgeTests
     public void LaterSourceCallbackCannotEncodeAheadOfAnOlderCapturedCurrent()
     {
         using var fixture = new Fixture();
-        var attached = fixture.Owner.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var attached = fixture.Owner.Attach(new(fixture.ReaderId, NativeLogicalProjector.ScopeFields,
             new[] { NativeLogicalService.Coverage[0] }, "full_reference"));
         var sub = attached.Subscription!;
         fixture.OnPrepared = () =>
@@ -88,7 +100,7 @@ public sealed class NativeLogicalBridgeTests
         _ = fixture.Current();
         fixture.OnPrepared = null;
         var currentB = fixture.Current();
-        var batch = fixture.Owner.Hub.Events("reader", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor);
+        var batch = fixture.Owner.Hub.Events(fixture.ReaderId, sub.SubscriptionId, sub.ScopeId, sub.StartingCursor);
         var sourceB = Assert.Single(batch.Events, e => e.Event.SourceSeam == "native_target_focus");
         Assert.Equal(currentB.Capture!.SnapshotId, sourceB.Event.PayloadReference!.SnapshotId);
     }
@@ -108,12 +120,12 @@ public sealed class NativeLogicalBridgeTests
     {
         using var fixture = new Fixture(); using var cancellation = new CancellationTokenSource();
         var queued = Enumerable.Range(0, 4).Select(_ => fixture.Owner.CurrentAsync(
-            new("reader", NativeLogicalProjector.ScopeFields, null), cancellation.Token)).ToArray();
+            new(fixture.ReaderId, NativeLogicalProjector.ScopeFields, null), cancellation.Token)).ToArray();
         Assert.Equal(4, fixture.Queue.PendingCount);
-        var reply = fixture.Owner.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var reply = fixture.Owner.Attach(new(fixture.ReaderId, NativeLogicalProjector.ScopeFields,
             new[] { NativeLogicalService.Coverage[0] }, "full_reference"));
         var subscription = reply.Subscription!;
-        var batch = fixture.Owner.Hub.Events("reader", subscription.SubscriptionId, subscription.ScopeId, subscription.StartingCursor);
+        var batch = fixture.Owner.Hub.Events(fixture.ReaderId, subscription.SubscriptionId, subscription.ScopeId, subscription.StartingCursor);
         var missing = Assert.Single(batch.Events).Event;
         Assert.Equal("1", missing.PublicationIndex); Assert.Equal("encoding_capacity_exceeded", missing.MissingReason);
         Assert.Null(missing.CaptureRef); Assert.Equal(0, fixture.Captures);
@@ -158,11 +170,11 @@ public sealed class NativeLogicalBridgeTests
         using var fixture = new Fixture();
         fixture.Frame = fixture.Frame with { Page = fixture.Frame.Page with { Completeness = fixture.Frame.Page.Completeness with
         { Status = "partial", Missing = new[] { "native_logical_public_list_action_bindings_incomplete" } } } };
-        var attached = fixture.Owner.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var attached = fixture.Owner.Attach(new(fixture.ReaderId, NativeLogicalProjector.ScopeFields,
             new[] { NativeLogicalService.Coverage[0] }, "full_reference"));
         var sub = Assert.IsType<NativeLogicalSubscription>(attached.Subscription);
         var current = fixture.Current();
-        var available = await fixture.Owner.Hub.AwaitAsync("reader", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor,
+        var available = await fixture.Owner.Hub.AwaitAsync(fixture.ReaderId, sub.SubscriptionId, sub.ScopeId, sub.StartingCursor,
             "00000000000000000000000000000001", "any_event", 10_000);
         Assert.Equal("event", available.Status);
         Assert.Equal("1", available.Event!.Event.PublicationIndex);
@@ -177,7 +189,7 @@ public sealed class NativeLogicalBridgeTests
     {
         using var fixture = new Fixture();
         using var cancellation = new CancellationTokenSource();
-        var waiting = fixture.Owner.CurrentAsync(new("reader", NativeLogicalProjector.ScopeFields, null), cancellation.Token);
+        var waiting = fixture.Owner.CurrentAsync(new(fixture.ReaderId, NativeLogicalProjector.ScopeFields, null), cancellation.Token);
         cancellation.Cancel();
         Assert.ThrowsAny<OperationCanceledException>(() => waiting.GetAwaiter().GetResult());
         Assert.Equal(0, fixture.Queue.Drain(1)); Assert.Equal(0, fixture.Captures);
@@ -190,30 +202,34 @@ public sealed class NativeLogicalBridgeTests
         Assert.Equal(count, fixture.Captures); Assert.Equal(0, fixture.Queue.PendingCount);
     }
     [Fact]
-    public void SharedRequestNamespaceRejectsCrossProfileReuseBeforeDispatch()
+    public async Task SharedRequestNamespaceRejectsCrossProfileReuseBeforeDispatch()
     {
         using var fixture = new Fixture();
-        fixture.Fingerprints["existing"] = "legacy-profile-fingerprint";
-        var result = fixture.Owner.Submit(new("existing", "snapshot", "action", "client", "lease", 1, NativeLogicalContract.Profile));
+        var legacy = new PlayerEnvironmentActionRequest("existing", "snapshot", "action",
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, null);
+        var admitted = fixture.Requests.Admit(legacy); Assert.Equal("admitted", admitted.Status);
+        fixture.Requests.CancelQueued("existing", "fixture_preinput"); (await admitted.OriginalCompletion!).Dispose();
+        var result = fixture.Submit(legacy with { InputProfile = NativeLogicalContract.Profile });
         Assert.Equal("request_id_conflict", result.Reason); Assert.Equal("not_started", result.Delivery);
         Assert.Equal("never_automatic", result.Retry); Assert.Equal(0, fixture.Dispatches);
     }
     [Fact]
-    public void QueuedAdmissionIsPendingAndQueueRejectionBecomesOneOriginalTerminalResult()
+    public async Task QueuedAdmissionIsPendingAndQueueRejectionBecomesOneOriginalTerminalResult()
     {
         using var fixture = new Fixture();
         var current = fixture.Current();
         var action = Assert.Single(fixture.Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
         var request = new PlayerEnvironmentActionRequest("queued", current.Capture.SnapshotId, action.ActionId,
             fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile);
-        Assert.Equal("admitted", fixture.Owner.Admit(request).Status);
-        Assert.True(fixture.Owner.IsPending("queued")); Assert.Null(fixture.Owner.Find("queued"));
-        var duplicate = fixture.Owner.Admit(request);
-        Assert.Equal("pending", duplicate.Status); Assert.Null(duplicate.Result);
-        var failure = fixture.Owner.RejectQueued(request, "main_thread_queue_full");
-        Assert.Equal("not_started", failure.Delivery); Assert.False(fixture.Owner.IsPending("queued"));
-        Assert.Same(failure, fixture.Owner.Submit(request));
-        Assert.Same(failure, fixture.Owner.Admit(request).Result); Assert.Equal(0, fixture.Dispatches);
+        var original = fixture.Requests.Admit(request); Assert.Equal("admitted", original.Status);
+        Assert.True(fixture.IsPending("queued")); Assert.Null(fixture.Find("queued"));
+        var duplicate = fixture.Requests.Admit(request);
+        Assert.Equal("pending", duplicate.Status); Assert.Null(duplicate.Reply);
+        Assert.True(fixture.Requests.CancelQueued(request.RequestId!, "main_thread_queue_full"));
+        var failure = fixture.Find(request.RequestId!)!; (await original.OriginalCompletion!).Dispose();
+        Assert.Equal("not_started", failure.Delivery); Assert.False(fixture.IsPending("queued"));
+        RequestTestDriver.AssertWireEqual(failure, fixture.Submit(request));
+        RequestTestDriver.AssertWireEqual(failure, RequestTestDriver.Decode<NativeLogicalResult>(fixture.Requests.Admit(request).Reply!)); Assert.Equal(0, fixture.Dispatches);
     }
     [Fact]
     public void OriginalPartialResultReplaysWithoutRedispatchAndKeepsUnknownExecution()
@@ -225,12 +241,12 @@ public sealed class NativeLogicalBridgeTests
             new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered, "focus_delivered"));
         var request = new PlayerEnvironmentActionRequest("partial", current.Capture.SnapshotId, action.ActionId,
             fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile);
-        var first = fixture.Owner.Submit(request); var replay = fixture.Owner.Submit(request);
-        Assert.Same(first, replay); Assert.Equal(1, fixture.Dispatches);
+        var first = fixture.Submit(request); var replay = fixture.Submit(request);
+        RequestTestDriver.AssertWireEqual(first, replay); Assert.Equal(1, fixture.Dispatches);
         Assert.Equal("partially_delivered", first.Delivery); Assert.Equal("unknown", first.Execution);
         Assert.Equal("unknown", first.Effect); Assert.Equal("unknown", first.Cancel);
         Assert.Equal("never_automatic", first.Retry); Assert.Equal("delivered", Assert.Single(first.Stages).Delivery);
-        Assert.False(fixture.Owner.IsPending("partial")); Assert.Same(first, fixture.Owner.Find("partial"));
+        Assert.False(fixture.IsPending("partial")); RequestTestDriver.AssertWireEqual(first, fixture.Find("partial"));
     }
     [Fact]
     public async Task StopAndWatchRemainPromptWhileStartedNativeCallbackIsBlocked()
@@ -248,18 +264,51 @@ public sealed class NativeLogicalBridgeTests
             fixture.OnDispatch = () => { entered.Set(); Assert.True(released.Wait(2_000)); };
             var stop = Task.Run(() =>
             {
-                Assert.True(entered.Wait(2_000)); Assert.True(fixture.Owner.IsPending("started"));
+                Assert.True(entered.Wait(2_000)); Assert.True(fixture.IsPending("started"));
                 var receipt = fixture.Controller.Release(new(authorization.ClientSessionId, authorization.ControllerLeaseId, authorization.ControllerGeneration));
                 Assert.Equal("controller_released", receipt.Status);
                 Assert.False(fixture.Controller.TryBegin(authorization).Accepted);
                 Assert.True(lost.Wait(2_000)); released.Set();
             });
-            var result = fixture.Owner.Submit(new("started", current.Capture.SnapshotId, action.ActionId,
+            var result = fixture.Submit(new("started", current.Capture.SnapshotId, action.ActionId,
                 authorization.ClientSessionId, authorization.ControllerLeaseId, authorization.ControllerGeneration, NativeLogicalContract.Profile));
             await stop; Assert.Equal("delivered", result.Delivery);
             Assert.Equal("unknown", result.Execution); Assert.Equal(1, fixture.Dispatches);
         }
     }
+    [Theory]
+    [InlineData("revoked")]
+    [InlineData("expired")]
+    [InlineData("foreign")]
+    public async Task ClosedOrForeignOriginalCannotAllocateCurrentAttachOrRetentionButKnownReadsRemain(string mode)
+    {
+        long mono = 0;
+        using var fixture = new Fixture(() => mono, 100);
+        var captured = fixture.Current().Capture!;
+        var lastSeen = fixture.Controller.Snapshot().Clients.Single(c => c.ClientSessionId == fixture.ReaderId).LastSeenAt;
+        mono = 90;
+        var retained = fixture.Owner.Retain(new(fixture.ReaderId, captured.CaptureId));
+        Assert.Equal("retained", retained.Status);
+        Assert.Equal(lastSeen, fixture.Controller.Snapshot().Clients.Single(c => c.ClientSessionId == fixture.ReaderId).LastSeenAt);
+        string target = fixture.ReaderId;
+        if (mode == "expired") mono = 100;
+        else if (mode == "revoked") fixture.Controller.Revoke(new("runtime", target));
+        else target = "foreign-unregistered";
+        int captures = fixture.Captures;
+        Assert.Equal("client_session_expired", (await Assert.ThrowsAsync<NativeLogicalException>(() => fixture.Owner.CurrentAsync(
+            new(target, NativeLogicalProjector.ScopeFields, null)))).Code);
+        Assert.Equal("client_session_expired", Assert.Throws<NativeLogicalException>(() => fixture.Owner.Attach(
+            new(target, NativeLogicalProjector.ScopeFields, new[] { NativeLogicalService.Coverage[0] }, "full_reference"))).Code);
+        Assert.Equal("client_session_expired", Assert.Throws<NativeLogicalException>(() => fixture.Owner.Retain(
+            new(target, captured.CaptureId))).Code);
+        Assert.Equal(captures, fixture.Captures); Assert.Equal(0, fixture.Queue.PendingCount);
+        var probe = fixture.Owner.Hub.Reserve("native_target_focus", "1", "negative_admission_probe");
+        Assert.Empty(probe.Subscriptions);
+        fixture.Owner.Hub.Complete(probe, Array.Empty<NativeLogicalProjectionOutcome>());
+        Assert.True(fixture.Owner.Store.Read(captured.CaptureId, captured.ReadCursor).Complete);
+        fixture.Owner.Store.ReleasePublic(new(fixture.ReaderId, retained.Retention!.RetentionHandleId));
+    }
+
     [Theory]
     [InlineData("{\"capture_id\":\"a\",\"cursor\":\"b\",\"max_bytes\":1,\"extra\":0}")]
     [InlineData("{\"capture_id\":\"a\",\"capture_id\":\"b\",\"cursor\":\"c\",\"max_bytes\":1}")]

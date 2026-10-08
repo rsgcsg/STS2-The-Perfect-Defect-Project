@@ -18,7 +18,11 @@ internal static partial class PlayerEnvironmentService
     private static readonly Lazy<NativeLogicalService> NativeLogicalOwner = new(CreateNativeLogicalOwner);
     private static NativeLogicalService CreateNativeLogicalOwner() => new(
         CaptureNativeLogicalFrame, () => RunManager.Instance.DebugOnlyGetState() is { } run
-            ? Entities.GetId(run, "run") : null, SubmissionGate, RequestFingerprints);
+            ? Entities.GetId(run, "run") : null, Requests, clientLifetime: new ClientLifetimeDependency(), clientActive: MutationControlRuntime.IsActiveClient);
+    private sealed class ClientLifetimeDependency : INativeLogicalClientLifetimeDependency
+    {
+        public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
+    }
     internal static NativeLogicalService NativeLogical => NativeLogicalOwner.Value;
     internal static void InitializeNativeLogical() => NativeLogical.Initialize();
     internal static NativeLogicalCapabilities GetNativeLogicalCapabilities()
@@ -80,20 +84,34 @@ internal sealed partial class NativeLogicalService : IDisposable
     private IReadOnlyDictionary<string, string> currentActionKeys = new Dictionary<string, string>();
     private string? projectedSnapshot;
     private readonly NativeLogicalExecutor executor;
+    private readonly Func<string, bool> clientActive;
     internal Func<bool> ExecutionAllowed { get; }
     private readonly Func<Func<Prepared>, CancellationToken, Task<Prepared>> nativeQueue;
 
     internal NativeLogicalService(Func<TextMenuFrame> capture, Func<string?> continuity,
-        object submissionGate, ConcurrentDictionary<string, string> fingerprints,
+        RequestNamespace requests,
         Func<Func<Prepared>, CancellationToken, Task<Prepared>>? nativeQueue = null, Func<bool>? executionAllowed = null,
-        Func<MutationAuthorizationRequest, MutationAdmission>? begin = null)
+        INativeLogicalClientLifetimeDependency? clientLifetime = null, Func<string, bool>? clientActive = null)
     {
         this.capture = capture; this.continuity = continuity;
+        this.clientActive = clientActive ?? MutationControlRuntime.IsActiveClient;
         ExecutionAllowed = executionAllowed ?? (() => EnvironmentIdentityRuntime.ExecutionAvailable(EnvironmentIdentityRuntime.ReadGame()));
         this.nativeQueue = nativeQueue ?? ((work, cancellation) => ConnectorMod.RunOnMainThread(work, cancellation));
         Store = new(limits: Limits); projector = new(Limits);
         Hub = new(Store, Coverage, limits: Limits, controls: new ControlDependency());
-        executor = new(submissionGate, fingerprints, this, begin);
+        executor = new(requests, this);
+        var lifetime = clientLifetime ?? new OwnedClientLifetimeDependency();
+        Hub.BindClientLifetime(lifetime, this.clientActive);
+        Store.BindClientLifetime(lifetime, this.clientActive);
+    }
+    private sealed class OwnedClientLifetimeDependency : INativeLogicalClientLifetimeDependency
+    {
+        public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
+    }
+    internal void ExpireClient(string originalClient, string reason)
+    {
+        Hub.ExpireClient(originalClient, reason);
+        Store.ExpireClient(originalClient);
     }
     internal void Initialize()
     {
@@ -211,8 +229,25 @@ internal sealed partial class NativeLogicalService : IDisposable
             if (currentFacts is not null && SameFacts(currentFacts, prepared.Facts))
             { projectedBasis = prepared.Facts; projectedSnapshot = catalog.Descriptor.SnapshotId; currentActionKeys = keys; }
     }
+    private void RequireActiveClient(string originalClient)
+    {
+        if (!clientActive(originalClient))
+            throw new NativeLogicalException("client_session_expired", "The original Authority client is absent or permanently closed.");
+    }
+    internal NativeLogicalRetainReply Retain(NativeLogicalRetainRequest request)
+    {
+        RequireActiveClient(request.ClientSessionId);
+        var reply = Store.RetainPublic(request);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
+        return reply;
+    }
     internal async Task<NativeLogicalCurrentReply> CurrentAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
     {
+        RequireActiveClient(request.ClientSessionId);
         if (!encodingAdmission.Wait(0)) return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "capacity_exceeded", null, null, null, "encoding_capacity_exceeded");
         request = request with { EagerScope = Array.AsReadOnly(request.EagerScope.ToArray()) };
         var source = new TaskCompletionSource<NativeLogicalCurrentReply>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -221,6 +256,7 @@ internal sealed partial class NativeLogicalService : IDisposable
         {
             await nativeQueue(() =>
             {
+                RequireActiveClient(request.ClientSessionId);
                 SynchronizeRun(); var prepared = Prepare();
                 // Enqueue in the same native turn as capture. A continuation
                 // on an HTTP/worker thread cannot reorder an older Current
@@ -229,8 +265,14 @@ internal sealed partial class NativeLogicalService : IDisposable
                 {
                     try
                     {
+                        RequireActiveClient(request.ClientSessionId);
                         var reply = projector.Current(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
                             () => Environment.TickCount64, Store, prepared.Continuity);
+                        if (!clientActive(request.ClientSessionId))
+                        {
+                            ExpireClient(request.ClientSessionId, "client_session_expired");
+                            RequireActiveClient(request.ClientSessionId);
+                        }
                         if (reply.Capture is { } value)
                             AcceptBasis(prepared, request.EagerScope.Contains("catalog") ? Store.Catalog(value.CaptureId) : null);
                         if (reply.Status == "source_capture_incomplete") reply = reply with { Reason = prepared.Facts.SourceCompleteness.Missing.FirstOrDefault() ?? reply.Reason };
@@ -247,8 +289,14 @@ internal sealed partial class NativeLogicalService : IDisposable
     }
     internal NativeLogicalAttachReply Attach(NativeLogicalAttachRequest request)
     {
+        RequireActiveClient(request.ClientSessionId);
         SynchronizeRun();
         var initial = Hub.AttachWithInitialReservation(request, Bootstrap);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
         if (initial.InitialReservation is { } reservation) CaptureReservation(reservation);
         return initial.Attach;
     }
@@ -309,11 +357,7 @@ internal sealed partial class NativeLogicalService : IDisposable
             return currentNative!.Leaves.SingleOrDefault(l => l.Key == key);
         }
     }
-    internal NativeLogicalExecutor.Admission Admit(PlayerEnvironmentActionRequest request) => executor.Admit(request);
-    internal NativeLogicalResult RejectQueued(PlayerEnvironmentActionRequest request, string reason) => executor.RejectQueued(request, reason);
-    internal NativeLogicalResult Submit(PlayerEnvironmentActionRequest request) => executor.Submit(request);
-    internal NativeLogicalResult? Find(string id) => executor.Find(id);
-    internal bool IsPending(string id) => executor.IsPending(id);
+    internal bool RunAdmitted(PlayerEnvironmentActionRequest request) => executor.RunAdmitted(request);
     public void Dispose()
     {
         if (initialized) NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;

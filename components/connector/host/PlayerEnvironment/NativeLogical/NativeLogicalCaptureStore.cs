@@ -23,9 +23,11 @@ public sealed class NativeLogicalCaptureStore
         internal bool BelongsTo(NativeLogicalCaptureStore owner) => ReferenceEquals(store, owner);
     }
     private sealed record CatalogStorage(Buffer Values, Buffer Index, NativeLogicalCatalog Catalog);
-    private sealed record Entry(Buffer Buffer, NativeLogicalCapture Capture, NativeLogicalCatalog? Catalog, CatalogStorage? CatalogStorage, long Deadline);
+    private sealed record Entry(Buffer Buffer, NativeLogicalCapture Capture, NativeLogicalCatalog? Catalog, CatalogStorage? CatalogStorage, long Deadline, string? InitialClient);
     private sealed record Handle(string Client, Entry Entry, long Deadline);
     private readonly object gate = new();
+    private INativeLogicalClientLifetimeDependency? clientLifetime;
+    private Func<string, bool>? clientActivity;
     private readonly Dictionary<string, Entry> captures = new(StringComparer.Ordinal);
     private readonly Dictionary<NativeLogicalCatalog, CatalogStorage> catalogStorage = new();
     private readonly Dictionary<string, Handle> handles = new(StringComparer.Ordinal);
@@ -40,6 +42,34 @@ public sealed class NativeLogicalCaptureStore
     public int ChargedBuffers { get { lock (gate) return buffers + catalogStorage.Count * 2; } }
     public NativeLogicalCaptureStore(Func<long>? monotonicMs = null, NativeLogicalLimits? limits = null)
     { this.clock = monotonicMs ?? (() => Environment.TickCount64); this.limits = limits ?? new(); }
+    // The same original Authority dependency is bound to Hub and Store. This
+    // predicate never renews idle time and is called only under Store's gate.
+    public void BindClientLifetime(INativeLogicalClientLifetimeDependency dependency, Func<string, bool> activity)
+    {
+        ArgumentNullException.ThrowIfNull(dependency); ArgumentNullException.ThrowIfNull(activity);
+        lock (gate)
+        {
+            if (clientLifetime is not null && !ReferenceEquals(clientLifetime, dependency)
+                || clientActivity is not null && !ReferenceEquals(clientActivity, activity))
+                throw new InvalidOperationException("The original client Authority cannot be replaced.");
+            clientLifetime = dependency; clientActivity = activity;
+        }
+    }
+    private void RequireActiveClientLocked(string client)
+    {
+        if (clientActivity is not null && !clientActivity(client))
+            throw new NativeLogicalException("client_session_expired", "The original client closed before retained-resource admission.");
+    }
+    public void ExpireClient(string client)
+    {
+        lock (gate)
+        {
+            foreach (var pair in handles.Where(pair => pair.Value.Client == client).ToArray())
+            { handles.Remove(pair.Key); DropEntryLocked(pair.Value.Entry); }
+            foreach (var pair in captures.Where(pair => pair.Value.InitialClient == client).ToArray())
+            { captures.Remove(pair.Key); DropEntryLocked(pair.Value); }
+        }
+    }
     public EncodingLease AcquireEncoding(ReadOnlySpan<byte> frozenBytes)
     {
         lock (gate)
@@ -54,32 +84,34 @@ public sealed class NativeLogicalCaptureStore
         }
     }
     public NativeLogicalCapturedProjection SealProjection(NativeLogicalFrozenProjection projection,
-        PlayerEnvironmentSessionReference session, string generation, string scopeId, DateTimeOffset capturedAt)
+        PlayerEnvironmentSessionReference session, string generation, string scopeId, DateTimeOffset capturedAt,
+        string? originalClient = null)
     {
-        bool hasCatalog = projection.Observation.Catalog.Status == "complete";
-        byte[] owned = projection.DetachPayload();
-        EncodingLease encoding;
+        // Allocation and closure cleanup use the same Store transaction. The
+        // short Authority query returns before payload hashing or native work.
         lock (gate)
         {
             SweepLocked();
+            if (originalClient is not null) RequireActiveClientLocked(originalClient);
+            bool hasCatalog = projection.Observation.Catalog.Status == "complete";
+            byte[] owned = projection.DetachPayload();
             if (owned.Length <= 0 || owned.Length > limits.MaxCaptureBytes || bytes + owned.Length > limits.MaxRetainedBytes || buffers >= limits.MaxCaptures)
                 throw new NativeLogicalException("capacity_exceeded", "Owned projection exceeds frozen buffer admission.");
-            bytes += owned.Length; buffers++; encoding = new(this, new(owned));
-        }
-        using (encoding)
-        {
+            bytes += owned.Length; buffers++;
+            using var encoding = new EncodingLease(this, new(owned));
             NativeLogicalCatalog? retainedCatalog = hasCatalog ? projection.Catalog : null;
-            NativeLogicalCapture capture = Seal(encoding, projection.SnapshotId, session, generation, scopeId, capturedAt, retainedCatalog);
+            NativeLogicalCapture capture = Seal(encoding, projection.SnapshotId, session, generation, scopeId, capturedAt, retainedCatalog, originalClient);
             return new(capture, retainedCatalog);
         }
     }
     public NativeLogicalCapture Seal(EncodingLease lease, string snapshotId,
         PlayerEnvironmentSessionReference session, string generation, string scopeId,
-        DateTimeOffset capturedAt, NativeLogicalCatalog? catalog = null)
+        DateTimeOffset capturedAt, NativeLogicalCatalog? catalog = null, string? originalClient = null)
     {
         lock (gate)
         {
             SweepLocked();
+            if (originalClient is not null) RequireActiveClientLocked(originalClient);
             if (!lease.BelongsTo(this)) throw new NativeLogicalException("invalid_capture", "Encoding lease has already released its actual bytes.");
             if (captures.Keys.Concat(handles.Values.Select(h => h.Entry.Capture.CaptureId)).Distinct().Count() >= limits.MaxCaptures)
                 throw new NativeLogicalException("capacity_exceeded", "Live capture identity count exceeded.");
@@ -113,7 +145,7 @@ public sealed class NativeLogicalCaptureStore
                 }
             }
             lease.Value.References++;
-            captures.Add(id, new(lease.Value, envelope, catalog, relation, deadline));
+            captures.Add(id, new(lease.Value, envelope, catalog, relation, deadline, originalClient));
             catalog?.BindRetention(() => IsCatalogAvailable(catalog), () => BorrowCatalog(catalog));
             return envelope;
         }
@@ -204,7 +236,17 @@ public sealed class NativeLogicalCaptureStore
     }
     public NativeLogicalRetainReply RetainPublic(NativeLogicalRetainRequest request)
     {
-        try { return new(NativeLogicalContract.RetainSchema, NativeLogicalContract.Profile, "retained", RetainReference(request.ClientSessionId, request.CaptureId), null); }
+        try
+        {
+            lock (gate)
+            {
+                SweepLocked(); Find(request.CaptureId);
+                if (handles.Count >= limits.MaxRetentionHandles || handles.Values.Count(handle => handle.Client == request.ClientSessionId) >= limits.MaxClientRetentionHandles)
+                    throw new NativeLogicalException("capacity_exceeded", "Reader retention handle count exceeded.");
+                RequireActiveClientLocked(request.ClientSessionId);
+                return new(NativeLogicalContract.RetainSchema, NativeLogicalContract.Profile, "retained", RetainReference(request.ClientSessionId, request.CaptureId), null);
+            }
+        }
         catch (NativeLogicalException e) when (e.Code is "payload_expired" or "capacity_exceeded")
         { return new(NativeLogicalContract.RetainSchema, NativeLogicalContract.Profile, e.Code, null, e.Code); }
     }

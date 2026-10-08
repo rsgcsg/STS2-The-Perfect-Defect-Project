@@ -19,11 +19,13 @@ internal sealed class TextMenuSession
             ["intent_tips"] = "Intent tips", ["orb_tips"] = "Orb tips",
             ["topbar_tips"] = "Top bar tips"
         };
-    private string cursor = "root";
-    private string? owner;
-    private long revision;
-    private long sequence;
-    private string? lastSnapshotId;
+    private sealed record State(string Cursor, string? Owner, long Revision, long Sequence, string? LastSnapshotId);
+    private State state = new("root", null, 0, 0, null);
+    private string cursor { get => state.Cursor; set => state = state with { Cursor = value }; }
+    private string? owner { get => state.Owner; set => state = state with { Owner = value }; }
+    private long revision { get => state.Revision; set => state = state with { Revision = value }; }
+    private long sequence { get => state.Sequence; set => state = state with { Sequence = value }; }
+    private string? lastSnapshotId { get => state.LastSnapshotId; set => state = state with { LastSnapshotId = value }; }
 
     internal void ResetCursor()
     {
@@ -127,6 +129,30 @@ internal sealed class TextMenuSession
         revision++;
         return Observe(currentFrame).Snapshot;
     }
+
+    internal sealed class PreparedChange
+    {
+        private readonly State expected, next;
+        internal TextMenuSnapshot Snapshot { get; }
+        private PreparedChange(State expected, State next, TextMenuSnapshot snapshot)
+        { this.expected = expected; this.next = next; Snapshot = snapshot; }
+        internal static PreparedChange Create(TextMenuSession session, TextMenuFrame frame,
+            string snapshotId, string actionId)
+        {
+            State original = session.state;
+            var projected = new TextMenuSession { state = original };
+            TextMenuSnapshot snapshot = projected.Navigate(frame, snapshotId, actionId);
+            return new(original, projected.state, snapshot);
+        }
+        internal void Commit(TextMenuSession session)
+        {
+            if (!ReferenceEquals(session.state, expected))
+                throw new InvalidOperationException("Text state changed before its frozen result was committed.");
+            session.state = next;
+        }
+    }
+    internal PreparedChange PrepareSystemApply(TextMenuFrame frame, string snapshotId, string actionId) =>
+        PreparedChange.Create(this, frame, snapshotId, actionId);
 
     private static void ValidateFrame(TextMenuFrame frame)
     {
