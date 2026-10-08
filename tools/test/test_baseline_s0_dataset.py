@@ -519,6 +519,101 @@ def test_exact_capsules_offers_score_only_and_unoffered_lineage(tmp_path):
     assert run["identity"]["counts"]["excluded_unoffered_captures"] == 1
     assert len(run["identity"]["lineage"]) == 12
     assert all(row["capsule_json"].startswith('{\n  "protocol_version"') for row in run["steps"])
+    assert "native_exit" not in run["identity"]  # Old receipt absence is not process-exit evidence.
+
+
+def add_native_exit(directory, rows, *, forced=False):
+    runtime_id = next(
+        row["payload"]["host"]["runtime_instance_id"]
+        for row in rows
+        if row["type"] == "episode_identity"
+    )
+    value = {
+        "schema": "sts2.baseline-s0/native-exit-receipt-1",
+        "status": "reported",
+        "runtime_instance_id": runtime_id,
+        "closed_at": "2026-10-08T00:00:00Z",
+        "error": None,
+        "receipt": {
+            "code": None if forced else 0,
+            "signal": "SIGTERM" if forced else None,
+            "forced": forced,
+            "host_shutdown": {
+                "status": "requested",
+                "http_status": 200,
+                "response": {"status": "shutdown_requested", "runtime_instance_id": runtime_id},
+                "error": None,
+            },
+        },
+    }
+    rows[-1]["payload"]["native_exit"] = value
+    summary_path = directory / "summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    summary["native_exit"] = copy.deepcopy(value)
+    write_rows(directory, rows)
+    summary_path.write_bytes(encode(summary))
+    return value
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_optional_exit_preserves_process_tuple_without_model_input(tmp_path, forced):
+    directory, rows = create_run(tmp_path)
+    before = converter.convert_runs([("train", directory)])["runs"][0]
+    value = add_native_exit(directory, rows, forced=forced)
+    after = converter.convert_runs([("train", directory)])["runs"][0]
+    assert after["identity"]["native_exit"] == value
+    assert after["steps"] == before["steps"]
+    assert after["identity"]["native_exit"]["receipt"]["forced"] is forced
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        ("runtime", "native_exit_identity"),
+        ("shutdown_runtime", "native_exit_shutdown_identity"),
+        ("rejected_http_ack", "native_exit_shutdown_identity"),
+        ("missing_process_exit", "native_exit_process_tuple"),
+        ("both_code_and_signal", "native_exit_process_tuple"),
+        ("boolean_exit_code", "native_exit_process_tuple"),
+        ("nonboolean_forced", "native_exit_process_tuple"),
+        ("not_reported", "native_exit_not_observed"),
+        ("timezone_missing", "native_exit_time"),
+        ("summary_mismatch", "native_exit_summary_binding"),
+        ("only_summary", "native_exit_summary_binding"),
+    ],
+)
+def test_optional_native_exit_rejects_false_identity_or_unobserved_claims(tmp_path, mutation, code):
+    directory, rows = create_run(tmp_path)
+    value = add_native_exit(directory, rows)
+    if mutation == "runtime":
+        value["runtime_instance_id"] = "different-runtime"
+    elif mutation == "shutdown_runtime":
+        value["receipt"]["host_shutdown"]["response"]["runtime_instance_id"] = "different-runtime"
+    elif mutation == "rejected_http_ack":
+        value["receipt"]["host_shutdown"]["http_status"] = 403
+    elif mutation == "missing_process_exit":
+        value["receipt"]["code"] = None
+    elif mutation == "both_code_and_signal":
+        value["receipt"]["signal"] = "SIGTERM"
+    elif mutation == "boolean_exit_code":
+        value["receipt"]["code"] = True
+    elif mutation == "nonboolean_forced":
+        value["receipt"]["forced"] = 1
+    elif mutation == "not_reported":
+        value["status"], value["receipt"] = "not_reported", None
+    elif mutation == "timezone_missing":
+        value["closed_at"] = "2026-10-08T00:00:00"
+    summary_path = directory / "summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    summary["native_exit"] = copy.deepcopy(value)
+    if mutation == "summary_mismatch":
+        summary["native_exit"]["receipt"]["code"] = 1
+    elif mutation == "only_summary":
+        del rows[-1]["payload"]["native_exit"]
+    write_rows(directory, rows)
+    summary_path.write_bytes(encode(summary))
+    with pytest.raises(ValueError, match=code):
+        converter.convert_runs([("train", directory)])
 
 
 def test_explicit_continuity_change_resets_and_preserves_actual_rows(tmp_path):
