@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
 from ..fullrun.structured_sequences import StructuredDataset
+from ..native_graph_spec import NativeGraphControl, optional_control
 from ..structured_code_scope import (
     LEGACY_SCOPE,
     ROOT,
@@ -30,7 +31,8 @@ from ..structured_code_scope import (
     inference_runtime,
 )
 from ..structured_profiles import (
-    NATIVE_SCOPE,
+    NATIVE_GRAPH_SCOPE,
+    NATIVE_SCOPES,
     NATIVE_SOURCE_SCHEMA,
     numerical_code_identity,
     profile_projection,
@@ -38,7 +40,7 @@ from ..structured_profiles import (
     validate_profile,
 )
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
-from .structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
+from .structured_m2 import GRAPH_ID, WIDTH, StructuredM2
 from .structured_training import StructuredTrainingConfig, evaluate_runs
 
 CHECKPOINT_SCHEMA = "stpd/structured-m2-training-checkpoint-v2"
@@ -73,12 +75,16 @@ def runtime_identity() -> dict[str, Any]:
 def execution_identity(
     dataset: StructuredDataset, config: StructuredTrainingConfig, *,
     code_scope: str = LEGACY_SCOPE,
+    model_control: NativeGraphControl | None = None,
 ) -> dict[str, Any]:
     config.validate()
     if torch.get_num_threads() != config.cpu_threads:
         raise BoundaryError("structured_engine", "cpu_thread_identity_mismatch")
     native = validate_profile(dataset, code_scope)
-    scoped = code_scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    model_control = optional_control(model_control)
+    if (model_control is not None) != (code_scope == NATIVE_GRAPH_SCOPE):
+        raise BoundaryError("structured_engine", "control_scope_mismatch")
+    scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     identity = numerical_code_identity(code_scope) if scoped else None
     runtime = runtime_identity()
     if scoped:
@@ -90,7 +96,8 @@ def execution_identity(
         "runtime": runtime,
         "source_sha256": dataset.source_sha256,
         "config": asdict(config),
-        "graph_id": GRAPH_ID,
+        "graph_id": GRAPH_ID if model_control is None else model_control.id,
+        **({"model_control": model_control.to_dict()} if model_control is not None else {}),
         "projection": profile_projection(dataset, code_scope),
         **({"input_spec": dataset.input_spec.value()} if native and dataset.input_spec else {}),
         **({"source_schema": NATIVE_SOURCE_SCHEMA,
@@ -168,7 +175,8 @@ def _plans(dataset: StructuredDataset, config: StructuredTrainingConfig) -> tupl
 
 class StructuredTrainingEngine:
     def __init__(self, dataset: StructuredDataset, config: StructuredTrainingConfig, *,
-                 code_scope: str = LEGACY_SCOPE) -> None:
+                 code_scope: str = LEGACY_SCOPE,
+                 model_control: NativeGraphControl | None = None) -> None:
         config.validate()
         if not isinstance(dataset, StructuredDataset):
             raise BoundaryError("structured_engine", "typed_dataset_required")
@@ -179,10 +187,13 @@ class StructuredTrainingEngine:
         ):
             raise BoundaryError("structured_engine", "train_choices_required")
         self.code_scope = code_scope
+        self.model_control = optional_control(model_control)
         self.checkpoint_schema = checkpoint_schema(code_scope)
-        self.identity = execution_identity(dataset, config, code_scope=code_scope)
+        self.identity = execution_identity(
+            dataset, config, code_scope=code_scope, model_control=self.model_control
+        )
         self.plans = _plans(dataset, config)
-        self.model = StructuredM2(seed=config.seed)
+        self.model = StructuredM2(seed=config.seed, model_control=self.model_control)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
         self.parameter_names = tuple(name for name, _ in self.model.named_parameters())
         # AdamW initializes state lazily, only for parameters with an actual gradient.
@@ -211,8 +222,9 @@ class StructuredTrainingEngine:
     def _assert_live(self) -> None:
         if self.failed:
             raise BoundaryError("structured_engine", "failed_engine_requires_restore")
-        if execution_identity(
-            self.dataset, self.config, code_scope=self.code_scope
+        if self.model.model_control != self.model_control or execution_identity(
+            self.dataset, self.config, code_scope=self.code_scope,
+            model_control=self.model_control
         ) != self.identity:
             self.failed = True
             raise BoundaryError("structured_engine", "runtime_code_or_input_changed")
@@ -389,7 +401,8 @@ class StructuredTrainingEngine:
             value["schema"] != self.checkpoint_schema
             or value["identity"] != self.identity
             or execution_identity(
-                self.dataset, self.config, code_scope=self.code_scope
+                self.dataset, self.config, code_scope=self.code_scope,
+            model_control=self.model_control
             ) != self.identity
             or value["parameter_names"] != self.parameter_names
         ):
@@ -461,7 +474,7 @@ class StructuredTrainingEngine:
         memory = value["memory"]
         if (
             not isinstance(memory, Tensor)
-            or memory.shape != (SLOTS, WIDTH)
+            or memory.shape != (self.model.slots, WIDTH)
             or memory.dtype != torch.float32
             or memory.device.type != "cpu"
         ):
