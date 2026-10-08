@@ -495,3 +495,74 @@ def test_uncertain_completion_reconciles_without_false_failure_or_retraining(tmp
         store, reporter, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
     )
     assert result.state == "completed" and result.optimizer_updates == 4
+
+
+def test_restore_rejects_missing_entire_adamw_entry_without_mutating_model():
+    data = dataset()
+    engine = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    engine.advance_chunk()
+    altered = decode_checkpoint(engine.checkpoint())
+    assert len(altered["optimizer"]["state"]) > 1
+    removed = next(iter(altered["optimizer"]["state"]))
+    assert altered["optimizer_participation"][removed] == 1
+    del altered["optimizer"]["state"][removed]
+    target = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    before = {name: tensor.clone() for name, tensor in target.model.state_dict().items()}
+    with pytest.raises(BoundaryError, match="optimizer_state_inventory_mismatch"):
+        target.restore(encode_checkpoint(altered))
+    equal_tree(target.model.state_dict(), before)
+    assert target.optimizer.state_dict()["state"] == {}
+
+
+def test_unused_parameters_keep_zero_participation_and_resume_exactly():
+    data = dataset()
+    engine = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    engine.advance_chunk()
+    checkpoint = decode_checkpoint(engine.checkpoint())
+    unused = {
+        index for index, count in enumerate(checkpoint["optimizer_participation"]) if count == 0
+    }
+    assert unused  # This synthetic frame does not activate every typed relation path.
+    assert unused.isdisjoint(checkpoint["optimizer"]["state"])
+    for index, state in checkpoint["optimizer"]["state"].items():
+        assert float(state["step"]) == checkpoint["optimizer_participation"][index]
+    resumed = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    resumed.restore(encode_checkpoint(checkpoint))
+    assert resumed.optimizer_participation == engine.optimizer_participation
+    assert finish(resumed) == finish(engine)
+    equal_tree(resumed.model.state_dict(), engine.model.state_dict())
+    equal_tree(resumed.optimizer.state_dict(), engine.optimizer.state_dict())
+    assert resumed.optimizer_participation == engine.optimizer_participation
+
+
+def test_adamw_step_is_bound_to_its_actual_parameter_participation():
+    data = dataset()
+    engine = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    engine.advance_chunk()
+    checkpoint = decode_checkpoint(engine.checkpoint())
+    used = next(iter(checkpoint["optimizer"]["state"]))
+    checkpoint["optimizer"]["state"][used]["step"] = torch.tensor(0.0)
+    with pytest.raises(BoundaryError, match="optimizer_step_mismatch"):
+        StructuredTrainingEngine(data, StructuredTrainingConfig()).restore(
+            encode_checkpoint(checkpoint)
+        )
+
+
+@pytest.mark.parametrize("inventory", ["absent", "wrong_length", "non_integer", "too_many"])
+def test_invalid_optimizer_participation_inventory_is_rejected(inventory):
+    data = dataset()
+    engine = StructuredTrainingEngine(data, StructuredTrainingConfig())
+    engine.advance_chunk()
+    checkpoint = decode_checkpoint(engine.checkpoint())
+    if inventory == "absent":
+        del checkpoint["optimizer_participation"]
+    elif inventory == "wrong_length":
+        checkpoint["optimizer_participation"].pop()
+    elif inventory == "non_integer":
+        checkpoint["optimizer_participation"][0] = True
+    else:
+        checkpoint["optimizer_participation"][0] = 2
+    with pytest.raises(BoundaryError):
+        StructuredTrainingEngine(data, StructuredTrainingConfig()).restore(
+            encode_checkpoint(checkpoint)
+        )

@@ -21,6 +21,17 @@ A v2 checkpoint is saved at a completed TBPTT chunk: losses/gradients are cleare
 W is detached, and the cursor points to the next unconsumed row. The state retains
 model parameters, AdamW state, RNG states, configuration/runtime/source/code
 identity, cumulative counters and metrics. Resume validates these before loading.
+Each checkpoint also retains a per-parameter count of actual gradient participation,
+tracked independently of AdamW's lazily populated state. Exact parameter names
+bind its index order. Restore requires precisely the positive-count parameter
+state entries and an exact scalar step count per participating parameter; unused
+parameters keep zero counts and no state. This detects an omitted entire entry,
+not only malformed fields inside entries. Tensor shapes/types and cumulative
+bounds are checked before model mutation. These checks validate checkpoint
+completeness/consistency against its saved inventory and immutable artifact
+identity; they do not independently prove the history of coherently rewritten
+weights and metadata.
+
 The cumulative optimizer budget never resets across attempts. Historical v1 runs
 and final-only checkpoints remain readable by their existing APIs and are rejected
 by v2 execution; they do not acquire resume guarantees.

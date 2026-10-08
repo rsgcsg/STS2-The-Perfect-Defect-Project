@@ -149,6 +149,8 @@ class StructuredTrainingEngine:
         self.model = StructuredM2(seed=config.seed)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
         self.parameter_names = tuple(name for name, _ in self.model.named_parameters())
+        # AdamW initializes state lazily, only for parameters with an actual gradient.
+        self.optimizer_participation = [0] * len(self.parameter_names)
         self.initial_train = evaluate_runs(self.model, self.train)
         self.memory = self.model.initial_memory()
         self.memory_run: int | None = None
@@ -210,6 +212,8 @@ class StructuredTrainingEngine:
                 ):
                     raise BoundaryError("structured_engine", "nonfinite_gradients")
                 self.optimizer.step()
+                for index, parameter in enumerate(self.model.parameters()):
+                    self.optimizer_participation[index] += parameter.grad is not None
                 self.model.validate_parameters()
                 loss_value = float(loss.detach())
             self.optimizer.zero_grad(set_to_none=True)
@@ -291,6 +295,7 @@ class StructuredTrainingEngine:
             "parameter_names": self.parameter_names,
             "model": dict(self.model.state_dict()),
             "optimizer": self.optimizer.state_dict(),
+            "optimizer_participation": list(self.optimizer_participation),
             "cursor": asdict(self.cursor),
             "boundary": self.boundary,
             "memory": self.memory,
@@ -328,6 +333,7 @@ class StructuredTrainingEngine:
                 "parameter_names",
                 "model",
                 "optimizer",
+                "optimizer_participation",
                 "cursor",
                 "boundary",
                 "memory",
@@ -433,6 +439,19 @@ class StructuredTrainingEngine:
         if bool(optimizer["state"]) != bool(expected_counters["updates"]):
             raise BoundaryError("structured_checkpoint", "optimizer_update_state_missing")
         parameters = tuple(self.model.parameters())
+        participation = value["optimizer_participation"]
+        if (
+            not isinstance(participation, list)
+            or len(participation) != len(parameters)
+            or any(
+                type(count) is not int or not 0 <= count <= expected_counters["updates"]
+                for count in participation
+            )
+        ):
+            raise BoundaryError("structured_checkpoint", "optimizer_participation_mismatch")
+        expected_inventory = {index for index, count in enumerate(participation) if count > 0}
+        if set(optimizer["state"]) != expected_inventory:
+            raise BoundaryError("structured_checkpoint", "optimizer_state_inventory_mismatch")
         for index, state in optimizer["state"].items():
             if type(index) is not int or not 0 <= index < len(parameters):
                 raise BoundaryError("structured_checkpoint", "optimizer_parameter_binding")
@@ -449,9 +468,9 @@ class StructuredTrainingEngine:
             step = node["step"]
             if (
                 not isinstance(step, Tensor)
-                or step.numel() != 1
-                or not 0 <= float(step) <= expected_counters["updates"]
-                or float(step) != int(float(step))
+                or step.shape != ()
+                or step.dtype != torch.float32
+                or float(step) != participation[index]
             ):
                 raise BoundaryError("structured_checkpoint", "optimizer_step_mismatch")
         partitions = value["partitions"]
@@ -487,6 +506,7 @@ class StructuredTrainingEngine:
         probe.set_state((numpy_rng[0], numpy_rng[1].numpy(), *numpy_rng[2:]))
         self.model.load_state_dict(weights, strict=True)
         self.optimizer.load_state_dict(optimizer)
+        self.optimizer_participation = list(participation)
         self.optimizer.zero_grad(set_to_none=True)
         self.epoch, self.chunk, self.boundary = epoch, chunk, boundary
         self.memory, self.memory_run = memory.detach().clone(), value["memory_run"]
