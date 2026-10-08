@@ -69,6 +69,28 @@ play-zone access and position-independent native input to the pinned game.
 These fixtures are source/test evidence; actual input-map collision, Godot scene
 behavior and native card effects still require the exact loaded-game canary.
 
+Validation at clean source `cfea8822c739da3389e8afc307051008ca4276b5`:
+
+- 19 focused Host cases and all 523 Host tests pass, with zero skips.
+- All 87 Mod static boundary/packaging tests pass.
+- Connector and unified Mod exact Release builds pass with zero warnings/errors.
+- Connector SDK, package, versions, docs/contract/boundary, compatibility, CLI,
+  release-tools and Python subgates pass. The unchanged pure native-logical suite
+  is a separate root integration gate; no additional C# process was started
+  after the exclusive build slot was released.
+
+The clean Connector build has source digest
+`ad67fb1451aa8d0008d207f5fc5a26ea4be4a2fadd4c3492d58fa098ec619e98`,
+artifact SHA-256
+`f07984112ce5eda330a456a68648d21169ceb0cc14c8d1283e7cea614d30cf0d`,
+MVID `1b64e63a-1e8a-413a-b296-21542bf0a206`. The unified compiled source digest is
+`fca9703e3cb52d8ed1e252dafd5c6bf5e85a019ea933a52e1b28acea40597cc6`,
+artifact SHA-256
+`80ca8e549c46d700d8ff7e43e51544870f63980a0ac8b43752cc6c5f824eeb6b`,
+MVID `d73a9249-3dec-4e27-802e-7a7c8448bcfc`. Documentation edits retain these
+component source identities. These artifacts were built locally; they were not
+installed, loaded or exercised in a game.
+
 Normal drag/release and shortcut-start/click paths, intermediate/nonplay/cancel
 zones, owner replacement, same-definition originals and all affected native
 preview opportunities remain runtime checks. The separate full offscreen grid
