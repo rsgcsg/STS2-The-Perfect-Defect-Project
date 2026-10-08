@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import {webcrypto} from "node:crypto";
 
 class Element {
   constructor(tag) {
@@ -91,6 +92,15 @@ const modelRegistrationStatus = (model, status = "not_registered", extra = {}) =
   csrf_token:"registration-csrf",
   ...extra,
 });
+const trainingCapabilities = {schema:"spireagent/training-capabilities-v1", automatic_retry:false,
+  placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+  recipes:["stage1a.dsimple.s.v1", ...["v1","v2"].flatMap(version =>
+    ["m2","reset"].flatMap(model => [1,8].flatMap(k => [
+      `stage1a.dsimple.${model}.k${k}.experimental.${version}`,
+      `stage1a.dsimple.${model}.k${k}.confirmed-interaction.${version}`,
+    ])))].map(recipe_id => ({recipe_id,placement_ids:["local-cpu"], dependencies_available:true,
+      supported_actions:[],config_defaults:{},config_fields:{},limits:{}})),
+};
 const uploadId = "a".repeat(32);
 const enrollmentId = "e".repeat(32);
 const memberId = "f".repeat(32);
@@ -144,6 +154,7 @@ function setup({
   renderOnReload = false,
   sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[]},
   comparisonData = {schema:"stpd/local-managed-start-comparison-v1",items:[]},
+  trainingCapabilitiesData = trainingCapabilities,
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -155,6 +166,7 @@ function setup({
   const timers = new Map();
   let nextTimer = 1;
   const context = vm.createContext({
+    crypto:webcrypto,
     setTimeout: (callback) => {
       const id = nextTimer++;
       timers.set(id, callback);
@@ -194,7 +206,9 @@ function setup({
     },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      const body = url === "/api/local-recordings/import/status"
+      const body = url === "/api/local-training/capabilities"
+        ? trainingCapabilitiesData
+        : url === "/api/local-recordings/import/status"
         ? importStatus
         : url === "/api/local-workspace/curation"
           ? curationStatus
@@ -323,9 +337,10 @@ test("local artifact detail presents data history facts and keeps uncertainty ex
   assert.equal(post(env.calls).length, 0);
 });
 function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = null,
-  trainingStatus = null, trainingHandler = () => {}} = {}) {
+  trainingStatus = null, trainingHandler = () => {}, capabilities = trainingCapabilities} = {}) {
   return setup({
     identity: {status:"signed_out"}, view:"local-workspace", query:`&id=${artifact}`,
+    trainingCapabilitiesData:capabilities,
     curationStatus:{schema:"stpd/local-curation-preparation-v1", status:"ready"},
     handler:async (url, options) => {
       if (url === "/api/local-workspace/managed") return {
@@ -381,6 +396,18 @@ function localHumanDatasetEnv({items, total = null, operation = {status:"idle"},
 const post = (calls) => calls.filter((call) => call.options.method === "POST");
 const body = (call) => JSON.parse(call.options.body);
 
+function fixedTrainingBody(call) {
+  const payload = body(call);
+  assert.equal(payload.schema, "spireagent/training-request-v1");
+  assert.match(payload.intent_id, /^[a-f0-9]{32}$/);
+  assert.equal(payload.placement_id, "local-cpu");
+  assert.deepEqual(payload.config, {});
+  assert.deepEqual(payload.limits, {});
+  assert.deepEqual(Object.keys(payload).sort(), ["schema", "intent_id", "recipe_id", "source_id", "config", "placement_id", "limits", "after_completed_operation_id"].sort());
+  return {dataset_id:payload.source_id,
+    ...(payload.recipe_id === "stage1a.dsimple.s.v1" ? {} : {recipe:payload.recipe_id}),
+    ...(payload.after_completed_operation_id === null ? {} : {after_completed_operation_id:payload.after_completed_operation_id})};
+}
 test("local research workspace browses the local API without project identity", async () => {
   const artifactId = id("a");
   const env = setup({
@@ -1223,7 +1250,7 @@ test("local training appears only on a fixed training dataset and starts once on
   assert.equal(post(env.calls).length, 1, "double click is guarded while the POST is unresolved");
   const start = post(env.calls)[0];
   assert.equal(start.url, "/api/local-training/start");
-  assert.deepEqual(JSON.parse(start.options.body), {dataset_id:dataset});
+  assert.deepEqual(fixedTrainingBody(start), {dataset_id:dataset});
   assert.equal(start.options.headers["X-CSRF-Token"], "training-csrf");
   finishStart();
   await Promise.all([first, duplicate]);
@@ -1306,7 +1333,7 @@ test("completed training offers one explicit new experiment with exact prior ide
   assert.equal(button.disabled, false);
   const first = button.onclick(), duplicate = button.onclick();
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {
     dataset_id:dataset, after_completed_operation_id:operationId,
   });
   finishStart();
@@ -1333,7 +1360,7 @@ for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and comp
   assert.equal(selection.children.some(option => option.value.endsWith(".v2")), false);
   selection.value = recipe;
   await action(page, "start-local-training").onclick();
-  assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
+  assert.deepEqual(fixedTrainingBody(post(ready.calls)[0]), {dataset_id:dataset, recipe});
 
   const done = localTrainingEnv({artifact:dataset, trainingStatus:{
     schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
@@ -1364,7 +1391,7 @@ for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only reci
   const button = action(page, "start-local-training");
   await Promise.all([button.onclick(), button.onclick()]);
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe:reset});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, recipe:reset});
   assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
 
   const operationId = "1".repeat(32);
@@ -1385,7 +1412,7 @@ for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only reci
   assert.equal(post(done.calls).length, 0);
   await action(completed, "start-local-training-new").onclick();
   assert.equal(post(done.calls).length, 1);
-  assert.deepEqual(body(post(done.calls)[0]), {
+  assert.deepEqual(fixedTrainingBody(post(done.calls)[0]), {
     dataset_id:dataset, after_completed_operation_id:operationId, recipe:reset});
 });
 
@@ -1444,7 +1471,7 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} trai
   const button = action(page, "start-local-training");
   await Promise.all([button.onclick(), button.onclick()]);
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, recipe});
   assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
 });
 
@@ -1460,7 +1487,7 @@ test("completed confirmed-interaction training preserves its explicit recipe for
   assert.match(text(page), /操作记忆（含已确认的上一操作）/);
   assert.equal(post(env.calls).length, 0);
   await action(page, "start-local-training-new").onclick();
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, after_completed_operation_id:operationId, recipe});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, after_completed_operation_id:operationId, recipe});
 });
 
 test("unknown or cross-profile training selection cannot silently fall back to the default", async () => {
@@ -3730,7 +3757,7 @@ test("Managed training source offers explicit v2 M2 and Reset without GET work",
     "stage1a.dsimple.reset.k8.confirmed-interaction.v2",
   ]);
   await action(page, "start-local-training").onclick();
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:source,
     recipe:"stage1a.dsimple.m2.k1.experimental.v2"});
 });
 
@@ -6373,4 +6400,130 @@ test("Managed registration response cannot reuse a Native status", async () => {
   assert.equal(walk(page).some(item => item.dataset?.action === "register-managed-model"), false);
   assert.match(text(page), /登记状态格式未知/);
   assert.equal(post(env.calls).length, 0);
+});
+
+const structuredTrainingCapabilities = () => ({...trainingCapabilities,
+  recipes:[{recipe_id:"structured-m2-cpu-v2", placement_ids:["local-cpu"], dependencies_available:true,
+    automatic_retry:false, supported_actions:["pause","cancel","resume","reconcile"],
+    config_defaults:{epochs:1,max_updates:10,learning_rate:0.001,cpu_threads:2,checkpoint_every_boundaries:100},
+    config_fields:{epochs:[1,100],max_updates:[1,10000],checkpoint_every_boundaries:[1,100]},
+    fixed_config_fields:["learning_rate","cpu_threads"],
+    limits:{wall_seconds:{minimum:1,maximum:3600},scratch_bytes:{minimum:16777216,maximum:1073741824,default:536870912}},
+  }],
+});
+const structuredTrainingStatus = overrides => ({
+  schema:"spireagent/training-operation-snapshot-v1",availability:"ready",csrf_token:"training-csrf",
+  operation:{operation_id:"a".repeat(32),attempt_id:"b".repeat(32),recipe_id:"structured-m2-cpu-v2",
+    status:"pending",phase:"training",worker_state:"running",validation_state:"not_completed",
+    domain_completion_state:"not_completed",requested_action:"continue",selected_result:true,
+    input_refs:{source_id:id("a")}, supported_actions:["pause","cancel"],
+    progress:{completed:3,total:10,unit:"optimizer_update"},elapsed_seconds:2.5,
+    config:{epochs:1,max_updates:10},limits:{wall_seconds:600,scratch_bytes:536870912},...overrides},
+});
+const structuredTrainingEnv = options => localTrainingEnv({
+  parameters:{schema:"stpd/structured-sequence-source-v1",source_kind:"synthetic",qualification:"synthetic_fixture"},
+  capabilities:structuredTrainingCapabilities(),...options,
+});
+
+test("structured source starts exact advertised configuration and cumulative limits on explicit click", async () => {
+  const env = structuredTrainingEnv({trainingHandler:async () => structuredTrainingStatus()});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(field(page,"local-training-source").value,id("a"));
+  assert.equal(field(page,"local-training-placement").value,"local-cpu");
+  field(page,"local-training-config-epochs").value = "2";
+  field(page,"local-training-config-checkpoint_every_boundaries").value = "7";
+  field(page,"local-training-limit-wall_seconds").value = "80";
+  await action(page,"start-local-training").onclick();
+  const payload = body(post(env.calls)[0]);
+  assert.match(payload.intent_id,/^[a-f0-9]{32}$/);
+  assert.deepEqual({...payload,intent_id:"generated"},{schema:"spireagent/training-request-v1",intent_id:"generated",
+    recipe_id:"structured-m2-cpu-v2",source_id:id("a"),placement_id:"local-cpu",
+    config:{epochs:2,max_updates:10,learning_rate:0.001,cpu_threads:2,checkpoint_every_boundaries:7},
+    limits:{wall_seconds:80,scratch_bytes:536870912},after_completed_operation_id:null});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"training-csrf");
+  await action(page,"start-local-training").onclick();
+  assert.equal(post(env.calls).length,1);
+});
+
+test("structured configuration, dependency and capability failures never submit", async () => {
+  for (const value of ["", "0", "101", "1.5"]) {
+    const env = structuredTrainingEnv();
+    const page = await env.render();
+    field(page,"local-training-config-epochs").value = value;
+    await action(page,"start-local-training").onclick();
+    assert.equal(post(env.calls).length,0);
+  }
+  const capabilities = structuredTrainingCapabilities();
+  capabilities.recipes[0].dependencies_available = false;
+  const missing = structuredTrainingEnv({capabilities});
+  const page = await missing.render();
+  assert.equal(action(page,"start-local-training").disabled,true);
+  assert.match(text(page),/依赖尚未/);
+  const unknown = structuredTrainingEnv({capabilities:{schema:"future/training-capabilities"}});
+  const unknownPage = await unknown.render();
+  assert.match(text(unknownPage),/能力声明暂不可用/);
+  assert.equal(walk(unknownPage).some(item => item.dataset?.action === "start-local-training"),false);
+});
+
+test("pause intent is distinct from terminal status and controls bind exact attempt", async () => {
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({requested_action:"pause"}),
+    trainingHandler:async () => structuredTrainingStatus({requested_action:"cancel",selected_result:false})});
+  const page = await env.render();
+  assert.match(text(page),/暂停请求已登记.*尚未终止/);
+  assert.match(text(page),/3 \/ 10/);
+  assert.equal(action(page,"local-training-pause").disabled,true);
+  assert.equal(action(page,"local-training-resume").disabled,true);
+  await action(page,"local-training-cancel").onclick();
+  assert.equal(post(env.calls)[0].url,"/api/local-training/cancel");
+  assert.deepEqual(body(post(env.calls)[0]),{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32)});
+  assert.equal(post(env.calls).length,1);
+  await action(page,"local-training-cancel").onclick();
+  assert.equal(post(env.calls).length,1);
+});
+
+test("unknown attempt requires explicit reconcile and never auto-resumes or starts", async () => {
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"interrupted_unknown",
+    worker_state:"terminal",checkpoint_id:id("c"),supported_actions:["resume","reconcile"]}),
+    trainingHandler:async () => ({httpStatus:409,error:"writer_still_running"})});
+  const page = await env.render();
+  assert.match(text(page),/结果未知.*先明确核对/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(action(page,"local-training-resume").disabled,true);
+  assert.equal(walk(page).some(item => item.dataset?.action === "start-local-training"),false);
+  await action(page,"local-training-reconcile").onclick();
+  await action(page,"local-training-reconcile").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.deepEqual(body(post(env.calls)[0]),{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32)});
+});
+
+test("reloaded paused attempt resumes with exact checkpoint new intent and original cumulative limits", async () => {
+  const limits = {wall_seconds:81,scratch_bytes:16777216};
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"paused",worker_state:"terminal",
+    checkpoint_id:id("c"),supported_actions:["resume"],limits}),
+    trainingHandler:async url => url.startsWith("/api/local-training/status?")
+      ? structuredTrainingStatus({status:"paused"}) : structuredTrainingStatus()});
+  await env.render();
+  const page = await env.render();
+  assert.equal(post(env.calls).length,0);
+  await action(page,"local-training-resume").onclick();
+  const payload = body(post(env.calls)[0]);
+  assert.equal(post(env.calls)[0].url,"/api/local-training/resume");
+  assert.match(payload.intent_id,/^[a-f0-9]{32}$/);
+  assert.notEqual(payload.intent_id,"b".repeat(32));
+  assert.deepEqual({...payload,intent_id:"generated"},{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32),
+    checkpoint_id:id("c"),intent_id:"generated",limits});
+  await action(page,"refresh-local-training-status").onclick();
+  assert.ok(env.calls.some(call => call.url === `/api/local-training/status?operation_id=${"a".repeat(32)}`));
+});
+
+test("resume is disabled when checkpoint or saved limits are absent and unavailable actions give a reason", async () => {
+  for (const extra of [{checkpoint_id:null},{limits:{}},{worker_state:"unknown"}]) {
+    const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"paused",worker_state:"terminal",
+      checkpoint_id:id("c"),supported_actions:["resume"],...extra})});
+    const page = await env.render();
+    assert.equal(action(page,"local-training-resume").disabled,true);
+    assert.match(text(page),/需要先核对未知结果、明确停止回执、checkpoint 与原累计预算/);
+    assert.equal(post(env.calls).length,0);
+  }
 });

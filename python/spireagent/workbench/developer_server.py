@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from spireagent.console.page import CSP, asset, render_shell
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, digest
 from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, doctor, tool_identity
@@ -593,6 +593,12 @@ class Application:
     def start_local_training(self, dataset_id: object, *,
                              after_completed_operation_id: object | None = None,
                              recipe: object = "stage1a.dsimple.s.v1") -> dict[str, Any]:
+        self._require_training_instance()
+        return self.local_training.start(
+            dataset_id, after_completed_operation_id=after_completed_operation_id,
+            recipe=recipe)
+
+    def _require_training_instance(self) -> None:
         if self.config_path is None:
             raise BoundaryError("local_training", "running_instance_unavailable")
         try:
@@ -604,9 +610,18 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_training", "running_configuration_mismatch")
-        return self.local_training.start(
-            dataset_id, after_completed_operation_id=after_completed_operation_id,
-            recipe=recipe)
+
+    def control_local_training(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        self._require_training_instance()
+        if action == "resume":
+            return self.local_training.resume(**body)
+        if action == "pause":
+            return self.local_training.pause(**body)
+        if action == "cancel":
+            return self.local_training.cancel(**body)
+        if action == "reconcile":
+            return self.local_training.reconcile(**body)
+        raise BoundaryError("local_training", "unsupported_training_action")
 
     def start_local_memory_evaluation(self, model_id: object, source_id: object,
                                       *, max_settling_events: object = None) -> dict[str, Any]:
@@ -950,15 +965,32 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-            elif parsed.path == "/api/local-training/status":
+            elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
-                if parsed.query:
+                try:
+                    if parsed.path.endswith("/capabilities"):
+                        if parsed.query:
+                            raise ValueError
+                        value = app.local_training.capabilities()
+                    else:
+                        query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                         keep_blank_values=True)
+                        if query and (set(query) != {"operation_id"} or
+                                      len(query["operation_id"]) != 1):
+                            raise ValueError
+                        operation_id = query.get("operation_id", [None])[0]
+                        if operation_id is not None:
+                            operation_id = digest(
+                                operation_id, "local_training.operation_id", length=32)
+                        value = app.local_training.status(operation_id)
+                    self.respond(200, json.dumps({**value,
+                                                  "csrf_token": app.account.csrf}).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_training_request"}')
-                    return
-                value = {**app.local_training.status(), "csrf_token": app.account.csrf}
-                self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-memory-evaluations/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1365,22 +1397,38 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
-                if self.path != "/api/local-training/start":
+                action = self.path.removeprefix("/api/local-training/")
+                if action not in {"start", "pause", "cancel", "resume", "reconcile"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=256)
-                    if not {"dataset_id"} <= set(body) or not set(body) <= {
-                        "dataset_id", "after_completed_operation_id", "recipe"
-                    }:
+                    body = self.json_body(maximum=4096 if action != "start" else 8192)
+                    if (action == "start" and "schema" not in body and
+                            int(self.headers.get("Content-Length", "0")) > 256):
                         raise ValueError
-                    if ("after_completed_operation_id" in body
-                            and not isinstance(body["after_completed_operation_id"], str)):
-                        raise ValueError
-                    value = app.start_local_training(
-                        body["dataset_id"],
-                        after_completed_operation_id=body.get("after_completed_operation_id"),
-                        recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
+                    if action == "start" and "schema" in body:
+                        from spireagent.workbench.recipe_contracts import TrainingRequest
+
+                        value = app.start_local_training(TrainingRequest.from_dict(body))
+                    elif action == "start":
+                        # Keep the bounded legacy body and its original contract.
+                        if (not {"dataset_id"} <= set(body) or not set(body) <= {
+                                    "dataset_id", "after_completed_operation_id", "recipe"}):
+                            raise ValueError
+                        if ("after_completed_operation_id" in body and
+                                not isinstance(body["after_completed_operation_id"], str)):
+                            raise ValueError
+                        value = app.start_local_training(
+                            body["dataset_id"],
+                            after_completed_operation_id=body.get("after_completed_operation_id"),
+                            recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
+                    else:
+                        fields = {"operation_id", "expected_attempt_id"}
+                        if action == "resume":
+                            fields |= {"checkpoint_id", "intent_id", "limits"}
+                        if set(body) != fields:
+                            raise ValueError
+                        value = app.control_local_training(action, body)
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())

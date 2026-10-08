@@ -513,6 +513,8 @@ class LocalTrainingService:
                      "observed_at": time.time(), "updated_at": value["updated_at"],
                      "last_progress_at": value.get("last_progress_at"),
                      "placement_id": value["request"]["placement_id"],
+                     "config": dict(value["request"]["config"]),
+                     "limits": dict(value["request"]["limits"]),
                      "supported_actions": actions, "requested_action": value["requested_action"],
                      "input_refs": {"source_id": value["dataset_id"],
                                     "training_input_id": value.get("input_id")},
