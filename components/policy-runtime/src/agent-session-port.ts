@@ -100,26 +100,36 @@ export class NdjsonAgentSessionPort {
   }
 
   static spawn(command: string, args: string[], expected: AgentAdapterIdentity, limits: AgentLimits,
-    options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): NdjsonAgentSessionPort {
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; byteBudget?: AgentByteBudget } = {}): NdjsonAgentSessionPort {
     // The trusted application explicitly chooses code/environment. No manifest selects a command.
     const inherited: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "TMPDIR", "TEMP", "TMP", "PYTHONPATH", "VIRTUAL_ENV", "OMP_NUM_THREADS"])
       if (process.env[key] !== undefined) inherited[key] = process.env[key];
     return new NdjsonAgentSessionPort(spawn(command, args, { cwd: options.cwd,
-      env: options.env ?? inherited, stdio: ["pipe", "pipe", "pipe"] }), expected, limits);
+      env: options.env ?? inherited, stdio: ["pipe", "pipe", "pipe"] }), expected, limits, options.byteBudget);
   }
 
-  async ready(timeoutMs = this.limits.agent_timeout_ms): Promise<AgentAdapterIdentity> {
+  async ready(timeoutMs = this.limits.agent_timeout_ms, signal?: AbortSignal): Promise<AgentAdapterIdentity> {
+    signal?.throwIfAborted();
     if (this.readyIdentity) return this.readyIdentity;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     try {
-      return await Promise.race([this.readyPromise, new Promise<never>((_resolve, reject) => {
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        if (!signal) return;
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      return await Promise.race([this.readyPromise, cancelled, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           const error = new AgentSessionError("agent_startup_timeout");
           this.fail(error); reject(error);
         }, timeoutMs);
       })]);
-    } finally { if (timer !== undefined) clearTimeout(timer); }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (abort) signal?.removeEventListener("abort", abort);
+    }
   }
 
   consume(context: AgentSessionContext, input: AgentConsumeInput, handlers: AgentPortHandlers,

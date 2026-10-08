@@ -145,6 +145,53 @@ describe("additive Agent manifest/consumption contract", () => {
     expect(duplicate.state_version).toBe(1);
     expect(ledger.accept(report("B", 2, "consumed-1")).prefix.omissions.received_unconsumed_count).toBe(0);
   });
+  it("records descriptor-only catalog exposure only in the declared scoped profile", () => {
+    const input = acquisition("A"); input.catalog = null; input.catalog_materialized = false;
+    expect(() => new AgentConsumptionLedger(manifest(), "segment").register(input)).toThrow("complete_catalog_required");
+    const scoped = manifest(true); scoped.input.state_recovery = { mode: "none", max_state_bytes: 0, model_bindings: [] };
+    const ledger = new AgentConsumptionLedger(scoped, "segment"); ledger.register(input);
+    const ack = ledger.accept(report("A", 1));
+    expect(ledger.get(input.acquisition_id)).toMatchObject({ catalog: null, catalog_materialized: false });
+    expect(ack.prefix.history_mode).toBe("scoped_query");
+    expect(ledger.get(input.acquisition_id).observation.completeness).toEqual(input.observation.completeness);
+  });
+  it("later catalog materialization does not manufacture another incremental scope or W advance", () => {
+    const input = acquisition("A"); input.catalog = null; input.catalog_materialized = false;
+    const ledger = new AgentConsumptionLedger(manifest(true), "segment"); ledger.register(input);
+    ledger.accept(report("A", 1));
+    const expanded = acquisition("A_duplicate"); ledger.register(expanded);
+    const ack = ledger.accept(report("A_duplicate", 1, "consumed-1", false));
+    expect(ack).toMatchObject({ state_version: 1, advanced: false });
+    expect(ledger.get(expanded.acquisition_id).catalog_materialized).toBe(true);
+  });
+  it.each([true, false])("rejects a false materialization assertion before retaining any bytes (%s)", marker => {
+    const input = acquisition("A"); input.catalog_materialized = marker;
+    input.catalog = marker ? null : input.catalog;
+    const ledger = new AgentConsumptionLedger(manifest(true), "segment");
+    expect(() => ledger.register(input)).toThrow("catalog_materialization_binding");
+    expect(ledger.byteBudget.used).toBe(0); expect(ledger.stateVersion).toBe(0);
+  });
+  it.each(["observed", "terminal"])("consumes a complete %s interaction object with empty C and no invented action", status => {
+    const input = acquisition("empty"); input.observation.status = status;
+    const ledger = new AgentConsumptionLedger(manifest(), "segment"); ledger.register(input);
+    expect(ledger.accept(report("empty", 1))).toMatchObject({ state_version: 1, advanced: true });
+    expect(ledger.get(input.acquisition_id).catalog).toEqual([]);
+  });
+  it.each(["renew", "retain", "release", "cancel_wait", "detach", "result", "read", "catalog"])(
+    "requires the actual full-reference lifecycle prerequisite %s in the closed manifest", method => {
+      const value = manifest(); value.requirements.required_methods = value.requirements.required_methods.filter(item => item !== method);
+      expect(() => validateAgentManifest(value)).toThrow("required_methods_mismatch");
+    });
+  it("requires scoped Current's sealed-read/pin prerequisites without forcing unrelated query or scoring methods", () => {
+    const value = manifest(true); value.input.state_recovery = { mode: "none", max_state_bytes: 0, model_bindings: [] };
+    const common = ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
+    value.requirements.required_methods = common;
+    expect(validateAgentManifest(value).requirements.required_methods).toEqual(common);
+    value.requirements.required_methods = [...common, "current"];
+    expect(() => validateAgentManifest(value)).toThrow("required_methods_mismatch");
+    value.requirements.required_methods = [...common, "current", "read", "retain", "release"];
+    expect(validateAgentManifest(value).requirements.required_methods).not.toContain("resolve");
+  });
   it("a new publication of the same occurrence is counted once without a state advance", () => {
     const ledger = new AgentConsumptionLedger(manifest(), "segment");
     ledger.register(acquisition("A"));

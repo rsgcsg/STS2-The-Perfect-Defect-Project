@@ -13,6 +13,8 @@ export interface AgentAcquisition {
   capture: Record<string, unknown>;
   observation: Record<string, unknown>;
   catalog: readonly Record<string, unknown>[] | null;
+  /** Runtime-owned exposure fact. A descriptor is not all candidate values. */
+  catalog_materialized: boolean;
   publication_index: string | null;
 }
 interface Known {
@@ -59,6 +61,7 @@ export class AgentConsumptionLedger {
   private receivedUnconsumed = 0;
   private readonly consumptionIds = new Set<string>();
   private continuity: string;
+  private closed = false;
 
   constructor(readonly manifest: AgentManifest, continuityToken: string,
     readonly byteBudget = new AgentByteBudget(manifest.limits.max_retained_acquisition_bytes)) {
@@ -71,7 +74,10 @@ export class AgentConsumptionLedger {
   get continuityToken(): string { return this.continuity; }
 
   register(value: AgentAcquisition): void {
-    sessionObject(value, ["acquisition_id", "capture", "observation", "catalog", "publication_index"]);
+    if (this.closed) throw new AgentSessionError("acquisition_ledger_closed");
+    sessionObject(value, ["acquisition_id", "capture", "observation", "catalog", "catalog_materialized", "publication_index"]);
+    if (typeof value.catalog_materialized !== "boolean" || value.catalog_materialized !== (value.catalog !== null))
+      throw new AgentSessionError("catalog_materialization_binding");
     sessionText(value.acquisition_id);
     if (this.acquisitions.has(value.acquisition_id)) throw new AgentSessionError("duplicate_acquisition_id");
     if (this.acquisitions.size >= this.manifest.limits.max_acquisitions) throw new AgentSessionError("acquisition_capacity");
@@ -102,7 +108,7 @@ export class AgentConsumptionLedger {
     sessionText(owner.owner_id); sessionText(owner.occurrence_id); sessionText(owner.binding_revision);
     if (owner.focus_occurrence !== null) sessionText(owner.focus_occurrence);
     if (owner.focus_referent_id !== null) sessionText(owner.focus_referent_id, 65_536);
-    if (!["interactive", "settling", "terminal"].includes(String(observation.status)))
+    if (!["interactive", "settling", "observed", "terminal"].includes(String(observation.status)))
       throw new AgentSessionError("native_frame_not_eligible");
     const completeness = sessionObject(observation.completeness);
     const included = validateAgentScope(completeness.included);
@@ -118,16 +124,19 @@ export class AgentConsumptionLedger {
     const facts: Partial<Record<AgentScope, string>> = {};
     for (const field of included) {
       if (field === "catalog") {
-        if (descriptor.status !== "complete" || !Array.isArray(value.catalog)) throw new AgentSessionError("complete_catalog_required");
+        if (descriptor.status !== "complete") throw new AgentSessionError("complete_catalog_required");
         const count = sessionInteger(descriptor.total_count, false, this.manifest.limits.max_catalog_actions);
         sessionDigest(descriptor.digest);
-        if (count !== value.catalog.length) throw new AgentSessionError("catalog_count_binding");
-        const ids = value.catalog.map(action => sessionText(sessionObject(action).action_id, 65_536));
-        if (new Set(ids).size !== ids.length) throw new AgentSessionError("duplicate_action_id");
-        if (value.catalog.some(action => !supportsProfileValue(this.manifest.support.action_verbs,
-          sessionText(sessionObject(action).verb, 65_536)))) throw new AgentSessionError("unsupported_action_verb");
+        if (value.catalog_materialized) {
+          if (!Array.isArray(value.catalog) || count !== value.catalog.length) throw new AgentSessionError("catalog_count_binding");
+          const ids = value.catalog.map(action => sessionText(sessionObject(action).action_id, 65_536));
+          if (new Set(ids).size !== ids.length) throw new AgentSessionError("duplicate_action_id");
+          if (value.catalog.some(action => !supportsProfileValue(this.manifest.support.action_verbs,
+            sessionText(sessionObject(action).verb, 65_536)))) throw new AgentSessionError("unsupported_action_verb");
+        } else if (this.manifest.input.history_mode === "full_reference") throw new AgentSessionError("complete_catalog_required");
         facts.catalog = stable({ digest: descriptor.digest, total_count: descriptor.total_count,
-          ordering_semantics: descriptor.ordering_semantics, actions: value.catalog });
+          ordering_semantics: descriptor.ordering_semantics,
+          ...(this.manifest.input.history_mode === "full_reference" ? { actions: value.catalog } : {}) });
       } else {
         if (field === "referents") {
           if (!Array.isArray(observation.referents)) throw new AgentSessionError("native_referents_required");
@@ -146,7 +155,7 @@ export class AgentConsumptionLedger {
       }
     }
     if (this.manifest.input.history_mode === "full_reference"
-      && (included.length !== 4 || completeness.status !== "complete"
+      && (!value.catalog_materialized || included.length !== 4 || completeness.status !== "complete"
         || completeness.full_reference_complete !== true || missing.length !== 0))
       throw new AgentSessionError("full_reference_input_required");
     if (value.publication_index !== null && !/^(0|[1-9][0-9]*)$/u.test(value.publication_index))
@@ -270,6 +279,16 @@ export class AgentConsumptionLedger {
     this.requiredGapPending = false;
     this.resetBasisAllowed = true;
     // The gap remains in evidence/prefix. Reset cannot restore full-reference history.
+  }
+
+  /** Release actual owned buffers on final process/session shutdown. Recorded
+   * acknowledgement metadata remains a historical status projection. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const known of this.acquisitions.values()) known.reservation.release();
+    for (const held of this.factReservations.values()) for (const reservation of held) reservation.release();
+    this.acquisitions.clear(); this.coherence.clear(); this.factReservations.clear();
   }
 
   private dropUnreferencedFacts(occurrence: string): void {

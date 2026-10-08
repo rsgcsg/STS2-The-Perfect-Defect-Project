@@ -1,5 +1,36 @@
 # E3 Agent session implementation checkpoint
 
+## Current native integration candidate (2026-10-08)
+
+Dependency base `f89a5267f43ea206fe39d081f5fd5d3643953ca8` includes independently
+accepted SDK `651f9cbd163d177805fa641ca0f05b8dcb424877`. The actual native branch
+now runs through `PolicyRuntime.forAgent`, the shared lifecycle owner, existing
+HTTP service and explicit CLI manifest discriminator. It owns one registration
+and controller, passive atomic Attach/Events, serial full-reference input,
+descriptor-only scoped queries, consume/ack watermarks, cancellable Await,
+deadline/Stop, exact original-request reconciliation and typed append-only events.
+The details below are historical source checkpoints, not current missing work.
+
+Fresh canonical component check: TypeScript, 298 required tests, build and
+deterministic package check pass. The package check's installed CPU smoke covers
+legacy profiles and reports `game_contact:false`. Newly added external-fixture
+tests are separately enabled: producer export requires `E3_NATIVE_FIXTURE_OUTPUT`;
+numerical interop requires Python/PYTHONPATH/an exact private Model package.
+Producer export was executed and its actual 15 events independently checked by
+the application verifier. Numerical interop was executed against initialized
+Model candidate `73b40366c34ec34af71bbdb6abc6ac64fc799468`: real SDK/HTTP/Runtime/
+stdio Consume+ACK, all-three-candidate Shadow scoring, Human epoch change,
+opaque ExportState and OneStep/one native HTTP submit pass. This is synthetic
+source/test transport with an initialized numerical Model; no fresh numerical
+Restore parity, training, provider, game, loaded, Human or G2/V1 qualification.
+
+Remaining limits: the factory rejects `explicit_reset` and scoped opaque recovery
+before Attach. Actual native source coverage and installed/runtime qualification
+belong to their exact owning packets. Independent Runtime source review, lead
+integration, versions/BOM/contract/package promotion and live gates remain pending.
+
+## Historical initial checkpoint
+
 Packet base: `1597141bf2d829c8b24eebb83a5177398101cf39`.
 Branch: `codex/e3-v1-agent-session`. Engineering class G2, Runtime-owned
 Agent contract/transport/consumption/evidence. This is an implementation checkpoint,

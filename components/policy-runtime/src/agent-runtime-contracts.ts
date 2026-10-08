@@ -34,7 +34,20 @@ export interface AgentRuntimeStatus {
     status: "pending" | "terminal"; delivery: string | null; execution: string | null;
     effect: string | null; cancel: string | null; reason: string | null;
   } | null;
+  pending_request: AgentPendingRequest | null;
   errors: string[]; invalidations: string[];
+}
+
+/** Original owned submission identity. Resolution appends a new fact and never
+ * rewrites the pending event or substitutes a request/current-state inference. */
+export interface AgentPendingRequest {
+  request_id: string; run_id: string; runtime_instance_id: string; session_id: string;
+  submission_epoch: number; basis_acquisition_id: string; snapshot_id: string;
+  action_id: string; status: "pending" | "unresolved"; reason: string | null;
+}
+export type AgentReconcileResolution = "resolved" | "pending" | "unresolved" | "tainted";
+export interface AgentReconcileResult {
+  request_id: string; resolution: AgentReconcileResolution; status: AgentRuntimeStatus;
 }
 
 export type AgentRuntimeTickResult =
@@ -58,4 +71,5 @@ export interface RuntimeServiceOwner {
   setMode(mode: RuntimeMode, expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<RuntimeStatus | AgentRuntimeStatus>;
   stop(): Promise<RuntimeStatus | AgentRuntimeStatus>;
   tick(expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<import("./contracts.js").TickResult | AgentRuntimeTickResult>;
+  reconcileOriginalRequest?(requestId: string, expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<AgentReconcileResult>;
 }

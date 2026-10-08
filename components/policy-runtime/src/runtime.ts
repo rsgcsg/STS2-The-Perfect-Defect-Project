@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RuntimeLifecycleOwner, RuntimeControlPreconditionError } from "./runtime-owner.js";
+import { createNativeAgentRuntime, type NativeAgentRuntimeOptions, type NativeAgentRuntimeOwner } from "./agent-native-runtime.js";
 export { RuntimeControlPreconditionError } from "./runtime-owner.js";
 import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "./admission.js";
@@ -64,6 +65,9 @@ export async function refreshWholeDecisionBundle(connector: PolicyConnector, req
 }
 
 export class PolicyRuntime {
+  static forAgent(options: NativeAgentRuntimeOptions): Promise<NativeAgentRuntimeOwner> {
+    return createNativeAgentRuntime(options);
+  }
   private mode: RuntimeMode;
   private held = false;
   private tainted = false;
