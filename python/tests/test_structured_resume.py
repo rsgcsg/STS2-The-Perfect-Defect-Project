@@ -933,3 +933,54 @@ def test_resume_cannot_reuse_a_non_adjacent_prior_attempt_identity(tmp_path):
             authority=Authority(),
         )
     assert store.manifest_ids() == before
+
+
+def test_transferred_checkpoint_rejects_ancestor_attempt_without_sibling_events(tmp_path):
+    from spireagent.storage.local import LocalBlobStore
+    from spireagent.storage.run_reporter import ObjectStoreRunReporter
+    from spireagent.storage.store import ManifestArtifactStore, copy_artifact
+
+    store, reporter, run, request = setup(tmp_path / "original")
+    first = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl(after=0)
+    )
+    second = execute_structured_workload(
+        store,
+        reporter,
+        replace(request, mode="resume", attempt_id="3" * 32,
+                resume_checkpoint_id=first.checkpoint_id),
+        PRODUCER,
+        authority=Authority(),
+        control=PauseControl(after=0),
+    )
+    copied = ManifestArtifactStore(LocalBlobStore(tmp_path / "copied"))
+    copy_artifact(store, copied, second.checkpoint_id)
+    copied_reporter = ObjectStoreRunReporter(copied, copied.blobs)
+    assert copied_reporter.events(run.artifact_id) == ()
+    before = copied.manifest_ids()
+    with pytest.raises(BoundaryError, match="resume_attempt_identity_reused"):
+        execute_structured_workload(
+            copied,
+            copied_reporter,
+            replace(request, mode="resume", resume_checkpoint_id=second.checkpoint_id),
+            PRODUCER,
+            authority=Authority(),
+            control=PauseControl(after=0),
+        )
+    assert copied.manifest_ids() == before
+
+    # A genuinely new attempt may resume the same immutable copied closure.
+    fresh = execute_structured_workload(
+        copied,
+        copied_reporter,
+        replace(request, mode="resume", attempt_id="4" * 32,
+                resume_checkpoint_id=second.checkpoint_id),
+        PRODUCER,
+        authority=Authority(),
+        control=PauseControl(after=0),
+    )
+    assert fresh.state == "paused"
+    from stpd.workers.structured_execution import _checkpoint_bytes
+
+    _checkpoint_bytes(copied, fresh.checkpoint_id, run,
+                      copied.get_manifest(request.training_input_id))

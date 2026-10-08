@@ -239,12 +239,18 @@ def _checkpoint_manifest(
 
 
 def _resume_checkpoint_depth(
-    store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
+    store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest,
+    *, prospective_attempt_id: str | None = None,
 ) -> int:
     """Validate only bounded explicit attempt-start ancestry, not periodic chronology."""
     depth = 0
     seen: set[str] = set()
-    seen_attempts: set[str] = set()
+    # A legitimately transferred checkpoint closure need not carry sibling
+    # run events. Bind freshness against every ancestor before creating an
+    # engine, not only against the selected checkpoint or local event history.
+    seen_attempts: set[str] = (
+        {prospective_attempt_id} if prospective_attempt_id is not None else set()
+    )
     while True:
         if checkpoint_id in seen:
             raise BoundaryError("structured_workload", "resume_checkpoint_cycle")
@@ -519,7 +525,10 @@ def execute_structured_workload(
         if selected_checkpoint.parameters.value()["attempt"] == request.attempt_id:
             raise BoundaryError("structured_workload", "resume_attempt_identity_reused")
         if (
-            _resume_checkpoint_depth(store, request.resume_checkpoint_id, run, training)
+            _resume_checkpoint_depth(
+                store, request.resume_checkpoint_id, run, training,
+                prospective_attempt_id=request.attempt_id,
+            )
             >= MAX_RESUME_ANCESTRY
         ):
             raise BoundaryError("structured_workload", "resume_attempt_limit")

@@ -85,3 +85,8 @@ or retrying publication. The application reconciles the explicit run before
 resuming or verifying its completed result. Synthetic tests cover exact recovery, cumulative
 budgets, old-schema rejection, crash/replay, and denied/stale authority. They do
 not qualify real data, remote processes, model quality, or production recovery.
+
+A copied checkpoint closure may omit sibling run events. A requested resume attempt
+ID must therefore be fresh against every checkpoint ancestor as well as local
+event history, before engine initialization or publication. A fresh attempt can
+resume the same verified copied closure; transferring it does not renew budgets.
