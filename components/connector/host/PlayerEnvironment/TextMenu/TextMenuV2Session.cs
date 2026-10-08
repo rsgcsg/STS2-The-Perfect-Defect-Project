@@ -16,13 +16,15 @@ internal sealed record TextMenuV2Projection(
 /// Native card-play state is neither read nor modified by these selections.</summary>
 internal sealed class TextMenuV2Session
 {
-    private string cursor = "root";
-    private string? cardId;
-    private string? targetId;
-    private string? sourceIdentity;
-    private long revision;
-    private long sequence;
-    private string? lastSnapshotId;
+    private sealed record State(string Cursor, string? CardId, string? TargetId, string? SourceIdentity, long Revision, long Sequence, string? LastSnapshotId);
+    private State state = new("root", null, null, null, 0, 0, null);
+    private string cursor { get => state.Cursor; set => state = state with { Cursor = value }; }
+    private string? cardId { get => state.CardId; set => state = state with { CardId = value }; }
+    private string? targetId { get => state.TargetId; set => state = state with { TargetId = value }; }
+    private string? sourceIdentity { get => state.SourceIdentity; set => state = state with { SourceIdentity = value }; }
+    private long revision { get => state.Revision; set => state = state with { Revision = value }; }
+    private long sequence { get => state.Sequence; set => state = state with { Sequence = value }; }
+    private string? lastSnapshotId { get => state.LastSnapshotId; set => state = state with { LastSnapshotId = value }; }
 
     internal void ResetSelection()
     {
@@ -233,6 +235,30 @@ internal sealed class TextMenuV2Session
         revision++;
         return Observe(frame).Snapshot;
     }
+
+    internal sealed class PreparedChange
+    {
+        private readonly State expected, next;
+        internal TextMenuV2Snapshot Snapshot { get; }
+        private PreparedChange(State expected, State next, TextMenuV2Snapshot snapshot)
+        { this.expected = expected; this.next = next; Snapshot = snapshot; }
+        internal static PreparedChange Create(TextMenuV2Session session, TextMenuFrame frame,
+            string snapshotId, string actionId)
+        {
+            State original = session.state;
+            var projected = new TextMenuV2Session { state = original };
+            TextMenuV2Snapshot snapshot = projected.Apply(frame, snapshotId, actionId);
+            return new(original, projected.state, snapshot);
+        }
+        internal void Commit(TextMenuV2Session session)
+        {
+            if (!ReferenceEquals(session.state, expected))
+                throw new InvalidOperationException("Text state changed before its frozen result was committed.");
+            session.state = next;
+        }
+    }
+    internal PreparedChange PrepareSystemApply(TextMenuFrame frame, string snapshotId, string actionId) =>
+        PreparedChange.Create(this, frame, snapshotId, actionId);
 
     private static void Validate(TextMenuFrame frame, bool combat)
     {

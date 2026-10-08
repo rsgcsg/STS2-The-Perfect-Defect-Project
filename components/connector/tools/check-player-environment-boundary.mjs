@@ -103,8 +103,12 @@ if (snapshotBuilder.includes("BuildInspectionCatalog")) {
 }
 
 const submission = "host/PlayerEnvironment/Execution/ActionSubmission.cs";
-for (const required of ["stale_snapshot", "bound_action_not_current", "MutationControlRuntime.Authorize", "input_delivery_unknown"])
+for (const required of ["stale_snapshot", "bound_action_not_current", "preparation.TryBegin()", "input_delivery_unknown"])
   requireText(submission, required, `delivery hard shell ${required}`);
+for (const required of ["MutationControlRuntime.ValidateActiveControl", "MutationControlRuntime.TryAdmitRequest", "MutationControlRuntime.TryBegin"])
+  requireText("host/PlayerEnvironment/Core/PlayerEnvironmentService.Requests.cs", required, `one shared request Authority ${required}`);
+for (const required of ["owner.begin(Authorization(entry.Request))", "entry.State = State.Started", "ReleasePreparation", "nativeTerminal(entry.Request, native)"])
+  requireText("host/PlayerEnvironment/Requests/RequestNamespace.cs", required, `original request start and seal ${required}`);
 forbidText(submission, "CompletionProbe", "business completion wait");
 
 const transport = read("host/ConnectorMod.cs")

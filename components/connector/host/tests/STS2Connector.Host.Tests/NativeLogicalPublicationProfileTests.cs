@@ -14,17 +14,18 @@ public sealed class NativeLogicalPublicationProfileTests
     {
         internal int Captures;
         internal readonly NativeLogicalService Owner;
+        private readonly RequestNamespace requests = RequestTestDriver.Namespace();
         internal Fixture()
         {
             Owner = new(() => { Captures++; throw new InvalidOperationException("No native capture belongs to this missing observation."); },
-                () => "run", new object(), new ConcurrentDictionary<string, string>(), executionAllowed: () => true);
+                () => "run", requests, executionAllowed: () => true);
             Owner.Initialize();
         }
         internal void Install() => Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId,
             NativeLogicalPublicationProfile.DefinitionSha256, NativeLogicalPublicationProfile.RequiredCoverage.Reverse().ToArray());
         internal NativeLogicalSubscription Attach(string reader) => Owner.Hub.Attach(new(reader,
             NativeLogicalProjector.ScopeFields, new[] { NativeLogicalService.Coverage[0] }, "scoped")).Subscription!;
-        public void Dispose() => Owner.Dispose();
+        public void Dispose() { Owner.Dispose(); requests.Dispose(); }
     }
 
     [Fact]

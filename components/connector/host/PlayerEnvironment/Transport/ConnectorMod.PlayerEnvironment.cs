@@ -196,54 +196,28 @@ public static partial class ConnectorMod
         }
         try
         {
-            if (action.InputProfile == NativeLogicalContract.Profile)
+            var admission = PlayerEnvironmentService.Requests.Admit(action);
+            if (admission.Status != "admitted")
             {
-                var owner = PlayerEnvironmentService.NativeLogical;
-                var admission = owner.Admit(action);
-                if (admission.Status == "pending")
-                { SendApiError(response, 202, "request_pending", "The original request is queued or started; query this request ID without resubmitting."); return; }
-                NativeLogicalResult native;
-                if (admission.Result is { } existing) native = existing;
-                else
-                {
-                    try { native = RunOnMainThread(() => owner.Submit(action)).GetAwaiter().GetResult(); }
-                    catch (MainThreadQueueFullException) { native = owner.RejectQueued(action, "main_thread_queue_full"); }
-                }
-                response.StatusCode = native.Delivery is "unknown" or "partially_delivered" ? 202 : native.Delivery == "delivered" ? 200 : 409;
-                SendNativeLogicalJson(response, native);
+                SendRequestLookup(response, admission.Status, admission.Reason, admission.Reply);
                 return;
             }
-            if (action.InputProfile == TextMenuContract.Profile)
+            // Only the original ID owns one queue job and sender. Duplicates
+            // never enqueue or borrow this original completion before sealing.
+            try
             {
-                var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenu(action));
-                TextMenuActionResult result = menuTask.GetAwaiter().GetResult();
-                response.StatusCode = result.Status switch
-                {
-                    "applied" => 200, "unknown" => 202, _ => 409
-                };
-                SendJson(response, result);
-                return;
+                try { RunOnMainThread(() => PlayerEnvironmentService.RunAdmittedAction(action), admission.QueueCancellation).GetAwaiter().GetResult(); }
+                catch (MainThreadQueueFullException) { PlayerEnvironmentService.Requests.CancelQueued(action.RequestId!, "main_thread_queue_full"); }
+                catch (OperationCanceledException) { PlayerEnvironmentService.Requests.CancelQueued(action.RequestId!, "original_queue_cancelled"); }
+                using var terminal = admission.OriginalCompletion!.GetAwaiter().GetResult();
+                SendFrozenTerminal(response, terminal);
             }
-            if (action.InputProfile == TextMenuV2Contract.Profile)
+            finally
             {
-                var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenuV2(action));
-                TextMenuV2ActionResult result = menuTask.GetAwaiter().GetResult();
-                response.StatusCode = result.Status switch
-                {
-                    "applied" => 200, "unknown" => 202, _ => 409
-                };
-                SendJson(response, result);
-                return;
+                // A failed transport still releases the exact original loan.
+                if (admission.OriginalCompletion!.IsCompletedSuccessfully)
+                    admission.OriginalCompletion.Result.Dispose();
             }
-            var task = RunOnMainThread(() => PlayerEnvironmentService.Submit(action));
-            PlayerEnvironmentActionReceipt receipt = task.GetAwaiter().GetResult();
-            response.StatusCode = receipt.Delivery switch
-            {
-                "delivered" => 200,
-                "unknown" => 202,
-                _ => 409
-            };
-            SendJson(response, receipt);
         }
         catch (Exception exception)
         {
@@ -379,49 +353,8 @@ public static partial class ConnectorMod
             SendApiError(response, 400, "invalid_request_id", "A bounded request_id is required.");
             return;
         }
-        if (inputProfile == NativeLogicalContract.Profile)
-        {
-            NativeLogicalResult? native = PlayerEnvironmentService.NativeLogical.Find(requestId);
-            if (native != null) { SendNativeLogicalJson(response, native); return; }
-            if (PlayerEnvironmentService.NativeLogical.IsPending(requestId))
-            { SendApiError(response, 202, "request_pending", "The original request is still in flight; query this request ID without resubmitting."); return; }
-            SendApiError(response, 404, "request_not_found", "No native-logical result exists for this request ID.");
-            return;
-        }
-        if (inputProfile == TextMenuContract.Profile)
-        {
-            TextMenuActionResult? result = PlayerEnvironmentService.FindTextMenuResult(requestId);
-            if (result == null)
-            {
-                SendApiError(response, 404, "request_not_found", "No text-menu result exists for this request ID.");
-                return;
-            }
-            SendJson(response, result);
-            return;
-        }
-        if (inputProfile == TextMenuV2Contract.Profile)
-        {
-            TextMenuV2ActionResult? result = PlayerEnvironmentService.FindTextMenuV2Result(requestId);
-            if (result == null)
-            {
-                SendApiError(response, 404, "request_not_found", "No text-menu-v2 result exists for this request ID.");
-                return;
-            }
-            SendJson(response, result);
-            return;
-        }
-        PlayerEnvironmentActionReceipt? receipt = PlayerEnvironmentService.FindReceipt(requestId);
-        if (receipt == null)
-        {
-            SendApiError(response, 404, "request_not_found", "No Player Environment receipt exists for request_id.");
-            return;
-        }
-        if (!PlayerEnvironmentService.ReceiptMatchesInputProfile(receipt, inputProfile))
-        {
-            SendApiError(response, 409, "input_profile_mismatch", "The receipt belongs to a different input profile.");
-            return;
-        }
-        SendJson(response, receipt);
+        var result = PlayerEnvironmentService.Requests.Find(requestId, inputProfile);
+        SendRequestLookup(response, result.Status, result.Reason, result.Reply);
     }
 
     private static void HandlePostPlayerEnvironmentNativePageEvidenceOpen(

@@ -45,10 +45,6 @@ internal static partial class PlayerEnvironmentService
     private const int MaxBoundActions = 512;
     private static NativeEntityRegistry Entities => NativeUiRuntime.Entities;
     private static readonly RewardPageSnapshotIdentity RewardPageIdentity = new();
-    private static readonly ConcurrentDictionary<string, string> RequestFingerprints =
-        new(StringComparer.Ordinal);
-    private static readonly ConcurrentDictionary<string, PlayerEnvironmentActionReceipt> Receipts =
-        new(StringComparer.Ordinal);
     private static readonly object SubmissionGate = new();
     private static readonly Lazy<PlayerEnvironmentNativePageSession> NativePageEvidenceLazy =
         new(() => new PlayerEnvironmentNativePageSession(

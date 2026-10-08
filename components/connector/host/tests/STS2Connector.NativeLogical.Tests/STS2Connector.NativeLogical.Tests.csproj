@@ -14,7 +14,10 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
     <Compile Include="*.cs" />
+    <Compile Include="../../MainThreadWorkQueue.cs" Link="MainThreadWorkQueue.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/TextMenuContracts.cs" Link="Protocol/TextMenuContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Requests/*.cs" Link="Requests/%(Filename)%(Extension)" />
     <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/ClientRevocationWire.cs" Link="Protocol/ClientRevocationWire.cs" />
     <Compile Include="../../Authority/MutationControlContracts.cs" Link="Authority/MutationControlContracts.cs" />

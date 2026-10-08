@@ -14,59 +14,12 @@ namespace STS2Connector.PlayerEnvironment;
 
 internal static partial class PlayerEnvironmentService
 {
-    public static PlayerEnvironmentActionReceipt Submit(
-        PlayerEnvironmentActionRequest request)
+    internal static bool RunAdmittedLegacy(PlayerEnvironmentActionRequest request)
     {
-        string requestId = request.RequestId ?? string.Empty;
-        if (!IsSupportedInputProfile(request.InputProfile)
-            || request.InputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile or NativeLogicalContract.Profile)
-            return BuildReceipt(
-                requestId, request.BoundActionId ?? "invalid", "activate", null,
-                Array.Empty<PlayerEnvironmentBoundActionArgument>(),
-                "not_delivered", "not_delivered", "unsupported_input_profile",
-                "The requested input profile is not supported.", null, null);
-        IReadOnlyDictionary<string, string> parameters =
-            new Dictionary<string, string>(StringComparer.Ordinal);
-        if (string.IsNullOrWhiteSpace(requestId))
-        {
-            return BuildReceipt(
-                requestId,
-                request.BoundActionId ?? "invalid",
-                "activate",
-                null,
-                Array.Empty<PlayerEnvironmentBoundActionArgument>(),
-                "not_delivered",
-                "not_delivered",
-                "invalid_request_id",
-                "A bounded non-empty request_id is required.",
-                null,
-                null,
-                request.InputProfile);
-        }
-        string fingerprint = ActionRequestFingerprint(request);
-
-        lock (SubmissionGate)
-        {
-            if (RequestFingerprints.TryGetValue(requestId, out string? previousFingerprint))
-            {
-                if (string.Equals(previousFingerprint, fingerprint, StringComparison.Ordinal)
-                    && Receipts.TryGetValue(requestId, out PlayerEnvironmentActionReceipt? replay))
-                    return replay;
-                return BuildReceipt(
-                    requestId,
-                    request.BoundActionId ?? "invalid",
-                    "activate",
-                    null,
-                    Array.Empty<PlayerEnvironmentBoundActionArgument>(),
-                    "not_delivered",
-                    "not_delivered",
-                    "request_id_conflict",
-                    "request_id was already used with a different exact action.",
-                    null,
-                    null,
-                    request.InputProfile);
-            }
-
+        using var preparation = Requests.PrepareOriginal(request);
+        if (preparation is null) return false;
+        string requestId = request.RequestId!;
+        IReadOnlyDictionary<string, string> parameters = new Dictionary<string, string>(StringComparer.Ordinal);
             SnapshotBuildResult snapshot = BuildSnapshot(inputProfile: request.InputProfile);
             string boundActionId = request.BoundActionId ?? string.Empty;
             PlayerEnvironmentBoundAction? boundAction = snapshot.Snapshot.BoundActions.Actions
@@ -85,8 +38,7 @@ internal static partial class PlayerEnvironmentService
             IReadOnlyList<PlayerEnvironmentBoundActionArgument> arguments =
                 boundAction?.Arguments ?? Array.Empty<PlayerEnvironmentBoundActionArgument>();
 
-            RequestFingerprints[requestId] = fingerprint;
-            PlayerEnvironmentActionReceipt Fail(string code, string detail)
+            bool Fail(string code, string detail)
             {
                 PlayerEnvironmentActionReceipt failed = BuildReceipt(
                     requestId,
@@ -101,8 +53,14 @@ internal static partial class PlayerEnvironmentService
                     snapshot.Snapshot,
                     null,
                     request.InputProfile);
-                Receipts[requestId] = failed;
-                return failed;
+                try { preparation.Seal(failed); }
+                catch (ResultPayloadCapacityException)
+                {
+                    preparation.Reservation.ResetEncoding();
+                    preparation.Seal(BuildReceipt(requestId, boundActionId, action, subjectReferentId, arguments,
+                        "not_delivered", "not_delivered", code, detail + " Current diagnostic snapshot omitted: successor_payload_capacity_exceeded.", null, null, request.InputProfile));
+                }
+                return false;
             }
 
             if (!IsCurrentRequestSnapshot(snapshot.Snapshot, request))
@@ -119,10 +77,14 @@ internal static partial class PlayerEnvironmentService
                 request.ClientSessionId,
                 request.ControllerLeaseId,
                 request.ControllerGeneration);
-            MutationAdmission admission = MutationControlRuntime.Authorize(mutationRequest);
+            LegacyTerminalBounds.Preflight(preparation, BuildReceipt(requestId, boundActionId, action,
+                subjectReferentId, arguments, "unknown", "unknown", LegacyTerminalBounds.MaximumField,
+                LegacyTerminalBounds.MaximumField, null, preparation.OriginalAttribution, request.InputProfile));
+            MutationAdmission admission = preparation.TryBegin();
             if (!admission.Accepted)
                 return Fail(admission.ErrorCode ?? "controller_rejected", admission.Detail ?? "Mutation control was rejected.");
 
+            preparation.ReleasePreparation();
             NativeInputResult started;
             try
             {
@@ -146,8 +108,8 @@ internal static partial class PlayerEnvironmentService
                     null,
                     admission.Attribution,
                     request.InputProfile);
-                Receipts[requestId] = unknown;
-                return unknown;
+                preparation.Seal(unknown);
+                return true;
             }
             if (started.LegacyDisposition == LegacyNativeInputDisposition.Unknown)
             {
@@ -156,8 +118,8 @@ internal static partial class PlayerEnvironmentService
                     "unknown", "unknown", "input_delivery_unknown",
                     "The native input has a partial, unconfirmed or unknown outcome that this legacy receipt cannot represent; never retry.",
                     null, admission.Attribution, request.InputProfile);
-                Receipts[requestId] = unknown;
-                return unknown;
+                preparation.Seal(unknown);
+                return true;
             }
             if (started.LegacyDisposition == LegacyNativeInputDisposition.NotDelivered)
                 return Fail(
@@ -192,15 +154,17 @@ internal static partial class PlayerEnvironmentService
                 postDeliveryObservation,
                 admission.Attribution,
                 request.InputProfile);
-            Receipts[requestId] = applied;
-            return applied;
-        }
+            try { preparation.Seal(applied); }
+            catch (ResultPayloadCapacityException)
+            {
+                preparation.Reservation.ResetEncoding();
+                preparation.Seal(BuildReceipt(requestId, boundActionId, action, subjectReferentId, arguments,
+                    "delivered", "delivered", "successor_payload_capacity_exceeded",
+                    "Native input was delivered; its optional immediate observation exceeded result capacity.",
+                    null, admission.Attribution, request.InputProfile));
+            }
+            return true;
     }
-
-    public static PlayerEnvironmentActionReceipt? FindReceipt(string requestId) =>
-        Receipts.TryGetValue(requestId, out PlayerEnvironmentActionReceipt? receipt)
-            ? receipt
-            : null;
 
     internal static string ActionRequestFingerprint(PlayerEnvironmentActionRequest request)
     {
