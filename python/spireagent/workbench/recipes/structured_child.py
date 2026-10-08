@@ -48,7 +48,7 @@ class ChildChannel:
         raw = json_bytes(value)
         if len(raw) > MAX_EVENT_BYTES or self.sequence > MAX_EVENTS:
             raise BoundaryError("structured_child", "channel_budget_exhausted")
-        sys.stdout.buffer.write(raw+b"\n")
+        sys.stdout.buffer.write(raw)
         sys.stdout.buffer.flush()
 
 
