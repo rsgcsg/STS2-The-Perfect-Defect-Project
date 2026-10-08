@@ -6,6 +6,7 @@ using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
@@ -110,6 +111,36 @@ public sealed class NativeCardOperationMethodTests
             Assert.InRange(cursor, 0, body.Length - 1);
         }
         Assert.True(rejected);
+    }
+
+    [Fact]
+    public void NativeInitializationClosePrecedesOpenSourceAndCloseKeepsDisplayTupleAndBackstop()
+    {
+        var create = Instructions(Method(typeof(NGame), nameof(NGame.GetInspectCardScreen))).ToArray();
+        int assignment = Array.FindIndex(create, i => i.Member?.Name == "set_InspectCardScreen");
+        int addChild = Array.FindIndex(create, i => i.Member?.Name == "AddChildSafely");
+        Assert.True(assignment >= 0 && addChild > assignment);
+        var ready = Instructions(Method(typeof(NInspectCardScreen), nameof(NInspectCardScreen._Ready))).ToArray();
+        Assert.Contains(ready, i => i.Member?.Name == nameof(NInspectCardScreen.Close));
+        Assert.DoesNotContain(ready, i => i.Op == OpCodes.Stfld && i.Member?.Name == "_cards");
+        var open = Instructions(Method(typeof(NInspectCardScreen), nameof(NInspectCardScreen.Open),
+            typeof(List<CardModel>), typeof(int), typeof(bool))).ToArray();
+        int source = Array.FindIndex(open, i => i.Op == OpCodes.Stfld && i.Member?.Name == "_cards");
+        int display = Array.FindIndex(open, i => i.Member?.Name == "SetCard");
+        Assert.True(source >= 0 && display > source);
+        var close = Instructions(Method(typeof(NInspectCardScreen), nameof(NInspectCardScreen.Close))).ToArray();
+        string[] tuple = { "_cards", "_index", "_card", "_upgradeTickbox" };
+        Assert.DoesNotContain(close, i => i.Op == OpCodes.Stfld && tuple.Contains(i.Member?.Name));
+        Assert.DoesNotContain(close, i => i.Member?.Name is "set_Model" or "set_IsTicked" or "UpdateCardDisplay");
+        var disabled = close.Select((instruction, index) => (instruction, index))
+            .Where(item => item.instruction.Member?.Name == "Disable")
+            .Select(item => close[item.index - 1].Member?.Name).Order().ToArray();
+        Assert.Equal(new[] { "_leftButton", "_rightButton", "_upgradeTickbox" }, disabled);
+        int process = Array.FindIndex(close, i => i.Member?.Name == "SetProcessInput");
+        Assert.True(process > 0); Assert.Equal(OpCodes.Ldc_I4_0, close[process - 1].Op);
+        // Backstop remains independently native-admitted; screen withdrawal
+        // therefore never proves the entire finite catalog is empty.
+        Assert.DoesNotContain(disabled, name => name == "_backstop");
     }
 
     [Fact]

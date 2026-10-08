@@ -13,6 +13,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using STS2Connector;
+using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment;
 
 namespace STS2Platform.GameMod;
@@ -26,6 +27,7 @@ internal static class ConnectorNativeLogicalFamily
     internal static bool Live(object? value) => value is Node node && ConnectorMod.IsLiveNode(node);
     internal static bool Current(Node node) => Guard(() => Live(node) && node.IsNodeReady()
         && node is CanvasItem canvas && ConnectorMod.IsNodeVisible(canvas)
+        && (node is not NInspectCardScreen inspector || NativeCardInspectionBinding.HasEnteredNativeSource(inspector))
         && ReferenceEquals(ActiveScreenContext.Instance.GetCurrentScreen(), node));
     internal static bool CurrentFamily(bool reward) => Guard(() =>
     {
@@ -85,7 +87,8 @@ internal static class ConnectorNativeLogicalFamily
         {
             __state = ConnectorNativeLogicalInspectionDeparture.Begin(__instance,
                 NGame.Instance?.InspectCardScreen, ActiveScreenContext.Instance.GetCurrentScreen(), ActiveScreenContext.Instance,
-                Live(__instance), __instance.IsNodeReady(), ConnectorMod.IsNodeVisible(__instance));
+                Live(__instance) && NativeCardInspectionBinding.HasEnteredNativeSource(__instance),
+                __instance.IsNodeReady(), ConnectorMod.IsNodeVisible(__instance));
         }
         catch { /* An unproved stale or non-owning callback cannot claim departure. */ }
     }

@@ -58,7 +58,7 @@ Callback phase/version changes require a versioned contract change.
 | `native_input_callback` | Live current `NPlayerHand.OnHolderPressed(NCardHolder)` return, including its actual native play/simple/upgrade/none conditions; no Human-origin or acceptance assertion. |
 | `connector_input_start` | Existing controller's accepted TryBegin start linearization, before the exact native dispatch. This is explicitly Connector start attribution, not a game-owned callback or Commit. |
 | `native_terminal_entry` | Live visible `NGameOverScreen.OpenSummaryScreen(NButton)` return: actual summary animation started. No animation completion, task end, win/loss or successor inference. |
-| `native_information_owner` | `NCapstoneContainer.Open/Close`, `NInspectCardScreen.Open/Close` and typed information-family transitions at `ActiveScreenContext.Update` return. Includes entered owner, input withdrawal during delayed close and actual native delayed visibility/context return; does not substitute Task completion. |
+| `native_information_owner` | `NCapstoneContainer.Open/Close`, entered-source `NInspectCardScreen.Open/Close` and typed information-family transitions at `ActiveScreenContext.Update` return. Includes entered owner, input withdrawal during delayed close and actual native delayed visibility/context return; does not substitute Task completion. |
 | `native_information_content` | Entered deck/cards-view actual `DisplayCards`, native card-grid upgrade/display changes and inspect content controls after native callbacks return, with exact current entered owner/membership. Covers that entered view, not unopened pages or hidden pile order. |
 | `native_reward_owner` | Actual `NRewardsScreen`/`NCardRewardSelectionScreen.ShowScreen` returns after Native Foundation owner registration; exact reward-family `NOverlayStack` push/remove and actual shown/hidden/closed return paths after native owner/context updates. |
 | `native_reward_catalog` | Exact current `NRewardsScreen.UpdateScreenState`, RewardCollectedFrom, RewardSkippedFrom, BeforeRoomExit and proceed callbacks; current child `RefreshOptions` finalizer after existing presentation-finish and Foundation refresh. Native select/defer/skip/reroll effects are observed as current public facts, not inferred Commit. |
@@ -69,6 +69,21 @@ SHA-256 `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`.
 Native APIs and faithful producer guards are validated separately; fixtures do
 not establish installation, load, runtime or family qualification. This file is a
 contract target before its new producer is independently accepted.
+
+The native card inspector is assigned before its scene `_Ready`, which calls
+`Close` before `Open` has supplied `_cards`. That initialization close is not an
+entered information owner. Eligibility reads the actual native source field;
+it does not require a successful display certificate, so an entered callback
+with an unproved display still retains its original explicit missing position.
+
+Native card `Close` leaves the current source/display tuple unchanged while the
+view remains visible. Its completed display certificate remains usable only
+under the same exact current-owner, visible-node and tuple checks. Close removes
+navigation/hotkeys but does not disable the native Backstop. Each control's
+actual admission determines the complete closing catalog; withdrawal does not
+promise an empty catalog. A surviving Backstop return remains published. Only
+an actually empty complete catalog yields `observed`. The native delayed
+visibility/context callback publishes the real restored owner independently.
 
 ## Observation status
 

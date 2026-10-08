@@ -28,6 +28,13 @@ internal static class NativeCardInspectionBinding
     private static readonly FieldInfo? Upgrade = typeof(NInspectCardScreen).GetField("_upgradeTickbox", Fields);
     private static bool registered;
     internal static void Registered() => registered = true;
+    // GetInspectCardScreen assigns the instance before AddChild/_Ready. The
+    // scene can already be visible/current when _Ready calls Close, but Open
+    // has not supplied a source yet. This reads the actual native field; it is
+    // neither a completed-display certificate nor a remembered lifecycle flag.
+    internal static bool HasEnteredNativeSource(NInspectCardScreen owner) =>
+        owner.GetType() == typeof(NInspectCardScreen)
+        && Cards?.GetValue(owner) is IReadOnlyList<CardModel>;
     private static Fact? ReadCurrent(NInspectCardScreen owner)
     {
         if (owner.GetType() != typeof(NInspectCardScreen)
