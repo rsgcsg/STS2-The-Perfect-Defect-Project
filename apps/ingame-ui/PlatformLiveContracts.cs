@@ -1,100 +1,8 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using STS2Connector.PlayerEnvironment.Protocol;
 using STS2HumanAnnotator.Core;
 
 namespace STS2PlatformLiveUi;
-
-public sealed record PolicyRuntimeHttpStatusResponse(
-    [property: JsonPropertyName("schema")] string Schema,
-    [property: JsonPropertyName("status")] PolicyRuntimeStatus Status);
-
-public sealed record PolicyRuntimeTickResponse(
-    [property: JsonPropertyName("schema")] string Schema,
-    [property: JsonPropertyName("results")] IReadOnlyList<PolicyRuntimeTickResult> Results,
-    [property: JsonPropertyName("status")] PolicyRuntimeStatus Status);
-
-public sealed record PolicyRuntimeTickResult(
-    [property: JsonPropertyName("type")] string Type,
-    [property: JsonPropertyName("status")] PolicyRuntimeStatus? Status);
-
-public sealed record PolicyRuntimeStatus(
-    [property: JsonPropertyName("schema")] string Schema,
-    [property: JsonPropertyName("runtime")] PolicyRuntimeSoftware Runtime,
-    [property: JsonPropertyName("policy")] PolicyRuntimePolicy Policy,
-    [property: JsonPropertyName("run_id")] string RunId,
-    [property: JsonPropertyName("lifecycle")] string Lifecycle,
-    [property: JsonPropertyName("mode")] string Mode,
-    [property: JsonPropertyName("controller")] string Controller,
-    [property: JsonPropertyName("tainted")] bool Tainted,
-    [property: JsonPropertyName("taint_reason")] string? TaintReason,
-    [property: JsonPropertyName("refreshing")] bool Refreshing,
-    [property: JsonPropertyName("last_snapshot_id")] string? LastSnapshotId,
-    [property: JsonPropertyName("last_snapshot")] PolicyRuntimeSnapshotStatus? LastSnapshot,
-    [property: JsonPropertyName("last_decision")] PolicyRuntimeDecisionStatus? LastDecision,
-    [property: JsonPropertyName("last_receipt")] PolicyRuntimeReceiptStatus? LastReceipt,
-    [property: JsonPropertyName("reads")] IReadOnlyList<PolicyRuntimeReadStatus> Reads,
-    [property: JsonPropertyName("invalidations")] IReadOnlyList<string> Invalidations,
-    [property: JsonPropertyName("errors")] IReadOnlyList<string> Errors,
-    [property: JsonPropertyName("environment")] PolicyRuntimeEnvironmentStatus? Environment)
-{
-    public const string CurrentSchema = "sts2.policy-runtime/status-1";
-}
-
-public sealed record PolicyRuntimeSoftware(
-    [property: JsonPropertyName("version")] string Version,
-    [property: JsonPropertyName("code_sha256")] string? CodeSha256);
-
-public sealed record PolicyRuntimePolicy(
-    [property: JsonPropertyName("manifest_id")] string ManifestId,
-    [property: JsonPropertyName("policy_id")] string PolicyId,
-    [property: JsonPropertyName("policy_version")] string PolicyVersion,
-    [property: JsonPropertyName("provider")] string Provider,
-    [property: JsonPropertyName("architecture")] string Architecture,
-    [property: JsonPropertyName("artifact_sha256")] string ArtifactSha256);
-
-public sealed record PolicyRuntimeSnapshotStatus(
-    [property: JsonPropertyName("snapshot_id")] string SnapshotId,
-    [property: JsonPropertyName("sequence")] int Sequence,
-    [property: JsonPropertyName("status")] string Status,
-    [property: JsonPropertyName("runtime_instance_id")] string RuntimeInstanceId,
-    [property: JsonPropertyName("environment_fingerprint")] string EnvironmentFingerprint);
-
-public sealed record PolicyRuntimeDecisionStatus(
-    [property: JsonPropertyName("decision_id")] string DecisionId,
-    [property: JsonPropertyName("candidate_digest")] string CandidateDigest,
-    [property: JsonPropertyName("candidate_count")] int CandidateCount,
-    [property: JsonPropertyName("scores")] IReadOnlyList<double> Scores,
-    [property: JsonPropertyName("selected_index")] int? SelectedIndex,
-    [property: JsonPropertyName("bound_action_id")] string? BoundActionId,
-    [property: JsonPropertyName("bound_action_label")] string? BoundActionLabel);
-
-public sealed record PolicyRuntimeReceiptStatus(
-    [property: JsonPropertyName("request_id")] string RequestId,
-    [property: JsonPropertyName("delivery")] string Delivery,
-    [property: JsonPropertyName("reason_code")] string? ReasonCode,
-    [property: JsonPropertyName("successor_snapshot_id")] string? SuccessorSnapshotId);
-
-public sealed record PolicyRuntimeReadStatus(
-    [property: JsonPropertyName("read_id")] string ReadId,
-    [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("content_schema")] string ContentSchema,
-    [property: JsonPropertyName("target_referent_id")] string? TargetReferentId);
-
-public sealed record PolicyRuntimeEnvironmentStatus(
-    [property: JsonPropertyName("runtime_instance_id")] string RuntimeInstanceId,
-    [property: JsonPropertyName("environment_fingerprint")] string EnvironmentFingerprint,
-    [property: JsonPropertyName("host_kind")] string HostKind,
-    [property: JsonPropertyName("connector_protocol_version")] string ConnectorProtocolVersion,
-    [property: JsonPropertyName("connector_version")] string ConnectorVersion,
-    [property: JsonPropertyName("connector_source_revision")] string? ConnectorSourceRevision,
-    [property: JsonPropertyName("connector_artifact_sha256")] string? ConnectorArtifactSha256,
-    [property: JsonPropertyName("connector_module_version_id")] string? ConnectorModuleVersionId,
-    [property: JsonPropertyName("game_version")] string? GameVersion,
-    [property: JsonPropertyName("game_commit")] string? GameCommit,
-    [property: JsonPropertyName("modset_status")] string ModsetStatus,
-    [property: JsonPropertyName("modset_fingerprint")] string ModsetFingerprint,
-    [property: JsonPropertyName("loaded_mod_ids")] IReadOnlyList<string> LoadedModIds);
 
 public sealed record PlatformLiveScore(
     string Name,
@@ -144,7 +52,7 @@ public sealed record PlatformLiveStatus(
     string? TransportDetail,
     string PolicyRuntimeTransportStatus,
     string? PolicyRuntimeTransportDetail,
-    PolicyRuntimeStatus? PolicyRuntime,
+    IPlatformRuntimeStatus? PolicyRuntime,
     PlayerEnvironmentCapabilitiesResponse? Capabilities,
     PlayerEnvironmentSnapshot? Snapshot,
     PlayerEnvironmentControlSnapshot? Controller,
@@ -163,7 +71,7 @@ public sealed record PlatformLiveStatus(
 public static class PlatformLiveStatusProjection
 {
     public static PlatformLiveStatus Build(
-        PolicyRuntimeStatus? policyRuntime,
+        IPlatformRuntimeStatus? policyRuntime,
         PlayerEnvironmentCapabilitiesResponse? capabilities,
         PlayerEnvironmentSnapshot? snapshot,
         PlayerEnvironmentControlSnapshot? controller,
@@ -243,7 +151,7 @@ public static class PlatformLiveStatusProjection
 
     private static PlatformExactIdentity BuildIdentity(
         PlayerEnvironmentCapabilitiesResponse? capabilities,
-        PolicyRuntimeStatus? policyRuntime,
+        IPlatformRuntimeStatus? policyRuntime,
         RecordingApplicationStatus recording)
     {
         PlatformArtifactIdentity? connector = capabilities?.Host.Implementation is
@@ -302,9 +210,18 @@ public static class PlatformLiveStatusProjection
             capabilities?.Game.Modset.LoadedModIds ?? environment?.LoadedModIds ?? Array.Empty<string>());
     }
 
-    private static IReadOnlyList<PlatformLiveScore> ReadScores(PolicyRuntimeStatus? policyRuntime)
+    private static IReadOnlyList<PlatformLiveScore> ReadScores(IPlatformRuntimeStatus? policyRuntime)
     {
-        PolicyRuntimeDecisionStatus? decision = policyRuntime?.LastDecision;
+        if (policyRuntime is NativeAgentRuntimeStatus native)
+        {
+            if (native.LastDirective is not { } directive || !directive.TryGetProperty("scores", out JsonElement scores)
+                || scores.ValueKind != JsonValueKind.Object || !scores.TryGetProperty("values", out JsonElement values))
+                return Array.Empty<PlatformLiveScore>();
+            return values.EnumerateArray().Select((value, index) => new PlatformLiveScore(
+                $"catalog[{index}]", value.GetDouble(), value.GetDouble().ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
+                "Agent Session status.last_directive.scores.values")).ToArray();
+        }
+        PolicyRuntimeDecisionStatus? decision = (policyRuntime as PolicyRuntimeStatus)?.LastDecision;
         if (decision == null)
         {
             return new[]
@@ -326,9 +243,18 @@ public static class PlatformLiveStatusProjection
             .ToArray();
     }
 
-    private static IReadOnlyList<PlatformSelectedItem> ReadSelected(PolicyRuntimeStatus? policyRuntime)
+    private static IReadOnlyList<PlatformSelectedItem> ReadSelected(IPlatformRuntimeStatus? policyRuntime)
     {
-        PolicyRuntimeDecisionStatus? decision = policyRuntime?.LastDecision;
+        if (policyRuntime is NativeAgentRuntimeStatus native)
+        {
+            if (native.LastDirective is not { } directive || !directive.TryGetProperty("selection", out JsonElement selection)
+                || !selection.TryGetProperty("kind", out JsonElement kind) || kind.GetString() != "handle"
+                || !selection.TryGetProperty("action_id", out JsonElement selected))
+                return Array.Empty<PlatformSelectedItem>();
+            string actionId = selected.GetString() ?? throw new JsonException("Native selected action ID absent.");
+            return [new PlatformSelectedItem(actionId, "agent-selected", "native-action-handle", actionId)];
+        }
+        PolicyRuntimeDecisionStatus? decision = (policyRuntime as PolicyRuntimeStatus)?.LastDecision;
         if (decision?.SelectedIndex is not int selectedIndex)
             return Array.Empty<PlatformSelectedItem>();
 
@@ -342,9 +268,18 @@ public static class PlatformLiveStatusProjection
         };
     }
 
-    private static PlatformReceiptView ReadReceipt(PolicyRuntimeStatus? policyRuntime)
+    private static PlatformReceiptView ReadReceipt(IPlatformRuntimeStatus? policyRuntime)
     {
-        PolicyRuntimeReceiptStatus? receipt = policyRuntime?.LastReceipt;
+        if (policyRuntime is NativeAgentRuntimeStatus native)
+        {
+            NativeAgentResultStatus? result = native.LastResult;
+            return result is null
+                ? new PlatformReceiptView("unavailable", "Agent Session has no original native result.", null)
+                : new PlatformReceiptView(result.Status == "pending" ? "pending" : result.Delivery ?? result.Status,
+                    $"execution={result.Execution ?? "unavailable"}; effect={result.Effect ?? "unavailable"}; reason={result.Reason ?? "none"}",
+                    result.RequestId);
+        }
+        PolicyRuntimeReceiptStatus? receipt = (policyRuntime as PolicyRuntimeStatus)?.LastReceipt;
         if (receipt == null)
         {
             return new PlatformReceiptView(
@@ -362,7 +297,7 @@ public static class PlatformLiveStatusProjection
 
     private static IReadOnlyList<PlatformReadView> ReadReads(
         PlayerEnvironmentSnapshot? snapshot,
-        PolicyRuntimeStatus? policyRuntime)
+        IPlatformRuntimeStatus? policyRuntime)
     {
         var reads = new Dictionary<string, PlatformReadView>(StringComparer.Ordinal);
         if (snapshot != null)
@@ -375,9 +310,9 @@ public static class PlatformLiveStatusProjection
                     "advertised by Connector Snapshot");
             }
         }
-        if (policyRuntime != null)
+        if (policyRuntime is PolicyRuntimeStatus policy)
         {
-            foreach (PolicyRuntimeReadStatus read in policyRuntime.Reads)
+            foreach (PolicyRuntimeReadStatus read in policy.Reads)
             {
                 reads[read.ReadId] = new PlatformReadView(
                     read.ReadId,
@@ -391,7 +326,7 @@ public static class PlatformLiveStatusProjection
             .ToArray();
     }
 
-    private static IReadOnlyList<string> ReadInvalidations(PolicyRuntimeStatus? policyRuntime) =>
+    private static IReadOnlyList<string> ReadInvalidations(IPlatformRuntimeStatus? policyRuntime) =>
         policyRuntime?.Invalidations.ToArray()
         ?? Array.Empty<string>();
 }

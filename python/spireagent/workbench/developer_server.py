@@ -764,6 +764,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return app.models.prepare(body["artifact_id"])
             if path == "/api/local-models/command" and set(body) == {"action"}:
                 return app.models.command(body["action"])
+            if (path == "/api/local-models/command" and set(body) == {"action", "request_id"}
+                    and body["action"] == "reconcile"):
+                return app.models.command("reconcile", request_id=body["request_id"])
             if path == "/api/local-models/install-runtime" and not body:
                 return app.models.install_runtime()
             if path == "/api/local-models/prepare-text-runtime" and set(body) == {

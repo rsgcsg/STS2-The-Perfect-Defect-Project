@@ -20,7 +20,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         "datasets.preview", "datasets.human-preview", "datasets.publish", "training.start",
         "training.pause", "training.cancel", "training.reconcile", "training.resume", "evaluation.start",
         "models.export", "models.register", "models.download", "models.load", "models.takeover",
-        "models.human", "models.stop", "identity.login", "identity.poll", "identity.logout",
+        "models.human", "models.stop", "models.reconcile", "identity.login", "identity.poll", "identity.logout",
         "collection.consent", "collection.prepare", "collection.upload", "downloads.start"
     };
     private static readonly HashSet<string> Pages = new(StringComparer.Ordinal) { "play", "data", "training", "models", "settings" };
@@ -183,7 +183,7 @@ internal sealed class PlatformNativeWorkbenchCommands
     private readonly HashSet<string> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _pendingOwners = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _unknown = new(StringComparer.Ordinal);
-    internal static bool Recovery(string action) => action is "models.human" or "models.stop"
+    internal static bool Recovery(string action) => action is "models.human" or "models.stop" or "models.reconcile"
         or "training.pause" or "training.cancel" or "training.reconcile" or "training.resume" or "identity.poll";
     private static string Owner(string action) => action switch { "models.export" => "export", "models.register" => "registration",
         "evaluation.start" => "evaluation", "recordings.import" => "import", "recordings.refresh" => "recording_catalog",

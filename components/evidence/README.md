@@ -66,6 +66,37 @@ introduced in rc.18; the cancellation event and protocol-v3 attestation require
 rc.23. Earlier strict verifiers reject those newer records rather than silently
 ignoring them. Consumer pins must match the event and adapter contracts in use.
 
+Native logical Agent sessions use the separate public
+`verify_agent_session_run_evidence(directory, expected)` verifier and
+`sts2-evidence verify-agent-session-run DIRECTORY` command. Its registry type is
+`policy-runtime-agent-session-run`, and its run schema is
+`sts2.policy-runtime/agent-session-run-1`. It verifies the closed Agent Manifest,
+adapter attestation, event order, session/acquisition identities, original
+submission/result/reconcile bindings, controller and budget facts, sticky taint,
+and sealed checksums. Declared opaque state files require exact inventory, byte
+hashes and durable consumption metadata. The legacy Policy-run verifier retains
+its original namespace and rejects native Agent fields.
+
+Consumption metadata follows the Runtime ledger's occurrence, revision,
+authorized scope, fresh consumption ID and publication-prefix rules. A new
+Current capture of the same unit can be neutral and retain an earlier consumed
+publication; a declared incremental view can advance for newly included scopes.
+Every received publication view, including terminal and unavailable entries,
+contributes to omission metadata. Its kind does not declare task completion.
+Act and submission must follow an acknowledged input and durable watermark;
+pending, unknown or outstanding submissions cannot authorize replacements.
+The original-request-bound `native_submission_not_started` event closes a
+recorded intent only when Runtime knows the SDK submission never started. It is
+not a Native Result or Receipt. A generic failure reason cannot replace that
+fact, and an unclosed intent cannot produce a clean final run.
+
+This verification establishes the producer's typed operational evidence. It
+does not decode numerical Model state, inspect the artifact path, prove complete
+native capture or causal effects, establish Human origin, or admit research data.
+Checksummed transfer uses this same typed verifier; generic file integrity cannot
+replace it. An installed consumer needs a release containing this additive API;
+the older rc.24 package does not acquire it from a source checkout edit.
+
 ```text
 producer bundle
   -> typed verifier

@@ -3,7 +3,8 @@
 from types import ModuleType
 
 SUPPORTED_ADAPTERS = frozenset(
-    {"s1-v1", "token-v1", "stpd-m2-decision-adapter", "stpd-s0-structured-adapter"}
+    {"s1-v1", "token-v1", "stpd-m2-decision-adapter", "stpd-s0-structured-adapter",
+     "stpd-native-structured-m2-agent"}
 )
 
 
