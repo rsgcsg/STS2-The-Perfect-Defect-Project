@@ -11,7 +11,7 @@
     "id": "stpd-s1-decision-adapter",
     "version": "1.0.2",
     "protocol": "sts2.policy-runtime/decision-only-ndjson-1",
-    "code_sha256": "48acd27bcdd8e70834f27661e46cf24a3a418ca9cd931b53ff98b5835f9cec83"
+    "code_sha256": "fd0e9b55faf2ff457cdf41c6fa758457ae459112efd27fe48a7043c11a9ccc12"
   },
   "artifact": {
     "id": "checkpoint-step-1659",
