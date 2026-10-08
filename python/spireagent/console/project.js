@@ -54,6 +54,7 @@ window.SpireProject = (() => {
   let exportId = null;
   let readiness = new Map();
   const pending = new Set();
+  const recordingIntents = new Map();
   const commandControls = new Map();
   let activeDataset = null;
   let localRecordingSnapshot = null;
@@ -278,6 +279,7 @@ window.SpireProject = (() => {
       runtime_game_mismatch: "模型运行器连接的不是当前游戏，请重新加载模型。",
       runtime_recovery_epoch_mismatch: "你已暂停或结束测试，这条旧操作已取消。",
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
+      recording_confirmation_storage_unavailable: "浏览器无法保留录制请求确认标记，本次没有发送。恢复浏览器存储后再明确操作；结束录制仍可使用。",
       local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。未启动训练或登记。",
@@ -3911,8 +3913,20 @@ window.SpireProject = (() => {
     catch (error) { box.append(el("p", failure(error), "small muted")); return box; }
     const status = view.status;
     const fenceKey = "spireagent-recording-unknown:" + status.runtime_instance_id;
-    let browserUnknown = null;
-    try { browserUnknown = JSON.parse(sessionStorage.getItem(fenceKey) || "null"); } catch { /* presentation storage unavailable */ }
+    let browserUnknown = recordingIntents.get(fenceKey) || null;
+    let confirmationStorage = true;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(fenceKey) || "null");
+      if (!browserUnknown && saved) browserUnknown = saved;
+      if (browserUnknown) recordingIntents.set(fenceKey, browserUnknown);
+    } catch { confirmationStorage = false; }
+    const persistIntent = value => {
+      try {
+        if (value) sessionStorage.setItem(fenceKey, JSON.stringify(value));
+        else sessionStorage.removeItem(fenceKey);
+        return true;
+      } catch { confirmationStorage = false; return false; }
+    };
     if (browserUnknown && !view.unconfirmed) view.unconfirmed = browserUnknown;
     if (browserUnknown && browserUnknown.isolated_session_id !== status.recording_session_id) {
       view.recovery_required = true;
@@ -3929,6 +3943,8 @@ window.SpireProject = (() => {
       box.append(el("p", "本机模型正在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先在模型页明确归还 Human 或 Stop。", "small muted"));
     if (view.unconfirmed)
       box.append(el("p", `保留未确认录制请求 ${view.unconfirmed.command_id}。刷新不重发，也不证明它执行。可明确结束当前会话，再开始隔离的新会话。`, "small muted"));
+    if (!confirmationStorage)
+      box.append(el("p", "浏览器确认存储不可用。开始、暂停、继续和更改来源已阻断；结束录制仍可使用。此页会保留提示；重新载入后无法恢复本页提示，新的录制变更仍会阻断。", "small muted"));
     const form = el("div", null, "project-form");
     const kind = select(form, "操作来源", "native-recording-kind", [["", "请选择来源"],
       ["declared_human", "本人操作"], ["agent_native_ui", "AI界面操作"],
@@ -3941,7 +3957,7 @@ window.SpireProject = (() => {
     const source3 = status.capture_profile_id === "native-logical-source-v3";
     const fresh = () => ["ready", "closed"].includes(status.recording_lifecycle)
       && (!view.recovery_required || (status.recording_lifecycle === "closed" && status.closeout_status === "closed"));
-    const eligible = action => !view.command_pending && !!view.csrf_token && (action === "start_new_session" ? fresh() && declared()
+    const eligible = action => !view.command_pending && !!view.csrf_token && (action === "close" || confirmationStorage) && (action === "start_new_session" ? fresh() && declared()
       : action === "change_source" ? source3 && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
       : action === "close" ? source3 && ["recording", "paused"].includes(status.recording_lifecycle)
       : source3 && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
@@ -3954,28 +3970,61 @@ window.SpireProject = (() => {
           recording_session_id: status.recording_session_id, source_segment_id: status.source?.segment_id ?? null,
           source_kind: declaration ? kind.value : null, actor_id: declaration ? actor.value : null,
           command_id: crypto.randomUUID()};
+        const previous = browserUnknown;
+        const previousRecovery = view.recovery_required, previousNotice = view.unconfirmed;
+        const marker = {command_id:body.command_id, kind:action, recording_session_id:body.recording_session_id,
+          runtime_instance_id:body.runtime_instance_id, source_segment_id:body.source_segment_id, pending:true, previous_unconfirmed:previous
+            ? [...(previous.previous_unconfirmed || []).slice(-7), {command_id:previous.command_id,
+                recording_session_id:previous.recording_session_id, runtime_instance_id:previous.runtime_instance_id}] : []};
+        // Preserve uncertainty before submission. Unavailable storage never grants
+        // a non-recovery mutation whose marker would disappear on full reload.
+        recordingIntents.set(fenceKey, marker);
+        browserUnknown = marker;
+        view.recovery_required = true;
+        view.unconfirmed = marker;
+        if (!persistIntent(marker) && action !== "close") {
+          // This failure happened before POST. Preserve any earlier uncertainty,
+          // but do not mislabel this rejected intent as a submitted unknown.
+          browserUnknown = previous;
+          if (previous) recordingIntents.set(fenceKey, previous);
+          else recordingIntents.delete(fenceKey);
+          view.recovery_required = previousRecovery;
+          view.unconfirmed = previousNotice;
+          box.append(el("p", failure(new Error("recording_confirmation_storage_unavailable")), "small muted"));
+          throw new Error("recording_confirmation_storage_unavailable");
+        }
+        const retire = value => {
+          if (!persistIntent(value)) return;
+          browserUnknown = value;
+          if (value) recordingIntents.set(fenceKey, value);
+          else recordingIntents.delete(fenceKey);
+        };
         try {
           const result = await request(ctx, "/api/native-recording/command", body, view.csrf_token);
+          let retained = previous;
           if (action === "start_new_session" && status.recording_lifecycle === "closed" && status.closeout_status === "closed"
-              && browserUnknown && result.status?.recording_session_id !== status.recording_session_id) {
-            browserUnknown.isolated_session_id = result.status.recording_session_id;
-            try { sessionStorage.setItem(fenceKey, JSON.stringify(browserUnknown)); } catch { /* keep live notice */ }
-          }
+              && previous && result.status?.recording_session_id !== status.recording_session_id)
+            retained = {...previous, isolated_session_id:result.status.recording_session_id};
+          // Failure to retire leaves the conservative marker in both live and saved scopes.
+          retire(retained);
           await reload(ctx);
         } catch (error) {
-          // Lost browser responses are also uncertain; a read must not silently unlock this view.
-          if (["request_unknown", "native_recording_command_unknown"].includes(error.message)) {
-            view.recovery_required = true;
-            view.unconfirmed = {command_id: body.command_id};
-            browserUnknown = {command_id: body.command_id, recording_session_id: body.recording_session_id,
-              runtime_instance_id: body.runtime_instance_id, previous_unconfirmed: browserUnknown
-                ? [...(browserUnknown.previous_unconfirmed || []).slice(-7), {command_id:browserUnknown.command_id,
-                    recording_session_id:browserUnknown.recording_session_id, runtime_instance_id:browserUnknown.runtime_instance_id}] : []};
-            try { sessionStorage.setItem(fenceKey, JSON.stringify(browserUnknown)); } catch { /* keep live notice */ }
+          const knownNonDispatch = new Set(["authentication_required", "invalid_native_recording_command",
+            "native_recording_context_changed", "native_recording_command_pending", "native_recording_recovery_required",
+            "native_recording_not_dispatched", "native_recording_rejected", "model_recovery_required",
+            "runtime_connector_binding_required", "connector_identity_unavailable", "native_recording_unavailable",
+            "native_recording_game_identity_mismatch"]);
+          if (knownNonDispatch.has(error.message)) retire(previous);
+          else {
+            marker.pending = false;
+            marker.unknown = true;
+            recordingIntents.set(fenceKey, marker);
+            persistIntent(marker);
             box.append(el("p", `操作结果未确认：${body.command_id}。不会自动重试。`, "small muted"));
           }
           throw error;
         }
+
       }, {disabled: () => !eligible(action)});
       button.disabled = !eligible(action);
       buttons.push([action, button]); form.append(button);

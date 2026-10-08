@@ -100,6 +100,25 @@ preparation. Human/AI UI/unknown, older profiles and incompatible known legacy i
 still Close through the Recorder owner. These are application sequencing checks,
 not research admission, origin attestation or new gameplay legality. Context is
 caller metadata and the original Runtime recovery binding is retained for Mode/Tick.
+All Source lifecycle intents and new non-recovery Workbench model intents now
+share atomic admission in LocalModelService; only Start/Change away from Agent
+Protocol requires Human/model-recovery eligibility. Existing Auto may still
+Pause/Resume/Close its recording, without cancelling an already admitted model intent. Source I/O holds a logical
+reservation, not an HTTP-duration lock, so Human/Stop/reconcile remain available.
+Unknown Source outcomes keep the existing admission fence after client timeout;
+same-runtime refresh does not clear it. Accepted exact durable Close can release
+sequencing, and a typed recording-status query that verifies a new runtime before
+and after against Connector can make an old notice inapplicable without Source
+Start or rewriting the unknown. Shared browser/paired native Workbench is this
+scope; direct Policy diagnostics and external Runtime/SDK callers are separate.
+
+The browser persists a pending confirmation marker before non-recovery Source
+POST. If browser storage cannot preserve it, the action rejects before submission.
+A live fallback retains notices through same-page auth renewal; a full reload with
+unavailable storage instead blocks new Source changes, without claiming it recovered
+old notices. Close remains an explicit recovery lane. A failed marker cleanup retains
+a conservative fence; no status refresh or browser retry resolves the original
+unknown. These markers are presentation state, not a second Recorder command ledger.
 
 The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
 byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported

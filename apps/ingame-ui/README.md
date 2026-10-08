@@ -62,6 +62,20 @@ compatibility metadata, never authentication, model Consume or Human proof. Runt
 Mode/Tick still carry the original run/game/recovery epoch; preparation cannot grant
 a newer epoch to a stale intent.
 
+Shared browser and paired native Workbench model admission uses the existing
+LocalModelService intent owner. Every Source lifecycle intent reserves that
+application boundary through its final outcome while new non-recovery model
+intents reject before admission; Human/Stop/reconcile remain independent. Only
+Start/Change away from Agent Protocol requires Human/model-recovery eligibility.
+Already active Auto may still Pause/Resume/Close its recording, and an already
+admitted model intent is not cancelled by a later Agent Source control. An
+unknown Source result keeps the existing notice and model admission fence after
+the request returns. Same-runtime refresh cannot release it; exact accepted
+durable Close or a separately verified new runtime may release the applicable
+scope while retaining the original unknown. The separate direct Policy diagnostic
+tab and arbitrary external Runtime/SDK callers bypass this Workbench owner;
+this packet does not claim universal cross-process or all-UI exclusion.
+
 Agent Run uses only typed Policy Runtime controls. Its compact view keeps mode,
 controller, policy, last selected action, Receipt and **Return to Human** visible.
 It never resolves or submits a gameplay action directly. The Runtime loopback

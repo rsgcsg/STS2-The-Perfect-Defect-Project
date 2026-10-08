@@ -43,6 +43,18 @@ public sealed class PlatformModelPreparationV2Tests
         Assert.False(PlatformCollectionHandoff.Ready(status)); // v1 Ready/Closed invariant is unchanged
     }
 
+    [Fact]
+    public void PausedProtocolIsNotDestroyedByKnownLegacyCloseOnlyContext()
+    {
+        var status = Source(state: RecordingLifecycleState.Paused);
+        var result = PlatformCollectionHandoff.PrepareForModel(Read(Request(null, "sts2.policy-runtime/status-1")),
+            () => "game-1", () => status, (_, _) => throw new Exception("paused source must not close"));
+        Assert.False(result.ReadyForModel); Assert.Equal("paused", result.RecordingDisposition);
+        Assert.Equal("paused", result.Status.RecordingLifecycle);
+        Assert.Equal("agent_protocol", result.Status.SourceDeclaration!.SourceKind);
+        Assert.False(PlatformCollectionHandoff.Ready(status));
+    }
+
     [Theory]
     [InlineData("declared_human")]
     [InlineData("agent_native_ui")]

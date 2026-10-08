@@ -18,8 +18,8 @@ import subprocess
 import sys
 import threading
 from collections import Counter
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -514,6 +514,8 @@ class LocalModelService:
         self.lock = threading.RLock()
         self.control_send_lock = threading.Lock()
         self.intent_generation = 0
+        self._recording_source_reservation: object | None = None
+        self._recording_admission_guard: Callable[[], bool] | None = None
         self._native_authorizer: Callable[[], None] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.client: RuntimeClient | None = None
@@ -1080,6 +1082,65 @@ class LocalModelService:
     def _save(self) -> None:
         atomic_json(self.directory / "session.json", self.state)
 
+    def _recording_recovery_required(self, model: dict[str, Any]) -> bool:
+        operation = model.get("operation")
+        if model.get("status") in {"loading", "command_unknown", "recovery_required"} or (
+            isinstance(operation, dict)
+            and operation.get("status") == "pending"
+            and operation.get("action") not in {"human", "stop", "reconcile"}
+        ):
+            return True
+        if not model.get("loaded") and self.client is None:
+            return False
+        runtime = model.get("runtime")
+        return (
+            model.get("observation_error") is not None
+            or not isinstance(runtime, dict)
+            or runtime.get("mode") != "human"
+            or runtime.get("controller") != "released"
+            or runtime.get("tainted") is True
+            or runtime.get("pending_request") is not None
+        )
+
+    def recording_recovery_required(self, *, fresh: bool = False) -> bool:
+        observed = self.status() if fresh else None
+        with self.lock:
+            return self._recording_recovery_required(self.state) or (
+                observed is not None and self._recording_recovery_required(observed)
+            )
+
+    @contextmanager
+    def reserve_recording_source_mutation(self, *, require_human: bool) -> Iterator[None]:
+        """Reserve application sequencing, never gameplay or external SDK authority."""
+        reservation = object()
+        with self.lock:
+            if require_human and (self.closed or self._recording_recovery_required(self.state)):
+                raise BoundaryError("recording", "model_recovery_required")
+            if self._recording_source_reservation is not None:
+                raise BoundaryError("recording", "native_recording_command_pending")
+            self._recording_source_reservation = reservation
+        try:
+            # HTTP is outside the lock. Existing model admissions reject immediately;
+            # Human/Stop retain the independent recovery lane while this intent waits.
+            if require_human and self.recording_recovery_required(fresh=True):
+                raise BoundaryError("recording", "model_recovery_required")
+            yield
+        finally:
+            with self.lock:
+                if self._recording_source_reservation is reservation:
+                    self._recording_source_reservation = None
+
+    def bind_recording_admission_guard(self, guard: Callable[[], bool]) -> None:
+        """Application's existing unresolved notice is read under this owner lock."""
+        with self.lock:
+            self._recording_admission_guard = guard
+
+    def _require_model_admission(self) -> None:
+        if self._recording_source_reservation is not None or (
+            self._recording_admission_guard is not None and self._recording_admission_guard()
+        ):
+            raise BoundaryError("local_model", "native_recording_command_pending")
+
     def _begin(
         self, action: str, operation: Callable[[], None], *, recovery: bool = False,
         admission: Callable[[], None] | None = None,
@@ -1087,6 +1148,8 @@ class LocalModelService:
         with self.lock:
             if self.closed:
                 raise BoundaryError("local_model", "service_closed")
+            if not recovery:
+                self._require_model_admission()
             if self.thread and self.thread.is_alive() and not recovery:
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.state["status"] in {"command_unknown", "recovery_required"} and not recovery:
@@ -1572,6 +1635,8 @@ class LocalModelService:
             else:
                 pending_request = None
             recovery = action in {"human", "stop", "reconcile"}
+            if not recovery:
+                self._require_model_admission()
             if not recovery and self.thread is not None and self.thread.is_alive():
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.client is None or not self.state["loaded"]:
@@ -1602,13 +1667,20 @@ class LocalModelService:
             connector_endpoint = self.state.get("connector_endpoint")
             managed_environment = self.state.get("managed_environment")
 
-        if action == "reconcile":
-            assert isinstance(pending_request, dict)
-            return self._begin(action, lambda: self._execute_reconcile(
-                intent, client, pending_request), recovery=True)
-        return self._begin(action, lambda: self._execute_command(
-            action, intent, client, connector_endpoint, managed_environment),
-            recovery=action in {"human", "stop"})
+            if action == "reconcile":
+                assert isinstance(pending_request, dict)
+                return self._begin(
+                    action,
+                    lambda: self._execute_reconcile(intent, client, pending_request),
+                    recovery=True,
+                )
+            return self._begin(
+                action,
+                lambda: self._execute_command(
+                    action, intent, client, connector_endpoint, managed_environment
+                ),
+                recovery=action in {"human", "stop"},
+            )
 
     def _execute_reconcile(self, intent: int, client: RuntimeClient,
                            pending_request: dict[str, Any]) -> None:

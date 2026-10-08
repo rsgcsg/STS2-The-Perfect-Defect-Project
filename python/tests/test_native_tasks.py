@@ -115,9 +115,7 @@ def bridge():
                     if not source["source"]["accounting_complete"]:
                         disposition, ready = "blocked", False
                     elif (
-                        context["runtime_status_schema"]
-                        == "sts2.policy-runtime/agent-session-status-1"
-                        and source["source"]["declaration"]["source_kind"] == "agent_protocol"
+                        source["source"]["declaration"]["source_kind"] == "agent_protocol"
                         and source["recording_lifecycle"] == "paused"
                     ):
                         disposition, ready = "paused", False
@@ -165,6 +163,29 @@ def bridge():
                 if outcome == "unknown_error":
                     self.respond({"error": "unrecognized"}, 503)
                     return
+                if outcome == "lost_pending":
+                    import socket
+
+                    behavior["recording_entered"].set()
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.connection.close()
+                    assert behavior["recording_release"].wait(timeout=5)
+                    return
+                if behavior.get("recording_apply_lifecycle"):
+                    kind = body["command"]["kind"]
+                    if kind == "start_new_session":
+                        source_status(behavior, "recording")
+                        behavior["recording"]["source"]["declaration"] = body["command"][
+                            "source_declaration"
+                        ]
+                    elif kind in {"pause", "resume", "close"}:
+                        lifecycle = {"pause": "paused", "resume": "recording", "close": "closed"}[
+                            kind
+                        ]
+                        behavior["recording"].update(
+                            recording_lifecycle=lifecycle, closeout_status=lifecycle
+                        )
                 result = {
                     "schema": "sts2.platform/recording-result-1",
                     "command_id": body["command"]["command_id"],
@@ -844,3 +865,26 @@ def test_v2_client_cannot_retain_using_context_foreign_to_fresh_native_status(br
             metadata, behavior["connector_endpoint"], model_context=native_context()
         )
     assert calls == []
+
+
+def test_v2_legacy_close_only_context_never_destroys_explicit_paused_protocol(bridge):
+    client, _, calls, behavior = bridge
+    source_status(behavior, "paused")
+    behavior["recording"]["source"]["declaration"]["source_kind"] = "agent_protocol"
+    context = {
+        **native_context(),
+        "runtime_status_schema": "sts2.policy-runtime/status-1",
+        "input_profile": None,
+    }
+    with pytest.raises(BoundaryError, match="recording_close_pending_or_failed"):
+        client.prepare_model(
+            {
+                "schema": "sts2.policy-runtime/status-1",
+                "environment": None,
+                "run_id": "fixture-run",
+            },
+            behavior["connector_endpoint"],
+            model_context=context,
+        )
+    assert behavior["recording"]["recording_lifecycle"] == "paused"
+    assert sum(value is not None for _, value in calls) == 1

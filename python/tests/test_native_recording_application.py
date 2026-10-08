@@ -199,9 +199,10 @@ def test_application_unknown_survives_refresh_and_explicit_new_isolation_preserv
     assert len(calls) == 1
     behavior["unknown"] = False
     call("/api/native-recording/command", body(current, "close"))
-    assert call("/api/native-recording/status")[
-        "recovery_required"
-    ]  # Closed is not proof of original request
+    closed = call("/api/native-recording/status")
+    assert not closed["recovery_required"]
+    assert closed["unconfirmed"]["command_id"] == original["command_id"]
+    # The distinct known Close releases sequencing, never proves the original request.
     call("/api/native-recording/command", body(current, "start_new_session", "agent_protocol"))
     view = call("/api/native-recording/status")
     assert (

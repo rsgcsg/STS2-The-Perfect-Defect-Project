@@ -52,9 +52,10 @@ public static class PlatformCollectionHandoff
         if (before.Session?.CaptureProfileId == SourceSessionContractV3.ProfileId)
         {
             if (!HealthySource3(before, current)) return Result(false, "blocked", before);
+            if (before.SourceV2!.Declaration.SourceKind == "agent_protocol"
+                && before.Lifecycle.State == RecordingLifecycleState.Paused) return Result(false, "paused", before);
             if (before.SourceV2!.Declaration.SourceKind == "agent_protocol" && request.ModelContext.NativeAgent)
             {
-                if (before.Lifecycle.State == RecordingLifecycleState.Paused) return Result(false, "paused", before);
                 if (CanPreserveForNativeAgent(before, current)) return Result(true, "retained_agent_protocol", before);
                 return Result(false, "blocked", before);
             }
