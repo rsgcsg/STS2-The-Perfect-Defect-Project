@@ -20,6 +20,7 @@ from test_native_structured_model import ack, offer
 from test_native_structured_training import origin
 from test_native_structured_training import two_threads as two_threads
 from test_native_task_completion import next_input, terminal_snapshot
+from test_ordered_source import contract_bundle, original_basis, projected
 from test_protocol_source import setup_store
 from test_structured_resume import Authority, PauseControl, equal_tree, finish
 
@@ -36,6 +37,7 @@ from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.recipes import structured as adapter_module
 from stpd.fullrun import ordered_source as sources
 from stpd.models.structured_engine import StructuredTrainingEngine
+from stpd.models.structured_m2 import StructuredM2
 from stpd.models.structured_training import StructuredTrainingConfig
 from stpd.ordered_source_spec import (
     DEFAULT_RECIPE,
@@ -54,6 +56,7 @@ from stpd.structured_code_scope import ROOT
 from stpd.workers.structured_control import StructuredWorkloadRequest
 from stpd.workers.structured_evaluation import (
     StructuredEvaluationRequest,
+    _rows,
     prepare_structured_evaluation,
     run_structured_evaluation,
 )
@@ -220,6 +223,9 @@ def test_admission_identity_covers_native_task_qualifier_and_transport_code(tmp_
         "stpd/policy/native_task.py",
         "stpd/fullrun/native_structured_sequences.py",
         "spireagent/storage/archives.py",
+        "stpd/contracts.py",
+        "stpd/linear_q.py",
+        "stpd/representation.py",
     ):
         target = tmp_path / relative
         before = target.read_bytes()
@@ -230,6 +236,47 @@ def test_admission_identity_covers_native_task_qualifier_and_transport_code(tmp_
     unrelated.parent.mkdir(parents=True)
     unrelated.write_bytes(b"# unrelated application owner\n")
     assert sources.verifier_identity(tmp_path) == original
+
+
+def test_fixed_native_evaluation_consumes_empty_C_publication_before_exact_label(
+    tmp_path, monkeypatch
+):
+    # This direct Source3 dataset integration is a numerical contract regression,
+    # not a forged typed Source verifier receipt. Original-shaped bases are used.
+    bundle = contract_bundle(tmp_path)
+    empty = original_basis(tmp_path, 1, empty=True)
+    labelled = original_basis(tmp_path, 2)
+    for row, basis in zip(bundle.observations, (empty, labelled), strict=True):
+        row.update(snapshot_id=basis[0]["snapshot_id"], capture=basis[2], catalog=basis[3])
+    row = bundle.inputs[1]
+    row.update(pre_capture=labelled[2], catalog=labelled[3], input_prefix_ordinal="1")
+    row["pre_position"]["publication_index"] = "2"
+    row["outcome"]["selected_action"] = labelled[1][0]
+    bundle.inputs = (row,)
+    bundle.final_input_prefix_ordinal = "1"
+    bundle.boundaries[0]["after_input_ordinal"] = "1"
+    _, _, dataset = projected(bundle, view=DEFAULT_VIEW)
+    model = StructuredM2(seed=0, model_control=recipe_control(DEFAULT_RECIPE))
+    expected_memory = model.initial_memory()
+    for step in dataset.runs[0].steps:
+        if step.advance:
+            expected_memory = model.advance(model.encode(step.frame), expected_memory)
+    original_score = model.score
+    scored_memory = []
+
+    def score(frame, entities, memory):
+        assert frame.action_ids, "empty C must be consumed without scoring or artificial targets"
+        scored_memory.append(memory.clone())
+        return original_score(frame, entities, memory)
+
+    monkeypatch.setattr(model, "score", score)
+    rows = _rows(model, dataset, None)
+    assert len(rows) == 3 and [row["advance"] for row in rows] == [True, True, False]
+    assert rows[0]["scores"] == [] and rows[0]["selected_index"] is None
+    assert rows[0]["label_index"] is None and rows[0]["loss"] is None
+    assert rows[2]["label_index"] == 0 and rows[2]["loss"] is not None
+    assert len(scored_memory) == 2
+    equal_tree(expected_memory, scored_memory[-1])
 
 
 @pytest.fixture

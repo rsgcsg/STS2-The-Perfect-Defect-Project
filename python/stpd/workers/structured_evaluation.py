@@ -218,7 +218,8 @@ def _rows(model: StructuredM2, dataset: StructuredDataset,
                 entities = model.encode(step.frame)
                 if step.advance:
                     memory = model.advance(entities, memory)
-                logits = model.score(step.frame, entities, memory)
+                logits = (model.score(step.frame, entities, memory) if step.frame.action_ids
+                          else entities.new_empty((0,)))
                 scores = [float(item) for item in logits]
                 if len(scores) != len(step.frame.action_ids) or any(
                     not math.isfinite(item) for item in scores

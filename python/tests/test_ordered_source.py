@@ -287,9 +287,10 @@ def test_one_original_game_across_attachment_epochs_keeps_related_group_and_rese
     for reference in ("capture", "catalog"):
         later_publication[reference]["epoch_id"] = "epoch-2"
     bundle.observations += (later_publication,)
-    source, _, dataset = projected(bundle, view=DEFAULT_VIEW)
+    source, report, dataset = projected(bundle, view=DEFAULT_VIEW)
     assert len({run.run_id for run in dataset.runs}) == 2
     assert len({run.source_group for run in dataset.runs}) == 1
+    assert report["counts"]["original_game_runs"] == 1
     assert all(run.steps[0].reset_before and run.steps[0].advance for run in dataset.runs)
     assert source["runs"][0]["identity"]["related_keys"] == (
         source["runs"][1]["identity"]["related_keys"])

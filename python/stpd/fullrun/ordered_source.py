@@ -77,6 +77,9 @@ PROJECTION_FILES = (
     "spireagent/storage/store.py",
     "stpd/__init__.py",
     "stpd/canonical.py",
+    "stpd/contracts.py",
+    "stpd/linear_q.py",
+    "stpd/representation.py",
     "stpd/ordered_source_spec.py",
     "stpd/native_graph_spec.py",
     "stpd/fullrun/__init__.py",
@@ -522,9 +525,11 @@ def _projection(
             ),
             "model_unexposed_frames": sum(not row["model_exposed"] for row in index),
             "excluded_frames": sum(not r["admitted"] for r in index),
-            "original_game_runs": sum(
-                e["context"]["game_continuity_id"] is not None for e in bundle.epochs
-            ),
+            "original_game_runs": len({
+                (e["context"]["environment"]["runtime_instance_id"],
+                 e["context"]["game_continuity_id"])
+                for e in bundle.epochs if e["context"]["game_continuity_id"] is not None
+            }),
             "whole_game_recorded_capture_runs": sum(
                 r["identity"]["whole_game_recorded_capture_eligible"] for r in all_runs
             ),
