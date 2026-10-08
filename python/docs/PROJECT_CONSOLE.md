@@ -595,3 +595,76 @@ not reconstruct a creation form. Navigation remains active while a status reques
 pending, and a late response cannot update a different page/account. An authentication
 denial clears private displayed data; an ordinary transient failure leaves the last
 observation with an explicit notice. These are presentation changes, not cached access grants.
+
+## Trusted local training service contract
+
+`LocalTrainingService` is the shared owning service for the existing local slot.
+A static code-owned recipe registry describes configuration fields, required
+optional dependencies, supported control actions and placement. Discovery does
+not import Torch, load model bytes or scan a source. Token and memory recipes
+retain their historical IDs/configurations, artifact schemas and legacy
+`start(dataset_id, recipe=..., after_completed_operation_id=...)` API.
+
+The typed application entry uses only immutable artifact IDs and the configured
+local CPU placement. It accepts no program, shell, import, executable path,
+remote URL or downloadable plugin. For example:
+
+```python
+from spireagent.workbench.recipe_contracts import TrainingRequest
+
+request = TrainingRequest(
+    intent_id="0123456789abcdef0123456789abcdef",
+    recipe_id="structured-m2-cpu-v2",
+    source_id=immutable_source_id,
+    config={"epochs": 1, "max_updates": 1000},
+    placement_id="local-cpu",
+    limits={"wall_seconds": 600},
+)
+capabilities = service.capabilities()
+operation = service.start(request)["operation"]
+status = service.status(operation["operation_id"])["operation"]
+ack = service.cancel(operation["operation_id"], operation["attempt_id"])
+# ACK remains pending until the worker returns a safe-boundary terminal receipt.
+# Query status first, then explicitly select the immutable checkpoint:
+resumed = service.resume(operation_id, expected_attempt_id, checkpoint_id,
+                         new_intent_id, {"wall_seconds": 600})
+reconciled = service.reconcile(operation_id, expected_attempt_id)
+```
+
+Typed requests have a strict JSON equivalent `spireagent/training-request-v1`.
+They migrate the same operation file to `spireagent/local-training-operation-v3`
+and preserve previous completion identities. There is no second job database.
+Snapshots retain legacy stage/artifact fields and add intent, attempt, phase,
+timestamps, actual progress, input/run/checkpoint/result/model refs and supported
+actions. Each resumed attempt retains the same input/run/config/producer and the
+prior attempt's terminal proof. Checkpoints require the owning immutable event;
+v1 final checkpoints cannot resume. Reconcile verifies an existing completed
+result or leaves the outcome unknown; it never restarts numerical work.
+
+The OS owner lock spans the entire worker lifecycle. Journal publication and
+control share the service mutex; application-supplied attempt fencing guards
+numerical durable publication. A different live service can observe the slot;
+it cannot pretend to own that worker's control channel. Service loss needs
+explicit reconciliation under the released owner lock. Legacy recipes advertise
+no cancel/resume capabilities. Typed legacy requests use empty `limits` because
+the legacy subprocess recipes do not enforce the new boundary wall limit.
+
+The structured adapter enforces a cumulative wall budget at the declared
+completed TBPTT/evaluation boundary and the recipe's cumulative optimizer-update
+bound. Evaluation and a tensor call remain synchronous between those boundaries;
+this does not claim arbitrary hung-process termination. Resume must preserve
+the original limits and cannot reset an exhausted budget. A cancel request that
+races completion retains artifacts for audit and does not select them as a
+normal completed result. Indexing follows verified durable completion, so index
+failure does not permit another numerical run.
+
+Current structured source admission supports explicitly marked immutable
+`synthetic_fixture` engineering sources with an existing exact source index,
+training claim and use reservation. An ordinary Agent source JSON, capsule hash
+or `engineering_only` label cannot establish provenance. Real Agent source
+admission remains blocked until its owning trusted verifier joins immutable
+source/report records; historical S0 input meaning is unchanged. The structured
+Agent registry entry reports `structured_installation_adapter_required`: STPD
+must supply its public package verifier/installation builder before Workbench
+export/registration can offer it. These source/test seams do not complete the
+ordinary UI journey, runtime/Human qualification or final G2/V1 user acceptance.
