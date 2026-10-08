@@ -224,6 +224,7 @@ class DirectoryReceiver:
             _copy_directory(source_path, staging)
             self._validate_source(staging, transfer)
             self._verify_artifact(staging, transfer)
+            self._validate_source(staging, transfer)
             _regular_directory(self.store.objects)
             try:
                 _promote_directory_no_replace(staging, destination)
@@ -282,15 +283,12 @@ class DirectoryReceiver:
             self.promotion_verifier(directory, manifest)
 
     def _validate_source(self, source: Path, manifest: DirectoryTransferManifest) -> None:
-        if not source.is_dir():
-            raise ValueError("transfer source directory is absent")
-        actual = {path.relative_to(source).as_posix(): path for path in source.rglob("*") if path.is_file()}
+        actual = {relative: (size, digest) for relative, size, digest in _inventory(source)}
         expected = {item.path: item for item in manifest.files}
         if set(actual) != set(expected):
             raise ValueError("transfer is partial or has unexpected files")
         for relative, item in expected.items():
-            path = actual[relative]
-            if path.stat().st_size != item.bytes or _sha256_file(path) != item.sha256:
+            if actual[relative] != (item.bytes, item.sha256):
                 raise ValueError(f"transfer checksum mismatch: {relative}")
 
     def _quarantine(self, source: Path, reason: str) -> Path | None:
@@ -306,26 +304,35 @@ class DirectoryReceiver:
 
 
 def _inventory(directory: Path) -> list[tuple[str, int, str]]:
-    if not directory.is_dir():
-        raise ValueError("directory is absent")
+    _regular_directory(directory)
     result: list[tuple[str, int, str]] = []
     for path in sorted(directory.rglob("*")):
-        if path.is_symlink():
-            raise ValueError("symbolic links are not allowed")
-        if path.is_file():
-            result.append((path.relative_to(directory).as_posix(), path.stat().st_size, _sha256_file(path)))
+        value = _regular_entry(path)
+        if stat.S_ISREG(value.st_mode):
+            result.append((path.relative_to(directory).as_posix(), value.st_size, _sha256_file(path)))
     return result
 
 
+def _regular_entry(path: Path) -> os.stat_result:
+    value = path.lstat()
+    if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+        raise ValueError("symbolic links or reparse points are not allowed")
+    if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+        raise ValueError("only regular directories and files are allowed")
+    if stat.S_ISREG(value.st_mode) and value.st_nlink != 1:
+        raise ValueError("hard-link aliases are not allowed")
+    return value
+
+
 def _copy_directory(source: Path, destination: Path) -> None:
+    _regular_directory(source)
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
         target = destination / relative
-        if path.is_symlink():
-            raise ValueError("symbolic links are not allowed")
-        if path.is_dir():
+        value = _regular_entry(path)
+        if stat.S_ISDIR(value.st_mode):
             target.mkdir(parents=True, exist_ok=True)
-        elif path.is_file():
+        elif stat.S_ISREG(value.st_mode):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
 

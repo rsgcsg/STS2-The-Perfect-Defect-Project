@@ -44,6 +44,12 @@ corrupt or linked targets remain untouched. Tests execute the local platform's
 real primitive and create targets during typed staging verification; tests on
 other platforms must execute their own native branch before claiming support.
 
+The receiver's exact inventory rejects linked descendants, reparse points,
+hard-link aliases and special nodes before any typed verification or reuse.
+It checks the same regular-file inventory again after typed verification of
+staging or an existing target. Byte-identical link targets are not immutable
+carrier files and cannot earn a reused receipt.
+
 The flags and platform behavior follow the
 [Apple XNU header at d4514f0b](https://github.com/apple-oss-distributions/xnu/blob/d4514f0bc1d3f944c22d92e68b646ac3fb40d452/bsd/sys/stdio.h),
 [Linux man-pages renameat2 contract](https://man7.org/linux/man-pages/man2/renameat2.2.html)

@@ -163,6 +163,107 @@ class DirectoryPublicationTests(unittest.TestCase):
         self.assertEqual(result.status, "quarantined")
         self.assertEqual(target.stat().st_ino, before)
 
+    def _link_nested_payload(self, directory: Path, *, hard: bool = False) -> Path:
+        payload = directory / "export" / "decisions.jsonl"
+        outside = self.root / "outside-payload"
+        outside.write_bytes(payload.read_bytes())
+        payload.unlink()
+        try:
+            if hard:
+                os.link(outside, payload)
+            else:
+                payload.symlink_to(outside)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"filesystem cannot create this link: {error}")
+        return payload
+
+    def test_existing_nested_links_cannot_be_reused(self) -> None:
+        for hard in (False, True):
+            with self.subTest(hard=hard), tempfile.TemporaryDirectory() as name:
+                self.root = Path(name)
+                source = self._bundle()
+                value = verify_human_session_bundle(source).require_value()
+                manifest = DirectoryTransferManifest.from_directory(
+                    source, content_id=value.bundle_content_id, artifact_type="human-session-bundle")
+                store = ContentAddressedStore(self.root / "store")
+                target = store.objects / value.bundle_content_id
+                shutil.copytree(source, target)
+                payload = self._link_nested_payload(target, hard=hard)
+                before = payload.lstat().st_ino
+                verifier = Mock(side_effect=lambda directory, transfer:
+                                verify_human_session_bundle(directory).require_value())
+                result = DirectoryReceiver(store, promotion_verifier=verifier).receive(source, manifest)
+                self.assertEqual(result.status, "collision")
+                self.assertIsNone(result.directory)
+                verifier.assert_not_called()
+                self.assertEqual(payload.lstat().st_ino, before)
+                self.assertEqual(payload.read_bytes(), (self.root / "outside-payload").read_bytes())
+
+    def test_promotion_time_nested_link_target_is_preserved_and_rejected(self) -> None:
+        source = self._bundle()
+        value = verify_human_session_bundle(source).require_value()
+        manifest = DirectoryTransferManifest.from_directory(
+            source, content_id=value.bundle_content_id, artifact_type="human-session-bundle")
+        store = ContentAddressedStore(self.root / "store")
+        target = store.objects / value.bundle_content_id
+        created = []
+
+        def verify(directory: Path, transfer: DirectoryTransferManifest) -> None:
+            verify_human_session_bundle(directory).require_value()
+            self.assertFalse(created, "invalid existing target must not reach typed verifier")
+            shutil.copytree(directory, target)
+            payload = self._link_nested_payload(target)
+            created.append(payload.lstat().st_ino)
+
+        result = DirectoryReceiver(store, promotion_verifier=verify).receive(source, manifest)
+        self.assertEqual(result.status, "collision")
+        self.assertIsNone(result.directory)
+        payload = target / "export" / "decisions.jsonl"
+        self.assertTrue(payload.is_symlink())
+        self.assertEqual(payload.lstat().st_ino, created[0])
+
+    def test_nested_link_created_during_typed_verification_is_rejected(self) -> None:
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as name:
+                self.root = Path(name)
+                source = self._bundle()
+                value = verify_human_session_bundle(source).require_value()
+                manifest = DirectoryTransferManifest.from_directory(
+                    source, content_id=value.bundle_content_id, artifact_type="human-session-bundle")
+                store = ContentAddressedStore(self.root / "store")
+                target = store.objects / value.bundle_content_id
+                if existing:
+                    shutil.copytree(source, target)
+
+                def verify(directory: Path, transfer: DirectoryTransferManifest) -> None:
+                    verify_human_session_bundle(directory).require_value()
+                    self._link_nested_payload(directory)
+
+                result = DirectoryReceiver(store, promotion_verifier=verify).receive(source, manifest)
+                self.assertEqual(result.status, "quarantined")
+                self.assertIsNone(result.directory)
+                if existing:
+                    self.assertTrue((target / "export" / "decisions.jsonl").is_symlink())
+                else:
+                    self.assertFalse(target.exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation requires POSIX")
+    def test_unlisted_special_node_cannot_be_ignored_for_reuse(self) -> None:
+        source = self._bundle()
+        value = verify_human_session_bundle(source).require_value()
+        manifest = DirectoryTransferManifest.from_directory(
+            source, content_id=value.bundle_content_id, artifact_type="human-session-bundle")
+        store = ContentAddressedStore(self.root / "store")
+        target = store.objects / value.bundle_content_id
+        shutil.copytree(source, target)
+        extra = target / "export" / "unlisted-fifo"
+        os.mkfifo(extra)
+        before = extra.lstat().st_ino
+        result = DirectoryReceiver(store).receive(source, manifest)
+        self.assertEqual(result.status, "collision")
+        self.assertIsNone(result.directory)
+        self.assertEqual(extra.lstat().st_ino, before)
+
     def test_receiver_unsupported_primitive_is_not_success_or_replace(self) -> None:
         source = self._bundle()
         bundle = verify_human_session_bundle(source).require_value()
