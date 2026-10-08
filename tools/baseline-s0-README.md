@@ -113,6 +113,23 @@ and Driver close. `summary.json` preserves the explicit termination reason,
 release confirmation and errors. Unknown termination may have confirmed control
 release but remains unknown; it is not a successful native action claim.
 
+New runs also store the exact `episode.close()` result in the additive
+`native_exit` field of `run_end` and `summary.json`. The versioned wrapper binds
+the owning runtime and actual close-return time; its receipt preserves the
+Host's exit code/signal, `forced` flag and Host shutdown response without
+normalizing a forced or nonzero exit into a graceful one. A missing return is
+`not_reported`, a thrown close is `close_failed`, and an episode never returned
+by startup is `episode_not_returned`. Missing new native exit evidence fails the
+CLI; control release alone never proves process exit. These are closure metadata,
+not additional policy input or training steps.
+
+The dataset verifier accepts old runs with both fields absent and makes no exit
+claim for them; it does not backfill historical receipts. When the new receipt
+is present, summary/ledger, runtime, process tuple and shutdown identity must
+agree. Forced exit remains explicitly forced in derived provenance. Validating
+recorded exit structure/identity does not itself authenticate a producer or
+qualify a clean native shutdown; the owner inspects the exact native evidence.
+
 Tests exercise public choice/browse, exact capsule joins, corrupt/over-budget
 capsules, capability binding, unknown no-retry, Stop release and failure cleanup.
 The Stop check uses the SDK's `controlSnapshot()` strict decoder and canonical

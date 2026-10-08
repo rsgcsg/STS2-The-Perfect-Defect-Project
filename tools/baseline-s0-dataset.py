@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import sys
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
@@ -70,6 +71,86 @@ KNOWN_TYPES = frozenset(
     }
 )
 GROUPING_POLICY = "fresh_native_new_run_seed_conditioned_on_shared_unlock_preferences_template-v1"
+
+
+def verify_native_exit(
+    summary: dict[str, Any], end: dict[str, Any], episode: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Optional new close evidence; legacy absence remains absence, never backfilled."""
+    if "native_exit" not in summary and "native_exit" not in end:
+        return None
+    if (
+        "native_exit" not in summary
+        or "native_exit" not in end
+        or summary["native_exit"] != end["native_exit"]
+    ):
+        fail("native_exit_summary_binding")
+    value = object_fields(
+        end["native_exit"],
+        {"schema", "status", "runtime_instance_id", "closed_at", "receipt", "error"},
+        "s0_dataset.native_exit",
+    )
+    runtime_id = episode["host"]["runtime_instance_id"]
+    if (
+        value["schema"] != "sts2.baseline-s0/native-exit-receipt-1"
+        or value["runtime_instance_id"] != runtime_id
+    ):
+        fail("native_exit_identity")
+    if value["status"] != "reported" or value["error"] is not None:
+        fail("native_exit_not_observed")
+    try:
+        stamp = datetime.fromisoformat(
+            text(value["closed_at"], "native_exit_time").replace("Z", "+00:00")
+        )
+        if stamp.utcoffset() is None:
+            fail("native_exit_time")
+    except ValueError:
+        fail("native_exit_time")
+    receipt = object_fields(
+        value["receipt"],
+        {"code", "signal", "forced", "host_shutdown"},
+        "s0_dataset.native_exit.receipt",
+    )
+    code, signal = receipt["code"], receipt["signal"]
+    if (
+        code is not None and (type(code) is not int or not -(2**53 - 1) <= code <= 2**53 - 1)
+        or signal is not None and (not isinstance(signal, str) or not signal or len(signal) > 128)
+        or (code is None) == (signal is None)
+        or type(receipt["forced"]) is not bool
+    ):
+        fail("native_exit_process_tuple")
+    shutdown = receipt["host_shutdown"]
+    if (
+        not isinstance(shutdown, dict)
+        or not {"status", "response", "error"} <= set(shutdown)
+        or set(shutdown) - {"status", "response", "error", "http_status"}
+        or shutdown["status"] not in {"requested", "transport_error", "unavailable", "rejected"}
+        or shutdown["error"] is not None and not isinstance(shutdown["error"], str)
+        or "http_status" in shutdown
+        and (
+            type(shutdown["http_status"]) is not int
+            or not 100 <= shutdown["http_status"] <= 599
+        )
+        or shutdown["response"] is not None and not isinstance(shutdown["response"], dict)
+    ):
+        fail("native_exit_shutdown_shape")
+    response = shutdown["response"]
+    if (
+        response is not None
+        and "runtime_instance_id" in response
+        and response["runtime_instance_id"] != runtime_id
+    ):
+        fail("native_exit_shutdown_identity")
+    if shutdown["status"] == "requested" and (
+        not isinstance(response, dict)
+        or response.get("status") != "shutdown_requested"
+        or response.get("runtime_instance_id") != runtime_id
+        or shutdown.get("error") is not None
+        or type(shutdown.get("http_status")) is not int
+        or not 200 <= shutdown["http_status"] < 300
+    ):
+        fail("native_exit_shutdown_identity")
+    return value
 
 
 def fail(code: str) -> NoReturn:
@@ -642,6 +723,7 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
     episode_row = singleton(records, "episode_identity")
     episode = episode_row["payload"]
     runtime_id = text(episode["host"]["runtime_instance_id"], "runtime_id")
+    native_exit = verify_native_exit(summary, end, episode)
     handoff = singleton(records, "bootstrap_controller_handoff")["payload"]
     if (
         handoff.get("schema") != "sts2.host-runtime/reference-controller-handoff-1"
@@ -1070,6 +1152,8 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
             "raw_records": len(records),
         },
     }
+    if native_exit is not None:
+        identity["native_exit"] = native_exit
     return {
         "run_id": run_id,
         "source_group": semantic_hash(grouping),

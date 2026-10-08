@@ -412,7 +412,10 @@ test("control release must be freshly confirmed with exact runtime and null owne
   assert.equal(failedRequests, 1);
 });
 
-function lifecycleDependencies(trace, { failStop = false, unknown = true } = {}) {
+function lifecycleDependencies(trace, { failStop = false, unknown = true, exitReceipt = {
+  code: 0, signal: null, forced: false, host_shutdown: { status: "requested", http_status: 200,
+    response: { status: "shutdown_requested", runtime_instance_id: "runtime-1" }, error: null }
+}, failClose = false } = {}) {
   class Client {
     async textMenuV2Capabilities() { return { data: capabilities }; }
     async getFullTextMenuV2() { return full(base); }
@@ -438,7 +441,7 @@ function lifecycleDependencies(trace, { failStop = false, unknown = true } = {})
       trace.push("start"); assert.equal(options.characterId, "DEFECT"); assert.equal(options.ascension, 0);
       return { identity: { endpoint: "http://fixture", host: capabilities.host },
         async releaseController() { trace.push("handoff"); return { confirmed: true }; },
-        async close() { trace.push("episode-close"); } };
+        async close() { trace.push("episode-close"); if (failClose) throw new Error("close-failed"); return exitReceipt; } };
     },
     PlayerEnvironmentRestClient: Client, ConnectorPolicyClient: Connector, PolicyRuntime: Runtime,
     POLICY_RUNTIME_VERSION: "fixture", validatePolicyManifest: () => {},
@@ -456,6 +459,38 @@ test("owning episode is handed off, unknown stops without a second tick, Stop pr
   assert.equal(result.termination, "unknown_delivery_or_successor");
   assert.equal(result.offers, 1);
   assert.equal(result.stop_confirmed, true);
+  assert.equal(result.native_exit.status, "reported");
+  assert.equal(result.native_exit.receipt.code, 0);
+  assert.equal(result.native_exit.receipt.forced, false);
+});
+
+test("new runs persist the actual forced exit tuple separately from control release and policy offers", async t => {
+  const directory = await temporary(t), trace = [];
+  const receipt = { code: null, signal: "SIGTERM", forced: true, host_shutdown: {
+    status: "transport_error", response: null, error: "socket closed" } };
+  const result = await runS0({ mode: "collect", evidenceRoot: directory, seed: "1", browse: false },
+    lifecycleDependencies(trace, { exitReceipt: receipt }));
+  assert.deepEqual(result.native_exit.receipt, receipt);
+  assert.equal(result.native_exit.runtime_instance_id, "runtime-1");
+  const rows = (await readFile(path.join(result.directory, "records.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.deepEqual(rows.at(-1).payload.native_exit, result.native_exit);
+  assert.equal(result.stop_confirmed, true); // Released control never implies graceful process exit.
+  assert.equal(result.offers, 1);
+});
+
+test("missing or failed new close receipt is recorded without an invented native exit", async t => {
+  for (const [options, expected] of [[{ exitReceipt: null }, "not_reported"], [{ failClose: true }, "close_failed"]]) {
+    const directory = await temporary(t), trace = [];
+    await assert.rejects(runS0({ mode: "collect", evidenceRoot: directory, seed: "1", browse: false },
+      lifecycleDependencies(trace, options)), error => {
+        assert.equal(error.summary.native_exit.status, expected);
+        assert.equal(error.summary.native_exit.receipt, null);
+        assert.equal(error.summary.stop_confirmed, true);
+        assert.ok(error.summary.errors.length > 0);
+        return true;
+      });
+    assert.equal(trace.at(-1), "episode-close");
+  }
 });
 
 test("Stop failure still closes owning episode and does not claim release", async t => {
