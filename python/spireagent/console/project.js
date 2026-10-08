@@ -2334,16 +2334,20 @@ window.SpireProject = (() => {
         "runtime_exited",
         "stopped",
       ].includes(data.status);
+    const tickSafe = data.loaded === true && runtime?.lifecycle === "running" && !changing
+      && !data.observation_error && !runtime?.tainted && !runtime?.pending_request
+      && !["command_unknown","recovery_required","runtime_exited","stopped"].includes(data.status);
     const advanced = el("details"); advanced.dataset.preserve = "model-advanced"; advanced.append(el("summary", "高级测试方式"));
     for (const [action, label] of [
       ["shadow", "只评分（不操作）"],
       ["one_step", "执行一个决策"],
+      ["tick", "当前模式推进一次 Tick"],
       ["auto", "开始测试"],
       ["human", "暂停并接管"],
       ["stop", "结束测试"],
     ]) {
       const recovery = ["human", "stop"].includes(action);
-      (["shadow", "one_step"].includes(action) ? advanced : actions).append(
+      (["shadow", "one_step", "tick"].includes(action) ? advanced : actions).append(
         command(
           ctx,
           `model-command-${action}`,
@@ -2357,7 +2361,7 @@ window.SpireProject = (() => {
             await reload(ctx);
           },
           {
-            disabled: recovery ? !recoverable : !safe,
+            disabled: recovery ? !recoverable : action === "tick" ? !tickSafe : !safe,
             danger: action === "stop",
           },
         ),

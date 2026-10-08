@@ -1421,8 +1421,12 @@ class LocalModelService:
             )):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
             native = self.state.get("_native_intent")
-            if (route == "/mode" and body.get("mode") == "auto" and
-                    isinstance(native, dict) and native.get("intent_generation") == intent):
+            if (
+                route in {"/mode", "/tick"}
+                and not recovery
+                and isinstance(native, dict)
+                and native.get("intent_generation") == intent
+            ):
                 if self._native_authorizer is None:
                     raise BoundaryError("local_model", "native_intent_authorization_required")
                 self._native_authorizer()
@@ -1615,12 +1619,89 @@ class LocalModelService:
         with self.lock:
             return cast(dict[str, Any], json.loads(json.dumps(self.state)))
 
-    def command(self, action: str, *, request_id: str | None = None) -> dict[str, Any]:
-        if action not in MODES | {"stop", "reconcile"} or (
+    @staticmethod
+    def read_control_context(value: object) -> tuple[str, RuntimeControlBinding]:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"runtime_run_id", "runtime_instance_id", "recovery_epoch"}
+            or not NativeTasks._recording_identifier(value["runtime_run_id"])
+            or not NativeTasks._recording_identifier(value["runtime_instance_id"])
+        ):
+            raise BoundaryError("local_model", "invalid_model_control_context")
+        return value["runtime_run_id"], RuntimeControlBinding(
+            value["runtime_instance_id"], value["recovery_epoch"]
+        )
+
+    def control_context(self) -> dict[str, Any]:
+        """Readonly owned Runtime precondition; never infer ownership from a listening port."""
+        with self.lock:
+            client = self.client
+            generation = self.intent_generation
+            if client is None or not self.state["loaded"]:
+                raise BoundaryError("local_model", "model_not_loaded")
+        observed = client.request("/status")["status"]
+        binding = RuntimeControlBinding.from_environment(
+            client.request("/environment"), observed["run_id"]
+        )
+        NativeTasks.confirm_runtime(observed, binding.runtime_instance_id)
+        NativeTasks.model_context(observed, observed["run_id"], binding.recovery_epoch)
+        with self.lock:
+            self._require_intent(generation)
+            if self.client is not client or not self.state["loaded"]:
+                raise BoundaryError("local_model", "native_model_context_changed")
+        return {
+            "schema": "spireagent/local-model-control-context-1",
+            "runtime_run_id": observed["run_id"],
+            "runtime_instance_id": binding.runtime_instance_id,
+            "recovery_epoch": binding.recovery_epoch,
+        }
+
+    def command(
+        self,
+        action: str,
+        *,
+        request_id: str | None = None,
+        expected_context: dict[str, Any] | None = None,
+        native_context: dict[str, Any] | None = None,
+        native_authorizer: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        if action not in MODES | {"stop", "reconcile", "tick"} or (
             (action == "reconcile") != (request_id is not None)
         ):
             raise BoundaryError("local_model", "unsupported_local_command")
+        expected = (
+            self.read_control_context(expected_context) if expected_context is not None else None
+        )
+        if expected is not None and action not in {"auto", "shadow", "one_step", "tick"}:
+            raise BoundaryError("local_model", "invalid_model_control_context")
+        observed_generation = None
+        if expected is not None:
+            with self.lock:
+                self._require_model_admission()
+                if self.client is None or self.client.startup.get("run_id") != expected[0]:
+                    raise BoundaryError("local_model", "runtime_run_mismatch")
+                observed_generation = self.intent_generation
+            fresh = self.control_context()
+            if fresh["runtime_run_id"] != expected[0]:
+                raise BoundaryError("local_model", "runtime_run_mismatch")
+            if fresh["runtime_instance_id"] != expected[1].runtime_instance_id:
+                raise BoundaryError("local_model", "runtime_game_mismatch")
+            if fresh["recovery_epoch"] != expected[1].recovery_epoch:
+                raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
         with self.lock:
+            if observed_generation is not None and observed_generation != self.intent_generation:
+                raise BoundaryError("local_model", "native_model_context_changed")
+            if expected is not None and (
+                self.client is None or self.client.startup.get("run_id") != expected[0]
+            ):
+                raise BoundaryError("local_model", "runtime_run_mismatch")
+            if native_context is not None:
+                if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
+                    raise BoundaryError("local_model", "native_intent_context_required")
+                digest(native_context["request_id"], "local_model.native_request", length=32)
+                from spireagent.workbench.native_workbench_access import NativePair
+
+                NativePair.from_dict(native_context["binding"])
             if action == "reconcile":
                 observed = self.state.get("runtime")
                 pending = observed.get("pending_request") if isinstance(observed, dict) else None
@@ -1635,8 +1716,12 @@ class LocalModelService:
             else:
                 pending_request = None
             recovery = action in {"human", "stop", "reconcile"}
+            if self.closed:
+                raise BoundaryError("local_model", "service_closed")
             if not recovery:
                 self._require_model_admission()
+                if self.state["status"] in {"command_unknown", "recovery_required"}:
+                    raise BoundaryError("local_model", "previous_operation_requires_recovery")
             if not recovery and self.thread is not None and self.thread.is_alive():
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.client is None or not self.state["loaded"]:
@@ -1666,6 +1751,12 @@ class LocalModelService:
             client = self.client
             connector_endpoint = self.state.get("connector_endpoint")
             managed_environment = self.state.get("managed_environment")
+            if native_context is not None:
+                self.state["_native_intent"] = {
+                    **json.loads(json.dumps(native_context)),
+                    "intent_generation": intent,
+                }
+                self._native_authorizer = native_authorizer
 
             if action == "reconcile":
                 assert isinstance(pending_request, dict)
@@ -1677,7 +1768,7 @@ class LocalModelService:
             return self._begin(
                 action,
                 lambda: self._execute_command(
-                    action, intent, client, connector_endpoint, managed_environment
+                    action, intent, client, connector_endpoint, managed_environment, expected
                 ),
                 recovery=action in {"human", "stop"},
             )
@@ -1703,19 +1794,34 @@ class LocalModelService:
                               last_reconciliation={"request_id": result["request_id"],
                                                    "resolution": result["resolution"]})
 
-    def _execute_command(self, action: str, intent: int, client: RuntimeClient,
-                         connector_endpoint: Any, managed_environment: Any) -> None:
+    def _execute_command(
+        self,
+        action: str,
+        intent: int,
+        client: RuntimeClient,
+        connector_endpoint: Any,
+        managed_environment: Any,
+        expected: tuple[str, RuntimeControlBinding] | None = None,
+    ) -> None:
         assert client is not None
         self._require_intent(intent)
         # Observe exact instance before every mutation; never address a new
         # process that reused the same port after our owned process exited.
         observation = client.request("/status")["status"]
         binding = None
-        if action in {"shadow", "one_step", "auto"}:
+        if action in {"shadow", "one_step", "auto", "tick"}:
             self._require_intent(intent)
             binding = RuntimeControlBinding.from_environment(
                 client.request("/environment"), observation["run_id"]
             )
+            if expected is not None:
+                if observation["run_id"] != expected[0]:
+                    raise BoundaryError("local_model", "runtime_run_mismatch")
+                if binding.runtime_instance_id != expected[1].runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                if binding.recovery_epoch != expected[1].recovery_epoch:
+                    raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
+                binding = expected[1]
             native_context = self.state.get("_native_intent")
             if (isinstance(native_context, dict)
                     and native_context.get("intent_generation") == intent
@@ -1751,7 +1857,11 @@ class LocalModelService:
                 # Native Close cannot authorize a replacement Runtime or game.
                 latest = client.request("/status")["status"]
                 NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
-        if action == "stop":
+        if action == "tick":
+            runtime = self._send_control(client, "/tick", {"max_ticks": 1}, intent, binding)[
+                "status"
+            ]
+        elif action == "stop":
             runtime = self._send_control(client, "/stop", {}, intent)["status"]
         else:
             runtime = self._send_control(

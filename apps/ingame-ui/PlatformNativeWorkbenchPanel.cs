@@ -92,6 +92,12 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         Refresh(true);
     }
 
+    internal void OpenPage(string page)
+    {
+        if (page is not ("play" or "data")) throw new ArgumentException("native_page_not_supported");
+        Navigate(page, null);
+    }
+
     internal void Refresh(bool visible)
     {
         if (_disposed || !visible || _read is { IsCompleted: false }) return;
@@ -298,6 +304,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         string ownerContexts = string.Join(';', view.GetProperty("cards").EnumerateArray().Select(card => {
             JsonElement data = card.GetProperty("data");
             JsonElement? operation = Object(data, "operation") ?? (Object(data, "session") is JsonElement session ? Object(session, "operation") : null);
+            if (String(card, "owner") == "model_control")
+                return "model_control:" + String(data, "runtime_run_id") + ":" + String(data, "runtime_instance_id")
+                    + ":" + (data.TryGetProperty("recovery_epoch", out JsonElement epoch) ? epoch.GetRawText() : "");
             if (String(card, "owner") == "native_recording" && Object(data, "status") is JsonElement recording)
             {
                 _recordingContext = PlatformNativeWorkbenchCommands.RecordingContext(String(recording, "runtime_instance_id"), String(recording, "recording_session_id"));
@@ -393,6 +402,14 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                         if (item.Value.Type == "artifact" && !PlatformNativeWorkbenchPair.Hex(value, 64)) throw new InvalidOperationException("请选择完整对象编号。");
                         if (item.Value.Type is "selection" or "enum" && value.Length == 0) throw new InvalidOperationException("请选择服务声明的选项。");
                         body[item.Key] = selected;
+                    }
+                    if (action is "models.auto" or "models.shadow" or "models.one_step" or "models.tick")
+                    {
+                        JsonElement context = view.GetProperty("cards").EnumerateArray()
+                            .First(card => String(card, "owner") == "model_control").GetProperty("data");
+                        body["runtime_run_id"] = String(context, "runtime_run_id");
+                        body["runtime_instance_id"] = String(context, "runtime_instance_id");
+                        body["recovery_epoch"] = context.GetProperty("recovery_epoch").GetInt64();
                     }
                     if (action.StartsWith("recording.", StringComparison.Ordinal))
                     {

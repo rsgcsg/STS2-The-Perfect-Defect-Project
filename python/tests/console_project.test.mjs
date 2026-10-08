@@ -6710,3 +6710,18 @@ test("known recording success with failed marker cleanup retains a conservative 
   assert.equal(action(page,"native-recording-close").disabled,false);
   assert.equal(JSON.parse([...storage.values()][0]).pending,true);
 });
+
+
+test("browser advanced Tick preserves current mode through the same command endpoint", async () => {
+  const calls=[];
+  const env=setup({identity:{status:"signed_out"},view:"local-models",handler:async(url,options)=>{
+    if(url === "/api/local-models/status")return {status:"loaded",loaded:true,operation:null,
+      runtime:{mode:"shadow",controller:"released",lifecycle:"running",tainted:false}};
+    if(url === "/api/local-models/command"){calls.push(JSON.parse(options.body));return {status:"pending"};}
+    return modelHandler(url,options);
+  }});
+  const page=await env.render();assert.equal(action(page,"model-command-tick").disabled,false);
+  await action(page,"model-command-tick").onclick();
+  assert.deepEqual(calls,[{action:"tick"}]);
+  assert.ok(!env.calls.some(call=>call.url.includes("/mode")));
+});

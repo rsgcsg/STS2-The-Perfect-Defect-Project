@@ -21,6 +21,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         "datasets.preview", "datasets.human-preview", "datasets.publish", "training.start",
         "training.pause", "training.cancel", "training.reconcile", "training.resume", "evaluation.start",
         "models.export", "models.register", "models.download", "models.load", "models.takeover",
+        "models.auto", "models.shadow", "models.one_step", "models.tick",
         "models.human", "models.stop", "models.reconcile", "identity.login", "identity.poll", "identity.logout",
         "collection.consent", "collection.prepare", "collection.upload", "downloads.start"
     };
@@ -226,7 +227,7 @@ internal sealed class PlatformNativeWorkbenchCommands
         lock (_gate)
         {
             previousModel = _nativeModel;
-            if (action is "models.load" or "models.takeover") _nativeModel = new(connection, requestId);
+            if (action is "models.load" or "models.takeover" or "models.auto" or "models.shadow" or "models.one_step" or "models.tick") _nativeModel = new(connection, requestId);
         }
         try
         {

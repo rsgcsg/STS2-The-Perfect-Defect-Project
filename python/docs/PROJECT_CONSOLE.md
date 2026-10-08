@@ -109,8 +109,11 @@ Unknown Source outcomes keep the existing admission fence after client timeout;
 same-runtime refresh does not clear it. Accepted exact durable Close can release
 sequencing, and a typed recording-status query that verifies a new runtime before
 and after against Connector can make an old notice inapplicable without Source
-Start or rewriting the unknown. Shared browser/paired native Workbench is this
-scope; direct Policy diagnostics and external Runtime/SDK callers are separate.
+Start or rewriting the unknown. Shared browser/paired native Workbench owns product Source3 and model execution.
+The Mod's duplicate non-recovery Policy entries and Source3 Recorder controls now
+navigate explicitly to Workbench play/data. Legacy native Human recording and
+direct Human/Stop retain their original independent recovery boundary; external
+Runtime/SDK callers remain outside this coordination.
 
 The browser persists a pending confirmation marker before non-recovery Source
 POST. If browser storage cannot preserve it, the action rejects before submission.
@@ -468,6 +471,17 @@ It requires its original checkpoint/support files and CUDA/BF16 backend; a Mac d
 compatible by installing the UI. Current Full-Run offline views have no qualified online-input
 parity/adapter here, so **Full-Run online evaluation remains BLOCKED** until that separate owner
 work is implemented and qualified. Do not manufacture missing features or filter the native catalog.
+
+Native Workbench play exposes fixed Auto/Shadow/OneStep/Tick commands for its owned
+loaded model. The original run/game/recovery tuple comes from a readonly typed owner
+status/environment query; strict payload validation and fresh matching happen before
+admission and again before recorder preparation. The same captured tuple accompanies
+the effect. Unknown outcomes do not retry; pair renewal cannot clear the UI fence.
+Direct diagnostic UI keeps Human/Stop and status, and links ordinary execution to
+this same task owner. Tick is one bounded current-mode tick with no Mode POST;
+OneStep still performs Mode then at most one tick. Browser advanced Tick uses the
+existing local-model command endpoint and owner. Existing native/default, S1 and
+text-menu adapter, artifact, profile and backend limits are unchanged.
 
 A compatible local selection loads in Human mode first. Shadow, One-Step, Auto, Human and Stop
 use typed Platform Runtime requests; deliberate execution is distinct from loading. Cloud pages

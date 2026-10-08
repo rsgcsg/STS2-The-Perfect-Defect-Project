@@ -47,6 +47,10 @@ ACTIONS = frozenset(
         "models.download",
         "models.load",
         "models.takeover",
+        "models.auto",
+        "models.shadow",
+        "models.one_step",
+        "models.tick",
         "models.human",
         "models.stop",
         "models.reconcile",
@@ -76,6 +80,7 @@ _PRECONDITION_CODES = frozenset(
         "cumulative_limits_must_be_preserved",
         "cumulative_budget_exhausted",
         "previous_training_outcome_unknown",
+        "previous_operation_requires_recovery",
         "prior_writer_terminal_required",
         "writer_still_running",
         "writer_reconciliation_required",
@@ -85,6 +90,12 @@ _PRECONDITION_CODES = frozenset(
         "unknown_local_model",
         "new_experiment_precondition_failed",
         "native_model_intent_superseded",
+        "native_model_context_changed",
+        "invalid_model_control_context",
+        "invalid_runtime_control_binding",
+        "runtime_run_mismatch",
+        "runtime_game_mismatch",
+        "runtime_recovery_epoch_mismatch",
         "native_pending_request_required",
         "native_pending_request_changed",
         "invalid_native_recording_command",
@@ -230,7 +241,9 @@ class NativeWorkbenchApi:
             raise fail("invalid_native_query")
         if context_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", context_id):
             raise fail("invalid_native_context")
-        cards, items, controls = [], [], []
+        cards: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        controls: list[dict[str, Any]] = []
         total = 0
         app = self.app
         training = app.local_training.capabilities()
@@ -258,6 +271,40 @@ class NativeWorkbenchApi:
                 and isinstance(request_id, str)
                 and bool(request_id)
                 and pending.get("run_id") == runtime.get("run_id")
+            )
+
+            control: dict[str, Any] = (
+                self.card("model_control", app.models.control_context)
+                if session.get("loaded") and not loading
+                else {
+                    "owner": "model_control",
+                    "schema": None,
+                    "data": {"availability": "unavailable", "reason": "model_not_loaded"},
+                }
+            )
+            cards.append(control)
+            context = control["data"]
+            can_control = (
+                control.get("schema") == "spireagent/local-model-control-context-1"
+                and context.get("runtime_instance_id") == pair.runtime_instance_id
+                and session.get("status") not in {"command_unknown", "recovery_required"}
+                and isinstance(runtime, dict)
+                and not runtime.get("tainted")
+                and pending is None
+            )
+            controls.extend(
+                action(
+                    "models." + mode,
+                    label,
+                    enabled=can_control,
+                    reason=None if can_control else "owner_control_not_available",
+                )
+                for mode, label in (
+                    ("auto", "开始测试"),
+                    ("shadow", "只评分（不操作）"),
+                    ("one_step", "执行一个决策"),
+                    ("tick", "当前模式推进一次 Tick"),
+                )
             )
 
             controls.extend(
@@ -808,6 +855,18 @@ class NativeWorkbenchApi:
                 body["run_profile"],
                 native_context=context,
                 native_authorizer=authorize,
+            )
+        if action_id in {"models.auto", "models.shadow", "models.one_step", "models.tick"}:
+            exact(body, {"runtime_run_id", "runtime_instance_id", "recovery_epoch"})
+            app.models.read_control_context(body)
+            if body["runtime_instance_id"] != pair.runtime_instance_id:
+                raise fail("native_model_context_changed")
+            context = {"request_id": request_id, "binding": pair.to_dict()}
+            return app.models.command(
+                action_id.split(".", 1)[1],
+                expected_context=body,
+                native_context=context,
+                native_authorizer=lambda: app.native_access.authorize_intent(context),
             )
         if action_id in {"models.human", "models.stop"}:
             mode = "human" if action_id == "models.human" else "stop"
