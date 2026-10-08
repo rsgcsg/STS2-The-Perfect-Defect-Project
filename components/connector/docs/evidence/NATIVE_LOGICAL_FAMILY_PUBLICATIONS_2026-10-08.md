@@ -68,9 +68,22 @@ causal successor, terminal status, task end or success inference.
 
 ## Validation and non-claims
 
-Local exact-game native compilation passed with zero warnings and errors.
+Code candidate: `2ba75066c656365fa6a6a69e05390533d8ad1cb4`, after normal-merging
+shared Service/Hub dependency `1725f5ea164d62ae93b665451b69a06b38597758`
+at integration head `06f58d9bcbaf45aebf290789e9a0cb9e8fa98784`.
+
+Local exact-game native compilation and clean Release packaging passed with zero
+warnings and errors. Build provenance records a clean workspace at the code
+candidate and the exact game assembly above. Artifact SHA-256 is
+`9bc2add30ec0af5aa57ecbf3c4f3e6fa913f64d6d4e68b55a0f77f2d0a2ed7e3`,
+MVID `a4560508-afbb-4e46-aa94-436947b74c2f`; compiled source digest is
+`24ba7557479d1e36f64f41412ed41d0a7b8ff88c265fdce6564e77dd963fee25`.
 Five focused tests and all 477 Host tests passed with zero skips; 82 Mod JavaScript
-tests passed. Project routing, dependency-boundary and diff checks passed.
+tests passed. Project routing, Connector contract/document/boundary, component identity and
+diff checks passed. `project:closeout` completed. BOM validation still reports
+six test failures for inherited stale integration metadata across component
+source revision/tree/digest fields; no BOM or version file was changed here.
+The full root check is therefore not claimed green.
 Independent source review remains pending. Source tests separately
 check exact private/native method signatures and passive guarded composition;
 production Service→projector→store→Hub fixtures check immutable original captures,
