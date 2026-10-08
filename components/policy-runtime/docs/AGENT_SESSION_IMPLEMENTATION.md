@@ -11,7 +11,7 @@ descriptor-only scoped queries, consume/ack watermarks, cancellable Await,
 deadline/Stop, exact original-request reconciliation and typed append-only events.
 The details below are historical source checkpoints, not current missing work.
 
-Fresh canonical component check: TypeScript, 298 required tests, build and
+Initial `8ef88c13` canonical component check: TypeScript, 298 required tests, build and
 deterministic package check pass. The package check's installed CPU smoke covers
 legacy profiles and reports `game_contact:false`. Newly added external-fixture
 tests are separately enabled: producer export requires `E3_NATIVE_FIXTURE_OUTPUT`;
@@ -28,6 +28,33 @@ Remaining limits: the factory rejects `explicit_reset` and scoped opaque recover
 before Attach. Actual native source coverage and installed/runtime qualification
 belong to their exact owning packets. Independent Runtime source review, lead
 integration, versions/BOM/contract/package promotion and live gates remain pending.
+
+## Independent native review repairs
+
+The independent `8ef88c13` review reproduced three Runtime P2 defects: terminal
+publications were skipped despite carrying captured views; Human during fresh
+Restore validation closed the still-valid original child before the stale epoch
+was rejected; passive renewal queued behind a long Model/Await operation let an
+accepted 400ms subscription expire. The owning repair counts every public source
+view, checks Restore authorization before replacing the child, and renews through
+one separate bounded passive SDK flight. Human preserves that flight; Stop and
+failed initialization quiesce it before detach. Actual five-second Await and long
+Consume tests retain the short subscription, and delayed ignored-abort tests
+verify that neither Stop nor failed initialization permit a late SDK response to
+resurrect it. Failure cancels active work/releases control immediately and seals
+only after its queued gap is recorded.
+
+The original source, review reproductions and numerical initialization package
+remain unchanged in private `/tmp` snapshots. A new exact producer fact binds
+durable original submission intent to an SDK-hook-proven not-started outcome;
+generic fail-closed strings are not substituted for that fact. These repairs need
+their own coherent freeze and independent recheck. The fresh repair canonical
+check passes TypeScript, 315 required tests, build and deterministic package checks;
+the two external-fixture cases remain separately enabled. Numerical fresh-child
+Restore reproduces the same three scores and opaque payload, source advance once,
+stale/pending recovery rejection, and the retained original numerical child after
+Human during fresh validation. They do not
+promote `8ef88c13` checks or synthetic expiry probes into game/runtime qualification.
 
 ## Historical initial checkpoint
 

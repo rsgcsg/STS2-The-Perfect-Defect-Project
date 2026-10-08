@@ -25,6 +25,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   const m = JSON.parse(line);
   if (m.message_type === "consume") {
     if (behavior === "hang_consume") return;
+    if (behavior === "slow_consume") { setTimeout(() => report(m, m.input), 1000); return; }
     report(m, m.input); return;
   }
   if (m.message_type === "consume_ack") {

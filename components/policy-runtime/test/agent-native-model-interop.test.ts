@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { cp, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { nativeRuntimeFixture } from "./native-runtime-fixtures.js";
 
 const python = process.env.E3_NUMERICAL_AGENT_PYTHON;
@@ -28,5 +30,22 @@ describe("separately enabled actual numerical native Agent interoperability", ()
       const diagnostics = Buffer.concat((f.port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8");
       throw new Error(`numerical conformance phase failed: ${String(error)}\n${diagnostics}`, { cause: error });
     } finally { await f.close(); }
+    const terminal = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "shadow",
+      numericalAgent: { python: python!, pythonPath: pythonPath!, packagePath: packagePath! } });
+    terminal.source.eventKind = "terminal";
+    try {
+      expect((await terminal.runtime.tick()).type).toBe("awaited");
+      expect((await terminal.runtime.tick()).type).toBe("awaited");
+      expect(terminal.runtime.status().session).toMatchObject({ state_version: 1,
+        prefix: { consumed_publication_index: "1", omissions: { received_unconsumed_count: 0, gap: null } } });
+      await terminal.runtime.setMode("human"); const state = await terminal.runtime.exportAgentState();
+      expect(state.state.metadata.state_version).toBe(1);
+      expect(state.state.metadata.prefix.consumed_publication_index).toBe("1");
+      expect(terminal.source.requests.filter(r => /\/(actions|current)$/.test(r.path))).toHaveLength(0);
+      if (process.env.E3_NATIVE_ALTERNATIVE_OUTPUT) {
+        await terminal.runtime.stop(); await mkdir(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, { recursive: true });
+        await cp(terminal.evidence.directory, join(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, "actual-numerical-terminal"), { recursive: true });
+      }
+    } finally { await terminal.close(); }
   }, 30000);
 });

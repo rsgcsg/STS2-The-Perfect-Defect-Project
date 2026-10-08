@@ -412,6 +412,11 @@ existing CLI accepts it through `--manifest` and the same loopback HTTP service
 reports `agent-session-startup-1` and `agent-session-status-1`. One shared lifecycle
 owner provides serialization, epoch cancellation, wallet/deadline and Stop.
 Capabilities, existing registration and atomic Attach precede source Events.
+Every SDK-decoded source event carries a captured view or explicit missing fact.
+Its open `kind` classifies source/Await timing and does not filter input eligibility:
+full-reference consumption includes terminal and future scalar kinds, and missing/
+expired payloads record the original publication gap. Terminal kind does not
+infer task completion, win/loss, Close or reset.
 Full-reference observations use SDK full capture/catalog assembly; scoped-query
 observations preserve an explicit descriptor-only materialization fact. Current
 is a query view and cannot replace missing historical input or advance W without
@@ -428,6 +433,26 @@ fails. Programmed real-process/SDK/HTTP tests are source/test evidence only. The
 separately enabled numerical interoperability test requires an external exact
 Model package and cannot be inferred from a skipped fixture or a legacy package
 smoke check.
+
+Passive subscription renewal uses one separate abortable, bounded SDK flight
+outside the Model operation queue, scheduled from half the actual remaining TTL
+with a five-second maximum cadence. It uses only the actual received cursor and
+never acquires control, emits a new view or advances W. Human keeps the passive
+subscription. Stop and initialization failure abort and await the flight before
+detach, including a bounded transport that ignores abort. Renewal failure fences
+mutation, cancels active work and releases control immediately; the existing
+operation queue records its gap/handoff before sealing. It does not retry failure.
+
+After durable `native_submission_requested`, a `native_submission_not_started`
+event has exactly session context plus `{request_id,submission_epoch,reason}` and
+closes that original intent only when the owning SDK dispatch hook never ran.
+The context epoch may reflect a subsequent Human handoff; `submission_epoch`
+binds the original intent epoch. This is not a NativeResult, Receipt, Commit or
+controller/effect claim. A started POST with an unknown outcome cannot receive
+this closure. Human after controller-acquired evidence is checked before any
+intent is constructed; Human after the intent is recorded receives this explicit
+known-not-started fact. Restore rechecks its captured authorization immediately
+after fresh-runtime validation, before closing the original idle child.
 
 Runtime owner: maintain Agent contract/validators, strict bounded duplex child
 port and native branch in the existing Runtime/CLI/server lifecycle. Legacy tests

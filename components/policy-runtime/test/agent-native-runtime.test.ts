@@ -13,8 +13,110 @@ async function eventually(condition: () => boolean | Promise<boolean>, timeout =
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
+function sourceKind(f: Awaited<ReturnType<typeof nativeRuntimeFixture>>, kind: string, availability = "available") {
+  const route = f.source.route.bind(f.source);
+  f.source.route = (url, body) => {
+    const result = route(url, body);
+    if (url.pathname.endsWith("/events")) {
+      const batch = result.value as { events: { event: Record<string, unknown>; availability: string }[] };
+      for (const entry of batch.events) {
+        entry.event.kind = kind; entry.event.source_seam = "native_terminal_entry"; entry.event.source_phase = "summary_animation_started";
+        entry.availability = availability;
+        if (availability === "missing") { entry.event.capture_ref = null; entry.event.payload_reference = null; entry.event.missing_reason = "source_capture_missing"; }
+      }
+    }
+    return result;
+  };
+}
+async function archive(f: Awaited<ReturnType<typeof nativeRuntimeFixture>>, name: string) {
+  if (!process.env.E3_NATIVE_ALTERNATIVE_OUTPUT) return;
+  await f.runtime.stop();
+  await mkdir(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, { recursive: true });
+  await cp(f.evidence.directory, join(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, name), { recursive: true });
+}
 
 describe("native Agent branch with real SDK, HTTP transport and stdio process", () => {
+  it.each(["terminal", "future_publication_kind"])("consumes every %s source view once, including observed empty C, without inferring Close", async kind => {
+    const f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "shadow" }); sourceKind(f, kind);
+    try {
+      expect((await f.runtime.tick()).type).toBe("awaited");
+      expect((await f.runtime.tick()).type).toBe("awaited");
+      expect(f.runtime.status()).toMatchObject({ lifecycle: "running", controller: "released", session: { state_version: 1,
+        prefix: { consumed_publication_index: "1", omissions: { received_unconsumed_count: 0, gap: null } } } });
+      expect((await f.events()).filter(e => e.kind === "agent_consumed")).toHaveLength(1);
+      expect(f.source.requests.filter(r => /\/(current|actions)$/.test(r.path))).toHaveLength(0);
+      await archive(f, `${kind}-captured`);
+    } finally { await f.close(); }
+  });
+  it.each(["missing", "payload_expired"])("records the original terminal %s view as a gap without Current substitution", async availability => {
+    const f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "auto" }); sourceKind(f, "terminal", availability);
+    try {
+      expect((await f.runtime.tick()).type).toBe("not_admitted");
+      expect(f.runtime.status()).toMatchObject({ mode: "human", session: { state_version: 0, prefix: { omissions: {
+        gap: { reason: availability === "missing" ? "source_capture_missing" : "payload_expired", from_publication_index: "1", through_publication_index: "1" } } } } });
+      expect(f.source.requests.filter(r => /\/(current|read|catalog|actions)$/.test(r.path))).toHaveLength(0);
+      await expect(f.runtime.setMode("auto")).rejects.toMatchObject({ code: "runtime_source_gap" });
+      await archive(f, `terminal-${availability}`);
+    } finally { await f.close(); }
+  });
+  it("counts the terminal source view omitted by an explicit scoped-query consumer", async () => {
+    const f = await nativeRuntimeFixture({ child: "query", mode: "shadow" }); sourceKind(f, "terminal");
+    try {
+      expect((await f.runtime.tick()).type).toBe("shadow");
+      expect(f.runtime.status().session.prefix).toMatchObject({ consumed_publication_index: null,
+        omissions: { received_unconsumed_count: 1, gap: null } });
+      await archive(f, "scoped-terminal-omitted");
+    } finally { await f.close(); }
+  });
+  it("keeps the same original child and opaque state when Human cancels Restore during fresh-runtime validation", async () => {
+    const f = await nativeRuntimeFixture({ mode: "shadow" }); const capabilities = gate(); let replacement: NdjsonAgentSessionPort | undefined;
+    try {
+      await f.runtime.tick(); await f.runtime.setMode("human"); const saved = await f.runtime.exportAgentState();
+      const child = (f.port as unknown as { child: { pid: number }; closed: boolean }).child;
+      replacement = NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, f.manifestPath, "act"], f.manifest.adapter, f.manifest.limits, { byteBudget: f.port.byteBudget });
+      const before = f.source.requests.filter(r => r.path.endsWith("/capabilities")).length; f.source.capabilitiesGate = capabilities.promise;
+      const restoring = f.runtime.restoreAgentState(saved.state, replacement);
+      const rejected = expect(restoring).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
+      await eventually(() => f.source.requests.filter(r => r.path.endsWith("/capabilities")).length > before);
+      const human = f.runtime.setMode("human"); capabilities.release(); await rejected; await human; f.source.capabilitiesGate = null;
+      expect((f.port as unknown as { closed: boolean }).closed).toBe(false);
+      expect((f.runtime as unknown as { port: NdjsonAgentSessionPort }).port).toBe(f.port);
+      expect(f.runtime.status().session).toMatchObject({ state_version: 1, agent_state: "known" });
+      await f.runtime.setMode("shadow"); expect((await f.runtime.tick()).type).toBe("shadow");
+      expect((f.port as unknown as { child: { pid: number } }).child.pid).toBe(child.pid);
+      await f.runtime.setMode("human"); const after = await f.runtime.exportAgentState();
+      expect(after.state.payload.data_base64).toBe(saved.state.payload.data_base64);
+      await archive(f, "restore-human-original-retained");
+    } finally { capabilities.release(); replacement?.close(); await f.close(); }
+  });
+  it.each(["controller_acquired", "native_submission_requested"] as const)("records Human after %s at its actual original dispatch boundary", async kind => {
+    const f = await nativeRuntimeFixture({ mode: "auto" }); const paused = gate(), seen = gate();
+    const append = f.evidence.append.bind(f.evidence);
+    f.evidence.append = async (...args) => { const value = await append(...args); if (args[0] === kind) { seen.release(); await paused.promise; } return value; };
+    try {
+      const tick = f.runtime.tick(); await seen.promise;
+      const human = f.runtime.setMode("human"); paused.release(); await tick; await human;
+      expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(0);
+      const events = await f.events(), intent = events.find(e => e.kind === "native_submission_requested"), closure = events.find(e => e.kind === "native_submission_not_started");
+      if (kind === "controller_acquired") { expect(intent).toBeUndefined(); expect(closure).toBeUndefined(); }
+      else {
+        expect(closure.payload).toMatchObject({ request_id: intent.payload.request_id, submission_epoch: intent.payload.recovery_epoch,
+          recovery_epoch: f.runtime.status().session.recovery_epoch, reason: "runtime_recovery_epoch_mismatch" });
+      }
+      await archive(f, kind === "controller_acquired" ? "human-pre-intent" : "original-intent-not-started");
+    } finally { paused.release(); await f.close(); }
+  });
+  it("preserves the passive session when Human fences an already written Close directive", async () => {
+    const f = await nativeRuntimeFixture({ child: "close", mode: "shadow" }); const paused = gate(), seen = gate();
+    const append = f.evidence.append.bind(f.evidence);
+    f.evidence.append = async (...args) => { const result = await append(...args); if (args[0] === "agent_directive") { seen.release(); await paused.promise; } return result; };
+    try {
+      const tick = f.runtime.tick(); await seen.promise; const human = f.runtime.setMode("human"); paused.release(); await tick; await human;
+      expect(f.runtime.status()).toMatchObject({ lifecycle: "running", mode: "human", session: { state_version: 1, agent_state: "known" } });
+      expect(f.source.requests.filter(r => r.path.endsWith("/detach"))).toHaveLength(0);
+      await archive(f, "human-fenced-close");
+    } finally { paused.release(); await f.close(); }
+  });
   it("ends an unattested child startup at the active autonomy deadline", async () => {
     const start = performance.now();
     await expect(nativeRuntimeFixture({ child: "hang_ready", mode: "auto", deadlineMs: 100 })).rejects.toThrow("autonomy_budget_exhausted");

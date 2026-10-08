@@ -22,6 +22,8 @@ export interface AgentRuntimeEventPayloads {
   agent_directive: Context & { output: AgentDirectiveOutput };
   native_submission_requested: Context & { request_id: string; basis_acquisition_id: string; snapshot_id: string;
     action_id: string; catalog_digest: string; run_id: string; runtime_instance_id: string };
+  /** Original durable intent never reached the owning SDK dispatch hook. */
+  native_submission_not_started: Context & { request_id: string; submission_epoch: number; reason: string };
   native_result: Context & { result: NativeLogicalResult };
   native_request_pending: Context & { original: AgentPendingRequest };
   native_request_reconciled: Context & { original: AgentPendingRequest; resolution: AgentReconcileResolution; result: NativeLogicalResult | null };

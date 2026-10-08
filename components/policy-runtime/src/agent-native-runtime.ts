@@ -83,6 +83,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private budgetFenced = false;
   private budgetHandoff: Promise<void> | null = null;
   private renewalTimer: ReturnType<typeof setTimeout> | undefined;
+  private renewalGeneration = 0;
+  private renewalFlight: Promise<void> | null = null;
+  private renewalAbort: AbortController | null = null;
+  private renewalHandoff: { gap: Record<string, unknown>; released: Promise<void> } | null = null;
   private releaseInFlight = 0;
   private renewalFailed = false;
 
@@ -129,12 +133,13 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (attached.status !== "attached" || !attached.subscription) throw new AgentSessionError(`native_attach_${attached.status}`);
       this.cursor = attached.subscription.starting_cursor;
       this.noteCursor(this.cursor, 0);
+      this.scheduleRenewal();
       await this.emit("native_session_attached", { ...this.context(), subscription: attached.subscription, environment: this.environment });
       active.signal.throwIfAborted();
-      this.scheduleRenewal();
     } catch (error) {
       this.owner.cancelActive(error); this.port.close();
       await this.release().catch(() => undefined);
+      await this.quiesceRenewal();
       if (this.native.subscription) await this.native.detach().catch(() => undefined);
       this.owner.clearDeadline();
       throw error;
@@ -212,6 +217,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         this.requireWatermark(output);
         this.lastDirective = output.directive;
         await this.emit("agent_directive", { ...this.context(), output });
+        this.checkActive(epoch, active.signal);
         switch (output.directive.type) {
           case "act": return await this.act(output, epoch, active.signal);
           case "await": {
@@ -280,8 +286,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
 
   async stop(): Promise<AgentRuntimeStatus> {
     if (!this.stopped) { this.stopping = true; this.revoke("stopped"); }
+    const quiet = this.quiesceRenewal();
     const release = this.release().catch(() => undefined);
-    return this.owner.serialize(async () => { await release; await this.finishStop(); return this.status(); });
+    return this.owner.serialize(async () => { await release; await quiet; await this.finishStop(); return this.status(); });
   }
 
   async exportAgentState() {
@@ -308,7 +315,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (replacement.byteBudget !== this.budget) throw new AgentSessionError("agent_shared_byte_budget_mismatch");
       if (canonicalStateMetadata(state.metadata) !== canonicalStateMetadata(authorization.expected_metadata))
         throw new AgentSessionError("state_durable_prefix_mismatch");
-      await this.freshRuntime();
+      try {
+        await this.freshRuntime();
+        authorization.assertCurrent();
+      } catch (error) { replacement.close(); throw error; }
       this.port.close();
       const active = new AbortController(); this.owner.active = { controller: active };
       try {
@@ -335,6 +345,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.tainted) throw new RuntimeControlPreconditionError("runtime_tainted", 409);
     if (this.agentUncertain) throw new RuntimeControlPreconditionError("runtime_agent_state_uncertain", 409);
     if (this.controllerStatus() === "unknown") throw new RuntimeControlPreconditionError("runtime_controller_unresolved", 409);
+    if (this.renewalFailed) throw new RuntimeControlPreconditionError("runtime_subscription_unavailable", 409);
     if (this.ledger.prefix().omissions.gap !== null) throw new RuntimeControlPreconditionError("runtime_source_gap", 409);
   }
   private revoke(reason: "human_recovery" | "stopped"): void {
@@ -396,10 +407,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.checkActive(epoch, signal);
       if (batch.gap) { await this.gap(batch.gap); throw new AgentSessionError("native_source_gap"); }
       for (const original of batch.events) {
-        const observation = original.event.kind === "observation";
-        this.noteCursor(original.event.cursor, observation ? 1 : 0);
+        // Every public source entry carries a captured view or its explicit
+        // missing fact. Open event kind classifies Await, not input eligibility.
+        this.noteCursor(original.event.cursor, 1);
         await this.emit("native_event_received", { ...this.context(), original, received_cursor: original.event.cursor });
-        if (!observation || this.manifest.input.history_mode !== "full_reference") continue;
+        if (this.manifest.input.history_mode !== "full_reference") continue;
         if (original.availability !== "available" || original.event.payload_reference === null) {
           await this.gap({ reason: original.availability === "missing" ? original.event.missing_reason ?? "required_capture_missing" : "payload_expired",
             from_publication_index: original.event.publication_index, through_publication_index: original.event.publication_index });
@@ -571,13 +583,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.mode === "shadow") return { type: "shadow", status: this.status() };
     await this.controller.credentials(); this.checkActive(epoch, signal);
     await this.emit("controller_acquired", { ...this.context(), controller: "held" });
+    this.checkActive(epoch, signal);
     const requestId = `request-${randomUUID()}`;
     await this.emit("native_submission_requested", { ...this.context(), request_id: requestId,
       basis_acquisition_id: a.acquisition_id, snapshot_id: String(a.observation.snapshot_id), action_id: action.action_id,
       catalog_digest: String(descriptor.digest), run_id: this.options.evidence.runId, runtime_instance_id: String(a.capture.session && (a.capture.session as Record<string, unknown>).runtime_instance_id) });
-    this.checkActive(epoch, signal);
     let lookup, started = false;
     try {
+      this.checkActive(epoch, signal);
       // Once offered to the owning SDK, Human/deadline cannot rewrite its real
       // original terminal outcome. The bounded transport owns this submit wait.
       lookup = await this.native.submit({ requestId, expectedSnapshotId: String(a.observation.snapshot_id), actionId: action.action_id,
@@ -588,6 +601,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         } });
     } catch (error) {
       if (!started) {
+        await this.emit("native_submission_not_started", { ...this.context(), request_id: requestId,
+          submission_epoch: epoch, reason: errorMessage(error) });
         await this.handoff(`native_submit_not_started:${errorMessage(error)}`);
         return { type: "not_admitted", reason: "native_submit_not_started", status: this.status() };
       }
@@ -660,22 +675,68 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     }).catch(error => { this.tainted = true; this.taintReason = `autonomy_budget_handoff_failed:${errorMessage(error)}`; });
   }
   private scheduleRenewal(): void {
-    if (this.stopped || this.stopping || this.renewalFailed || !this.native.subscription) return;
-    const ms = Math.max(1, Math.min(5000, Date.parse(this.native.subscription.expires_at) - Date.now() - 1000));
+    if (this.stopped || this.stopping || this.renewalFailed || this.renewalFlight || this.renewalTimer !== undefined || !this.native.subscription) return;
+    const remaining = Date.parse(this.native.subscription.expires_at) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) { this.failRenewal({ reason: "subscription_expired" }); return; }
+    const generation = this.renewalGeneration;
+    // Renew halfway through the actual remaining TTL, capped for ordinary long
+    // subscriptions. A short valid TTL must not create a fixed-margin 1ms loop.
+    const ms = Math.max(1, Math.min(5000, Math.floor(remaining / 2)));
     this.renewalTimer = setTimeout(() => {
-      void this.owner.serialize(async () => {
-        if (this.stopped || this.stopping || this.cursor === null) return;
-        const result = (await this.native.renew(this.cursor)).data;
-        if (result.status !== "renewed" || result.gap) {
-          this.renewalFailed = true;
-          await this.gap(result.gap ?? { reason: `subscription_${result.status}` });
-        }
-      }).catch(async error => { this.renewalFailed = true; await this.failClosed(`native_renew_failed:${errorMessage(error)}`); }).finally(() => this.scheduleRenewal());
+      this.renewalTimer = undefined;
+      if (generation !== this.renewalGeneration || this.stopped || this.stopping || this.cursor === null) return;
+      const cursor = this.cursor, controller = new AbortController();
+      this.renewalAbort = controller;
+      const timeout = setTimeout(() => controller.abort("native_renew_timeout"), Math.max(1,
+        Math.min(5000, this.manifest.limits.agent_timeout_ms, Date.parse(this.native.subscription!.expires_at) - Date.now())));
+      timeout.unref?.();
+      // Passive resource renewal has no Model/ledger/action work. It cannot sit
+      // behind a long owned Consume/Next/Await in the operational queue.
+      const flight: Promise<void> = (async () => {
+        const result = (await this.native.renew(cursor, controller.signal)).data;
+        if (generation !== this.renewalGeneration || this.stopped || this.stopping) return;
+        if (result.status !== "renewed" || result.gap) this.failRenewal(result.gap ?? { reason: `subscription_${result.status}` });
+      })().catch(error => {
+        if (generation === this.renewalGeneration && !this.stopped && !this.stopping)
+          this.failRenewal({ reason: `native_renew_failed:${errorMessage(error)}` });
+      }).finally(() => {
+        clearTimeout(timeout);
+        if (this.renewalAbort === controller) this.renewalAbort = null;
+        if (this.renewalFlight === flight) this.renewalFlight = null;
+        if (generation === this.renewalGeneration) this.scheduleRenewal();
+      });
+      this.renewalFlight = flight;
     }, ms);
     this.renewalTimer.unref?.();
   }
+  private failRenewal(gap: Record<string, unknown>): void {
+    if (this.renewalFailed || this.stopped || this.stopping) return;
+    this.renewalFailed = true; this.owner.advanceEpoch();
+    this.owner.cancelActive("native_subscription_unavailable"); this.mode = "human"; this.owner.end("mode_changed");
+    const released = this.release().catch(() => undefined);
+    this.renewalHandoff = { gap, released };
+    // The network flight never waits on this queue: Stop may itself await the
+    // flight before detach. New mutation is already fenced above.
+    void this.owner.serialize(() => this.flushRenewalFailure())
+      .catch(error => { this.tainted = true; this.taintReason = `native_renew_handoff_failed:${errorMessage(error)}`; });
+  }
+  private async flushRenewalFailure(): Promise<void> {
+    const pending = this.renewalHandoff;
+    if (!pending) return;
+    this.renewalHandoff = null;
+    await pending.released; this.ledger.recordGap(pending.gap);
+    await this.emit("native_gap", { ...this.context(), gap: pending.gap });
+    await this.emit("handoff_to_human", { ...this.context(), reason: "native_source_gap",
+      autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
+  }
+  private async quiesceRenewal(): Promise<void> {
+    this.renewalGeneration += 1;
+    if (this.renewalTimer !== undefined) { clearTimeout(this.renewalTimer); this.renewalTimer = undefined; }
+    this.renewalAbort?.abort("native_passive_stopped");
+    await this.renewalFlight;
+  }
   private stateAuthorization(restore = false) {
-    if (this.stopped || this.stopping || this.tainted || this.pending || (!restore && this.agentUncertain)
+    if (this.stopped || this.stopping || this.tainted || this.pending || this.renewalFailed || (!restore && this.agentUncertain)
       || this.manifest.input.state_recovery.mode !== "opaque" || this.lastAckMetadata === null
       || this.ledger.prefix().omissions.gap !== null || this.ledger.prefix().omissions.received_unconsumed_count !== 0)
       throw new AgentSessionError("state_requires_known_durable_prefix");
@@ -691,7 +752,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private async finishStop(): Promise<void> {
     if (this.stopped) return;
     this.stopping = true; this.owner.end("stopped");
-    if (this.renewalTimer !== undefined) clearTimeout(this.renewalTimer);
+    await this.quiesceRenewal();
+    await this.flushRenewalFailure();
     await this.release().catch(() => undefined);
     if (this.pending) { this.tainted = true; this.taintReason = "stopped_with_unresolved_request"; }
     this.mode = "human";

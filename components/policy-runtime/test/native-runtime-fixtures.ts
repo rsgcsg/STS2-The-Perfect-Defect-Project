@@ -35,8 +35,13 @@ export class SyntheticNativeHttp {
   waitGate: Promise<void> | null = null;
   submitGate: Promise<void> | null = null;
   acquireGate: Promise<void> | null = null;
+  capabilitiesGate: Promise<void> | null = null;
+  renewGate: Promise<void> | null = null;
+  renewInFlight = 0;
+  maxRenewInFlight = 0;
+  eventKind = "observation";
   generation = 0;
-  constructor(count = 3, status: NativeLogicalObservation["status"] = "interactive") {
+  constructor(count = 3, status: NativeLogicalObservation["status"] = "interactive", readonly retentionMs = 120000) {
     this.actions = Array.from({ length: count }, (_, i) => ({ action_id: `action-${i}`, kind: "native_input", verb: "choose",
       label: `public choice ${i}`, subject_referent_id: `public-${i}`, arguments: [], effect_domain: "native" }));
     this.observation.status = status;
@@ -51,8 +56,9 @@ export class SyntheticNativeHttp {
     this.capabilities.game.modset.status = "exact"; this.capabilities.game.modset.fingerprint = "f".repeat(64);
     this.capabilities.game.modset.loaded_mod_ids = ["fixture-mod"];
     this.capabilities.supported_methods = [...METHODS];
+    this.capabilities.limits.retention_ms = retentionMs;
     this.subscription.starting_cursor = "cursor-0";
-    this.subscription.expires_at = new Date(Date.now() + 120000).toISOString();
+    this.subscription.expires_at = new Date(Date.now() + retentionMs).toISOString();
   }
   rehash(): void {
     this.bytes = Buffer.from(JSON.stringify(this.observation)); this.capture.byte_count = this.bytes.length;
@@ -64,7 +70,11 @@ export class SyntheticNativeHttp {
       const chunks: Buffer[] = []; for await (const part of request) chunks.push(Buffer.from(part));
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) as JsonObject : {};
       const url = new URL(request.url!, "http://127.0.0.1"); this.requests.push({ path: url.pathname, body });
+      const renewing = url.pathname.endsWith("/renew");
+      if (renewing) { this.renewInFlight += 1; this.maxRenewInFlight = Math.max(this.maxRenewInFlight, this.renewInFlight); }
       try {
+        if (url.pathname.endsWith("/capabilities") && this.capabilitiesGate) await this.capabilitiesGate;
+        if (url.pathname.endsWith("/renew") && this.renewGate) await this.renewGate;
         if (url.pathname.endsWith("/controller/acquire") && this.acquireGate) await this.acquireGate;
         if (url.pathname.endsWith("/await") && this.waitGate) await this.waitGate;
         if (url.pathname.endsWith("/actions") && this.submitGate) await this.submitGate;
@@ -73,6 +83,7 @@ export class SyntheticNativeHttp {
         const wire = Buffer.from(JSON.stringify(result.value));
         response.writeHead(result.status ?? 200, { "content-type": "application/json", "content-length": wire.length }); response.end(wire);
       } catch (error) { response.writeHead(500); response.end(JSON.stringify({ error: String(error) })); }
+      finally { if (renewing) this.renewInFlight -= 1; }
     });
     this.server.listen(0, "127.0.0.1"); await once(this.server, "listening");
     const address = this.server.address(); if (!address || typeof address === "string") throw new Error("synthetic HTTP listener unavailable");
@@ -88,10 +99,13 @@ export class SyntheticNativeHttp {
         client_session_id: "client-fixture", expires_at: new Date(Date.now() + 60000).toISOString() } } };
     if (op === "capabilities") return { value: this.capabilities };
     if (op === "attach") { this.subscription.eager_scope = body.eager_scope; this.subscription.delivery_mode = body.delivery_mode;
+      this.subscription.expires_at = new Date(Date.now() + this.retentionMs).toISOString();
       return { value: { schema: native.attach!.schema, status: "attached", subscription: this.subscription } }; }
     if (op === "events") {
       const event = structuredClone(((native.event_batch!.events as unknown as { event: Record<string, unknown> }[])[0]!).event);
-      Object.assign(event, { cursor: "cursor-1", publication_index: "1", source_index: "1", source_phase: "initial_observation",
+      Object.assign(event, { cursor: "cursor-1", publication_index: "1", source_index: "1", kind: this.eventKind,
+        source_phase: this.eventKind === "terminal" ? "summary_animation_started" : "initial_observation",
+        ...(this.eventKind === "terminal" ? { source_seam: "native_terminal_entry" } : {}),
         payload_reference: this.capture, capture_ref: this.capture.capture_id });
       return { value: { schema: native.event_batch!.schema, events: body.after_cursor === "cursor-0" ? [{ event, availability: "available" }] : [],
         next_cursor: "cursor-1", high_watermark: "cursor-1", retained_start_cursor: "cursor-0", gap: null } };
@@ -119,8 +133,14 @@ export class SyntheticNativeHttp {
     if (op === "resolve") return { value: { schema: "sts2.player-environment/native-logical-resolve-1", status: "unique", action: this.actions[0] ?? null } };
     if (op === "release") return { value: { schema: "sts2.player-environment/native-logical-release-1", input_profile: "native-logical-v1", status: "released",
       retention_handle_id: body.retention_handle_id, released: true, reason: null } };
-    if (op === "renew") return { value: { ...native.renew!, subscription: { ...this.subscription, expires_at: new Date(Date.now() + 120000).toISOString() },
-      next_cursor: body.after_cursor, high_watermark: "cursor-1", retained_start_cursor: "cursor-0" } };
+    if (op === "renew") {
+      if (Date.now() >= Date.parse(String(this.subscription.expires_at))) return { value: {
+        schema: "sts2.player-environment/native-logical-renew-1", input_profile: "native-logical-v1", status: "subscription_expired",
+        subscription: null, next_cursor: null, high_watermark: null, retained_start_cursor: null, gap: null, reason: "subscription_expired" } };
+      this.subscription.expires_at = new Date(Date.now() + this.retentionMs).toISOString();
+      return { value: { ...native.renew!, subscription: this.subscription,
+        next_cursor: body.after_cursor, high_watermark: "cursor-1", retained_start_cursor: "cursor-0" } };
+    }
     if (op === "await") return { value: { schema: native.await!.schema, status: "timeout", event: null, gap: null, reason: null } };
     if (op === "cancel_wait") return { value: { ...native.cancel_wait!, wait_id: body.wait_id, subscription_id: body.subscription_id } };
     if (op === "detach") return { value: { ...native.detach!, subscription_id: body.subscription_id } };
@@ -143,9 +163,12 @@ export class SyntheticNativeHttp {
 
 export async function nativeRuntimeFixture(options: { count?: number; status?: NativeLogicalObservation["status"]; child?: string; mode?: "human" | "shadow" | "one_step" | "auto";
   deadlineMs?: number; maxPolicyCalls?: number; gapPolicy?: "handoff" | "explicit_reset";
+  retentionMs?: number;
+  beforeInitialize?: (value: { source: SyntheticNativeHttp; port: NdjsonAgentSessionPort; evidence: AgentRunEvidence;
+    environment: PlayerEnvironmentRestClient }) => void;
   numericalAgent?: { python: string; pythonPath: string; packagePath: string } } = {}) {
   const root = await mkdtemp(join(tmpdir(), "native-runtime-source-"));
-  const source = new SyntheticNativeHttp(options.count, options.status); await source.start();
+  const source = new SyntheticNativeHttp(options.count, options.status, options.retentionMs); await source.start();
   let manifest = structuredClone(agent);
   manifest.support.interaction_kinds = ["*"]; manifest.support.action_verbs = ["*"];
   manifest.requirements.required_methods = [...METHODS];
@@ -174,7 +197,9 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
     manifest.adapter, manifest.limits, { env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, manifestPath, options.child ?? "act"], manifest.adapter, manifest.limits);
   let runtime: NativeAgentRuntimeOwner;
-  try { runtime = await PolicyRuntime.forAgent({ manifest, environment: new PlayerEnvironmentRestClient(source.address, 2000), port, evidence,
+  const environment = new PlayerEnvironmentRestClient(source.address, 2000);
+  try { options.beforeInitialize?.({ source, port, evidence, environment });
+    runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
     mode: options.mode ?? "human", runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) },
     autoBudget: { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }
   catch (error) {
