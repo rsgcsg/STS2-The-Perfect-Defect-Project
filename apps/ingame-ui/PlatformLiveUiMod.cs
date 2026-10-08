@@ -172,6 +172,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private Button _externalWorkbenchButton = null!;
     private PlatformNativeWorkbenchPanel _nativeWorkbench = null!;
     private bool _policyCommandPending;
+    private bool _nativeRuntimeRecoveryRequired;
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
@@ -1096,7 +1097,7 @@ internal sealed class PlatformLivePanel : IDisposable
             string expected = _displayedPolicyRunId
                 ?? throw new InvalidOperationException("请先加载模型并读取其状态。");
             PlatformPolicyBinding? binding = null;
-            PolicyRuntimeStatus response = await _policyCommands.RunAsync(
+            IPlatformRuntimeStatus response = await _policyCommands.RunAsync(
                 expected, command,
                 async () => {
                     string game = STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
@@ -1182,6 +1183,9 @@ internal sealed class PlatformLivePanel : IDisposable
         _connection.Text =
             $"Connector: {status.TransportStatus} | Policy Runtime: {status.PolicyRuntimeTransportStatus} | observed {status.ObservedAt:HH:mm:ss} UTC";
         string policyReason = PlatformLiveLayout.PolicyUnavailableReason(status);
+        _nativeRuntimeRecoveryRequired = status.PolicyRuntime is NativeAgentRuntimeStatus native
+            && (native.Tainted || native.PendingRequest is not null || native.Controller == "unknown"
+                || native.Session?.AgentState == "uncertain");
         SetPolicyControlsAvailable(status.PolicyRuntime != null, policyReason);
         if (status.PolicyRuntime != null)
             _mode = ParseRuntimeMode(status.PolicyRuntime.Mode);
@@ -1192,7 +1196,7 @@ internal sealed class PlatformLivePanel : IDisposable
             _compactSummary.Text = $"{status.PolicyRuntime?.Mode ?? "unavailable"} · {status.PolicyRuntime?.Controller ?? "unavailable"}";
             _compactRecent.Text = status.PolicyRuntime == null
                 ? "Policy Runtime unavailable.\nHuman control remains available in the game."
-                : $"{status.PolicyRuntime.Policy.PolicyId}\n{status.PolicyRuntime.LastDecision?.BoundActionLabel ?? "No decision yet"}\nReceipt: {status.Receipt.Status}";
+                : CompactRuntimeDetails(status);
         }
         RefreshActionFeed(status.Recording);
         ApplyRecordingAvailability(status.Recording);
@@ -1204,14 +1208,14 @@ internal sealed class PlatformLivePanel : IDisposable
         foreach ((PlatformCommandMode mode, Button button) in _modeButtons)
         {
             button.Disabled = mode == PlatformCommandMode.Human
-                ? !(available || uncertain) : !available || uncertain;
+                ? !(available || uncertain) : !available || uncertain || _nativeRuntimeRecoveryRequired;
             button.TooltipText = available
                 ? button.TooltipText
                 : $"Unavailable: {reason ?? "Policy Runtime is unavailable."}";
         }
         _compactHumanButton.Disabled = !(available || uncertain);
         _endTestButton.Disabled = !(available || uncertain);
-        _tickButton.Disabled = !available || uncertain;
+        _tickButton.Disabled = !available || uncertain || _nativeRuntimeRecoveryRequired;
         _tickButton.TooltipText = uncertain
             ? "上次操作未确认，请先暂停并接管或结束测试。"
             : available ? "Ask Policy Runtime for one bounded tick; action authority remains Connector/Runtime."
@@ -1402,16 +1406,37 @@ internal sealed class PlatformLivePanel : IDisposable
         $"Connector: {status.TransportStatus}",
         $"Policy Runtime: {status.PolicyRuntimeTransportStatus}",
         $"Mode: {status.PolicyRuntime?.Mode ?? "unavailable"}",
-        $"Policy: {status.PolicyRuntime?.Policy.PolicyId ?? "unavailable"} {status.PolicyRuntime?.Policy.PolicyVersion ?? ""}".TrimEnd(),
+        RuntimeIdentityLabel(status.PolicyRuntime),
         $"Lifecycle: {status.PolicyRuntime?.Lifecycle ?? "unavailable"}",
-        $"Last decision: {ShortValue(status.PolicyRuntime?.LastDecision?.DecisionId, "none")}",
-        $"Receipt: {status.Receipt.Status}",
+        $"Last operation: {RuntimeOperationLabel(status.PolicyRuntime)}",
+        $"{(status.PolicyRuntime is NativeAgentRuntimeStatus ? "Result" : "Receipt")}: {status.Receipt.Status}",
         $"Interaction: {status.Snapshot?.Interaction.Kind ?? "none"}",
         $"Selected: {(status.Selected.Count == 0 ? "none" : string.Join(", ", status.Selected.Select(item => item.Label)))}",
         status.PolicyRuntime == null
             ? $"Unavailable: {PlatformLiveLayout.PolicyUnavailableReason(status)}"
             : $"Tainted: {status.PolicyRuntime.Tainted}"
     });
+
+    private static string RuntimeIdentityLabel(IPlatformRuntimeStatus? status) => status switch
+    {
+        NativeAgentRuntimeStatus native => $"Agent: {native.Agent.AgentId} {native.Agent.AgentVersion}",
+        PolicyRuntimeStatus policy => $"Policy: {policy.Policy.PolicyId} {policy.Policy.PolicyVersion}",
+        _ => "Agent: unavailable"
+    };
+
+    private static string RuntimeOperationLabel(IPlatformRuntimeStatus? status) => status switch
+    {
+        NativeAgentRuntimeStatus native => native.LastResult?.RequestId ?? native.LastObservation?.AcquisitionId ?? "none",
+        PolicyRuntimeStatus policy => ShortValue(policy.LastDecision?.DecisionId, "none"),
+        _ => "none"
+    };
+
+    private static string CompactRuntimeDetails(PlatformLiveStatus status) => status.PolicyRuntime switch
+    {
+        NativeAgentRuntimeStatus native => $"{native.Agent.AgentId}\n{RuntimeOperationLabel(native)}\nResult: {status.Receipt.Status}",
+        PolicyRuntimeStatus policy => $"{policy.Policy.PolicyId}\n{policy.LastDecision?.BoundActionLabel ?? "No decision yet"}\nReceipt: {status.Receipt.Status}",
+        _ => "Runtime unavailable"
+    };
 
     private static string ShortValue(string? value, string fallback = "unavailable")
     {

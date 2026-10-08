@@ -27,7 +27,10 @@ from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
-from spireagent.workbench.local_model_dependencies import require_local_models
+from spireagent.workbench.local_model_dependencies import (
+    require_local_models,
+    require_native_models,
+)
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
 from spireagent.workbench.memory_recipe import (
     V2_MEMORY_RECIPES,
@@ -35,6 +38,7 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child
+from stpd.policy.native_structured_export import is_native_model_schema
 from stpd.structured_code_scope import (
     is_structured_model_schema,
     require_structured_model_package,
@@ -60,7 +64,7 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
 
 
 def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
-                 structured: bool = False) -> Path:
+                 structured: bool = False, native: bool = False) -> Path:
     state = config.state_dir
     if not _ordinary(state, directory=True):
         raise BoundaryError("local_model_export", "unsafe_export_root")
@@ -74,10 +78,12 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
     if target.exists() or target.is_symlink():
         if not _ordinary(target, directory=True):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
-        names = (("model.json", "weights.tensor-tree") if structured else
+        names = (("model.json", "weights.tensor-tree") if structured or native else
                  ("model.json", "weights.tensor-tree", "tokenizer.json") if memory
                  else ("model.json", "weights.safetensors", "tokenizer.json"))
-        if (memory or structured) and {path.name for path in target.iterdir()} != set(names):
+        if (memory or structured or native) and {path.name for path in target.iterdir()} != set(
+            names
+        ):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
         for name in names:
             if not _ordinary(target / name, directory=False):
@@ -211,7 +217,8 @@ class _DownloadedStructuredModel:
                 or receipt.get("schema") != "stpd/result-download-v1"
                 or receipt.get("artifact_id") != identity
                 or self.model.kind != "model"
-                or not is_structured_model_schema(self.model.parameters.value().get("schema"))):
+                or not (is_structured_model_schema(self.model.parameters.value().get("schema"))
+                        or is_native_model_schema(self.model.parameters.value().get("schema")))):
             raise BoundaryError("local_model_export", "structured_download_required")
         self.directory = directory
         self.blobs = SimpleNamespace(root=directory)
@@ -230,6 +237,55 @@ class _DownloadedStructuredModel:
         if hashlib.sha256(raw).hexdigest() != payload.sha256:
             raise BoundaryError("local_model_export", "download_payload_integrity")
         return raw
+
+    def read_payload(self, payload: Payload) -> Any:
+        # Same authorized own-byte adapter used by the native domain exporter.
+        yield self.bytes(payload, maximum=payload.size)
+
+
+def _native_package(store: Any, model: Manifest, destination: Path, *,
+                    materialize: bool = False) -> int:
+    from stpd.policy.native_structured_export import (
+        MAX_MANIFEST_BYTES,
+        MAX_WEIGHTS_BYTES,
+        export_native_model,
+        load_native_package,
+        require_native_model_package,
+    )
+
+    if not is_native_model_schema(model.parameters.value().get("schema")):
+        raise BoundaryError("local_model_export", "native_model_required")
+    if not destination.exists() and not destination.is_symlink():
+        if not materialize:
+            raise BoundaryError("local_model_export", "verified_export_required")
+        export_native_model(store, model.artifact_id, destination)
+    if (
+        not _ordinary(destination, directory=True)
+        or {path.name for path in destination.iterdir()} != {"model.json", "weights.tensor-tree"}
+        or any(
+            not _ordinary(destination / name, directory=False)
+            for name in ("model.json", "weights.tensor-tree")
+        )
+    ):
+        raise BoundaryError("local_model_export", "unsafe_export_destination")
+    package, loaded = load_native_package(destination)
+    del loaded
+    require_native_model_package(model, package)
+    # Reconciliation verifies existing own bytes. It never re-exports or reads parents.
+    for role, name, limit in (("package_manifest", "model.json", MAX_MANIFEST_BYTES),
+                             ("weights", "weights.tensor-tree", MAX_WEIGHTS_BYTES)):
+        payload = model.payload(role)
+        if not 0 < payload.size <= limit:
+            raise BoundaryError("local_model_export", "download_payload_invalid")
+        raw = bytearray()
+        for chunk in store.read_payload(payload):
+            if not isinstance(chunk, bytes) or len(raw) + len(chunk) > payload.size:
+                raise BoundaryError("local_model_export", "download_payload_integrity")
+            raw.extend(chunk)
+        if (len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256
+                or bytes(raw) != (destination / name).read_bytes()):
+            raise BoundaryError("local_model_export", "export_identity_mismatch")
+    return sum(payload.size for payload in model.payloads)
 
 
 def _structured_package(store: Any, model: Manifest, destination: Path, *,
@@ -298,7 +354,8 @@ class LocalModelExport:
                     directory / "manifest.json", directory=False):
                 raise BoundaryError("local_model_export", "unsafe_download_cache")
             cached = Manifest.from_bytes((directory / "manifest.json").read_bytes(), identity)
-            if is_structured_model_schema(cached.parameters.value().get("schema")):
+            if (is_structured_model_schema(cached.parameters.value().get("schema"))
+                    or is_native_model_schema(cached.parameters.value().get("schema"))):
                 return _DownloadedStructuredModel(directory, identity)
         return self._workspace().store
 
@@ -397,7 +454,8 @@ class LocalModelExport:
             result = self._public(value)
             try:
                 selected = (self._source(value["model_id"])
-                            if value.get("model_type") == "structured" else self._workspace().store)
+                            if value.get("model_type") in {"structured", "native"}
+                            else self._workspace().store)
                 root = getattr(getattr(selected, "blobs", None), "root", None)
                 result["availability"] = (
                     "ready" if value["status"] == "idle" or str(root) == value["store_root"]
@@ -423,6 +481,9 @@ class LocalModelExport:
             if model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1":
                 raise BoundaryError("local_model_export", "memory_registration_not_ready")
             destination = self.config.state_dir / EXPORT_ROOT / identity
+            if is_native_model_schema(model.parameters.value().get("schema")):
+                _native_package(source, model, destination)
+                return destination
             if is_structured_model_schema(model.parameters.value().get("schema")):
                 _structured_package(source, model, destination)
                 return destination
@@ -577,11 +638,15 @@ class LocalModelExport:
                     and previous["store_root"] != str(root)):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = store.get_manifest(identity)
-            require_local_models("local_model_export")
+            native = is_native_model_schema(model.parameters.value().get("schema"))
+            if native:
+                require_native_models("local_model_export")
+            else:
+                require_local_models("local_model_export")
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
             structured = is_structured_model_schema(model.parameters.value().get("schema"))
-            if not memory and not structured:
+            if not memory and not structured and not native:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
             if lock_path.is_symlink() or (lock_path.exists()
@@ -596,13 +661,15 @@ class LocalModelExport:
                 raise
             try:
                 destination = _destination(self.config, identity, memory=memory,
-                                           structured=structured)
+                                           structured=structured, native=native)
                 operation = {"schema": SCHEMA_V2 if memory else SCHEMA,
                              "status": "pending",
                              "operation_id": uuid.uuid4().hex, "model_id": identity,
                              "store_root": str(root)}
                 if structured:
                     operation.update(model_type="structured")
+                if native:
+                    operation.update(model_type="native")
                 if memory:
                     assert run_id is not None
                     operation.update(model_type="memory", run_id=run_id)
@@ -674,7 +741,9 @@ class LocalModelExport:
             child_started = True
 
         try:
-            if is_structured_model_schema(model.parameters.value().get("schema")):
+            if is_native_model_schema(model.parameters.value().get("schema")):
+                count = _native_package(store, model, destination, materialize=True)
+            elif is_structured_model_schema(model.parameters.value().get("schema")):
                 count = _structured_package(store, model, destination, materialize=True)
             elif run_id is None:
                 from stpd.policy.token_decision import export_token_model
