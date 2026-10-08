@@ -54,6 +54,15 @@ proofs never enter wire data. The full-membership proof is JSON-ignored, and the
 completeness gate independently checks frozen public membership and exact action
 subjects. Legacy profiles continue using their existing source path.
 
+The qualified binder replaces only the corresponding legacy selector/window
+omissions for the same native source type or screen identity. Inherited persistent
+HUD, shared information bindings, page/entity/catalog consistency and unexplained
+failure status remain required. A selector proof cannot promote those omissions
+to complete input. Final native capture closes every action leaf, including Peek,
+when any required scope remains partial. A stable identity, binding or capacity
+failure reports partial/unsupported instead of inventing settling; source-proved
+transient and completed states retain their own readiness.
+
 ## Peek and inspection
 
 Peek keeps the same native child owner, task, roster and current selection while
@@ -102,7 +111,10 @@ active until a faithful safe native presentation path is established.
 Tests cover 200/500 actual game-assembly model references beyond a 24-holder
 window, source/reference order, exact closed callback ABI, runtime accessor
 behavior, stale/Peek fencing, native callback-owned selection/preview behavior,
-unknown after callback exception and exact inspector return ordering. These are
+unknown after callback exception and exact inspector return ordering. Golden
+negative captures also retain failed persistent HUD and consistency gaps after a
+qualified grid/choice/bundle replacement, suppress every dispatch leaf, and test
+conditional readiness for stable identity/binding/capacity failures. These are
 binding/ABI/control fixtures, not real-game selection or performance receipts.
 Exact builds and a later bounded runtime canary are still required for the loaded
 callback, native UI/execution effects, cancellation, inspection and publication.

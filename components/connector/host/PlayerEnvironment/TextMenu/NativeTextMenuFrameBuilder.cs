@@ -69,9 +69,7 @@ internal static class NativeTextMenuFrameBuilder
                 is MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen deckView)
         {
             if (!STS2Connector.Authority.EnvironmentIdentityRuntime.ExecutionAvailable(legacy.HostObservation.Game))
-                return new(page with { Status = "settling", Completeness = page.Completeness with
-                { Status = "partial", Missing = page.Completeness.Missing.Append("native_logical_deck_execution_identity_unavailable").ToArray() } },
-                    owner, Array.Empty<TextMenuLeaf>());
+                return NativeLogicalCapturePolicy.Partial(page, owner, "native_logical_deck_execution_identity_unavailable");
             return NativeLogicalDeckCapture.Capture(deckView, page, owner, information.Leaves, entities);
         }
 

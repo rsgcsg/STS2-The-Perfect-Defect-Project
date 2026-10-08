@@ -41,7 +41,7 @@ internal static class NativeLogicalCapture
             {
                 Page = frame.Page with
                 {
-                    Status = "visible_unsupported",
+                    Status = NativeLogicalCapturePolicy.FailureStatus(frame.Page.Status),
                     Completeness = frame.Page.Completeness with
                     {
                         Status = "partial",
@@ -51,7 +51,7 @@ internal static class NativeLogicalCapture
                 },
                 Leaves = Array.Empty<TextMenuLeaf>()
             };
-        return frame;
+        return NativeLogicalCapturePolicy.CloseIncompleteRequiredScope(frame);
     }
 
     private static TextMenuFrame AppendPeek(TextMenuFrame frame, NativeEntityRegistry entities)

@@ -22,9 +22,7 @@ internal static class NativeLogicalDeckCapture
         string ownerKey, IReadOnlyList<NativeTextMenuInformationLeaf> informationLeaves, NativeEntityRegistry entities)
     {
         NativeLogicalDeckState? state = NativeLogicalDeckState.Capture(owner);
-        if (state == null) return new(page with { Status = "settling", Completeness = page.Completeness with
-            { Status = "partial", Missing = page.Completeness.Missing.Append("native_logical_deck_binding_missing").ToArray() } },
-                ownerKey, Array.Empty<TextMenuLeaf>());
+        if (state == null) return NativeLogicalCapturePolicy.Partial(page, ownerKey, "native_logical_deck_binding_missing");
         var leaves = informationLeaves.Select(leaf => new TextMenuLeaf(leaf.Key, leaf.Group,
             leaf.Verb, leaf.Label, leaf.SubjectReferentId, leaf.Arguments, leaf.Dispatch)).ToList();
         var refs = page.Referents.ToDictionary(referent => referent.ReferentId, StringComparer.Ordinal);
@@ -79,8 +77,10 @@ internal static class NativeLogicalDeckCapture
         var surface = new JsonObject { ["kind"] = "run_deck", ["cards"] = cards,
             ["card_count"] = cards.Count, ["ordering_basis"] = "exact_current_native_deck_grid_order",
             ["showing_upgrade_previews"] = state.UpgradeView };
-        return new(page with { Referents = refs.Values.ToArray(), Completeness = page.Completeness with
-        { Status = missing.Count == 0 ? "complete" : "partial", Missing = missing.Order(StringComparer.Ordinal).ToArray() },
+        PlayerEnvironmentCompleteness completeness = NativeLogicalCapturePolicy.Replace(page.Completeness,
+            NativeLogicalProjectionReplacement.Grid, false, missing,
+            page.Completeness.VisibleInformation, page.Completeness.InteractionDiscovery);
+        return new(page with { Referents = refs.Values.ToArray(), Completeness = completeness,
             Interaction = page.Interaction with { Content = page.Interaction.Content with { Surface = surface } } }, ownerKey, leaves)
         { LogicalDeckProof = state };
     }

@@ -58,11 +58,15 @@ internal static class NativeLogicalNonGridPeek
         // Only the battlefield currently revealed by Peek and the public current
         // parent-selection fact are projected. Unopened bundle contents are not
         // aggregated into this view merely because private _bundles exists.
+        PlayerEnvironmentCompleteness completeness = NativeLogicalCapturePolicy.Replace(page.Completeness,
+            owner is NChooseACardSelectionScreen ? NativeLogicalProjectionReplacement.ChoicePeek : NativeLogicalProjectionReplacement.BundlePeek,
+            NativeLogicalCapturePolicy.DisplacesLegacyProjection(native.HostObservation.Surface,
+                owner is NChooseACardSelectionScreen ? nameof(NChooseACardSelectionScreen) : "card_bundle_selection", kind, id),
+            Array.Empty<string>(), "native_peek_current_battlefield_and_parent_selection", "exact_native_peek_return_control");
         PlayerEnvironmentSnapshot captured = page with
         {
-            Status = "interactive", Referents = referents,
-            Completeness = new("complete", "native_peek_current_battlefield_and_parent_selection",
-                "exact_native_peek_return_control", Array.Empty<string>(), page.Completeness.HiddenByPolicy),
+            Status = NativeLogicalCapturePolicy.ProjectionStatus("peek", page.Status, completeness), Referents = referents,
+            Completeness = completeness,
             Interaction = page.Interaction with
             {
                 InteractionId = id, Kind = kind, Stage = "peek",

@@ -110,14 +110,15 @@ internal static class NativeLogicalGridCapture
             ["ordering_basis"] = "exact_current_native_grid_logical_list",
             ["native_preview_text"] = CapturePreviewText(state)
         };
+        PlayerEnvironmentCompleteness completeness = NativeLogicalCapturePolicy.Replace(informationPage.Completeness,
+            NativeLogicalProjectionReplacement.Grid,
+            NativeLogicalCapturePolicy.DisplacesLegacyProjection(native.HostObservation.Surface, owner.GetType().Name, SurfaceKind(owner), ownerId), missing,
+            "complete_entered_native_logical_grid_list", "registered_native_card_model_callbacks_and_current_controls");
         PlayerEnvironmentSnapshot page = informationPage with
         {
-            Status = state.Stage == "completed" ? "observed" : state.Stage == "settling" ? "settling" : "interactive",
+            Status = NativeLogicalCapturePolicy.ProjectionStatus(state.Stage, informationPage.Status, completeness),
             Referents = referents.Values.ToArray(),
-            Completeness = new(missing.Count == 0 ? "complete" : "partial",
-                "complete_entered_native_logical_grid_list",
-                "registered_native_card_model_callbacks_and_current_controls",
-                missing.Order(StringComparer.Ordinal).ToArray(), informationPage.Completeness.HiddenByPolicy),
+            Completeness = completeness,
             Interaction = informationPage.Interaction with
             {
                 InteractionId = ownerId, Kind = SurfaceKind(owner), Stage = state.Stage,
@@ -134,9 +135,7 @@ internal static class NativeLogicalGridCapture
     }
 
     private static TextMenuFrame Partial(PlayerEnvironmentSnapshot page, NCardGridSelectionScreen owner, string missing) =>
-        new(page with { Status = "settling", Completeness = page.Completeness with
-        { Status = "partial", Missing = page.Completeness.Missing.Append(missing).Distinct(StringComparer.Ordinal).ToArray() } },
-            "logical_grid_unresolved:" + RuntimeHelpers.GetHashCode(owner), Array.Empty<TextMenuLeaf>());
+        NativeLogicalCapturePolicy.Partial(page, "logical_grid_unresolved:" + RuntimeHelpers.GetHashCode(owner), missing);
 
     private static JsonArray CapturePreviewText(NativeLogicalGridState state)
     {
