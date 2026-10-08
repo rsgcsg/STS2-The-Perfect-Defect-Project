@@ -129,6 +129,23 @@ describe("additive Agent manifest/consumption contract", () => {
     (incomplete.observation.catalog as Record<string, unknown>).total_count = 2;
     expect(() => ledger.register(incomplete)).toThrow("catalog_count_binding");
   });
+  it("preserves actual Core full-reference persistent:null without fabricating an empty object", () => {
+    const value = manifest(); value.support.interaction_kinds.push("selector");
+    const ledger = new AgentConsumptionLedger(value, "segment");
+    const nullable = acquisition("core_null_persistent");
+    expect(nullable.observation.completeness).toMatchObject({ status: "complete",
+      included: ["persistent", "interaction", "referents", "catalog"], full_reference_complete: true });
+    ledger.register(nullable);
+    expect(ledger.accept(report("core_null_persistent", 1))).toMatchObject({ advanced: true, state_version: 1 });
+    expect(ledger.get(nullable.acquisition_id).observation.persistent).toBeNull();
+    for (const kind of ["missing", "undefined", "interaction_null"] as const) {
+      const rejected = acquisition("core_null_persistent");
+      if (kind === "missing") delete rejected.observation.persistent;
+      else if (kind === "undefined") rejected.observation.persistent = undefined;
+      else rejected.observation.interaction = null;
+      expect(() => new AgentConsumptionLedger(value, "segment").register(rejected)).toThrow();
+    }
+  });
   it("requires declared reset and never turns a gap into seamless history", () => {
     const value = manifest(); value.input.gap_policy = "explicit_reset";
     const ledger = new AgentConsumptionLedger(value, "segment");

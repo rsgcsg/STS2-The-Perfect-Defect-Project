@@ -47,6 +47,7 @@ export class AgentRunEvidence {
   private stateBytes = 0;
   private stateStorageFailed = false;
   private pendingStateBytes = 0;
+  private pendingStateFiles = 0;
 
   private constructor(
     directory: string,
@@ -176,7 +177,8 @@ export class AgentRunEvidence {
     validateAgentStateMetadata(metadata, manifest);
     if (manifest.input.state_recovery.mode !== "opaque" || bytes.byteLength < 1
       || bytes.byteLength > manifest.input.state_recovery.max_state_bytes
-      || this.stateFiles.size >= 256 || this.stateBytes + this.pendingStateBytes + bytes.byteLength > 256 * 1024 * 1024)
+      || this.stateFiles.size + this.pendingStateFiles + 2 > 256
+      || this.stateBytes + this.pendingStateBytes + bytes.byteLength > 256 * 1024 * 1024)
       throw new Error("opaque state storage capacity");
     // Snapshot before entering an async queue: callers cannot change saved bytes/meta.
     const snapshot = JSON.parse(encodeBoundedAgentJson(metadata, 64 * 1024).toString("utf8")) as AgentStateMetadata;
@@ -184,6 +186,7 @@ export class AgentRunEvidence {
     const sha = sha256Bytes(buffer);
     if (!/^[a-f0-9]{64}$/u.test(expectedSha256) || sha !== expectedSha256) throw new Error("opaque state integrity");
     this.pendingStateBytes += buffer.length;
+    this.pendingStateFiles += 2;
     return this.serialize(async () => {
       if (this.sealed) throw new Error("state store requires an active Agent session");
       const id = sha256Bytes(Buffer.from(canonicalJson({ metadata: snapshot, sha256: sha }), "utf8"));
@@ -196,6 +199,7 @@ export class AgentRunEvidence {
           throw new Error("immutable state collision");
         return { path, metadata_path: metadataPath, bytes: buffer.length, sha256: sha };
       }
+      if (this.stateFiles.size + 2 > 256) throw new Error("opaque state storage capacity");
       try {
         const handle = await open(join(this.directory, path), "wx");
         try { await handle.writeFile(buffer); await handle.sync(); } finally { await handle.close(); }
@@ -204,7 +208,7 @@ export class AgentRunEvidence {
       } catch (error) { this.stateStorageFailed = true; throw error; }
       this.stateFiles.add(path); this.stateFiles.add(metadataPath); this.stateBytes += buffer.length;
       return { path, metadata_path: metadataPath, bytes: buffer.length, sha256: sha };
-    }).finally(() => { this.pendingStateBytes -= buffer.length; });
+    }).finally(() => { this.pendingStateBytes -= buffer.length; this.pendingStateFiles -= 2; });
   }
 
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {

@@ -74,3 +74,24 @@ Six faithful regressions cover replay accounting, new-position duplicate units,
 and all four cancellation causes. Fresh typecheck, all 238 Runtime tests (47 new
 session tests), and build pass. Actual SDK/native lifecycle integration remains the
 separate pending work above; these repairs do not complete that branch or G2/V1.
+
+## Concurrent Evidence state-count repair
+
+The actual storeAgentState API accepted 130 distinct concurrent one-byte synthetic
+snapshots on the previous head, producing 260 files despite its 256-file bound.
+The existing owner now reserves two pending file slots before queue entry and
+rechecks before a new write. The faithful regression accepts 128 snapshots,
+rejects two for capacity, and verifies exactly 256 state files in sealed checksums.
+No new queue or schema was introduced. Fresh state-suite/typecheck, all 239 Runtime
+tests (48 session tests), and build pass; native SDK integration remains pending.
+
+## Core nullable persistent compatibility
+
+Core `18af56cca83532765acac146329a3cc21409c654` declares Persistent nullable;
+its full-scope projector preserves an explicit null while completeness remains
+complete. The Runtime now accepts exactly that present persistent:null value,
+without synthesizing an empty object. Missing/undefined persistent and null
+interaction remain rejected. The shared regression derives the actual Core wire
+fixture shape and binds its rederived capture bytes/hash. Fresh contract/typecheck,
+all 240 Runtime tests (49 session tests), and build pass; this is source compatibility,
+not native installation or Model qualification.

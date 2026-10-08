@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -125,6 +125,27 @@ describe("opaque Agent state wire, not numerical Model qualification", () => {
       expect(await readFile(join(evidence.directory, receipt.path))).toEqual(raw);
       const manifest = await evidence.finalize({ status: "stopped", tainted: false, mode: "human" });
       expect(manifest.files.map(file => file.path)).toContain(receipt.path);
+      await verifyEvidenceDirectory(evidence.directory);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("reserves the file-count bound for concurrently queued distinct state snapshots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-state-count-"));
+    try {
+      const evidence = await AgentRunEvidence.createSession({ root, agentManifest: shared.manifest,
+        runtimeVersion: "fixture", runtimeCodeSha256: "a".repeat(64), mode: "human" });
+      const raw = Buffer.from("s"), payload = makeAgentStatePayload(raw, 100);
+      const outcomes = await Promise.allSettled(Array.from({ length: 130 }, (_, index) => {
+        const distinct = structuredClone(metadata());
+        distinct.consumption_id = `synthetic-${index}`;
+        distinct.state_version = index + 1;
+        return evidence.storeAgentState(distinct, raw, payload.sha256);
+      }));
+      expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(128);
+      expect(outcomes.filter(outcome => outcome.status === "rejected")).toHaveLength(2);
+      const files = (await readdir(evidence.directory)).filter(name => name.startsWith("agent-state-"));
+      expect(files).toHaveLength(256);
+      const result = await evidence.finalize({ status: "stopped", tainted: false, mode: "human" });
+      expect(result.files.filter(file => file.path.startsWith("agent-state-"))).toHaveLength(256);
       await verifyEvidenceDirectory(evidence.directory);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

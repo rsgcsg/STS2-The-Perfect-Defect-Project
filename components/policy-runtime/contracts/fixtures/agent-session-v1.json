@@ -1150,6 +1150,99 @@
       },
       "catalog": null,
       "publication_index": null
+    },
+    "core_null_persistent": {
+      "acquisition_id": "acquisition-core-null-persistent",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1428,
+        "sha256": "6de6b1fc4ad8cf32e67cf11e4bcfaf3fceb4afb6fb7bd7e970b9060ff2848157",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": null,
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      },
+      "catalog": [],
+      "publication_index": "1"
     }
   },
   "cases": [
@@ -3160,5 +3253,11 @@
         "consumption_mode": "once_per_occurrence"
       }
     }
+  },
+  "core_null_persistent_basis": {
+    "core_revision": "18af56cca83532765acac146329a3cc21409c654",
+    "wire_fixture": "components/connector/contracts/fixtures/native-logical-v1.json:wire_samples.observation/capture",
+    "producer": "NativeLogicalPublicFrame.Persistent is nullable; full-scope NativeLogicalProjector.Freeze preserves null and reports complete scope",
+    "change": "persistent:null; capture byte_count/hash rederived from exact JSON bytes; no missing content fabricated"
   }
 }
