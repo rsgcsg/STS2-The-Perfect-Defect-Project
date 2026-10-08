@@ -595,3 +595,112 @@ not reconstruct a creation form. Navigation remains active while a status reques
 pending, and a late response cannot update a different page/account. An authentication
 denial clears private displayed data; an ordinary transient failure leaves the last
 observation with an explicit notice. These are presentation changes, not cached access grants.
+
+## Trusted local training service contract
+
+`LocalTrainingService` is the shared owning service for the existing local slot.
+A static code-owned recipe registry describes configuration fields, required
+optional dependencies, supported control actions and placement. Discovery does
+not import Torch, load model bytes or scan a source. Token and memory recipes
+retain their historical IDs/configurations, artifact schemas and legacy
+`start(dataset_id, recipe=..., after_completed_operation_id=...)` API.
+
+The typed application entry uses only immutable artifact IDs and the configured
+local CPU placement. It accepts no program, shell, import, executable path,
+remote URL or downloadable plugin. For example:
+
+```python
+from spireagent.workbench.recipe_contracts import TrainingRequest
+
+request = TrainingRequest(
+    intent_id="0123456789abcdef0123456789abcdef",
+    recipe_id="structured-m2-cpu-v2",
+    source_id=immutable_source_id,
+    config={"epochs": 1, "max_updates": 1000},
+    placement_id="local-cpu",
+    limits={"wall_seconds": 600},
+)
+capabilities = service.capabilities()
+operation = service.start(request)["operation"]
+status = service.status(operation["operation_id"])["operation"]
+ack = service.cancel(operation["operation_id"], operation["attempt_id"])
+# ACK remains pending until the parent observes actual child exit and publishes terminal state.
+# Query status first, then explicitly select the immutable checkpoint:
+resumed = service.resume(operation_id, expected_attempt_id, checkpoint_id,
+                         new_intent_id, {"wall_seconds": 600})
+reconciled = service.reconcile(operation_id, expected_attempt_id)
+```
+
+Typed requests have a strict JSON equivalent `spireagent/training-request-v1`.
+They migrate the same operation file to `spireagent/local-training-operation-v3`
+and preserve previous completion identities. There is no second job database.
+Snapshots retain legacy stage/artifact fields and add intent, attempt, phase,
+timestamps, actual progress, input/run/checkpoint/result/model refs and supported
+actions. Each resumed attempt retains the same input/run/config/producer and the
+prior attempt's terminal proof. Checkpoints require the owning immutable event;
+v1 final checkpoints cannot resume. Reconcile verifies an existing completed
+result or leaves the outcome unknown; it never restarts numerical work.
+
+The OS owner lock spans the entire worker lifecycle. Journal publication and
+control share the service mutex; application-supplied attempt fencing guards
+numerical durable publication. A different live service can observe the slot;
+it cannot pretend to own that worker's control channel. Service loss needs
+explicit reconciliation under the released owner lock. Legacy recipes advertise
+no cancel/resume capabilities. Typed legacy requests use empty `limits` because
+the legacy subprocess recipes do not enforce the new boundary wall limit.
+
+The structured recipe runs numerical work in a fixed private child process;
+Torch imports, RNG and thread settings stay in that child. The parent alone
+writes the application journal. The child publishes immutable domain artifacts
+through a bounded NDJSON channel and holds its own OS lifecycle lock until exit.
+Parent loss does not prove the child stopped: recovery must acquire both owner
+locks before admitting a new attempt. No PID guess or stale-file deletion grants
+publication authority.
+
+The parent enforces cumulative wall time across attempts, including numerical
+calls and evaluation/export. It monitors the child at up to 250ms wait intervals
+plus callback/inventory latency and can kill a hung child. Cancel records intent,
+then allows a one-second cooperative grace period before forced termination;
+pause waits for a safe numerical boundary or the wall deadline. A writer becomes
+terminal only after actual exit or proof that no child was spawned. Forced exit
+preserves the latest verified checkpoint and records an unknown domain outcome;
+application cancellation and result selection remain separate from domain completion.
+
+The optimizer-update bound, wall budget, artifact publication reservations and
+scratch boundary remain cumulative through explicit resume; total attempts are
+limited to 32. Artifact byte reservations precede immutable publication. Scratch
+monitoring counts every retained attempt directory in the operation, including
+forced attempts, with one bounded inventory that rejects symlinks and unsafe
+entries. Resume rejects exhausted retained scratch before changing the journal
+or creating another attempt. These are separate byte checks under the original
+`scratch_bytes` setting. Scratch is a monitored detection threshold, not a kernel
+or filesystem hard allocation quota: a write can overshoot between checks, after
+which the parent kills the child, retains the files for audit, and blocks further
+resume. Logs and immutable checkpoints/results are retained outside scratch;
+there is no automatic cleanup of old or orphan attempt directories. Resume cannot
+increase or reset any original limit. Checkpoint cadence accepts 1–100 completed
+boundaries and defaults to 100.
+
+A cancel request that races completion retains artifacts for audit and does not
+select them as a normal completed result, including after explicit reconciliation.
+Indexing follows verified durable completion, so index failure does not permit
+another numerical run. Unexpected numerical exceptions leave an unknown outcome
+with an actual exit receipt and bounded private diagnostic; public status does
+not expose exception text or claim domain completion.
+
+Current structured source admission supports both explicitly marked immutable
+`synthetic_fixture` engineering sources and typed E2 protocol-source partitions.
+The typed verifier must join the exact immutable original source/report records,
+accepted projection and row mappings; only TRAIN partitions may enter this
+service. Existing curation purpose, exact-source claims and operation-bound use
+reservations are required. DEV/TEST sources are rejected before journal creation
+or use reservation and do not enter training-input/model ancestry. An ordinary
+Agent source JSON, capsule hash or `engineering_only` label cannot establish
+provenance. Historical S0 input meaning is unchanged.
+
+The structured Agent registry entry still reports
+`structured_installation_adapter_required`: STPD must supply its public package
+verifier/installation builder before Workbench export/registration can offer it.
+Typed source admission and training are therefore distinct from structured model
+installation support. These source/test seams do not complete the ordinary UI
+journey, runtime/Human qualification or final G2/V1 user acceptance.
