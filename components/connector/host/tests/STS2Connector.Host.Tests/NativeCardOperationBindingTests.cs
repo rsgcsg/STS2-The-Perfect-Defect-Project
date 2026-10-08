@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment;
+using STS2Connector.PlayerEnvironment.NativeLogical;
 using STS2Connector.PlayerEnvironment.Protocol;
 using Xunit;
 
@@ -115,5 +116,22 @@ public sealed class NativeCardOperationBindingTests
         Assert.Equal("unopened-original", Assert.Single(source.Referents).ReferentId);
         string json = JsonSerializer.Serialize(native);
         Assert.DoesNotContain("unopened-original", json);
+        // Use the actual frozen native catalog/Resolve path: informational
+        // source/display referents do not become action subjects or operands.
+        var frame = new NativeLogicalPublicFrame("generation", source.Session,
+            new("inspect-owner", "1", "1", null, null), native.Status, native.Persistent,
+            native.Interaction, native.Referents, native.InformationPolicy,
+            new[] { new NativeLogicalLeaf("return_card_inspect", "Close", null, Array.Empty<NativeLogicalArgument>(), "native")
+                { BindingKey = "current-inspect-control" } }, new("complete", Array.Empty<string>()));
+        var frozen = new NativeLogicalProjector().Freeze(frame, NativeLogicalProjector.ScopeFields,
+            "scope", DateTimeOffset.UnixEpoch, 120000, () => 0);
+        Assert.Null(Assert.Single(frozen.Catalog.Actions).SubjectReferentId);
+        Assert.Empty(Assert.Single(frozen.Catalog.Actions).Arguments);
+        foreach (string id in new[] { "original-current", "display-current" })
+        {
+            var expression = JsonSerializer.SerializeToElement(new { verb = "play", subject_referent_id = id,
+                arguments = Array.Empty<NativeLogicalArgument>() }, NativeLogicalWire.Options);
+            Assert.Equal("no_match", frozen.Catalog.Resolve("generation", expression).Status);
+        }
     }
 }
