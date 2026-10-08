@@ -334,8 +334,11 @@ def _completed(
 
     scope = run_code_scope(run.parameters.value().get("schema"))
     scoped = scope == TRAINING_SCOPE
-    saved = _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
-    completed_producer = saved.producer if scoped else run.producer
+    _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
+    # A publication-phase resume may export already-complete numerical state
+    # from an earlier writer's immutable checkpoint. Bind the actual exporter
+    # independently; reconciliation must not relabel either producer.
+    completed_producer = result.producer if scoped else run.producer
     _roles(result, {"run", "training_input", "checkpoint", "model"}, {"report"})
     info = object_fields(
         result.parameters.value(),
@@ -353,6 +356,9 @@ def _completed(
     if (
         result.kind != "run_result"
         or result.producer != completed_producer
+        or scoped and (
+            completed_producer.uv_lock_sha256 != run.parameters.value()[
+                "execution_identity"]["code_identity"]["dependency_lock_sha256"])
         or info
         != {
             "schema": "stpd/run-result-v1",

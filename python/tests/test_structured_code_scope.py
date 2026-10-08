@@ -12,7 +12,14 @@ from pathlib import Path
 
 import pytest
 import torch
-from test_structured_resume import Authority, PauseControl, dataset, equal_tree, finish
+from test_structured_resume import (
+    Authority,
+    PauseControl,
+    alternate_completion,
+    dataset,
+    equal_tree,
+    finish,
+)
 from test_structured_s0 import manifest_for, sample
 
 from spireagent.artifact_contracts import Producer
@@ -29,7 +36,6 @@ from stpd.structured_code_scope import (
     INFERENCE_PATHS,
     INFERENCE_SCOPE,
     LEGACY_SCOPE,
-    ROOT,
     SCOPED_CHECKPOINT_SCHEMA,
     SCOPED_CONFIG_SCHEMA,
     SCOPED_MODEL_SCHEMA,
@@ -46,6 +52,8 @@ from stpd.workers.structured_execution import (
     execute_structured_workload,
     prepare_structured_workload,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -401,10 +409,11 @@ def test_actual_clean_process_all_local_modules_fit_the_reviewed_scope(body, pat
     script = f'''
 import sys
 from pathlib import Path
+root = Path({str(ROOT)!r})
+sys.path.insert(0, str(root))
 import torch
 torch.set_num_threads(2)
 {body}
-root = Path({str(ROOT)!r})
 actual = {{Path(m.__file__).resolve().relative_to(root).as_posix()
            for n, m in sys.modules.items() if n.split(".")[0] in {{"stpd", "spireagent"}}
            and getattr(m, "__file__", None)}}
@@ -558,10 +567,11 @@ def test_binder_is_a_separate_trusted_edge_with_an_inventory_of_actual_dependenc
     script = f'''
 import sys
 from pathlib import Path
+root = Path({str(ROOT)!r})
+sys.path.insert(0, str(root))
 import stpd.structured_policy_installation
 import stpd.policy.structured_export
 import stpd.policy.structured_port
-root = Path({str(ROOT)!r})
 actual = {{Path(m.__file__).resolve().relative_to(root).as_posix()
            for n, m in sys.modules.items() if n.split(".")[0] in {{"stpd", "spireagent"}}
            and getattr(m, "__file__", None)}}
@@ -572,3 +582,71 @@ assert not any(n.startswith(("spireagent.workbench", "spireagent.hub", "stpd.tra
     result = subprocess.run([sys.executable, "-I", "-c", script], cwd=ROOT,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_publication_checkpoint_from_prior_producer_can_export_and_reconcile(tmp_path, monkeypatch):
+    archive = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    original, exporter = producer(), producer("b")
+    run = prepare_structured_workload(archive, dataset(), original, StructuredTrainingConfig(),
+                                      operation_id="1" * 32, code_scope=TRAINING_SCOPE)
+    request = StructuredWorkloadRequest(run.artifact_id, run.parent("training_input"),
+                                        "1" * 32, "2" * 32)
+
+    def crash_before_export(*args, **kwargs):
+        raise KeyboardInterrupt("publication checkpoint durable; exporter process lost")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(structured_export, "export_structured_package", crash_before_export)
+        with pytest.raises(KeyboardInterrupt):
+            execute_structured_workload(archive, reporter, request, original,
+                                          authority=Authority(), attempt_producer=original)
+    assert reporter.completed(run.artifact_id) is None
+    events = reporter.events(run.artifact_id)
+    checkpoint_event = next(event for event in reversed(events)
+                            if event.parameters.value()["kind"] == "checkpoint")
+    checkpoint_id = checkpoint_event.parameters.value()["details"]["checkpoint_id"]
+    checkpoint = archive.get_manifest(checkpoint_id)
+    raw = b"".join(archive.read_payload(checkpoint.payload("checkpoint")))
+    assert checkpoint.parameters.value()["phase"] == "publication"
+    assert decode_checkpoint(raw)["phase"] == "publication"
+    assert checkpoint.producer == original
+    checkpoint_count = sum(event.parameters.value()["kind"] == "checkpoint" for event in events)
+
+    def forbidden_numerical_replay(*args, **kwargs):
+        raise AssertionError("publication resume replayed training/evaluation")
+
+    monkeypatch.setattr(StructuredTrainingEngine, "advance_chunk", forbidden_numerical_replay)
+    monkeypatch.setattr(StructuredTrainingEngine, "evaluate", forbidden_numerical_replay)
+    resumed = replace(request, mode="resume", attempt_id="3" * 32,
+                      resume_checkpoint_id=checkpoint_id)
+    completed = execute_structured_workload(archive, reporter, resumed, original,
+                                             authority=Authority(), attempt_producer=exporter)
+    assert completed.state == "completed" and completed.checkpoint_id == checkpoint_id
+    assert archive.get_manifest(completed.result_id).producer == exporter
+    assert archive.get_manifest(completed.model_id).producer == exporter
+    assert archive.get_manifest(checkpoint_id) == checkpoint
+    assert b"".join(archive.read_payload(checkpoint.payload("checkpoint"))) == raw
+    assert sum(event.parameters.value()["kind"] == "checkpoint"
+               for event in reporter.events(run.artifact_id)) == checkpoint_count
+    inventory = archive.manifest_ids()
+    reconciled = execute_structured_workload(
+        archive, reporter, replace(request, mode="reconcile", attempt_id="4" * 32), original,
+        authority=Authority(), attempt_producer=producer("c"))
+    assert reconciled.result_id == completed.result_id
+    assert reconciled.model_id == completed.model_id
+    assert reconciled.checkpoint_id == checkpoint_id
+    assert archive.manifest_ids() == inventory
+    # Independent checkpoint provenance must not weaken exporter agreement.
+    result = archive.get_manifest(completed.result_id)
+    for forged_producer, error in (
+        (producer("d"), "completed_model_identity_mismatch"),
+        (Producer(exporter.repository, "d" * 40, "0" * 64),
+         "completed_result_identity_mismatch"),
+    ):
+        forged = replace(result, producer=forged_producer)
+        alternate = alternate_completion(tmp_path / forged.artifact_id, archive, forged)
+        with pytest.raises(BoundaryError, match=error):
+            execute_structured_workload(
+                archive, alternate, replace(request, mode="reconcile", attempt_id="5" * 32),
+                original, authority=Authority(), attempt_producer=producer("c"))

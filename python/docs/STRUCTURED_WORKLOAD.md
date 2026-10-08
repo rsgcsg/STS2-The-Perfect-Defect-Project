@@ -147,3 +147,10 @@ No old-package migration or checkpoint warm-start migration is implemented.
 Old packages remain immutable and require their original strict identity.
 Applications must explicitly opt in and dispatch run-v3/checkpoint-v3 before
 using scoped workloads; the default application recipe is not silently upgraded.
+
+A durable publication-phase checkpoint can retain an earlier attempt's producer
+when a later compatible attempt exports its already-complete numerical state.
+The checkpoint creator remains independently validated; result, model, report
+and package export provenance must agree on the actual exporting producer.
+Reconciliation verifies those existing identities without stamping its own
+producer onto them or replaying numerical work.
