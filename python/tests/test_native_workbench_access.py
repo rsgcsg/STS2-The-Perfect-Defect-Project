@@ -220,3 +220,46 @@ def test_installer_explicit_opt_in_is_selected_private_idempotent_and_revocable(
         assert "secret" not in enabled and "secret" not in disabled
     finally:
         app.close()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_launcher_republication_requires_explicit_native_binding_revalidation(
+    tmp_path, monkeypatch, enabled,
+):
+    from tools import install_developer_kit as installer
+
+    app, _pair, root, _secret, _peer = paired_app(tmp_path, monkeypatch)
+    try:
+        selected = json.loads((root / "launcher.json").read_bytes())
+        before_launcher = (root / "launcher.json").read_bytes()
+        (root / "open").write_bytes(b"#!/bin/sh\nexit 0\n")
+        (root / "open").chmod(0o700)
+        monkeypatch.setattr(installer, "_launcher_directory", lambda **_: root)
+        monkeypatch.setattr(installer, "_launcher_binding", lambda *_: selected)
+        monkeypatch.setattr(installer, "_launcher_script", lambda *_: "#!/bin/sh\nexit 0\n")
+        prepared = {"workbench_launcher_schema": installer.LAUNCHER_SCHEMA,
+                    "mod_sha256": "8" * 64}
+        installer.configure_native_access(tmp_path, app.config_path, prepared, enabled=enabled)
+        previous_bootstrap = (root / "native-access.json").read_bytes()
+        installer._install_open_launcher(tmp_path, app.config_path, prepared, platform="darwin")
+        assert (root / "launcher.json").read_bytes() != before_launcher
+        assert json.loads((root / "launcher.json").read_bytes()) == selected
+        assert (root / "native-access.json").read_bytes() == previous_bootstrap
+        code = "native_launcher_mismatch" if enabled else "native_access_not_configured"
+        with pytest.raises(BoundaryError, match=code):
+            NativeBootstrap.read(root, app.config_path)
+        result = installer.configure_native_access(
+            tmp_path, app.config_path, prepared, enabled=enabled,
+        )
+        assert "secret" not in result
+        current = json.loads((root / "native-access.json").read_bytes())
+        assert current["enabled"] is enabled
+        assert current["launcher_sha256"] == hashlib.sha256(
+            (root / "launcher.json").read_bytes()).hexdigest()
+        if enabled:
+            assert NativeBootstrap.read(root, app.config_path).config_path == str(app.config_path)
+        else:
+            with pytest.raises(BoundaryError, match="native_access_not_configured"):
+                NativeBootstrap.read(root, app.config_path)
+    finally:
+        app.close()
