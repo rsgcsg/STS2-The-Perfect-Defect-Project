@@ -16,7 +16,7 @@ public sealed class SourceSessionTests
     private static SourceDeclaration Agent(string id = "declaration-agent") =>
         new("agent_native_ui", "actor-agent", id, false);
     private static readonly SourcePublicAction Action = new("action-fixture", "native_input", "focus_target",
-        "Focus 中文 🧪", "creature-fixture", Array.Empty<SourceActionArgument>(), "native_input");
+        "Focus 中文 🧪", "creature-fixture", Array.Empty<SourceActionArgument>(), "native");
 
     private sealed class Fixture : IDisposable
     {
@@ -139,6 +139,8 @@ public sealed class SourceSessionTests
         fixture.Store.CompleteSourceInput(before, outcome);
         Assert.Throws<InvalidDataException>(() => fixture.Store.CompleteSourceInput(before, outcome with { Delivery = "unknown" }));
         fixture.Store.RecordSourceBoundary("resume", Clock(8), RecordingLifecycleState.Recording);
+        Assert.Throws<InvalidDataException>(() => fixture.Store.BeginSourceInput("stale-input", Clock(7),
+            references.Capture, references.Catalog, RecordingLifecycleState.Recording));
         SourceInputScope after = fixture.Store.BeginSourceInput("input-after", Clock(9),
             references.Capture, references.Catalog, RecordingLifecycleState.Recording);
         Assert.Equal(next.SegmentId, after.SegmentId);
@@ -203,6 +205,18 @@ public sealed class SourceSessionTests
     [Fact]
     public void CatalogCodecDistinguishesNullEmptyUnicodeAndRejectsMalformedStructure()
     {
+        // Exact multilingual digest case from Connector native-logical conformance v1.
+        SourcePublicAction[] conformance =
+        {
+            new("action-a", "native_input", "选择", "空 / 🐉 / café / é", null,
+                Array.Empty<SourceActionArgument>(), "native"),
+            new("action-b", "native_input", "选择", "", "",
+                new[] { new SourceActionArgument("目标", "référent-😀") }, "native"),
+            new("action-c", "native_input", "选择", "換行\n保留", "卡牌甲",
+                new[] { new SourceActionArgument("first", "甲"), new SourceActionArgument("second", "乙") }, "native")
+        };
+        Assert.Equal("e219492176272b9832799b109a2c770d7801b97e21abf64f6ced9faea8cbcf63",
+            SourceCatalogCodec.Digest(conformance));
         Assert.NotEqual(SourceCatalogCodec.Digest(new[] { Action with { SubjectReferentId = null } }),
             SourceCatalogCodec.Digest(new[] { Action with { SubjectReferentId = "" } }));
         Assert.Throws<InvalidDataException>(() => SourceCatalogCodec.Digest(new[] { Action with { Label = "\ud800" } }));

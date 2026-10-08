@@ -242,9 +242,11 @@ internal sealed class SourceSessionStreams : IDisposable
     internal SourceInputScope Begin(string inputId, SourceClockReference clock,
         PublicCaptureReference? pre, PublicCatalogReference? catalog, RecordingLifecycleState state)
     {
-        Healthy(); SourceSessionContract.Identifier(inputId); CheckClock(clock);
+        Healthy(); SourceSessionContract.Identifier(inputId); CheckClock(clock, monotonicBoundary: true);
         if (state != RecordingLifecycleState.Recording || pauseClock != null || closeClock != null)
             throw new InvalidOperationException("source_input_not_recording");
+        if (IsPaused(SourceSessionContract.Index(clock)))
+            throw new InvalidDataException("source_input_clock_in_paused_interval");
         if (pending.ContainsKey(inputId) || completed.ContainsKey(inputId))
             throw new InvalidDataException("source_input_id_conflict");
         if (pending.Count >= profile.Limits.MaxPendingInputs

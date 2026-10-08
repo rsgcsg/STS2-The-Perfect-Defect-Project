@@ -34,6 +34,9 @@ it never upgrades them. Normal required-seam gaps remain qualification failures.
 Source changes use `ChangeSource` only while Paused, with the exact prior
 `segment_id`. The owner obtains the actual boundary clock from the bridge,
 appends a new immutable segment and makes it effective only for later work.
+The typed application event is `SourceChanged`; accepted source changes never
+emit `CommandRejected`. Source lifecycle descriptions describe the source profile
+and never label a declaration as a Human admission.
 Clock generation must match attachment; boundary cannot move backwards. Recording
 pause/resume boundaries are durable source accounting in `source-boundaries.jsonl`,
 not native inputs. Pause stops admission of new inputs/observation occurrences;

@@ -119,7 +119,7 @@ def _catalog_digest(actions: Any) -> str:
         _require(set(item) == _ACTION_FIELDS, "source_catalog_fields_invalid")
         action_id = item["action_id"]
         _require(isinstance(action_id, str) and action_id not in ids
-                 and item["kind"] == "native_input" and item["effect_domain"] == "native_input",
+                 and item["kind"] == "native_input",
                  "source_catalog_identity_invalid")
         ids.add(action_id)
         for field in ("action_id", "kind", "verb", "label"):

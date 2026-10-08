@@ -1,19 +1,19 @@
 {
   "schema": "sts2.human-annotator/recording-performance-profile-1",
   "session_id": "session-source-fixture",
-  "generated_at": "2026-10-08T06:24:01.023821+00:00",
+  "generated_at": "2026-10-08T06:42:23.355188+00:00",
   "phases": [
     {
       "phase": "close_evidence_durable_flush",
       "count": 1,
       "sampled_count": 1,
       "dropped_sample_count": 0,
-      "mean_us": 4494,
-      "p50_us": 4494,
-      "p95_us": 4494,
-      "p99_us": 4494,
-      "max_us": 4494,
-      "total_us": 4494
+      "mean_us": 21605,
+      "p50_us": 21605,
+      "p95_us": 21605,
+      "p99_us": 21605,
+      "max_us": 21605,
+      "total_us": 21605
     }
   ],
   "non_claims": [

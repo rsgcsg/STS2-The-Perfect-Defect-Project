@@ -179,6 +179,18 @@ class SourceSessionBundleTests(unittest.TestCase):
         self.assert_fail("source_raw_export_equivalence_invalid")
 
     def test_duplicate_json_keys_and_unpaired_surrogates_never_normalize(self) -> None:
+        conformance = [
+            {"action_id": "action-a", "kind": "native_input", "verb": "选择", "label": "空 / 🐉 / café / é",
+             "subject_referent_id": None, "arguments": [], "effect_domain": "native"},
+            {"action_id": "action-b", "kind": "native_input", "verb": "选择", "label": "",
+             "subject_referent_id": "", "arguments": [{"role": "目标", "referent_id": "référent-😀"}],
+             "effect_domain": "native"},
+            {"action_id": "action-c", "kind": "native_input", "verb": "选择", "label": "換行\n保留",
+             "subject_referent_id": "卡牌甲", "arguments": [{"role": "first", "referent_id": "甲"},
+                 {"role": "second", "referent_id": "乙"}], "effect_domain": "native"},
+        ]
+        self.assertEqual("e219492176272b9832799b109a2c770d7801b97e21abf64f6ced9faea8cbcf63",
+                         _catalog_digest(conformance))
         action = json.loads(next((self.bundle / "raw/public-catalogs").rglob("*.bin")).read_bytes())[0]
         self.assertNotEqual(_catalog_digest([dict(action, subject_referent_id=None)]),
                             _catalog_digest([dict(action, subject_referent_id="")]))

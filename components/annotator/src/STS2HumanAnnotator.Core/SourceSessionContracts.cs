@@ -246,7 +246,7 @@ public static class SourceCatalogCodec
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (SourcePublicAction action in actions)
         {
-            if (!ids.Add(action.ActionId) || action.Kind != "native_input" || action.EffectDomain != "native_input"
+            if (!ids.Add(action.ActionId) || action.Kind != "native_input"
                 || action.Arguments.Select(x => x.Role).Distinct(StringComparer.Ordinal).Count() != action.Arguments.Count)
                 throw new InvalidDataException("source_catalog_identity_invalid");
             Text(action.ActionId); Text(action.Kind); Text(action.Verb); Text(action.Label);

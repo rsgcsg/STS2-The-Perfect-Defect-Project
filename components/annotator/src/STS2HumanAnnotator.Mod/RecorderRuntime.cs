@@ -482,6 +482,7 @@ internal static partial class RecorderRuntime
                 RecordingCommandKind.Pause => RecordingEventKind.SessionPaused,
                 RecordingCommandKind.Resume => RecordingEventKind.SessionResumed,
                 RecordingCommandKind.Close => RecordingEventKind.SessionCloseRequested,
+                RecordingCommandKind.ChangeSource => RecordingEventKind.SourceChanged,
                 _ => RecordingEventKind.CommandRejected
             }
             : RecordingEventKind.CommandRejected;

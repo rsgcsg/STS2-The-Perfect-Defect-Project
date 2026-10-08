@@ -212,7 +212,8 @@ public enum RecordingEventKind
     DecisionAborted,
     DecisionProjectionOmitted,
     HealthChanged,
-    CommandRejected
+    CommandRejected,
+    SourceChanged
 }
 
 public sealed record RecordingEvent(

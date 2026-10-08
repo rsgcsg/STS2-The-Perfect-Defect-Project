@@ -72,6 +72,7 @@ internal static partial class RecorderRuntime
                         throw new InvalidDataException("source_profile_and_declaration_required");
                     result = RecordingLifecycleStateMachine.Apply(_lifecycle, command.Kind,
                         "session-" + Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, false);
+                    result = SourceLifecycleDescription(result, command.Kind);
                     if (result.Accepted) StartSourceSession(result.Lifecycle, command.SourceDeclaration);
                 }
                 else if (IsSourceRecording && IsStateNoOp(command.Kind, _lifecycle.State))
@@ -91,6 +92,7 @@ internal static partial class RecorderRuntime
                 {
                     result = RecordingLifecycleStateMachine.Apply(_lifecycle, command.Kind, null,
                         DateTimeOffset.UtcNow, _store.GetSourceStatus()!.PendingInputs != 0);
+                    result = SourceLifecycleDescription(result, command.Kind);
                     if (result.Accepted)
                     {
                         SourceClockReference clock = _sourceAttachment.ReadBoundaryClock();
@@ -123,6 +125,21 @@ internal static partial class RecorderRuntime
         PublishCommandEvent(command, result);
         if (result.Accepted && command.Kind == RecordingCommandKind.Close) FinalizeSourceClose();
         return result;
+    }
+
+    private static RecordingCommandResult SourceLifecycleDescription(
+        RecordingCommandResult result, RecordingCommandKind kind)
+    {
+        if (!result.Accepted) return result;
+        string detail = kind switch
+        {
+            RecordingCommandKind.StartNewSession => "Source recording attached; the declared source is not Human attestation.",
+            RecordingCommandKind.Pause => "New source occurrences are paused; already admitted scopes may complete.",
+            RecordingCommandKind.Resume => "Source recording resumed after its explicit paused interval.",
+            RecordingCommandKind.Close => "Source Close awaits its exact publication boundary and durable flush.",
+            _ => result.Detail
+        };
+        return result with { Detail = detail, Lifecycle = result.Lifecycle with { Detail = detail } };
     }
 
     private static void StartSourceSession(RecordingLifecycleSnapshot lifecycle, SourceDeclaration source)
