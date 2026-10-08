@@ -20,6 +20,8 @@
         "sdk/typescript/src/rewardPage.ts",
         "sdk/typescript/src/textMenu.ts",
         "sdk/typescript/src/textMenuV2.ts",
+        "host/LiveHost/LiveHostContracts.cs",
+        "docs/player-environment/PROTOCOL.md",
         "host/PlayerEnvironment/Protocol/TextMenuContracts.cs",
         "sdk/typescript/src/sealedObservation.ts",
         "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs"
