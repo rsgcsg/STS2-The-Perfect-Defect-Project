@@ -35,16 +35,18 @@ public sealed class NativeLogicalCatalog
     internal (byte[] Values, byte[] Index) StorageBuffers
     { get { lock (storageGate) return (relationBytes ?? throw new NativeLogicalException("expired", "Catalog storage released."), relationIndex!); } }
     internal void ExpireStorage() { lock (storageGate) { relationBytes = null; relationIndex = null; } }
+    private NativeLogicalAction ReadAction(byte[] bytes, byte[] index, int position)
+    {
+        int offset = BinaryPrimitives.ReadInt32BigEndian(index.AsSpan(position * 8, 4));
+        int length = BinaryPrimitives.ReadInt32BigEndian(index.AsSpan(position * 8 + 4, 4));
+        return Freeze(System.Text.Json.JsonSerializer.Deserialize<NativeLogicalAction>(bytes.AsSpan(offset, length), NativeLogicalWire.Options)!, limits.MaxFieldBytes);
+    }
+    private static int ActionBytes(byte[] index, int position) => BinaryPrimitives.ReadInt32BigEndian(index.AsSpan(position * 8 + 4, 4));
     private NativeLogicalAction[] Values()
     {
         var (bytes, index) = StorageBuffers;
         var values = new NativeLogicalAction[totalCount];
-        for (int i = 0; i < totalCount; i++)
-        {
-            int offset = BinaryPrimitives.ReadInt32BigEndian(index.AsSpan(i * 8, 4));
-            int length = BinaryPrimitives.ReadInt32BigEndian(index.AsSpan(i * 8 + 4, 4));
-            values[i] = Freeze(System.Text.Json.JsonSerializer.Deserialize<NativeLogicalAction>(bytes.AsSpan(offset, length), NativeLogicalWire.Options)!, limits.MaxFieldBytes);
-        }
+        for (int i = 0; i < totalCount; i++) values[i] = ReadAction(bytes, index, i);
         return values;
     }
 
@@ -104,32 +106,44 @@ public sealed class NativeLogicalCatalog
         int budget = maxPageBytes ?? limits.MaxPageBytes;
         if (budget <= 0 || budget > limits.MaxPageBytes) throw new NativeLogicalException("invalid_limit", "Invalid encoded page budget.");
         var expression = Expression.Parse(prefix, false, limits.MaxFieldBytes);
-        NativeLogicalAction[] actions = Values();
-        NativeLogicalAction[] filtered = actions.Where(expression.MatchesPrefix).ToArray();
-        string digest = Digest(filtered);
-        ulong start = cursor is null ? 0 : cursors.Parse(cursor, Binding(expression.Canonical), clock());
-        if (start > (ulong)filtered.Length) throw new NativeLogicalException("cursor_mismatch", "Cursor position is outside this relation.");
-        var selected = new List<NativeLogicalAction>();
-        int position = checked((int)start);
-        while (position < filtered.Length && selected.Count < pageLimit)
+        var (relation, index) = StorageBuffers;
+        List<int>? matchingRows = null;
+        int filteredCount = totalCount; string digest = Descriptor.Digest!;
+        if (!expression.Unfiltered)
         {
-            selected.Add(filtered[position]);
-            string? next = position + 1 < filtered.Length ? cursors.Create(Binding(expression.Canonical), (ulong)(position + 1), CursorDeadline) : null;
-            int bytes = NativeLogicalWire.Encode(Page(selected, filtered.Length, digest, next, null)).Length;
-            if (bytes > budget)
+            matchingRows = new List<int>();
+            for (int i = 0; i < totalCount; i++) if (expression.MatchesPrefix(ReadAction(relation, index, i))) matchingRows.Add(i);
+            filteredCount = matchingRows.Count;
+            digest = DigestSequence(matchingRows.Select(i => ReadAction(relation, index, i)), filteredCount);
+        }
+        ulong start = cursor is null ? 0 : cursors.Parse(cursor, Binding(expression.Canonical), clock());
+        if (start > (ulong)filteredCount) throw new NativeLogicalException("cursor_mismatch", "Cursor position is outside this relation.");
+        int position = checked((int)start); var selected = new List<NativeLogicalAction>();
+        long memberBytes = 0; string? continuation = null;
+        // NativeLogicalAction rows were encoded once into this immutable indexed relation.
+        // An empty envelope plus the exact row byte lengths/commas gives the exact wire size.
+        while (position < filteredCount && selected.Count < pageLimit)
+        {
+            int row = matchingRows is null ? position : matchingRows[position];
+            string? next = position + 1 < filteredCount ? cursors.Create(Binding(expression.Canonical), (ulong)(position + 1), CursorDeadline) : null;
+            long withMember = memberBytes + ActionBytes(index, row) + (selected.Count == 0 ? 0 : 1);
+            int emptyEnvelopeBytes = NativeLogicalWire.Encode(Page(Array.Empty<NativeLogicalAction>(), filteredCount, digest, next, null)).Length;
+            long required = emptyEnvelopeBytes + withMember;
+            if (required > budget)
             {
-                selected.RemoveAt(selected.Count - 1);
-                if (selected.Count == 0) return Page(Array.Empty<NativeLogicalAction>(), filtered.Length, digest, cursor, bytes) with { Status = "page_budget_too_small" };
+                if (selected.Count == 0) return Page(Array.Empty<NativeLogicalAction>(), filteredCount, digest, cursor, checked((int)required)) with { Status = "page_budget_too_small" };
                 break;
             }
-            position++;
+            selected.Add(ReadAction(relation, index, row)); memberBytes = withMember; continuation = next; position++;
         }
-        string? continuation = position < filtered.Length ? cursors.Create(Binding(expression.Canonical), (ulong)position, CursorDeadline) : null;
-        var result = Page(Array.AsReadOnly(selected.ToArray()), filtered.Length, digest, continuation, null);
-        if (NativeLogicalWire.Encode(result).Length > budget)
-            return Page(Array.Empty<NativeLogicalAction>(), filtered.Length, digest, cursor, NativeLogicalWire.Encode(result).Length) with { Status = "page_budget_too_small" };
+        var result = Page(Array.AsReadOnly(selected.ToArray()), filteredCount, digest, continuation, null);
+        // One final encoding check protects exact envelope accounting without growing-page reserialization.
+        int encodedBytes = NativeLogicalWire.Encode(result).Length;
+        if (encodedBytes > budget)
+            return Page(Array.Empty<NativeLogicalAction>(), filteredCount, digest, cursor, encodedBytes) with { Status = "page_budget_too_small" };
         return result;
     }
+
     private NativeLogicalCatalogPage Page(IReadOnlyList<NativeLogicalAction> values, long filteredCount, string filteredDigest, string? cursor, int? minimum) =>
         new(NativeLogicalContract.CatalogPageSchema, "complete", Descriptor.CatalogRef, Descriptor.SnapshotId,
             Descriptor.StreamGeneration, totalCount, Descriptor.Digest!, filteredCount, filteredDigest, values, cursor, minimum);
@@ -172,12 +186,16 @@ public sealed class NativeLogicalCatalog
         var list = values.Select(v => Freeze(v, int.MaxValue)).ToArray();
         if (list.Select(a => a.ActionId).Distinct(StringComparer.Ordinal).Count() != list.Length)
             throw new NativeLogicalException("invalid_expression", "Duplicate action ID.");
+        return DigestSequence(list, list.Length);
+    }
+    private static string DigestSequence(IEnumerable<NativeLogicalAction> values, int count)
+    {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(NativeLogicalWire.Utf8.GetBytes("sts2.native-logical.catalog.v1\0"));
         void Count(uint n) { Span<byte> b = stackalloc byte[4]; BinaryPrimitives.WriteUInt32BigEndian(b, n); hash.AppendData(b); }
         void Text(string text) { byte[] b = NativeLogicalWire.Utf8.GetBytes(text); Count(checked((uint)b.Length)); hash.AppendData(b); }
-        Count(checked((uint)list.Length));
-        foreach (var a in list)
+        Count(checked((uint)count));
+        foreach (var a in values)
         {
             Text(a.ActionId); Text(a.Kind); Text(a.Verb); Text(a.Label);
             hash.AppendData(new[] { a.SubjectReferentId is null ? (byte)0 : (byte)1 });
@@ -191,6 +209,7 @@ public sealed class NativeLogicalCatalog
     private sealed record Expression(bool HasVerb, string? Verb, bool HasSubject, string? Subject,
         bool HasArguments, IReadOnlyList<NativeLogicalArgument> Arguments, string Canonical)
     {
+        internal bool Unfiltered => !HasVerb && !HasSubject && !HasArguments;
         internal bool MatchesPrefix(NativeLogicalAction a) => (!HasVerb || a.Verb == Verb)
             && (!HasSubject || a.SubjectReferentId == Subject)
             && (!HasArguments || Arguments.Count <= a.Arguments.Count && Arguments.Select((v, i) => v == a.Arguments[i]).All(v => v));

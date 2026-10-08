@@ -180,6 +180,74 @@ public sealed class NativeLogicalPublicationTests
         sub = Attach(hub); var cancellation = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(3), "terminal", 10);
         now = 110; Assert.False(hub.CancelWait("client", sub.SubscriptionId, Id(3))); Assert.Equal("timeout", (await cancellation).Status);
     }
+    [Fact]
+    public async Task RenewalKeepsOneHistoryAcrossMultipleResourceLeasesAndNoCaptureExtension()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now, new(RetentionMs: 100));
+        using var hub = new NativeLogicalPublicationHub(store, new[] { CompleteSeam }, () => now, new(RetentionMs: 100));
+        var sub = Attach(hub);
+        var frame = new NativeLogicalPublicFrame(hub.StreamGeneration, new("runtime", "fp"), new("owner", "occurrence", "binding", null, null),
+            "settling", null, new("owner", "none", "no_input", null, "fixture", new(new System.Text.Json.Nodes.JsonObject(), new System.Text.Json.Nodes.JsonObject()), Array.Empty<PlayerEnvironmentInteractionCapability>()),
+            Array.Empty<PlayerEnvironmentReferent>(), new("fair", "current", false, "explicit"), Array.Empty<NativeLogicalLeaf>(), new("complete", Array.Empty<string>()));
+        var capture = new NativeLogicalProjector().Capture(frame, NativeLogicalProjector.ScopeFields, sub.ScopeId, DateTimeOffset.UnixEpoch, 100, () => now, store).Capture;
+        var initial = hub.Reserve("owner", "enter", "observation"); hub.Complete(initial, new[] { new NativeLogicalProjectionOutcome(sub.ScopeId, capture, null) });
+        var before = hub.Events("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor).Events.Single();
+        byte[] originalEvent = NativeLogicalWire.Encode(before.Event);
+        var wait = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, before.Event.Cursor, Id(1), "terminal", 300);
+        foreach (long time in new long[] { 90, 180, 270 })
+        {
+            now = time; var renewed = hub.Renew("client", sub.SubscriptionId, sub.ScopeId, before.Event.Cursor);
+            Assert.Equal("renewed", renewed.Status); Assert.Equal(sub.SubscriptionId, renewed.Subscription!.SubscriptionId);
+            Assert.Equal(sub.ScopeId, renewed.Subscription.ScopeId); Assert.Equal(sub.StreamGeneration, renewed.Subscription.StreamGeneration);
+            Assert.Equal(sub.StartingCursor, renewed.Subscription.StartingCursor); Assert.Equal(before.Event.Cursor, renewed.NextCursor);
+            Assert.Equal(originalEvent, NativeLogicalWire.Encode(hub.Events("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor).Events.Single().Event));
+            Assert.False(wait.IsCompleted); Assert.Equal(128, hub.WaitIdMetadataBytes);
+            NativeLogicalDecoder.Decode<NativeLogicalRenewReply>(NativeLogicalWire.Encode(renewed));
+        }
+        Assert.False(store.IsAvailable(capture.CaptureId)); Assert.Equal(capture.ExpiresAt, before.Event.PayloadReference!.ExpiresAt);
+        Assert.Equal("payload_expired", hub.Events("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor).Events.Single().Availability);
+        now = 290; var terminal = hub.Reserve("owner", "terminal", "terminal"); hub.Complete(terminal, new[] { Missing(sub) });
+        var reply = await wait; Assert.Equal("event", reply.Status); Assert.Equal("2", reply.Event!.Event.PublicationIndex);
+        Assert.Equal("duplicate_wait_id", Assert.Throws<NativeLogicalException>(() => { _ = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, reply.Event.Event.Cursor, Id(1), "terminal", 100); }).Code);
+        var finite = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, reply.Event.Event.Cursor, Id(2), "terminal", 100);
+        now = 360; hub.Renew("client", sub.SubscriptionId, sub.ScopeId, reply.Event.Event.Cursor); now = 390; hub.Tick();
+        Assert.Equal("timeout", (await finite).Status); Assert.Equal(256, hub.WaitIdMetadataBytes);
+    }
+    [Fact]
+    public void RenewalRejectsExpiredDetachedAndCrossBindingWithoutRevivalOrGapReset()
+    {
+        long now = 0; var store = new NativeLogicalCaptureStore(() => now);
+        using var hub = new NativeLogicalPublicationHub(store, new[] { CompleteSeam }, () => now, new(RetentionMs: 100, MaxEvents: 2));
+        var sub = Attach(hub); var other = Attach(hub, "other");
+        Assert.Equal("cursor_mismatch", Assert.Throws<NativeLogicalException>(() => hub.Renew("other", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor)).Code);
+        Assert.Equal("cursor_mismatch", Assert.Throws<NativeLogicalException>(() => hub.Renew("client", sub.SubscriptionId, other.ScopeId, sub.StartingCursor)).Code);
+        Assert.Equal("cursor_mismatch", Assert.Throws<NativeLogicalException>(() => hub.Renew("client", sub.SubscriptionId, sub.ScopeId, other.StartingCursor)).Code);
+        for (int i = 0; i < 3; i++) { var reservation = hub.Reserve("owner", "change", "observation"); hub.Complete(reservation, new[] { Missing(sub), Missing(other) }); }
+        now = 90; var renewed = hub.Renew("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor);
+        Assert.Equal("retention_overflow", renewed.Gap!.Reason); Assert.Equal("1", renewed.Gap.FromPublicationIndex); Assert.Equal("1", renewed.Gap.ThroughPublicationIndex);
+        Assert.Equal("retention_overflow", hub.Events("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor).Gap!.Reason);
+        hub.Detach("client", sub.SubscriptionId); Assert.Equal("subscription_expired", hub.Renew("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor).Status);
+        now = 100; Assert.Equal("subscription_expired", hub.Renew("other", other.SubscriptionId, other.ScopeId, other.StartingCursor).Status);
+        NativeLogicalDecoder.Decode<NativeLogicalRenewReply>(NativeLogicalWire.Encode(hub.Renew("other", other.SubscriptionId, other.ScopeId, other.StartingCursor)));
+        var fresh = Attach(hub); hub.ChangeGeneration(); Assert.Equal("subscription_expired", hub.Renew("client", fresh.SubscriptionId, fresh.ScopeId, fresh.StartingCursor).Status);
+    }
+    [Fact]
+    public async Task CancelAndDetachRepliesMatchActualOwnedResourceDisposition()
+    {
+        var store = new NativeLogicalCaptureStore(() => 0); using var hub = new NativeLogicalPublicationHub(store, new[] { CompleteSeam }, () => 0); var sub = Attach(hub);
+        var wait = hub.AwaitAsync("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor, Id(1), "terminal", 100);
+        var cancelled = hub.CancelWaitPublic(new("client", sub.SubscriptionId, Id(1)));
+        Assert.Equal("cancelled", cancelled.Status); Assert.True(cancelled.Cancelled); Assert.Equal("cancelled", (await wait).Status);
+        var noPending = hub.CancelWaitPublic(new("client", sub.SubscriptionId, Id(1)));
+        Assert.Equal("not_pending", noPending.Status); Assert.False(noPending.Cancelled);
+        Assert.Equal("cursor_mismatch", Assert.Throws<NativeLogicalException>(() => hub.DetachPublic(new("other", sub.SubscriptionId))).Code);
+        Assert.NotNull(hub.Events("client", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor));
+        var detached = hub.DetachPublic(new("client", sub.SubscriptionId)); Assert.True(detached.Detached);
+        Assert.False(hub.DetachPublic(new("client", sub.SubscriptionId)).Detached);
+        NativeLogicalDecoder.Decode<NativeLogicalCancelWaitReply>(NativeLogicalWire.Encode(cancelled));
+        NativeLogicalDecoder.Decode<NativeLogicalCancelWaitReply>(NativeLogicalWire.Encode(noPending));
+        NativeLogicalDecoder.Decode<NativeLogicalDetachReply>(NativeLogicalWire.Encode(detached));
+    }
     private sealed class TestControls : INativeLogicalControlDependency
     {
         private readonly object gate = new(); private bool valid = true; private readonly List<Action> callbacks = new();
