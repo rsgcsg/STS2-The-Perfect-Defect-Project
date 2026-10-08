@@ -430,7 +430,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           this.checkActive(epoch, signal);
         } finally { await full.dispose(); }
       }
+      this.checkActive(epoch, signal);
       this.noteCursor(batch.next_cursor, 0);
+      await this.emit("native_event_batch_received", { ...this.context(), after_cursor: before, next_cursor: batch.next_cursor,
+        high_watermark: batch.high_watermark, retained_start_cursor: batch.retained_start_cursor, event_count: batch.events.length });
+      this.checkActive(epoch, signal);
       if (this.manifest.input.history_mode !== "full_reference" || batch.next_cursor === batch.high_watermark
         || batch.events.length === 0) break;
       if (batch.next_cursor === before) throw new AgentSessionError("native_event_cursor_no_progress");

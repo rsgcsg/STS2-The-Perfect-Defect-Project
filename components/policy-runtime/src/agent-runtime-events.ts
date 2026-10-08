@@ -17,6 +17,9 @@ export interface AgentAcquisitionWitness {
 export interface AgentRuntimeEventPayloads {
   native_session_attached: Context & { subscription: NativeLogicalSubscription; environment: RuntimeStatus["environment"] };
   native_event_received: Context & { original: NativeLogicalEventAvailability; received_cursor: string };
+  /** Actual SDK batch tail after every provided item was processed; no Model input. */
+  native_event_batch_received: Context & { after_cursor: string; next_cursor: string; high_watermark: string;
+    retained_start_cursor: string; event_count: number };
   native_acquisition_registered: Context & { witness: AgentAcquisitionWitness };
   agent_consumed: Context & { report: AgentConsumption; acknowledgement: AgentConsumeAck; witness: AgentAcquisitionWitness };
   agent_directive: Context & { output: AgentDirectiveOutput };

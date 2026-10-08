@@ -417,6 +417,16 @@ Its open `kind` classifies source/Await timing and does not filter input eligibi
 full-reference consumption includes terminal and future scalar kinds, and missing/
 expired payloads record the original publication gap. Terminal kind does not
 infer task completion, win/loss, Close or reset.
+After all provided batch items and full-reference acknowledgements complete,
+`native_event_batch_received` records exactly session context plus
+`{after_cursor,next_cursor,high_watermark,retained_start_cursor,event_count}` from
+that actual SDK response. It is emitted in the same guarded phase as advancing
+the operational received cursor, before later Next/query work. A genuine empty
+global batch may advance that cursor without any Model input, W advance or new
+consumption. Intermediate full-reference ACKs precede the batch tail and use
+their individual event cursors. Gap, failed item or interrupted Consume does not
+produce a falsely completed tail. Opaque state metadata remains bound to the
+last acknowledged Model prefix; an empty operational tail does not rewrite it.
 Full-reference observations use SDK full capture/catalog assembly; scoped-query
 observations preserve an explicit descriptor-only materialization fact. Current
 is a query view and cannot replace missing historical input or advance W without

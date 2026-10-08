@@ -34,8 +34,75 @@ async function archive(f: Awaited<ReturnType<typeof nativeRuntimeFixture>>, name
   await mkdir(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, { recursive: true });
   await cp(f.evidence.directory, join(process.env.E3_NATIVE_ALTERNATIVE_OUTPUT, name), { recursive: true });
 }
+function emptyGlobalTail(f: Awaited<ReturnType<typeof nativeRuntimeFixture>>) {
+  const route = f.source.route.bind(f.source);
+  f.source.route = (url, body) => {
+    const result = route(url, body);
+    if (url.pathname.endsWith("/events") && body.after_cursor !== "cursor-0") {
+      const batch = result.value as { events: unknown[]; next_cursor: string; high_watermark: string };
+      batch.events = []; batch.next_cursor = "other-subscription-global-tail"; batch.high_watermark = "other-subscription-global-tail";
+    }
+    return result;
+  };
+}
 
 describe("native Agent branch with real SDK, HTTP transport and stdio process", () => {
+  it("records an actual empty global batch advance without another full-reference Consume or W advance", async () => {
+    const f = await nativeRuntimeFixture({ mode: "shadow" }); emptyGlobalTail(f);
+    try {
+      expect((await f.runtime.tick()).type).toBe("shadow");
+      const initialState = await f.runtime.exportAgentState();
+      expect((await f.runtime.tick()).type).toBe("shadow");
+      expect(f.runtime.status().session).toMatchObject({ state_version: 1, prefix: {
+        received_cursor: "other-subscription-global-tail", consumed_publication_index: "1", omissions: { received_unconsumed_count: 0 } } });
+      const events = await f.events(), tails = events.filter(e => e.kind === "native_event_batch_received");
+      expect(tails).toHaveLength(2); expect(tails[1].payload).toMatchObject({ after_cursor: "cursor-1", next_cursor: "other-subscription-global-tail",
+        high_watermark: "other-subscription-global-tail", retained_start_cursor: "cursor-0", event_count: 0 });
+      expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(1);
+      const afterTail = await f.runtime.exportAgentState();
+      expect(afterTail.state.metadata.prefix.received_cursor).toBe("cursor-1");
+      expect(afterTail.state.payload.data_base64).toBe(initialState.state.payload.data_base64);
+      await archive(f, "empty-global-batch-full-reference");
+    } finally { await f.close(); }
+  });
+  it("uses the actual empty batch tail as the later scoped-query ACK received cursor", async () => {
+    const f = await nativeRuntimeFixture({ child: "query", mode: "shadow" }); emptyGlobalTail(f);
+    try {
+      expect((await f.runtime.tick()).type).toBe("shadow"); expect((await f.runtime.tick()).type).toBe("shadow");
+      const events = await f.events(), consumed = events.filter(e => e.kind === "agent_consumed");
+      expect(consumed).toHaveLength(2);
+      expect(consumed[1].payload.acknowledgement.prefix).toMatchObject({ received_cursor: "other-subscription-global-tail",
+        consumed_publication_index: null, omissions: { received_unconsumed_count: 1 } });
+      expect(consumed[1].payload.report).toMatchObject({ state_version: 1, advanced: false });
+      const tailIndex = events.findIndex(e => e.kind === "native_event_batch_received" && e.payload.event_count === 0);
+      expect(events.indexOf(consumed[1])).toBeGreaterThan(tailIndex);
+      await archive(f, "empty-global-batch-scoped-query-ack");
+    } finally { await f.close(); }
+  });
+  it("records each full-reference ACK at its actual event cursor before the completed batch tail", async () => {
+    const f = await nativeRuntimeFixture({ mode: "shadow" });
+    try {
+      await f.runtime.tick();
+      const events = await f.events(), ackIndex = events.findIndex(e => e.kind === "agent_consumed"), tailIndex = events.findIndex(e => e.kind === "native_event_batch_received"), nextIndex = events.findIndex(e => e.kind === "agent_directive");
+      expect(events[ackIndex].payload.acknowledgement.prefix.received_cursor).toBe("cursor-1");
+      expect(events[tailIndex].payload).toMatchObject({ after_cursor: "cursor-0", next_cursor: "cursor-1", event_count: 1 });
+      expect(tailIndex).toBeGreaterThan(ackIndex); expect(nextIndex).toBeGreaterThan(tailIndex);
+    } finally { await f.close(); }
+  });
+  it("does not record a completed batch tail when an offered full-reference Consume is interrupted", async () => {
+    const f = await nativeRuntimeFixture({ child: "hang_consume", mode: "shadow", deadlineMs: 300 });
+    try {
+      const tick = f.runtime.tick();
+      await eventually(async () => (await f.events()).some(e => e.kind === "native_acquisition_registered"));
+      await tick;
+      const events = await f.events();
+      expect(events.filter(e => e.kind === "native_event_received")).toHaveLength(1);
+      expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(0);
+      expect(events.filter(e => e.kind === "native_event_batch_received")).toHaveLength(0);
+      expect(f.runtime.status().session.prefix.omissions.received_unconsumed_count).toBe(1);
+      await archive(f, "interrupted-consume-no-completed-batch");
+    } finally { await f.close(); }
+  });
   it.each(["terminal", "future_publication_kind"])("consumes every %s source view once, including observed empty C, without inferring Close", async kind => {
     const f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "shadow" }); sourceKind(f, kind);
     try {
@@ -55,6 +122,7 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       expect(f.runtime.status()).toMatchObject({ mode: "human", session: { state_version: 0, prefix: { omissions: {
         gap: { reason: availability === "missing" ? "source_capture_missing" : "payload_expired", from_publication_index: "1", through_publication_index: "1" } } } } });
       expect(f.source.requests.filter(r => /\/(current|read|catalog|actions)$/.test(r.path))).toHaveLength(0);
+      expect((await f.events()).some(e => e.kind === "native_event_batch_received")).toBe(false);
       await expect(f.runtime.setMode("auto")).rejects.toMatchObject({ code: "runtime_source_gap" });
       await archive(f, `terminal-${availability}`);
     } finally { await f.close(); }

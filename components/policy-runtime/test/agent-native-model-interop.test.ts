@@ -20,12 +20,25 @@ describe("separately enabled actual numerical native Agent interoperability", ()
       await f.runtime.setMode("human"); const stored = await f.runtime.exportAgentState();
       expect(stored.receipt.bytes).toBeGreaterThan(0);
       expect(stored.state.metadata).toMatchObject({ profile: "native-logical-v1", state_version: 1, input_spec: f.manifest.input.input_spec });
+      const route = f.source.route.bind(f.source);
+      f.source.route = (url, body) => {
+        const reply = route(url, body);
+        if (url.pathname.endsWith("/events")) {
+          const batch = reply.value as { events: unknown[]; next_cursor: string; high_watermark: string };
+          batch.events = []; batch.next_cursor = "numerical-other-subscription-global-tail"; batch.high_watermark = batch.next_cursor;
+        }
+        return reply;
+      };
       await f.runtime.setMode("one_step");
       const delivered = await f.runtime.tick();
       expect(delivered.type, JSON.stringify(delivered)).toBe("delivered");
       expect(delivered.status.mode).toBe("human");
       expect(delivered.status.session.state_version).toBe(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(1);
+      expect(f.runtime.status().session.prefix.received_cursor).toBe("numerical-other-subscription-global-tail");
+      const afterTail = await f.runtime.exportAgentState();
+      expect(afterTail.state.metadata.prefix.received_cursor).toBe(stored.state.metadata.prefix.received_cursor);
+      expect(afterTail.state.payload.data_base64).toBe(stored.state.payload.data_base64);
     } catch (error) {
       const diagnostics = Buffer.concat((f.port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8");
       throw new Error(`numerical conformance phase failed: ${String(error)}\n${diagnostics}`, { cause: error });

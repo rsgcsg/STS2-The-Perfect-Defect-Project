@@ -56,6 +56,23 @@ stale/pending recovery rejection, and the retained original numerical child afte
 Human during fresh validation. They do not
 promote `8ef88c13` checks or synthetic expiry probes into game/runtime qualification.
 
+## Actual batch-tail provenance refinement
+
+The `4917eb31` producer advanced the SDK batch `next_cursor` without a typed tail
+fact. Native Hub global positions can legitimately yield an empty selected-scope
+batch, so an individual event cursor cannot substitute for that operational tail.
+The new `native_event_batch_received` records the exact original request cursor,
+SDK next/high/retained-start cursors and actual event count after all provided
+events and full-reference ACKs complete. Empty global advance and scoped-query
+ACK tests compare opaque cursor equality only; no cursor parsing, guessed order,
+new Model input or W advance is introduced. Interrupted/gapped batches emit no
+completed tail. Opaque Model metadata remains at the last acknowledged prefix.
+Historical `4917eb31` bundles retain their original event schema and claims;
+source/test verification of the refined producer requires newly generated facts.
+Fresh refined-producer canonical checks pass TypeScript, 319 required tests,
+build and deterministic package checks; the two external-fixture cases are
+separately enabled for the exact final source receipt.
+
 ## Historical initial checkpoint
 
 Packet base: `1597141bf2d829c8b24eebb83a5177398101cf39`.
