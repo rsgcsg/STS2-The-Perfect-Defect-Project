@@ -64,6 +64,15 @@ internal static class NativeTextMenuFrameBuilder
         PlayerEnvironmentSnapshot page = information.Page;
         string owner = information.OwnerKey;
 
+        if (nativeLogical && page.Interaction.Kind == "run_deck"
+            && MegaCrit.Sts2.Core.Nodes.Screens.Capstones.NCapstoneContainer.Instance?.CurrentCapstoneScreen
+                is MegaCrit.Sts2.Core.Nodes.Screens.NDeckViewScreen deckView)
+        {
+            if (!STS2Connector.Authority.EnvironmentIdentityRuntime.ExecutionAvailable(legacy.HostObservation.Game))
+                return NativeLogicalCapturePolicy.Partial(page, owner, "native_logical_deck_execution_identity_unavailable");
+            return NativeLogicalDeckCapture.Capture(deckView, page, owner, information.Leaves, entities);
+        }
+
         if (CloseIncompleteInformationBindings(page, owner) is { } incomplete)
             return incomplete;
 
@@ -123,6 +132,13 @@ internal static class NativeTextMenuFrameBuilder
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
+
+        if (nativeLogical && NativeLogicalGridCapture.TryCapture(legacy, page, leaves, entities) is { } logicalGrid)
+            return logicalGrid.LogicalGridProof is { } proof
+                ? NativeTextMenuInformation.AppendLogicalGridInformation(logicalGrid, proof, entities) : logicalGrid;
+
+        if (nativeLogical && NativeLogicalNonGridPeek.TryCapture(legacy, page, entities) is { } nativePeek)
+            return nativePeek;
 
         if (legacy.HostObservation.Surface is PotionPopupSurface popup)
         {

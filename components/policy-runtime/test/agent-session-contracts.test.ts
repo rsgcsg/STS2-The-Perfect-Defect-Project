@@ -1,13 +1,19 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
+  supportsProfileValue, validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
 } from "../src/agent-session-contracts.js";
 import { AgentConsumptionLedger, type AgentAcquisition } from "../src/agent-session-consumption.js";
 import { AgentJsonLineFramer, encodeBoundedAgentJson } from "../src/agent-session-json.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/agent-session-v1.json", import.meta.url), "utf8")) as {
   manifest: AgentManifest; acquisitions: Record<string, AgentAcquisition>;
+  support_examples: {
+    valid: { interaction_kinds: string[]; action_verbs: string[]; kind: string; verb: string }[];
+    invalid_declarations: { field: keyof AgentManifest["support"]; values: string[] }[];
+    finite_rejections: { interaction_kinds: string[]; action_verbs: string[]; kind: string; verb: string; expected: string }[];
+  };
 };
 const clone = <T>(value: T): T => structuredClone(value);
 function manifest(incremental = false): AgentManifest {
@@ -31,6 +37,71 @@ describe("additive Agent manifest/consumption contract", () => {
   it("accepts the shared manifest without requiring scores, index or successor", () => {
     expect(validateAgentManifest(shared.manifest).adapter.protocol).toBe("sts2.policy-runtime/agent-session-ndjson-1");
     expect(shared.manifest.requirements).not.toHaveProperty("successor_required");
+  });
+  it.each(shared.support_examples.valid)("admits declared profile vocabulary without filtering a candidate", example => {
+    const value = manifest();
+    value.support.interaction_kinds = example.interaction_kinds;
+    value.support.action_verbs = example.action_verbs;
+    const input = acquisition("A");
+    (input.observation.interaction as Record<string, unknown>).kind = example.kind;
+    input.catalog![0]!.verb = example.verb;
+    const ledger = new AgentConsumptionLedger(validateAgentManifest(value), "segment");
+    ledger.register(input);
+    expect(ledger.get(input.acquisition_id).catalog).toEqual(input.catalog);
+    expect(ledger.get(input.acquisition_id).catalog).toHaveLength(1);
+    expect(ledger.accept(report("A", 1))).toMatchObject({ advanced: true, state_version: 1 });
+  });
+  it.each(shared.support_examples.invalid_declarations)("rejects mixed or game-identity support wildcards", example => {
+    const value = manifest(); value.support[example.field] = example.values;
+    expect(() => validateAgentManifest(value)).toThrow("invalid_support_wildcard");
+  });
+  it.each(shared.support_examples.finite_rejections)("rejects the whole undeclared input and preserves the prefix", example => {
+    const value = manifest();
+    value.support.interaction_kinds = example.interaction_kinds;
+    value.support.action_verbs = example.action_verbs;
+    const input = acquisition("A");
+    (input.observation.interaction as Record<string, unknown>).kind = example.kind;
+    input.catalog![0]!.verb = example.verb;
+    const ledger = new AgentConsumptionLedger(value, "segment");
+    expect(() => ledger.register(input)).toThrow(example.expected);
+    expect(ledger.stateVersion).toBe(0); expect(ledger.consumptionId).toBeNull();
+    expect(ledger.byteBudget.used).toBe(0);
+    expect(() => ledger.get(input.acquisition_id)).toThrow("unknown_acquisition");
+  });
+  it("the explicit vocabulary wildcard cannot admit malformed source strings", () => {
+    expect(() => supportsProfileValue(["*"], "")).toThrow("invalid_text");
+    expect(() => supportsProfileValue(["*"], "\ud800")).toThrow("invalid_text");
+    expect(supportsProfileValue(["end_turn"], "confirm")).toBe(false);
+  });
+  it.each(["k".repeat(257), "界".repeat(86), "k".repeat(65_536), "界".repeat(21_845) + "x"])(
+    "uses the Core public semantic field byte bound for kind and stage (%#)", semantic => {
+      const value = manifest(); value.support.interaction_kinds = ["*"];
+      const input = acquisition("core_null_persistent");
+      const interaction = input.observation.interaction as Record<string, unknown>;
+      interaction.kind = semantic; interaction.stage = semantic;
+      // This is a newly frozen synthetic capture, not a mutation of old source bytes.
+      const bytes = Buffer.from(JSON.stringify(input.observation), "utf8");
+      input.capture.byte_count = bytes.length;
+      input.capture.sha256 = createHash("sha256").update(bytes).digest("hex");
+      expect(Buffer.byteLength(semantic, "utf8")).toBeLessThanOrEqual(65_536);
+      expect(supportsProfileValue(["*"], semantic)).toBe(true);
+      const ledger = new AgentConsumptionLedger(value, "segment");
+      ledger.register(input);
+      expect(ledger.get(input.acquisition_id).observation.interaction).toEqual(interaction);
+      expect(ledger.accept(report("core_null_persistent", 1))).toMatchObject({ advanced: true, state_version: 1 });
+    });
+  it.each(["kind", "stage"])("rejects an above-bound public %s without accepting any prefix", field => {
+    const value = manifest(); value.support.interaction_kinds = ["*"];
+    const input = acquisition("core_null_persistent");
+    const semantic = "k".repeat(65_537);
+    (input.observation.interaction as Record<string, unknown>)[field] = semantic;
+    const bytes = Buffer.from(JSON.stringify(input.observation), "utf8");
+    input.capture.byte_count = bytes.length;
+    input.capture.sha256 = createHash("sha256").update(bytes).digest("hex");
+    expect(() => supportsProfileValue(["*"], semantic)).toThrow("invalid_text");
+    const ledger = new AgentConsumptionLedger(value, "segment");
+    expect(() => ledger.register(input)).toThrow("invalid_text");
+    expect(ledger.stateVersion).toBe(0); expect(ledger.byteBudget.used).toBe(0);
   });
   it.each([
     (value: AgentManifest) => { (value as unknown as Record<string, unknown>).executable = "untrusted"; },

@@ -1,0 +1,601 @@
+{
+  "schema": "sts2.annotator/source-session-v2-conformance-1",
+  "fixture_kind": "synthetic_contract_examples_not_native_history",
+  "base": "f5a435892b6e90068e1070e20d163b67e7f69f0b",
+  "profile_id": "native-logical-source-v2",
+  "input_profile": "native-logical-v1",
+  "non_claims": [
+    "not_machine_proof_of_human_origin",
+    "not_native_coverage_qualified",
+    "not_causal_transition_proof",
+    "not_research_admission",
+    "not_non_interference_qualified",
+    "not_g2_v1_approved"
+  ],
+  "limits": {
+    "max_epochs": 256,
+    "max_retiring_epochs": 2,
+    "max_metadata_packets": 32,
+    "max_copied_payload_bytes": 134217728,
+    "max_admitted_inputs": 128,
+    "encoding_deadline_ms": 2000,
+    "close_barrier_grace_ms": 3000
+  },
+  "declarations": [
+    {
+      "source_kind": "agent_protocol",
+      "actor_id": "actor-original",
+      "declaration_id": "declaration-original",
+      "machine_verifiable": false
+    },
+    {
+      "source_kind": "declared_human",
+      "actor_id": "actor-declared",
+      "declaration_id": "declaration-next",
+      "machine_verifiable": false
+    }
+  ],
+  "title_launch_epochs": [
+    {
+      "schema": "sts2.annotator/source-attachment-epoch-2",
+      "sequence": 1,
+      "session_id": "session-synthetic",
+      "timeline_id": "timeline-synthetic",
+      "epoch_id": "epoch-title",
+      "previous_epoch_id": null,
+      "context": {
+        "publication_profile_id": "native-logical-publication-profile-v1",
+        "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+        "scope_id": "scope-title",
+        "stream_generation": "stream-title",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "seam_coverage": {
+          "connector_initial_observation": {
+            "version": "1",
+            "coverage": "complete_at_seam"
+          },
+          "native_owner_ready": {
+            "version": "1",
+            "coverage": "sampled"
+          },
+          "other_native_exposures": {
+            "version": "1",
+            "coverage": "unsupported"
+          }
+        },
+        "game_continuity_id": null,
+        "environment": {
+          "game": {
+            "version": "fixture-game",
+            "commit": "fixture-commit",
+            "main_assembly_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "main_assembly_module_version_id": "game-mvid"
+          },
+          "connector": {
+            "product": "Connector",
+            "version": "fixture",
+            "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "source_digest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "module_version_id": "connector-mvid"
+          },
+          "annotator": {
+            "product": "Annotator",
+            "version": "fixture",
+            "source_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "source_digest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "module_version_id": "annotator-mvid"
+          },
+          "player_environment_protocol": "1.0.0",
+          "runtime_instance_id": "runtime-synthetic",
+          "environment_fingerprint": "environment-synthetic",
+          "modset_status": "fixture",
+          "modset_fingerprint": "modset-fixture"
+        }
+      },
+      "starting_position": {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "publication_index": "8"
+      },
+      "initial_position": {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "publication_index": "9"
+      },
+      "predecessor_seal": null,
+      "transition": null,
+      "recorded_at": "2026-10-08T00:00:00Z"
+    },
+    {
+      "schema": "sts2.annotator/source-attachment-epoch-2",
+      "sequence": 2,
+      "session_id": "session-synthetic",
+      "timeline_id": "timeline-synthetic",
+      "epoch_id": "epoch-run",
+      "previous_epoch_id": "epoch-title",
+      "context": {
+        "publication_profile_id": "native-logical-publication-profile-v1",
+        "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+        "scope_id": "scope-run",
+        "stream_generation": "stream-run",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "seam_coverage": {
+          "connector_initial_observation": {
+            "version": "1",
+            "coverage": "complete_at_seam"
+          },
+          "native_owner_ready": {
+            "version": "1",
+            "coverage": "sampled"
+          },
+          "other_native_exposures": {
+            "version": "1",
+            "coverage": "unsupported"
+          }
+        },
+        "game_continuity_id": "run-synthetic",
+        "environment": {
+          "game": {
+            "version": "fixture-game",
+            "commit": "fixture-commit",
+            "main_assembly_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "main_assembly_module_version_id": "game-mvid"
+          },
+          "connector": {
+            "product": "Connector",
+            "version": "fixture",
+            "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "source_digest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "module_version_id": "connector-mvid"
+          },
+          "annotator": {
+            "product": "Annotator",
+            "version": "fixture",
+            "source_revision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "source_digest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "module_version_id": "annotator-mvid"
+          },
+          "player_environment_protocol": "1.0.0",
+          "runtime_instance_id": "runtime-synthetic",
+          "environment_fingerprint": "environment-synthetic",
+          "modset_status": "fixture",
+          "modset_fingerprint": "modset-fixture"
+        }
+      },
+      "starting_position": {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "publication_index": "0"
+      },
+      "initial_position": {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "publication_index": "1"
+      },
+      "predecessor_seal": {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "reserved_through": "12",
+        "completed_through": "10"
+      },
+      "transition": {
+        "witness_id": "native-witness-setup-handoff",
+        "kind": "setup_handoff",
+        "mechanism": "RunManager.SetUpNewSingleplayer.prefix->exact-staged-current-RunState",
+        "previous_game_continuity_id": null,
+        "game_continuity_id": "run-synthetic",
+        "start_provenance": "new",
+        "graceful": null,
+        "victory": null
+      },
+      "recorded_at": "2026-10-08T00:00:01Z"
+    }
+  ],
+  "frozen_payload_cases": [
+    {
+      "epoch_id": "epoch-title",
+      "observation_utf8": "{\"protocol_version\":\"1.0.0\",\"schema\":\"sts2.player-environment/native-logical-observation-1\",\"input_profile\":\"native-logical-v1\",\"snapshot_id\":\"snapshot-title\",\"revision\":1,\"observed_at\":\"2026-10-08T00:00:00Z\",\"status\":\"interactive\",\"persistent\":null,\"interaction\":{\"interaction_id\":\"interaction-epoch-title\",\"kind\":\"synthetic_fixture\",\"stage\":\"ready\",\"prompt\":null,\"content_schema\":\"synthetic-source-v2\",\"content\":{\"surface\":{\"kind\":\"synthetic_fixture\"},\"context\":{\"kind\":\"synthetic_fixture\"}},\"capabilities\":[]},\"referents\":[{\"referent_id\":\"control-start\",\"role\":\"control\",\"kind\":\"button\",\"label\":\"Synthetic start\",\"state\":{\"visible\":true,\"enabled\":true,\"selected\":false,\"focused\":false,\"observation_basis\":\"synthetic_fixture\"},\"properties_schema\":null,\"properties\":null}],\"completeness\":{\"status\":\"complete\",\"included\":[\"persistent\",\"interaction\",\"referents\",\"catalog\"],\"missing\":[],\"full_reference_complete\":true},\"session\":{\"runtime_instance_id\":\"runtime-synthetic\",\"environment_fingerprint\":\"environment-synthetic\"},\"information_policy\":{\"id\":\"fair-player\",\"scope\":\"entered-native-page\",\"includes_hidden_information\":false,\"unknown_field_behavior\":\"explicit\"},\"owner_occurrence\":{\"owner_id\":\"owner-epoch-title\",\"occurrence_id\":\"occurrence-epoch-title\",\"binding_revision\":\"binding-epoch-title\",\"focus_referent_id\":null,\"focus_occurrence\":null},\"catalog\":{\"catalog_ref\":\"catalog-epoch-title\",\"snapshot_id\":\"snapshot-title\",\"scope_id\":\"scope-title\",\"stream_generation\":\"stream-title\",\"status\":\"complete\",\"total_count\":1,\"digest\":\"9e4219abdc5eb6f6653ad10837b92e13bd8f7424f2107a5d7adaffeba2b771f7\",\"ordering_semantics\":\"native_public_order\",\"access_methods\":[\"catalog\",\"resolve\"]}}\n",
+      "observation_byte_count": 1682,
+      "observation_sha256": "0c70b9ff17414f48f3e56c0380e3d955650b9514a66667e668629779a74271e8",
+      "catalog_utf8": "[{\"action_id\":\"action-start\",\"kind\":\"native_input\",\"verb\":\"fixture_start\",\"label\":\"Synthetic start\",\"subject_referent_id\":\"control-start\",\"arguments\":[],\"effect_domain\":\"native_ui\"}]\n",
+      "catalog_byte_count": 183,
+      "catalog_sha256": "ceab4a0bcdd38f77df0a4ee6981010ddb91e0950bf218472079ed1474a9276cc",
+      "catalog_structural_digest": "9e4219abdc5eb6f6653ad10837b92e13bd8f7424f2107a5d7adaffeba2b771f7",
+      "selected_action": {
+        "action_id": "action-start",
+        "kind": "native_input",
+        "verb": "fixture_start",
+        "label": "Synthetic start",
+        "subject_referent_id": "control-start",
+        "arguments": [],
+        "effect_domain": "native_ui"
+      }
+    },
+    {
+      "epoch_id": "epoch-run",
+      "observation_utf8": "{\"protocol_version\":\"1.0.0\",\"schema\":\"sts2.player-environment/native-logical-observation-1\",\"input_profile\":\"native-logical-v1\",\"snapshot_id\":\"snapshot-run\",\"revision\":1,\"observed_at\":\"2026-10-08T00:00:00Z\",\"status\":\"interactive\",\"persistent\":null,\"interaction\":{\"interaction_id\":\"interaction-epoch-run\",\"kind\":\"synthetic_fixture\",\"stage\":\"ready\",\"prompt\":null,\"content_schema\":\"synthetic-source-v2\",\"content\":{\"surface\":{\"kind\":\"synthetic_fixture\"},\"context\":{\"kind\":\"synthetic_fixture\"}},\"capabilities\":[]},\"referents\":[{\"referent_id\":\"control-summary\",\"role\":\"control\",\"kind\":\"button\",\"label\":\"Synthetic summary\",\"state\":{\"visible\":true,\"enabled\":true,\"selected\":false,\"focused\":false,\"observation_basis\":\"synthetic_fixture\"},\"properties_schema\":null,\"properties\":null}],\"completeness\":{\"status\":\"complete\",\"included\":[\"persistent\",\"interaction\",\"referents\",\"catalog\"],\"missing\":[],\"full_reference_complete\":true},\"session\":{\"runtime_instance_id\":\"runtime-synthetic\",\"environment_fingerprint\":\"environment-synthetic\"},\"information_policy\":{\"id\":\"fair-player\",\"scope\":\"entered-native-page\",\"includes_hidden_information\":false,\"unknown_field_behavior\":\"explicit\"},\"owner_occurrence\":{\"owner_id\":\"owner-epoch-run\",\"occurrence_id\":\"occurrence-epoch-run\",\"binding_revision\":\"binding-epoch-run\",\"focus_referent_id\":null,\"focus_occurrence\":null},\"catalog\":{\"catalog_ref\":\"catalog-epoch-run\",\"snapshot_id\":\"snapshot-run\",\"scope_id\":\"scope-run\",\"stream_generation\":\"stream-run\",\"status\":\"complete\",\"total_count\":1,\"digest\":\"b29023d68006e24e0472c8e2c0360285f1c752fd2980e8ecd091140393979d08\",\"ordering_semantics\":\"native_public_order\",\"access_methods\":[\"catalog\",\"resolve\"]}}\n",
+      "observation_byte_count": 1668,
+      "observation_sha256": "9b68257df51f8b8fa2a3c33300730499b7155c32001dd8a418c77c806468263f",
+      "catalog_utf8": "[{\"action_id\":\"action-summary\",\"kind\":\"native_input\",\"verb\":\"fixture_summary\",\"label\":\"Synthetic summary\",\"subject_referent_id\":\"control-summary\",\"arguments\":[],\"effect_domain\":\"native_ui\"}]\n",
+      "catalog_byte_count": 191,
+      "catalog_sha256": "fde4014864f4fbaf1593fddad2aceab4a4d1e197ff8d0ca78473f31937b6a7df",
+      "catalog_structural_digest": "b29023d68006e24e0472c8e2c0360285f1c752fd2980e8ecd091140393979d08",
+      "selected_action": {
+        "action_id": "action-summary",
+        "kind": "native_input",
+        "verb": "fixture_summary",
+        "label": "Synthetic summary",
+        "subject_referent_id": "control-summary",
+        "arguments": [],
+        "effect_domain": "native_ui"
+      }
+    }
+  ],
+  "delayed_input_case": {
+    "input_id": "input-before-launch",
+    "epoch_id": "epoch-title",
+    "segment_id": "segment-original",
+    "pre_position": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "completion_epoch": "epoch-run",
+    "expected_epoch_id": "epoch-title",
+    "expected_segment_id": "segment-original",
+    "delivery": "unknown",
+    "reason_code": "native_completion_unconfirmed"
+  },
+  "paused_rollover_case": {
+    "pause": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "old_seal": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "reserved_through": "12",
+      "completed_through": "10"
+    },
+    "new_initial": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "1"
+    },
+    "change_source": {
+      "expected_segment_id": "segment-original",
+      "new_segment_id": "segment-next",
+      "position": {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "publication_index": "2"
+      }
+    },
+    "resume": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "4"
+    },
+    "expected_intervals": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "after_index": "10",
+        "through_index": "12",
+        "reason": "recording_paused"
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "after_index": "0",
+        "through_index": "4",
+        "reason": "recording_paused"
+      }
+    ],
+    "old_admitted_token_keeps_actor": true,
+    "bootstrap_inside_pause_admitted": false
+  },
+  "negative_cases": [
+    {
+      "name": "continuity_changed_without_native_witness",
+      "expected": "source_native_boundary_missing"
+    },
+    {
+      "name": "original_generation_rewritten",
+      "expected": "source_epoch_position_mismatch"
+    },
+    {
+      "name": "source_scope_rewritten",
+      "expected": "source_epoch_scope_mismatch"
+    },
+    {
+      "name": "partial_body_complete_outer_label",
+      "expected": "source_capture_full_reference_incomplete"
+    },
+    {
+      "name": "partial_basis_exact_input",
+      "expected": "source_capture_full_reference_incomplete"
+    },
+    {
+      "name": "catalog_operand_missing_in_frozen_body",
+      "expected": "source_catalog_operand_not_in_capture"
+    },
+    {
+      "name": "retiring_epoch_capacity",
+      "expected": "source_retiring_epoch_capacity"
+    },
+    {
+      "name": "copy_payload_capacity",
+      "expected": "source_copied_payload_capacity"
+    },
+    {
+      "name": "close_barrier_deadline",
+      "expected": "source_close_drain_failed"
+    },
+    {
+      "name": "late_old_attachment_after_replacement",
+      "expected": "ignored_obsolete_binding"
+    },
+    {
+      "name": "unfinished_input_at_close",
+      "expected": "unknown_original_epoch_and_actor"
+    },
+    {
+      "name": "v1_reader_v2_manifest",
+      "expected": "unsupported_schema"
+    },
+    {
+      "name": "prepared_setup_used_as_native_Launch_proof",
+      "expected": "source_launch_witness_required"
+    },
+    {
+      "name": "staged_RunState_not_actual_current_reference",
+      "expected": "source_native_boundary_missing"
+    },
+    {
+      "name": "final_close_relies_on_original_completed_10_with_reserved_12",
+      "expected": "source_close_drain_incomplete"
+    },
+    {
+      "name": "delayed_observation_relabelled_current_actor",
+      "expected": "source_observation_original_segment_mismatch"
+    },
+    {
+      "name": "paused_close_leaves_open_interval",
+      "expected": "source_pause_interval_unclosed"
+    },
+    {
+      "name": "publication_profile_definition_rewritten",
+      "expected": "source_publication_profile_mismatch"
+    },
+    {
+      "name": "ExitTree_used_as_process_exit",
+      "expected": "source_process_exit_unproduced"
+    }
+  ],
+  "close_case": {
+    "seals": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "reserved_through": "12",
+        "completed_through": "10"
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "reserved_through": "9",
+        "completed_through": "9"
+      }
+    ],
+    "before_old_completion": "pending",
+    "after_original_slots_completed_or_gapped": "closed_if_durable",
+    "after_drain_deadline": "failed_no_close_receipt",
+    "final_drains": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "sealed_reserved_through": "12",
+        "completed_through": "12",
+        "durable_through": "12",
+        "admitted_inputs_terminal": true
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "sealed_reserved_through": "9",
+        "completed_through": "9",
+        "durable_through": "9",
+        "admitted_inputs_terminal": true
+      }
+    ],
+    "original_completed_through_is_not_final_drain_proof": true
+  },
+  "publication_profile_id": "native-logical-publication-profile-v1",
+  "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+  "producer_unproduced_reserved_kinds": [
+    "process_exit"
+  ],
+  "early_setup_cases": [
+    {
+      "name": "new_setup_callback_before_setup_postfix",
+      "setup_kind": "new",
+      "exact_invocation_id": "setup-new-invocation",
+      "exact_staged_run_id": "run-new-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "initialization_public_callback",
+        "setup_postfix"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "first_callback_epoch": "epoch-new-prepared",
+      "launch_proven": false
+    },
+    {
+      "name": "saved_setup_callback_before_async_setup_completion",
+      "setup_kind": "saved",
+      "exact_invocation_id": "setup-saved-invocation",
+      "exact_staged_run_id": "run-saved-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "await_IncrementNumReloads",
+        "public_callback_before_setup_completion",
+        "exact_setup_context_cleanup"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "first_callback_epoch": "epoch-saved-prepared",
+      "launch_proven": false
+    },
+    {
+      "name": "no_early_callback_setup_postfix_handoff",
+      "setup_kind": "new",
+      "exact_invocation_id": "setup-no-callback-invocation",
+      "exact_staged_run_id": "run-no-callback-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "setup_postfix_matches_actual_State_before_context_cleanup"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "launch_proven": false
+    },
+    {
+      "name": "setup_fails_before_actual_assignment",
+      "setup_kind": "new",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "native_setup_throws_before_assignment",
+        "exact_scope_cleared"
+      ],
+      "epoch_created": false,
+      "launch_proven": false
+    },
+    {
+      "name": "unknown_or_conflicting_setup",
+      "setup_kind": "unknown",
+      "native_order": [
+        "typed_setup_context_conflict",
+        "actual_RunState_reference_matching"
+      ],
+      "allowed": [
+        "unknown_prepared_provenance",
+        "source_native_boundary_missing"
+      ],
+      "launch_proven": false,
+      "fresh_native_start_proven": false
+    }
+  ],
+  "launch_internal_callback_case": {
+    "existing_prepared_epoch": "epoch-run",
+    "native_order": [
+      "exact_setup_handoff_epoch_created",
+      "Launch_prefix",
+      "RunStarted_callback_inside_Launch",
+      "Launch_returns",
+      "exact_Launch_postfix_witness"
+    ],
+    "internal_callback_position": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "2"
+    },
+    "postfix_boundary": {
+      "kind": "launch",
+      "epoch_id": "epoch-run",
+      "position": {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "publication_index": "3"
+      },
+      "transition": {
+        "witness_id": "native-witness-launch",
+        "kind": "launch",
+        "mechanism": "RunManager.Launch.postfix",
+        "previous_game_continuity_id": "run-synthetic",
+        "game_continuity_id": "run-synthetic",
+        "start_provenance": "new",
+        "graceful": null,
+        "victory": null
+      }
+    },
+    "expected_internal_callback_epoch": "epoch-run",
+    "callback_relabelled_by_postfix": false,
+    "new_epoch_at_Launch": false
+  },
+  "delayed_observation_case": {
+    "original_position": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "original_segment_id": "segment-original",
+    "source_seam": "native_card_preview",
+    "append_after": {
+      "epoch_id": "epoch-run",
+      "operation": "paused_ChangeSource",
+      "new_segment_id": "segment-next"
+    },
+    "expected_epoch_id": "epoch-title",
+    "expected_segment_id": "segment-original",
+    "original_position_is_before_or_at_pause_boundary": true
+  },
+  "paused_close_case": {
+    "pause_position": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "close_position": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "6"
+    },
+    "resume_observed": false,
+    "expected_closed_intervals": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "after_index": "10",
+        "through_index": "12",
+        "reason": "recording_paused"
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "after_index": "0",
+        "through_index": "6",
+        "reason": "recording_paused"
+      }
+    ],
+    "open_interval_remaining": false
+  },
+  "bootstrap_selection_case": {
+    "existing_recording_subscription": "subscription-source",
+    "new_observer_subscription": "subscription-other",
+    "reserved_original_publication_index": "5",
+    "expected_selected_subscriptions": [
+      "subscription-other",
+      "subscription-source"
+    ],
+    "permitted_exclusion_if_not_selected": "explicit_not_in_scope",
+    "exclusion_means_missing_native_exposure": false,
+    "Current_backfill_allowed": false
+  }
+}

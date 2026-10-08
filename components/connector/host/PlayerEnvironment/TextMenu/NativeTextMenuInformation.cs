@@ -102,7 +102,7 @@ internal static class NativeTextMenuInformation
             return FailClosedPage(legacy, RootOwnerKey(legacy),
                 "native_tip_owner_unresolved");
         if (_ownedScreen != null && !(nativeLogical && _ownedScreen is NHoverTipSet))
-            return CaptureOwned(legacy, entities);
+            return CaptureOwned(legacy, entities, nativeLogical);
 
         var leaves = new List<NativeTextMenuInformationLeaf>();
         AddDeckOpen(legacy, leaves);
@@ -116,7 +116,7 @@ internal static class NativeTextMenuInformation
         {
             AddRelicTipsOpen(entities, leaves, bindings);
             AddOtherTipLeaves(entities, leaves, bindings);
-            if (nativeLogical) AddNativeLogicalTips(legacy, entities, leaves, bindings);
+            if (nativeLogical) AddNativeLogicalTips(legacy.Snapshot, entities, leaves, bindings);
         }
         if (nativeLogical && _ownedScreen is NHoverTipSet tip && _ownedKind is { } tipKind
             && IsExactOwner(tip, tipKind))
@@ -308,7 +308,7 @@ internal static class NativeTextMenuInformation
 
     private static NativeTextMenuInformationCapture CaptureOwned(
         SnapshotBuildResult legacy,
-        NativeEntityRegistry entities)
+        NativeEntityRegistry entities, bool nativeLogical)
     {
         object screen = _ownedScreen!;
         string kind = _ownedKind!;
@@ -319,7 +319,7 @@ internal static class NativeTextMenuInformation
                 || screen is NInspectCardScreen card && !ConnectorMod.IsNodeVisible(card))
             {
                 ClearOwner();
-                return Capture(legacy, entities);
+                return Capture(legacy, entities, nativeLogical);
             }
             return FailClosedPage(legacy, key, "native_information_return_pending");
         }
@@ -448,7 +448,7 @@ internal static class NativeTextMenuInformation
         if (screen is NDeckViewScreen deck)
         {
             var visible = page.Referents.ToList();
-            AddDeckCardInspectLeaves(deck, entities, pageLeaves, visible);
+            if (!nativeLogical) AddDeckCardInspectLeaves(deck, entities, pageLeaves, visible);
             page = page with { Referents = visible };
         }
         return new NativeTextMenuInformationCapture(page, key, pageLeaves);
@@ -694,22 +694,40 @@ internal static class NativeTextMenuInformation
                 "Close tips", () => Return(_ownedScreen!, _ownedKind!)) });
     }
 
+    internal static TextMenuFrame AppendLogicalGridInformation(TextMenuFrame frame,
+        NativeLogicalGridState state, NativeEntityRegistry entities)
+    {
+        if (NHoverTipSet.shouldBlockHoverTips || state.Stage == "completed") return frame;
+        var bindings = new PublicInformationBindings(frame.Page);
+        var information = new List<NativeTextMenuInformationLeaf>();
+        AddOtherTipLeaves(entities, information, bindings, state.Owner);
+        if (state.Stage == "peek")
+            AddNativeLogicalTips(frame.Page, entities, information, bindings, state.Owner);
+        var leaves = frame.Leaves.Concat(information.Select(item => new TextMenuLeaf(item.Key,
+            item.Group, item.Verb, item.Label, item.SubjectReferentId, item.Arguments, item.Dispatch))).ToArray();
+        return frame with { Page = bindings.Page, Leaves = leaves };
+    }
+
     private static void AddOtherTipLeaves(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
-        PublicInformationBindings bindings)
+        PublicInformationBindings bindings, NCardGridSelectionScreen? selectorOwner = null)
     {
         if (ActiveHoverTipsField == null || NMapScreen.Instance?.IsOpen == true) return;
         bool noOverlay = NOverlayStack.Instance?.Peek() == null;
+        bool selectorCurrent = selectorOwner != null && NativeLogicalGridState.ExactOwner(selectorOwner);
+        bool battlefieldAvailable = noOverlay || selectorCurrent
+            && selectorOwner!.GetNodeOrNull<NPeekButton>("%PeekButton")?.IsPeeking == true;
         NCombatRoom? room = NCombatRoom.Instance;
-        Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node ?? room;
-        if (noOverlay && cardRoot != null)
+        Node? cardRoot = selectorCurrent ? selectorOwner
+            : NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node ?? room;
+        if ((noOverlay || selectorCurrent) && cardRoot != null)
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
                 if (holder.CardNode?.Visibility != ModelVisibility.Visible || holder.CardModel == null) continue;
                 AddSignalTipLeaf(entities, leaves, holder, "card_tips", Control.SignalName.FocusEntered,
-                    bindings.Card(entities.GetId(holder.CardModel, "card")));
+                    bindings.Card(entities.GetId(holder.CardModel, "card")), selectorOwner: selectorOwner);
             }
-        if (noOverlay && room != null && ConnectorMod.IsNodeVisible(room)
+        if (battlefieldAvailable && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
         {
             // Native RemoveCreatureNode retires input ownership immediately but
@@ -731,7 +749,7 @@ internal static class NativeTextMenuInformation
                 { bindings.Missing("power_owner"); continue; }
                 AddSignalTipLeaf(entities, leaves, power, "power_tips", Control.SignalName.MouseEntered,
                     bindings.Power(entities.GetId(model, "power"), owner!, model.Id.Entry,
-                        model.DisplayAmount, model.Owner.Powers.Contains(model)), owner, bindings.OwnerLabel(owner!));
+                        model.DisplayAmount, model.Owner.Powers.Contains(model)), owner, bindings.OwnerLabel(owner!), selectorOwner: selectorOwner);
             }
             NCreature[] creatures = VisibleNodes<NCreature>(room).ToArray();
             foreach (NIntent intent in VisibleNodes<NIntent>(room))
@@ -748,7 +766,7 @@ internal static class NativeTextMenuInformation
                 int nativeOrder = Array.FindIndex(current, value => ReferenceEquals(value, intent));
                 AddSignalTipLeaf(entities, leaves, intent, "intent_tips", Control.SignalName.MouseEntered,
                     bindings.Intent(entities.GetId(intent, "intent"), owner!, nativeOrder,
-                        current.Length, nativeOrder >= 0), owner, bindings.OwnerLabel(owner!));
+                        current.Length, nativeOrder >= 0), owner, bindings.OwnerLabel(owner!), selectorOwner: selectorOwner);
             }
             foreach (NCreature ownerNode in creatures)
             {
@@ -793,7 +811,7 @@ internal static class NativeTextMenuInformation
                     else
                         subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
                     AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
-                        subject, owner, bindings.OwnerLabel(owner!));
+                        subject, owner, bindings.OwnerLabel(owner!), selectorOwner: selectorOwner);
                 }
             }
         }
@@ -812,10 +830,13 @@ internal static class NativeTextMenuInformation
     }
 
     private static void AddNativeLogicalTips(
-        SnapshotBuildResult legacy, NativeEntityRegistry entities,
-        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
+        PlayerEnvironmentSnapshot page, NativeEntityRegistry entities,
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings,
+        NCardGridSelectionScreen? selectorOwner = null)
     {
-        if (NOverlayStack.Instance?.Peek() != null || NMapScreen.Instance?.IsOpen == true)
+        bool permittedPeek = selectorOwner != null && NativeLogicalGridState.ExactOwner(selectorOwner)
+            && selectorOwner.GetNodeOrNull<NPeekButton>("%PeekButton")?.IsPeeking == true;
+        if (NOverlayStack.Instance?.Peek() != null && !permittedPeek || NMapScreen.Instance?.IsOpen == true)
             return;
         var topBar = NRun.Instance?.GlobalUi.TopBar;
         if (topBar != null && ConnectorMod.IsNodeVisible(topBar))
@@ -823,7 +844,7 @@ internal static class NativeTextMenuInformation
             {
                 if (holder.Potion?.Model is not { } potion || !holder.IsEnabled) continue;
                 AddSignalTipLeaf(entities, leaves, holder, "potion_tips", Control.SignalName.FocusEntered,
-                    bindings.Potion(entities.GetId(potion, "potion")));
+                    bindings.Potion(entities.GetId(potion, "potion")), selectorOwner: selectorOwner);
             }
         NCombatRoom? room = NCombatRoom.Instance;
         if (room == null || !ConnectorMod.IsNodeVisible(room)
@@ -833,12 +854,12 @@ internal static class NativeTextMenuInformation
             if (!ConnectorMod.IsNodeVisible(creature) || creature.Hitbox.MouseFilter == Control.MouseFilterEnum.Ignore
                 || !ConnectorMod.IsNodeVisible(creature.Hitbox)) continue;
             AddSignalTipLeaf(entities, leaves, creature.Hitbox, "creature_tips", Control.SignalName.FocusEntered,
-                bindings.Existing(entities.GetId(creature.Entity, "creature"), "creature_subject"));
+                bindings.Existing(entities.GetId(creature.Entity, "creature"), "creature_subject"), selectorOwner: selectorOwner);
         }
         foreach (NStarCounter counter in VisibleNodes<NStarCounter>(room))
             AddSignalTipLeaf(entities, leaves, counter, "resource_tips", Control.SignalName.MouseEntered,
                 bindings.PublicControl(entities.GetId(counter, "resource_control"), "resource", "Stars",
-                    NativeLogicalPresentation.ResourceFacts(counter, legacy.Snapshot.Interaction.Content.Context)));
+                    NativeLogicalPresentation.ResourceFacts(counter, page.Interaction.Content.Context)), selectorOwner: selectorOwner);
     }
 
     private static T? VisibleAncestor<T>(Node source) where T : Control
@@ -872,26 +893,27 @@ internal static class NativeTextMenuInformation
     private static void AddSignalTipLeaf(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
         Control source, string group, StringName signal, PlayerEnvironmentReferent? subject,
-        string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false)
+        string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false,
+        NCardGridSelectionScreen? selectorOwner = null)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
         if (subject == null) return; // Binding owner marked the required catalog partial.
         string id = entities.GetId(source, "tip_source");
         leaves.Add(PublicInformationBindings.Leaf($"show_{group}:{id}", group, $"show_{group}", subject,
-            () => OpenSignalTip(source, group, signal, allowRewardOverlay), owner, ownerLabel));
+            () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner), owner, ownerLabel));
     }
 
     private static NativeInputResult OpenSignalTip(
         Control source, string group, StringName signal,
-        bool allowRewardOverlay)
+        bool allowRewardOverlay, NCardGridSelectionScreen? selectorOwner = null)
     {
         if (!ConnectorMod.IsNodeVisible(source)
             || source is NClickableControl { IsEnabled: false }
             || ActiveHoverTipsField?.GetValue(null) is not
                 Dictionary<Control, NHoverTipSet> active
-            || (allowRewardOverlay
-                ? !CanUseTopBarWithCurrentOverlay()
+            || (selectorOwner != null ? !NativeLogicalGridState.ExactOwner(selectorOwner)
+                : allowRewardOverlay ? !CanUseTopBarWithCurrentOverlay()
                 : NOverlayStack.Instance?.Peek() != null)
             || NMapScreen.Instance?.IsOpen == true)
             return NativeInputResult.Rejected("native_tip_owner_changed",

@@ -3259,5 +3259,84 @@
     "wire_fixture": "components/connector/contracts/fixtures/native-logical-v1.json:wire_samples.observation/capture",
     "producer": "NativeLogicalPublicFrame.Persistent is nullable; full-scope NativeLogicalProjector.Freeze preserves null and reports complete scope",
     "change": "persistent:null; capture byte_count/hash rederived from exact JSON bytes; no missing content fabricated"
+  },
+  "support_examples": {
+    "meaning": "Synthetic mechanical native-profile vocabulary admission; not complete native coverage or inherited artifact qualification.",
+    "valid": [
+      {
+        "interaction_kinds": [
+          "*"
+        ],
+        "action_verbs": [
+          "*"
+        ],
+        "kind": "new_valid_interaction",
+        "verb": "new_valid_verb",
+        "expected": "admitted_without_catalog_filter"
+      },
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "combat",
+        "verb": "end_turn",
+        "expected": "admitted_exact"
+      }
+    ],
+    "invalid_declarations": [
+      {
+        "field": "interaction_kinds",
+        "values": [
+          "*",
+          "combat"
+        ]
+      },
+      {
+        "field": "action_verbs",
+        "values": [
+          "*",
+          "end_turn"
+        ]
+      },
+      {
+        "field": "game_versions",
+        "values": [
+          "*"
+        ]
+      },
+      {
+        "field": "game_commits",
+        "values": [
+          "*"
+        ]
+      }
+    ],
+    "finite_rejections": [
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "new_valid_interaction",
+        "verb": "end_turn",
+        "expected": "unsupported_interaction"
+      },
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "combat",
+        "verb": "new_valid_verb",
+        "expected": "unsupported_action_verb"
+      }
+    ]
   }
 }

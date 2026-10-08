@@ -17,6 +17,10 @@ the explicit source-declaration recording foundation and generic bundle. Its
 synthetic checks do not qualify native coverage or Human origin; the legacy
 Human profile and bundle checks remain separate.
 
+The [source v2 attachment epoch contract](SOURCE_SESSION_PROFILE_V2.md) and its
+synthetic conformance fixture define the proposed one-lifecycle real producer
+integration. Production, native lifecycle and performance gates remain pending.
+
 The Platform root [Testing](../../../docs/TESTING.md) defines the shared
 portable versus exact-game evidence boundary. `LIVE_EVIDENCE_2026-08-22.md`
 and dated reports are evidence/history, not a current Platform identity
