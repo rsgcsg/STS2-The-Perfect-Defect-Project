@@ -309,7 +309,7 @@ def project_native_structured(
         observation["protocol_version"] != "1.0.0"
         or observation["schema"] != OBSERVATION_SCHEMA
         or observation["input_profile"] != PROFILE
-        or observation["status"] not in {"interactive", "settling", "terminal"}
+        or observation["status"] not in {"interactive", "settling", "observed", "terminal"}
         or completeness
         != {
             "status": "complete",

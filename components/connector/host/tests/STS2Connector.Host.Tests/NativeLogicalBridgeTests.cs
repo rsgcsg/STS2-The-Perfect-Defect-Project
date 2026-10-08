@@ -10,6 +10,8 @@ using Xunit;
 
 namespace STS2Connector;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.NativeLogicalCapture;
+
 public sealed class NativeLogicalBridgeTests
 {
     private sealed class Fixture : IDisposable
@@ -152,6 +154,92 @@ public sealed class NativeLogicalBridgeTests
         var replacement = fixture.Current();
         Assert.NotEqual(next.Capture.SnapshotId, replacement.Capture!.SnapshotId);
     }
+    [Theory]
+    [InlineData("inspect", "visible_unsupported")]
+    [InlineData("held", "visible_unsupported")]
+    [InlineData("potion", "visible_unsupported")]
+    [InlineData("inspect", "settling")]
+    [InlineData("held", "settling")]
+    [InlineData("potion", "settling")]
+    public void ValidNativeDisplayAndControlsCannotSealAnInheritedIncompleteHud(string family, string sourceReadiness)
+    {
+        using var fixture = new Fixture();
+        var before = fixture.Current();
+        var oldAction = Assert.Single(fixture.Owner.Store.Catalog(before.Capture!.CaptureId).Actions);
+        PlayerEnvironmentSnapshot source = fixture.Frame.Page with
+        {
+            Status = sourceReadiness, Persistent = null,
+            Completeness = new("partial", "inherited", "inherited",
+                new[] { "persistent_visible_state", "public_information_binding_power_owner",
+                    "page_entities_catalog_consistency", "finite_bound_action_projection_incomplete" },
+                new[] { "hidden_future_outcome" })
+        };
+        // These are the same production projections used after native label and
+        // exact enabled-control extraction. No scene or native input is invoked.
+        PlayerEnvironmentSnapshot page = ProjectEnteredPage(source, family, nativeLogical: true);
+        var leaves = new[]
+        {
+            fixture.Frame.Leaves[0],
+            fixture.Frame.Leaves[0] with { Key = "information", Verb = "show_card_tips" },
+            fixture.Frame.Leaves[0] with { Key = "peek", Verb = "close_peek" },
+            fixture.Frame.Leaves[0] with { Key = "return", Verb = "return_card_inspect" }
+        };
+        fixture.Frame = NativeLogicalCapture.Validate(fixture.Frame with
+            { Page = page, OwnerKey = "entered:" + family, Leaves = leaves });
+        Assert.Equal(sourceReadiness, fixture.Frame.Page.Status);
+        Assert.Equal("partial", fixture.Frame.Page.Completeness.Status);
+        Assert.Null(fixture.Frame.Page.Persistent);
+        Assert.Equal(source.Completeness.Missing.Order(StringComparer.Ordinal), fixture.Frame.Page.Completeness.Missing);
+        Assert.Equal(source.Completeness.HiddenByPolicy, fixture.Frame.Page.Completeness.HiddenByPolicy);
+        Assert.Empty(fixture.Frame.Leaves); // Includes tips, Peek and return.
+        NativeLogicalCurrentReply current = fixture.Current();
+        Assert.Equal("source_capture_incomplete", current.Status);
+        Assert.Null(current.Capture);
+        Assert.Null(fixture.Owner.Revalidate(before.Capture.SnapshotId, oldAction.ActionId));
+        Assert.Equal(0, fixture.Dispatches);
+    }
+
+    [Theory]
+    [InlineData("inspect")]
+    [InlineData("held")]
+    [InlineData("potion")]
+    public void NativePageProjectionRetainsUnexplainedInheritedFailureButTextCompatibilityDoesNotChange(string family)
+    {
+        using var fixture = new Fixture();
+        PlayerEnvironmentSnapshot source = fixture.Frame.Page with
+        {
+            Status = "visible_unsupported",
+            Completeness = new("visible_unmapped", "unknown", "unknown", Array.Empty<string>(), new[] { "hidden_future_outcome" })
+        };
+        PlayerEnvironmentSnapshot native = ProjectEnteredPage(source, family, nativeLogical: true);
+        Assert.Equal("partial", native.Completeness.Status);
+        Assert.Equal("visible_unsupported", native.Status);
+        Assert.Equal(source.Completeness.HiddenByPolicy, native.Completeness.HiddenByPolicy);
+        PlayerEnvironmentSnapshot compatibility = ProjectEnteredPage(source, family, nativeLogical: false);
+        Assert.Equal("complete", compatibility.Completeness.Status);
+        Assert.Equal("interactive", compatibility.Status);
+        Assert.Empty(compatibility.Completeness.Missing);
+        Assert.Empty(compatibility.Completeness.HiddenByPolicy);
+    }
+
+    private static PlayerEnvironmentSnapshot ProjectEnteredPage(PlayerEnvironmentSnapshot source, string family, bool nativeLogical)
+    {
+        var surface = new JsonObject { ["kind"] = "current_display", ["displayed_title"] = "Defend",
+            ["displayed_cost"] = "1", ["displayed_description"] = "Gain 5 Block." };
+        return family switch
+        {
+            "inspect" => NativeTextMenuInformation.PreserveInformationScope(source,
+                new(NativeTextMenuInformation.ProjectCardInspectPage(source, "Defend", "1", "Gain 5 Block.", true),
+                    "entered_inspect", Array.Empty<NativeTextMenuInformationLeaf>()), nativeLogical).Page,
+            "held" => NativeTextMenuFrameBuilder.ProjectHeldCardPage(source, source.Referents, surface,
+                "native_targeting", displayComplete: true, nativeLogical),
+            "potion" => NativeLogicalCapturePolicy.PreserveNativeScope(source,
+                NativeTextMenuFrameBuilder.ProjectPotionTargetPage(source, source.Referents, surface),
+                NativeLogicalProjectionReplacement.PotionTarget, nativeLogical),
+            _ => throw new ArgumentOutOfRangeException(nameof(family))
+        };
+    }
+
     [Fact]
     public async Task InitialAttachReservesItsOwnPositionAndPartialSourceIsExplicitMissing()
     {

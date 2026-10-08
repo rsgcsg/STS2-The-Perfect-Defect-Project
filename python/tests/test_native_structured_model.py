@@ -24,7 +24,7 @@ from stpd.fullrun.native_structured_inputs import (
 from stpd.fullrun.native_structured_sequences import SOURCE_SCHEMA, parse_native_sequence
 from stpd.models.native_structured_scorer import NativeStructuredScorer
 from stpd.models.structured_m2 import StructuredM2
-from stpd.native_code_scope import PATHS
+from stpd.native_code_scope import PATHS, REQUIRED_METHODS
 from stpd.policy.native_agent import (
     LIMIT_MAXIMA,
     MAX_STATE_BYTES,
@@ -377,7 +377,7 @@ def agent_files(tmp_path):
                 "modset_fingerprint": "fixture",
                 "loaded_mod_ids": [],
             },
-            "required_methods": ["attach", "events", "read", "catalog", "submit", "await"],
+            "required_methods": list(REQUIRED_METHODS),
         },
         "support": {
             "game_versions": ["synthetic"],

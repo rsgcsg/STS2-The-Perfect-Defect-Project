@@ -16,7 +16,7 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest, json_by
 
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROFILE, PROJECTION_VERSION, SCOPE
 from ..models.native_structured_scorer import NativeStructuredScorer
-from ..native_code_scope import native_code_sha256
+from ..native_code_scope import REQUIRED_METHODS, native_code_sha256
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .native_structured_export import (
@@ -250,8 +250,9 @@ class NativeStructuredAgent:
         methods = requirements["required_methods"]
         if (
             not isinstance(methods, list)
+            or any(not isinstance(method, str) or not method for method in methods)
             or len(set(methods)) != len(methods)
-            or not {"attach", "events", "read", "catalog", "submit", "await"} <= set(methods)
+            or not set(REQUIRED_METHODS) <= set(methods)
         ):
             raise BoundaryError("native_agent", "required_native_methods")
         recovery = input_spec["state_recovery"]
@@ -559,14 +560,13 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             or not isinstance(current[0], str)
             or not current[0]
             or type(current[1]) is not int
-            or current[1] < 0
+            or not 0 <= current[1] <= 2**53 - 1
             or context is not None
-            and current != context
+            and (current[0] != context[0] or current[1] < context[1])
         ):
             raise BoundaryError("native_agent", "message_session_or_size")
-        context = current
         if kind == "consume_ack":
-            if request != pending_request:
+            if current != context or request != pending_request:
                 raise BoundaryError("native_agent", "consume_ack_request_binding")
             agent.scorer.acknowledge(message["completion"])
             pending_request = None
@@ -576,6 +576,10 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
         seen.add(request)
         if pending_request is not None:
             raise BoundaryError("native_agent", "consume_ack_before_next_required")
+        # Recovery epoch is the parent's operational fence, not model history.
+        # Only a fresh idle command can advance it in this physical session.
+        # An acknowledgement remains bound to the epoch of its Consume.
+        context = current
         if kind == "consume":
             result, output_kind, field = agent.consume(message["input"]), "consumed", "completion"
             pending_request = request

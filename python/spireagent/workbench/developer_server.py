@@ -39,6 +39,7 @@ from spireagent.workbench.native_workbench import (
     WorkbenchRegistrationLoop,
     start_workbench_registration,
 )
+from spireagent.workbench.service_process import service_environment, service_process
 
 
 @contextlib.contextmanager
@@ -124,7 +125,7 @@ def open_project(
             if report["status"] != "PASS":
                 raise BoundaryError("project", "doctor_blocked")
             config.state_dir.mkdir(parents=True, exist_ok=True)
-            environment = dict(os.environ)
+            environment = service_environment(config.state_dir)
             environment.pop("STPD_HUB_ADMIN_TOKEN", None)
             command = [sys.executable]
             if expected_identity is not None:
@@ -1547,7 +1548,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         body["model_id"], environment_kind=body.get("environment_kind", "native"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
-                    self.respond(409, json.dumps({"error": error.code}).encode())
+                    from spireagent.workbench.local_model_registration import (
+                        RegistrationStorageError,
+                    )
+
+                    if isinstance(error, RegistrationStorageError):
+                        self.respond(500, json.dumps(error.public_failure()).encode())
+                    else:
+                        self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_model_registration_request"}')
                 return
@@ -1678,7 +1686,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
 def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str, Any]:
     if doctor(config)["status"] != "PASS":
         raise BoundaryError("project", "doctor_blocked")
-    with instance_lock(config.state_dir / "instance.lock"):
+    with service_process(config.state_dir) as resources, instance_lock(
+        config.state_dir / "instance.lock"
+    ):
         app = Application(config, config_path=config_path)
         server = create_server(app)
         previous_signal = signal.getsignal(signal.SIGTERM)
@@ -1697,6 +1707,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     "configuration_id": configuration_id(config),
                     "pid": os.getpid(),
                     "identity": app.identity,
+                    "process_resources": resources,
                     "delivery": "configured" if config.delivery_config else "not_configured",
                 },
             )

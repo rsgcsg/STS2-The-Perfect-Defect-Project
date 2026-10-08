@@ -72,6 +72,17 @@ layout files are not migrated because no evidence or consumer contract depends
 on their geometry. See the canonical
 [UI and interaction specification](../../docs/UI_INTERACTION_SPEC.md).
 
+## Initial scene attachment
+
+Initialization schedules one main-thread deferred mount, then verifies that the
+layer and panel entered the captured SceneTree before preparing the panel. The
+ready log is published only after preparation succeeds. Root exit cancels an
+already queued callback; duplicate initialization/callbacks cannot mount twice.
+Attachment or preparation failure disposes the panel and layer once, reports the
+failure, and does not retry automatically. Portable lifecycle fixtures cover this
+ordering; the exact candidate still needs a cold-start, busy-tree, shutdown and
+open-panel runtime canary before the mount is qualified.
+
 ## Ownership and validation
 
 This component consumes typed Connector, Policy Runtime and Annotator services.

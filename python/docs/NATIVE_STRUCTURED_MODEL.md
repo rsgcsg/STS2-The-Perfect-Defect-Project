@@ -157,3 +157,23 @@ content remains generic; nullable fields retain their actual domains. Malformed
 kind/stage or metadata cannot receive a synthetic conformance stamp or reach
 training. Online rejection also preserves W and leaves no pending Consume.
 These checks validate input shape, not native legality or scientific admission.
+
+A complete `observed` public view is a valid native input alongside interactive,
+settling and terminal. It carries no inferred readiness, Commit, successor or
+outcome. Actual new occurrences advance W once; empty C remains a bounded Await
+without a fake candidate, status rewrite or terminal inference.
+
+The exact Model schema gate and fixed native required-method declaration are
+available in the lightweight `native_code_scope` module. The exporter re-exports
+the same gate; merely classifying a Model does not import Torch, NumPy,
+safetensors, tokenizers or Qwen. Native manifests declare the 15 fixed public
+methods, including retain/renew/release required by full-reference retention and
+subscription lifecycle. Missing lifecycle methods reject binding rather than
+silently repairing the caller's requirements.
+
+Production registration uses the Connector-owned fixed publication-profile-v1
+13-seam target, version 1 and complete_at_seam for every required entry. The
+application consumes its public SDK/profile identity; the current advertised
+subset does not redefine that target. Registration remains blocked until the
+source fulfills it. This target and synthetic conformance fixtures do not imply
+all native-family/L64 coverage, installed behavior or Human qualification.

@@ -7,9 +7,11 @@ remain separate, and the current Connector remains the environment authority.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from pathlib import Path
@@ -49,6 +51,27 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
+
+
+class RegistrationStorageError(BoundaryError):
+    """A terminal storage failure with a safe correlation ID for the local log."""
+
+    def __init__(self, error: sqlite3.DatabaseError) -> None:
+        self.error_id = uuid.uuid4().hex
+        super().__init__(
+            "local_model_registration", "registration_verification_storage_failed",
+            "inspect verification storage and service resource limits before an explicit retry",
+        )
+        logging.getLogger(__name__).error(
+            "registration storage failure error_id=%s sqlite_errorcode=%s sqlite_errorname=%s",
+            self.error_id, getattr(error, "sqlite_errorcode", None),
+            getattr(error, "sqlite_errorname", None), exc_info=True,
+        )
+
+    def public_failure(self) -> dict[str, str]:
+        return {"error": self.code, "stage": self.stage, "category": "storage",
+                "status": "failed", "error_id": self.error_id}
+
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
@@ -731,7 +754,13 @@ class LocalModelRegistration:
 
     def register(self, model_id: object, *, environment_kind: str = "native") -> dict[str, Any]:
         _target_kind(environment_kind)
-        result = self._register(model_id, environment_kind=environment_kind)
+        try:
+            result = self._register(model_id, environment_kind=environment_kind)
+        except sqlite3.DatabaseError as error:
+            # Verification can use private, disk-backed decision rows before any
+            # registration is published. A storage fault must finish the POST as
+            # a classified failure, rather than disconnecting the browser thread.
+            raise RegistrationStorageError(error) from error
         if environment_kind == "managed":
             result["environment_kind"] = environment_kind
         return result

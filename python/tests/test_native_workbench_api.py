@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -457,3 +458,34 @@ def test_rejected_ordinary_start_preserves_pending_native_intent(native_http, ru
     finally:
         release.set()
     finish_model(app)
+
+
+def test_registration_sqlite_failure_is_safe_unconfirmed_without_replay(
+    native_http, tmp_path, monkeypatch, caplog,
+):
+    app, call, pair, _root, _secret, _peer = native_http
+    storage_path = tmp_path / "private-rows.sqlite"
+    with sqlite3.connect(storage_path) as database:
+        database.execute("CREATE TABLE rows(body TEXT)")
+    attempts = []
+
+    def fail_verification(model_id, *, environment_kind):
+        attempts.append((model_id, environment_kind))
+        with sqlite3.connect(storage_path.as_uri() + "?mode=ro", uri=True) as database:
+            database.execute("INSERT INTO rows VALUES ('synthetic')")
+
+    monkeypatch.setattr(app.local_model_registration, "_register", fail_verification)
+    result = call(*command("models.register", {"model_id": "d" * 64}))
+    assert result["binding"] == pair.to_dict()
+    assert result["request_id"] == "c" * 32
+    assert result["status"] == "unconfirmed"
+    assert result["error"] == {
+        "code": "registration_verification_storage_failed", "automatic_retry": False,
+    }
+    assert result["owner_response"] is None
+    assert attempts == [("d" * 64, "native")]
+    assert str(storage_path) not in json.dumps(result)
+    assert "Traceback" not in json.dumps(result)
+    assert "sqlite_errorname=SQLITE_READONLY" in caplog.text
+    assert call("/health", headers={}) == {"instance_id": app.instance_id}
+    assert len(attempts) == 1

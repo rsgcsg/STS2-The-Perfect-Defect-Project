@@ -241,6 +241,72 @@ public sealed class NativeLogicalCaptureTests
         Assert.Equal("observed", NativeLogicalCapturePolicy.ProjectionStatus("completed", "interactive", preview));
     }
 
+    [Theory]
+    [InlineData("interactive", true, "visible_unsupported")]
+    [InlineData("settling", true, "settling")]
+    [InlineData("interactive", false, "settling")]
+    public void MissingHeldCardLabelsRetainNativeReadinessWithoutChangingTextCompatibility(
+        string actualSourceStatus, bool nativeLogical, string expectedStatus)
+    {
+        PlayerEnvironmentSnapshot source = Snapshot() with { Status = actualSourceStatus };
+        PlayerEnvironmentSnapshot page = NativeTextMenuFrameBuilder.ProjectHeldCardPage(source,
+            source.Referents, new JsonObject { ["kind"] = "combat_card_operation" }, "native_targeting",
+            displayComplete: false, nativeLogical);
+        Assert.Equal(expectedStatus, page.Status);
+        Assert.Equal("partial", page.Completeness.Status);
+        Assert.Equal(new[] { "current_native_card_display" }, page.Completeness.Missing);
+        Assert.Empty(NativeLogicalCapture.Validate(new(page, "held", new[] { Leaf("cancel", "root", "cancel_card_play") })).Leaves);
+    }
+
+    [Fact]
+    public void NativeInformationFailureReportsItsOwnGapAndKeepsBothHiddenPolicies()
+    {
+        PlayerEnvironmentSnapshot inherited = Snapshot() with
+        {
+            Completeness = new("partial", "inherited", "inherited", new[] { "persistent_visible_state" }, new[] { "hidden_future_outcome" })
+        };
+        PlayerEnvironmentSnapshot unresolved = inherited with
+        {
+            Interaction = inherited.Interaction with { Kind = "native_information_unresolved", Stage = "unresolved" },
+            Completeness = inherited.Completeness with { HiddenByPolicy = new[] { "hidden_draw_order" } }
+        };
+        PlayerEnvironmentSnapshot native = NativeLogicalCapturePolicy.PreserveNativeScope(inherited,
+            unresolved, NativeLogicalProjectionReplacement.InformationPage, nativeLogical: true);
+        Assert.Equal("visible_unsupported", native.Status);
+        Assert.Equal("partial", native.Completeness.Status);
+        Assert.Equal(new[] { "current_native_information_projection_incomplete", "persistent_visible_state" }, native.Completeness.Missing);
+        Assert.Equal(new[] { "hidden_draw_order", "hidden_future_outcome" }, native.Completeness.HiddenByPolicy);
+        Assert.Equal("unresolved", native.Interaction.Stage);
+    }
+
+    [Fact]
+    public void ValidHeldDisplayReplacesOnlyItsKnownMissingSlice()
+    {
+        PlayerEnvironmentSnapshot source = Snapshot() with
+        {
+            Status = "visible_unsupported",
+            Completeness = new("partial", "legacy", "legacy", new[] { "current_native_card_display" }, Array.Empty<string>())
+        };
+        PlayerEnvironmentSnapshot native = NativeTextMenuFrameBuilder.ProjectHeldCardPage(source,
+            source.Referents, new JsonObject { ["kind"] = "combat_card_operation" }, "native_targeting",
+            displayComplete: true, nativeLogical: true);
+        Assert.Equal("interactive", native.Status);
+        Assert.Equal("complete", native.Completeness.Status);
+        Assert.Empty(native.Completeness.Missing);
+    }
+
+    [Fact]
+    public void CompletedInformationReturnDoesNotReopenInputOnUnderlyingObservedRoom()
+    {
+        PlayerEnvironmentSnapshot underlying = Snapshot() with { Status = "observed" };
+        var captured = new NativeTextMenuInformationCapture(underlying, "underlying_room",
+            Array.Empty<NativeTextMenuInformationLeaf>());
+        NativeTextMenuInformationCapture result = NativeTextMenuInformation.PreserveInformationScope(
+            Snapshot(), captured, nativeLogical: true);
+        Assert.Same(captured, result);
+        Assert.Equal("observed", result.Page.Status);
+    }
+
     private sealed class PotionOwnerFixture
     {
         public bool ShouldCancelTargeting() => throw new InvalidOperationException("Owner probe must not invoke native delegates.");

@@ -9,6 +9,11 @@ from .canonical import semantic_hash
 from .structured_code_scope import INFERENCE_PATHS, ROOT, TRAINING_PATHS, _regular_bytes
 
 SCOPE = "native-structured-inference-code-closure-v1"
+MODEL_SCHEMA = "stpd/native-structured-m2-model-v1"
+REQUIRED_METHODS = (
+    "capabilities", "attach", "current", "events", "await", "cancel_wait", "detach",
+    "renew", "read", "catalog", "resolve", "retain", "release", "submit", "result",
+)
 PATHS = tuple(
     sorted(
         set(INFERENCE_PATHS) - {"stpd/policy/structured_port.py"}
@@ -22,6 +27,11 @@ PATHS = tuple(
         }
     )
 )
+
+
+def is_native_model_schema(schema: object) -> bool:
+    """Lightweight exact artifact gate; importing it requires no numerical backend."""
+    return schema == MODEL_SCHEMA
 
 
 def native_code_identity(root: Path = ROOT) -> dict[str, str]:
