@@ -238,8 +238,13 @@ Every Map global entry rechecks the exact Map input owner, named control/contain
 visibility, enabled/process and native focus-disable conditions. Deck honors
 native TestMode; tips honor the global hover-block/debug-hide conditions. Native
 modal/inspect/capstone ownership takes priority; rendered nonmodal tips keep the
-Map catalog and its scope failures. Map composition never appends underlying
-combat, hand or pile actions. These are source/Host-test guarantees; actual initial
+Map catalog and its scope failures. Submitted Map departures (Deck/relic inspect,
+Back/top-bar close and travel) exit the retained exact native tip source before
+invoking their original native input. This balances the source focus latch before
+capstone cleanup or owner replacement; it never runs from Capture/Read. A stale
+source rejects before input; an exception or target rejection after native exit is
+unknown, with no retry. Annotation retains its original input path. Map composition
+never appends underlying combat, hand or pile actions. These are source/Host-test guarantees; actual initial
 Map eligibility and exact-package journeys require separate runtime evidence.
 
 Missing or inconsistent required public bindings explicitly mark completeness
