@@ -1,0 +1,6 @@
+# This release projection is deny-by-default, not another source tree.
+*
+!.gitignore
+!README.md
+!workshop.json
+!image.png
