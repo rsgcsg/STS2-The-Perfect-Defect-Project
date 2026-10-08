@@ -112,6 +112,15 @@ npm run evidence -- verify-human-bundle /path/to/session-bundle
 
 ## Transfer And Receive
 
+[Explicit carrier recovery](CARRIER_RECOVERY.md) creates a separate exact-inventory
+Human bundle carrier when only enumerated unlisted metadata polluted a directory.
+`sts2_platform_evidence.carrier_recovery.recover_human_bundle_carrier` preserves
+original bytes, manifest/attestation and source identities, records the original
+carrier and excluded metadata hashes outside the recovered bundle, and uses the
+unchanged typed verifier and receiver. It is an explicit operation, never an
+automatic import fallback or a new Human/use/Gold authority. Directory input is
+the first supported form; no permissive archive extraction is added.
+
 ```bash
 npm run evidence -- transfer-manifest /path/to/session-bundle \
   --content-id <bundle_content_id> \
