@@ -158,6 +158,61 @@ requires operator recovery. Older kits without the capability retain their
 existing initialization behavior and do not receive this entry. This entry is
 currently macOS-only; Windows is not qualified.
 
+### Reviewed launcher replacement and recovery
+
+Launcher publication belongs to this installer. Ordinary same-profile install and
+explicit replacement share `install.lock`; replacement requires **both** observed
+`launcher.json` and `open` SHA256 values. Both are rechecked under that lock. A
+partial pair, changed digest or one-sided argument fails before pair publication.
+The private configuration is never rewritten by the launcher owner.
+
+The installer uses one durable byte writer for install and restore. Prepared,
+installed and restored binding JSON uses the same canonical bytes, including its
+newline; the script and POSIX modes are also exact (`0600` binding, `0700` script).
+If a write fails, the owner attempts to restore both prior files. A failed rollback
+reports `launcher_recovery_required` and leaves the actual partial result for
+inspection. Two replacements are not a crash-atomic transaction: a reader may
+briefly reject a mismatched pair, and a hard kill may require explicit recovery.
+
+Prepare the release's dependencies with `initialize --defer-launcher` when the
+global launcher must stay selected until review. This flag only defers launcher
+publication; normal initialization still uses its existing profile, dependency
+and Runtime owners. Then use the bounded owner commands:
+
+- `backup-launcher --snapshot-directory /ABS/history --expected-launcher-binding-sha256 HASH --expected-open-sha256 HASH`
+  preserves the exact current pair and modes as **non-launchable history**. Its
+  manifest records `config_inventory` as `existing_regular_file` or `missing`.
+  An absent, absolute, normalized, nonsymlink config path may be recorded without
+  creating or reconstructing it. This history never grants restore eligibility.
+- `prepare-launcher-target --directory /ABS/releases/KIT_HASH --config /ABS/private/project.json --snapshot-directory /ABS/target`
+  validates the complete immutable release, existing config's archived
+  combination, source identity and isolated target Python 3.11 environment. The
+  bounded probe verifies the archive-pinned installed Evidence import; it starts
+  no Workbench, game, training or installation. The release initialization lock
+  remains held through validation. Target snapshots contain only launcher files
+  and a manifest, never configuration contents or credentials.
+- `restore-launcher --snapshot-directory /ABS/target --snapshot-manifest-sha256 HASH --expected-launcher-binding-sha256 HASH --expected-open-sha256 HASH`
+  revalidates that prepared target, including its still-existing config and usable
+  interpreter, before replacing the current pair under the same two-hash guard.
+  Historical snapshots cannot be restored. Source/config/environment drift is a
+  rejection, not permission to reconstruct a missing profile.
+
+These are arguments to the selected verified release's installer; they do not
+fetch a release or qualify a loaded Mod. Snapshot directories must be new private
+absolute paths outside the selected release and fixed launcher directory. Existing
+snapshots are immutable, and both file hashes must be observed again before an
+explicit subsequent replacement. `install-launcher` also accepts the same two
+expected-hash flags for an explicitly reviewed rebind.
+
+The fixed native `/open` entry and browser `project open` retain their current
+launch and expected-running-identity checks. Native Workbench access additionally
+binds the exact launcher bytes. Even JSON-format-only changes can invalidate an
+existing bootstrap. Publication leaves `native-access.json` untouched: no secret
+is copied into snapshots, silently rotated or relabelled as valid. Revalidate
+through the separate explicit `native-access` owner after selecting a compatible
+launcher/config/Mod. A disabled bootstrap remains disabled unless explicitly
+enabled; a different-config bootstrap still requires its own recovery.
+
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in
