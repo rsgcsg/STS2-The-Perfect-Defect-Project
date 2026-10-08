@@ -128,6 +128,8 @@ TRAINING_PATHS = tuple(
         (
             *_SHARED_PATHS,
             "stpd/ordered_source_spec.py",
+            "stpd/policy/__init__.py",
+            "stpd/policy/native_task.py",
             "stpd/fullrun/ordered_source.py",
             "stpd/fullrun/native_structured_inputs.py",
             "stpd/fullrun/native_structured_sequences.py",
