@@ -90,3 +90,67 @@ A copied checkpoint closure may omit sibling run events. A requested resume atte
 ID must therefore be fresh against every checkpoint ancestor as well as local
 event history, before engine initialization or publication. A fresh attempt can
 resume the same verified copied closure; transferring it does not renew budgets.
+
+## Explicit scoped identities
+
+Existing APIs retain their legacy defaults: package-v1 and run-v2/checkpoint-v2
+still bind every `stpd`/`spireagent` Python source and the whole dependency lock.
+Their strict checks are not reinterpreted after a schema or digest rename. The
+final-only run-v1/checkpoint-v1 path still has no resume guarantee.
+
+New callers may explicitly select `TRAINING_SCOPE` from
+`stpd.structured_code_scope` when preparing a workload. This creates run-v3 and
+checkpoint-v3. The fixed reviewed source inventory includes projection, graph,
+configuration, numerical execution, checkpoint verification, run preparation and
+publication owners, their package initializers, and shared storage/codec helpers.
+The source closure SHA and complete `uv.lock` SHA are separate exact fields.
+Unrelated Workbench/Hub source is excluded. Missing or symlinked source fails
+closed; artifacts never select an executable file inventory. Static import and
+lazy-export checks supplement clean-process inventories, rather than deriving a
+scope from one successful import.
+
+Execute a scoped run with its original run producer as the existing positional
+argument and an explicit current `attempt_producer`. The application supplies
+current source provenance through its existing trusted source identity owner.
+The worker independently recomputes current scoped code, runtime, input and
+configuration identity before restoring or advancing. An unrelated application
+commit may therefore change the current attempt producer without changing the
+numerical identity. Each new checkpoint, event, model and report preserves that
+actual attempt producer; the immutable run and package training provenance retain
+the original producer. The cumulative budget and explicit resume ancestry remain
+unchanged. Scope/schema switches are rejected before numerical restore; rewriting
+an old checkpoint is not an exact-resume migration.
+
+A completed scoped run exports package-v2 with `INFERENCE_SCOPE`. Direct scoped
+export additionally requires original training and current export producers and
+explicit run/training-input/checkpoint IDs. These supplied facts are provenance;
+standalone package verification does not independently attest that training ran.
+Workload completion separately verifies their immutable parent bindings and
+weight equality. Package-v2 separately binds its actual weights, graph/projection,
+training data/teacher, code closure, dependency lock and declared CPU/float32
+inference ABI. Installation keeps its existing callable APIs and dispatches only
+between these verified schemas: config-v2 and adapter version 1.1.0 use the
+explicit inference scope. The binder remains a trusted application edge governed
+by its installed source provenance; binder changes do not invalidate weights.
+
+Numerical resume remains exact for Python, OS, machine architecture, Torch/Numpy,
+codec, threads and deterministic settings. Portable inference instead requires
+the declared `structured-inference-cpu-float32-codec-v2` profile: exact Torch
+version (including any wheel local-version suffix), codec version, CPU/float32,
+graph and weight shape/type. Exporter Python/OS/machine are recorded solely as
+provenance, so a different source platform does not automatically reject a model.
+Cross-platform fixtures exercise this admission rule; actual remote-to-local
+model inference and numerical equivalence still need their own evidence. No
+cross-platform bitwise training/resume claim is made.
+
+No old-package migration or checkpoint warm-start migration is implemented.
+Old packages remain immutable and require their original strict identity.
+Applications must explicitly opt in and dispatch run-v3/checkpoint-v3 before
+using scoped workloads; the default application recipe is not silently upgraded.
+
+A durable publication-phase checkpoint can retain an earlier attempt's producer
+when a later compatible attempt exports its already-complete numerical state.
+The checkpoint creator remains independently validated; result, model, report
+and package export provenance must agree on the actual exporting producer.
+Reconciliation verifies those existing identities without stamping its own
+producer onto them or replaying numerical work.

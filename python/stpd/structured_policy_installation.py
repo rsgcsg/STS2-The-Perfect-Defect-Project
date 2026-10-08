@@ -14,6 +14,14 @@ from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
+from .structured_code_scope import (
+    INFERENCE_SCOPE,
+    SCOPED_ADAPTER_VERSION,
+    SCOPED_CONFIG_SCHEMA,
+    SCOPED_PACKAGE_SCHEMA,
+    code_identity,
+    code_sha256,
+)
 from .token_policy_installation import _manifest_artifact_path
 
 CONFIG_SCHEMA = "stpd/structured-policy-config-v1"
@@ -59,23 +67,29 @@ def bind_structured_export(
     manifest_path = _bound_path(binding_root, manifest_path)
     if config_path == manifest_path or config_path.exists() or manifest_path.exists():
         raise BoundaryError("structured_policy", "invalid_binding_destination")
-    config = {"schema": CONFIG_SCHEMA, "export_path": str(export_path),
+    scoped = package["schema"] == SCOPED_PACKAGE_SCHEMA
+    schema = SCOPED_CONFIG_SCHEMA if scoped else CONFIG_SCHEMA
+    scope = INFERENCE_SCOPE if scoped else CODE_SCOPE
+    identity = {"code_identity": code_identity(INFERENCE_SCOPE, root)} if scoped else {}
+    config = {"schema": schema, "export_path": str(export_path),
               "export_manifest_sha256": hashlib.sha256(json_bytes(package)).hexdigest(),
               "model_id": package["model_id"]}
     manifest = {
         "schema": "sts2.policy-runtime/policy-manifest-1", "manifest_id": manifest_id,
         "policy": policy,
-        "adapter": {"id": ADAPTER, "version": "1.0.0", "protocol": PROTOCOL,
-                    "code_sha256": code_digest(root)},
+        "adapter": {"id": ADAPTER,
+                    "version": SCOPED_ADAPTER_VERSION if scoped else "1.0.0", "protocol": PROTOCOL,
+                    "code_sha256": (code_sha256(INFERENCE_SCOPE, root) if scoped
+                                    else code_digest(root))},
         "artifact": {"id": config["model_id"], "path": _manifest_artifact_path(
             export_path / MANIFEST_NAME, manifest_path.parent),
             "sha256": config["export_manifest_sha256"]},
         "representation": {"id": PROJECTION["id"], "version": PROJECTION["version"],
                            "input_schema": PROJECTION["source_schema"]},
         "requirements": requirements, "support": support,
-        "adapter_config": {"stage1a": {"code_digest_scope": CODE_SCOPE, "config": {
+        "adapter_config": {"stage1a": {"code_digest_scope": scope, **identity, "config": {
             "path": config_path.relative_to(binding_root).as_posix(),
-            "sha256": hashlib.sha256(json_bytes(config)).hexdigest(), "schema": CONFIG_SCHEMA}}},
+            "sha256": hashlib.sha256(json_bytes(config)).hexdigest(), "schema": schema}}},
         "claims": CLAIMS,
     }
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,18 +116,23 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     config = object_fields(_object_file(config_path), {
         "schema", "export_path", "export_manifest_sha256", "model_id",
     }, "structured_policy.config")
-    if config["schema"] != CONFIG_SCHEMA or not isinstance(config["export_path"], str):
+    scoped = config["schema"] == SCOPED_CONFIG_SCHEMA
+    if config["schema"] not in {CONFIG_SCHEMA, SCOPED_CONFIG_SCHEMA} or not isinstance(
+        config["export_path"], str):
         raise BoundaryError("structured_policy", "unsupported_config")
     export = Path(config["export_path"])
     if not export.is_absolute():
         raise BoundaryError("structured_policy", "absolute_export_path_required")
     manifest = _object_file(manifest_path)
-    pin = {"code_digest_scope": CODE_SCOPE, "config": {
+    pin = {"code_digest_scope": INFERENCE_SCOPE if scoped else CODE_SCOPE,
+           **({"code_identity": code_identity(INFERENCE_SCOPE, root)} if scoped else {}),
+           "config": {
         "path": config_path.relative_to(binding_root).as_posix(),
-        "sha256": file_sha256(config_path), "schema": CONFIG_SCHEMA}}
+        "sha256": file_sha256(config_path), "schema": config["schema"]}}
     if (manifest.get("adapter_config") != {"stage1a": pin}
             or manifest.get("claims") != CLAIMS
-            or manifest.get("adapter", {}).get("code_sha256") != code_digest(root)
+            or manifest.get("adapter", {}).get("code_sha256") != (
+                code_sha256(INFERENCE_SCOPE, root) if scoped else code_digest(root))
             or manifest.get("artifact") != {
                 "id": config["model_id"], "path": _manifest_artifact_path(
                     export / MANIFEST_NAME, manifest_path.parent),
@@ -129,13 +148,14 @@ def arguments(entry: dict[str, Any]) -> list[str]:
     config = object_fields(_object_file(Path(entry["config"])), {
         "schema", "export_path", "export_manifest_sha256", "model_id",
     }, "structured_policy.config")
-    if config["schema"] != CONFIG_SCHEMA or not Path(config["export_path"]).is_absolute():
+    if config["schema"] not in {CONFIG_SCHEMA, SCOPED_CONFIG_SCHEMA} or not Path(
+        config["export_path"]).is_absolute():
         raise BoundaryError("structured_policy", "unsupported_config")
     manifest_path = Path(entry["manifest"])
     manifest = _object_file(manifest_path)
     pin = manifest.get("adapter_config", {}).get("stage1a", {}).get("config", {})
     artifact = manifest.get("artifact", {})
-    if (pin.get("schema") != CONFIG_SCHEMA
+    if (pin.get("schema") != config["schema"]
             or pin.get("sha256") != file_sha256(Path(entry["config"]))
             or artifact.get("id") != config["model_id"]
             or artifact.get("sha256") != config["export_manifest_sha256"]

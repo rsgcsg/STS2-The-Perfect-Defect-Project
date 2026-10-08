@@ -34,7 +34,7 @@ from ..fullrun.structured_sequences import (
 )
 from ..models.structured_m2 import GRAPH_ID
 from ..models.structured_training import StructuredTrainingConfig, train_structured_model
-from ..policy.structured_export import ROOT, export_structured_package
+from ..structured_code_scope import LEGACY_SCOPE, ROOT, SCOPED_RUN_SCHEMA, TRAINING_SCOPE
 from .checkpoint_codec import encode_checkpoint
 from .reporting import RunReporter
 
@@ -50,9 +50,13 @@ def prepare_structured_run(
     *,
     source_id: str | None = None,
     operation_id: str | None = None,
+    code_scope: str = LEGACY_SCOPE,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
+    if (code_scope not in {LEGACY_SCOPE, TRAINING_SCOPE}
+            or code_scope == TRAINING_SCOPE and operation_id is None):
+        raise BoundaryError("structured_run", "unsupported_code_scope")
     execution_parameters: dict[str, Any] = {}
     if operation_id is not None:
         from spireagent.json_boundary import digest
@@ -61,10 +65,11 @@ def prepare_structured_run(
 
         digest(operation_id, "structured_run.operation_id", length=32)
         torch.set_num_threads(config.cpu_threads)
-        execution_parameters = {
-            "operation_id": operation_id,
-            "execution_identity": execution_identity(dataset, config),
-        }
+        identity = execution_identity(dataset, config, code_scope=code_scope)
+        if (code_scope == TRAINING_SCOPE
+                and producer.uv_lock_sha256 != identity["code_identity"]["dependency_lock_sha256"]):
+            raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
+        execution_parameters = {"operation_id": operation_id, "execution_identity": identity}
     if source_id is None:
         payload = store.put_payload("source", io.BytesIO(dataset.source_bytes), "application/json")
         source = Manifest(
@@ -137,7 +142,8 @@ def prepare_structured_run(
         ),
         parameters=FrozenObject.of(
             {
-                "schema": "stpd/structured-m2-run-v2" if operation_id is not None else RUN_SCHEMA,
+                "schema": (SCOPED_RUN_SCHEMA if code_scope == TRAINING_SCOPE else
+                           "stpd/structured-m2-run-v2" if operation_id is not None else RUN_SCHEMA),
                 "config": asdict(config),
                 "source_sha256": dataset.source_sha256,
                 "torch_version": torch.__version__,
@@ -161,6 +167,8 @@ def run_structured_job(
     source_id: str | None = None,
 ) -> dict[str, Any]:
     """Train once and publish model/checkpoint/results; never overwrite/retry a run."""
+    from ..policy.structured_export import export_structured_package
+
     config.validate()
     if (
         not isinstance(dataset, StructuredDataset)

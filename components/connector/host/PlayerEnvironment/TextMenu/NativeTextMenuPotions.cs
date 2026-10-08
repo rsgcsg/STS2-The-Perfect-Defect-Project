@@ -23,12 +23,49 @@ using STS2Connector.NativeUi;
 namespace STS2Connector.PlayerEnvironment;
 
 /// <summary>Native potion-holder and popup controls for the text profile.</summary>
+internal sealed record NativePotionTargetBinding(
+    NPotionHolder Holder, PotionModel Potion, NTargetManager Manager, Func<bool> ExitPredicate, int Slot);
+
 internal static class NativeTextMenuPotions
 {
     private static readonly FieldInfo? HolderUsable = typeof(NPotionHolder)
         .GetField("_isUsable", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly FieldInfo? HolderDisabled = typeof(NPotionHolder)
         .GetField("_disabledUntilPotionRemoved", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo? TargetExitCondition = typeof(NTargetManager)
+        .GetField("_exitEarlyCondition", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly MethodInfo? PotionExitMethod = typeof(NPotionHolder)
+        .GetMethod("ShouldCancelTargeting", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    internal static NativePotionTargetBinding? CaptureNativeTargeting()
+    {
+        if (NRun.Instance?.GlobalUi.TopBar.PotionContainer is not { } container
+            || NTargetManager.Instance is not { IsInSelection: true } manager
+            || TargetExitCondition?.GetValue(manager) is not Func<bool> exit
+            || exit.Target is not NPotionHolder holder
+            || holder.Potion?.Model is not { } potion
+            || RunManager.Instance.DebugOnlyGetState() is not { } run
+            || LocalContext.GetMe(run) is not { } player
+            || !ReferenceEquals(potion.Owner, player)) return null;
+        NPotionHolder[] holders = ConnectorMod.FindAll<NPotionHolder>(container).ToArray();
+        if (holders.Length != player.PotionSlots.Count) return null;
+        int slot = Array.FindIndex(holders, current => ReferenceEquals(current, holder));
+        if (slot < 0 || holders.Count(current => ReferenceEquals(current, holder)) != 1
+            || !NativePotionTargetOwner.Matches(exit, holder, PotionExitMethod, potion,
+                holder.Potion?.Model, player.GetPotionAtSlotIndex(slot),
+                ConnectorMod.IsLiveNode(holder) && ConnectorMod.IsNodeVisible(holder))) return null;
+        return new(holder, potion, manager, exit, slot);
+    }
+
+    private static bool IsCurrent(NativePotionTargetBinding binding) =>
+        CaptureNativeTargeting() is { } current
+        && ReferenceEquals(current.Holder, binding.Holder) && ReferenceEquals(current.Potion, binding.Potion)
+        && ReferenceEquals(current.Manager, binding.Manager) && ReferenceEquals(current.ExitPredicate, binding.ExitPredicate)
+        && current.Slot == binding.Slot;
+
+    private static PotionModel? CurrentPotion(NativePotionTargetBinding? binding) =>
+        binding == null ? PendingPotion : IsCurrent(binding) ? binding.Potion : null;
+
     private static NPotionHolder? _targetingHolder;
     private static PotionModel? _targetingPotion;
     private static NTargetManager? _targetingManager;
@@ -61,9 +98,9 @@ internal static class NativeTextMenuPotions
 
     internal static PotionModel? PendingPotion => HasPendingTargeting ? _targetingPotion : null;
 
-    internal static IReadOnlyList<NCreature> Targets()
+    internal static IReadOnlyList<NCreature> Targets(NativePotionTargetBinding? binding = null)
     {
-        PotionModel? potion = PendingPotion;
+        PotionModel? potion = CurrentPotion(binding);
         NCombatRoom? room = NCombatRoom.Instance;
         NTargetManager? manager = NTargetManager.Instance;
         if (potion == null || room == null || manager?.IsInSelection != true
@@ -77,9 +114,9 @@ internal static class NativeTextMenuPotions
             && manager.AllowedToTargetNode(node)).ToArray();
     }
 
-    internal static NMerchantButton? MerchantTarget()
+    internal static NMerchantButton? MerchantTarget(NativePotionTargetBinding? binding = null)
     {
-        if (PendingPotion is not FoulPotion potion
+        if (CurrentPotion(binding) is not FoulPotion potion
             || potion.TargetType != TargetType.TargetedNoCreature
             || potion.Owner.RunState.CurrentRoom is not { } currentRoom
             || NTargetManager.Instance is not { IsInSelection: true } manager)
@@ -92,9 +129,30 @@ internal static class NativeTextMenuPotions
             ? button : null;
     }
 
-    internal static NativeInputResult SelectMerchant(NMerchantButton button)
+    internal static NativeInputResult FocusMerchant(NMerchantButton button, NativePotionTargetBinding? binding = null)
     {
-        if (!ReferenceEquals(MerchantTarget(), button))
+        if (!ReferenceEquals(MerchantTarget(binding), button))
+            return NativeInputResult.Rejected("potion_merchant_target_changed", "The exact merchant target changed.");
+        NTargetManager manager = NTargetManager.Instance;
+        bool accepted = false;
+        void OnHovered(Node current) { if (ReferenceEquals(current, button)) accepted = true; }
+        manager.NodeHovered += OnHovered;
+        try { manager.OnNodeHovered(button); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_merchant_focus_unknown", "The merchant focus boundary threw.",
+                new NativeInputStage(NativeInputStageKind.MerchantFocus, NativeInputDelivery.Unknown, "native_merchant_focus_threw"));
+        }
+        finally { manager.NodeHovered -= OnHovered; }
+        return accepted ? NativeInputResult.Delivered("native_merchant_target_focused")
+            : NativeInputResult.DeliveredWithoutAcceptance("merchant_focus_not_witnessed",
+                "Native focus input returned without an acceptance witness.",
+                new NativeInputStage(NativeInputStageKind.MerchantFocus, NativeInputDelivery.Delivered, "native_merchant_focus_input_delivered"));
+    }
+
+    internal static NativeInputResult SelectMerchant(NMerchantButton button, NativePotionTargetBinding? binding = null)
+    {
+        if (!ReferenceEquals(MerchantTarget(binding), button))
             return NativeInputResult.Rejected("potion_merchant_target_changed",
                 "The exact visible native merchant target is no longer current.");
         NTargetManager manager = NTargetManager.Instance;
@@ -105,18 +163,73 @@ internal static class NativeTextMenuPotions
         }
         manager.NodeHovered += OnHovered;
         try { manager.OnNodeHovered(button); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_potion_focus_unknown", "The native potion focus boundary threw.",
+                new NativeInputStage(NativeInputStageKind.MerchantFocus, NativeInputDelivery.Unknown, "native_potion_focus_threw"));
+        }
         finally { manager.NodeHovered -= OnHovered; }
-        if (!hovered || !manager.IsInSelection)
-            return NativeInputResult.Rejected("potion_merchant_focus_changed",
-                "Native targeting did not accept the current merchant button.");
-        manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true });
+        if (!hovered)
+            return NativeInputResult.DeliveredWithoutAcceptance("potion_target_focus_not_witnessed",
+                "Native focus input returned, but potion target acceptance was not witnessed.",
+                new NativeInputStage(NativeInputStageKind.MerchantFocus, NativeInputDelivery.Delivered, "native_potion_focus_input_delivered"));
+        var focus = new NativeInputStage(NativeInputStageKind.MerchantFocus, NativeInputDelivery.Delivered,
+            "native_potion_target_focused");
+        if (!manager.IsInSelection)
+            return NativeInputResult.PartiallyDelivered("potion_target_selection_changed",
+                "Potion focus was delivered; confirmation was not delivered.", focus);
+        try { manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true }); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_potion_confirm_unknown",
+                "Potion focus was delivered; confirmation input threw.", focus,
+                new NativeInputStage(NativeInputStageKind.MerchantConfirmInput, NativeInputDelivery.Unknown, "native_potion_confirm_threw"));
+        }
         ClearPendingTargeting();
-        return NativeInputResult.Delivered("native_foul_potion_merchant_selected");
+        return NativeInputResult.DeliveredStages("native_foul_potion_merchant_selected", focus,
+            new NativeInputStage(NativeInputStageKind.MerchantConfirmInput, NativeInputDelivery.Delivered, "native_foul_potion_merchant_selected"));
     }
 
-    internal static NativeInputResult SelectTarget(NCreature node)
+    internal static Node? FocusedTarget(NativePotionTargetBinding? binding = null)
     {
-        if (!Targets().Contains(node))
+        if (CurrentPotion(binding) == null || NTargetManager.Instance is not { IsInSelection: true } manager)
+            return null;
+        Node? focused = NativeTextMenuCombat.CurrentFocusedNode(manager);
+        return focused is CanvasItem visibleFocus && ConnectorMod.IsLiveNode(focused) && ConnectorMod.IsNodeVisible(visibleFocus)
+            && (focused is NCreature creature && NCombatRoom.Instance?.CreatureNodes.Contains(creature) == true
+                || focused is NMerchantButton && CurrentPotion(binding) is FoulPotion) ? focused : null;
+    }
+
+    internal static NativeInputResult FocusTarget(NCreature node, NativePotionTargetBinding? binding = null)
+    {
+        if (!Targets(binding).Contains(node))
+            return NativeInputResult.Rejected("potion_target_changed", "The exact potion target is no longer focusable.");
+        NTargetManager manager = NTargetManager.Instance;
+        bool accepted = false;
+        void OnHovered(NCreature current) { if (ReferenceEquals(current, node)) accepted = true; }
+        manager.CreatureHovered += OnHovered;
+        try { manager.OnNodeHovered(node); }
+        finally { manager.CreatureHovered -= OnHovered; }
+        return accepted ? NativeInputResult.Delivered("native_potion_target_focused")
+            : NativeInputResult.DeliveredWithoutAcceptance("potion_target_focus_not_witnessed",
+                "Native focus input returned, but potion target acceptance was not witnessed.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered, "native_potion_focus_input_delivered"));
+    }
+
+    internal static bool CanUnfocusTarget(Node expected, NativePotionTargetBinding? binding = null) =>
+        ReferenceEquals(FocusedTarget(binding), expected) && NTargetManager.Instance.AllowedToTargetNode(expected);
+
+    internal static NativeInputResult UnfocusTarget(Node expected, NativePotionTargetBinding? binding = null)
+    {
+        if (!CanUnfocusTarget(expected, binding))
+            return NativeInputResult.Rejected("potion_target_focus_changed", "The exact potion target focus changed.");
+        NTargetManager.Instance.OnNodeUnhovered(expected);
+        return NativeInputResult.Delivered("native_potion_target_unfocused");
+    }
+
+    internal static NativeInputResult SelectTarget(NCreature node, NativePotionTargetBinding? binding = null)
+    {
+        if (!Targets(binding).Contains(node))
             return NativeInputResult.Rejected("potion_target_changed",
                 "The exact native potion target is no longer available.");
         NTargetManager manager = NTargetManager.Instance;
@@ -127,18 +240,36 @@ internal static class NativeTextMenuPotions
         }
         manager.CreatureHovered += OnHovered;
         try { manager.OnNodeHovered(node); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_potion_focus_unknown", "The native potion focus boundary threw.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Unknown, "native_potion_focus_threw"));
+        }
         finally { manager.CreatureHovered -= OnHovered; }
-        if (!hovered || !manager.IsInSelection)
-            return NativeInputResult.Rejected("potion_target_focus_changed",
-                "Native targeting did not accept the exact potion target.");
-        manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true });
+        if (!hovered)
+            return NativeInputResult.DeliveredWithoutAcceptance("potion_target_focus_not_witnessed",
+                "Native focus input returned, but potion target acceptance was not witnessed.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered, "native_potion_focus_input_delivered"));
+        var focus = new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered,
+            "native_potion_target_focused");
+        if (!manager.IsInSelection)
+            return NativeInputResult.PartiallyDelivered("potion_target_selection_changed",
+                "Potion focus was delivered; confirmation was not delivered.", focus);
+        try { manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true }); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_potion_confirm_unknown",
+                "Potion focus was delivered; confirmation input threw.", focus,
+                new NativeInputStage(NativeInputStageKind.PotionTargetConfirmInput, NativeInputDelivery.Unknown, "native_potion_confirm_threw"));
+        }
         ClearPendingTargeting();
-        return NativeInputResult.Delivered("native_potion_target_selected");
+        return NativeInputResult.DeliveredStages("native_potion_target_selected", focus,
+            new NativeInputStage(NativeInputStageKind.PotionTargetConfirmInput, NativeInputDelivery.Delivered, "native_potion_target_selected"));
     }
 
-    internal static NativeInputResult CancelTargeting()
+    internal static NativeInputResult CancelTargeting(NativePotionTargetBinding? binding = null)
     {
-        if (!HasPendingTargeting)
+        if (CurrentPotion(binding) == null)
             return NativeInputResult.Rejected("potion_target_changed",
                 "The exact native potion targeting operation is gone.");
         NTargetManager.Instance._Input(new InputEventAction
@@ -274,6 +405,7 @@ internal static class NativeTextMenuPotions
             || !ReferenceEquals(Button(popup, path), button))
             return NativeInputResult.Rejected("potion_popup_changed",
                 "The native popup control is no longer current.");
+        var stages = new List<NativeInputStage>();
         NControllerManager? controller = NControllerManager.Instance;
         if (path == "%UseButton" && potion is FoulPotion
             && controller?.IsUsingDirectionalNavigation != true)
@@ -281,15 +413,30 @@ internal static class NativeTextMenuPotions
             if (controller == null || !NGame.IsGameFocusedWindow())
                 return NativeInputResult.Rejected("controller_input_unavailable",
                     "Foul Potion's merchant target requires current native directional input.");
-            controller._Input(new InputEventAction
-            { Action = Controller.faceButtonSouth, Pressed = true });
+            try { controller._Input(new InputEventAction
+                { Action = Controller.faceButtonSouth, Pressed = true }); }
+            catch (Exception)
+            {
+                return NativeInputResult.Unknown("native_potion_controller_unknown", "The controller input boundary threw.",
+                    new NativeInputStage(NativeInputStageKind.ControllerModeInput, NativeInputDelivery.Unknown, "native_controller_mode_input_threw"));
+            }
+            stages.Add(new NativeInputStage(NativeInputStageKind.ControllerModeInput, NativeInputDelivery.Delivered,
+                "native_controller_mode_input_delivered"));
             if (!controller.IsUsingDirectionalNavigation
                 || !ReferenceEquals(PotionPopupSurfaceReader.Current(), popup)
                 || !ReferenceEquals(Button(popup, path), button))
-                return NativeInputResult.Delivered(
-                    "native_controller_mode_changed_foul_potion_use_pending");
+                return NativeInputResult.PartiallyDelivered("native_potion_use_pending",
+                    "Controller input was delivered; potion use input was not delivered.", stages.ToArray());
         }
-        button.ForceClick();
+        try { button.ForceClick(); }
+        catch (Exception)
+        {
+            stages.Add(new NativeInputStage(NativeInputStageKind.PotionPopupInput, NativeInputDelivery.Unknown,
+                "native_potion_popup_button_threw"));
+            return NativeInputResult.Unknown("native_potion_popup_unknown", "The potion popup input boundary threw.", stages.ToArray());
+        }
+        stages.Add(new NativeInputStage(NativeInputStageKind.PotionPopupInput, NativeInputDelivery.Delivered,
+            "native_potion_popup_button_clicked"));
         if (path == "%UseButton" && NTargetManager.Instance?.IsInSelection == true
             && (potion.TargetType is
                 TargetType.AnyEnemy or TargetType.TargetedNoCreature
@@ -301,7 +448,7 @@ internal static class NativeTextMenuPotions
             _targetingHolder = holder;
             _targetingPotion = potion;
         }
-        return NativeInputResult.Delivered("native_potion_popup_button_clicked");
+        return NativeInputResult.DeliveredStages("native_potion_popup_button_clicked", stages.ToArray());
     }
 
     private static NativeInputResult Close(NPotionPopup popup, PotionModel potion,
