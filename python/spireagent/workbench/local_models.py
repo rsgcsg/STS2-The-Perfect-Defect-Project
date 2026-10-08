@@ -347,6 +347,7 @@ class LocalModelService:
         self.lock = threading.RLock()
         self.control_send_lock = threading.Lock()
         self.intent_generation = 0
+        self._native_authorizer: Callable[[], None] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.client: RuntimeClient | None = None
         self.thread: threading.Thread | None = None
@@ -972,7 +973,25 @@ class LocalModelService:
             else self._start(identity, intent, run_profile)
         )
 
-    def prepare_and_load(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
+    def prepare_and_load(self, identity: str, run_profile: str = "short", *,
+                         native_context: dict[str, Any] | None = None,
+                         native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+        """Prepare the existing selection in Human mode."""
+        return self._prepare_and_load(identity, run_profile, takeover=False,
+                                      native_context=native_context,
+                                      native_authorizer=native_authorizer)
+
+    def prepare_and_takeover(self, identity: str, run_profile: str = "short", *,
+                            native_context: dict[str, Any] | None = None,
+                            native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+        """One application intent owns preparation, Human load and bounded Auto."""
+        return self._prepare_and_load(identity, run_profile, takeover=True,
+                                      native_context=native_context,
+                                      native_authorizer=native_authorizer)
+
+    def _prepare_and_load(self, identity: str, run_profile: str, *,
+                          takeover: bool, native_context: dict[str, Any] | None,
+                          native_authorizer: Callable[[], None] | None) -> dict[str, Any]:
         """Prepare a reviewed selection, then load in Human mode; never fetch model weights.
 
         Only the existing bounded, hash-pinned Runtime installer is automatic.
@@ -1020,10 +1039,55 @@ class LocalModelService:
                 self._start(identity, intent)
             else:
                 self._start(identity, intent, run_profile)
+            if takeover:
+                with self.lock:
+                    self._require_intent(intent)
+                    client = self.client
+                    connector_endpoint = self.state.get("connector_endpoint")
+                    managed_environment = self.state.get("managed_environment")
+                if client is None:
+                    raise BoundaryError("local_model", "model_not_loaded")
+                self._execute_command("auto", intent, client, connector_endpoint,
+                                      managed_environment)
             with self.lock:
+                self._require_intent(intent)
                 self.state["preparation_stage"] = "ready"
 
-        return self._begin("prepare-and-load", prepare)
+        def admit() -> None:
+            self._require_intent(intent)
+            if native_context is not None:
+                if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
+                    raise BoundaryError("local_model", "native_intent_context_required")
+                digest(native_context["request_id"], "local_model.native_request", length=32)
+                from spireagent.workbench.native_workbench_access import NativePair
+
+                NativePair.from_dict(native_context["binding"])
+                self.state["_native_intent"] = {**json.loads(json.dumps(native_context)),
+                                                 "intent_generation": intent}
+                self._native_authorizer = native_authorizer
+            else:
+                self.state.pop("_native_intent", None)
+                self._native_authorizer = None
+
+        return self._begin("prepare-and-takeover" if takeover else "prepare-and-load", prepare,
+                           admission=admit)
+
+    def native_intent_context(self, request_id: object) -> dict[str, Any]:
+        identity = digest(request_id, "local_model.native_request", length=32)
+        with self.lock:
+            context = self.state.get("_native_intent")
+            if (not isinstance(context, dict) or context.get("request_id") != identity
+                    or context.get("intent_generation") != self.intent_generation or self.closed):
+                raise BoundaryError("local_model", "native_model_intent_superseded")
+            return cast(dict[str, Any], json.loads(json.dumps(context)))
+
+    def recover_native_intent(self, request_id: object, action: str) -> dict[str, Any]:
+        if action not in {"human", "stop"}:
+            raise BoundaryError("local_model", "native_recovery_action_required")
+        with self.lock:
+            self.native_intent_context(request_id)
+            # Validation and the existing command's intent increment are atomic.
+            return self.command(action)
 
     def _require_intent(self, intent: int) -> None:
         with self.lock:
@@ -1054,6 +1118,13 @@ class LocalModelService:
                 route == "/mode" and body.get("mode") != "human"
             )):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
+            native = self.state.get("_native_intent")
+            if (route == "/mode" and body.get("mode") == "auto" and
+                    isinstance(native, dict) and native.get("intent_generation") == intent):
+                if self._native_authorizer is None:
+                    raise BoundaryError("local_model", "native_intent_authorization_required")
+                self._native_authorizer()
+                self._require_intent(intent)
             value = (client.request(route, body, binding=binding)
                      if binding is not None else client.request(route, body))
             self._require_intent(intent)
@@ -1077,6 +1148,10 @@ class LocalModelService:
         package = self._runtime_package(identity)
         _check_runtime_port(15527)
         managed = managed_manifest(manifest)
+        native_context = self.state.get("_native_intent")
+        if (managed and isinstance(native_context, dict)
+                and native_context.get("intent_generation") == intent):
+            raise BoundaryError("local_model", "native_model_target_unavailable")
         target = self._managed_runtime_target() if managed else None
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
@@ -1085,6 +1160,15 @@ class LocalModelService:
             environment_arguments = runtime_arguments(target, self.private_root)
         else:
             assert connector is not None
+            if (isinstance(native_context, dict)
+                    and native_context.get("intent_generation") == intent):
+                if self._native_authorizer is None:
+                    raise BoundaryError("local_model", "native_intent_authorization_required")
+                self._native_authorizer()
+                if (self.native_tasks.connector_instance(connector)
+                        != native_context["binding"]["runtime_instance_id"]):
+                    raise BoundaryError("local_model", "native_model_context_changed")
+                self._require_intent(intent)
             environment_arguments = ["--connector-endpoint", connector]
         command = [
             "node",
@@ -1253,7 +1337,7 @@ class LocalModelService:
                     )
                 if recovery and self.thread is not None and self.thread.is_alive() and (
                     (self.state.get("operation") or {}).get("action")
-                    in {"start", "prepare-and-load"}
+                    in {"start", "prepare-and-load", "prepare-and-takeover"}
                 ):
                     self.intent_generation += 1
                     intent = self.intent_generation
@@ -1267,65 +1351,74 @@ class LocalModelService:
             connector_endpoint = self.state.get("connector_endpoint")
             managed_environment = self.state.get("managed_environment")
 
-        def execute() -> None:
-            assert client is not None
-            self._require_intent(intent)
-            # Observe exact instance before every mutation; never address a new
-            # process that reused the same port after our owned process exited.
-            observation = client.request("/status")["status"]
-            binding = None
-            if action in {"shadow", "one_step", "auto"}:
-                self._require_intent(intent)
-                binding = RuntimeControlBinding.from_environment(
-                    client.request("/environment"), observation["run_id"]
-                )
-                # Capture the shared Runtime epoch before native preparation.
-                # A recovery from either UI invalidates this exact observation;
-                # never refresh its epoch to make a stale intent eligible again.
-                if managed_environment is not None:
-                    current_target = self._managed_runtime_target()
-                    confirm_target(managed_environment, current_target)
-                    if current_target["runtime_instance_id"] != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    # Managed attaches to the selected Host. It must never call
-                    # the native Mod's recorder preparation or reset the Host.
-                    self._require_intent(intent)
-                else:
-                    bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
-                    instance = self.native_tasks.connector_instance(bound_endpoint)
-                    if instance != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
-                    self._require_intent(intent)
-                    native = self.native_tasks.prepare_model(observation, bound_endpoint)
-                    if native["runtime_instance_id"] != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    # Native Close cannot authorize a replacement Runtime or game.
-                    latest = client.request("/status")["status"]
-                    NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
-            if action == "stop":
-                runtime = self._send_control(client, "/stop", {}, intent)["status"]
-            else:
-                runtime = self._send_control(
-                    client, "/mode", {"mode": action}, intent, binding
-                )["status"]
-                if action == "one_step":
-                    runtime = self._send_control(
-                        client, "/tick", {"max_ticks": 1}, intent, binding
-                    )["status"]
-            with self.lock:
-                self._require_intent(intent)
-                if not self.closed and self.state["status"] != "stopped":
-                    self.state.update(runtime=runtime, status="loaded", error_code=None)
-            if action == "stop":
-                self._stop_process()
-                self._evaluation_handoff()
-                with self.lock:
-                    self.state.update(status="stopped", loaded=False)
-                    self.state.pop("observation_error", None)
-                    self.client = None
+        return self._begin(action, lambda: self._execute_command(
+            action, intent, client, connector_endpoint, managed_environment),
+            recovery=action in {"human", "stop"})
 
-        return self._begin(action, execute, recovery=action in {"human", "stop"})
+    def _execute_command(self, action: str, intent: int, client: RuntimeClient,
+                         connector_endpoint: Any, managed_environment: Any) -> None:
+        assert client is not None
+        self._require_intent(intent)
+        # Observe exact instance before every mutation; never address a new
+        # process that reused the same port after our owned process exited.
+        observation = client.request("/status")["status"]
+        binding = None
+        if action in {"shadow", "one_step", "auto"}:
+            self._require_intent(intent)
+            binding = RuntimeControlBinding.from_environment(
+                client.request("/environment"), observation["run_id"]
+            )
+            native_context = self.state.get("_native_intent")
+            if (isinstance(native_context, dict)
+                    and native_context.get("intent_generation") == intent
+                    and native_context["binding"]["runtime_instance_id"]
+                    != binding.runtime_instance_id):
+                raise BoundaryError("local_model", "native_model_context_changed")
+            # Capture the shared Runtime epoch before native preparation.
+            # A recovery from either UI invalidates this exact observation;
+            # never refresh its epoch to make a stale intent eligible again.
+            if managed_environment is not None:
+                current_target = self._managed_runtime_target()
+                confirm_target(managed_environment, current_target)
+                if current_target["runtime_instance_id"] != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                # Managed attaches to the selected Host. It must never call
+                # the native Mod's recorder preparation or reset the Host.
+                self._require_intent(intent)
+            else:
+                bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
+                instance = self.native_tasks.connector_instance(bound_endpoint)
+                if instance != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
+                self._require_intent(intent)
+                native = self.native_tasks.prepare_model(observation, bound_endpoint)
+                if native["runtime_instance_id"] != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                # Native Close cannot authorize a replacement Runtime or game.
+                latest = client.request("/status")["status"]
+                NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
+        if action == "stop":
+            runtime = self._send_control(client, "/stop", {}, intent)["status"]
+        else:
+            runtime = self._send_control(
+                client, "/mode", {"mode": action}, intent, binding
+            )["status"]
+            if action == "one_step":
+                runtime = self._send_control(
+                    client, "/tick", {"max_ticks": 1}, intent, binding
+                )["status"]
+        with self.lock:
+            self._require_intent(intent)
+            if not self.closed and self.state["status"] != "stopped":
+                self.state.update(runtime=runtime, status="loaded", error_code=None)
+        if action == "stop":
+            self._stop_process()
+            self._evaluation_handoff()
+            with self.lock:
+                self.state.update(status="stopped", loaded=False)
+                self.state.pop("observation_error", None)
+                self.client = None
 
     def _cancel_loading(self, intent: int) -> None:
         with self.control_send_lock, self.lock:
