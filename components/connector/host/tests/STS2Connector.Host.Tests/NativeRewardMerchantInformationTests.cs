@@ -98,14 +98,14 @@ public sealed class NativeRewardMerchantInformationTests
 
     private static NativeMerchantInformation Merchant(NativeMerchantInformationKind kind)
     {
-        (MerchantEntry entry, NMerchantSlot slot, Node display) = kind switch
+        NativeMerchantInformationEntry entry = kind switch
         {
-            NativeMerchantInformationKind.Card => (Bare<MerchantCardEntry>(), Bare<NMerchantCard>(), Bare<NCard>()),
-            NativeMerchantInformationKind.Relic => (Bare<MerchantRelicEntry>(), Bare<NMerchantRelic>(), Bare<NRelic>()),
-            _ => (Bare<MerchantPotionEntry>(), Bare<NMerchantPotion>(), Bare<NPotion>())
+            NativeMerchantInformationKind.Card => new(Bare<MerchantCardEntry>(), Bare<NMerchantCard>(), Bare<Control>(), Bare<NCard>(), new object(), kind, true),
+            NativeMerchantInformationKind.Relic => new(Bare<MerchantRelicEntry>(), Bare<NMerchantRelic>(), Bare<Control>(), Bare<NRelic>(), new object(), kind, true),
+            _ => new(Bare<MerchantPotionEntry>(), Bare<NMerchantPotion>(), Bare<Control>(), Bare<NPotion>(), new object(), kind, true)
         };
         return new(Bare<MerchantRoom>(), Bare<NMerchantRoom>(), Bare<MerchantInventory>(), Bare<NMerchantInventory>(),
-            Bare<NBackButton>(), Bare<Control>(), false, new[] { new NativeMerchantInformationEntry(entry, slot, Bare<Control>(), display, new object(), kind, true) });
+            Bare<NBackButton>(), Bare<Control>(), false, new[] { entry });
     }
 
     [Theory]
