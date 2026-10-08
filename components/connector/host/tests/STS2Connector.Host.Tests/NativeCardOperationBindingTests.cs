@@ -95,7 +95,8 @@ public sealed class NativeCardOperationBindingTests
             DateTimeOffset.UnixEpoch, "observed", null,
             new("interaction", "game_over", "summary", null, "sts2.player-environment/surface/game_over-1", new(new JsonObject(), new JsonObject()),
                 Array.Empty<PlayerEnvironmentInteractionCapability>()),
-            Array.Empty<PlayerEnvironmentReferent>(),
+            new[] { new PlayerEnvironmentReferent("unopened-original", "card", "entity", "Same native title",
+                new(true, false, false, false, "fixture_unopened_source"), null, null) },
             new("sts2.player-environment/bound-actions-1", "complete", 0, 0, 65536, "native", Array.Empty<PlayerEnvironmentBoundAction>()),
             Array.Empty<PlayerEnvironmentReadOpportunity>(),
             new("complete", "fixture", "fixture", Array.Empty<string>(), Array.Empty<string>()),
@@ -111,6 +112,7 @@ public sealed class NativeCardOperationBindingTests
         Assert.Equal("Rendered upgraded text", surface["description"]!.GetValue<string>());
         Assert.Null(surface["cards"]); Assert.Null(surface["index"]); Assert.Null(surface["source_list"]);
         Assert.Null(legacy.Interaction.Content.Surface["source_card_referent_id"]); // Legacy and source remain detached.
+        Assert.Equal("unopened-original", Assert.Single(source.Referents).ReferentId);
         string json = JsonSerializer.Serialize(native);
         Assert.DoesNotContain("unopened-original", json);
     }
