@@ -630,7 +630,7 @@ class LocalTrainingService:
             # verification; use reservation remains prior to preparation/fit.
             from spireagent.workbench.recipes.structured import StructuredRecipeAdapter
 
-            StructuredRecipeAdapter().preflight(store, owner, request.source_id)
+            StructuredRecipeAdapter(request.recipe_id).preflight(store, owner, request.source_id)
             operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
             self._prepare_child_ownership(path, operation)
             write_replaceable_json(path, operation)
