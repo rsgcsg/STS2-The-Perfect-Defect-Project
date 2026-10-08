@@ -98,14 +98,16 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     manifest = _object_file(manifest_path)
     export = Path(config["export_path"])
     package, model = load_native_package(export)
-    del model
+    # The domain loader validates the complete package/control/weight binding.
+    # Match the adapter closure selected by that model, never by a config flag.
+    expected_adapter = adapter_identity(graph=model.model_control is not None)
     if (config["package_model_id"] != package["model_id"]
             or config["weights_sha256"] != package["weights"]["sha256"]
             or config["package_manifest_sha256"] != file_sha256(export / "model.json")
             or any(config[key] != package[key] for key in
                    ("input_spec", "agent_spec", "state_format_version", "code_identity"))
             or manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
-            or manifest.get("adapter") != adapter_identity()
+            or manifest.get("adapter") != expected_adapter
             or manifest.get("artifact") != {
                 "id": config["package_model_id"], "path": str((export / "model.json").resolve()),
                 "sha256": config["package_manifest_sha256"]}):
