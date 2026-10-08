@@ -212,32 +212,15 @@ internal static class NativeTextMenuFrameBuilder
             leaves.Add(Leaf("cancel_potion_target:" + potionId,
                 "cancel_potion_target", "Cancel potion targeting", potionId,
                 () => NativeTextMenuPotions.CancelTargeting(nativePotionBinding)));
-            page = page with
-            {
-                Status = "interactive",
-                Referents = referents,
-                Completeness = new PlayerEnvironmentCompleteness(
-                    "complete", "current_native_potion_targeting",
-                    "exact_native_potion_target_controls", Array.Empty<string>(),
-                    Array.Empty<string>()),
-                Interaction = page.Interaction with
+            page = NativeLogicalCapturePolicy.PreserveNativeScope(page,
+                ProjectPotionTargetPage(page, referents, new JsonObject
                 {
-                    Kind = "potion_targeting", Stage = "native_targeting",
-                    Prompt = "Choose potion target",
-                    ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
-                    Content = new PlayerEnvironmentInteractionContent(new JsonObject
-                    {
-                        ["kind"] = "potion_targeting",
-                        ["potion_referent_id"] = potionId,
-                        ["focused_target_referent_id"] = nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } focusedPotionTarget
-                            ? PotionFocusId(focusedPotionTarget, entities) : null,
-                        ["target_count"] = targets.Count
-                            + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
-                    }, ValidContext(page.Interaction.Content.Context,
-                        "combat_potion_targeting")),
-                    Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
-                }
-            };
+                    ["kind"] = "potion_targeting", ["potion_referent_id"] = potionId,
+                    ["focused_target_referent_id"] = nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } focusedPotionTarget
+                        ? PotionFocusId(focusedPotionTarget, entities) : null,
+                    ["target_count"] = targets.Count
+                        + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
+                }), NativeLogicalProjectionReplacement.PotionTarget, nativeLogical);
             if (!nativeLogical && page.Interaction.Content.Surface is JsonObject potionSurface)
                 potionSurface.Remove("focused_target_referent_id");
             return new TextMenuFrame(page, owner, leaves);
@@ -586,7 +569,14 @@ internal static class NativeTextMenuFrameBuilder
                 ? entities.GetId(focused.Entity, "creature") : null;
             NativeLogicalPresentation.AddCardDisplay(surface, cardNode);
         }
-        return source with
+        return ProjectHeldCardPage(source, visible, surface, stage, displayComplete, nativeLogical);
+    }
+
+    internal static PlayerEnvironmentSnapshot ProjectHeldCardPage(PlayerEnvironmentSnapshot source,
+        IReadOnlyList<PlayerEnvironmentReferent> visible, JsonObject surface, string stage,
+        bool displayComplete, bool nativeLogical)
+    {
+        PlayerEnvironmentSnapshot projected = source with
         {
             Status = displayComplete ? "interactive" : "settling",
             Referents = visible,
@@ -608,7 +598,24 @@ internal static class NativeTextMenuFrameBuilder
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
+        return NativeLogicalCapturePolicy.PreserveNativeScope(source, projected,
+            NativeLogicalProjectionReplacement.HeldCard, nativeLogical);
     }
+
+    internal static PlayerEnvironmentSnapshot ProjectPotionTargetPage(PlayerEnvironmentSnapshot source,
+        IReadOnlyList<PlayerEnvironmentReferent> referents, JsonObject surface) => source with
+    {
+        Status = "interactive", Referents = referents,
+        Completeness = new("complete", "current_native_potion_targeting",
+            "exact_native_potion_target_controls", Array.Empty<string>(), Array.Empty<string>()),
+        Interaction = source.Interaction with
+        {
+            Kind = "potion_targeting", Stage = "native_targeting", Prompt = "Choose potion target",
+            ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
+            Content = new(surface, ValidContext(source.Interaction.Content.Context, "combat_potion_targeting")),
+            Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
+        }
+    };
 
     private static JsonNode ValidContext(JsonNode source, string fallbackKind)
     {
