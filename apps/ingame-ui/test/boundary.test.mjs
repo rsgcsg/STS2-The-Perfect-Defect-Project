@@ -27,7 +27,7 @@ test("Live UI has a visible entry without keyboard or gameplay authority", () =>
 });
 
 test("Workbench browser opens after a user click and exact-instance health check", () => {
-  assert.match(mod, /BuildHeaderButton\("工作台", BeginOpenWorkbench/u);
+  assert.match(mod, /BuildHeaderButton\("外部窗口", BeginOpenWorkbench/u);
   assert.match(mod, /if \(_disposed \|\| _workbenchOpenCheck is \{ IsCompleted: false \}\)\s+return/u);
   assert.match(mod, /CompleteWorkbenchOpenCheck\(\);/u);
   assert.match(mod, /if \(!result\.CanOpen \|\| result\.Url is null\)[\s\S]*?return;[\s\S]*?OS\.ShellOpen\(result\.Url\)/u);
@@ -57,8 +57,8 @@ test("Workbench registration bridge is exact-loopback, game-instance-bound metad
   assert.doesNotMatch(taskBridge, /OS\.ShellOpen|Process\.Start|WebBrowser/u);
 });
 
-test("Product navigation exposes exactly model tests and Human collection", () => {
-  assert.match(mod, /new\[\] \{ "模型实战", "真人采集" \}/u);
+test("Product navigation retains model and Human surfaces and adds the native Workbench", () => {
+  assert.match(mod, /new\[\] \{ "模型实战", "真人采集", "工作台" \}/u);
   assert.match(mod, /BuildAgentRunPage\(_surfaceViewport\)/u);
   assert.match(mod, /BuildRecorderPage\(_surfaceViewport\)/u);
   assert.match(mod, /_surfaces\.Add\(_agentRunPage\)/u);

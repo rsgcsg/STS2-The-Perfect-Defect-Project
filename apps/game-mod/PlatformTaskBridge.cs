@@ -66,6 +66,10 @@ internal static class PlatformTaskBridge
             { RegisterWorkbench(context); return; }
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/unregister")
             { UnregisterWorkbench(context); return; }
+            if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/native-register")
+            { RegisterNativeWorkbench(context); return; }
+            if (request.HttpMethod == "GET" && request.RawUrl == "/v1/workbench/native-status")
+            { NativeWorkbenchStatus(context); return; }
             if (request.HttpMethod != "POST" || request.RawUrl != "/v1/tasks/prepare-model"
                 || request.ContentType != "application/json" || request.ContentLength64 is <= 0 or > 4096)
             { Reply(context, 400, new { error = "invalid_task_request" }); return; }
@@ -180,6 +184,7 @@ internal static class PlatformTaskBridge
                 || _workbenchRegistration.WorkbenchInstanceId != instanceId)
             { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
             _workbenchRegistration = null;
+            PlatformNativeWorkbenchConnection.Clear(instanceId!);
         }
         Reply(context, 200, new
         {
@@ -188,6 +193,58 @@ internal static class PlatformTaskBridge
             runtime_instance_id = runtime,
             workbench_instance_id = instanceId
         });
+    }
+
+    private static void RegisterNativeWorkbench(HttpListenerContext context)
+    {
+        HttpListenerRequest request = context.Request;
+        if (request.ContentType != "application/json" || request.ContentLength64 is <= 0 or > 4096
+            || request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
+        { Reply(context, 400, new { error = "invalid_native_pair_request" }); return; }
+        using var reader = new StreamReader(request.InputStream);
+        using JsonDocument document = JsonDocument.Parse(reader.ReadToEnd());
+        PlatformNativeWorkbenchBootstrap bootstrap = PlatformNativeWorkbenchBootstrap.Read(
+            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
+        PlatformNativeWorkbenchPair pair = PlatformNativeWorkbenchPair.ReadSigned(
+            document.RootElement, PlatformNativeWorkbenchPair.Schema, "native-register-v1", bootstrap.Secret);
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        lock (Gate)
+        {
+            string runtime = PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
+            if (pair.ExpiresAt <= now || pair.ExpiresAt > now + 600 || pair.RuntimeInstanceId != runtime
+                || _workbenchRegistration?.RuntimeInstanceId != runtime
+                || _workbenchRegistration.WorkbenchInstanceId != pair.WorkbenchInstanceId
+                || _workbenchRegistration.Url != pair.WorkbenchUrl)
+            { Reply(context, 409, new { error = "native_pair_identity_mismatch" }); return; }
+            PlatformNativeWorkbenchConnection.Install(pair, bootstrap.Secret);
+        }
+        Reply(context, 200, pair.Signed(PlatformNativeWorkbenchPair.AckSchema,
+            "native-register-ack-v1", bootstrap.Secret));
+    }
+
+    private static void NativeWorkbenchStatus(HttpListenerContext context)
+    {
+        PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
+        if (connection is null || context.Request.Headers["Cookie"] != null)
+        { Reply(context, 403, new { error = "native_pair_required" }); return; }
+        PlatformNativeWorkbenchPair pair = connection.Binding;
+        PlatformNativeWorkbenchBootstrap bootstrap = PlatformNativeWorkbenchBootstrap.Read(
+            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
+        string runtime = PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
+        bool current;
+        lock (Gate) current = _workbenchRegistration?.RuntimeInstanceId == runtime
+            && _workbenchRegistration.WorkbenchInstanceId == pair.WorkbenchInstanceId
+            && _workbenchRegistration.Url == pair.WorkbenchUrl;
+        if (!current || pair.RuntimeInstanceId != runtime || pair.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            || !PlatformNativeWorkbenchPair.EqualSecret(context.Request.Headers["Authorization"],
+                "Bearer " + pair.Sign(bootstrap.Secret, "native-access-v1"))
+            || context.Request.Headers["X-STS2-Game-Instance-ID"] != pair.RuntimeInstanceId
+            || context.Request.Headers["X-SpireAgent-Workbench-Instance-ID"] != pair.WorkbenchInstanceId
+            || context.Request.Headers["X-SpireAgent-Configuration-ID"] != pair.ConfigurationId
+            || context.Request.Headers["X-SpireAgent-Pair-ID"] != pair.PairId)
+        { Reply(context, 409, new { error = "native_pair_changed" }); return; }
+        Reply(context, 200, pair.Signed(PlatformNativeWorkbenchPair.CurrentSchema,
+            "native-current-v1", bootstrap.Secret));
     }
 
     private static void Reply(HttpListenerContext context, int code, object value)

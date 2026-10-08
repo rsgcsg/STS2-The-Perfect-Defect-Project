@@ -15,6 +15,9 @@
     <Compile Include="../PlatformPolicyBinding.cs" Link="PlatformPolicyBinding.cs" />
     <Compile Include="../PlatformPolicyTransport.cs" Link="PlatformPolicyTransport.cs" />
     <Compile Include="../PlatformWorkbenchOpen.cs" Link="PlatformWorkbenchOpen.cs" />
+    <Compile Include="../PlatformNativeWorkbenchPair.cs" Link="PlatformNativeWorkbenchPair.cs" />
+    <Compile Include="../PlatformNativeWorkbenchClient.cs" Link="PlatformNativeWorkbenchClient.cs" />
+    <None Include="../../../docs/design/fixtures/native_workbench_pair_v1.json" Link="native_workbench_pair_v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />

@@ -8,7 +8,7 @@ import {
 import { isJsonObject, type JsonObject } from "./json.js";
 import { NATIVE_LOGICAL_PROFILE, NATIVE_LOGICAL_ROUTE, NATIVE_LOGICAL_MAX_RESPONSE_BYTES,
   parseNativeLogicalJson, type NativeLogicalTransportOperation, type NativeLogicalTransportOptions,
-  type NativeLogicalTransportReply, validateNativeLogicalRequest } from "./nativeLogical.js";
+  type NativeLogicalTransportReply, validateNativeLogicalRequest, decodeNativeLogicalCurrent } from "./nativeLogical.js";
 import { assertNativeLogicalJson } from "./nativeLogicalWire.js";
 import {
   ORDINARY_REWARD_PAGE_PROFILE,
@@ -364,7 +364,7 @@ export class PlayerEnvironmentRestClient {
     }
     let encodedByteCount = 0;
     let statusCode = 0;
-    const raw = await this.request(path, init, true, { ...options, maxResponseBytes,
+    const raw = await this.request(path, init, operation === "submit" || operation === "result", { ...options, maxResponseBytes, operation,
       onResponseBytes: bytes => { encodedByteCount = bytes; }, onResponseStatus: status => { statusCode = status; } });
     return { raw, encodedByteCount, statusCode };
   }
@@ -389,7 +389,7 @@ export class PlayerEnvironmentRestClient {
     path: string,
     init: RequestInit,
     acceptReceiptOnError = false,
-    native?: NativeLogicalTransportOptions & { maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
+    native?: NativeLogicalTransportOptions & { operation: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
   ): Promise<JsonObject> {
     let response: Response;
     const requestSignal = native?.signal ? AbortSignal.any([native.signal, AbortSignal.timeout(native.timeoutMs ?? this.timeoutMs)])
@@ -409,9 +409,9 @@ export class PlayerEnvironmentRestClient {
       && (value.schema === "sts2.player-environment/receipt-1"
         || value.schema === TEXT_MENU_RESULT_SCHEMA
         || value.schema === TEXT_MENU_V2_RESULT_SCHEMA
-        || native !== undefined && typeof value.schema === "string" && value.schema.startsWith("sts2.player-environment/native-logical-")
-          && value.schema !== "sts2.player-environment/native-logical-error-1");
-    if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
+        || native !== undefined && value.schema === "sts2.player-environment/native-logical-result-1");
+    const typedCurrentFailure = native?.operation === "current" && isNativeCurrentFailure(response.status, value);
+    if (!response.ok && !(acceptReceiptOnError && isReceipt) && !typedCurrentFailure) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,
         response.status
@@ -422,6 +422,15 @@ export class PlayerEnvironmentRestClient {
     }
     return value as JsonObject;
   }
+}
+
+function isNativeCurrentFailure(status: number, value: unknown): boolean {
+  if (status !== 409 && status !== 429) return false;
+  try {
+    const current = decodeNativeLogicalCurrent(value).data;
+    return status === 429 ? current.status === "capacity_exceeded"
+      : current.status === "stale" || current.status === "source_capture_incomplete" || current.status === "failed";
+  } catch { return false; }
 }
 
 async function readNativeLogicalResponse(response: Response, maxBytes: number, signal: AbortSignal | undefined,

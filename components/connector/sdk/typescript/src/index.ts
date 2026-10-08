@@ -12,3 +12,4 @@ export * from "./sealedObservation.js";
 export * from "./nativeLogical.js";
 export * from "./nativeLogicalAssembly.js";
 export * from "./nativeLogicalClient.js";
+export * from "./nativeLogicalPublicationProfile.generated.js";

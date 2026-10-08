@@ -309,7 +309,7 @@ class LocalModelRegistration:
         adapter_id = ("stpd-s0-structured-adapter" if structured else
                       "stpd-m2-decision-adapter" if memory else "token-v1")
         owner = policy_support(adapter_id)
-        current_code = owner.code_digest(self.models.root)
+        current_code = owner.code_digest(self.models.root) if not structured else None
         for entry in reversed(self._entries()):
             if (entry.get("runtime_profile") != profile
                     or (entry.get("adapter") == "stpd-s0-structured-adapter") != structured):
@@ -323,13 +323,22 @@ class LocalModelRegistration:
                 manifest = _object_file(_inside(self.models.private_root, entry["manifest"]))
                 if managed_manifest(manifest) != (environment_kind == "managed"):
                     continue
-                if manifest.get("adapter", {}).get("code_sha256") != current_code:
+                if (not structured and
+                        manifest.get("adapter", {}).get("code_sha256") != current_code):
                     stale = True
                     continue
-                owner.validate(self.models.root,
-                          _inside(self.models.private_root, entry["config"]),
-                          _inside(self.models.private_root, entry["manifest"]),
-                          binding_root=self.models.private_root)
+                try:
+                    # The owning validator selects config-v1 broad or config-v2
+                    # inference closure identity from its verified package schema.
+                    owner.validate(self.models.root,
+                                   _inside(self.models.private_root, entry["config"]),
+                                   _inside(self.models.private_root, entry["manifest"]),
+                                   binding_root=self.models.private_root)
+                except BoundaryError as error:
+                    if structured and error.code == "trusted_policy_identity_drift":
+                        stale = True
+                        continue
+                    raise
                 if (requirements is not None and manifest.get("requirements") != requirements
                         or support is not None and manifest.get("support") != support):
                     continue

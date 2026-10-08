@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { describe, expect, it } from "vitest";
 import { NativeLogicalSession, PlayerEnvironmentRestClient, EnvironmentControllerSession } from "../src/index.js";
-import { nativeScenario, measuredBudget } from "./nativeLogicalFixtures.js";
+import { nativeScenario, measuredBudget, nativeHarness } from "./nativeLogicalFixtures.js";
 
 describe("native logical synthetic HTTP boundary", () => {
   it("uses the same real HTTP client for registration, immutable transfer and private controller submission", async () => {
@@ -80,5 +80,55 @@ describe("native logical synthetic HTTP boundary", () => {
     }
     const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000, (async () => new Response("{}", { headers: { "content-length": "10000" } })) as typeof fetch);
     await expect(client.nativeLogicalRequest("capabilities", undefined, { maxResponseBytes: 100 })).rejects.toThrow(/byte budget/u);
+  });
+
+  it("preserves terminal action receipts on HTTP errors without promoting failed read responses", async () => {
+    const source = nativeScenario();
+    const failedRead = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(source.fixture.wire_samples.capabilities), { status: 500 })) as typeof fetch);
+    await expect(failedRead.nativeLogicalRequest("capabilities")).rejects.toThrow(/HTTP 500/u);
+    const result = source.fixture.wire_samples.result!;
+    const failedAction = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(result), { status: 409 })) as typeof fetch);
+    const reply = await failedAction.nativeLogicalRequest("result", { request_id: String(result.request_id) });
+    expect(reply.statusCode).toBe(409);
+    expect(reply.raw).toEqual(result);
+    const wrongReceipt = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(source.fixture.wire_samples.capabilities), { status: 409 })) as typeof fetch);
+    await expect(wrongReceipt.nativeLogicalRequest("result", { request_id: "original" })).rejects.toThrow(/HTTP 409/u);
+  });
+
+  it.each([[409, "stale"], [409, "source_capture_incomplete"], [409, "failed"], [429, "capacity_exceeded"]] as const)
+    ("preserves the Host's typed Current failure %i/%s", async (status, disposition) => {
+      const source = await nativeHarness(3, url => url.pathname.endsWith("/current") ? new Response(JSON.stringify({
+        schema: "sts2.player-environment/native-logical-current-1", input_profile: "native-logical-v1",
+        status: disposition, context: null, capture: null, retention: null, reason: "exact producer reason " + "细节".repeat(200)
+      }), { status }) : undefined);
+      try {
+        const reply = await source.session.current();
+        expect(reply.data.status).toBe(disposition);
+        expect(reply.data.reason).toBe("exact producer reason " + "细节".repeat(200));
+        expect(reply.data.capture).toBeNull();
+      } finally { await source.controller.close(); }
+    });
+
+  it.each([[409, "capacity_exceeded"], [429, "stale"], [500, "failed"]] as const)
+    ("rejects a Current status/body mismatch %i/%s", async (status, disposition) => {
+      const source = await nativeHarness(3, url => url.pathname.endsWith("/current") ? new Response(JSON.stringify({
+        schema: "sts2.player-environment/native-logical-current-1", input_profile: "native-logical-v1",
+        status: disposition, context: null, capture: null, retention: null, reason: "failure"
+      }), { status }) : undefined);
+      try { await expect(source.session.current()).rejects.toThrow(`HTTP ${status}`); }
+      finally { await source.controller.close(); }
+    });
+
+  it("rejects a captured Current on HTTP 500 and a contradictory failure envelope", async () => {
+    const fake = nativeScenario();
+    for (const reply of [new Response(JSON.stringify(fake.current), { status: 500 }),
+      new Response(JSON.stringify({ ...fake.current, status: "stale", reason: "stale" }), { status: 409 })]) {
+      const source = await nativeHarness(3, url => url.pathname.endsWith("/current") ? reply : undefined);
+      try { await expect(source.session.current()).rejects.toThrow(/HTTP/u); }
+      finally { await source.controller.close(); }
+    }
   });
 });

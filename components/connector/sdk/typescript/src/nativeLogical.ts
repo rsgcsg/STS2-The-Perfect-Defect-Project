@@ -19,6 +19,7 @@ const scalar = z.string().superRefine((value, ctx) => {
   if (Buffer.byteLength(value, "utf8") > 65536) ctx.addIssue({ code: "custom", message: "string exceeds max_field_bytes" });
 });
 const id = z.string().min(1).max(128);
+const actionRouteId = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.-]+$/u);
 const cursor = z.string().min(1).max(1024);
 const digest = z.string().regex(/^[0-9a-f]{64}$/u);
 const time = z.string().datetime({ offset: true });
@@ -48,14 +49,11 @@ const json = z.custom<JsonValue>(value => {
 const requiredJson = json.refine(value => value !== null, "required public JSON node is null");
 const content = z.object({ content_schema: scalar, content: requiredJson }).strict();
 const referent = z.object({
-  referent_id: scalar, role: scalar, kind: z.enum(["entity", "control"]), label: scalar.nullable(),
+  referent_id: scalar, role: scalar, kind: scalar, label: scalar.nullable(),
   state: z.object({ visible: z.boolean(), enabled: z.boolean().nullable(), selected: z.boolean().nullable(),
-    focused: z.boolean().nullable(), observation_basis: z.literal("native_visible_fact") }).strict(),
+    focused: z.boolean().nullable(), observation_basis: scalar }).strict(),
   properties_schema: scalar.nullable(), properties: json.nullable()
-}).strict().superRefine((value, ctx) => {
-  if (value.properties !== null && value.properties_schema === null)
-    ctx.addIssue({ code: "custom", message: "public properties require their schema" });
-});
+}).strict();
 const interaction = z.object({
   interaction_id: scalar, kind: scalar, stage: scalar, prompt: scalar.nullable(), content_schema: scalar,
   content: z.object({ surface: requiredJson, context: requiredJson }).strict(),
@@ -335,7 +333,7 @@ const requestSchemas = {
   renew: z.object(subscriptionRequestFields).strict(),
   retain: z.object({ client_session_id: id, capture_id: id }).strict(),
   release: z.object({ client_session_id: id, retention_handle_id: id }).strict(),
-  submit: z.object({ request_id: id, expected_snapshot_id: id, bound_action_id: id, client_session_id: id,
+  submit: z.object({ request_id: actionRouteId, expected_snapshot_id: actionRouteId, bound_action_id: actionRouteId, client_session_id: id,
     controller_lease_id: id, controller_generation: positive, input_profile: profile }).strict(),
   result: z.object({ request_id: id }).strict()
 };

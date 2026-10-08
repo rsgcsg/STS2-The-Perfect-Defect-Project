@@ -35,6 +35,10 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child
+from stpd.structured_code_scope import (
+    is_structured_model_schema,
+    require_structured_model_package,
+)
 
 SCHEMA = "stpd/local-model-export-operation-v1"
 SCHEMA_V2 = "stpd/local-model-export-operation-v2"
@@ -207,7 +211,7 @@ class _DownloadedStructuredModel:
                 or receipt.get("schema") != "stpd/result-download-v1"
                 or receipt.get("artifact_id") != identity
                 or self.model.kind != "model"
-                or self.model.parameters.value().get("schema") != "stpd/structured-m2-model-v1"):
+                or not is_structured_model_schema(self.model.parameters.value().get("schema"))):
             raise BoundaryError("local_model_export", "structured_download_required")
         self.directory = directory
         self.blobs = SimpleNamespace(root=directory)
@@ -238,7 +242,7 @@ def _structured_package(store: Any, model: Manifest, destination: Path, *,
     )
 
     info = model.parameters.value()
-    if (model.kind != "model" or info.get("schema") != "stpd/structured-m2-model-v1"
+    if (model.kind != "model" or not is_structured_model_schema(info.get("schema"))
             or {item.role for item in model.payloads} != {"package_manifest", "weights"}):
         raise BoundaryError("local_model_export", "structured_model_required")
     payloads = (("package_manifest", "model.json", MAX_MANIFEST_BYTES),
@@ -250,8 +254,7 @@ def _structured_package(store: Any, model: Manifest, destination: Path, *,
             raw = store.bytes(payload, maximum=limit)
             (checked / name).write_bytes(raw)
         package, _ = load_structured_package(checked)
-        if info.get("model_id") != package["model_id"]:
-            raise BoundaryError("local_model_export", "export_identity_mismatch")
+        require_structured_model_package(model, package)
         if destination.exists() or destination.is_symlink():
             load_structured_package(destination)
             if any((destination / name).read_bytes() != (checked / name).read_bytes()
@@ -295,7 +298,7 @@ class LocalModelExport:
                     directory / "manifest.json", directory=False):
                 raise BoundaryError("local_model_export", "unsafe_download_cache")
             cached = Manifest.from_bytes((directory / "manifest.json").read_bytes(), identity)
-            if cached.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+            if is_structured_model_schema(cached.parameters.value().get("schema")):
                 return _DownloadedStructuredModel(directory, identity)
         return self._workspace().store
 
@@ -420,7 +423,7 @@ class LocalModelExport:
             if model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1":
                 raise BoundaryError("local_model_export", "memory_registration_not_ready")
             destination = self.config.state_dir / EXPORT_ROOT / identity
-            if model.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+            if is_structured_model_schema(model.parameters.value().get("schema")):
                 _structured_package(source, model, destination)
                 return destination
             _eligible(model)
@@ -577,7 +580,7 @@ class LocalModelExport:
             require_local_models("local_model_export")
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
-            structured = model.parameters.value().get("schema") == "stpd/structured-m2-model-v1"
+            structured = is_structured_model_schema(model.parameters.value().get("schema"))
             if not memory and not structured:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
@@ -671,7 +674,7 @@ class LocalModelExport:
             child_started = True
 
         try:
-            if model.parameters.value().get("schema") == "stpd/structured-m2-model-v1":
+            if is_structured_model_schema(model.parameters.value().get("schema")):
                 count = _structured_package(store, model, destination, materialize=True)
             elif run_id is None:
                 from stpd.policy.token_decision import export_token_model

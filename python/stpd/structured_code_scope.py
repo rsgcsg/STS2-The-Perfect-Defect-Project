@@ -13,7 +13,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.artifact_contracts import Manifest
+from spireagent.json_boundary import BoundaryError, digest
 
 from .canonical import semantic_hash
 
@@ -31,6 +32,45 @@ SCOPED_REPORT_SCHEMA = "stpd/structured-m2-training-report-v3"
 SCOPED_ADAPTER_VERSION = "1.1.0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_WEIGHTS_BYTES = 32 * 1024 * 1024
+STRUCTURED_MODEL_SCHEMAS = frozenset({
+    "stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2", SCOPED_MODEL_SCHEMA,
+})
+
+
+def is_structured_model_schema(schema: object) -> bool:
+    return isinstance(schema, str) and schema in STRUCTURED_MODEL_SCHEMAS
+
+
+def structured_model_package_schema(schema: object) -> str:
+    """Closed artifact/package dispatch; unknown versions never inherit admission."""
+    if schema in ("stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2"):
+        return "stpd/structured-m2-package-v1"
+    if schema == SCOPED_MODEL_SCHEMA:
+        return SCOPED_PACKAGE_SCHEMA
+    raise BoundaryError("structured_model", "unsupported_model_schema")
+
+
+def require_structured_model_package(model: Manifest, package: dict[str, Any]) -> None:
+    """Bind verified own package bytes without fetching private ancestry payloads."""
+    info = model.parameters.value()
+    expected = structured_model_package_schema(info.get("schema"))
+    if (model.kind != "model" or package.get("schema") != expected
+            or info.get("model_id") != package.get("model_id")):
+        raise BoundaryError("structured_model", "model_package_binding_mismatch")
+    if expected == SCOPED_PACKAGE_SCHEMA:
+        provenance = package.get("provenance")
+        graph = package.get("graph")
+        if (set(info) != {"schema", "model_id", "graph_id", "qualification", "attempt"}
+                or not isinstance(graph, dict) or info["graph_id"] != graph.get("id")
+                or info["qualification"] != package.get("qualification")
+                or not isinstance(provenance, dict)
+                or provenance.get("export_producer") != model.producer.to_dict()
+                or sorted(parent.role for parent in model.parents)
+                != ["checkpoint", "run", "training_input"]
+                or any(provenance.get(role + "_id") != model.parent(role)
+                       for role in ("run", "training_input", "checkpoint"))):
+            raise BoundaryError("structured_model", "model_export_provenance_mismatch")
+        digest(info["attempt"], "structured_model.export_attempt", length=32)
 
 # Include package initializers even when they expose unused lazy legacy exports.
 # Their exact source is part of the boundary, rather than inferred from one run.
@@ -47,10 +87,12 @@ _SHARED_PATHS = (
     "stpd/fullrun/representation.py",
     "stpd/fullrun/semantic_projection.py",
     "stpd/fullrun/structured_inputs.py",
+    "stpd/fullrun/structured_tree.py",
     "stpd/fullrun/text_menu_inputs.py",
     "stpd/linear_q.py",
     "stpd/models/__init__.py",
     "stpd/models/structured_m2.py",
+    "stpd/models/structured_weights.py",
     "stpd/representation.py",
     "stpd/structured_code_scope.py",
     "stpd/workers/__init__.py",

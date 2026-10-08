@@ -171,6 +171,7 @@ public static partial class ConnectorMod
             var tree = (SceneTree)Engine.GetMainLoop();
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(ProcessMainThreadQueue));
 
+            PlayerEnvironment.PlayerEnvironmentService.InitializeNativeLogical();
             RuntimeConfig config = LoadRuntimeConfig();
             PlayerEnvironment.PlayerEnvironmentService.ConfigureNativePageEvidence(
                 config.NativePageEvidenceEnabled);
@@ -293,6 +294,10 @@ public static partial class ConnectorMod
                     HandleGetTextMenuObservationContext(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
+            }
+            else if (path.StartsWith("/api/player-environment/native-logical/", StringComparison.Ordinal))
+            {
+                HandleNativeLogical(path["/api/player-environment/native-logical/".Length..], request, response);
             }
             else if (path.StartsWith(SealedObservationContract.Route + "/", StringComparison.Ordinal))
             {

@@ -154,3 +154,43 @@ The checkpoint creator remains independently validated; result, model, report
 and package export provenance must agree on the actual exporting producer.
 Reconciliation verifies those existing identities without stamping its own
 producer onto them or replaying numerical work.
+
+## Application opt-in and model composition
+
+The ordinary local training service now exposes the separate trusted recipe
+`structured-m2-cpu-v3`. Select it explicitly in `TrainingRequest`; the default
+recipe and `structured-m2-cpu-v2` retain their previous meanings. The service
+capability descriptor reports the selected code scope and run, checkpoint,
+model and package schemas without importing Torch.
+
+| Application recipe | Training scope | Run / checkpoint | Model / package |
+| --- | --- | --- | --- |
+| `structured-m2-cpu-v2` | legacy whole Python source and lock | v2 / v2 | v2 / v1 |
+| `structured-m2-cpu-v3` | reviewed numerical closure and lock | v3 / v3 | v3 / v2 |
+
+The existing operation journal caches the actual current `source_identity(ROOT)`
+producer once for each owned scoped attempt. The child independently checks that
+producer, selects preparation scope from the trusted recipe, and verifies the
+frozen run's schema before resume/reconcile. Parent event and checkpoint checks
+bind the actual publisher for that attempt. Selecting an earlier checkpoint
+requires its terminal writer and exact historical event/producer; it is never
+renamed to the original run producer or the new writer. A publication checkpoint
+created by A may be exported by B and later reconciled by C while all three
+identities remain distinct. One journal, controls, cumulative budgets and use
+reservations continue to apply.
+
+Export, registration and fixed-model evaluation explicitly admit model-v1/v2
+with package-v1 and model-v3 with package-v2. Unknown or mismatched versions are
+rejected. Scoped model metadata binds graph, qualification, export attempt,
+actual exporter and immutable run/input/checkpoint parent IDs. Detached downloads
+verify only their own closed package payloads and those IDs, without requesting
+private ancestry. Registration delegates broad/config-v1 versus
+inference/config-v2 identity checks to the versioned installation owner, so an
+unrelated Workbench edit does not falsely stale a scoped registration.
+
+These recipes consume the retained sampled S0 text-menu-v2 I/F-off source;
+scoped code identity does not create a new native projection or runtime
+qualification. Fixed evaluation still requires original source verification,
+current use/Gold/partition and model ancestry/source-group overlap gates before
+its existing private child executes. External exposure remains unknown and no
+clean held-out claim is inferred. No old checkpoint/package is rewritten.

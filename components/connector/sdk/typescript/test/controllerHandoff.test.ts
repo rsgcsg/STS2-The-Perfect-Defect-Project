@@ -64,6 +64,7 @@ describe("one registered owner through lease handoff", () => {
     source.environment.renewController.mockImplementationOnce(() => reply.promise);
     const pending = source.session.credentials();
     const rejected = expect(pending).rejects.toThrow(/released/u);
+    await Promise.resolve(); // Enter the pending renewal before Stop.
     expect(source.environment.renewController).toHaveBeenCalledTimes(1);
     await source.session.releaseControl();
     expect(source.environment.releaseController).toHaveBeenCalledTimes(1);
@@ -84,6 +85,7 @@ describe("one registered owner through lease handoff", () => {
     source.environment.renewController.mockImplementationOnce(() => reply.promise);
     const pending = source.session.credentials();
     const rejected = expect(pending).rejects.toThrow(/released/u);
+    await Promise.resolve();
     await source.session.releaseControl();
     reply.reject(new Error("renewal connection ended"));
     await rejected;
@@ -98,6 +100,7 @@ describe("one registered owner through lease handoff", () => {
     source.environment.acquireController.mockImplementationOnce(() => original.promise);
     const pending = source.session.credentials();
     const rejected = expect(pending).rejects.toThrow(/released/u);
+    await Promise.resolve(); // The actual acquire has entered its transport.
     const release = source.session.releaseControl();
     expect(source.environment.releaseController).not.toHaveBeenCalled();
     original.resolve({ raw: {}, data: { runtime_instance_id: "runtime", status: "controller_acquired", controller: {
@@ -141,5 +144,26 @@ describe("one registered owner through lease handoff", () => {
     await expect(source.session.credentials()).rejects.toBeInstanceOf(EnvironmentControlUncertainError);
     expect(source.environment.acquireController).toHaveBeenCalledTimes(1);
     await source.session.close();
+  });
+
+  it("cleans a lease granted by an actual REST acquire that reentrantly requests release", async () => {
+    let source: Awaited<ReturnType<typeof nativeHarness>>;
+    let held = false;
+    let releasing: Promise<void> | undefined;
+    source = await nativeHarness(3, url => {
+      if (url.pathname.endsWith("/controller/acquire")) {
+        held = true;
+        releasing = source.controller.releaseControl();
+      }
+      if (url.pathname.endsWith("/controller/release")) held = false;
+    });
+    try {
+      await expect(source.controller.credentials()).rejects.toThrow(/released/u);
+      await releasing;
+      expect(held).toBe(false);
+      expect(source.calls.filter(call => call.url.pathname.endsWith("/controller/release"))).toHaveLength(1);
+      expect(source.controller.snapshot()).toMatchObject({ controller_lease_id: null, controller_release_uncertain: false });
+      expect(source.calls.filter(call => call.url.pathname.endsWith("/controller/acquire"))).toHaveLength(1);
+    } finally { await source.controller.close(); }
   });
 });
