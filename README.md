@@ -39,8 +39,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 ## Start here
 
 - [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
-  contracts, abstract layers, S0 real instance, I/F-off structured Model and gates.
-- [Current execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md) and
+  abstract layers, full interaction target, I/F-off Agent and user approval gates.
+- [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
   [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
 - [Completed S0 learning loop](docs/evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md):
   real Agent collection, structured-model training/export, native play and exact limits.
@@ -53,9 +53,10 @@ restrictions; local and cloud views do not create separate copies of authority.
   [document map](docs/DOCUMENT_MAP.md) and [skills](.agents/skills/README.md): earlier proposals, alternatives and exact
   receipts. Historical proposal documents are not additional normative layers.
 
-The first new instance is explicitly a text-menu-v2 sealed-observation compatibility
-profile, not claimed full native-flat or Human qualification. G1 review, source/test,
-installed/loaded execution and scientific results remain separate. The latest owner
+The first completed instance is a bounded text-menu-v2 compatibility loop. Full
+G2/V1 implementation and verification continue against the retained requirements;
+only the user can approve those gates. Source/test, installed/loaded execution,
+Human origin and scientific results remain separate. The latest owner
 has authorized lead-managed implementation and necessary operations within the
 execution packet; paid model/training spend is capped at USD 20 in aggregate.
 

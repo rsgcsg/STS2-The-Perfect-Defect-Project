@@ -1,7 +1,7 @@
 # Document Map
 
 Current baseline authority: [v1 specification](BASELINE_V1_SPEC.zh-CN.md) and
-[execution packet](plans/BASELINE_V1_EXECUTION_2026-10-08.md). Earlier BASELINE design
+[execution packet](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md). Earlier BASELINE design
 entries below are history/alternatives, not coequal implementation specifications.
 
 
@@ -9,9 +9,10 @@ Use the smallest route that answers the task.
 
 ## Current baseline
 
-- [v1 specification](BASELINE_V1_SPEC.zh-CN.md): the sole implementation contract and declared S0 scope.
-- [Execution packet](plans/BASELINE_V1_EXECUTION_2026-10-08.md): completed work, budget and next gates.
-- [G1 acceptance](evidence/G1_V1_ACCEPTANCE_2026-10-08.md): independent design reviews and bounded acceptance.
+- [v1 specification](BASELINE_V1_SPEC.zh-CN.md): the sole implementation contract, full G2/V1 target and historical S0 boundary.
+- [Execution packet](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): complete retained requirements, active work, budget and user approval.
+- [Full G2/V1 initial audit](evidence/BASELINE_G2_V1_AUDIT_2026-10-08.md): independent findings and owning repairs; not final gate acceptance.
+- [Historical limited G1 acceptance](evidence/G1_V1_ACCEPTANCE_2026-10-08.md): independent design reviews and bounded acceptance.
 - [G2-S0 learning loop](evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md): exact source, installed artifact, real Agent data, training, export and native execution evidence with limitations.
 
 ## Baseline design history
