@@ -24,7 +24,7 @@ public sealed record NativeLogicalProjectionOutcome(string ScopeId, NativeLogica
     string? MissingReason, bool CatalogNonempty = false);
 
 /// <summary>Bounded source metadata and immutable scoped projections. No native capture or dispatch occurs here.</summary>
-public sealed class NativeLogicalPublicationHub : IDisposable
+public sealed partial class NativeLogicalPublicationHub : IDisposable
 {
     private sealed class Subscription(string client, NativeLogicalSubscription value, long deadline)
     {

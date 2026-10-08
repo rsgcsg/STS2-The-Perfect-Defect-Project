@@ -16,6 +16,10 @@
     <Compile Include="*.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/ClientRevocationWire.cs" Link="Protocol/ClientRevocationWire.cs" />
+    <Compile Include="../../Authority/MutationControlContracts.cs" Link="Authority/MutationControlContracts.cs" />
+    <Compile Include="../../Authority/MutationClientLifetime.cs" Link="Authority/MutationClientLifetime.cs" />
+    <Compile Include="../../Authority/MutationControllerCoordinator*.cs" Link="Authority/%(Filename)%(Extension)" />
     <Compile Include="../../PlayerEnvironment/NativeLogical/*.cs" Link="Core/%(Filename)%(Extension)" />
     <None Include="../../../contracts/fixtures/native-logical-v1.json" Link="native-logical-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />

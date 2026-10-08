@@ -10,6 +10,7 @@ GET  /api/player-environment/snapshot
 GET  /api/player-environment/text-menu/observation-context
 GET  /api/player-environment/reads/{read_id}?expected_snapshot_id=...
 POST /api/player-environment/clients/register
+POST /api/player-environment/clients/revoke
 GET  /api/player-environment/controller
 POST /api/player-environment/controller/acquire|renew|release
 POST /api/player-environment/actions
@@ -18,6 +19,34 @@ POST /api/player-environment/evidence/native-pages/sessions
 GET  /api/player-environment/evidence/native-pages/sessions/{session_id}
 POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|recover
 ```
+
+## Original client lifetime and final revocation (source foundation)
+
+An original client has a 30-minute idle deadline measured by the Host's
+monotonic clock. Valid registration or owned control operations extend it;
+invalid lease attempts and passive state/result lookups do not. Expiry permanently
+closes that original session and revokes only its owned lease, including while
+no request or poll is arriving. Closed records remain runtime tombstones within
+the existing 4096-client capacity. A later explicit registration receives a new
+session identity; it does not reopen an old session.
+
+`POST /api/player-environment/clients/revoke` accepts exactly
+`runtime_instance_id` and `client_session_id`: two required original opaque ASCII
+identifiers of at most 128 characters in a body of at most 1 KiB. The call uses
+the existing Authority gate directly and does not wait for the game thread.
+An HTTP 200 acknowledgement has protocol `1.0.0`, schema
+`sts2.player-environment/client-revoke-1`, exact original identity echoes,
+`status=client_revoked`, `closed=true`, and `controller=null`. The null controller
+means the target owns no lease; another client's global lease may still exist.
+The same closed target can be acknowledged again. Wrong runtime, unknown target,
+malformed body, missing/duplicate/extra fields or oversized body cannot assert
+closure. A missing or invalid acknowledgement retains consumer uncertainty.
+
+This foundation additionally exposes private original-client lifetime handles
+and post-Authority closure callbacks for the existing request/publication owners.
+Their bounded request-result storage, owned passive renewal and source accounting
+are separate integration work; these interfaces alone do not claim those owners
+are wired or any game/runtime qualification.
 
 ## Snapshot
 
