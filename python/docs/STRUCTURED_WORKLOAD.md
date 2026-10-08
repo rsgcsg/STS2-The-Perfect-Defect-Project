@@ -34,7 +34,10 @@ weights and metadata.
 
 The cumulative optimizer budget never resets across attempts. Historical v1 runs
 and final-only checkpoints remain readable by their existing APIs and are rejected
-by v2 execution; they do not acquire resume guarantees.
+by v2 execution; they do not acquire resume guarantees. The declared checkpoint cadence accepts 1–100 completed
+boundaries; worker fixture defaults use 1, while applications choose a bounded
+cadence and cumulative resource reservation for larger jobs rather than blindly
+publishing a full tensor tree at every boundary.
 
 Pause/cancel are checked between complete chunks and before/after the fixed-weight
 evaluation pass. They publish a checkpoint and explicit terminal event when the
@@ -46,9 +49,23 @@ is recorded. A final complete result is verified against its checkpoint/export
 and may be reconciled without new training. Completion verification closes the
 exact run/training-input/experiment/checkpoint/model/result role inventory and
 producer/identity bindings. The selected checkpoint's manifest cursor, phase,
-boundary and update count must match its verified tensor payload. Its optional
-previous-checkpoint reference is checked for direct manifest identity; this
-verification does not scan all historical ancestor payloads.
+boundary and update count must match its verified tensor payload. Periodic
+checkpoints reference the run/input and, for a resumed attempt, its explicit
+starting `resume_checkpoint`. That anchor stays constant throughout the attempt;
+periodic checkpoints never form a data-ancestry chain. Their chronological
+previous IDs remain in ordered run events, including repeated publication of the
+same immutable state. A completed model therefore does not inherit hundreds of
+periodic checkpoint parents.
+
+Each checkpoint's explicit resume ancestry has at most 32 links and is validated against
+the exact same run/input/producer/execution identity. Every resume uses a fresh
+attempt ID distinct from prior writers in the run events and checkpoint ancestry. The worker rejects
+an exhausted ancestry bound before publication or numerical work. This does not
+count all attempts branching from older anchors: total-attempt and cumulative
+resource budgets remain application-owned. Applications can impose a stricter
+total-attempt limit. Cross-run warm starts are unsupported.
+This checks bounded attempt-start manifest ancestry and the selected state/output
+payloads; it does not scan all historical checkpoint payloads.
 
 Every selected source, checkpoint, model package, weight and report payload is
 read within its declared bound and independently checked against declared size

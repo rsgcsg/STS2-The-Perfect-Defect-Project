@@ -734,3 +734,202 @@ def test_reporter_marker_write_failure_after_manifest_never_resubmits_or_invents
             store, reporter, replace(request, mode="reconcile"), PRODUCER, authority=Authority()
         )
     assert store.manifest_ids() == before
+
+
+def test_real_worker_periodic_checkpoints_anchor_only_explicit_attempt_start(tmp_path):
+    store, reporter, run, request = setup(tmp_path)
+    paused = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl()
+    )
+    execute_structured_workload(
+        store,
+        reporter,
+        replace(
+            request, mode="resume", attempt_id="3" * 32, resume_checkpoint_id=paused.checkpoint_id
+        ),
+        PRODUCER,
+        authority=Authority(),
+    )
+    previous = None
+    for event in reporter.events(run.artifact_id):
+        info = event.parameters.value()
+        if info["kind"] != "checkpoint":
+            continue
+        details = info["details"]
+        checkpoint = store.get_manifest(details["checkpoint_id"])
+        if info["attempt"] == request.attempt_id:
+            assert {parent.role for parent in checkpoint.parents} == {"run", "training_input"}
+        else:
+            assert {parent.role for parent in checkpoint.parents} == {
+                "run",
+                "training_input",
+                "resume_checkpoint",
+            }
+            assert checkpoint.parent("resume_checkpoint") == paused.checkpoint_id
+        assert details["previous_checkpoint_id"] == previous
+        previous = details["checkpoint_id"]
+
+
+def test_more_than_512_periodic_checkpoint_publications_keep_model_lineage_bounded(tmp_path):
+    import io
+
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.hub.access import lineage
+    from spireagent.json_boundary import FrozenObject
+    from stpd.fullrun.dataset_policy import training_sources
+    from stpd.workers.structured_execution import _checkpoint_parents
+
+    store, reporter, run, request = setup(tmp_path)
+    training = store.get_manifest(run.parent("training_input"))
+    # This is a real CAS/lineage shape fixture, not a numerical checkpoint claim.
+    # One small payload is reused so the test never writes hundreds of tensor trees.
+    payload = store.put_payload("checkpoint", io.BytesIO(b"structural-checkpoint-fixture"))
+    for boundary in range(600):
+        checkpoint = Manifest(
+            "checkpoint",
+            PRODUCER,
+            _checkpoint_parents(run, training, None),
+            (payload,),
+            FrozenObject.of({"structural_fixture_boundary": boundary}),
+        )
+        store.publish(checkpoint)
+    model = Manifest(
+        "model",
+        PRODUCER,
+        (
+            Parent("run", run.artifact_id),
+            Parent("training_input", training.artifact_id),
+            Parent("checkpoint", checkpoint.artifact_id),
+        ),
+    )
+    store.publish(model)
+    assert (
+        len(
+            [item for item in store.manifest_ids() if store.get_manifest(item).kind == "checkpoint"]
+        )
+        == 600
+    )
+    assert len(lineage(store, model)) == 6
+    assert training_sources(store, model.artifact_id) == (
+        store.get_manifest(training.parent("source")),
+    )
+
+    # A resumed attempt holds the exact same single starting anchor for all 600 publications.
+    anchor = checkpoint.artifact_id
+    for boundary in range(600):
+        resumed = Manifest(
+            "checkpoint",
+            PRODUCER,
+            _checkpoint_parents(run, training, anchor),
+            (payload,),
+            FrozenObject.of({"structural_fixture_boundary": boundary, "resumed": True}),
+        )
+        store.publish(resumed)
+    resumed_model = replace(
+        model,
+        parents=tuple(
+            Parent(parent.role, resumed.artifact_id) if parent.role == "checkpoint" else parent
+            for parent in model.parents
+        ),
+    )
+    store.publish(resumed_model)
+    assert len(lineage(store, resumed_model)) == 7
+    assert training_sources(store, resumed_model.artifact_id) == training_sources(
+        store, model.artifact_id
+    )
+
+
+def test_explicit_resume_depth_limit_rejects_before_publication(tmp_path):
+    from spireagent.json_boundary import FrozenObject
+    from stpd.structured_workload_contracts import MAX_RESUME_ANCESTRY
+    from stpd.workers.structured_execution import _checkpoint_parents, _resume_checkpoint_depth
+
+    store, reporter, run, request = setup(tmp_path)
+    paused = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl(after=0)
+    )
+    base = store.get_manifest(paused.checkpoint_id)
+    training = store.get_manifest(request.training_input_id)
+    anchor = base.artifact_id
+    for index in range(MAX_RESUME_ANCESTRY):
+        params = base.parameters.value()
+        params["attempt"] = f"{index + 10:032x}"
+        checkpoint = replace(
+            base,
+            parents=_checkpoint_parents(run, training, anchor),
+            parameters=FrozenObject.of(params),
+        )
+        store.publish(checkpoint)
+        anchor = checkpoint.artifact_id
+    assert _resume_checkpoint_depth(store, anchor, run, training) == MAX_RESUME_ANCESTRY
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="resume_attempt_limit"):
+        execute_structured_workload(
+            store,
+            reporter,
+            replace(request, mode="resume", attempt_id="f" * 32, resume_checkpoint_id=anchor),
+            PRODUCER,
+            authority=Authority(),
+        )
+    assert store.manifest_ids() == before
+
+
+def test_resume_anchor_cannot_launder_other_run_or_reuse_attempt_identity(tmp_path):
+    store, reporter, run, request = setup(tmp_path)
+    paused = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl(after=0)
+    )
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="resume_attempt_identity_reused"):
+        execute_structured_workload(
+            store,
+            reporter,
+            replace(request, mode="resume", resume_checkpoint_id=paused.checkpoint_id),
+            PRODUCER,
+            authority=Authority(),
+        )
+    assert store.manifest_ids() == before
+    other = prepare_structured_workload(
+        store, dataset(), PRODUCER, StructuredTrainingConfig(epochs=2), operation_id="4" * 32
+    )
+    different = replace(
+        request,
+        run_id=other.artifact_id,
+        operation_id="4" * 32,
+        training_input_id=other.parent("training_input"),
+        attempt_id="5" * 32,
+        mode="resume",
+        resume_checkpoint_id=paused.checkpoint_id,
+    )
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="checkpoint_run_identity_mismatch"):
+        execute_structured_workload(store, reporter, different, PRODUCER, authority=Authority())
+    assert store.manifest_ids() == before
+
+
+def test_resume_cannot_reuse_a_non_adjacent_prior_attempt_identity(tmp_path):
+    store, reporter, run, request = setup(tmp_path)
+    initial = execute_structured_workload(
+        store, reporter, request, PRODUCER, authority=Authority(), control=PauseControl(after=0)
+    )
+    resumed_request = replace(
+        request, mode="resume", attempt_id="3" * 32, resume_checkpoint_id=initial.checkpoint_id
+    )
+    next_attempt = execute_structured_workload(
+        store,
+        reporter,
+        resumed_request,
+        PRODUCER,
+        authority=Authority(),
+        control=PauseControl(after=0),
+    )
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="resume_attempt_identity_reused"):
+        execute_structured_workload(
+            store,
+            reporter,
+            replace(request, mode="resume", resume_checkpoint_id=next_attempt.checkpoint_id),
+            PRODUCER,
+            authority=Authority(),
+        )
+    assert store.manifest_ids() == before

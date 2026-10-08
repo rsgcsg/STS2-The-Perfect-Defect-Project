@@ -47,6 +47,7 @@ from ..policy.structured_export import (
     export_structured_package,
     load_structured_package,
 )
+from ..structured_workload_contracts import MAX_RESUME_ANCESTRY
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import (
@@ -202,13 +203,13 @@ def _roles(manifest: Manifest, parents: set[str], payloads: set[str]) -> None:
         raise BoundaryError("structured_workload", "artifact_role_inventory_mismatch")
 
 
-def _checkpoint_bytes(
+def _checkpoint_manifest(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
-) -> bytes:
+) -> Manifest:
     saved = store.get_manifest(checkpoint_id)
     parent_roles = {"run", "training_input"}
-    if any(parent.role == "previous_checkpoint" for parent in saved.parents):
-        parent_roles.add("previous_checkpoint")
+    if any(parent.role == "resume_checkpoint" for parent in saved.parents):
+        parent_roles.add("resume_checkpoint")
     _roles(saved, parent_roles, {"checkpoint"})
     info = object_fields(
         saved.parameters.value(),
@@ -234,16 +235,48 @@ def _checkpoint_bytes(
         != semantic_hash(run.parameters.value()["execution_identity"])
     ):
         raise BoundaryError("structured_workload", "checkpoint_run_identity_mismatch")
-    if "previous_checkpoint" in parent_roles:
-        previous = store.get_manifest(saved.parent("previous_checkpoint"))
-        if (
-            previous.kind != "checkpoint"
-            or previous.producer != run.producer
-            or previous.parent("run") != run.artifact_id
-            or previous.parent("training_input") != training.artifact_id
-            or previous.parameters.value().get("schema") != CHECKPOINT_SCHEMA
-        ):
-            raise BoundaryError("structured_workload", "previous_checkpoint_identity_mismatch")
+    return saved
+
+
+def _resume_checkpoint_depth(
+    store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
+) -> int:
+    """Validate only bounded explicit attempt-start ancestry, not periodic chronology."""
+    depth = 0
+    seen: set[str] = set()
+    seen_attempts: set[str] = set()
+    while True:
+        if checkpoint_id in seen:
+            raise BoundaryError("structured_workload", "resume_checkpoint_cycle")
+        seen.add(checkpoint_id)
+        saved = _checkpoint_manifest(store, checkpoint_id, run, training)
+        attempt = saved.parameters.value()["attempt"]
+        if attempt in seen_attempts:
+            raise BoundaryError("structured_workload", "resume_attempt_identity_reused")
+        seen_attempts.add(attempt)
+        if not any(parent.role == "resume_checkpoint" for parent in saved.parents):
+            return depth
+        depth += 1
+        if depth > MAX_RESUME_ANCESTRY:
+            raise BoundaryError("structured_workload", "resume_attempt_limit")
+        checkpoint_id = saved.parent("resume_checkpoint")
+
+
+def _checkpoint_parents(
+    run: Manifest, training: Manifest, resume_checkpoint_id: str | None
+) -> tuple[Parent, ...]:
+    parents = (Parent("run", run.artifact_id), Parent("training_input", training.artifact_id))
+    if resume_checkpoint_id is not None:
+        return (*parents, Parent("resume_checkpoint", resume_checkpoint_id))
+    return parents
+
+
+def _checkpoint_bytes(
+    store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
+) -> bytes:
+    _resume_checkpoint_depth(store, checkpoint_id, run, training)
+    saved = _checkpoint_manifest(store, checkpoint_id, run, training)
+    info = saved.parameters.value()
     payload = saved.payload("checkpoint")
     if payload.media_type != "application/vnd.stpd.tensor-tree":
         raise BoundaryError("structured_workload", "checkpoint_media_type_mismatch")
@@ -472,11 +505,24 @@ def execute_structured_workload(
     if request.mode == "start" and history:
         raise BoundaryError("structured_workload", "explicit_resume_required")
     if request.mode == "resume":
+        if any(event.parameters.value().get("attempt") == request.attempt_id for event in history):
+            raise BoundaryError("structured_workload", "resume_attempt_identity_reused")
         assert request.resume_checkpoint_id is not None
         authority.authorize_resume(
             run.artifact_id, request.attempt_id, request.resume_checkpoint_id
         )
         guard()
+        assert request.resume_checkpoint_id is not None
+        selected_checkpoint = _checkpoint_manifest(
+            store, request.resume_checkpoint_id, run, training
+        )
+        if selected_checkpoint.parameters.value()["attempt"] == request.attempt_id:
+            raise BoundaryError("structured_workload", "resume_attempt_identity_reused")
+        if (
+            _resume_checkpoint_depth(store, request.resume_checkpoint_id, run, training)
+            >= MAX_RESUME_ANCESTRY
+        ):
+            raise BoundaryError("structured_workload", "resume_attempt_limit")
     checkpoint_id = request.resume_checkpoint_id
     engine = StructuredTrainingEngine(dataset, config)
     if checkpoint_id is not None:
@@ -518,12 +564,8 @@ def execute_structured_workload(
             "checkpoint", io.BytesIO(raw), "application/vnd.stpd.tensor-tree"
         )
         guard()
-        parents: tuple[Parent, ...] = (
-            Parent("run", run.artifact_id),
-            Parent("training_input", training.artifact_id),
-        )
-        if checkpoint_id is not None:
-            parents += (Parent("previous_checkpoint", checkpoint_id),)
+        previous_checkpoint_id = checkpoint_id
+        parents = _checkpoint_parents(run, training, request.resume_checkpoint_id)
         saved = Manifest(
             "checkpoint",
             producer,
@@ -546,6 +588,8 @@ def execute_structured_workload(
         event(
             "checkpoint",
             checkpoint_id=checkpoint_id,
+            previous_checkpoint_id=previous_checkpoint_id,
+            resume_checkpoint_id=request.resume_checkpoint_id,
             boundary=engine.boundary,
             cursor=asdict(engine.cursor),
             optimizer_updates=engine.updates,

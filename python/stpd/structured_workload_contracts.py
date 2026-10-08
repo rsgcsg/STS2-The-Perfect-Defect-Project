@@ -38,6 +38,7 @@ class StructuredTrainingConfig:
 
 
 REQUEST_SCHEMA = "stpd/structured-workload-request-v1"
+MAX_RESUME_ANCESTRY = 32
 
 
 class AttemptAuthority(Protocol):
@@ -136,4 +137,6 @@ def structured_workload_capabilities() -> dict[str, Any]:
         "checkpoint_schema": "stpd/structured-m2-training-checkpoint-v2",
         "legacy_v1": "final_only_not_resumable",
         "automatic_retry": False,
+        "max_resume_ancestry": MAX_RESUME_ANCESTRY,
+        "checkpoint_every_boundaries_bounds": [1, 100],
     }
