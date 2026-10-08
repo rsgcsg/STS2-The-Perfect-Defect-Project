@@ -15,7 +15,7 @@ AGENT_PROFILES = (
     ("text-menu-v1", "token-v1", "text-menu-v1", True),
     ("text-menu-m2-v1", "stpd-m2-decision-adapter", "text-menu-v1", True),
     ("text-menu-m2-v2", "stpd-m2-decision-adapter", "text-menu-v2", True),
-    ("stpd-s0-structured-adapter", "stpd-s0-structured-adapter", "text-menu-v2", False),
+    ("stpd-s0-structured-adapter", "stpd-s0-structured-adapter", "text-menu-v2", True),
 )
 
 
@@ -42,5 +42,7 @@ def trusted_agent_support(adapter_id: str) -> ModuleType:
 
         return memory_policy_installation
     if adapter_id == "stpd-s0-structured-adapter":
-        raise BoundaryError("local_model", "structured_installation_adapter_required")
+        from stpd import structured_policy_installation
+
+        return structured_policy_installation
     raise BoundaryError("local_model", "unsupported_trusted_adapter")

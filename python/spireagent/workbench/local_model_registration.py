@@ -19,6 +19,7 @@ from typing import Any, cast
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.package_identity import PackageIdentityError
+from spireagent.policies import policy_support
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
@@ -298,20 +299,20 @@ class LocalModelRegistration:
     def _matching(self, model_id: str, export: Path,
                   requirements: dict[str, Any] | None = None,
                   support: dict[str, Any] | None = None, *,
-                  profile: str = PROFILE, environment_kind: str = "native"
+                  profile: str = PROFILE, environment_kind: str = "native",
+                  structured: bool = False
                   ) -> tuple[str | None, bool]:
-        from stpd.token_policy_installation import code_digest, validate
-
         stale = False
-        memory = profile in {M2_PROFILE, V2_M2_PROFILE}
-        if memory:
-            from stpd.memory_policy_installation import code_digest as memory_code_digest
-            from stpd.memory_policy_installation import validate as validate_memory
-
-        current_code = (memory_code_digest(self.models.root) if memory
-                        else code_digest(self.models.root))
+        if structured:
+            model_id = _object_file(export / "model.json")["model_id"]
+        memory = profile in {M2_PROFILE, V2_M2_PROFILE} and not structured
+        adapter_id = ("stpd-s0-structured-adapter" if structured else
+                      "stpd-m2-decision-adapter" if memory else "token-v1")
+        owner = policy_support(adapter_id)
+        current_code = owner.code_digest(self.models.root)
         for entry in reversed(self._entries()):
-            if entry.get("runtime_profile") != profile:
+            if (entry.get("runtime_profile") != profile
+                    or (entry.get("adapter") == "stpd-s0-structured-adapter") != structured):
                 continue
             try:
                 config = _object_file(_inside(self.models.private_root, entry["config"]))
@@ -325,8 +326,7 @@ class LocalModelRegistration:
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
-                validator = validate_memory if memory else validate
-                validator(self.models.root,
+                owner.validate(self.models.root,
                           _inside(self.models.private_root, entry["config"]),
                           _inside(self.models.private_root, entry["manifest"]),
                           binding_root=self.models.private_root)
@@ -352,7 +352,8 @@ class LocalModelRegistration:
         operation = observed["operation"]
         memory = (operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
-        profile = M2_PROFILE if memory else PROFILE
+        structured = operation.get("model_type") == "structured"
+        profile = V2_M2_PROFILE if structured else M2_PROFILE if memory else PROFILE
         if observed.get("availability") == "workspace_changed":
             return _public(identity, "unavailable", reason_code="workspace_changed",
                            profile=profile)
@@ -376,7 +377,8 @@ class LocalModelRegistration:
                                reason_code="managed_requires_confirmed_interaction_model",
                                profile=profile)
             found, stale = self._matching(identity, export, profile=profile,
-                                          environment_kind=environment_kind)
+                                          environment_kind=environment_kind,
+                                          structured=structured)
             if found is not None:
                 return _public(identity, "registered", selection_id=found, profile=profile)
             if stale:
@@ -505,11 +507,15 @@ class LocalModelRegistration:
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
+        structured = operation.get("model_type") == "structured"
         require_local_models("local_model_registration")
         export = (self.export.verified_memory_for_registration(identity, deadline=deadline)
                   if memory else self.export.verified_for_registration(identity))
         _remaining(deadline)
-        if memory:
+        if structured:
+            profile = V2_M2_PROFILE
+            recipe = "stpd.structured-observation-only.s-m2-0.v1"
+        elif memory:
             # The isolated verification child has checked exact model/run lineage
             # and the parent has rebound the response to unchanged package bytes.
             recipe = self.export.verified_memory_recipe_for_registration(
@@ -562,7 +568,7 @@ class LocalModelRegistration:
                             self._capabilities(sdk, deadline=deadline))
             requirements, support = _requirements(capabilities,
                                                   input_profile=input_profile)
-        if memory and not managed:
+        if (memory or structured) and not managed:
             if profile == V2_M2_PROFILE:
                 self._context_available(sdk, deadline=deadline,
                                         input_profile=input_profile)
@@ -583,7 +589,8 @@ class LocalModelRegistration:
             with instance_lock(lock_path):
                 _remaining(deadline)
                 found, _ = self._matching(identity, export, requirements, support,
-                                           profile=profile, environment_kind=environment_kind)
+                                           profile=profile, environment_kind=environment_kind,
+                                           structured=structured)
                 if found is not None:
                     _remaining(deadline)
                     return _public(identity, "registered", selection_id=found,
@@ -596,12 +603,17 @@ class LocalModelRegistration:
                         )
                 else:
                     folder.mkdir(mode=0o700)
-                selection = ("local-text-m2-" if memory else "local-text-b-") + uuid.uuid4().hex
+                selection = ("local-text-structured-" if structured else
+                             "local-text-m2-" if memory else "local-text-b-") + uuid.uuid4().hex
                 target = folder / selection
                 target.mkdir(mode=0o700)
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
                 try:
-                    binder = (bind_managed_memory_export if managed else
+                    if structured:
+                        from stpd.structured_policy_installation import bind_structured_export
+
+                    binder = (bind_structured_export if structured else
+                              bind_managed_memory_export if managed else
                               bind_memory_export if memory else bind_text_menu_export)
                     binding: dict[str, Any] = {"manifest_id": selection,
                                "policy": {"id": selection, "version": "1.0.0",
@@ -612,16 +624,18 @@ class LocalModelRegistration:
                         binding["input_profile"] = input_profile_for_recipe(recipe)
                     binder(self.models.root, export, config_path, manifest_path,
                            **binding)
-                    if memory:
+                    if memory or structured:
                         self._m2_runtime_manifest_compatible(node_modules, manifest_path,
                                                              deadline=deadline)
                     entries = self._entries()
-                    label = (MEMORY_RECIPE_LABELS[recipe] if memory
+                    label = ("结构 M2 S0 text-v2（I/F 关闭）" if structured else
+                             MEMORY_RECIPE_LABELS[recipe] if memory
                              else RECIPE_LABELS[recipe])
                     entry = {"id": selection,
                              "label": ("独立游戏环境 " if managed else "本机文字菜单 ")
                                       + label + " " + identity[:8],
-                             "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",
+                             "adapter": ("stpd-s0-structured-adapter" if structured else
+                                         "stpd-m2-decision-adapter" if memory else "token-v1"),
                              "runtime_profile": profile,
                              "manifest": manifest_path.relative_to(
                                  self.models.private_root).as_posix(),
