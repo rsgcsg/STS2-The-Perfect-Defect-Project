@@ -61,6 +61,28 @@ internal static class PlatformTaskBridge
             { Reply(context, 403, new { error = "native_loopback_required" }); return; }
             if (request.HttpMethod == "GET" && request.RawUrl == "/v1/tasks/status")
             { Reply(context, 200, Status(RecordingApplicationService.Instance.QueryStatus())); return; }
+            if (request.RawUrl is "/v2/tasks/status" or "/v2/tasks/prepare-model")
+            {
+                if (request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
+                { Reply(context, 400, new { error = "invalid_task_request" }); return; }
+                if (request.HttpMethod == "GET" && request.RawUrl == "/v2/tasks/status")
+                {
+                    Reply(context, 200, PlatformCollectionHandoff.ProjectV2(
+                        PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
+                        RecordingApplicationService.Instance.QueryStatus())); return;
+                }
+                if (request.HttpMethod != "POST" || request.RawUrl != "/v2/tasks/prepare-model")
+                { Reply(context, 400, new { error = "invalid_task_request" }); return; }
+                using JsonDocument modelBody = await ReadBoundedBody(request, PlatformRecordingCommands.MaximumRequestBytes);
+                PlatformModelPreparationRequestV2 modelRequest = PlatformRecordingCommands.ReadModelPreparationV2(modelBody.RootElement);
+                PlatformModelPreparationResultV2 modelResult = await Dispatch(() => {
+                    Interlocked.Exchange(ref nativeWorkStarted, 1);
+                    return PlatformCollectionHandoff.PrepareForModel(modelRequest,
+                        () => PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
+                        RecordingApplicationService.Instance.QueryStatus, RecordingApplicationService.Instance.ExecuteForSession);
+                });
+                Reply(context, 200, modelResult); return;
+            }
             if (request.RawUrl is "/v1/tasks/recording/status" or "/v1/tasks/recording/command")
             {
                 if (request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)

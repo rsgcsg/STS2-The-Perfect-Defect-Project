@@ -258,7 +258,9 @@ test("model commands bind the observed Runtime to this game and recovery epoch",
   const callback = mod.slice(dispatchAt, callbackEnd);
   assert.match(callback, /intent != Interlocked.Read\(ref _policyUiIntent\) \|\| _disposed/u);
   assert.match(callback, /GetPlayerEnvironmentControlSnapshot\(\)\.RuntimeInstanceId != game/u);
-  assert.match(callback, /Prepare\(recording\.Lifecycle\.SessionId/u);
+  assert.match(callback, /PrepareForModel\(new\([\s\S]*game, recording\.Lifecycle\.SessionId/u);
+  assert.match(callback, /recording\.SourceV2\?\.SegmentId \?\? recording\.Source\?\.SegmentId/u);
+  assert.match(mod, /ObserveModelContextAsync\(binding\)/u);
   assert.match(client, /X-STS2-Game-Instance-ID/u);
   assert.match(client, /X-STS2-Recovery-Epoch/u);
 });

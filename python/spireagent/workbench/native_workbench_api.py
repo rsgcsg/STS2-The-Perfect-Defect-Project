@@ -28,6 +28,11 @@ ACTIONS = frozenset(
         "curation.prepare",
         "recordings.refresh",
         "recordings.import",
+        "recording.start",
+        "recording.pause",
+        "recording.resume",
+        "recording.change_source",
+        "recording.close",
         "datasets.preview",
         "datasets.human-preview",
         "datasets.publish",
@@ -82,6 +87,13 @@ _PRECONDITION_CODES = frozenset(
         "native_model_intent_superseded",
         "native_pending_request_required",
         "native_pending_request_changed",
+        "invalid_native_recording_command",
+        "model_recovery_required",
+        "native_recording_context_changed",
+        "native_recording_command_pending",
+        "native_recording_recovery_required",
+        "native_recording_not_dispatched",
+        "native_recording_rejected",
     }
 )
 _PRIVATE_KEYS = frozenset(
@@ -325,6 +337,72 @@ class NativeWorkbenchApi:
                 cards.append(self.card("workspace", app.managed_local_workspace))
                 controls.append(action("workspace.create", "建立本机资料空间"))
             if page == "data":
+                live_recording = self.card("native_recording", app.native_recording_status)
+                cards.append(live_recording)
+                owner_view = live_recording["data"]
+                owner_status = owner_view.get("status", {})
+                state = (
+                    owner_status.get("recording_lifecycle")
+                    if isinstance(owner_status, dict)
+                    else None
+                )
+                source3 = owner_status.get("capture_profile_id") == "native-logical-source-v3"
+                pending = owner_view.get("command_pending") is True
+                recovery = owner_view.get("recovery_required") is True
+                fresh = state in {"ready", "closed"} and (
+                    not recovery
+                    or (state == "closed" and owner_status.get("closeout_status") == "closed")
+                )
+                declaration_fields = [
+                    field(
+                        "source_kind",
+                        "操作来源",
+                        "enum",
+                        "",
+                        [
+                            {"value": "declared_human", "label": "本人操作"},
+                            {"value": "agent_native_ui", "label": "AI 界面操作"},
+                            {"value": "agent_protocol", "label": "Agent 协议"},
+                            {"value": "unknown", "label": "未知来源"},
+                        ],
+                    ),
+                    field("actor_id", "操作者 ID"),
+                ]
+                controls.extend(
+                    [
+                        action(
+                            "recording.start",
+                            "开始原生交互与观察录制",
+                            declaration_fields,
+                            enabled=fresh and not pending,
+                            reason=None if fresh else "recording_start_unavailable",
+                        ),
+                        action(
+                            "recording.pause",
+                            "暂停录制",
+                            enabled=source3
+                            and state == "recording"
+                            and not pending
+                            and not recovery,
+                        ),
+                        action(
+                            "recording.resume",
+                            "继续录制",
+                            enabled=source3 and state == "paused" and not pending and not recovery,
+                        ),
+                        action(
+                            "recording.change_source",
+                            "更改操作来源",
+                            declaration_fields,
+                            enabled=source3 and state == "paused" and not pending and not recovery,
+                        ),
+                        action(
+                            "recording.close",
+                            "结束并封存录制",
+                            enabled=source3 and state in {"recording", "paused"} and not pending,
+                        ),
+                    ]
+                )
                 cards.extend(
                     [
                         self.card("curation", app.local_curation_preparation.status),
@@ -650,6 +728,29 @@ class NativeWorkbenchApi:
             observed = app.local_recordings.read()
             self._recordings = public(observed)
             return {**observed, "candidates": observed.get("candidates", [])[:50]}
+        if action_id.startswith("recording."):
+            exact(
+                body,
+                {
+                    "kind",
+                    "runtime_instance_id",
+                    "recording_session_id",
+                    "source_segment_id",
+                    "source_kind",
+                    "actor_id",
+                    "command_id",
+                },
+            )
+            expected = {
+                "recording.start": "start_new_session",
+                "recording.pause": "pause",
+                "recording.resume": "resume",
+                "recording.change_source": "change_source",
+                "recording.close": "close",
+            }[action_id]
+            if body["kind"] != expected or body["runtime_instance_id"] != pair.runtime_instance_id:
+                raise fail("invalid_native_payload")
+            return app.control_native_recording(body)
         if action_id == "recordings.import":
             exact(body, {"candidate_id", "human_origin_attested"})
             return app.start_local_recording_import(**body)

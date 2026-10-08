@@ -81,6 +81,26 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
 this inventory alone does not make it a usable training set, installed model or validated result.
 
+The local Data page and paired native Workbench also expose **原生交互与观察**
+lifecycle controls through one Application/NativeTasks path. They query only scalar
+recording status and use the configured local Connector (or its documented Mod
+default) to check the exact game instance. Start and ChangeSource require an explicit
+本人操作 / AI界面操作 / Agent协议 / 未知来源 plus actor ID; no Human default or
+machine-verifiable origin is introduced. ChangeSource requires Pause and the
+observed session/segment. Resume is explicit. Close remains pending until owner
+durable completion. An unknown write retains its notice through refresh and pair
+renewal, never replays, and permits a deliberate isolated next session only after
+known durable Closed. Known active Workbench model recovery is required before
+Start/Change away from Agent Protocol; Human/Stop recovery stays independent.
+
+Model activation passes fresh run/input-profile/recovery context to the typed v2
+handoff. Healthy Recording Source3 Agent Protocol is retained only with exact Native
+Agent `native-logical-v1` compatibility; Paused and accounting failure block model
+preparation. Human/AI UI/unknown, older profiles and incompatible known legacy inputs
+still Close through the Recorder owner. These are application sequencing checks,
+not research admission, origin attestation or new gameplay legality. Context is
+caller metadata and the original Runtime recovery binding is retained for Mode/Tick.
+
 The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
 byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported
 recordings root; it does not read Game Mod configuration files directly or guess a default path.

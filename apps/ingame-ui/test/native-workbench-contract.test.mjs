@@ -61,3 +61,16 @@ test("public bridge status remains secret-free and scoped pair routes are explic
   assert.match(client,/native_request_id/);
   assert.match(client,/ExpiresAt \+ 600/);
 });
+
+
+test("recording forms keep explicit declaration, fixed owner API and original session context", () => {
+  for (const id of ["recording.start", "recording.pause", "recording.resume", "recording.change_source", "recording.close"])
+    { assert.ok(client.includes(`"${id}"`)); assert.ok(api.includes(`"${id}"`)); }
+  assert.match(panel, /body\["runtime_instance_id"\]/);
+  assert.match(panel, /body\["recording_session_id"\]/);
+  assert.match(panel, /body\["source_segment_id"\]/);
+  assert.match(panel, /PlatformNativeWorkbenchCommands.RecordingContext/);
+  assert.match(client, /PayloadContext\(action, payload\)/);
+  assert.match(api, /return app.control_native_recording\(body\)/);
+  assert.match(bridge, /\/v2\/tasks\/prepare-model/);
+});

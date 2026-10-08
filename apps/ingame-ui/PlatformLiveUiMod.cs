@@ -1207,6 +1207,7 @@ internal sealed class PlatformLivePanel : IDisposable
                     string game = STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
                     var recording = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();
                     binding = await _statusClient.ObserveBindingAsync(expected, game);
+                    var modelContext = await _statusClient.ObserveModelContextAsync(binding);
                     if (intent != Interlocked.Read(ref _policyUiIntent) || _disposed)
                         throw new PlatformPolicyCommandSupersededException();
                     var prepared = await PlatformRecordingCommands.OnMainThread(() => {
@@ -1214,13 +1215,17 @@ internal sealed class PlatformLivePanel : IDisposable
                             throw new PlatformPolicyCommandSupersededException();
                         if (STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId != game)
                             throw new InvalidOperationException("recording_game_instance_changed");
-                        return PlatformCollectionHandoff.Prepare(recording.Lifecycle.SessionId,
-                            Guid.NewGuid().ToString("D"),
+                        return PlatformCollectionHandoff.PrepareForModel(new(
+                            PlatformRecordingCommands.ModelRequestSchemaV2, game, recording.Lifecycle.SessionId,
+                            recording.SourceV2?.SegmentId ?? recording.Source?.SegmentId, Guid.NewGuid().ToString("D"), modelContext),
+                            () => STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
                             STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus,
                             STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.ExecuteForSession);
                     }, STS2Connector.ConnectorMod.RunOnMainThread);
-                    if (!PlatformCollectionHandoff.Ready(prepared))
-                        throw new InvalidOperationException("真人录制正在封存。完成后再开始测试；模型尚未接管。");
+                    if (!prepared.ReadyForModel)
+                        throw new InvalidOperationException(prepared.RecordingDisposition == "paused"
+                            ? "协议录制已暂停。请明确继续或结束录制后再开始模型；模型尚未接管。"
+                            : "录制正在封存或健康状态阻断准备；模型尚未接管。请查看录制状态。");
                 },
                 mode => _statusClient.SetModeAsync(mode, expected, binding),
                 () => _statusClient.TickAsync(expected, binding ?? throw new InvalidOperationException("Game binding unavailable.")),

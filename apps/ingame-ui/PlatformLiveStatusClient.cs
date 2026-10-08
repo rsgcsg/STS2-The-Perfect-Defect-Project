@@ -129,6 +129,28 @@ public sealed class PlatformLiveStatusClient : IDisposable
         return observed;
     }
 
+    public async Task<PlatformModelContext> ObserveModelContextAsync(PlatformPolicyBinding binding,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await GetAsync<PolicyRuntimeHttpStatusResponse>(_policyRuntimeHttp, "status", cancellationToken);
+        EnsurePolicyRuntimeStatus(response.Schema, response.Status);
+        var status = response.Status;
+        if (status.RunId != binding.RunId || binding.RecoveryEpoch is null
+            || (status.Environment is { } environment && environment.RuntimeInstanceId != binding.RuntimeInstanceId))
+            throw new InvalidOperationException("model_context_changed");
+        string? profile = null;
+        if (status is NativeAgentRuntimeStatus agent)
+        {
+            if (agent.Session is null || agent.Session.Profile != "native-logical-v1"
+                || agent.Session.RecoveryEpoch != binding.RecoveryEpoch.Value)
+                throw new InvalidOperationException("model_context_changed");
+            profile = agent.Session.Profile;
+        }
+        var context = new PlatformModelContext(status.Schema, status.RunId, profile, binding.RecoveryEpoch.Value);
+        context.Validate();
+        return context;
+    }
+
     public async Task<IPlatformRuntimeStatus> SetModeAsync(
         string mode,
         string expectedRunId,

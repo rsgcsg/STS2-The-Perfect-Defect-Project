@@ -32,6 +32,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private int _offset;
     private long _generation;
     private string? _formsKey;
+    private string? _recordingContext;
     private string? _itemsKey;
     private bool _disposed;
     private bool _visible;
@@ -199,6 +200,23 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     };
     private void RenderSummary(VBoxContainer target, JsonElement data)
     {
+        if (String(data, "schema") == "spireagent/native-recording-view-1" && Object(data, "status") is JsonElement recording)
+        {
+            target.AddChild(Label("原生交互与观察 · " + String(recording, "recording_lifecycle")));
+            target.AddChild(Label("来源仅由操作员明确声明，不是机器验证的真人证明。"));
+            if (Object(recording, "source") is JsonElement source)
+            {
+                target.AddChild(Label($"公开观察 {Show(source.GetProperty("observations"))} · 输入 {Show(source.GetProperty("inputs"))} · 待完成 {Show(source.GetProperty("pending_inputs"))} · 缺口 {Show(source.GetProperty("gaps"))}"));
+                target.AddChild(Label(Boolean(source, "accounting_complete") ? "当前无记账失败；不代表零缺口或覆盖资格。" : "记账不完整，请查看录制诊断。"));
+                if (Object(source, "declaration") is JsonElement declaration)
+                    target.AddChild(Label("当前来源 · " + (String(declaration, "source_kind") switch { "declared_human" => "本人操作", "agent_native_ui" => "AI界面操作", "agent_protocol" => "Agent协议", _ => "未知来源" }) + " · " + String(declaration, "actor_id")));
+            }
+            if (Boolean(data, "model_recovery_required"))
+                target.AddChild(Label("本机模型尚在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先明确归还 Human 或 Stop。"));
+            if (Object(data, "unconfirmed") is JsonElement uncertain)
+                target.AddChild(Label("保留未确认录制请求 · " + String(uncertain, "command_id") + "。刷新不会重试或证明它执行。"));
+            return;
+        }
         foreach (JsonProperty property in data.EnumerateObject())
         {
             if (Names.TryGetValue(property.Name, out string? label))
@@ -280,6 +298,13 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         string ownerContexts = string.Join(';', view.GetProperty("cards").EnumerateArray().Select(card => {
             JsonElement data = card.GetProperty("data");
             JsonElement? operation = Object(data, "operation") ?? (Object(data, "session") is JsonElement session ? Object(session, "operation") : null);
+            if (String(card, "owner") == "native_recording" && Object(data, "status") is JsonElement recording)
+            {
+                _recordingContext = PlatformNativeWorkbenchCommands.RecordingContext(String(recording, "runtime_instance_id"), String(recording, "recording_session_id"));
+                return "native_recording:" + _recordingContext + ":" + String(recording, "recording_lifecycle")
+                    + ":" + (Object(recording, "source") is JsonElement source ? String(source, "segment_id") : "")
+                    + ":" + Boolean(data, "recovery_required");
+            }
             return String(card, "owner") + ":" + (operation is JsonElement task ?
                 (String(task, "operation_id") ?? String(task, "id")) + ":" + String(task, "attempt_id") : "");
         }));
@@ -369,13 +394,24 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                         if (item.Value.Type is "selection" or "enum" && value.Length == 0) throw new InvalidOperationException("请选择服务声明的选项。");
                         body[item.Key] = selected;
                     }
+                    if (action.StartsWith("recording.", StringComparison.Ordinal))
+                    {
+                        JsonElement recording = view.GetProperty("cards").EnumerateArray()
+                            .First(card => String(card, "owner") == "native_recording").GetProperty("data").GetProperty("status");
+                        body["kind"] = action switch { "recording.start" => "start_new_session", "recording.change_source" => "change_source", _ => action.Split('.')[1] };
+                        body["runtime_instance_id"] = String(recording, "runtime_instance_id");
+                        body["recording_session_id"] = String(recording, "recording_session_id");
+                        body["source_segment_id"] = Object(recording, "source") is JsonElement source ? String(source, "segment_id") : null;
+                        body["command_id"] = Guid.NewGuid().ToString("D");
+                        if (!body.ContainsKey("source_kind")) { body["source_kind"] = null; body["actor_id"] = null; }
+                    }
                 }
                 Submit(connection, action, body);
             }
             catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
             { _notice.Text = "尚未提交：" + error.Message; }
         });
-        submit.Disabled = !Boolean(descriptor, "enabled") || !_commands.CanSubmit(connection.Binding.ConfigurationId, action);
+        submit.Disabled = !Boolean(descriptor, "enabled") || !_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext);
         if (!Boolean(descriptor, "enabled")) form.AddChild(Label("当前不可用：" + String(descriptor, "reason")));
         _fields[action + ":submit"] = submit; form.AddChild(submit); _forms.AddChild(form);
     }
@@ -498,7 +534,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         if (_disposed) return;
         if (!originalRecovery && PlatformNativeWorkbenchConnection.Current?.Binding != connection.Binding)
         { _notice.Text = "认证连接已变化。保留原任务上下文，请刷新后明确操作。"; return; }
-        if (!_commands.CanSubmit(connection.Binding.ConfigurationId, action)) return;
+        if (!_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext)) return;
         if (_fields.TryGetValue(action + ":submit", out Control? control) && control is Button button) button.Disabled = true;
         _notice.Text = "正在提交本次意图；不会重复发送。";
         _writes.Add((_commands.RunAsync(_client, connection, action, payload, _lifetime.Token), action));

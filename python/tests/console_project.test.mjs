@@ -155,6 +155,8 @@ function setup({
   sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[]},
   comparisonData = {schema:"stpd/local-managed-start-comparison-v1",items:[]},
   trainingCapabilitiesData = trainingCapabilities,
+  nativeRecordingData = null,
+  recordingStorage = new Map(),
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -167,6 +169,7 @@ function setup({
   let nextTimer = 1;
   const context = vm.createContext({
     crypto:webcrypto,
+    sessionStorage:{getItem:key => recordingStorage.get(key) || null, setItem:(key,value) => recordingStorage.set(key,value)},
     setTimeout: (callback) => {
       const id = nextTimer++;
       timers.set(id, callback);
@@ -206,7 +209,9 @@ function setup({
     },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      const body = url === "/api/local-training/capabilities"
+      const body = url === "/api/native-recording/status"
+        ? (typeof nativeRecordingData === "function" ? nativeRecordingData() : nativeRecordingData) || {httpStatus:409,error:"native_recording_unavailable"}
+        : url === "/api/local-training/capabilities"
         ? trainingCapabilitiesData
         : url === "/api/local-recordings/import/status"
         ? importStatus
@@ -444,10 +449,11 @@ test("local research workspace browses the local API without project identity", 
   assert.match(text(page), /数据集/);
   assert.match(text(page), /证据/);
   assert.match(text(page), /本机索引/);
-  assert.equal(env.calls.length, 3);
+  assert.equal(env.calls.length, 4);
   assert.equal(env.calls[0].url === "/api/local-workspace/managed", true);
   assert.equal(env.calls[1].url, "/api/local-recordings/import/status");
-  assert.equal(env.calls[2].url.startsWith("/api/local-workspace?"), true);
+  assert.equal(env.calls[2].url, "/api/native-recording/status");
+  assert.equal(env.calls[3].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
 });
 
@@ -6561,4 +6567,67 @@ test("resume is disabled when checkpoint or saved limits are absent and unavaila
     assert.match(text(page),/需要先核对未知结果、明确停止回执、checkpoint 与原累计预算/);
     assert.equal(post(env.calls).length,0);
   }
+});
+
+
+const recordingView = (lifecycle = "ready", session = null) => ({
+  schema:"spireagent/native-recording-view-1", connection:"http://127.0.0.1:15526", csrf_token:"recording-csrf",
+  command_pending:false, recovery_required:false, model_recovery_required:false, unconfirmed:null, previous_unconfirmed:[],
+  status:{runtime_instance_id:"game-1", recording_session_id:session, recording_lifecycle:lifecycle,
+    capture_profile_id:session ? "native-logical-source-v3" : null, closeout_status:lifecycle === "closed" ? "closed" : "idle",
+    source:session ? {segment_id:"segment-1", observations:7, inputs:3, pending_inputs:1, gaps:4, accounting_complete:true,
+      declaration:{source_kind:"agent_protocol", actor_id:"explicit-operator"}} : null, health:{}, non_claims:[]},
+});
+const recordingPageHandler = async (url, options) => {
+  if (url === "/api/local-workspace/managed") return {status:"not_created"};
+  if (url.startsWith("/api/local-workspace?")) return {items:[],total:0};
+  throw new Error(`unexpected route ${url}`);
+};
+
+test("Source recording forms require explicit actor and source, preserve exact context and never start a model", async () => {
+  const view = recordingView(); const mutations=[];
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", nativeRecordingData:()=>view,
+    handler:async (url, options) => {
+      if (url === "/api/native-recording/command") { mutations.push(JSON.parse(options.body)); return {status:{recording_session_id:"fresh-session"}}; }
+      return recordingPageHandler(url, options);
+    }});
+  const page=await env.render(); const start=action(page,"native-recording-start_new_session");
+  assert.equal(field(page,"native-recording-kind").value, "");
+  assert.equal(field(page,"native-recording-actor").value, "");
+  assert.equal(start.disabled,true);
+  const kind=field(page,"native-recording-kind"), actor=field(page,"native-recording-actor");
+  kind.value="agent_protocol"; kind.onchange(); assert.equal(start.disabled,true);
+  actor.value="explicit-operator"; actor.oninput(); assert.equal(start.disabled,false);
+  await start.onclick(); assert.equal(mutations.length,1);
+  assert.deepEqual({...mutations[0],command_id:null}, {kind:"start_new_session", runtime_instance_id:"game-1",
+    recording_session_id:null, source_segment_id:null, source_kind:"agent_protocol", actor_id:"explicit-operator", command_id:null});
+  assert.ok(mutations[0].command_id);
+  assert.ok(!env.calls.some(item=> /local-models|training|upload/.test(item.url)));
+});
+
+test("lost recording reply survives refresh and explicit new isolation keeps the original notice", async () => {
+  let view=recordingView("recording","original-session"), lost=true; const mutations=[];
+  const storage=new Map();
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",renderOnReload:true,
+    nativeRecordingData:()=>view,recordingStorage:storage, handler:async (url,options)=> {
+      if (url === "/api/native-recording/command") {
+        mutations.push(JSON.parse(options.body));
+        if (lost) throw new Error("socket lost");
+        view=recordingView("recording","new-isolated-session");
+        return {status:view.status};
+      }
+      return recordingPageHandler(url, options);
+    }});
+  let page=await env.render(); await action(page,"native-recording-pause").onclick();
+  assert.equal(mutations.length,1); assert.equal(action(page,"native-recording-pause").disabled,true);
+  env.account(owner("member", "renewed-user"));
+  page=await env.render(); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.match(text(page),/保留未确认/); assert.equal(action(page,"native-recording-close").disabled,false);
+  view=recordingView("closed","original-session"); lost=false;
+  page=await env.render(); const kind=field(page,"native-recording-kind"),actor=field(page,"native-recording-actor");
+  kind.value="agent_protocol"; kind.onchange(); actor.value="explicit-operator"; actor.oninput();
+  await action(page,"native-recording-start_new_session").onclick();
+  page=env.livePage; assert.equal(action(page,"native-recording-pause").disabled,false);
+  assert.match(text(page),/保留未确认/); assert.equal(mutations.length,2);
+  assert.ok([...storage.values()].some(value=>value.includes("new-isolated-session")));
 });

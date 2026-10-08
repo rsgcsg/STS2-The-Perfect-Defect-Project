@@ -418,7 +418,7 @@ window.SpireProject = (() => {
     button.dataset.action = name;
     const key = `${ctx.account}:${name}`;
     const controlKey = key;
-    const disabledState = () => Boolean(options.disabled);
+    const disabledState = () => Boolean(typeof options.disabled === "function" ? options.disabled() : options.disabled);
     button.disabled = disabledState() || pending.has(key);
     if (current === ctx) {
       let controls = commandControls.get(controlKey);
@@ -3904,6 +3904,95 @@ window.SpireProject = (() => {
     return card;
   }
 
+  async function nativeRecordingCard(ctx) {
+    const box = panel("原生交互与观察", "直接控制当前本机游戏的录制。来源由操作员明确声明，不是机器验证的真人证明。不会自动开始模型、上传或训练。");
+    let view;
+    try { view = await request(ctx, "/api/native-recording/status"); }
+    catch (error) { box.append(el("p", failure(error), "small muted")); return box; }
+    const status = view.status;
+    const fenceKey = "spireagent-recording-unknown:" + status.runtime_instance_id;
+    let browserUnknown = null;
+    try { browserUnknown = JSON.parse(sessionStorage.getItem(fenceKey) || "null"); } catch { /* presentation storage unavailable */ }
+    if (browserUnknown && !view.unconfirmed) view.unconfirmed = browserUnknown;
+    if (browserUnknown && browserUnknown.isolated_session_id !== status.recording_session_id) {
+      view.recovery_required = true;
+      view.unconfirmed = browserUnknown;
+    }
+    box.append(el("p", `录制状态：${show(status.recording_lifecycle)}`, "small muted"));
+    if (status.source) {
+      const source = status.source;
+      box.append(el("p", `公开观察 ${count(source.observations)} · 输入 ${count(source.inputs)} · 待完成 ${count(source.pending_inputs)} · 缺口 ${count(source.gaps)}`, "small muted"));
+      box.append(el("p", source.accounting_complete ? "当前无记账失败；不代表零缺口、覆盖资格或 Human 起源。" : "记账不完整，请查看录制诊断。", "small muted"));
+      box.append(el("p", `当前来源：${({declared_human:"本人操作", agent_native_ui:"AI界面操作", agent_protocol:"Agent协议", unknown:"未知来源"})[source.declaration.source_kind]} · ${source.declaration.actor_id}`, "small muted"));
+    }
+    if (view.model_recovery_required)
+      box.append(el("p", "本机模型正在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先在模型页明确归还 Human 或 Stop。", "small muted"));
+    if (view.unconfirmed)
+      box.append(el("p", `保留未确认录制请求 ${view.unconfirmed.command_id}。刷新不重发，也不证明它执行。可明确结束当前会话，再开始隔离的新会话。`, "small muted"));
+    const form = el("div", null, "project-form");
+    const kind = select(form, "操作来源", "native-recording-kind", [["", "请选择来源"],
+      ["declared_human", "本人操作"], ["agent_native_ui", "AI界面操作"],
+      ["agent_protocol", "Agent协议"], ["unknown", "未知来源"]], drafts.get("native-recording-kind") || "");
+    const actor = input(form, "操作者 ID（字母、数字、_、-、.）", "native-recording-actor", drafts.get("native-recording-actor") || "");
+    actor.maxLength = 128;
+    const declared = () => kind.value && /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
+      && ![".", ".."].includes(actor.value)
+      && (!view.model_recovery_required || kind.value === "agent_protocol");
+    const source3 = status.capture_profile_id === "native-logical-source-v3";
+    const fresh = () => ["ready", "closed"].includes(status.recording_lifecycle)
+      && (!view.recovery_required || (status.recording_lifecycle === "closed" && status.closeout_status === "closed"));
+    const eligible = action => !view.command_pending && !!view.csrf_token && (action === "start_new_session" ? fresh() && declared()
+      : action === "change_source" ? source3 && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
+      : action === "close" ? source3 && ["recording", "paused"].includes(status.recording_lifecycle)
+      : source3 && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
+    const buttons = [];
+    for (const [action, label] of [["start_new_session", "开始录制"], ["pause", "暂停"], ["resume", "继续"], ["change_source", "更改来源"], ["close", "结束并封存"]]) {
+      const button = command(ctx, "native-recording-" + action, label, async () => {
+        if (!eligible(action)) return;
+        const declaration = ["start_new_session", "change_source"].includes(action);
+        const body = {kind: action, runtime_instance_id: status.runtime_instance_id,
+          recording_session_id: status.recording_session_id, source_segment_id: status.source?.segment_id ?? null,
+          source_kind: declaration ? kind.value : null, actor_id: declaration ? actor.value : null,
+          command_id: crypto.randomUUID()};
+        try {
+          const result = await request(ctx, "/api/native-recording/command", body, view.csrf_token);
+          if (action === "start_new_session" && status.recording_lifecycle === "closed" && status.closeout_status === "closed"
+              && browserUnknown && result.status?.recording_session_id !== status.recording_session_id) {
+            browserUnknown.isolated_session_id = result.status.recording_session_id;
+            try { sessionStorage.setItem(fenceKey, JSON.stringify(browserUnknown)); } catch { /* keep live notice */ }
+          }
+          await reload(ctx);
+        } catch (error) {
+          // Lost browser responses are also uncertain; a read must not silently unlock this view.
+          if (["request_unknown", "native_recording_command_unknown"].includes(error.message)) {
+            view.recovery_required = true;
+            view.unconfirmed = {command_id: body.command_id};
+            browserUnknown = {command_id: body.command_id, recording_session_id: body.recording_session_id,
+              runtime_instance_id: body.runtime_instance_id, previous_unconfirmed: browserUnknown
+                ? [...(browserUnknown.previous_unconfirmed || []).slice(-7), {command_id:browserUnknown.command_id,
+                    recording_session_id:browserUnknown.recording_session_id, runtime_instance_id:browserUnknown.runtime_instance_id}] : []};
+            try { sessionStorage.setItem(fenceKey, JSON.stringify(browserUnknown)); } catch { /* keep live notice */ }
+            box.append(el("p", `操作结果未确认：${body.command_id}。不会自动重试。`, "small muted"));
+          }
+          throw error;
+        }
+      }, {disabled: () => !eligible(action)});
+      button.disabled = !eligible(action);
+      buttons.push([action, button]); form.append(button);
+    }
+    const refreshButtons = () => {
+      drafts.set("native-recording-kind", kind.value); drafts.set("native-recording-actor", actor.value);
+      for (const [action, button] of buttons) button.disabled = !eligible(action);
+    };
+    kind.onchange = refreshButtons; actor.oninput = refreshButtons;
+    box.append(form);
+    box.append(command(ctx, "refresh-native-recording", "刷新录制状态", async () => { await reload(ctx); }, {type:"secondary"}));
+    box.append(technical({connection:view.connection, profile:status.capture_profile_id,
+      session_id:status.recording_session_id, health:status.health, non_claims:status.non_claims,
+      unconfirmed:view.unconfirmed, previous_unconfirmed:[...(view.previous_unconfirmed || []), ...(browserUnknown?.previous_unconfirmed || [])]}, "查看录制诊断"));
+    return box;
+  }
+
   function localRecordingCard(ctx, importStatus) {
     const section = panel(
       "本机录制来源",
@@ -4869,6 +4958,7 @@ window.SpireProject = (() => {
     }
 
     const importStatus = await request(ctx, "/api/local-recordings/import/status");
+    box.append(await nativeRecordingCard(ctx));
     box.append(localRecordingCard(ctx, importStatus));
 
     const query = drafts.get("local-workspace-search") || "";

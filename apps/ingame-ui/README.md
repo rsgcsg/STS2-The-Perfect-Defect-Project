@@ -42,8 +42,25 @@ candidate until its exact package/native runtime canaries pass.
 Direct native controls and the local TaskBridge share typed command composition.
 The bridge and async model preparation use the existing bounded native queue;
 queued cancellation can prove non-dispatch, while uncertain started work is never
-automatically retried. The browser/native Workbench lifecycle forms remain a
-follow-up in this same entry packet; the current browser still lists ended records.
+automatically retried. The browser and paired native Workbench Data page use the same application methods
+and fixed lifecycle API. Start/Change require an explicit source and actor; neither
+form defaults to Human. Refresh never retries an unknown write. Explicit Close and
+then a deliberate fresh session after durable Closed retain the earlier uncertainty
+notice. A fresh runtime/session isolates the presentation fence; it does not prove
+the prior request. Starting or changing away from Agent Protocol while a known
+Workbench model is active requires explicit Human/Stop recovery first.
+
+Model preparation uses `/v2/tasks/status` (`task-status-2`) and
+`/v2/tasks/prepare-model` (`task-model-request-2` / `task-model-result-2`). Only a
+healthy Recording Source3 declared `agent_protocol` may remain Recording with a
+fresh compatible `agent-session-status-1` / `native-logical-v1` context. Paused
+Agent Protocol remains paused and blocks preparation until explicit Resume/Close;
+accounting errors block readiness. Other supported profiles/kinds or known legacy
+model input use owner Close and wait for durable completion. The original v1
+Ready/Closed readiness invariant is unchanged. Context is caller-provided
+compatibility metadata, never authentication, model Consume or Human proof. Runtime
+Mode/Tick still carry the original run/game/recovery epoch; preparation cannot grant
+a newer epoch to a stale intent.
 
 Agent Run uses only typed Policy Runtime controls. Its compact view keeps mode,
 controller, policy, last selected action, Receipt and **Return to Human** visible.

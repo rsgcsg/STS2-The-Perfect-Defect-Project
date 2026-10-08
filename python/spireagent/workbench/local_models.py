@@ -1668,7 +1668,12 @@ class LocalModelService:
                     raise BoundaryError("local_model", "runtime_game_mismatch")
                 NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
                 self._require_intent(intent)
-                native = self.native_tasks.prepare_model(observation, bound_endpoint)
+                context = NativeTasks.model_context(
+                    observation, observation["run_id"], binding.recovery_epoch
+                )
+                native = self.native_tasks.prepare_model(
+                    observation, bound_endpoint, model_context=context
+                )
                 if native["runtime_instance_id"] != binding.runtime_instance_id:
                     raise BoundaryError("local_model", "runtime_game_mismatch")
                 # Native Close cannot authorize a replacement Runtime or game.

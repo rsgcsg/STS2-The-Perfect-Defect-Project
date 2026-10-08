@@ -147,6 +147,37 @@ namespace STS2PlatformLiveUiTests
             Assert.False(body.GetProperty("ready_for_model").GetBoolean());
         }
 
+        [Theory]
+        [InlineData(RecordingLifecycleState.Recording, "retained_agent_protocol")]
+        [InlineData(RecordingLifecycleState.Paused, "paused")]
+        public async Task V2ActualHttpRetainsOriginalProtocolOrPausedSourceWithoutOwnerClose(RecordingLifecycleState state, string disposition)
+        {
+            Reset(); var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
+            owner.Status = PlatformModelPreparationV2Tests.Source(state: state);
+            await using var call = new Call("/v2/tasks/prepare-model", PlatformModelPreparationV2Tests.Request().ToJsonString());
+            await Queued(); Assert.False(call.Response.IsCompleted);
+            STS2Connector.ConnectorMod.Queue.Drain(1);
+            var body = await call.Body(); Assert.Equal(HttpStatusCode.OK, (await call.Response).StatusCode);
+            Assert.Equal(disposition, body.GetProperty("recording_disposition").GetString());
+            Assert.Equal(state == RecordingLifecycleState.Recording, body.GetProperty("ready_for_model").GetBoolean());
+            Assert.Equal(19, body.GetProperty("model_context").GetProperty("recovery_epoch").GetInt64());
+        }
+
+        [Theory]
+        [InlineData("context")]
+        [InlineData("cookie")]
+        [InlineData("duplicate")]
+        public async Task V2InvalidCallerContextAndTransportNeverQueue(string defect)
+        {
+            Reset(); var request = PlatformModelPreparationV2Tests.Request();
+            if (defect == "context") request["model_context"]!["input_profile"] = null;
+            string body = request.ToJsonString();
+            if (defect == "duplicate") body = body.Replace("\"recovery_epoch\":19", "\"recovery_epoch\":1,\"recovery_epoch\":19", StringComparison.Ordinal);
+            await using var call = new Call("/v2/tasks/prepare-model", body, cookie: defect == "cookie" ? "browser=1" : null);
+            Assert.False((await call.Response).IsSuccessStatusCode);
+            Assert.Equal(0, STS2Connector.ConnectorMod.Queue.PendingCount);
+        }
+
         [Fact]
         public async Task RuntimeChangeBeforeNativeDispatchNeverReachesRecordingOwner()
         {
