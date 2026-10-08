@@ -279,6 +279,15 @@ If it is unclear which stage ran, report `unknown`. No automatic retry follows
 partial delivery, unknown delivery, or an expired result. Requests rejected before
 input can be followed only by a separately chosen action on a new observation.
 
+Result `stages` is a required ordered array of at most 16 public
+`{stage, delivery, evidence}` records, including an empty array when no exact
+stage fact is known. Stage and evidence are Unicode scalar strings of at most
+128 UTF-8 bytes; delivery uses the same finite disposition values above. Retain
+already-known compound input facts without inventing stages. These records do
+not prove native execution or causal settlement. In particular, a legacy
+`Accepted` value alone cannot produce `execution:native_accepted`; execution
+remains `unknown` without an exact native witness.
+
 Current normal 200/500 and 10,000 pressure cases must measure actual membership,
 capture, encoding, transfer, query/resolve and peak retention. A concrete Model's
 input limit is separate. Default full-reference acquisition must assemble one
