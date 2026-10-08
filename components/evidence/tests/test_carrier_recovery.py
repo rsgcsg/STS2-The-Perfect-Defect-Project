@@ -182,8 +182,23 @@ class CarrierRecoveryTests(unittest.TestCase):
             os.link(first, second)
         except OSError as error:
             self.skipTest(f"filesystem cannot create a hard link: {error}")
-        with self.assertRaisesRegex(recovery.CarrierRecoveryError, "duplicate_file_alias"):
+        with self.assertRaisesRegex(recovery.CarrierRecoveryError, "source_hard_link"):
             self._recover(source)
+
+    def test_external_hard_link_alias_is_rejected(self) -> None:
+        source = self._bundle()
+        target = source / "export" / "decisions.jsonl"
+        alias = self.root / "external-alias"
+        try:
+            os.link(target, alias)
+        except OSError as error:
+            self.skipTest(f"filesystem cannot create a hard link: {error}")
+        self.assertEqual(target.stat().st_nlink, 2)
+        before = self._bytes(source)
+        with self.assertRaisesRegex(recovery.CarrierRecoveryError, "source_hard_link"):
+            self._recover(source)
+        self.assertEqual(self._bytes(source), before)
+        self.assertFalse((self.destination / "objects").exists())
 
     def test_source_root_file_and_directory_links_are_rejected(self) -> None:
         source = self._bundle()
@@ -252,6 +267,28 @@ class CarrierRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(recovery.CarrierRecoveryError, "carrier_promotion_failed"):
             self._recover(source)
         self.assertEqual(marker.read_bytes(), b"existing object")
+
+    def test_empty_target_created_at_receiver_promotion_is_not_replaced(self) -> None:
+        source = self._bundle()
+        (source / ".DS_Store").write_bytes(b"metadata")
+        content_id = json.loads((source / "session-bundle-manifest.json").read_bytes())["bundle_content_id"]
+        target = self.destination / "objects" / content_id
+        original_verify = recovery.DirectoryReceiver._verify_artifact
+        created = []
+
+        def create_existing(receiver: object, directory: Path, manifest: object) -> None:
+            original_verify(receiver, directory, manifest)
+            if not created:
+                target.mkdir()
+                created.append(target.stat().st_ino)
+
+        before = self._bytes(source)
+        with patch.object(recovery.DirectoryReceiver, "_verify_artifact", create_existing):
+            with self.assertRaisesRegex(recovery.CarrierRecoveryError, "carrier_promotion_failed"):
+                self._recover(source)
+        self.assertEqual(target.stat().st_ino, created[0])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertEqual(self._bytes(source), before)
 
     def test_receipt_failure_preserves_promoted_carrier_without_success(self) -> None:
         source = self._bundle()

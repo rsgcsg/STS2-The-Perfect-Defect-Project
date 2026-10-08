@@ -55,7 +55,7 @@ class _File:
     relative: str
     bytes: int
     sha256: str
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int, int, int, int]
 
     def transfer_file(self) -> TransferFile:
         return TransferFile(self.relative, self.bytes, self.sha256)
@@ -67,8 +67,9 @@ class _Snapshot:
     directories: tuple[tuple[str, int, int], ...]
 
 
-def _identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+def _identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+            value.st_ctime_ns, value.st_nlink)
 
 
 def _is_link(value: os.stat_result) -> bool:
@@ -92,7 +93,7 @@ def _alias(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
-def _stream(path: Path, expected: tuple[int, int, int, int, int],
+def _stream(path: Path, expected: tuple[int, int, int, int, int, int],
             sink: BinaryIO | None = None) -> tuple[int, str]:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as handle:
@@ -142,6 +143,8 @@ def _snapshot(root: Path) -> _Snapshot:
                 continue
             if not stat.S_ISREG(value.st_mode):
                 raise CarrierRecoveryError("source_not_regular", relative)
+            if value.st_nlink != 1:
+                raise CarrierRecoveryError("source_hard_link", relative)
             inode = (value.st_dev, value.st_ino)
             if inode in identities:
                 raise CarrierRecoveryError("duplicate_file_alias", relative)
