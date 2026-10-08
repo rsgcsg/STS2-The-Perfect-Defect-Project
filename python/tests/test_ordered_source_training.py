@@ -7,6 +7,8 @@ consumer source/test behavior, never real gameplay, Human origin or model qualit
 from __future__ import annotations
 
 import io
+import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +16,10 @@ from types import SimpleNamespace
 import pytest
 import sts2_platform_evidence as evidence_owner
 from test_native_agent_application import native_capabilities, settled
+from test_native_structured_model import ack, offer
 from test_native_structured_training import origin
 from test_native_structured_training import two_threads as two_threads
+from test_native_task_completion import next_input, terminal_snapshot
 from test_protocol_source import setup_store
 from test_structured_resume import Authority, PauseControl, equal_tree, finish
 
@@ -29,6 +33,7 @@ from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.local_training import LocalTrainingService
 from spireagent.workbench.native_agent_support import validate
 from spireagent.workbench.recipe_contracts import TrainingRequest
+from spireagent.workbench.recipes import structured as adapter_module
 from stpd.fullrun import ordered_source as sources
 from stpd.models.structured_engine import StructuredTrainingEngine
 from stpd.models.structured_training import StructuredTrainingConfig
@@ -338,5 +343,78 @@ def test_actual_source3_application_child_use_export_and_native_registry(tmp_pat
     assert manifest["agent"]["version"] == "1.2.0"
     agent = NativeStructuredAgent(folder, models.entry_path(entry, "manifest"))
     assert agent.metadata["agent_spec"]["task_spec"] == ready_summary_task_spec()
+    observation, catalog = terminal_snapshot()
+    agent.scorer.acknowledge(ack(agent.consume(offer(observation, catalog))))
+    memory_before = agent.scorer.memory.clone()
+    monkeypatch.setattr(agent.scorer, "scores", lambda: pytest.fail("ready task must not score"))
+    assert agent.next(next_input(agent))["directive"] == {
+        "type": "close",
+        "reason": "native_ready_summary_task_complete",
+    }
+    assert agent.scorer.input is not None and agent.scorer.input["catalog"] == catalog
+    equal_tree(memory_before, agent.scorer.memory)
     assert models.readiness(entry["id"])["checks"]["policy_identity"] == {"status": "pass"}
     models.close()
+
+
+def test_actual_source3_private_child_pause_requires_explicit_checkpoint_resume(
+    tmp_path, monkeypatch
+):
+    store, owner = setup_store(tmp_path)
+    _, _, partition = source(store)
+    owner.reserve_verified_ordered_source(store, partition.manifest.artifact_id)
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    service = LocalTrainingService(config)
+    request = TrainingRequest(
+        "1" * 32,
+        DEFAULT_RECIPE,
+        partition.manifest.artifact_id,
+        {"epochs": 2},
+        limits={"wall_seconds": 600},
+    )
+    original = adapter_module._private_child
+    entered, released = threading.Event(), threading.Event()
+    held_once = False
+
+    def delayed(command, *args, **kwargs):
+        parent_message = kwargs["on_stdout_line"]
+
+        def message(raw):
+            nonlocal held_once
+            if json.loads(raw)["kind"] == "prepared" and not held_once:
+                held_once = True
+                entered.set()
+                assert released.wait(3)
+            parent_message(raw)
+
+        return original(command, *args, **{**kwargs, "on_stdout_line": message})
+
+    monkeypatch.setattr(adapter_module, "_private_child", delayed)
+    started = service.start(request)["operation"]
+    assert entered.wait(10)
+    service.pause(started["operation_id"], started["attempt_id"])
+    released.set()
+    assert service._thread is not None
+    service._thread.join(timeout=30)
+    paused = service.status()["operation"]
+    assert not service._thread.is_alive()
+    assert paused["status"] == "paused" and paused["checkpoint_id"]
+    assert "model_id" not in paused
+    resumed = service.resume(
+        paused["operation_id"],
+        paused["attempt_id"],
+        paused["checkpoint_id"],
+        "2" * 32,
+        request.limits,
+    )
+    assert resumed["operation"]["attempt_id"] != paused["attempt_id"]
+    assert service._thread is not None
+    service._thread.join(timeout=30)
+    completed = service.status()["operation"]
+    assert not service._thread.is_alive()
+    assert completed["status"] == "completed", completed
+    assert completed["run_id"] == paused["run_id"]
+    assert store.get_manifest(completed["model_id"]).parameters.value()["schema"] == MODEL_SCHEMA
+    owner.require_verified_ordered_training_use(
+        store, partition.manifest.artifact_id, completed["operation_id"]
+    )
