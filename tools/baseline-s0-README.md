@@ -34,7 +34,7 @@ heuristic teacher, not Human data or an optimal strategy.
 
 ## Actual text-menu-v2 scope
 
-Teacher 1.1.0 and generated manifests share `S0_TEXT_V2_KINDS`, a finite registry
+Teacher 1.2.0 and generated manifests share `S0_TEXT_V2_KINDS`, a finite registry
 of current native text overrides and source-defined LiveHost/NativeUi passthrough
 families. Unknown/unresolved kinds abstain or fail whole-decision admission;
 there is no arbitrary-kind fallback. This source scope is not all-scene runtime
@@ -49,7 +49,9 @@ qualification. It intentionally excludes startup/menu/tutorial management.
 | `run_deck/combat_draw_pile/combat_discard_pile/combat_exhaust_pile` | `return_native_information` | `NativeTextMenuInformation.CaptureOwned` |
 | `relic_inspect/inspect_card` | `return_relic_inspect/return_card_inspect` | `NativeTextMenuInformation.CaptureRelic/CaptureCardInspect` |
 | `potion_popup/potion_targeting` | Close/cancel advertised current operation; teacher does not initiate potion use. | `NativeTextMenuPotions`, `NativeTextMenuFrameBuilder` |
-| Reward/linked rewards | Advertised proceed/skip or claim leaf | `NativeTextMenuRewardPages` |
+| Ordinary rewards | Current generic `activate` joined to enabled public reward subject; after claims, unique subjectless activate/explicit skip joined to public proceed flags | `RewardClaimSurfaceReader`, `NativeUiActionRuntime`, `BoundActionProjection.GenericAction` |
+| Linked rewards | Semantic claim joined to current public entry/group/child, then exact screen-bound proceed/skip | `NativeTextMenuRewardPages` |
+| Card reward | Current native `select` joined to public cards/selectable IDs; label-only alternatives abstain | `CardRewardSurfaceReader`, `NativeUiActionRuntime.DescribeCardRewardCommands`, `BoundActionProjection.GenericAction` |
 | Exact source-defined selector families | Advertised confirm/select/skip/cancel | `LiveHost/*SurfaceReader`, `NativeUi/*Selection`, `NativeTextMenuFrameBuilder.OrderLegacyTextActions` |
 | Event/dialogue/rest/treasure/shop/game-over | Declared forward-choice heuristic over current native C; unknown operations abstain | Exact LiveHost surface readers and bound-action projection |
 
@@ -60,6 +62,25 @@ visit. Browse offers are capped at 16, then ordinary play continues; native retu
 actions remain preferred. No raw runtime IDs, coordinates, private rule state or
 consumer-created operands determine executable authority. Public map references
 are only used to rank existing C members, never reconstruct legality.
+
+Ordinary rewards use the legacy generic projection because the specialized
+linked adapter returns no frame when no linked group exists. Consequently
+`claim_reward -> choose -> activate` and `proceed_rewards -> activate_control ->
+activate` do not arrive as semantic reward verbs. The teacher discriminates by
+the current public surface schema, typed visible subject and enabled descriptor;
+it never reads private native-operation fields or chooses from labels. Claimable
+rewards precede proceeding; unresolved claim bindings or ambiguous subjectless
+controls abstain rather than silently skipping. The entire C and score count
+remain intact.
+
+The current unprofiled card-reward alternative descriptor exposes only ID,
+index, label and enabled state. It does not expose whether the native alternative
+rerolls or returns without completing the parent reward. A typed selectable card
+is preferred; alternative-only input abstains with
+`card_reward_alternative_effect_not_public` in optional raw `policy_result`
+diagnostic metadata. Diagnostics are not adapter output or model input. Resolving
+that protocol ambiguity requires the owning public contract, not label guessing,
+forced runner input or a history reset to conceal a reward loop.
 
 `records.jsonl` uses `sts2.baseline-s0/raw-record-1` envelopes with monotonic
 `record_index`, `run_id`, `recorded_at`, `type`, `payload`. Each `capture` stores

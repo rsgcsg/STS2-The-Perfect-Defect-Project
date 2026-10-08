@@ -87,7 +87,7 @@ export class S0RawRecords {
     await committed;
     return offerId;
   }
-  async policyResult(offerId, input, value) {
+  async policyResult(offerId, input, value, diagnostic) {
     const snapshot = input.bundle.observation;
     if (value.completion.continuity_token !== input.continuity_token
       || value.completion.snapshot_id !== snapshot.snapshot_id || value.completion.sequence !== snapshot.sequence
@@ -99,7 +99,8 @@ export class S0RawRecords {
       throw new Error("policy_result_binding_mismatch");
     await this.append("policy_result", { offer_id: offerId, output: value.output,
       completion: value.completion, chosen_action_id: value.output.selected_index === null ? null
-        : snapshot.menu_actions.actions[value.output.selected_index].action_id });
+        : snapshot.menu_actions.actions[value.output.selected_index].action_id,
+      ...(diagnostic == null ? {} : { diagnostic }) });
   }
   async close() {
     if (this.closed) return;

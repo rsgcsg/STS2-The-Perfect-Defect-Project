@@ -160,7 +160,7 @@ export async function runS0(options, dependencies) {
       statefulPolicy = async input => {
         const offerId = await records.offer(input);
         const value = teacher.decide(input);
-        await records.policyResult(offerId, input, value);
+        await records.policyResult(offerId, input, value, teacher.lastDiagnostic);
         return value;
       };
     } else {
