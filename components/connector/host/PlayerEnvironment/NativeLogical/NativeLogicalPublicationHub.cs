@@ -88,7 +88,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
         timer = new(_ => Tick(), null, 25, 25);
     }
     private string Binding(Subscription s) => s.Client + "|" + s.Value.SubscriptionId + "|" + s.Value.ScopeId + "|" + s.Value.StreamGeneration;
-    private string Cursor(Subscription s, ulong index) => cursors.Create(Binding(s), index, s.Deadline);
+    private string Cursor(Subscription s, ulong index) => cursors.Create(Binding(s), index, 0);
     public NativeLogicalAttachReply Attach(NativeLogicalAttachRequest request)
     {
         lock (gate)
@@ -118,6 +118,25 @@ public sealed class NativeLogicalPublicationHub : IDisposable
             return new("attached", subscription.Value);
         }
     }
+    public NativeLogicalRenewReply Renew(string clientSessionId, string subscriptionId,
+        string scopeId, string afterCursor)
+    {
+        lock (gate)
+        {
+            TickLocked();
+            Subscription sub;
+            try { sub = Get(clientSessionId, subscriptionId, scopeId); }
+            catch (NativeLogicalException e) when (e.Code == "subscription_expired")
+            { return new(NativeLogicalContract.RenewSchema, NativeLogicalContract.Profile, "subscription_expired", null, null, null, null, null, "subscription_expired"); }
+            ulong after = Parse(sub, afterCursor);
+            sub.Deadline = checked(clock() + limits.RetentionMs);
+            sub.Value = sub.Value with { ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(limits.RetentionMs) };
+            return new(NativeLogicalContract.RenewSchema, NativeLogicalContract.Profile, "renewed", sub.Value,
+                Cursor(sub, after), Cursor(sub, high), Cursor(sub, retainedStart - 1), Gap(after), null);
+        }
+    }
+    public NativeLogicalRenewReply Renew(NativeLogicalRenewRequest request) =>
+        Renew(request.ClientSessionId, request.SubscriptionId, request.ScopeId, request.AfterCursor);
     // The native owner invokes this and freezes its initial frame in one main-thread turn.
     // No source callback can interleave registration and the new subscription's reserved initial position.
     public NativeLogicalInitialAttachment AttachWithInitialReservation(NativeLogicalAttachRequest request,
@@ -287,14 +306,25 @@ public sealed class NativeLogicalPublicationHub : IDisposable
             Finish(waiter, new("cancelled", null, null, reason)); return true;
         }
     }
-    public void Detach(string client, string subscriptionId)
+    public NativeLogicalCancelWaitReply CancelWaitPublic(NativeLogicalCancelWaitRequest request)
+    {
+        bool cancelled = CancelWait(request.ClientSessionId, request.SubscriptionId, request.WaitId);
+        return new(NativeLogicalContract.CancelWaitSchema, NativeLogicalContract.Profile,
+            cancelled ? "cancelled" : "not_pending", request.SubscriptionId, request.WaitId, cancelled, null);
+    }
+    public bool Detach(string client, string subscriptionId)
     {
         lock (gate)
         {
-            if (!subscriptions.TryGetValue(subscriptionId, out var sub) || sub.Client != client) return;
-            RemoveSubscription(subscriptionId, "cancelled");
+            TickLocked();
+            if (!subscriptions.TryGetValue(subscriptionId, out var sub)) return false;
+            if (sub.Client != client) throw new NativeLogicalException("cursor_mismatch", "This subscription belongs to another client.");
+            RemoveSubscription(subscriptionId, "cancelled"); return true;
         }
     }
+    public NativeLogicalDetachReply DetachPublic(NativeLogicalDetachRequest request) =>
+        new(NativeLogicalContract.DetachSchema, NativeLogicalContract.Profile, "detached",
+            request.SubscriptionId, Detach(request.ClientSessionId, request.SubscriptionId), null);
     public void Tick() { lock (gate) if (!disposed) TickLocked(); }
     private void TickLocked()
     {
@@ -324,7 +354,7 @@ public sealed class NativeLogicalPublicationHub : IDisposable
     }
     private ulong Parse(Subscription sub, string cursor)
     {
-        ulong position = cursors.Parse(cursor, Binding(sub), clock());
+        ulong position = cursors.Parse(cursor, Binding(sub), clock(), checkExpiry: false);
         if (position > reserved) throw new NativeLogicalException("cursor_mismatch", "Cursor is above the reserved source watermark.");
         return position;
     }
