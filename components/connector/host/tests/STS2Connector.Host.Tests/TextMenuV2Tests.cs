@@ -130,7 +130,7 @@ public sealed class TextMenuV2Tests
         Assert.Equal("applied", result.Status);
         Assert.Equal("delivered", result.NativeDelivery);
         Assert.Equal(1, calls);
-        Assert.Same(result, executor.Submit(Request(target.Successor, "play", "play")));
+        RequestTestDriver.AssertWireEqual(result, executor.Submit(Request(target.Successor, "play", "play")));
         Assert.Equal(1, calls);
     }
 
@@ -206,8 +206,8 @@ public sealed class TextMenuV2Tests
     public void ControllerRejectionCannotChangeSelectionOrDispatch()
     {
         TextMenuFrame frame = Frame(targeted: true);
-        var executor = new TextMenuV2Executor(new object(), new(), () => frame,
-            _ => MutationAdmission.Reject("controller_lease_stale", "stale"));
+        var executor = new TextMenuV2Executor(new object(), RequestTestDriver.Namespace(
+            _ => MutationAdmission.Reject("controller_lease_stale", "stale")), () => frame);
         var root = executor.Observe();
         var result = executor.Submit(Request(root, "select_card", "rejected"));
         Assert.Equal("controller_lease_stale", result.ReasonCode);
@@ -242,14 +242,31 @@ public sealed class TextMenuV2Tests
         Assert.Equal("unknown", unknown.NativeDelivery);
         Assert.Equal("never", unknown.Retry);
         Assert.Null(unknown.Successor);
-        Assert.Same(unknown, unknownExecutor.Submit(request));
+        RequestTestDriver.AssertWireEqual(unknown, unknownExecutor.Submit(request));
         Assert.Equal(1, calls);
     }
 
+    [Fact]
+    public void MandatorySelectionSuccessorCapacityFailureLeavesExactPrivateSelectionStateAndCatalogUnchanged()
+    {
+        int inputs = 0;
+        var frame = Frame(targeted: true, () => { inputs++; return NativeInputResult.Delivered("fixture"); });
+        frame.Page.Interaction.Content.Surface["large-current-fact"] = new string('x', 8_000);
+        using var requests = RequestTestDriver.Namespace(legacyEnvelope: 4096);
+        var executor = new TextMenuV2Executor(new object(), requests, () => frame);
+        var before = executor.Observe(); var request = Request(before, "select_card", "capacity-selection");
+        var rejected = executor.Submit(request);
+        Assert.Equal("not_applied", rejected.Status); Assert.Equal("result_core_capacity_exceeded", rejected.ReasonCode);
+        Assert.Null(rejected.Successor); Assert.Equal(0, inputs);
+        var after = executor.Observe(); RequestTestDriver.AssertWireEqual(before, after);
+        Assert.Equal("root", after.Menu.Cursor); Assert.Empty(after.Menu.Selection);
+        Assert.Equal(before.Menu.Revision, after.Menu.Revision); Assert.Equal(before.Sequence, after.Sequence);
+        Assert.Equal(before.SnapshotId, after.SnapshotId); Assert.Equal(1, requests.SpentIdCount);
+        RequestTestDriver.AssertWireEqual(rejected, executor.Submit(request)); Assert.Equal(0, inputs);
+    }
+
     private static TextMenuV2Executor Executor(Func<TextMenuFrame> capture,
-        Func<string?>? controller = null) => new(new object(), new ConcurrentDictionary<string, string>(),
-            capture, _ => MutationAdmission.Allow(new MutationAttribution(
-                "runtime", "client", "instance", "test", "Test", "1", "lease", 1)), controller);
+        Func<string?>? controller = null) => new(new object(), RequestTestDriver.Namespace(), capture, controller);
 
     [Theory]
     [InlineData("partial")]
@@ -275,7 +292,7 @@ public sealed class TextMenuV2Tests
         Assert.Equal("never", result.Retry);
         Assert.Null(result.Successor);
         Assert.NotNull(result.Attribution);
-        Assert.Same(result, executor.Submit(request));
+        RequestTestDriver.AssertWireEqual(result, executor.Submit(request));
         Assert.Equal(1, calls);
         Assert.Equal("root", executor.Observe().Menu.Cursor);
         Assert.Empty(executor.Observe().Menu.Selection);

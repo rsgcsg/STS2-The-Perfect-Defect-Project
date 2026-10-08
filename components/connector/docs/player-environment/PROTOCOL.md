@@ -23,7 +23,8 @@ POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|
 ## Original client lifetime and final revocation (source foundation)
 
 An original client has a 30-minute idle deadline measured by the Host's
-monotonic clock. Valid registration or owned control operations extend it;
+monotonic clock. Valid registration, owned control operations and explicit
+owned passive subscription renewal extend it;
 invalid lease attempts, passive control watches (including capacity denial),
 and passive state/result lookups do not. Expiry permanently
 closes that original session and revokes only its owned lease, including while
@@ -45,9 +46,85 @@ closure. A missing or invalid acknowledgement retains consumer uncertainty.
 
 This foundation additionally exposes private original-client lifetime handles
 and post-Authority closure callbacks for the existing request/publication owners.
-Their bounded request-result storage, owned passive renewal and source accounting
-are separate integration work; these interfaces alone do not claim those owners
-are wired or any game/runtime qualification.
+The shared request owner below consumes these lifetime handles. Owned source
+renewal and recording accounting remain separate producer integration work.
+These interfaces and source tests do not claim game/runtime qualification.
+
+## Original request and terminal byte lifetime (source candidate)
+
+All Player Environment profiles use one existing runtime-global request namespace.
+An admitted original ID is permanently spent within that runtime, including when
+its queue is cancelled or its terminal bytes expire. Limits are 65,536 spent IDs
+per original client and per runtime. Matching duplicates return the original
+pending state or byte-identical terminal; they do not enqueue work or extend client
+idle time. Conflicting profile/action/client fingerprints return a conflict.
+An expired original result returns HTTP 410 `result_expired` and cannot be retried
+or revived by renewing the client or controller. Pending/started results are never
+retired as though their outcome was known.
+
+New IDs require a live original client/controller, bounded request shape, available
+ID/sender capacity and a physical result reservation before admission and queueing.
+Capacity or invalid-client denial spends no ID. A client closure cancels only its
+unstarted requests, removes their original queued jobs and releases HTTP waits
+without another game-thread drain. A start that already won the existing Authority boundary may
+finish its actual outcome after closure; the original in-flight POST sender may
+receive those bytes while later lookups report expiry. Successful control release
+keeps its original client/passive registration alive.
+
+Original terminal retention lasts 30 monotonic minutes after sealing, independently
+of client renewal. Results retain frozen UTF-8 segments rather than typed outcome
+or successor graphs. The original POST and replay GET write those exact segments
+with reference-counted sender loans. Retirement retains its actual backing-array
+charge until the final sender finishes; it cannot reclaim a still-writing buffer.
+The result-only arena owns at most 512 MiB of byte-array capacity, including bounded
+reusable free segments. This limit is separate from public capture memory, source
+and game graphs, CLR metadata, network buffers and process RSS.
+
+The closed terminal encoder requires the signed .NET 9 `System.Text.Json` identity
+and a successful read-only private `JsonElement.GetRawValue` ABI probe. It borrows
+existing JSON bytes synchronously and emits scalars incrementally through charged
+scratch/output blocks, with no serializer/pool/whole-document-copy fallback.
+Unsupported framework identity rejects new admission before allocating an ID.
+Native terminal output is at most 2 MiB with a 4 MiB reservation; other profiles
+use 8 MiB output and 16 MiB reservation. These source bounds and portable serializer
+parity are not measurements of loaded-game peak memory or performance.
+
+Applied text-only navigation/selection first computes the complete mandatory
+successor without changing its private state and freezes the entire result. Only
+then can the original Authority start and state commit occur. Capacity failure
+preserves cursor, selection, revision, sequence and native state. Applied text
+successors are never omitted. For actual native input, only the optional immediate
+post-input diagnostic view may be omitted with explicit
+`successor_payload_capacity_exceeded`; original delivery, action, attribution and
+known stages remain intact. No result claims native Commit or causal settlement.
+An overlarge
+pre-input selected-action body may use the existing truthful `action=null` rejection
+shell: request/snapshot IDs and the namespace's original immutable request retain
+the submitted bound-action identifier. No partial NativeAction is invented and no
+input or text effect begins. After input starts, action facts cannot be omitted.
+
+## Passive owner admission and original closure (source candidate)
+
+Public subscription Renew validates the exact original client/subscription/scope and
+cursor before touching the bound Authority idle deadline. Wrong ownership, expired
+subscription or malformed cursor cannot touch. A permanently closed original client
+cannot renew: its matching subscription is removed and the reply is
+`subscription_expired`. No renewal acquires a controller or changes another lease.
+
+Actual Host Hub and Store bind the same lifetime dependency and no-touch Authority
+activity predicate. Attach and public Retain recheck that original client under their
+resource-owner gate immediately before allocation. Current's retained seal does the
+same under Store. Post-Authority closure cleanup takes those same gates, so it cannot
+finish first and then miss a later resource allocation. Final service checks reject a
+response when closure has already won. Native reads/JSON encoding never hold Authority.
+
+An initial standalone Current pin identifies its original client in existing Store
+entry metadata. Closure drops that client's initial pins and public reader handles;
+other client handles and existing catalog/byte readers retain their original reference
+counts and backing-byte charge. Publication/source captures and private source/Hub pins
+keep their separate owner semantics. Source/recording accounting still belongs to its
+own producer. Explicit unbound standalone portable owners retain their prior semantics;
+production NativeLogicalService always binds the real original-client activity check.
 
 ## Snapshot
 

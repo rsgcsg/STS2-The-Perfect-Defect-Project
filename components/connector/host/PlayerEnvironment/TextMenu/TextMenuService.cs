@@ -18,15 +18,14 @@ internal sealed class TextMenuRunContinuityChangedException : InvalidOperationEx
 internal static partial class PlayerEnvironmentService
 {
     private static readonly System.Lazy<TextMenuExecutor> TextMenus = new(() => new(
-        SubmissionGate, RequestFingerprints, CaptureTextMenuFrame, MutationControlRuntime.Authorize,
+        SubmissionGate, Requests, CaptureTextMenuFrame,
         () =>
         {
             var lease = MutationControlRuntime.Snapshot().Controller;
             return lease == null ? null : $"{lease.ClientSessionId}:{lease.ControllerGeneration}";
         }));
     private static readonly System.Lazy<TextMenuV2Executor> TextMenusV2 = new(() => new(
-        SubmissionGate, RequestFingerprints, CaptureTextMenuV2Frame,
-        MutationControlRuntime.Authorize,
+        SubmissionGate, Requests, CaptureTextMenuV2Frame,
         () =>
         {
             var lease = MutationControlRuntime.Snapshot().Controller;
@@ -178,14 +177,7 @@ internal static partial class PlayerEnvironmentService
     public static TextMenuSnapshot ObserveTextMenu() => TextMenus.Value.Observe();
     public static TextMenuObservationContext ObserveTextMenuContext() =>
         TextMenus.Value.ObserveContext();
-    public static TextMenuActionResult SubmitTextMenu(PlayerEnvironmentActionRequest request) =>
-        TextMenus.Value.Submit(request);
-    public static TextMenuActionResult? FindTextMenuResult(string requestId) => TextMenus.Value.Find(requestId);
     public static TextMenuV2Snapshot ObserveTextMenuV2() => TextMenusV2.Value.Observe();
     public static TextMenuV2ObservationContext ObserveTextMenuV2Context() =>
         TextMenusV2.Value.ObserveContext();
-    public static TextMenuV2ActionResult SubmitTextMenuV2(PlayerEnvironmentActionRequest request) =>
-        TextMenusV2.Value.Submit(request);
-    public static TextMenuV2ActionResult? FindTextMenuV2Result(string requestId) =>
-        TextMenusV2.Value.Find(requestId);
 }

@@ -14,10 +14,11 @@ public interface INativeLogicalClientLifetimeDependency
 public sealed partial class NativeLogicalPublicationHub
 {
     private INativeLogicalClientLifetimeDependency? clientLifetime;
+    private Func<string, bool>? clientActivity;
 
     /// <summary>The host binds its one Authority dependency at composition.
     /// Unbound portable hubs retain their existing standalone semantics.</summary>
-    public void BindClientLifetime(INativeLogicalClientLifetimeDependency dependency)
+    public void BindClientLifetime(INativeLogicalClientLifetimeDependency dependency, Func<string, bool>? activity = null)
     {
         ArgumentNullException.ThrowIfNull(dependency);
         lock (gate)
@@ -25,9 +26,16 @@ public sealed partial class NativeLogicalPublicationHub
             if (disposed) throw new ObjectDisposedException(nameof(NativeLogicalPublicationHub));
             if (clientLifetime is not null && !ReferenceEquals(clientLifetime, dependency))
                 throw new InvalidOperationException("The original client Authority cannot be replaced.");
+            if (clientActivity is not null && activity is not null && !ReferenceEquals(clientActivity, activity))
+                throw new InvalidOperationException("The original client activity predicate cannot be replaced.");
             clientLifetime = dependency;
+            clientActivity ??= activity;
         }
     }
+
+    // No-touch allocation admission is checked under the actual resource-owner
+    // gate. Production composition always supplies its real Authority predicate.
+    private bool IsActiveClient(string clientSessionId) => clientActivity?.Invoke(clientSessionId) ?? true;
 
     // Called only under gate AFTER validating owned subscription/scope/cursor
     // and BEFORE extending its deadline. Hub -> Authority is the declared order.

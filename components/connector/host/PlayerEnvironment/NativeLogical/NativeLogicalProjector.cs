@@ -115,7 +115,7 @@ public sealed class NativeLogicalProjector
             var projection = Freeze(frame, request.EagerScope, scopeId, observedAt, retentionDeadline, clock);
             if (request.ExpectedSnapshotId is not null && request.ExpectedSnapshotId != projection.SnapshotId)
                 return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "stale", null, null, null, "stale_snapshot");
-            var sealedProjection = store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt);
+            var sealedProjection = store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt, request.ClientSessionId);
             var context = new NativeLogicalObservationContext(NativeLogicalContract.ContextSchema,
                 NativeLogicalContract.Profile, sealedProjection.Capture.SnapshotId, sealedProjection.Capture.CaptureId,
                 gameContinuityId, frame.StreamGeneration, null);

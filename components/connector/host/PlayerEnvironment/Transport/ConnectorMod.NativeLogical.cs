@@ -140,7 +140,7 @@ public static partial class ConnectorMod
                 {
                     var body = ReadNativeLogicalRequest<NativeLogicalRetainRequest>(request);
                     NativeId(body.ClientSessionId); NativeId(body.CaptureId);
-                    SendNativeLogicalJson(response, owner.Store.RetainPublic(body), 1024 * 1024); break;
+                    SendNativeLogicalJson(response, owner.Retain(body), 1024 * 1024); break;
                 }
                 case "release":
                 {
