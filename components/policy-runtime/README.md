@@ -159,7 +159,7 @@ cancellation-event write taints the Agent Run because its evidence is incomplete
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.16` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.24` provides a source candidate for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -168,7 +168,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.16.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.24.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
@@ -187,7 +187,10 @@ package SHA-256/integrity and protocol from `policy-runtime-package.json`.
 Never substitute a floating branch or raw source import for that pin.
 `check:package` packs twice, compares bytes, installs outside the workspace,
 checks bundled SDK/Zod identity and installed bytes, exercises synthetic modes and starts/stops the
-installed CLI in Human mode. This is CPU package evidence with no game contact.
+installed CLI in Human mode. It also checks the installed native Agent Runtime/SDK
+APIs and validates a fixture Agent Manifest against the bundled fixed publication
+profile. This is CPU package evidence with no game contact; the native API check
+does not register or run a real Model.
 It does not establish real-model, game, Full-Run or causal-successor evidence.
 
 ## Process boundary
