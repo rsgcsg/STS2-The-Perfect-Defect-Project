@@ -72,7 +72,10 @@ class AttemptFence:
         self.assert_current(None, self.operation_id, self.attempt_id)
         value = self.service._read(self.path, self.owner.identity)
         limit = value["request"]["limits"]["wall_seconds"]
-        if value["elapsed_seconds"] + max(0, time.time()-value["attempt_started_at"]) >= limit:
+        started = self.service._attempt_started_monotonic
+        if started is None:
+            raise BoundaryError("local_training", "attempt_clock_required")
+        if value["elapsed_seconds"] + max(0, time.monotonic()-started) >= limit:
             return "pause"
         return cast(Literal["continue", "pause", "cancel"], value["requested_action"])
 

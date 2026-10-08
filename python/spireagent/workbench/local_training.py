@@ -114,6 +114,7 @@ class LocalTrainingService:
         self._lock = threading.RLock()
         self._failure_diagnostic: dict[str, Any] | None = None
         self._active_attempt: str | None = None
+        self._attempt_started_monotonic: float | None = None
 
     def _selected(self):
         return self._selection._selected()
@@ -397,6 +398,7 @@ class LocalTrainingService:
                 self._failure_diagnostic = None
                 self._thread = thread
                 self._active_attempt = operation.get("attempt_id")
+                self._attempt_started_monotonic = time.monotonic()
             thread.start()
             held = None  # type: ignore[assignment]
             if operation.get("schema") == SCHEMA_V3:
@@ -609,6 +611,7 @@ class LocalTrainingService:
                                   name="local-training-" + operation["attempt_id"], daemon=True)
         with self._lock:
             self._active_attempt = operation["attempt_id"]
+            self._attempt_started_monotonic = time.monotonic()
             self._thread = thread
             self._failure_diagnostic = None
         thread.start()
@@ -655,7 +658,10 @@ class LocalTrainingService:
             if (value.get("operation_id") != operation_id or value.get("status") != "pending"
                     or value.get("attempt_id") != expected_attempt_id):
                 raise BoundaryError("local_training", "operation_superseded")
-            seconds = value["elapsed_seconds"] + max(0.0, time.time()-value["attempt_started_at"])
+            if self._attempt_started_monotonic is None:
+                raise BoundaryError("local_training", "attempt_clock_required")
+            seconds = value["elapsed_seconds"] + max(
+                0.0, time.monotonic()-self._attempt_started_monotonic)
             value.update(updates, elapsed_seconds=seconds, updated_at=time.time())
             if value["requested_action"] == "cancel" and value["status"] == "completed":
                 value.update(status="cancelled", error_code="cancel_requested_during_completion",
@@ -718,7 +724,13 @@ class LocalTrainingService:
                          "writer_terminal", "checkpoint_id", "attempt_started_at")}
                 value["attempts"].append(prior)
                 if value["status"] == "pending":
-                    value["elapsed_seconds"] += max(0.0, time.time()-value["attempt_started_at"])
+                    # A restarted process has no prior monotonic clock. Account
+                    # conservatively from the durable wall timestamp, and refuse
+                    # rollback instead of replenishing the cumulative budget.
+                    elapsed = time.time()-value["attempt_started_at"]
+                    if elapsed < 0:
+                        raise BoundaryError("local_training", "clock_recovery_required")
+                    value["elapsed_seconds"] += elapsed
                 value.update(attempt_id=uuid.uuid4().hex, status="pending", writer_terminal=False,
                              requested_action="continue", mode=mode, attempt_started_at=time.time(),
                              updated_at=time.time())

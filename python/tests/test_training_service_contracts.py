@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -222,8 +223,12 @@ def test_cumulative_wall_limit_is_enforced_at_worker_boundary(tmp_path, monkeypa
     original = structured_execution.execute_structured_workload
 
     def spent(*args, **kwargs):
+        # Live budgets use monotonic time; a wall clock adjustment cannot
+        # replenish the already-spent attempt's allowance.
         control = kwargs["control"]
-        service._advance(control.path, control.operation_id, elapsed_seconds=600.0)
+        service._attempt_started_monotonic = time.monotonic()-600.0
+        value = service._read(control.path, owner.identity)
+        monkeypatch.setattr(adapter_module.time, "time", lambda: value["attempt_started_at"]-1)
         return original(*args, **kwargs)
 
     monkeypatch.setattr(structured_execution, "execute_structured_workload", spent)
@@ -260,3 +265,36 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
         service.resume(saved["operation_id"], saved["attempt_id"], wrong.artifact_id,
                        "2" * 32, request.limits)
     assert (owner.path.parent / OPERATION_FILE).read_bytes() == journal
+
+
+def test_typed_legacy_request_preserves_previous_v1_and_legacy_idempotency(tmp_path, monkeypatch):
+    config, dataset_id, _, _store = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    service.start(dataset_id)
+    legacy = settle(service)
+    assert legacy["status"] == "completed", legacy
+    request = TrainingRequest("1" * 32, "stage1a.dsimple.s.v1", dataset_id, {}, limits={},
+                              after_completed_operation_id=legacy["operation_id"])
+    service.start(request)
+    typed = settle(service)
+    assert typed["status"] == "completed", typed
+    assert typed["previous_completed"] == legacy
+    assert typed["attempt_id"] and typed["evaluation_id"]
+    assert typed["recipe_id"] == "stage1a.dsimple.s.v1"
+    assert typed["supported_actions"] == []
+    assert service.start(dataset_id)["operation"]["operation_id"] == typed["operation_id"]
+    assert service.start(request)["operation"]["attempt_id"] == typed["attempt_id"]
+
+
+@pytest.mark.parametrize("table", ["curation_claims", "curation_exact_source_index"])
+def test_source_claim_and_exact_index_are_required_before_journal_admission(
+    tmp_path, monkeypatch, table,
+):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    with owner.transaction() as db:
+        db.execute("DELETE FROM " + table)
+    before = set(store.manifest_ids())
+    with pytest.raises(BoundaryError, match="training_claim_mismatch|source_index_incomplete"):
+        service.start(request)
+    assert not (owner.path.parent / OPERATION_FILE).exists()
+    assert set(store.manifest_ids()) == before
