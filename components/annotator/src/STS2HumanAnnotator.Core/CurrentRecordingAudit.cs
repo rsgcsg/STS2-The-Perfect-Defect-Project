@@ -16,6 +16,10 @@ public static class RecordingSessionAuditor
         long previousSequence = 0;
         CurrentRecordingManifest? manifest = ReadOrError<CurrentRecordingManifest>(
             Path.Combine(directory, "recording-manifest.json"), errors, "manifest_invalid");
+        if (manifest?.SourceSchemaVersion != null || manifest?.Schema == SourceSessionContract.ManifestSchema)
+            return new RecordingAuditResult("fail", directory, 0, 0, 0,
+                new Dictionary<string, long> { ["source_session_requires_source_audit"] = 1 },
+                SourceSessionContract.NonClaims);
         HumanCaptureProfile? profile = ReadOrError<HumanCaptureProfile>(
             Path.Combine(directory, "capture-profile.json"), errors, "capture_profile_invalid");
         if (manifest != null && profile != null
@@ -31,6 +35,8 @@ public static class RecordingSessionAuditor
         if (manifest?.TextInputSchemaVersion != null
             && !HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
             Add(errors, "human_text_input_schema_invalid");
+        if (manifest?.SourceSchemaVersion != null)
+            Add(errors, "source_session_requires_source_audit");
         if (manifest?.CloseSchemaVersion is not (null or 1))
             Add(errors, "session_close_schema_invalid");
         if (profile != null)

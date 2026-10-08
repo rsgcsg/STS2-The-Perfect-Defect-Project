@@ -29,6 +29,13 @@ from ..fullrun.structured_inputs import (
 )
 from ..fullrun.text_menu_inputs import V2_SNAPSHOT_SCHEMA
 from ..models.structured_m2 import GRAPH_ID, StructuredM2
+from ..structured_code_scope import (
+    INFERENCE_SCOPE,
+    SCOPED_ADAPTER_VERSION,
+    SCOPED_PACKAGE_SCHEMA,
+    code_identity,
+    code_sha256,
+)
 from .structured_export import MANIFEST_NAME, ROOT, code_digest, load_structured_package
 
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-2"
@@ -196,14 +203,25 @@ class StructuredPolicyAdapter:
             or not isinstance(manifest["adapter_config"], dict)
         ):
             raise BoundaryError("structured_port", "manifest_identity")
+        adapter_identity = object_fields(manifest["adapter"],
+            {"id", "version", "protocol", "code_sha256"}, "structured_port.adapter")
+        scoped = adapter_identity["version"] == SCOPED_ADAPTER_VERSION
+        if scoped:
+            config_identity = manifest["adapter_config"].get("stage1a", {})
+            if (not isinstance(config_identity, dict)
+                    or config_identity.get("code_digest_scope") != INFERENCE_SCOPE
+                    or config_identity.get("code_identity") !=
+                    code_identity(INFERENCE_SCOPE, ROOT)):
+                raise BoundaryError("structured_port", "manifest_identity")
         if (
             manifest["schema"] != "sts2.policy-runtime/policy-manifest-1"
             or manifest["adapter"]
             != {
                 "id": ADAPTER_ID,
-                "version": ADAPTER_VERSION,
+                "version": SCOPED_ADAPTER_VERSION if scoped else ADAPTER_VERSION,
                 "protocol": "sts2.policy-runtime/decision-only-ndjson-2",
-                "code_sha256": code_digest(ROOT),
+                "code_sha256": (code_sha256(INFERENCE_SCOPE, ROOT) if scoped
+                                else code_digest(ROOT)),
             }
             or manifest["representation"]
             != {"id": INPUT_ID, "version": PROJECTION_VERSION, "input_schema": V2_SNAPSHOT_SCHEMA}
@@ -221,6 +239,8 @@ class StructuredPolicyAdapter:
         metadata, model = load_structured_package(
             package, expected_manifest_sha256=artifact["sha256"]
         )
+        if scoped != (metadata["schema"] == SCOPED_PACKAGE_SCHEMA):
+            raise BoundaryError("structured_port", "package_scope_binding")
         if artifact["id"] != metadata["model_id"]:
             raise BoundaryError("structured_port", "model_id_binding")
         requirements = object_fields(

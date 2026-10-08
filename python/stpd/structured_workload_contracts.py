@@ -10,6 +10,15 @@ from typing import Any, Literal, Protocol
 
 from spireagent.json_boundary import BoundaryError, digest, object_fields
 
+from .structured_code_scope import (
+    INFERENCE_SCOPE,
+    LEGACY_SCOPE,
+    SCOPED_CHECKPOINT_SCHEMA,
+    SCOPED_PACKAGE_SCHEMA,
+    SCOPED_RUN_SCHEMA,
+    TRAINING_SCOPE,
+)
+
 
 @dataclass(frozen=True)
 class StructuredTrainingConfig:
@@ -136,6 +145,17 @@ def structured_workload_capabilities() -> dict[str, Any]:
         "control_boundary": "completed_tbptt_chunk_or_complete_evaluation_pass",
         "checkpoint_schema": "stpd/structured-m2-training-checkpoint-v2",
         "legacy_v1": "final_only_not_resumable",
+        "scoped_identity": {
+            "selection": "explicit_trusted_opt_in",
+            "default_scope": LEGACY_SCOPE,
+            "inference_scope": INFERENCE_SCOPE,
+            "training_scope": TRAINING_SCOPE,
+            "package_schema": SCOPED_PACKAGE_SCHEMA,
+            "run_schema": SCOPED_RUN_SCHEMA,
+            "checkpoint_schema": SCOPED_CHECKPOINT_SCHEMA,
+            "attempt_producer": "explicit_current_source_provenance",
+            "legacy_migration": False,
+        },
         "automatic_retry": False,
         "max_resume_ancestry": MAX_RESUME_ANCESTRY,
         "checkpoint_every_boundaries_bounds": [1, 100],

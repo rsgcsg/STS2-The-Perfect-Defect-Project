@@ -19,7 +19,7 @@ internal static partial class PlayerEnvironmentService
     {
         string requestId = request.RequestId ?? string.Empty;
         if (!IsSupportedInputProfile(request.InputProfile)
-            || request.InputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile)
+            || request.InputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile or NativeLogicalContract.Profile)
             return BuildReceipt(
                 requestId, request.BoundActionId ?? "invalid", "activate", null,
                 Array.Empty<PlayerEnvironmentBoundActionArgument>(),

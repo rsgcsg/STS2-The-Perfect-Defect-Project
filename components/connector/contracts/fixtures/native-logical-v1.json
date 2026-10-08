@@ -1,0 +1,2113 @@
+{
+  "schema": "sts2.native-logical.conformance-1",
+  "profile": "native-logical-v1",
+  "digest_cases": [
+    {
+      "name": "empty",
+      "actions": [],
+      "sha256": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11"
+    },
+    {
+      "name": "multilingual_null_empty_ordered",
+      "actions": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-b",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "",
+          "subject_referent_id": "",
+          "arguments": [
+            {
+              "role": "目标",
+              "referent_id": "référent-😀"
+            }
+          ],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-c",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "換行\n保留",
+          "subject_referent_id": "卡牌甲",
+          "arguments": [
+            {
+              "role": "first",
+              "referent_id": "甲"
+            },
+            {
+              "role": "second",
+              "referent_id": "乙"
+            }
+          ],
+          "effect_domain": "native"
+        }
+      ],
+      "sha256": "e219492176272b9832799b109a2c770d7801b97e21abf64f6ced9faea8cbcf63"
+    }
+  ],
+  "expression_cases": [
+    {
+      "expression": {},
+      "prefix_valid": true,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": "选择",
+        "subject_referent_id": null,
+        "arguments": []
+      },
+      "prefix_valid": true,
+      "resolve_valid": true
+    },
+    {
+      "expression": {
+        "subject_referent_id": ""
+      },
+      "prefix_valid": true,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": "选择",
+        "subject_referent_id": null,
+        "arguments": [
+          {
+            "role": "target",
+            "referent_id": "a"
+          },
+          {
+            "role": "target",
+            "referent_id": "b"
+          }
+        ]
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "label": "禁止"
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": 4
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    }
+  ],
+  "invalid_action_cases": [
+    {
+      "name": "duplicate_roles",
+      "actions": [
+        {
+          "action_id": "dup",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "重复",
+          "subject_referent_id": null,
+          "arguments": [
+            {
+              "role": "target",
+              "referent_id": "a"
+            },
+            {
+              "role": "target",
+              "referent_id": "b"
+            }
+          ],
+          "effect_domain": "native"
+        }
+      ]
+    },
+    {
+      "name": "duplicate_ids",
+      "actions": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ]
+    }
+  ],
+  "raw_invalid_expressions": [
+    "{\"verb\":\"a\",\"verb\":\"b\"}",
+    "{\"arguments\":[{\"role\":\"a\",\"role\":\"b\",\"referent_id\":\"x\"}]}",
+    "{\"verb\":\"\\uD800\",\"subject_referent_id\":null,\"arguments\":[]}"
+  ],
+  "wire_samples": {
+    "observation": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-observation-1",
+      "input_profile": "native-logical-v1",
+      "snapshot_id": "snapshot-fixture",
+      "revision": 1,
+      "observed_at": "1970-01-01T00:00:00+00:00",
+      "status": "settling",
+      "persistent": {
+        "content_schema": "public-persistent-fixture",
+        "content": {
+          "text": "你好 / 🐉 / café / é"
+        }
+      },
+      "interaction": {
+        "interaction_id": "interaction-fixture",
+        "kind": "selector",
+        "stage": "ready",
+        "prompt": null,
+        "content_schema": "public-surface-fixture",
+        "content": {
+          "surface": {
+            "kind": "selector",
+            "focus_referent_id": null
+          },
+          "context": {
+            "kind": "public-fixture"
+          }
+        },
+        "capabilities": []
+      },
+      "referents": [],
+      "completeness": {
+        "status": "complete",
+        "included": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "missing": [],
+        "full_reference_complete": true
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "information_policy": {
+        "id": "fair-player",
+        "scope": "entered-native-page",
+        "includes_hidden_information": false,
+        "unknown_field_behavior": "explicit"
+      },
+      "owner_occurrence": {
+        "owner_id": "owner-fixture",
+        "occurrence_id": "occurrence-fixture",
+        "binding_revision": "binding-fixture",
+        "focus_referent_id": null,
+        "focus_occurrence": null
+      },
+      "catalog": {
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "status": "complete",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "ordering_semantics": "native_public_order",
+        "access_methods": [
+          "catalog",
+          "resolve"
+        ],
+        "scope_id": "scope-fixture",
+        "stream_generation": "stream-fixture"
+      }
+    },
+    "capture": {
+      "schema": "sts2.player-environment/native-logical-capture-1",
+      "capture_id": "capture-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "input_profile": "native-logical-v1",
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "scope_id": "scope-fixture",
+      "capture_ordinal": "1",
+      "captured_at": "1970-01-01T00:00:00+00:00",
+      "expires_at": "1970-01-01T00:02:00+00:00",
+      "byte_count": 1519,
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "read_cursor": "opaque-read-fixture"
+    },
+    "read": {
+      "capture_id": "capture-fixture",
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "offset": 0,
+      "total_bytes": 1519,
+      "data_base64": "eyJwcm90b2NvbF92ZXJzaW9uIjoiMS4wLjAiLCJzY2hlbWEiOiJzdHMyLnBsYXllci1lbnZpcm9ubWVudC9uYXRpdmUtbG9naWNhbC1vYnNlcnZhdGlvbi0xIiwiaW5wdXRfcHJvZmlsZSI6Im5hdGl2ZS1sb2dpY2FsLXYxIiwic25hcHNob3RfaWQiOiJzbmFwc2hvdC1maXh0dXJlIiwicmV2aXNpb24iOjEsIm9ic2VydmVkX2F0IjoiMTk3MC0wMS0wMVQwMDowMDowMCswMDowMCIsInN0YXR1cyI6InNldHRsaW5nIiwicGVyc2lzdGVudCI6eyJjb250ZW50X3NjaGVtYSI6InB1YmxpYy1wZXJzaXN0ZW50LWZpeHR1cmUiLCJjb250ZW50Ijp7InRleHQiOiLkvaDlpb0gLyDwn5CJIC8gY2Fmw6kgLyBlzIEifX0sImludGVyYWN0aW9uIjp7ImludGVyYWN0aW9uX2lkIjoiaW50ZXJhY3Rpb24tZml4dHVyZSIsImtpbmQiOiJzZWxlY3RvciIsInN0YWdlIjoicmVhZHkiLCJwcm9tcHQiOm51bGwsImNvbnRlbnRfc2NoZW1hIjoicHVibGljLXN1cmZhY2UtZml4dHVyZSIsImNvbnRlbnQiOnsic3VyZmFjZSI6eyJraW5kIjoic2VsZWN0b3IiLCJmb2N1c19yZWZlcmVudF9pZCI6bnVsbH0sImNvbnRleHQiOnsia2luZCI6InB1YmxpYy1maXh0dXJlIn19LCJjYXBhYmlsaXRpZXMiOltdfSwicmVmZXJlbnRzIjpbXSwiY29tcGxldGVuZXNzIjp7InN0YXR1cyI6ImNvbXBsZXRlIiwiaW5jbHVkZWQiOlsicGVyc2lzdGVudCIsImludGVyYWN0aW9uIiwicmVmZXJlbnRzIiwiY2F0YWxvZyJdLCJtaXNzaW5nIjpbXSwiZnVsbF9yZWZlcmVuY2VfY29tcGxldGUiOnRydWV9LCJzZXNzaW9uIjp7InJ1bnRpbWVfaW5zdGFuY2VfaWQiOiJydW50aW1lLWZpeHR1cmUiLCJlbnZpcm9ubWVudF9maW5nZXJwcmludCI6ImVudmlyb25tZW50LWZpeHR1cmUifSwiaW5mb3JtYXRpb25fcG9saWN5Ijp7ImlkIjoiZmFpci1wbGF5ZXIiLCJzY29wZSI6ImVudGVyZWQtbmF0aXZlLXBhZ2UiLCJpbmNsdWRlc19oaWRkZW5faW5mb3JtYXRpb24iOmZhbHNlLCJ1bmtub3duX2ZpZWxkX2JlaGF2aW9yIjoiZXhwbGljaXQifSwib3duZXJfb2NjdXJyZW5jZSI6eyJvd25lcl9pZCI6Im93bmVyLWZpeHR1cmUiLCJvY2N1cnJlbmNlX2lkIjoib2NjdXJyZW5jZS1maXh0dXJlIiwiYmluZGluZ19yZXZpc2lvbiI6ImJpbmRpbmctZml4dHVyZSIsImZvY3VzX3JlZmVyZW50X2lkIjpudWxsLCJmb2N1c19vY2N1cnJlbmNlIjpudWxsfSwiY2F0YWxvZyI6eyJjYXRhbG9nX3JlZiI6ImNhdGFsb2ctZml4dHVyZSIsInNuYXBzaG90X2lkIjoic25hcHNob3QtZml4dHVyZSIsInN0YXR1cyI6ImNvbXBsZXRlIiwidG90YWxfY291bnQiOjAsImRpZ2VzdCI6Ijc3YjA0NzhjNzZmNzI0N2UzOTE2YmVlMzYyMGQ2YjQ5ZDY5NGRjMDExMzljNTQ4ODA5NDVmN2U0MDc4ZGFjMTEiLCJvcmRlcmluZ19zZW1hbnRpY3MiOiJuYXRpdmVfcHVibGljX29yZGVyIiwiYWNjZXNzX21ldGhvZHMiOlsiY2F0YWxvZyIsInJlc29sdmUiXSwic2NvcGVfaWQiOiJzY29wZS1maXh0dXJlIiwic3RyZWFtX2dlbmVyYXRpb24iOiJzdHJlYW0tZml4dHVyZSJ9fQ==",
+      "next_cursor": null,
+      "complete": true,
+      "schema": "sts2.player-environment/native-logical-read-1"
+    },
+    "catalog_page": {
+      "schema": "sts2.player-environment/native-logical-catalog-page-1",
+      "status": "complete",
+      "catalog_ref": "catalog-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "stream_generation": "stream-fixture",
+      "total_count": 0,
+      "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+      "filtered_count": 0,
+      "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+      "actions": [],
+      "next_cursor": null,
+      "minimum_required_bytes": null
+    },
+    "resolve": {
+      "status": "unique",
+      "action": {
+        "action_id": "action-a",
+        "kind": "native_input",
+        "verb": "选择",
+        "label": "空 / 🐉 / café / é",
+        "subject_referent_id": null,
+        "arguments": [],
+        "effect_domain": "native"
+      },
+      "schema": "sts2.player-environment/native-logical-resolve-1"
+    },
+    "attach_request": {
+      "client_session_id": "client-fixture",
+      "eager_scope": [
+        "persistent",
+        "interaction",
+        "referents",
+        "catalog"
+      ],
+      "required_seams": [
+        {
+          "source_seam": "owner",
+          "version": "1",
+          "coverage": "complete_at_seam"
+        }
+      ],
+      "delivery_mode": "full_reference"
+    },
+    "attach": {
+      "status": "attached",
+      "subscription": {
+        "subscription_id": "subscription-fixture",
+        "scope_id": "scope-fixture",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "coverage": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "delivery_mode": "full_reference",
+        "stream_generation": "stream-fixture",
+        "starting_cursor": "opaque-event-fixture-start",
+        "expires_at": "1970-01-01T00:02:00+00:00"
+      },
+      "schema": "sts2.player-environment/native-logical-attach-1"
+    },
+    "event": {
+      "schema": "sts2.player-environment/native-logical-event-1",
+      "cursor": "opaque-event-fixture-next",
+      "stream_generation": "stream-fixture",
+      "publication_index": "9007199254740993",
+      "kind": "observation",
+      "source_seam": "owner",
+      "source_phase": "enter",
+      "source_index": "18446744073709551614",
+      "scope_id": "scope-fixture",
+      "capture_ref": "capture-fixture",
+      "missing_reason": null,
+      "coverage": "complete_at_seam",
+      "payload_reference": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1519,
+        "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+        "read_cursor": "opaque-read-fixture"
+      }
+    },
+    "event_batch": {
+      "events": [
+        {
+          "event": {
+            "schema": "sts2.player-environment/native-logical-event-1",
+            "cursor": "opaque-event-fixture-next",
+            "stream_generation": "stream-fixture",
+            "publication_index": "9007199254740993",
+            "kind": "observation",
+            "source_seam": "owner",
+            "source_phase": "enter",
+            "source_index": "18446744073709551614",
+            "scope_id": "scope-fixture",
+            "capture_ref": "capture-fixture",
+            "missing_reason": null,
+            "coverage": "complete_at_seam",
+            "payload_reference": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-fixture",
+              "snapshot_id": "snapshot-fixture",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "runtime-fixture",
+                "environment_fingerprint": "environment-fixture"
+              },
+              "stream_generation": "stream-fixture",
+              "scope_id": "scope-fixture",
+              "capture_ordinal": "1",
+              "captured_at": "1970-01-01T00:00:00+00:00",
+              "expires_at": "1970-01-01T00:02:00+00:00",
+              "byte_count": 1519,
+              "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+              "read_cursor": "opaque-read-fixture"
+            }
+          },
+          "availability": "available"
+        }
+      ],
+      "next_cursor": "opaque-event-fixture-next",
+      "high_watermark": "opaque-event-fixture-next",
+      "retained_start_cursor": "opaque-event-fixture-start",
+      "gap": null,
+      "schema": "sts2.player-environment/native-logical-events-1"
+    },
+    "await": {
+      "status": "event",
+      "event": {
+        "event": {
+          "schema": "sts2.player-environment/native-logical-event-1",
+          "cursor": "opaque-event-fixture-next",
+          "stream_generation": "stream-fixture",
+          "publication_index": "9007199254740993",
+          "kind": "observation",
+          "source_seam": "owner",
+          "source_phase": "enter",
+          "source_index": "18446744073709551614",
+          "scope_id": "scope-fixture",
+          "capture_ref": "capture-fixture",
+          "missing_reason": null,
+          "coverage": "complete_at_seam",
+          "payload_reference": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          }
+        },
+        "availability": "available"
+      },
+      "gap": null,
+      "reason": null,
+      "schema": "sts2.player-environment/native-logical-await-1"
+    },
+    "observation_context": {
+      "schema": "sts2.player-environment/native-logical-context-1",
+      "input_profile": "native-logical-v1",
+      "observation_ref": "snapshot-fixture",
+      "capture_ref": "capture-fixture",
+      "game_continuity_id": null,
+      "stream_generation": "stream-fixture",
+      "publication_cursor": null
+    },
+    "result": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-result-1",
+      "input_profile": "native-logical-v1",
+      "request_id": "request-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "action": {
+        "action_id": "action-a",
+        "kind": "native_input",
+        "verb": "选择",
+        "label": "空 / 🐉 / café / é",
+        "subject_referent_id": null,
+        "arguments": [],
+        "effect_domain": "native"
+      },
+      "delivery": "partially_delivered",
+      "execution": "unknown",
+      "effect": "not_observed",
+      "cancel": "too_late",
+      "reason": "confirmation_rejected_after_native_focus",
+      "retry": "never_automatic",
+      "observed_frame": null,
+      "attribution": null,
+      "stages": [
+        {
+          "stage": "focus",
+          "delivery": "delivered",
+          "evidence": "native_focus_observed"
+        },
+        {
+          "stage": "confirm",
+          "delivery": "rejected_before_input",
+          "evidence": "native_callback_declined"
+        }
+      ]
+    },
+    "capabilities": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-capabilities-1",
+      "input_profile": "native-logical-v1",
+      "host": {
+        "id": "host-fixture",
+        "name": "fixture",
+        "version": "fixture",
+        "runtime_instance_id": "runtime-fixture",
+        "host_kind": "fixture",
+        "implementation": {
+          "source_revision": null,
+          "module_version_id": null,
+          "artifact_sha256": null
+        }
+      },
+      "game": {
+        "version": null,
+        "commit": null,
+        "branch": null,
+        "main_assembly_hash": null,
+        "compatibility": {
+          "status": "fixture",
+          "observation_allowed": true,
+          "detail": "synthetic source conformance"
+        },
+        "modset": {
+          "status": "fixture",
+          "fingerprint": "fixture",
+          "scope": "fixture",
+          "loaded_mod_ids": [],
+          "detail": "synthetic source conformance"
+        }
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "supported_methods": [
+        "attach",
+        "current",
+        "read",
+        "catalog",
+        "resolve",
+        "events",
+        "await",
+        "cancel_wait",
+        "detach",
+        "release",
+        "renew",
+        "retain"
+      ],
+      "implemented_mechanisms": [
+        "finite_materialized_catalog",
+        "frozen_capture",
+        "scoped_publication",
+        "atomic_await",
+        "subscription_resource_renewal",
+        "lifetime_neutral_event_cursors",
+        "indexed_catalog_pages"
+      ],
+      "capture_coverage": [
+        {
+          "source_seam": "owner",
+          "version": "1",
+          "coverage": "complete_at_seam"
+        }
+      ],
+      "source_clock": {
+        "publication_index_encoding": "u64_decimal_string",
+        "source_index_encoding": "u64_decimal_string",
+        "source_position_meaning": "native_source_occurrence",
+        "publication_meaning": "contiguous_completed_projections_not_causal_commit_order"
+      },
+      "limits": {
+        "max_actions": 65536,
+        "max_capture_bytes": 67108864,
+        "max_retained_bytes": 536870912,
+        "max_events": 2048,
+        "retention_ms": 120000,
+        "max_read_bytes": 1048576,
+        "max_encoded_read_bytes": 2097152,
+        "max_page_bytes": 1048576,
+        "max_wait_ms": 30000,
+        "max_subscriptions": 64,
+        "max_client_subscriptions": 4,
+        "max_waiters": 128,
+        "max_client_waiters": 4,
+        "max_captures": 256,
+        "max_retention_handles": 1024,
+        "max_client_retention_handles": 64,
+        "encoding_deadline_ms": 2000,
+        "max_field_bytes": 65536,
+        "max_cursor_length": 1024,
+        "max_wait_ids_per_subscription": 65536,
+        "max_wait_id_metadata_bytes": 67108864,
+        "max_source_seams": 256,
+        "max_metadata_field_bytes": 128,
+        "max_in_flight_catalog_reads": 128
+      },
+      "control_policy": {
+        "recommended_renewal_ms": 1000
+      },
+      "non_claims": [
+        "synthetic_source_conformance_only",
+        "no_native_coverage_qualification"
+      ]
+    },
+    "current_request": {
+      "client_session_id": "client-fixture",
+      "eager_scope": [
+        "persistent",
+        "interaction",
+        "referents",
+        "catalog"
+      ],
+      "expected_snapshot_id": null
+    },
+    "current": {
+      "schema": "sts2.player-environment/native-logical-current-1",
+      "input_profile": "native-logical-v1",
+      "status": "captured",
+      "context": {
+        "schema": "sts2.player-environment/native-logical-context-1",
+        "input_profile": "native-logical-v1",
+        "observation_ref": "snapshot-fixture",
+        "capture_ref": "capture-fixture",
+        "game_continuity_id": null,
+        "stream_generation": "stream-fixture",
+        "publication_cursor": null
+      },
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1519,
+        "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "retention": null,
+      "reason": null
+    },
+    "current_retained": {
+      "schema": "sts2.player-environment/native-logical-current-1",
+      "input_profile": "native-logical-v1",
+      "status": "captured",
+      "context": {
+        "schema": "sts2.player-environment/native-logical-context-1",
+        "input_profile": "native-logical-v1",
+        "observation_ref": "snapshot-fixture",
+        "capture_ref": "capture-fixture",
+        "game_continuity_id": null,
+        "stream_generation": "stream-fixture",
+        "publication_cursor": null
+      },
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1519,
+        "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "retention": {
+        "retention_handle_id": "retention-fixture",
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "read_cursor": "opaque-fresh-retained-read-fixture",
+        "expires_at": "1970-01-01T00:03:00+00:00"
+      },
+      "reason": null
+    },
+    "current_failed": {
+      "schema": "sts2.player-environment/native-logical-current-1",
+      "input_profile": "native-logical-v1",
+      "status": "source_capture_incomplete",
+      "context": null,
+      "capture": null,
+      "retention": null,
+      "reason": "source_capture_incomplete"
+    },
+    "retain_request": {
+      "client_session_id": "client-fixture",
+      "capture_id": "capture-fixture"
+    },
+    "retain": {
+      "schema": "sts2.player-environment/native-logical-retain-1",
+      "input_profile": "native-logical-v1",
+      "status": "retained",
+      "retention": {
+        "retention_handle_id": "retention-fixture",
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "read_cursor": "opaque-fresh-retained-read-fixture",
+        "expires_at": "1970-01-01T00:03:00+00:00"
+      },
+      "reason": null
+    },
+    "retain_expired": {
+      "schema": "sts2.player-environment/native-logical-retain-1",
+      "input_profile": "native-logical-v1",
+      "status": "payload_expired",
+      "retention": null,
+      "reason": "payload_expired"
+    },
+    "release_request": {
+      "client_session_id": "client-fixture",
+      "retention_handle_id": "retention-fixture"
+    },
+    "release": {
+      "schema": "sts2.player-environment/native-logical-release-1",
+      "input_profile": "native-logical-v1",
+      "status": "released",
+      "retention_handle_id": "retention-fixture",
+      "released": true,
+      "reason": null
+    },
+    "renew_request": {
+      "client_session_id": "client-fixture",
+      "subscription_id": "subscription-fixture",
+      "scope_id": "scope-fixture",
+      "after_cursor": "opaque-event-fixture-next"
+    },
+    "renew": {
+      "schema": "sts2.player-environment/native-logical-renew-1",
+      "input_profile": "native-logical-v1",
+      "status": "renewed",
+      "subscription": {
+        "subscription_id": "subscription-fixture",
+        "scope_id": "scope-fixture",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "coverage": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "delivery_mode": "full_reference",
+        "stream_generation": "stream-fixture",
+        "starting_cursor": "opaque-event-fixture-start",
+        "expires_at": "1970-01-01T00:04:00+00:00"
+      },
+      "next_cursor": "opaque-event-fixture-next",
+      "high_watermark": "opaque-event-fixture-next",
+      "retained_start_cursor": "opaque-event-fixture-start",
+      "gap": null,
+      "reason": null
+    },
+    "renew_expired": {
+      "schema": "sts2.player-environment/native-logical-renew-1",
+      "input_profile": "native-logical-v1",
+      "status": "subscription_expired",
+      "subscription": null,
+      "next_cursor": null,
+      "high_watermark": null,
+      "retained_start_cursor": null,
+      "gap": null,
+      "reason": "subscription_expired"
+    },
+    "cancel_wait_request": {
+      "client_session_id": "client-fixture",
+      "subscription_id": "subscription-fixture",
+      "wait_id": "0123456789abcdef0123456789abcdef"
+    },
+    "cancel_wait": {
+      "schema": "sts2.player-environment/native-logical-cancel-wait-1",
+      "input_profile": "native-logical-v1",
+      "status": "cancelled",
+      "subscription_id": "subscription-fixture",
+      "wait_id": "0123456789abcdef0123456789abcdef",
+      "cancelled": true,
+      "reason": null
+    },
+    "cancel_wait_not_pending": {
+      "schema": "sts2.player-environment/native-logical-cancel-wait-1",
+      "input_profile": "native-logical-v1",
+      "status": "not_pending",
+      "subscription_id": "subscription-fixture",
+      "wait_id": "0123456789abcdef0123456789abcdef",
+      "cancelled": false,
+      "reason": null
+    },
+    "detach_request": {
+      "client_session_id": "client-fixture",
+      "subscription_id": "subscription-fixture"
+    },
+    "detach": {
+      "schema": "sts2.player-environment/native-logical-detach-1",
+      "input_profile": "native-logical-v1",
+      "status": "detached",
+      "subscription_id": "subscription-fixture",
+      "detached": true,
+      "reason": null
+    },
+    "detach_absent": {
+      "schema": "sts2.player-environment/native-logical-detach-1",
+      "input_profile": "native-logical-v1",
+      "status": "detached",
+      "subscription_id": "subscription-fixture",
+      "detached": false,
+      "reason": null
+    },
+    "current_partial": {
+      "schema": "sts2.player-environment/native-logical-current-1",
+      "input_profile": "native-logical-v1",
+      "status": "partial",
+      "context": {
+        "schema": "sts2.player-environment/native-logical-context-1",
+        "input_profile": "native-logical-v1",
+        "observation_ref": "snapshot-fixture",
+        "capture_ref": "capture-partial-fixture",
+        "game_continuity_id": null,
+        "stream_generation": "stream-fixture",
+        "publication_cursor": null
+      },
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-partial-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-partial-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1369,
+        "sha256": "4723d3657f6eed94e34b2584ce02efa52be2c7eda94afabe1c5bc5b639f31d5b",
+        "read_cursor": "opaque-partial-read-fixture"
+      },
+      "retention": null,
+      "reason": "scope_omission"
+    },
+    "current_partial_observation": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-observation-1",
+      "input_profile": "native-logical-v1",
+      "snapshot_id": "snapshot-fixture",
+      "revision": 1,
+      "observed_at": "1970-01-01T00:00:00+00:00",
+      "status": "settling",
+      "persistent": null,
+      "interaction": {
+        "interaction_id": "interaction-fixture",
+        "kind": "selector",
+        "stage": "ready",
+        "prompt": null,
+        "content_schema": "public-surface-fixture",
+        "content": {
+          "surface": {
+            "kind": "selector",
+            "focus_referent_id": null
+          },
+          "context": {
+            "kind": "public-fixture"
+          }
+        },
+        "capabilities": []
+      },
+      "referents": [],
+      "completeness": {
+        "status": "partial",
+        "included": [
+          "interaction"
+        ],
+        "missing": [
+          "persistent",
+          "referents",
+          "catalog"
+        ],
+        "full_reference_complete": false
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "information_policy": {
+        "id": "fair-player",
+        "scope": "entered-native-page",
+        "includes_hidden_information": false,
+        "unknown_field_behavior": "explicit"
+      },
+      "owner_occurrence": {
+        "owner_id": "owner-fixture",
+        "occurrence_id": "occurrence-fixture",
+        "binding_revision": "binding-fixture",
+        "focus_referent_id": null,
+        "focus_occurrence": null
+      },
+      "catalog": {
+        "catalog_ref": "catalog-partial-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "status": "not_captured",
+        "total_count": null,
+        "digest": null,
+        "ordering_semantics": "native_public_order",
+        "access_methods": [],
+        "scope_id": "scope-partial-fixture",
+        "stream_generation": "stream-fixture"
+      }
+    },
+    "current_partial_read": {
+      "schema": "sts2.player-environment/native-logical-read-1",
+      "capture_id": "capture-partial-fixture",
+      "sha256": "4723d3657f6eed94e34b2584ce02efa52be2c7eda94afabe1c5bc5b639f31d5b",
+      "offset": 0,
+      "total_bytes": 1369,
+      "data_base64": "eyJwcm90b2NvbF92ZXJzaW9uIjoiMS4wLjAiLCJzY2hlbWEiOiJzdHMyLnBsYXllci1lbnZpcm9ubWVudC9uYXRpdmUtbG9naWNhbC1vYnNlcnZhdGlvbi0xIiwiaW5wdXRfcHJvZmlsZSI6Im5hdGl2ZS1sb2dpY2FsLXYxIiwic25hcHNob3RfaWQiOiJzbmFwc2hvdC1maXh0dXJlIiwicmV2aXNpb24iOjEsIm9ic2VydmVkX2F0IjoiMTk3MC0wMS0wMVQwMDowMDowMCswMDowMCIsInN0YXR1cyI6InNldHRsaW5nIiwicGVyc2lzdGVudCI6bnVsbCwiaW50ZXJhY3Rpb24iOnsiaW50ZXJhY3Rpb25faWQiOiJpbnRlcmFjdGlvbi1maXh0dXJlIiwia2luZCI6InNlbGVjdG9yIiwic3RhZ2UiOiJyZWFkeSIsInByb21wdCI6bnVsbCwiY29udGVudF9zY2hlbWEiOiJwdWJsaWMtc3VyZmFjZS1maXh0dXJlIiwiY29udGVudCI6eyJzdXJmYWNlIjp7ImtpbmQiOiJzZWxlY3RvciIsImZvY3VzX3JlZmVyZW50X2lkIjpudWxsfSwiY29udGV4dCI6eyJraW5kIjoicHVibGljLWZpeHR1cmUifX0sImNhcGFiaWxpdGllcyI6W119LCJyZWZlcmVudHMiOltdLCJjb21wbGV0ZW5lc3MiOnsic3RhdHVzIjoicGFydGlhbCIsImluY2x1ZGVkIjpbImludGVyYWN0aW9uIl0sIm1pc3NpbmciOlsicGVyc2lzdGVudCIsInJlZmVyZW50cyIsImNhdGFsb2ciXSwiZnVsbF9yZWZlcmVuY2VfY29tcGxldGUiOmZhbHNlfSwic2Vzc2lvbiI6eyJydW50aW1lX2luc3RhbmNlX2lkIjoicnVudGltZS1maXh0dXJlIiwiZW52aXJvbm1lbnRfZmluZ2VycHJpbnQiOiJlbnZpcm9ubWVudC1maXh0dXJlIn0sImluZm9ybWF0aW9uX3BvbGljeSI6eyJpZCI6ImZhaXItcGxheWVyIiwic2NvcGUiOiJlbnRlcmVkLW5hdGl2ZS1wYWdlIiwiaW5jbHVkZXNfaGlkZGVuX2luZm9ybWF0aW9uIjpmYWxzZSwidW5rbm93bl9maWVsZF9iZWhhdmlvciI6ImV4cGxpY2l0In0sIm93bmVyX29jY3VycmVuY2UiOnsib3duZXJfaWQiOiJvd25lci1maXh0dXJlIiwib2NjdXJyZW5jZV9pZCI6Im9jY3VycmVuY2UtZml4dHVyZSIsImJpbmRpbmdfcmV2aXNpb24iOiJiaW5kaW5nLWZpeHR1cmUiLCJmb2N1c19yZWZlcmVudF9pZCI6bnVsbCwiZm9jdXNfb2NjdXJyZW5jZSI6bnVsbH0sImNhdGFsb2ciOnsiY2F0YWxvZ19yZWYiOiJjYXRhbG9nLXBhcnRpYWwtZml4dHVyZSIsInNuYXBzaG90X2lkIjoic25hcHNob3QtZml4dHVyZSIsInN0YXR1cyI6Im5vdF9jYXB0dXJlZCIsInRvdGFsX2NvdW50IjpudWxsLCJkaWdlc3QiOm51bGwsIm9yZGVyaW5nX3NlbWFudGljcyI6Im5hdGl2ZV9wdWJsaWNfb3JkZXIiLCJhY2Nlc3NfbWV0aG9kcyI6W10sInNjb3BlX2lkIjoic2NvcGUtcGFydGlhbC1maXh0dXJlIiwic3RyZWFtX2dlbmVyYXRpb24iOiJzdHJlYW0tZml4dHVyZSJ9fQ==",
+      "next_cursor": null,
+      "complete": true
+    }
+  },
+  "wire_fixture_note": "Fixed opaque fixture tokens demonstrate shape only; HMAC cursor authorization is tested independently in C#.",
+  "invalid_wire_cases": [
+    {
+      "name": "null_catalog_action",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          null
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    },
+    {
+      "name": "null_public_referent",
+      "type": "observation",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          null
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "null_completeness_scope_field",
+      "type": "observation",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            null
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "null_supported_method",
+      "type": "capabilities",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-capabilities-1",
+        "input_profile": "native-logical-v1",
+        "host": {
+          "id": "host-fixture",
+          "name": "fixture",
+          "version": "fixture",
+          "runtime_instance_id": "runtime-fixture",
+          "host_kind": "fixture",
+          "implementation": {
+            "source_revision": null,
+            "module_version_id": null,
+            "artifact_sha256": null
+          }
+        },
+        "game": {
+          "version": null,
+          "commit": null,
+          "branch": null,
+          "main_assembly_hash": null,
+          "compatibility": {
+            "status": "fixture",
+            "observation_allowed": true,
+            "detail": "synthetic source conformance"
+          },
+          "modset": {
+            "status": "fixture",
+            "fingerprint": "fixture",
+            "scope": "fixture",
+            "loaded_mod_ids": [],
+            "detail": "synthetic source conformance"
+          }
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "supported_methods": [
+          null
+        ],
+        "implemented_mechanisms": [
+          "finite_materialized_catalog",
+          "frozen_capture",
+          "scoped_publication",
+          "atomic_await"
+        ],
+        "capture_coverage": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "source_clock": {
+          "publication_index_encoding": "u64_decimal_string",
+          "source_index_encoding": "u64_decimal_string",
+          "source_position_meaning": "native_source_occurrence",
+          "publication_meaning": "contiguous_completed_projections_not_causal_commit_order"
+        },
+        "limits": {
+          "max_actions": 65536,
+          "max_capture_bytes": 67108864,
+          "max_retained_bytes": 536870912,
+          "max_events": 2048,
+          "retention_ms": 120000,
+          "max_read_bytes": 1048576,
+          "max_encoded_read_bytes": 2097152,
+          "max_page_bytes": 1048576,
+          "max_wait_ms": 30000,
+          "max_subscriptions": 64,
+          "max_client_subscriptions": 4,
+          "max_waiters": 128,
+          "max_client_waiters": 4,
+          "max_captures": 256,
+          "max_retention_handles": 1024,
+          "max_client_retention_handles": 64,
+          "encoding_deadline_ms": 2000,
+          "max_field_bytes": 65536,
+          "max_cursor_length": 1024,
+          "max_wait_ids_per_subscription": 65536,
+          "max_wait_id_metadata_bytes": 67108864,
+          "max_source_seams": 256,
+          "max_metadata_field_bytes": 128,
+          "max_in_flight_catalog_reads": 128
+        },
+        "control_policy": {
+          "recommended_renewal_ms": 1000
+        },
+        "non_claims": [
+          "synthetic_source_conformance_only",
+          "no_native_coverage_qualification"
+        ]
+      }
+    },
+    {
+      "name": "null_event_projection",
+      "type": "event_batch",
+      "wire": {
+        "events": [
+          null
+        ],
+        "next_cursor": "opaque-event-fixture-next",
+        "high_watermark": "opaque-event-fixture-next",
+        "retained_start_cursor": "opaque-event-fixture-start",
+        "gap": null,
+        "schema": "sts2.player-environment/native-logical-events-1"
+      }
+    },
+    {
+      "name": "null_required_seam",
+      "type": "attach_request",
+      "wire": {
+        "client_session_id": "client-fixture",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "required_seams": [
+          null
+        ],
+        "delivery_mode": "full_reference"
+      }
+    },
+    {
+      "name": "null_ordered_argument",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          {
+            "action_id": "action-a",
+            "kind": "native_input",
+            "verb": "选择",
+            "label": "空 / 🐉 / café / é",
+            "subject_referent_id": null,
+            "arguments": [
+              null
+            ],
+            "effect_domain": "native"
+          }
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    },
+    {
+      "name": "null_required_argument_role",
+      "type": "catalog_page",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-catalog-page-1",
+        "status": "complete",
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "stream_generation": "stream-fixture",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "filtered_count": 0,
+        "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "actions": [
+          {
+            "action_id": "action-a",
+            "kind": "native_input",
+            "verb": "选择",
+            "label": "空 / 🐉 / café / é",
+            "subject_referent_id": null,
+            "arguments": [
+              {
+                "role": null,
+                "referent_id": "public"
+              }
+            ],
+            "effect_domain": "native"
+          }
+        ],
+        "next_cursor": null,
+        "minimum_required_bytes": null
+      }
+    },
+    {
+      "name": "captured_current_missing_context",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": null,
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": null,
+        "reason": null
+      }
+    },
+    {
+      "name": "captured_current_cross_snapshot",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "other-snapshot",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": null,
+        "reason": null
+      }
+    },
+    {
+      "name": "captured_current_cross_capture",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "other-capture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": null,
+        "reason": null
+      }
+    },
+    {
+      "name": "captured_current_cross_generation",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "other-stream",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": null,
+        "reason": null
+      }
+    },
+    {
+      "name": "captured_current_reason_is_failure",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": null,
+        "reason": "source_capture_incomplete"
+      }
+    },
+    {
+      "name": "retained_current_cross_capture",
+      "type": "current_retained",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "other-capture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": null
+      }
+    },
+    {
+      "name": "retained_reply_missing_reference",
+      "type": "retain",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-retain-1",
+        "input_profile": "native-logical-v1",
+        "status": "retained",
+        "retention": null,
+        "reason": null
+      }
+    },
+    {
+      "name": "expired_renewal_fabricates_subscription",
+      "type": "renew_expired",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-renew-1",
+        "input_profile": "native-logical-v1",
+        "status": "subscription_expired",
+        "subscription": {
+          "subscription_id": "subscription-fixture",
+          "scope_id": "scope-fixture",
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "coverage": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference",
+          "stream_generation": "stream-fixture",
+          "starting_cursor": "opaque-event-fixture-start",
+          "expires_at": "1970-01-01T00:04:00+00:00"
+        },
+        "next_cursor": null,
+        "high_watermark": null,
+        "retained_start_cursor": null,
+        "gap": null,
+        "reason": "subscription_expired"
+      }
+    },
+    {
+      "name": "retained_current_cross_runtime",
+      "type": "current_retained",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "other-runtime",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": null
+      }
+    },
+    {
+      "name": "retained_current_rewrites_capture_time",
+      "type": "current_retained",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "captured",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:01+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": null
+      }
+    },
+    {
+      "name": "cancel_nonpending_cannot_claim_cancelled",
+      "type": "cancel_wait",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-cancel-wait-1",
+        "input_profile": "native-logical-v1",
+        "status": "not_pending",
+        "subscription_id": "subscription-fixture",
+        "wait_id": "0123456789abcdef0123456789abcdef",
+        "cancelled": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "native_result_never_automatic_retry",
+      "type": "result",
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-result-1",
+        "input_profile": "native-logical-v1",
+        "request_id": "request-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "action": {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        },
+        "delivery": "partially_delivered",
+        "execution": "unknown",
+        "effect": "not_observed",
+        "cancel": "too_late",
+        "reason": "confirmation_rejected_after_native_focus",
+        "retry": "automatic",
+        "observed_frame": null,
+        "attribution": null,
+        "stages": [
+          {
+            "stage": "focus",
+            "delivery": "delivered",
+            "evidence": "native_focus_observed"
+          },
+          {
+            "stage": "confirm",
+            "delivery": "rejected_before_input",
+            "evidence": "native_callback_declined"
+          }
+        ]
+      }
+    },
+    {
+      "name": "current_stale_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "stale",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "stale"
+      }
+    },
+    {
+      "name": "current_capacity_exceeded_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "capacity_exceeded",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "capacity_exceeded"
+      }
+    },
+    {
+      "name": "current_source_capture_incomplete_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "source_capture_incomplete",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "source_capture_incomplete"
+      }
+    },
+    {
+      "name": "current_failed_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "failed",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "failed"
+      }
+    },
+    {
+      "name": "current_partial_requires_real_capture_and_omission_reason",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "partial",
+        "context": null,
+        "capture": null,
+        "retention": null,
+        "reason": null
+      }
+    }
+  ],
+  "source_completeness_cases": [
+    {
+      "name": "partial_native_list",
+      "certificate": {
+        "status": "partial",
+        "missing": [
+          "native_list_items"
+        ]
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "missing_public_field_despite_complete_status",
+      "certificate": {
+        "status": "complete",
+        "missing": [
+          "interaction.preview"
+        ]
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "failed_source",
+      "certificate": {
+        "status": "failed",
+        "missing": []
+      },
+      "observation_status": "settling",
+      "accepted": false
+    },
+    {
+      "name": "complete_empty_settling",
+      "certificate": {
+        "status": "complete",
+        "missing": []
+      },
+      "observation_status": "settling",
+      "accepted": true
+    },
+    {
+      "name": "complete_empty_terminal",
+      "certificate": {
+        "status": "complete",
+        "missing": []
+      },
+      "observation_status": "terminal",
+      "accepted": true
+    }
+  ]
+}

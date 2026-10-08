@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../../contracts/native-logical-publication-profile-v1.json"
+                      LogicalName="STS2Connector.NativeLogicalPublicationProfileV1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
+    <Compile Include="*.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/NativeLogical/*.cs" Link="Core/%(Filename)%(Extension)" />
+    <None Include="../../../contracts/fixtures/native-logical-v1.json" Link="native-logical-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

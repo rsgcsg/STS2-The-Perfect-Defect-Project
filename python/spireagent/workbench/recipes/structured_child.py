@@ -19,6 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
 from spireagent.storage.local import LocalBlobStore
@@ -27,6 +28,11 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.instance_lock import instance_lock
+from spireagent.workbench.trusted_recipes import (
+    STRUCTURED_SCOPED_RECIPE,
+    structured_recipe_run_schema,
+    structured_recipe_scope,
+)
 
 EVENT_SCHEMA = "spireagent/structured-child-event-v1"
 MAX_JOURNAL_BYTES = 8 * 1024 * 1024
@@ -200,7 +206,12 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
                                 args.remaining_seconds, store)
     operation = fence.operation()
     fence.channel = channel
-    channel.emit("started")
+    scope = structured_recipe_scope(operation["recipe"])
+    scoped = operation["recipe"] == STRUCTURED_SCOPED_RECIPE
+    current_producer = source_identity(ROOT)
+    if scoped and current_producer != Producer.decode(operation["attempt_producer"]):
+        raise BoundaryError("structured_child", "current_attempt_producer_mismatch")
+    channel.emit("started", **({"attempt_producer": current_producer.to_dict()} if scoped else {}))
     for name in ("TMPDIR", "TMP", "TEMP"):
         os.environ[name] = str(args.scratch_dir)
     tempfile.tempdir = str(args.scratch_dir)
@@ -232,16 +243,19 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
         if any(run.split != "train" for run in dataset.runs):
             raise BoundaryError("structured_child", "train_only_source_required")
         run = prepare_structured_workload(
-            fenced_store, dataset, source_identity(ROOT),
+            fenced_store, dataset, current_producer,
             StructuredTrainingConfig(**{key: item for key, item in
                                         operation["request"]["config"].items()
                                         if key != "checkpoint_every_boundaries"}),
-            operation_id=args.operation_id, source_id=source.artifact_id)
+            operation_id=args.operation_id, source_id=source.artifact_id, code_scope=scope)
         input_id = run.parent("training_input")
         channel.emit("prepared", run_id=run.artifact_id, input_id=input_id)
         fence.wait_for_parent_run(run.artifact_id, input_id)
     else:
         run = store.get_manifest(operation["run_id"])
+    if (run.parameters.value().get("schema")
+            != structured_recipe_run_schema(operation["recipe"])):
+        raise BoundaryError("structured_child", "recipe_run_scope_mismatch")
     request = StructuredWorkloadRequest(
         run.artifact_id, run.parent("training_input"), args.operation_id, args.attempt_id,
         mode=operation["mode"],
@@ -251,7 +265,9 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     reporter = ChildReporter(ObjectStoreRunReporter(fenced_store, FencedSlots(store.blobs, fence)),
                              fence, channel)
     result = execute_structured_workload(fenced_store, reporter, request, run.producer,
-                                        authority=fence, control=fence)
+                                        authority=fence, control=fence,
+                                        **({"attempt_producer": current_producer}
+                                           if scoped else {}))
     channel.emit("terminal", **asdict(result))
 
 

@@ -7,6 +7,8 @@ using Xunit;
 
 namespace STS2Connector;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.NativeLogicalCapture;
+
 public sealed class NativeLogicalCaptureTests
 {
     [Theory]

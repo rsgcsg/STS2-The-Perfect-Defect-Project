@@ -703,6 +703,27 @@ def test_downloaded_fullrun_model_is_not_treated_as_a_loadable_policy(service):
     assert service.process is None
 
 
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v999"])
+def test_structured_catalog_requires_explicit_export_and_registration_for_closed_versions(
+    service, version
+):
+    model = Manifest(
+        "model", Producer("test/repository", "a" * 40, "b" * 64),
+        parameters=FrozenObject.of({"schema": "stpd/structured-m2-model-" + version}),
+    )
+    directory = service.config.state_dir / "downloads" / model.artifact_id
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(model.to_bytes())
+    (directory / "download.json").write_text("{}")
+    result = service.catalog()["downloaded_models"][0]
+    expected = "unsupported" if version == "v999" else "export_and_registration_required"
+    assert result["support_status"] == expected
+    assert result["loaded"] is False
+    with pytest.raises(BoundaryError, match="unregistered_policy"):
+        service.start(model.artifact_id)
+    assert service.process is None
+
+
 def test_prepare_preserves_verified_download_receipt_and_never_starts_runtime(service):
     receipt = {
         "schema": "stpd/result-download-v1",

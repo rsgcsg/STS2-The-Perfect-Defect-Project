@@ -1,0 +1,3342 @@
+{
+  "schema": "sts2.policy-runtime/agent-session-conformance-1",
+  "status": "candidate_before_production",
+  "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+  "base_revision": "1597141bf2d829c8b24eebb83a5177398101cf39",
+  "native_dependency": {
+    "status": "uncommitted_candidate_requires_root_acceptance",
+    "contract": "components/connector/docs/NATIVE_LOGICAL_PROFILE.md",
+    "fixture": "components/connector/contracts/fixtures/native-logical-v1.json",
+    "bootstrap": "AttachWithInitialReservation"
+  },
+  "fixture_scope": "Synthetic source/contract examples, not complete transcripts. Test drivers establish pending Consume/Next calls and synthesize expected Runtime consume_ack between valid reports and directives. Named setup/event steps are harness instructions, never child wire. Every case starts a fresh isolated fixture session unless setup says otherwise.",
+  "manifest": {
+    "schema": "sts2.policy-runtime/agent-manifest-1",
+    "manifest_id": "fixture-agent",
+    "agent": {
+      "id": "fixture",
+      "version": "1",
+      "provider": "fixture",
+      "architecture": "fixture-reference"
+    },
+    "adapter": {
+      "id": "fixture-agent-adapter",
+      "version": "1",
+      "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+      "code_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "artifact": {
+      "id": "fixture-package",
+      "path": "fixture-agent.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "input": {
+      "profile": "native-logical-v1",
+      "input_spec": {
+        "id": "fixture-native-observation-1",
+        "version": "1.0.0",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "projection": {
+        "id": "fixture-public-native",
+        "version": "1"
+      },
+      "state_format_version": "fixture-state-1",
+      "history_mode": "full_reference",
+      "gap_policy": "handoff",
+      "attachment": {
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "required_seams": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "delivery_mode": "full_reference"
+      },
+      "consumption_mode": "once_per_occurrence",
+      "state_recovery": {
+        "mode": "opaque",
+        "max_state_bytes": 16777216,
+        "model_bindings": [
+          {
+            "model_id": "fixture-model",
+            "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    },
+    "requirements": {
+      "connector_protocol_version": "1.0.0",
+      "environment": {
+        "host_kind": "test",
+        "connector_version": "fixture",
+        "connector_source_revision": "dddddddddddddddddddddddddddddddddddddddd",
+        "connector_artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "connector_module_version_id": "fixture-mvid",
+        "modset_status": "exact",
+        "modset_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "loaded_mod_ids": [
+          "fixture-mod"
+        ]
+      },
+      "required_methods": [
+        "capabilities",
+        "attach",
+        "current",
+        "read",
+        "catalog",
+        "resolve",
+        "events",
+        "await",
+        "cancel_wait",
+        "detach",
+        "submit",
+        "result"
+      ]
+    },
+    "support": {
+      "game_versions": [
+        "fixture-game"
+      ],
+      "game_commits": [
+        "fixture-commit"
+      ],
+      "interaction_kinds": [
+        "combat",
+        "card_selector",
+        "summary"
+      ],
+      "action_verbs": [
+        "end_turn",
+        "select",
+        "confirm",
+        "return"
+      ]
+    },
+    "limits": {
+      "max_message_bytes": 100663296,
+      "max_acquisitions": 256,
+      "max_pending_queries": 8,
+      "max_queries_per_turn": 64,
+      "max_query_bytes_per_turn": 134217728,
+      "max_capture_bytes": 67108864,
+      "max_catalog_actions": 65536,
+      "max_cancelled_ids": 256,
+      "agent_timeout_ms": 30000,
+      "max_retained_acquisition_bytes": 268435456
+    },
+    "claims": {
+      "catalog_filtered": false,
+      "creates_action_authority": false,
+      "creates_native_operands": false,
+      "human_origin": false,
+      "causal_successor": false
+    }
+  },
+  "ready": {
+    "schema": "sts2.policy-runtime/agent-session-1",
+    "message_type": "ready",
+    "adapter": {
+      "id": "fixture-agent-adapter",
+      "version": "1",
+      "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+      "code_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "acquisitions": {
+    "empty": {
+      "acquisition_id": "acquisition-empty1",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-empty1",
+        "snapshot_id": "snapshot-empty",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "1",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1410,
+        "sha256": "026cba8089979fbfa7c65da754869957b3346f6cf1b159ee24b5ee7020488c73",
+        "read_cursor": "read-empty1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-empty",
+        "revision": 1,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "settling",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-empty",
+          "binding_revision": "1",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-empty1",
+          "snapshot_id": "snapshot-empty",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [],
+      "publication_index": "11"
+    },
+    "A": {
+      "acquisition_id": "acquisition-A1",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-A1",
+        "snapshot_id": "snapshot-A1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "2",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1400,
+        "sha256": "76af2937e6d41f60ff43e4d09765b51c7f947a90fcf7374434e7602b12326870",
+        "read_cursor": "read-A1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-A1",
+        "revision": 2,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-A1",
+          "binding_revision": "2",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-A1",
+          "snapshot_id": "snapshot-A1",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": "12"
+    },
+    "A_duplicate": {
+      "acquisition_id": "acquisition-A2",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-A2",
+        "snapshot_id": "snapshot-A1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "3",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1400,
+        "sha256": "e6c62a548f618716a9c7572489ad4c6053b1c6d452fb1c67cc8ad8255ef6becf",
+        "read_cursor": "read-A2"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-A1",
+        "revision": 2,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-A1",
+          "binding_revision": "2",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-A2",
+          "snapshot_id": "snapshot-A1",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": null
+    },
+    "B": {
+      "acquisition_id": "acquisition-B1",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-B1",
+        "snapshot_id": "snapshot-B1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "4",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1400,
+        "sha256": "5543e5c272c1d788650c5f6c8ff76d471f3dac8067499ca81a6a004fb7b2b518",
+        "read_cursor": "read-B1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-B1",
+        "revision": 3,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-B",
+          "occurrence_id": "occurrence-B1",
+          "binding_revision": "3",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-B1",
+          "snapshot_id": "snapshot-B1",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "98aa9713e7f2e6ab7576057f35a5c64d654ab02c228c250e63e64bbe113784a0",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-b",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": "13"
+    },
+    "A_return": {
+      "acquisition_id": "acquisition-A3",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-A3",
+        "snapshot_id": "snapshot-A3",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "5",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1400,
+        "sha256": "4c95cfedfef12480e1046587dbc501a808d839d1a5d2abd4e6c1a94169a04e06",
+        "read_cursor": "read-A3"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-A3",
+        "revision": 4,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-A3",
+          "binding_revision": "4",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-A3",
+          "snapshot_id": "snapshot-A3",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "88fd199063ef6393b9a99f9b5f5066173609d3fbb1e8981f8ad0de19ccc345ea",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-a3",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": "14"
+    },
+    "same_features_new_focus": {
+      "acquisition_id": "acquisition-A4",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-A4",
+        "snapshot_id": "snapshot-A4",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-full",
+        "capture_ordinal": "6",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1405,
+        "sha256": "a983884d678a4eb10db3c9f2e470a2289ed124f68dffed1b9dae109127744301",
+        "read_cursor": "read-A4"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-A4",
+        "revision": 5,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-A3",
+          "binding_revision": "5",
+          "focus_referent_id": null,
+          "focus_occurrence": "focus-2"
+        },
+        "catalog": {
+          "catalog_ref": "catalog-A4",
+          "snapshot_id": "snapshot-A4",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "39c6afde974c3d66cd4bc63546e2a4bcfcbfef629b757204d8f454753d418764",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-full",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-a4",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": "15"
+    },
+    "query_current": {
+      "acquisition_id": "acquisition-Q1",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-Q1",
+        "snapshot_id": "snapshot-Q1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "scope-query",
+        "capture_ordinal": "7",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1401,
+        "sha256": "82d0eeea2639356c13d1d4d4ee50b4da8f2051e94e9689be9d7dce10cf8fe310",
+        "read_cursor": "read-Q1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-Q1",
+        "revision": 6,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-Q1",
+          "binding_revision": "6",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-Q1",
+          "snapshot_id": "snapshot-Q1",
+          "status": "complete",
+          "total_count": 1,
+          "digest": "c2451a90aeeca5c2b7a5ed354f315cd0fd74f1279f887ed135698312fdd9b86e",
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-query",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": [
+        {
+          "action_id": "action-q",
+          "kind": "native_input",
+          "verb": "end_turn",
+          "label": "End turn",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ],
+      "publication_index": null
+    },
+    "incremental_persistent": {
+      "acquisition_id": "acquisition-incremental_persistent",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-incremental_persistent",
+        "snapshot_id": "snapshot-Q1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "random-scope-incremental_persistent",
+        "capture_ordinal": "7",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1176,
+        "sha256": "0c517327a47bd6d224b00f37e3d60fac1995289e589bd94c0303199a2109321a",
+        "read_cursor": "read-Q1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-Q1",
+        "revision": 6,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": null,
+        "referents": [],
+        "completeness": {
+          "status": "partial",
+          "included": [
+            "persistent"
+          ],
+          "missing": [
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "full_reference_complete": false
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-Q1",
+          "binding_revision": "6",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-incremental_persistent",
+          "snapshot_id": "snapshot-Q1",
+          "status": "not_requested",
+          "total_count": null,
+          "digest": null,
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "random-scope-incremental_persistent",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": null,
+      "publication_index": null
+    },
+    "incremental_expanded": {
+      "acquisition_id": "acquisition-incremental_expanded",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-incremental_expanded",
+        "snapshot_id": "snapshot-Q1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "random-scope-incremental_expanded",
+        "capture_ordinal": "7",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1386,
+        "sha256": "7e7cff192d3ea6f91080101c01f3128ecb69f1609b03e2202646724bd84ca363",
+        "read_cursor": "read-Q1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-Q1",
+        "revision": 6,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "partial",
+          "included": [
+            "persistent",
+            "interaction"
+          ],
+          "missing": [
+            "referents",
+            "catalog"
+          ],
+          "full_reference_complete": false
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-Q1",
+          "binding_revision": "6",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-incremental_expanded",
+          "snapshot_id": "snapshot-Q1",
+          "status": "not_requested",
+          "total_count": null,
+          "digest": null,
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "random-scope-incremental_expanded",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": null,
+      "publication_index": null
+    },
+    "incremental_expanded_duplicate": {
+      "acquisition_id": "acquisition-incremental_expanded_duplicate",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-incremental_expanded_duplicate",
+        "snapshot_id": "snapshot-Q1",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "stream_generation": "generation-1",
+        "scope_id": "random-scope-incremental_expanded_duplicate",
+        "capture_ordinal": "7",
+        "captured_at": "2026-10-08T00:00:00Z",
+        "expires_at": "2026-10-08T00:02:00Z",
+        "byte_count": 1406,
+        "sha256": "7f2e6562cd7eb1e82d2b4e273195fa86cb12a0366ec91e666ad0f59de5449e8b",
+        "read_cursor": "read-Q1"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-Q1",
+        "revision": 6,
+        "observed_at": "2026-10-08T00:00:00Z",
+        "status": "interactive",
+        "persistent": {
+          "content_schema": "fixture-persistent-1",
+          "content": {
+            "hp": 12
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "combat",
+          "stage": "root",
+          "prompt": null,
+          "content_schema": "fixture-interaction-1",
+          "content": {
+            "surface": {
+              "public_text": "same public features"
+            },
+            "context": {}
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "partial",
+          "included": [
+            "persistent",
+            "interaction"
+          ],
+          "missing": [
+            "referents",
+            "catalog"
+          ],
+          "full_reference_complete": false
+        },
+        "session": {
+          "runtime_instance_id": "fixture-runtime",
+          "environment_fingerprint": "fixture-environment"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "current-public",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-A",
+          "occurrence_id": "occurrence-Q1",
+          "binding_revision": "6",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-incremental_expanded_duplicate",
+          "snapshot_id": "snapshot-Q1",
+          "status": "not_requested",
+          "total_count": null,
+          "digest": null,
+          "ordering_semantics": "public-native-order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "random-scope-incremental_expanded_duplicate",
+          "stream_generation": "generation-1"
+        }
+      },
+      "catalog": null,
+      "publication_index": null
+    },
+    "core_null_persistent": {
+      "acquisition_id": "acquisition-core-null-persistent",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1428,
+        "sha256": "6de6b1fc4ad8cf32e67cf11e4bcfaf3fceb4afb6fb7bd7e970b9060ff2848157",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "observation": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "settling",
+        "persistent": null,
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      },
+      "catalog": [],
+      "publication_index": "1"
+    }
+  },
+  "cases": [
+    {
+      "name": "empty_catalog_observation_consumes_without_action",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "input": {
+            "acquisition_id": "acquisition-empty1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-empty",
+              "revision": 1,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "settling",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-empty",
+                "binding_revision": "1",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-empty1",
+                "snapshot_id": "snapshot-empty",
+                "status": "complete",
+                "total_count": 0,
+                "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": []
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-empty1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "directive": {
+              "type": "await",
+              "after_cursor": "cursor-11",
+              "condition": "observation",
+              "timeout_ms": 1000
+            }
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "advances": 1,
+        "score_calls": 0,
+        "controller_acquires": 0,
+        "submissions": 0
+      }
+    },
+    {
+      "name": "new_capture_same_occurrence_does_not_advance",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "input": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-A1",
+              "revision": 2,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-A1",
+                "binding_revision": "2",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-A1",
+                "snapshot_id": "snapshot-A1",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-a",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-2",
+          "input": {
+            "acquisition_id": "acquisition-A2",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-A1",
+              "revision": 2,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-A1",
+                "binding_revision": "2",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-A2",
+                "snapshot_id": "snapshot-A1",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-a",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-2",
+          "completion": {
+            "acquisition_id": "acquisition-A2",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": false
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "advances": 1,
+        "state_version": 1
+      }
+    },
+    {
+      "name": "A_B_A_equal_features_distinct_occurrences",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "input": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-A1",
+              "revision": 2,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-A1",
+                "binding_revision": "2",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-A1",
+                "snapshot_id": "snapshot-A1",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-a",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-2",
+          "input": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-B1",
+              "revision": 3,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-B",
+                "occurrence_id": "occurrence-B1",
+                "binding_revision": "3",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-B1",
+                "snapshot_id": "snapshot-B1",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "98aa9713e7f2e6ab7576057f35a5c64d654ab02c228c250e63e64bbe113784a0",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-b",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-2",
+          "completion": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-3",
+          "input": {
+            "acquisition_id": "acquisition-A3",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-A3",
+              "revision": 4,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-A3",
+                "binding_revision": "4",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-A3",
+                "snapshot_id": "snapshot-A3",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "88fd199063ef6393b9a99f9b5f5066173609d3fbb1e8981f8ad0de19ccc345ea",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-a3",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-3",
+          "completion": {
+            "acquisition_id": "acquisition-A3",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-3",
+            "state_version": 3,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "advances": 3,
+        "opaque_occurrence_ids_enter_model_features": false
+      }
+    },
+    {
+      "name": "same_features_new_focus_advances",
+      "steps": [
+        {
+          "use_acknowledged": "A_return",
+          "consumption_id": "consumption-3",
+          "state_version": 3
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "input": {
+            "acquisition_id": "acquisition-A4",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-3",
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-A4",
+              "revision": 5,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-A",
+                "occurrence_id": "occurrence-A3",
+                "binding_revision": "5",
+                "focus_referent_id": null,
+                "focus_occurrence": "focus-2"
+              },
+              "catalog": {
+                "catalog_ref": "catalog-A4",
+                "snapshot_id": "snapshot-A4",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "39c6afde974c3d66cd4bc63546e2a4bcfcbfef629b757204d8f454753d418764",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-a4",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-A4",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-3",
+            "consumption_id": "consumption-4",
+            "state_version": 4,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "advances": 1
+      }
+    },
+    {
+      "name": "query_result_alone_is_not_consumption",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "query",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-query-1",
+          "input": {
+            "method": "current",
+            "arguments": {
+              "eager_scope": [
+                "persistent",
+                "interaction",
+                "referents",
+                "catalog"
+              ]
+            }
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "query_result",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-query-1",
+          "result": {
+            "method": "current",
+            "value": {
+              "capture": {
+                "schema": "sts2.player-environment/native-logical-capture-1",
+                "capture_id": "capture-Q1",
+                "snapshot_id": "snapshot-Q1",
+                "input_profile": "native-logical-v1",
+                "session": {
+                  "runtime_instance_id": "fixture-runtime",
+                  "environment_fingerprint": "fixture-environment"
+                },
+                "stream_generation": "generation-1",
+                "scope_id": "scope-query",
+                "capture_ordinal": "7",
+                "captured_at": "2026-10-08T00:00:00Z",
+                "expires_at": "2026-10-08T00:02:00Z",
+                "byte_count": 1401,
+                "sha256": "82d0eeea2639356c13d1d4d4ee50b4da8f2051e94e9689be9d7dce10cf8fe310",
+                "read_cursor": "read-Q1"
+              },
+              "observation": {
+                "protocol_version": "1.0.0",
+                "schema": "sts2.player-environment/native-logical-observation-1",
+                "input_profile": "native-logical-v1",
+                "snapshot_id": "snapshot-Q1",
+                "revision": 6,
+                "observed_at": "2026-10-08T00:00:00Z",
+                "status": "interactive",
+                "persistent": {
+                  "content_schema": "fixture-persistent-1",
+                  "content": {
+                    "hp": 12
+                  }
+                },
+                "interaction": {
+                  "interaction_id": "interaction-fixture",
+                  "kind": "combat",
+                  "stage": "root",
+                  "prompt": null,
+                  "content_schema": "fixture-interaction-1",
+                  "content": {
+                    "surface": {
+                      "public_text": "same public features"
+                    },
+                    "context": {}
+                  },
+                  "capabilities": []
+                },
+                "referents": [],
+                "completeness": {
+                  "status": "complete",
+                  "included": [
+                    "persistent",
+                    "interaction",
+                    "referents",
+                    "catalog"
+                  ],
+                  "missing": [],
+                  "full_reference_complete": true
+                },
+                "session": {
+                  "runtime_instance_id": "fixture-runtime",
+                  "environment_fingerprint": "fixture-environment"
+                },
+                "information_policy": {
+                  "id": "fair-player",
+                  "scope": "current-public",
+                  "includes_hidden_information": false,
+                  "unknown_field_behavior": "explicit"
+                },
+                "owner_occurrence": {
+                  "owner_id": "owner-A",
+                  "occurrence_id": "occurrence-Q1",
+                  "binding_revision": "6",
+                  "focus_referent_id": null,
+                  "focus_occurrence": null
+                },
+                "catalog": {
+                  "catalog_ref": "catalog-Q1",
+                  "snapshot_id": "snapshot-Q1",
+                  "status": "complete",
+                  "total_count": 1,
+                  "digest": "c2451a90aeeca5c2b7a5ed354f315cd0fd74f1279f887ed135698312fdd9b86e",
+                  "ordering_semantics": "public-native-order",
+                  "access_methods": [
+                    "catalog",
+                    "resolve"
+                  ],
+                  "scope_id": "scope-query",
+                  "stream_generation": "generation-1"
+                }
+              }
+            },
+            "acquisition_id": "acquisition-Q1"
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "new_consumptions": 0,
+        "state_version_unchanged": true
+      }
+    },
+    {
+      "name": "scoped_explicit_query_consumption",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "acquisition_already_returned": "query_current",
+          "previous_consumption_id": null
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-1",
+          "completion": {
+            "acquisition_id": "acquisition-Q1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "consume_ack_required": true,
+        "advances": 1,
+        "full_reference_history_claim": false,
+        "omissions_recorded": true
+      }
+    },
+    {
+      "name": "unknown_acquisition_consumption_rejected",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-2",
+          "completion": {
+            "acquisition_id": "not-acquired",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "unknown_acquisition",
+        "state_version": 0,
+        "submissions": 0
+      }
+    },
+    {
+      "name": "duplicate_report_cannot_forge_advance",
+      "steps": [
+        {
+          "use_acknowledged": "A",
+          "consumption_id": "consumption-1",
+          "state_version": 1
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-A2",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "duplicate_occurrence_advance",
+        "state_version": 1
+      }
+    },
+    {
+      "name": "Act_without_scores_uses_known_catalog_member",
+      "steps": [
+        {
+          "use_acknowledged": "A",
+          "consumption_id": "consumption-1",
+          "state_version": 1
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "directive": {
+              "type": "act",
+              "basis_acquisition_id": "acquisition-A1",
+              "selection": {
+                "kind": "handle",
+                "action_id": "action-a"
+              },
+              "scores": null
+            }
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "submissions": 1,
+        "source_relation_filtered": false
+      }
+    },
+    {
+      "name": "expression_ambiguity_never_chooses_first",
+      "steps": [
+        {
+          "use_acknowledged": "A",
+          "consumption_id": "consumption-1",
+          "state_version": 1
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "directive": {
+              "type": "act",
+              "basis_acquisition_id": "acquisition-A1",
+              "selection": {
+                "kind": "expression",
+                "expression": {
+                  "verb": "end_turn",
+                  "subject_referent_id": null,
+                  "arguments": []
+                }
+              },
+              "scores": null
+            }
+          }
+        },
+        {
+          "sdk_resolve_status": "ambiguous"
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "ambiguous",
+        "submissions": 0
+      }
+    },
+    {
+      "name": "parent_pending_child_ready_has_no_successor_fence",
+      "steps": [
+        {
+          "use_acknowledged": "A",
+          "consumption_id": "consumption-1",
+          "state_version": 1
+        },
+        {
+          "native_result": {
+            "delivery": "delivered",
+            "execution": "native_accepted",
+            "effect": "pending",
+            "cancel": "not_requested",
+            "retry": "never"
+          }
+        },
+        {
+          "published_child_ready": "B"
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consume",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "input": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "observation": {
+              "protocol_version": "1.0.0",
+              "schema": "sts2.player-environment/native-logical-observation-1",
+              "input_profile": "native-logical-v1",
+              "snapshot_id": "snapshot-B1",
+              "revision": 3,
+              "observed_at": "2026-10-08T00:00:00Z",
+              "status": "interactive",
+              "persistent": {
+                "content_schema": "fixture-persistent-1",
+                "content": {
+                  "hp": 12
+                }
+              },
+              "interaction": {
+                "interaction_id": "interaction-fixture",
+                "kind": "combat",
+                "stage": "root",
+                "prompt": null,
+                "content_schema": "fixture-interaction-1",
+                "content": {
+                  "surface": {
+                    "public_text": "same public features"
+                  },
+                  "context": {}
+                },
+                "capabilities": []
+              },
+              "referents": [],
+              "completeness": {
+                "status": "complete",
+                "included": [
+                  "persistent",
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "missing": [],
+                "full_reference_complete": true
+              },
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "information_policy": {
+                "id": "fair-player",
+                "scope": "current-public",
+                "includes_hidden_information": false,
+                "unknown_field_behavior": "explicit"
+              },
+              "owner_occurrence": {
+                "owner_id": "owner-B",
+                "occurrence_id": "occurrence-B1",
+                "binding_revision": "3",
+                "focus_referent_id": null,
+                "focus_occurrence": null
+              },
+              "catalog": {
+                "catalog_ref": "catalog-B1",
+                "snapshot_id": "snapshot-B1",
+                "status": "complete",
+                "total_count": 1,
+                "digest": "98aa9713e7f2e6ab7576057f35a5c64d654ab02c228c250e63e64bbe113784a0",
+                "ordering_semantics": "public-native-order",
+                "access_methods": [
+                  "catalog",
+                  "resolve"
+                ],
+                "scope_id": "scope-full",
+                "stream_generation": "generation-1"
+              }
+            },
+            "catalog": [
+              {
+                "action_id": "action-b",
+                "kind": "native_input",
+                "verb": "end_turn",
+                "label": "End turn",
+                "subject_referent_id": null,
+                "arguments": [],
+                "effect_domain": "native"
+              }
+            ]
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-consume-1",
+          "completion": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "directive": {
+              "type": "act",
+              "basis_acquisition_id": "acquisition-B1",
+              "selection": {
+                "kind": "handle",
+                "action_id": "action-b"
+              },
+              "scores": null
+            }
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "stable_successor_polls": 0,
+        "parent_causal_settlement_claim": false,
+        "child_submit_permitted": true
+      }
+    },
+    {
+      "name": "Stop_during_Await_fences_and_cancels",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "directive": {
+              "type": "await",
+              "after_cursor": "cursor-12",
+              "condition": "any_event",
+              "timeout_ms": 30000
+            }
+          }
+        },
+        {
+          "control": "stop"
+        },
+        {
+          "late_await_status": "event"
+        },
+        {
+          "late_directive": {
+            "schema": "sts2.policy-runtime/agent-session-1",
+            "message_type": "directive",
+            "session_id": "fixture-session",
+            "recovery_epoch": 7,
+            "request_id": "parent-next-1",
+            "output": {
+              "continuity_token": "continuity-1",
+              "consumption_id": "consumption-1",
+              "state_version": 1,
+              "directive": {
+                "type": "act",
+                "basis_acquisition_id": "acquisition-A1",
+                "selection": {
+                  "kind": "handle",
+                  "action_id": "action-a"
+                },
+                "scores": null
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "epoch_immediately": 8,
+        "owned_wait_cancelled": true,
+        "late_submissions": 0,
+        "controller_released": true
+      }
+    },
+    {
+      "name": "model_hang_then_deadline_without_second_tick",
+      "steps": [
+        {
+          "next_started": true,
+          "child_hangs": true
+        },
+        {
+          "monotonic_deadline_expires": true
+        }
+      ],
+      "expect": {
+        "second_tick_or_status_required": false,
+        "mode": "human",
+        "child_work_fenced": true,
+        "controller_release_attempted": true,
+        "expiry_evidence_once": true
+      }
+    },
+    {
+      "name": "idle_after_delivery_deadline_without_second_tick",
+      "steps": [
+        {
+          "native_result": {
+            "delivery": "delivered",
+            "execution": "native_accepted",
+            "effect": "pending",
+            "cancel": "not_requested",
+            "retry": "never"
+          }
+        },
+        {
+          "no_next_tick": true,
+          "monotonic_deadline_expires": true
+        }
+      ],
+      "expect": {
+        "second_tick_or_status_required": false,
+        "new_start_permission_revoked": true,
+        "controller_release_attempted": true,
+        "delivery_rewritten": false
+      }
+    },
+    {
+      "name": "unknown_delivery_never_retries",
+      "steps": [
+        {
+          "native_result": {
+            "delivery": "unknown",
+            "execution": "unknown",
+            "effect": "unknown",
+            "cancel": "unknown",
+            "retry": "never"
+          }
+        },
+        {
+          "new_current_available": true
+        }
+      ],
+      "expect": {
+        "tainted": true,
+        "submissions_after_unknown": 0,
+        "replacement_request_id_created": false
+      }
+    },
+    {
+      "name": "gap_handoff",
+      "steps": [
+        {
+          "native_gap": {
+            "reason": "retention_gap",
+            "from_publication_index": "13",
+            "through_publication_index": "16"
+          }
+        },
+        {
+          "gap_policy": "handoff"
+        }
+      ],
+      "expect": {
+        "mode": "human",
+        "controller_release_attempted": true,
+        "history_backfilled_by_Current": false
+      }
+    },
+    {
+      "name": "gap_explicit_reset_is_separate_segment",
+      "steps": [
+        {
+          "native_gap": {
+            "reason": "retention_gap",
+            "from_publication_index": "13",
+            "through_publication_index": "16"
+          }
+        },
+        {
+          "gap_policy": "explicit_reset",
+          "fresh_current": "query_current",
+          "new_continuity_token": "continuity-2"
+        }
+      ],
+      "expect": {
+        "new_segment": true,
+        "state_version_before_consume": 0,
+        "seamless_history_claim": false,
+        "unknown_delivery_taint_cleared": false
+      }
+    },
+    {
+      "name": "initial_capture_encoding_race_is_ordered",
+      "steps": [
+        {
+          "native_attach_starting_index": "10",
+          "initial_reserved_index": "11",
+          "same_main_thread_turn": true
+        },
+        {
+          "native_other_event_reserved_index": "12",
+          "encoding_finishes_first": true
+        },
+        {
+          "initial_encoding_finishes_last": true
+        }
+      ],
+      "expect": {
+        "first_consumed_publication_index": "11",
+        "then_publication_index": "12",
+        "separate_Current_bootstrap_calls": 0,
+        "main_thread_waits_for_encoding": false
+      }
+    },
+    {
+      "name": "initial_capture_failure_is_gap_not_current_backfill",
+      "steps": [
+        {
+          "native_attach_starting_index": "10",
+          "initial_reserved_index": "11"
+        },
+        {
+          "initial_encoding_outcome": "failed"
+        },
+        {
+          "later_current_available": true
+        }
+      ],
+      "expect": {
+        "required_initial_position_missing": true,
+        "full_reference_success": false,
+        "original_position_removed": false
+      }
+    },
+    {
+      "name": "query_consumer_changes_no_Runtime_strategy",
+      "steps": [
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "query",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-query-1",
+          "input": {
+            "method": "catalog",
+            "arguments": {
+              "catalog_ref": "catalog-Q1",
+              "prefix": {
+                "verb": "end_turn"
+              },
+              "limit": 100
+            }
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "query",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-query-2",
+          "input": {
+            "method": "resolve",
+            "arguments": {
+              "catalog_ref": "catalog-Q1",
+              "expression": {
+                "verb": "end_turn",
+                "subject_referent_id": null,
+                "arguments": []
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "prefix_selected_by": "AgentSpec",
+        "queries_forwarded_mechanically": true,
+        "full_score_vector_required": false
+      }
+    },
+    {
+      "name": "once_per_occurrence_scope_expansion_is_view_only",
+      "steps": [
+        {
+          "use_acknowledged": "A",
+          "consumption_id": "consumption-1",
+          "state_version": 1,
+          "consumption_mode": "once_per_occurrence"
+        },
+        {
+          "query_same_occurrence_new_scope": true
+        },
+        {
+          "report_additional_advance": true
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "once_per_occurrence_reconsumption",
+        "implicit_extra_W_update": false
+      }
+    },
+    {
+      "name": "old_epoch_directive_rejected",
+      "steps": [
+        {
+          "runtime_epoch": 8
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "directive",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "output": {
+            "continuity_token": "continuity-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "directive": {
+              "type": "close",
+              "reason": "late"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "recovery_epoch_mismatch",
+        "new_lifecycle_overwritten": false
+      }
+    },
+    {
+      "name": "scoped_query_can_start_with_empty_consumption_prefix",
+      "steps": [
+        {
+          "history_mode": "scoped_query"
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "next",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "parent-next-1",
+          "input": {
+            "continuity_token": "continuity-1",
+            "consumption_id": null,
+            "state_version": 0,
+            "basis_acquisition_id": null,
+            "received_cursor": "cursor-10"
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "query",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-query-1",
+          "input": {
+            "method": "current",
+            "arguments": {
+              "eager_scope": [
+                "persistent",
+                "interaction",
+                "referents",
+                "catalog"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "synthetic_initial_Model_update": false,
+        "queries_allowed_before_consume": true,
+        "Act_requires_later_accepted_consumption": true
+      }
+    },
+    {
+      "name": "incremental_view_new_authorized_scope_can_be_consumed",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "consumption_mode": "incremental_view",
+          "known_acquisitions": [
+            "incremental_persistent",
+            "incremental_expanded"
+          ]
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-1",
+          "completion": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-2",
+          "completion": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "accepted_consumptions": 2,
+        "state_version": 2,
+        "scope_key_uses_random_ID": false,
+        "full_reference_history_claim": false,
+        "omissions_recorded": true
+      }
+    },
+    {
+      "name": "incremental_view_same_scope_new_handles_is_duplicate",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "consumption_mode": "incremental_view",
+          "use_acknowledged": "incremental_expanded",
+          "consumption_id": "consumption-2",
+          "state_version": 2
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-1",
+          "completion": {
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": false
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "additional_consumptions": 0,
+        "state_version": 2
+      }
+    },
+    {
+      "name": "same_scope_content_drift_is_not_new_information",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "consumption_mode": "incremental_view",
+          "use_acknowledged": "incremental_expanded",
+          "consumption_id": "consumption-2",
+          "state_version": 2
+        },
+        {
+          "same_occurrence_same_included_fields_changed_public_content": true,
+          "new_capture_id": true
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "same_occurrence_coherence_drift",
+        "additional_consumptions": 0
+      }
+    },
+    {
+      "name": "stateless_query_Agent_tracks_ack_without_Model",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "consumption_mode": "incremental_view",
+          "Agent_has_Model": false,
+          "known_acquisitions": [
+            "incremental_persistent",
+            "incremental_expanded"
+          ]
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-1",
+          "completion": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          }
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-2",
+          "completion": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          }
+        }
+      ],
+      "expect": {
+        "accepted": true,
+        "accepted_consumption_state_version": 2,
+        "numerical_Model_memory_updates": 0,
+        "Model_existence_required_by_Runtime": false
+      }
+    },
+    {
+      "name": "regressing_native_revision_rejected_even_old_known_duplicate",
+      "steps": [
+        {
+          "history_mode": "scoped_query",
+          "consumption_mode": "incremental_view",
+          "accepted_native_revision": 6,
+          "previous_consumption_id": "consumption-2"
+        },
+        {
+          "schema": "sts2.policy-runtime/agent-session-1",
+          "message_type": "consumed",
+          "session_id": "fixture-session",
+          "recovery_epoch": 7,
+          "request_id": "child-report-1",
+          "completion": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": false
+          }
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "native_revision_regressed",
+        "state_version_unchanged": true
+      }
+    },
+    {
+      "name": "aggregate_retained_bytes_include_pending_assembly",
+      "steps": [
+        {
+          "max_retained_acquisition_bytes": 268435456
+        },
+        {
+          "retained_capture_and_catalog_bytes": 251658240
+        },
+        {
+          "pending_current_assembly_requested_bytes": 33554432
+        }
+      ],
+      "expect": {
+        "accepted": false,
+        "reason": "retained_acquisition_byte_capacity",
+        "assembly_allocated": false,
+        "deadline_alone_releases_actual_buffers": false
+      }
+    },
+    {
+      "name": "opaque_state_restores_only_exact_durable_acknowledged_prefix",
+      "steps": [
+        {
+          "export_after_durable_consume_ack": true
+        },
+        {
+          "new_child_same_package_Model_InputSpec_stateformat_generation_prefix": true
+        },
+        {
+          "pending_native_requests_reconciled": true
+        }
+      ],
+      "expect": {
+        "restore_before_new_consume": true,
+        "Runtime_interprets_W": false,
+        "Model_owns_codec_validation": true,
+        "numerical_default_Model_parity": "STPD_next_packet_not_yet_executed"
+      }
+    }
+  ],
+  "consume_ack_example": {
+    "schema": "sts2.policy-runtime/agent-session-1",
+    "message_type": "consume_ack",
+    "session_id": "fixture-session",
+    "recovery_epoch": 7,
+    "request_id": "parent-consume-1",
+    "completion": {
+      "consumption_id": "consumption-1",
+      "acquisition_id": "acquisition-empty1",
+      "state_version": 1,
+      "advanced": true,
+      "prefix": {
+        "continuity_token": "continuity-1",
+        "history_mode": "full_reference",
+        "received_cursor": "cursor-11",
+        "consumed_publication_index": "11",
+        "omissions": {
+          "received_unconsumed_count": 0,
+          "missing_scopes": [],
+          "gap": null
+        },
+        "consumption_mode": "once_per_occurrence"
+      }
+    }
+  },
+  "core_null_persistent_basis": {
+    "core_revision": "18af56cca83532765acac146329a3cc21409c654",
+    "wire_fixture": "components/connector/contracts/fixtures/native-logical-v1.json:wire_samples.observation/capture",
+    "producer": "NativeLogicalPublicFrame.Persistent is nullable; full-scope NativeLogicalProjector.Freeze preserves null and reports complete scope",
+    "change": "persistent:null; capture byte_count/hash rederived from exact JSON bytes; no missing content fabricated"
+  },
+  "support_examples": {
+    "meaning": "Synthetic mechanical native-profile vocabulary admission; not complete native coverage or inherited artifact qualification.",
+    "valid": [
+      {
+        "interaction_kinds": [
+          "*"
+        ],
+        "action_verbs": [
+          "*"
+        ],
+        "kind": "new_valid_interaction",
+        "verb": "new_valid_verb",
+        "expected": "admitted_without_catalog_filter"
+      },
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "combat",
+        "verb": "end_turn",
+        "expected": "admitted_exact"
+      }
+    ],
+    "invalid_declarations": [
+      {
+        "field": "interaction_kinds",
+        "values": [
+          "*",
+          "combat"
+        ]
+      },
+      {
+        "field": "action_verbs",
+        "values": [
+          "*",
+          "end_turn"
+        ]
+      },
+      {
+        "field": "game_versions",
+        "values": [
+          "*"
+        ]
+      },
+      {
+        "field": "game_commits",
+        "values": [
+          "*"
+        ]
+      }
+    ],
+    "finite_rejections": [
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "new_valid_interaction",
+        "verb": "end_turn",
+        "expected": "unsupported_interaction"
+      },
+      {
+        "interaction_kinds": [
+          "combat"
+        ],
+        "action_verbs": [
+          "end_turn"
+        ],
+        "kind": "combat",
+        "verb": "new_valid_verb",
+        "expected": "unsupported_action_verb"
+      }
+    ]
+  }
+}

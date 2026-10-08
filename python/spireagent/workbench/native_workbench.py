@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import re
+import secrets
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -53,9 +56,10 @@ class NativeWorkbenchRegistrar:
         return value
 
     def _request(
-        self, method: str, route: str, *, body: dict[str, Any] | None = None
+        self, method: str, route: str, *, body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", **(headers or {})}
         data = None
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -146,6 +150,46 @@ class NativeWorkbenchRegistrar:
         except (URLError, OSError, ValueError, TypeError):
             return {"status": "unavailable", "reason": "game_bridge_unavailable"}
 
+    def register_native(self, url: str, instance_id: str, access: Any) -> dict[str, str]:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench.developer_server import configuration_id
+        from spireagent.workbench.native_workbench_access import (
+            ACK_SCHEMA,
+            BINDING_FIELDS,
+            PAIR_SCHEMA,
+            NativePair,
+        )
+
+        try:
+            bootstrap = access.bootstrap()
+            current = self._request("GET", "/v1/workbench/status")
+            if (current.get("status") != "registered" or
+                    current.get("workbench_url") != url or
+                    current.get("workbench_instance_id") != instance_id):
+                raise BoundaryError("native_workbench", "native_registration_changed")
+            pair = access.current()
+            config_id = configuration_id(access.app.config)
+            if (pair is None or pair.runtime_instance_id != current.get("runtime_instance_id")
+                    or pair.configuration_id != config_id or pair.expires_at <= time.time() + 60):
+                pair = NativePair(current["runtime_instance_id"], instance_id, config_id,
+                                  url, secrets.token_hex(16), int(time.time()) + 600)
+            body = {"schema": PAIR_SCHEMA, **pair.to_dict(),
+                    "signature": pair.sign(bootstrap.secret, "native-register-v1")}
+            ack = self._request("POST", "/v1/workbench/native-register", body=body)
+            if (set(ack) != {"schema", "signature", *BINDING_FIELDS}
+                    or ack["schema"] != ACK_SCHEMA or
+                    {key: ack[key] for key in BINDING_FIELDS} != pair.to_dict()
+                    or not isinstance(ack["signature"], str) or
+                    not hmac.compare_digest(ack["signature"],
+                                            pair.sign(bootstrap.secret, "native-register-ack-v1"))):
+                raise BoundaryError("native_workbench", "native_pair_ack_invalid")
+            access.install(pair, self)
+            return {"native_status": "paired"}
+        except BoundaryError as error:
+            return {"native_status": "unavailable", "native_reason": error.code}
+        except (HTTPError, URLError, OSError, ValueError, TypeError, KeyError):
+            return {"native_status": "unavailable", "native_reason": "native_pair_unavailable"}
+
     def unregister(self, url: object, instance_id: object) -> dict[str, str]:
         """Clear only this Workbench's exact registration on the current game."""
         if not self._valid_url(url) or not self._valid_instance_id(instance_id):
@@ -218,10 +262,12 @@ class WorkbenchRegistrationLoop:
         registrar: NativeWorkbenchRegistrar | None = None,
         stop_event: threading.Event | None = None,
         wait: Callable[[float], bool] | None = None,
+        access: Any | None = None,
     ) -> None:
         self.url = url
         self.instance_id = instance_id
         self.registrar = registrar or NativeWorkbenchRegistrar()
+        self.access = access
         self._stop_event = stop_event or threading.Event()
         self._wait = wait or self._stop_event.wait
         self._lock = threading.Lock()
@@ -248,6 +294,8 @@ class WorkbenchRegistrationLoop:
 
     def close(self, *, timeout: float = 4.5) -> None:
         self._stop_event.set()
+        if self.access is not None:
+            self.access.revoke()
         with self._lock:
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -259,6 +307,9 @@ class WorkbenchRegistrationLoop:
         delay = 10.0
         while not self._stop_event.is_set():
             result = self.registrar.register(self.url, self.instance_id)
+            if result.get("status") == "registered" and self.access is not None:
+                result = {**result, **self.registrar.register_native(
+                    self.url, self.instance_id, self.access)}
             with self._lock:
                 self._last_result = dict(result)
                 if result.get("status") == "registered":
@@ -268,8 +319,9 @@ class WorkbenchRegistrationLoop:
             delay = min(30.0, delay * 2.0)
 
 
-def start_workbench_registration(url: str, instance_id: str) -> WorkbenchRegistrationLoop:
+def start_workbench_registration(url: str, instance_id: str, *,
+                                 access: Any | None = None) -> WorkbenchRegistrationLoop:
     """Create/start the loop from Workbench ``serve`` when platform is configured."""
-    loop = WorkbenchRegistrationLoop(url, instance_id)
+    loop = WorkbenchRegistrationLoop(url, instance_id, access=access)
     loop.start()
     return loop

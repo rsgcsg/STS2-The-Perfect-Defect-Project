@@ -10,6 +10,7 @@ import math
 import platform
 import random
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,9 +21,22 @@ from torch.nn import functional as F
 from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
-from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.structured_sequences import StructuredDataset
-from ..policy.structured_export import code_digest
+from ..structured_code_scope import (
+    LEGACY_SCOPE,
+    ROOT,
+    TRAINING_SCOPE,
+    checkpoint_schema,
+    inference_runtime,
+)
+from ..structured_profiles import (
+    NATIVE_SCOPE,
+    NATIVE_SOURCE_SCHEMA,
+    numerical_code_identity,
+    profile_projection,
+    source_verification,
+    validate_profile,
+)
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
 from .structured_training import StructuredTrainingConfig, evaluate_runs
@@ -30,6 +44,14 @@ from .structured_training import StructuredTrainingConfig, evaluate_runs
 CHECKPOINT_SCHEMA = "stpd/structured-m2-training-checkpoint-v2"
 ENGINE_VERSION = "structured-tbptt-boundaries-v1"
 MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024
+
+
+def code_digest(root: Path = ROOT) -> str:
+    # This branch preserves the legacy broad-v1 meaning; scoped numerics never
+    # import the export implementation merely to identify their numerical code.
+    from ..policy.structured_export import code_digest as legacy_digest
+
+    return legacy_digest(root)
 
 
 def runtime_identity() -> dict[str, Any]:
@@ -49,19 +71,30 @@ def runtime_identity() -> dict[str, Any]:
 
 
 def execution_identity(
-    dataset: StructuredDataset, config: StructuredTrainingConfig
+    dataset: StructuredDataset, config: StructuredTrainingConfig, *,
+    code_scope: str = LEGACY_SCOPE,
 ) -> dict[str, Any]:
     config.validate()
     if torch.get_num_threads() != config.cpu_threads:
         raise BoundaryError("structured_engine", "cpu_thread_identity_mismatch")
+    native = validate_profile(dataset, code_scope)
+    scoped = code_scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    identity = numerical_code_identity(code_scope) if scoped else None
+    runtime = runtime_identity()
+    if scoped:
+        runtime["safetensors"] = inference_runtime(str(torch.__version__))["safetensors"]
     return {
         "engine": ENGINE_VERSION,
-        "code_sha256": code_digest(),
-        "runtime": runtime_identity(),
+        "code_sha256": semantic_hash(identity) if scoped else code_digest(),
+        **({"code_identity": identity} if scoped else {}),
+        "runtime": runtime,
         "source_sha256": dataset.source_sha256,
         "config": asdict(config),
         "graph_id": GRAPH_ID,
-        "projection": {"id": INPUT_ID, "version": PROJECTION_VERSION, "I": False, "F": False},
+        "projection": profile_projection(dataset, code_scope),
+        **({"input_spec": dataset.input_spec.value()} if native and dataset.input_spec else {}),
+        **({"source_schema": NATIVE_SOURCE_SCHEMA,
+            "source_verification": source_verification(dataset)} if native else {}),
         "event_order_sha256": semantic_hash(
             [
                 {
@@ -134,7 +167,8 @@ def _plans(dataset: StructuredDataset, config: StructuredTrainingConfig) -> tupl
 
 
 class StructuredTrainingEngine:
-    def __init__(self, dataset: StructuredDataset, config: StructuredTrainingConfig) -> None:
+    def __init__(self, dataset: StructuredDataset, config: StructuredTrainingConfig, *,
+                 code_scope: str = LEGACY_SCOPE) -> None:
         config.validate()
         if not isinstance(dataset, StructuredDataset):
             raise BoundaryError("structured_engine", "typed_dataset_required")
@@ -144,7 +178,9 @@ class StructuredTrainingEngine:
             step.chosen_action_id is not None for run in self.train for step in run.steps
         ):
             raise BoundaryError("structured_engine", "train_choices_required")
-        self.identity = execution_identity(dataset, config)
+        self.code_scope = code_scope
+        self.checkpoint_schema = checkpoint_schema(code_scope)
+        self.identity = execution_identity(dataset, config, code_scope=code_scope)
         self.plans = _plans(dataset, config)
         self.model = StructuredM2(seed=config.seed)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
@@ -175,7 +211,9 @@ class StructuredTrainingEngine:
     def _assert_live(self) -> None:
         if self.failed:
             raise BoundaryError("structured_engine", "failed_engine_requires_restore")
-        if execution_identity(self.dataset, self.config) != self.identity:
+        if execution_identity(
+            self.dataset, self.config, code_scope=self.code_scope
+        ) != self.identity:
             self.failed = True
             raise BoundaryError("structured_engine", "runtime_code_or_input_changed")
 
@@ -290,7 +328,7 @@ class StructuredTrainingEngine:
         if not isinstance(numpy_rng, tuple):
             raise BoundaryError("structured_checkpoint", "unsupported_numpy_rng")
         payload = {
-            "schema": CHECKPOINT_SCHEMA,
+            "schema": self.checkpoint_schema,
             "identity": self.identity,
             "parameter_names": self.parameter_names,
             "model": dict(self.model.state_dict()),
@@ -348,9 +386,11 @@ class StructuredTrainingEngine:
             "structured_checkpoint",
         )
         if (
-            value["schema"] != CHECKPOINT_SCHEMA
+            value["schema"] != self.checkpoint_schema
             or value["identity"] != self.identity
-            or execution_identity(self.dataset, self.config) != self.identity
+            or execution_identity(
+                self.dataset, self.config, code_scope=self.code_scope
+            ) != self.identity
             or value["parameter_names"] != self.parameter_names
         ):
             raise BoundaryError("structured_checkpoint", "exact_resume_identity_mismatch")
