@@ -9,3 +9,6 @@ export * from "./textMenuV2.js";
 export * from "./visibleState.js";
 export type { JsonObject, JsonValue } from "./json.js";
 export * from "./sealedObservation.js";
+export * from "./nativeLogical.js";
+export * from "./nativeLogicalAssembly.js";
+export * from "./nativeLogicalClient.js";
