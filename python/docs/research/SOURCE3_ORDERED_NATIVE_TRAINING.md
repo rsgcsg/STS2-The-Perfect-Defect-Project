@@ -242,6 +242,18 @@ Its complete fixed descriptor is appended in `native_agent_sampled_source_spec.p
 the previous Teacher1.0.2 relation/artifact remains unchanged. Equal Teacher
 InputSpecs do not make different producer closures interchangeable.
 
+Teacher1.0.5 has a separately closed current-focus relation. It can Confirm a
+canonical held-card surface's visible current target when that same original C
+contains its Confirm member and no different requested focus remains pending.
+It does not require its own earlier Focus when the target is already focused;
+a pending different target still Awaits its observed arrival. The occurrence
+descriptor may mirror focus but is not a substitute for these typed surface
+facts. Teacher AgentSpec1.1/TaskSpec1.1, sampled readiness/ACK and input digests
+remain unchanged. Previous1.0.2/1.0.4 producer definitions and original labels
+retain their identities. Adding the new fixed producer table changes current
+Student inference/training code closures, so old packages keep their pinned
+runner; equal numerical graph/input/weights do not make them current-code packages.
+
 All original offers, including discarded or censored ones, enter the existing
 curation index. The conservative related key is
 `protocol-runtime:<original runtime_instance_id>`, shared with Source3 and S0.

@@ -843,11 +843,11 @@ def test_unsafe_raw_archive_member_never_reaches_typed_replay(tmp_path, original
     assert not (tmp_path / "escape").exists()
 
 
-def declared_teacher_fixture(original):
+def declared_teacher_fixture(original, definition=None):
     """Approved production identity on synthetic bytes: never actual native data."""
     from stpd.native_agent_sampled_source_spec import TEACHER_PRODUCER
 
-    definition = TEACHER_PRODUCER
+    definition = TEACHER_PRODUCER if definition is None else definition
     original.f.agent["adapter"] = copy.deepcopy(definition["adapter"])
     original.f.agent["agent"] = {
         "id": definition["agent_spec"]["id"],
@@ -914,6 +914,57 @@ def test_fixed_teacher_descriptor_relation_keeps_synthetic_origin_explicit(tmp_p
         sources.verify_native_agent_sampled_partition(store, partition.manifest.artifact_id)
         == partition
     )
+
+
+def test_current_focus_teacher_relation_preserves_old_tuple_and_closes_actual_new_descriptor(
+    tmp_path, original,
+):
+    from stpd.native_agent_sampled_source_spec import (
+        FOCUS_TEACHER_PRODUCER,
+        FOCUS_TEACHER_RELATION_SPEC,
+        MAP_TEACHER_PRODUCER,
+        MAP_TEACHER_RELATION_SPEC,
+        TEACHER_PRODUCER,
+        TEACHER_RELATION_SPEC,
+        relation_body,
+    )
+    from stpd.policy.native_teacher_agent import descriptor
+
+    new = FOCUS_TEACHER_PRODUCER
+    declared_teacher_fixture(original, new)
+    assert new["agent_spec"]["teacher"]["version"] == "1.0.5"
+    assert MAP_TEACHER_PRODUCER["agent_spec"]["teacher"]["version"] == "1.0.4"
+    assert TEACHER_PRODUCER["agent_spec"]["teacher"]["version"] == "1.0.2"
+    for historical in (MAP_TEACHER_PRODUCER, TEACHER_PRODUCER):
+        assert new["artifact_sha256"] != historical["artifact_sha256"]
+        assert new["input_spec"] == historical["input_spec"]
+    actual = descriptor()
+    frozen = {"schema": new["artifact_schema"], **{key: new[key] for key in (
+        "agent_spec", "input_spec_body", "input_spec", "adapter", "code_files",
+        "runtime_provenance",
+    )}}
+    assert frozen == actual and sha(json_bytes(actual)) == new["artifact_sha256"]
+    for relation in (MAP_TEACHER_RELATION_SPEC, TEACHER_RELATION_SPEC):
+        path = tmp_path / relation["id"]
+        path.mkdir()
+        with pytest.raises(BoundaryError, match="fixed_teacher_producer_identity"):
+            sources.publish_native_agent_sampled_raw(
+                setup_store(path)[0], original.directory, IMPORTER,
+                relation=relation,
+            )
+    path = tmp_path / "new-relation"
+    path.mkdir()
+    store, _ = setup_store(path)
+    raw = sources.publish_native_agent_sampled_raw(
+        store, original.directory, IMPORTER, relation=FOCUS_TEACHER_RELATION_SPEC,
+    )
+    ref = sources.publish_native_agent_sampled_admission(store, raw.artifact_id, PROJECTOR)
+    partition = sources.publish_native_agent_sampled_partition(store, (ref,), "train", PROJECTOR)
+    report = json.loads(store.bytes(store.get_manifest(ref.admission_id).payload("report")))
+    assert report["counts"]["eligible_unique_N"] == 3
+    assert report["native_origin_status"] == "synthetic_conformance"
+    assert partition.dataset.input_spec.value() == INPUT_SPEC
+    assert relation_body(FOCUS_TEACHER_RELATION_SPEC, FIXTURE_COHORT)["producer_definition"] == new
 
 
 def test_declared_teacher_origin_is_unknown_not_zero_and_does_not_block_known_N(tmp_path, original):
