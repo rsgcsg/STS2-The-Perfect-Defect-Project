@@ -15,7 +15,7 @@ public sealed class NativeLogicalCoreTests
     private static NativeLogicalAction Action(int i, string? subject = null) => new("action-" + i, "native_input", i % 2 == 0 ? "pick" : "inspect", "卡牌 " + i, subject,
         new[] { new NativeLogicalArgument("target", "目标-" + i) }, "native");
     private static NativeLogicalCatalog Catalog(IEnumerable<NativeLogicalAction> actions, Func<long>? clock = null, NativeLogicalLimits? limits = null) => new("snapshot", "generation", "scope", actions, 120000, clock ?? (() => 0), limits: limits);
-    private static NativeLogicalPublicFrame Frame(string owner = "A", string occurrence = "1", string binding = "1") => new("generation", new("runtime", "fingerprint"),
+    internal static NativeLogicalPublicFrame Frame(string owner = "A", string occurrence = "1", string binding = "1") => new("generation", new("runtime", "fingerprint"),
         new(owner, occurrence, binding, null, null), "interactive", new("persistent", new JsonObject { ["value"] = 1 }),
         new("interaction", "selector", "ready", "选择", "surface", new(new JsonObject { ["nested"] = new JsonArray(1, 2) }, new JsonObject { ["kind"] = "selector" }), Array.Empty<PlayerEnvironmentInteractionCapability>()),
         new[] { new PlayerEnvironmentReferent("public-card", "card", "card", "甲", new(true, true, false, false, "displayed"), "card", new JsonObject { ["name"] = "甲" }) },

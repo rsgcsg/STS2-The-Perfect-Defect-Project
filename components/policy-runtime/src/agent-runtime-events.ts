@@ -34,7 +34,10 @@ export interface AgentRuntimeEventPayloads {
   agent_consumed: Context & { report: AgentConsumption; acknowledgement: AgentConsumeAck; witness: AgentAcquisitionWitness };
   agent_directive: Context & { output: AgentDirectiveOutput };
   native_submission_requested: Context & { request_id: string; basis_acquisition_id: string; snapshot_id: string;
-    action_id: string; catalog_digest: string; run_id: string; runtime_instance_id: string };
+    action_id: string; catalog_digest: string; run_id: string; runtime_instance_id: string;
+    dispatch_binding?: import("@rsgcsg/sts2-connector-client").NativeLogicalDispatchBinding };
+  native_stale_decision_deferred: Context & { request_id: string; basis_acquisition_id: string;
+    consumption_id: string; state_version: number; known_stale_rejections: number; consecutive_known_stale_rejections: number };
   /** Original durable intent never reached the owning SDK dispatch hook. */
   native_submission_not_started: Context & { request_id: string; submission_epoch: number; reason: string };
   native_result: Context & { result: NativeLogicalResult };

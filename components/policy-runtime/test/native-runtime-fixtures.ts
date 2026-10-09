@@ -194,8 +194,8 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
     runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
   const port = options.numericalAgent ? NdjsonAgentSessionPort.spawn(options.numericalAgent.python,
     ["-m", "stpd.policy.native_agent", "--package", options.numericalAgent.packagePath, "--manifest", manifestPath],
-    manifest.adapter, manifest.limits, { env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" } })
-    : NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, manifestPath, options.child ?? "act"], manifest.adapter, manifest.limits);
+    manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" } })
+    : NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, manifestPath, options.child ?? "act"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   let runtime: NativeAgentRuntimeOwner;
   const environment = new PlayerEnvironmentRestClient(source.address, 2000);
   try { options.beforeInitialize?.({ source, port, evidence, environment });

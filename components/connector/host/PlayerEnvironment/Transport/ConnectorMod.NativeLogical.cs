@@ -67,13 +67,15 @@ public static partial class ConnectorMod
             switch (operation)
             {
                 case "current":
+                case "current_owned":
                 {
                     var body = ReadNativeLogicalRequest<NativeLogicalCurrentRequest>(request);
                     NativeId(body.ClientSessionId);
                     if (body.ExpectedSnapshotId is { } expected) NativeId(expected);
                     NativeLogicalProjector.ValidateScope(body.EagerScope);
                     using var deadline = new CancellationTokenSource(30_000);
-                    var reply = owner.CurrentAsync(body, deadline.Token).GetAwaiter().GetResult();
+                    var reply = (operation == "current_owned" ? owner.CurrentOwnedAsync(body, deadline.Token)
+                        : owner.CurrentAsync(body, deadline.Token)).GetAwaiter().GetResult();
                     response.StatusCode = reply.Status is "captured" or "partial" ? 200 : reply.Status == "capacity_exceeded" ? 429 : 409;
                     SendNativeLogicalJson(response, reply, 1024 * 1024); break;
                 }

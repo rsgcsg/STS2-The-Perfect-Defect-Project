@@ -185,7 +185,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
   };
   try {
     port = NdjsonAgentSessionPort.spawn(options.adapterCommand, options.adapterArgs,
-      manifest.adapter, manifest.limits, { cwd: options.adapterCwd });
+      manifest.adapter, manifest.limits, { cwd: options.adapterCwd, executionPolicy: manifest.execution_policy });
     runtime = await PolicyRuntime.forAgent({ manifest, environment: new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms),
       port, evidence, mode: options.mode, autoBudget: options.autoBudget,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });

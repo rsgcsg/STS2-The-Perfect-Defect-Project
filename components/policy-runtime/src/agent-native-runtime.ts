@@ -5,7 +5,7 @@ import {
   type JsonObject, type NativeLogicalAction, type NativeLogicalByteBudget,
   type NativeLogicalCapabilities, type NativeLogicalCapturedObservation,
   type NativeLogicalExpression, type NativeLogicalFullCapture, type NativeLogicalPrefix, type NativeLogicalResult,
-  type NativeLogicalScopeField
+  type NativeLogicalScopeField, type NativeLogicalRetentionLease, type NativeLogicalOwnedCurrentReply, type NativeLogicalDispatchBinding
 } from "@rsgcsg/sts2-connector-client";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type AutonomyBudgetConfig, type RuntimeControlPreconditions,
@@ -14,10 +14,11 @@ import { RuntimeControlPreconditionError, RuntimeLifecycleOwner } from "./runtim
 import { AgentByteBudget } from "./agent-session-budget.js";
 import type { AgentByteReservation } from "./agent-session-budget.js";
 import { agentJsonByteLength } from "./agent-session-json.js";
-import { AgentConsumptionLedger, type AgentAcquisition } from "./agent-session-consumption.js";
+import { AgentConsumptionLedger, type AgentAcquisition, type AgentNativeUnitWitness } from "./agent-session-consumption.js";
 import { NdjsonAgentSessionPort, type AgentPortHandlers } from "./agent-session-port.js";
-import { AgentSessionError, sessionText, supportsProfileValue, validateAgentManifest,
-  type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
+import { AgentSessionError, sessionText, supportsProfileValue, validateAgentManifest, sameAgentExecutionPolicy,
+  isKnownStaleResult, AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA,
+  type AgentOperationalOutcome, type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
 import { canonicalStateMetadata, type AgentOpaqueState, type AgentStateMetadata } from "./agent-session-state.js";
 import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, AgentRuntimeTickResult,
   RuntimeServiceOwner } from "./agent-runtime-contracts.js";
@@ -72,6 +73,13 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private readonly knownAcquisitions = new Set<string>();
   private readonly knownActions = new Map<string, Map<string, NativeLogicalAction>>();
   private readonly actionReservations = new Map<string, AgentByteReservation[]>();
+  private readonly readerLeases = new Map<string, NativeLogicalRetentionLease>();
+  private freshDecision: { outcome: AgentOperationalOutcome; unit: Readonly<AgentNativeUnitWitness>; advancedTo: string | null } | null = null;
+  // Deduplication of terminal evidence counters only; no request/delivery authority.
+  private readonly countedTerminalResults = new Map<string, string>();
+  private knownStaleRejections = 0;
+  private consecutiveKnownStaleRejections = 0;
+  private terminationReason: string | null = null;
   private basisId: string | null = null;
   private readonly samplePayloads = new Map<string, { bytes: Buffer; reservation: AgentByteReservation; offered: boolean;
     stored: boolean }>();
@@ -100,6 +108,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   constructor(private readonly options: NativeAgentRuntimeOptions) {
     const validated = validateAgentManifest(options.manifest);
     this.manifest = immutable(JSON.parse(canonicalJson(validated)) as AgentManifest);
+    if (!sameAgentExecutionPolicy(this.manifest.execution_policy, options.port.executionPolicy))
+      throw new AgentSessionError("agent_execution_policy_mismatch");
     if (!options.runtimeIdentity.version || !/^[a-f0-9]{64}$/u.test(options.runtimeIdentity.code_sha256))
       throw new AgentSessionError("exact_runtime_identity_required");
     this.manifestSha256 = createHash("sha256").update(canonicalJson(this.manifest)).digest("hex");
@@ -142,6 +152,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.noteCursor(this.cursor, 0);
       this.scheduleRenewal();
       await this.emit("native_session_attached", { ...this.context(), subscription: attached.subscription, environment: this.environment });
+      if (this.manifest.execution_policy)
+        await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
       active.signal.throwIfAborted();
     } catch (error) {
       this.owner.cancelActive(error); this.port.close();
@@ -187,7 +199,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await earlyRelease;
       if (mode === "human") { this.owner.end("human_recovery"); await this.endSampleSegment("human_recovery"); }
       else if (this.mode === "human" || this.owner.state.state !== "active") {
-        this.budgetFenced = false; this.budgetHandoff = null;
+        this.budgetFenced = false; this.budgetHandoff = null; this.terminationReason = null;
         this.owner.begin(() => this.expireBudget());
       }
       if (mode !== "auto") await this.release();
@@ -218,7 +230,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         if (!this.owner.consumeCall()) { this.expireBudget(); return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() }; }
         const nextInput = { continuity_token: this.ledger.continuityToken,
           consumption_id: this.ledger.consumptionId, state_version: this.ledger.stateVersion,
-          basis_acquisition_id: this.basisId, received_cursor: this.cursor };
+          basis_acquisition_id: this.basisId, received_cursor: this.cursor,
+          ...(this.manifest.execution_policy ? { operational_outcome: this.freshDecision?.outcome ?? null } : {}) };
         const output = await this.port.next(this.context(), nextInput, handlers, active.signal, requestId => {
           offer.pending = true;
           if (this.manifest.input.history_mode === "sampled_current") {
@@ -241,6 +254,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         this.lastDirective = output.directive;
         await this.emit("agent_directive", { ...this.context(), output });
         if (this.manifest.input.history_mode === "sampled_current") { this.agentUncertain = false; this.sampleNextRequestId = null; }
+        const fresh = this.freshDecision;
+        if (fresh && fresh.advancedTo !== null && fresh.advancedTo === this.basisId) this.freshDecision = null;
         this.checkActive(epoch, active.signal);
         switch (output.directive.type) {
           case "act": return await this.act(output, epoch, active.signal);
@@ -273,8 +288,19 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         await this.failClosed(reason);
         return { type: this.tainted ? "unknown" : "not_admitted", ...(this.tainted ? { error: reason } : { reason }), status: this.status() } as AgentRuntimeTickResult;
       } finally {
-        await this.cleanupSampleQueries(offer.pending || this.agentUncertain);
-        if (this.owner.active?.controller === active) this.owner.active = null;
+        try { await this.cleanupSampleQueries(offer.pending || this.agentUncertain); }
+        catch (error) {
+          if (!this.manifest.execution_policy) throw error;
+          // Cleanup owns this failure even after a known result/normal Await.
+          // Fence immediately; a caller need not issue another tick or Stop.
+          this.terminationReason ??= "sample_query_cleanup_failed";
+          this.mode = "human"; this.owner.end("mode_changed"); this.owner.advanceEpoch(); this.owner.cancelActive(error);
+          const errors = [error];
+          try { await this.endSampleSegment(this.terminationReason); } catch (cleanup) { errors.push(cleanup); }
+          finally { try { await this.release(); } catch (cleanup) { errors.push(cleanup); } }
+          throw new AggregateError(errors, "native tick owned-reader cleanup failed");
+        }
+        finally { if (this.owner.active?.controller === active) this.owner.active = null; }
       }
     }); } finally { this.tickActive = false; }
   }
@@ -289,7 +315,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
       if (this.mode !== "human") throw new RuntimeControlPreconditionError("runtime_reconcile_requires_human", 409);
       try {
-        const lookup = await this.native.result(original.request_id);
+        const lookup = await this.native.result(original.request_id, undefined, original.dispatch_binding);
         if (lookup.status === "pending") {
           await this.emit("native_request_reconciled", { ...this.context(), original, resolution: "pending", result: null });
           return { request_id: requestId, resolution: "pending", status: this.status() };
@@ -298,6 +324,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         if (result.snapshot_id !== original.snapshot_id || result.action !== null && result.action.action_id !== original.action_id)
           throw new AgentSessionError("native_original_request_basis_mismatch");
         this.recordResult(result);
+        this.countOriginalTerminal(result, original.dispatch_binding);
         if (result.delivery === "unknown" || result.delivery === "partially_delivered") {
           await this.taint(`native_delivery_${result.delivery}`);
           await this.emit("native_request_reconciled", { ...this.context(), original, resolution: "tainted", result });
@@ -341,6 +368,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.mode !== "human") throw new AgentSessionError("restore_requires_human");
     return this.owner.serialize(async () => {
       if (this.mode !== "human") throw new AgentSessionError("restore_requires_human");
+      if (!sameAgentExecutionPolicy(this.manifest.execution_policy, replacement.executionPolicy)) {
+        replacement.close(); throw new AgentSessionError("agent_execution_policy_mismatch");
+      }
       this.owner.advanceEpoch();
       const authorization = this.stateAuthorization(true);
       if (replacement.byteBudget !== this.budget) throw new AgentSessionError("agent_shared_byte_budget_mismatch");
@@ -381,6 +411,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.ledger.prefix().omissions.gap !== null) throw new RuntimeControlPreconditionError("runtime_source_gap", 409);
   }
   private revoke(reason: "human_recovery" | "stopped"): void {
+    this.terminationReason ??= reason;
     this.owner.advanceEpoch(); this.owner.cancelActive(reason); this.mode = "human"; this.owner.end(reason);
   }
   private async freshRuntime(): Promise<string> {
@@ -417,6 +448,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       || c.game.commit === null || !this.manifest.support.game_commits.includes(c.game.commit)) throw new AgentSessionError("game_identity_unsupported");
     if (!c.game.compatibility.observation_allowed || this.manifest.requirements.required_methods.some(value => !c.supported_methods.includes(value)))
       throw new AgentSessionError("native_required_method_unsupported");
+    if (this.manifest.execution_policy && !c.implemented_mechanisms.includes("native_current_reader_owned_v1"))
+      throw new AgentSessionError("native_owned_current_mechanism_unsupported");
     if (this.manifest.input.attachment.required_seams.some(seam => !c.capture_coverage.some(value =>
       value.source_seam === seam.source_seam && value.version === seam.version && value.coverage === seam.coverage)))
       throw new AgentSessionError("native_required_seam_unsupported");
@@ -496,10 +529,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       observation: capture.observation as unknown as Record<string, unknown>, catalog: catalog as readonly Record<string, unknown>[] | null,
       catalog_materialized: catalog !== null, publication_index: publication };
     this.ledger.register(a); this.knownAcquisitions.add(id);
+    try {
+    if (this.freshDecision) this.checkFreshUnit(this.ledger.nativeUnit(id), false);
     if (this.manifest.input.history_mode === "sampled_current") {
       const reservation = this.budget.reserve(Buffer.byteLength(capture.serializedObservation, "utf8"));
       try { this.samplePayloads.set(id, { bytes: Buffer.from(capture.serializedObservation), reservation, offered: false, stored: false }); }
-      catch (error) { reservation.release(); this.releaseAcquisition(id); throw error; }
+      catch (error) { reservation.release(); throw error; }
     }
     const retained = this.ledger.get(id).catalog as unknown as readonly NativeLogicalAction[] | null;
     this.knownActions.set(id, new Map(retained?.map(action => [action.action_id, action]) ?? []));
@@ -509,12 +544,25 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       catalog_count: capture.observation.catalog.total_count };
     await this.emit("native_acquisition_registered", { ...this.context(), witness: this.witness(id) });
     return id;
+    } catch (error) {
+      try { await this.releaseAcquisition(id); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "native acquisition registration cleanup failed"); }
+      throw error;
+    }
   }
-  private releaseAcquisition(id: string): void {
-    this.ledger.release(id); this.knownAcquisitions.delete(id); this.knownActions.delete(id);
-    for (const held of this.actionReservations.get(id) ?? []) held.release();
-    this.actionReservations.delete(id);
-    this.samplePayloads.get(id)?.reservation.release(); this.samplePayloads.delete(id);
+  private async releaseAcquisition(id: string): Promise<void> {
+    const lease = this.readerLeases.get(id); this.readerLeases.delete(id);
+    const errors: unknown[] = [];
+    try {
+      try { this.ledger.release(id); } catch (error) { errors.push(error); }
+      this.knownAcquisitions.delete(id); this.knownActions.delete(id);
+      for (const held of this.actionReservations.get(id) ?? [])
+        try { held.release(); } catch (error) { errors.push(error); }
+      this.actionReservations.delete(id);
+      try { this.samplePayloads.get(id)?.reservation.release(); } catch (error) { errors.push(error); }
+      this.samplePayloads.delete(id);
+    } finally { try { await lease?.dispose(); } catch (error) { errors.push(error); } }
+    if (errors.length) throw new AggregateError(errors, "native acquisition local/reader cleanup failed");
   }
   private async persistSample(id: string, disposition: "query_offered" | "consume_proposed", proposal: AgentSessionContext & { request_id: string; report: AgentConsumption } | null = null): Promise<void> {
     const payload = this.samplePayloads.get(id);
@@ -530,13 +578,20 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private async cleanupSampleQueries(uncertain: boolean): Promise<void> {
     if (this.manifest.input.history_mode !== "sampled_current") return;
-    await this.sampleOfferEvidence;
+    const errors: unknown[] = [];
+    try { await this.sampleOfferEvidence; } catch (error) { errors.push(error); }
     for (const [id, payload] of [...this.samplePayloads]) {
       if (id === this.basisId) continue;
-      if (uncertain && payload.offered && !payload.stored) await this.persistSample(id, "query_offered");
-      if (!payload.stored) await this.emit("agent_sample_query_discarded", { ...this.context(), acquisition_id: id,
-        reason: payload.offered ? "readiness_check" : "not_offered" });
-      this.releaseAcquisition(id);
+      try {
+        if (uncertain && payload.offered && !payload.stored) await this.persistSample(id, "query_offered");
+        if (!payload.stored) await this.emit("agent_sample_query_discarded", { ...this.context(), acquisition_id: id,
+          reason: payload.offered ? "readiness_check" : "not_offered" });
+      } catch (error) { errors.push(error); }
+      finally { try { await this.releaseAcquisition(id); } catch (error) { errors.push(error); } }
+    }
+    if (errors.length) {
+      this.tainted = true; this.taintReason = "sample_query_cleanup_failed";
+      throw new AggregateError(errors, "sample query evidence/reader cleanup failed");
     }
   }
   private async endSampleSegment(reason: string): Promise<void> {
@@ -572,6 +627,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       void this.sampleOfferEvidence.catch(() => undefined);
     }, consumed: async (report, signal, requestId) => {
       this.checkActive(epoch, signal);
+      if (this.freshDecision) this.checkFreshUnit(this.ledger.nativeUnit(report.acquisition_id), true);
       await this.sampleOfferEvidence;
       if (this.manifest.input.history_mode === "sampled_current") await this.persistSample(report.acquisition_id, "consume_proposed", { session_id: this.sessionId, recovery_epoch: epoch, request_id: requestId, report });
       this.checkActive(epoch, signal);
@@ -594,8 +650,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           revision: Number(o.revision), included: witness.included as AgentStateMetadata["last_acknowledged_basis"]["included"], publication_index: a.publication_index } });
       const previous = this.basisId;
       this.basisId = report.acquisition_id;
+      if (this.freshDecision) this.freshDecision.advancedTo = report.acquisition_id;
       if (previous !== null && previous !== this.basisId) {
-        this.releaseAcquisition(previous);
+        await this.releaseAcquisition(previous);
       }
       return ack;
     }, query: async (query, signal) => {
@@ -606,26 +663,51 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         if (Object.hasOwn(args, "client_session_id")) throw new AgentSessionError("query_cannot_supply_credentials");
         const body = { ...args, client_session_id: this.controller.clientIdentity()!.clientSessionId } as JsonObject;
         validateNativeLogicalRequest("current", body);
-        const current = (await this.native.current({ eagerScope: body.eager_scope as NativeLogicalScopeField[],
-          expectedSnapshotId: body.expected_snapshot_id as string | null, signal })).data;
-        if (!current.capture || !current.context || !["captured", "partial"].includes(current.status)) throw new AgentSessionError(`query_current_${current.status}`);
-        if (current.capture.byte_count > this.manifest.limits.max_capture_bytes) {
-          if (current.retention) await this.native.release(current.retention.retention_handle_id);
-          throw new AgentSessionError("capture_byte_capacity");
-        }
-        const assembly = { capture: current.capture, context: current.context, retention: current.retention,
-          signal, budget: this.assemblyBudget() };
-        const captured = this.manifest.input.history_mode !== "scoped_query"
-          ? await this.native.getFull({ ...assembly, maxActions: this.manifest.limits.max_catalog_actions })
-          : await this.native.getCapture({ ...assembly, eagerScope: body.eager_scope as NativeLogicalScopeField[] });
+        let ownedReply: NativeLogicalOwnedCurrentReply | undefined;
+        let captured: NativeLogicalCapturedObservation | undefined;
+        let stackLease: NativeLogicalRetentionLease | undefined, committed = false;
+        let registered: string | undefined, primary: unknown;
         try {
+          const request = { eagerScope: body.eager_scope as NativeLogicalScopeField[],
+            expectedSnapshotId: body.expected_snapshot_id as string | null, signal };
+          const current = this.manifest.execution_policy
+            ? (ownedReply = await this.native.currentOwned(request)).data
+            : (await this.native.current(request)).data;
+          if (!current.capture || !current.context || !["captured", "partial"].includes(current.status))
+            throw new AgentSessionError(`query_current_${current.status}`);
+          if (current.capture.byte_count > this.manifest.limits.max_capture_bytes) {
+            if (!ownedReply && current.retention) await this.native.release(current.retention.retention_handle_id);
+            throw new AgentSessionError("capture_byte_capacity");
+          }
+          const assembly = { capture: current.capture, context: current.context, retention: current.retention,
+            signal, budget: this.assemblyBudget(), ...(ownedReply ? { readerLease: ownedReply.takeRetention() } : {}) };
+          captured = this.manifest.input.history_mode !== "scoped_query"
+            ? await this.native.getFull({ ...assembly, maxActions: this.manifest.limits.max_catalog_actions })
+            : await this.native.getCapture({ ...assembly, eagerScope: body.eager_scope as NativeLogicalScopeField[] });
+          if (ownedReply) stackLease = captured.transferRetention();
           this.checkActive(epoch, signal);
           const catalog = this.manifest.input.history_mode !== "scoped_query" ? (captured as NativeLogicalFullCapture).actions : null;
-          const id = await this.register(captured, catalog, null), a = this.ledger.get(id);
-          return { method: query.method, acquisition_id: id, value: { capture: a.capture, observation: a.observation,
-            catalog: a.catalog, catalog_materialized: a.catalog_materialized } };
-        } finally { await captured.dispose(); }
+          const id = await this.register(captured, catalog, null); registered = id;
+          if (stackLease) { this.readerLeases.set(id, stackLease); committed = true; }
+          const acquisition = this.ledger.get(id);
+          return { method: query.method, acquisition_id: id, value: { capture: acquisition.capture, observation: acquisition.observation,
+            catalog: acquisition.catalog, catalog_materialized: acquisition.catalog_materialized } };
+        } catch (error) {
+          primary = error;
+          if (registered && this.knownAcquisitions.has(registered)) {
+            try { await this.releaseAcquisition(registered); }
+            catch (cleanup) { primary = new AggregateError([error, cleanup], "native Current registration/map cleanup failed"); }
+          }
+          throw primary;
+        } finally {
+          const errors: unknown[] = [];
+          if (!committed) try { await stackLease?.dispose(); } catch (error) { errors.push(error); }
+          try { await captured?.dispose(); } catch (error) { errors.push(error); }
+          try { await ownedReply?.dispose(); } catch (error) { errors.push(error); }
+          if (errors.length) throw new AggregateError(primary === undefined ? errors : [primary, ...errors], "native Current owner cleanup failed");
+        }
       }
+
       validateNativeLogicalRequest(query.method, args);
       if (query.method === "read") {
         const capture = [...this.knownAcquisitions].find(id => this.ledger.get(id).capture.capture_id === args.capture_id);
@@ -689,27 +771,38 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     await this.controller.credentials(); this.checkActive(epoch, signal);
     await this.emit("controller_acquired", { ...this.context(), controller: "held" });
     this.checkActive(epoch, signal);
+    if (this.freshDecision) throw new AgentSessionError("fresh_decision_requires_changed_acknowledged_input");
     const requestId = `request-${randomUUID()}`;
-    await this.emit("native_submission_requested", { ...this.context(), request_id: requestId,
-      basis_acquisition_id: a.acquisition_id, snapshot_id: String(a.observation.snapshot_id), action_id: action.action_id,
-      catalog_digest: String(descriptor.digest), run_id: this.options.evidence.runId, runtime_instance_id: String(a.capture.session && (a.capture.session as Record<string, unknown>).runtime_instance_id) });
+    const intent = { ...this.context(), request_id: requestId, basis_acquisition_id: a.acquisition_id,
+      snapshot_id: String(a.observation.snapshot_id), action_id: action.action_id,
+      catalog_digest: String(descriptor.digest), run_id: this.options.evidence.runId,
+      runtime_instance_id: String((a.capture.session as Record<string, unknown>).runtime_instance_id) };
+    const optIn = this.manifest.execution_policy !== undefined;
+    let intentRecorded = false, dispatchBinding: Readonly<NativeLogicalDispatchBinding> | undefined;
+    if (!optIn) { await this.emit("native_submission_requested", intent); intentRecorded = true; }
     let lookup, started = false;
     try {
       this.checkActive(epoch, signal);
-      // Once offered to the owning SDK, Human/deadline cannot rewrite its real
-      // original terminal outcome. The bounded transport owns this submit wait.
       lookup = await this.native.submit({ requestId, expectedSnapshotId: String(a.observation.snapshot_id), actionId: action.action_id,
-        preSubmitSignal: signal, onSubmitStart: () => {
+        preSubmitSignal: signal, ...(optIn ? { onDispatchBinding: async (binding: Readonly<NativeLogicalDispatchBinding>) => {
           this.checkActive(epoch, signal);
+          if (binding.runtime_instance_id !== intent.runtime_instance_id) throw new AgentSessionError("dispatch_runtime_binding");
+          dispatchBinding = immutable({ ...binding });
+          await this.emit("native_submission_requested", { ...intent, dispatch_binding: dispatchBinding });
+          intentRecorded = true;
+          this.checkActive(epoch, signal);
+        } } : {}), onSubmitStart: () => {
+          this.checkActive(epoch, signal);
+          if (optIn && (!dispatchBinding || !intentRecorded)) throw new AgentSessionError("sdk_dispatch_binding_unavailable");
           if (!this.owner.consumeSubmission()) { this.expireBudget(); throw new AgentSessionError("autonomy_budget_exhausted"); }
           started = true;
         } });
     } catch (error) {
       if (!started) {
-        await this.emit("native_submission_not_started", { ...this.context(), request_id: requestId,
+        if (intentRecorded) await this.emit("native_submission_not_started", { ...this.context(), request_id: requestId,
           submission_epoch: epoch, reason: errorMessage(error) });
-        await this.handoff(`native_submit_not_started:${errorMessage(error)}`);
-        return { type: "not_admitted", reason: "native_submit_not_started", status: this.status() };
+        if (!optIn || !this.terminationReason) await this.handoff(`native_submit_not_started:${errorMessage(error)}`);
+        return { type: "not_admitted", reason: optIn ? this.terminationReason ?? "native_submit_not_started" : "native_submit_not_started", status: this.status() };
       }
       await this.taint(`native_submit_unknown:${errorMessage(error)}`);
       return { type: "unknown", error: errorMessage(error), status: this.status() };
@@ -718,7 +811,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.pending = immutable({ request_id: requestId, run_id: this.options.evidence.runId,
         runtime_instance_id: this.environment!.runtime_instance_id, session_id: this.sessionId, submission_epoch: epoch,
         basis_acquisition_id: a.acquisition_id, snapshot_id: String(a.observation.snapshot_id), action_id: action.action_id,
-        status: "pending", reason: null });
+        status: "pending", reason: null, ...(dispatchBinding ? { dispatch_binding: dispatchBinding } : {}) });
       this.lastResult = { request_id: requestId, snapshot_id: String(a.observation.snapshot_id), action_id: action.action_id,
         status: "pending", delivery: null, execution: null, effect: null, cancel: null, reason: null };
       await this.emit("native_request_pending", { ...this.context(), original: this.pending });
@@ -726,14 +819,83 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       return { type: "unknown", error: "native_request_pending", status: this.status() };
     }
     const result = lookup.result.data; this.recordResult(result);
+    this.countOriginalTerminal(result, dispatchBinding);
     await this.emit("native_result", { ...this.context(), result });
     if (result.delivery === "partially_delivered" || result.delivery === "unknown") {
       await this.taint(`native_delivery_${result.delivery}`); return { type: "unknown", error: `native_delivery_${result.delivery}`, status: this.status() };
     }
-    if (result.delivery !== "delivered" || this.mode === "one_step" || epoch !== this.owner.epoch || this.stopping) await this.handoff(`native_delivery_${result.delivery}`);
+    if (optIn && isKnownStaleResult(result)) {
+      // Counting precedes this gate: a threshold or late Stop result still counts.
+      const ineligible = dispatchBinding ? this.freshDecisionIneligibility(epoch, dispatchBinding) : "original_terminal_dispatch_binding";
+      if (ineligible === null) {
+        const policy = this.manifest.execution_policy!;
+        const limit = this.knownStaleRejections >= policy.max_known_stale_rejections ? "known_stale_rejection_limit"
+          : this.consecutiveKnownStaleRejections >= policy.max_consecutive_known_stale_rejections ? "known_stale_streak_limit" : null;
+        if (limit) await this.handoff(limit);
+        else {
+          if (!this.ledger.consumptionId) throw new AgentSessionError("known_stale_requires_original_consumption");
+          const outcome: AgentOperationalOutcome = immutable({ schema: AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA,
+            basis_acquisition_id: a.acquisition_id, action_id: action.action_id, consumption_id: this.ledger.consumptionId,
+            state_version: this.ledger.stateVersion, result });
+          this.freshDecision = { outcome, unit: this.ledger.nativeUnit(a.acquisition_id), advancedTo: null };
+          await this.emit("native_stale_decision_deferred", { ...this.context(), request_id: requestId,
+            basis_acquisition_id: a.acquisition_id, consumption_id: outcome.consumption_id, state_version: outcome.state_version,
+            known_stale_rejections: this.knownStaleRejections, consecutive_known_stale_rejections: this.consecutiveKnownStaleRejections });
+          this.checkActive(epoch, signal);
+          return { type: "fresh_decision_required", original_request_id: requestId, status: this.status() };
+        }
+      } else if (!this.terminationReason) await this.handoff(ineligible);
+      return { type: "not_delivered", reason: this.terminationReason ?? "native_delivery_not_started", status: this.status() };
+    }
+    if (result.delivery !== "delivered" || this.mode === "one_step" || epoch !== this.owner.epoch || this.stopping) {
+      if (!optIn || !this.terminationReason) await this.handoff(`native_delivery_${result.delivery}`);
+    }
     if (!this.owner.available() && this.mode !== "human") this.expireBudget();
-    return { type: result.delivery === "delivered" ? "delivered" : "not_delivered", status: this.status() };
+    if (result.delivery === "delivered") return { type: "delivered", status: this.status() };
+    return { type: "not_delivered", ...(optIn ? { reason: this.terminationReason ?? `native_delivery_${result.delivery}` } : {}), status: this.status() };
   }
+  private countOriginalTerminal(result: NativeLogicalResult, binding?: Readonly<NativeLogicalDispatchBinding>): void {
+    if (!this.manifest.execution_policy) return;
+    if (!binding || !result.attribution || Object.keys(binding).some(key =>
+      result.attribution![key as keyof NativeLogicalDispatchBinding] !== binding[key as keyof NativeLogicalDispatchBinding]))
+      throw new AgentSessionError("original_terminal_dispatch_binding");
+    const fingerprint = createHash("sha256").update(canonicalJson(result)).digest("hex");
+    const known = this.countedTerminalResults.get(result.request_id);
+    if (known !== undefined) {
+      if (known !== fingerprint) throw new AgentSessionError("original_terminal_result_conflict");
+      return;
+    }
+    this.countedTerminalResults.set(result.request_id, fingerprint);
+    if (result.delivery === "delivered") this.consecutiveKnownStaleRejections = 0;
+    else if (isKnownStaleResult(result)) { this.knownStaleRejections++; this.consecutiveKnownStaleRejections++; }
+  }
+  private freshDecisionIneligibility(epoch: number, binding: Readonly<NativeLogicalDispatchBinding>): string | null {
+    if (this.terminationReason) return this.terminationReason;
+    if (this.stopping || this.stopped) return "stopped";
+    if (this.mode !== "auto" || this.owner.epoch !== epoch) return "human_recovery";
+    if (this.agentUncertain || this.tainted || this.pending || this.sampleSegmentEnded || this.renewalFailed)
+      return "runtime_fresh_decision_fenced";
+    if (!this.owner.available()) { this.expireBudget(); return this.terminationReason ?? "autonomy_budget_exhausted"; }
+    const controller = this.controller.snapshot();
+    if (this.controllerStatus() !== "held" || controller.client_session_closed === true || controller.client_revoked === true)
+      return "runtime_controller_unresolved";
+    if (controller.client_session_id !== binding.client_session_id || controller.controller_lease_id !== binding.controller_lease_id
+      || controller.controller_generation !== binding.controller_generation) return "runtime_controller_binding_changed";
+    if (typeof controller.controller_expires_at !== "string" || !(Date.parse(controller.controller_expires_at) > Date.now()))
+      return "runtime_controller_expired";
+    return null;
+  }
+  private checkFreshUnit(candidate: Readonly<AgentNativeUnitWitness>, requireAdvance: boolean): void {
+    const previous = this.freshDecision?.unit; if (!previous) return;
+    if (candidate.generation !== previous.generation) throw new AgentSessionError("native_generation_requires_explicit_reset");
+    if (candidate.revision < previous.revision) throw new AgentSessionError("native_revision_regressed");
+    if (candidate.occurrence === previous.occurrence) {
+      if (candidate.revision !== previous.revision) throw new AgentSessionError("same_occurrence_revision_drift");
+      if (candidate.coherence !== previous.coherence) throw new AgentSessionError("same_occurrence_coherence_drift");
+      if (requireAdvance) throw new AgentSessionError("fresh_decision_requires_changed_native_unit");
+    } else if (candidate.revision <= previous.revision) throw new AgentSessionError("native_revision_not_newer");
+  }
+
   private recordResult(result: NativeLogicalResult): void {
     this.lastResult = { request_id: result.request_id, snapshot_id: result.snapshot_id,
       action_id: result.action?.action_id ?? null, status: "terminal", delivery: result.delivery,
@@ -755,10 +917,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     } finally { this.releaseInFlight -= 1; }
   }
   private async handoff(reason: string): Promise<void> {
-    await this.endSampleSegment(reason);
+    this.terminationReason ??= reason;
+    await this.endSampleSegment(this.manifest.execution_policy ? this.terminationReason : reason);
     this.mode = "human"; this.owner.end("mode_changed");
     await this.release().catch(() => undefined);
-    await this.emit("handoff_to_human", { ...this.context(), reason, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
+    await this.emit("handoff_to_human", { ...this.context(), reason: this.manifest.execution_policy ? this.terminationReason : reason, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
   private async failClosed(reason: string): Promise<void> {
     this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20);
@@ -773,6 +936,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private expireBudget(): void {
     if (this.budgetFenced || this.stopped) return;
+    this.terminationReason ??= "autonomy_budget_exhausted";
     this.budgetFenced = true; this.owner.exhaust("deadline"); this.owner.advanceEpoch();
     this.owner.cancelActive("autonomy_budget_exhausted"); this.mode = "human";
     const released = this.release().catch(() => undefined);
@@ -830,7 +994,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private failRenewal(gap: Record<string, unknown>): void {
     if (this.renewalFailed || this.stopped || this.stopping) return;
-    this.renewalFailed = true; this.owner.advanceEpoch();
+    this.renewalFailed = true;
+    if (this.manifest.execution_policy) this.terminationReason ??= "native_subscription_unavailable";
+    this.owner.advanceEpoch();
     this.owner.cancelActive("native_subscription_unavailable"); this.mode = "human"; this.owner.end("mode_changed");
     const released = this.release().catch(() => undefined);
     this.renewalHandoff = { gap, released };
@@ -843,9 +1009,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const pending = this.renewalHandoff;
     if (!pending) return;
     this.renewalHandoff = null;
-    await pending.released; await this.endSampleSegment("native_subscription_unavailable"); this.ledger.recordGap(pending.gap);
+    const reason = this.manifest.execution_policy ? this.terminationReason ?? "native_subscription_unavailable" : "native_subscription_unavailable";
+    await pending.released; await this.endSampleSegment(reason); this.ledger.recordGap(pending.gap);
     await this.emit("native_gap", { ...this.context(), gap: pending.gap });
-    await this.emit("handoff_to_human", { ...this.context(), reason: "native_source_gap",
+    await this.emit("handoff_to_human", { ...this.context(), reason: this.manifest.execution_policy ? reason : "native_source_gap",
       autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
   private async flushRenewalAdvisories(): Promise<void> {
@@ -875,6 +1042,49 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       } };
   }
   private async finishStop(): Promise<void> {
+    if (!this.manifest.execution_policy) return this.finishStopLegacy();
+    if (this.stopped) return;
+    this.stopping = true; this.terminationReason ??= "stopped"; this.owner.end("stopped");
+    const errors: unknown[] = [];
+    const attempt = async (operation: () => unknown | Promise<unknown>) => {
+      try { await operation(); }
+      catch (error) {
+        errors.push(error); this.tainted = true;
+        this.taintReason ??= `native_stop_cleanup_failed:${errorMessage(error)}`;
+      }
+    };
+    try {
+      await attempt(() => this.endSampleSegment(this.terminationReason!));
+      await attempt(async () => { await this.sampleOfferEvidence; });
+      await attempt(() => this.cleanupSampleQueries(this.agentUncertain));
+      await attempt(() => this.quiesceRenewal());
+      await attempt(() => this.flushRenewalAdvisories());
+      await attempt(() => this.flushRenewalFailure());
+      await attempt(() => this.release());
+      if (this.pending) { this.tainted = true; this.taintReason = "stopped_with_unresolved_request"; }
+      this.mode = "human";
+    } finally {
+      // Registration remains available for every original-reader release attempt.
+      // One failure must not skip another lease or leave the child alive.
+      for (const id of new Set([...this.knownAcquisitions, ...this.readerLeases.keys()]))
+        await attempt(() => this.releaseAcquisition(id));
+      if (this.native.subscription) await attempt(async () => { await this.native.detach(); });
+      await attempt(() => this.controller.close());
+      await attempt(() => this.port.close());
+      await attempt(() => this.ledger.close()); this.knownAcquisitions.clear(); this.knownActions.clear();
+      for (const held of this.actionReservations.values()) for (const reservation of held)
+        await attempt(() => reservation.release());
+      this.actionReservations.clear();
+      for (const payload of this.samplePayloads.values()) await attempt(() => payload.reservation.release());
+      this.samplePayloads.clear(); this.freshDecision = null;
+      await attempt(() => this.emit("stopped", { ...this.context(), autonomy_budget: this.budgetStatus(), controller: this.controllerStatus(),
+        pending_request: this.pending, agent_state: this.agentUncertain ? "uncertain" : "known" }));
+      await attempt(() => this.options.evidence.finalize({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }));
+      this.stopped = true;
+    }
+    if (errors.length) throw new AggregateError(errors, "native Stop attempted all owned cleanup");
+  }
+  private async finishStopLegacy(): Promise<void> {
     if (this.stopped) return;
     this.stopping = true; this.owner.end("stopped");
     await this.endSampleSegment("stopped");

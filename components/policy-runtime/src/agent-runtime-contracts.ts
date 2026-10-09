@@ -1,5 +1,6 @@
 import type { RuntimeEnvironmentBinding, RuntimeMode, RuntimeStatus } from "./contracts.js";
 import type { AgentAdapterIdentity, AgentDirective, AgentInputSpec, AgentPrefix } from "./agent-session-contracts.js";
+import type { NativeLogicalDispatchBinding } from "@rsgcsg/sts2-connector-client";
 
 /** Operational native profile projection. It exposes neither package paths nor
  * adapter commands, environment credentials, native operands or Model state. */
@@ -44,6 +45,7 @@ export interface AgentPendingRequest {
   request_id: string; run_id: string; runtime_instance_id: string; session_id: string;
   submission_epoch: number; basis_acquisition_id: string; snapshot_id: string;
   action_id: string; status: "pending" | "unresolved"; reason: string | null;
+  dispatch_binding?: Readonly<NativeLogicalDispatchBinding>;
 }
 export type AgentReconcileResolution = "resolved" | "pending" | "unresolved" | "tainted";
 export interface AgentReconcileResult {
@@ -51,7 +53,9 @@ export interface AgentReconcileResult {
 }
 
 export type AgentRuntimeTickResult =
-  | { type: "human" | "observation" | "awaited" | "shadow" | "delivered" | "not_delivered" | "closed"; status: AgentRuntimeStatus }
+  | { type: "fresh_decision_required"; original_request_id: string; status: AgentRuntimeStatus }
+  | { type: "not_delivered"; reason?: string; status: AgentRuntimeStatus }
+  | { type: "human" | "observation" | "awaited" | "shadow" | "delivered" | "closed"; status: AgentRuntimeStatus }
   | { type: "not_admitted"; reason: string; status: AgentRuntimeStatus }
   | { type: "unknown"; error: string; status: AgentRuntimeStatus };
 

@@ -150,7 +150,7 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
     try {
       await f.runtime.tick(); await f.runtime.setMode("human"); const saved = await f.runtime.exportAgentState();
       const child = (f.port as unknown as { child: { pid: number }; closed: boolean }).child;
-      replacement = NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, f.manifestPath, "act"], f.manifest.adapter, f.manifest.limits, { byteBudget: f.port.byteBudget });
+      replacement = NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, f.manifestPath, "act"], f.manifest.adapter, f.manifest.limits, { byteBudget: f.port.byteBudget, executionPolicy: f.manifest.execution_policy });
       const before = f.source.requests.filter(r => r.path.endsWith("/capabilities")).length; f.source.capabilitiesGate = capabilities.promise;
       const restoring = f.runtime.restoreAgentState(saved.state, replacement);
       const rejected = expect(restoring).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
@@ -367,7 +367,7 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       const bytes = await readFile(join(f.evidence.directory, saved.receipt.path));
       expect(bytes.length).toBe(saved.receipt.bytes);
       const replacement = NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, f.manifestPath, "act"],
-        f.manifest.adapter, f.manifest.limits, { byteBudget: f.port.byteBudget });
+        f.manifest.adapter, f.manifest.limits, { byteBudget: f.port.byteBudget, executionPolicy: f.manifest.execution_policy });
       await f.runtime.restoreAgentState(saved.state, replacement);
       expect(f.runtime.status().session).toMatchObject({ state_version: 1, agent_state: "known" });
       await f.runtime.setMode("one_step");

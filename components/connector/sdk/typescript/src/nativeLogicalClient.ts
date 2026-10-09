@@ -3,19 +3,19 @@ import { type JsonObject } from "./json.js";
 import { type DecodedPlayerPayload } from "./protocol.js";
 import {
   NATIVE_LOGICAL_PROFILE, NATIVE_LOGICAL_SCOPE, NATIVE_LOGICAL_MAX_PAGE_BYTES,
-  decodeNativeLogicalCapabilities, decodeNativeLogicalAttach, decodeNativeLogicalCurrent,
+  decodeNativeLogicalCapabilities, decodeNativeLogicalAttach, decodeNativeLogicalCurrent, decodeNativeLogicalOwnedCurrent,
   decodeNativeLogicalRead, decodeNativeLogicalCatalogPage, decodeNativeLogicalResolve,
   decodeNativeLogicalEvents, decodeNativeLogicalAwait, decodeNativeLogicalCancelWait,
   decodeNativeLogicalDetach, decodeNativeLogicalRenew, decodeNativeLogicalRetain,
-  decodeNativeLogicalRelease, decodeNativeLogicalResult, validateNativeLogicalScope,
+  decodeNativeLogicalRelease, decodeNativeLogicalResult, decodeNativeLogicalDispatchBinding, validateNativeLogicalScope,
   validateNativeLogicalPrefix, validateNativeLogicalExpression, validateNativeLogicalRequest,
   isNativeLogicalPendingLookup, type NativeLogicalResult,
   type NativeLogicalTransport, type NativeLogicalTransportOperation, type NativeLogicalTransportOptions,
   type NativeLogicalCapabilities, type NativeLogicalSubscription, type NativeLogicalScopeField,
   type NativeLogicalPrefix, type NativeLogicalExpression, type NativeLogicalEventAvailability,
-  type NativeLogicalCapture
+  type NativeLogicalCapture, type NativeLogicalCurrent, type NativeLogicalDispatchBinding
 } from "./nativeLogical.js";
-import { assembleNativeLogicalCapture, assembleNativeLogicalObservation, type NativeLogicalAssemblyInput, type NativeLogicalFullCapture,
+import { assembleNativeLogicalCapture, assembleNativeLogicalObservation, NativeLogicalRetentionLease, type NativeLogicalAssemblyInput, type NativeLogicalFullCapture,
   type NativeLogicalScopedAssemblyInput, type NativeLogicalCapturedObservation,
   type NativeLogicalByteBudget } from "./nativeLogicalAssembly.js";
 
@@ -36,6 +36,26 @@ export interface NativeLogicalAwaitInput {
 }
 export type NativeLogicalResultLookup = { status: "pending"; requestId: string } |
   { status: "terminal"; result: DecodedPlayerPayload<NativeLogicalResult> };
+export type { NativeLogicalDispatchBinding } from "./nativeLogical.js";
+export class NativeLogicalOwnedCurrentReply {
+  readonly raw: DecodedPlayerPayload<NativeLogicalCurrent>["raw"];
+  readonly data: NativeLogicalCurrent;
+  readonly encodedByteCount: number;
+  #reader?: NativeLogicalRetentionLease;
+  #disposed?: Promise<void>;
+  constructor(reply: DecodedPlayerPayload<NativeLogicalCurrent> & { encodedByteCount: number }, reader?: NativeLogicalRetentionLease) {
+    this.raw = reply.raw; this.data = reply.data; this.encodedByteCount = reply.encodedByteCount; this.#reader = reader;
+  }
+  takeRetention(): NativeLogicalRetentionLease {
+    if (!this.#reader) throw new Error("native logical owned Current reader already moved or unavailable");
+    const reader = this.#reader; this.#reader = undefined; return reader;
+  }
+  dispose(): Promise<void> {
+    if (this.#disposed) return this.#disposed;
+    const reader = this.#reader; this.#reader = undefined;
+    return this.#disposed = reader ? reader.dispose() : Promise.resolve();
+  }
+}
 export interface NativeLogicalSubmitInput {
   requestId: string;
   expectedSnapshotId: string;
@@ -48,6 +68,9 @@ export interface NativeLogicalSubmitInput {
   /** Synchronous admission notification before the final cancellation check.
    * This proves neither HTTP delivery, native input, nor Commit. */
   onSubmitStart?: () => void;
+  /** Optional immutable actual-body observation before the existing synchronous
+   * start hook. Failure/cancellation here cannot cause a transport POST. */
+  onDispatchBinding?: (binding: Readonly<NativeLogicalDispatchBinding>) => void | Promise<void>;
 }
 
 /** Thin client over the one registered Player Environment session. Scope and
@@ -113,6 +136,51 @@ export class NativeLogicalSession {
         throw new Error("native logical Current returned a different requested snapshot");
     }
     return reply;
+  }
+
+  async currentOwned(input: { eagerScope?: readonly NativeLogicalScopeField[]; expectedSnapshotId?: string | null;
+    signal?: AbortSignal } = {}): Promise<NativeLogicalOwnedCurrentReply> {
+    const eagerScope = input.eagerScope ?? NATIVE_LOGICAL_SCOPE;
+    validateNativeLogicalScope(eagerScope);
+    const capabilities = await this.negotiated(input.signal);
+    if (!capabilities.supported_methods.includes("current_owned")
+      || !capabilities.implemented_mechanisms.includes("native_current_reader_owned_v1"))
+      throw new Error("native logical owned Current is not advertised; no legacy fallback");
+    const original = this.identity();
+    const requestOriginal = this.#environment.nativeLogicalRequest.bind(this.#environment);
+    const body = { client_session_id: original.clientSessionId, eager_scope: [...eagerScope],
+      expected_snapshot_id: input.expectedSnapshotId ?? null };
+    validateNativeLogicalRequest("current_owned", body); input.signal?.throwIfAborted();
+    const response = await requestOriginal("current_owned", body, { signal: input.signal, maxResponseBytes: 1024 * 1024 });
+    // Only a fully decoded coherent reply provides a handle safe to own. Do not
+    // let post-reply identity/cancellation checks strand this known reader pin.
+    const decoded = decodeNativeLogicalOwnedCurrent(response.raw);
+    const retention = decoded.data.retention;
+    const lease = retention ? new NativeLogicalRetentionLease(retention.capture, retention, async () => {
+      const releaseBody = { client_session_id: original.clientSessionId, retention_handle_id: retention.retention_handle_id };
+      validateNativeLogicalRequest("release", releaseBody);
+      const response = await requestOriginal("release", releaseBody, { maxResponseBytes: 1024 * 1024 });
+      const released = decodeNativeLogicalRelease(response.raw).data;
+      if (released.retention_handle_id !== retention.retention_handle_id || released.status !== "released" || !released.released)
+        throw new Error("native logical original reader release was not confirmed");
+    }) : undefined;
+    const reply = new NativeLogicalOwnedCurrentReply({ ...decoded, encodedByteCount: response.encodedByteCount }, lease);
+    try {
+      const currentIdentity = this.identity();
+      if (currentIdentity.clientSessionId !== original.clientSessionId || currentIdentity.runtimeInstanceId !== original.runtimeInstanceId)
+        throw new Error("native logical owned Current original registration changed");
+      input.signal?.throwIfAborted();
+      if (reply.data.capture) {
+        this.checkCapture(reply.data.capture);
+        if (input.expectedSnapshotId != null && reply.data.capture.snapshot_id !== input.expectedSnapshotId)
+          throw new Error("native logical owned Current returned a different requested snapshot");
+      }
+      return reply;
+    } catch (error) {
+      try { await reply.dispose(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "native logical owned Current and original reader cleanup failed"); }
+      throw error;
+    }
   }
 
   async read(input: { captureId: string; cursor: string; maxBytes?: number; signal?: AbortSignal }) {
@@ -238,6 +306,8 @@ export class NativeLogicalSession {
   }
 
   async submit(input: NativeLogicalSubmitInput): Promise<NativeLogicalResultLookup> {
+    const onDispatchBinding = input.onDispatchBinding, onSubmitStart = input.onSubmitStart;
+    const requestId = input.requestId, expectedSnapshotId = input.expectedSnapshotId, actionId = input.actionId;
     const signals = [input.preSubmitSignal, input.signal].filter((value): value is AbortSignal => value !== undefined);
     const preSubmitSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     preSubmitSignal?.throwIfAborted();
@@ -246,27 +316,42 @@ export class NativeLogicalSession {
     preSubmitSignal?.throwIfAborted();
     const credentials = await this.#controller.credentials();
     preSubmitSignal?.throwIfAborted();
-    const body = { request_id: input.requestId, expected_snapshot_id: input.expectedSnapshotId,
-      bound_action_id: input.actionId, client_session_id: credentials.clientSessionId,
+    const body = Object.freeze({ request_id: requestId, expected_snapshot_id: expectedSnapshotId,
+      bound_action_id: actionId, client_session_id: credentials.clientSessionId,
       controller_lease_id: credentials.controllerLeaseId, controller_generation: credentials.controllerGeneration,
-      input_profile: NATIVE_LOGICAL_PROFILE };
+      input_profile: NATIVE_LOGICAL_PROFILE });
     validateNativeLogicalRequest("submit", body);
     preSubmitSignal?.throwIfAborted();
-    input.onSubmitStart?.();
+    const dispatchBinding = Object.freeze({ runtime_instance_id: originalIdentity.runtimeInstanceId,
+      client_session_id: body.client_session_id, controller_lease_id: body.controller_lease_id,
+      controller_generation: body.controller_generation });
+    if (onDispatchBinding) {
+      if (dispatchBinding.client_session_id !== originalIdentity.clientSessionId)
+        throw new Error("native logical prepared dispatch changed the original registered client");
+      await onDispatchBinding(dispatchBinding);
+      preSubmitSignal?.throwIfAborted();
+    }
+    onSubmitStart?.();
     preSubmitSignal?.throwIfAborted(); // Reentrant Stop in the notification prevents dispatch.
     const response = await this.#environment.nativeLogicalRequest("submit", body, { maxResponseBytes: 2 * 1024 * 1024 });
     if (response.statusCode === 202 && isNativeLogicalPendingLookup(response.raw))
-      return { status: "pending", requestId: input.requestId };
+      return { status: "pending", requestId: body.request_id };
     const reply = decodeNativeLogicalResult(response.raw);
-    if (reply.data.request_id !== input.requestId || reply.data.snapshot_id !== input.expectedSnapshotId ||
-        reply.data.action !== null && reply.data.action.action_id !== input.actionId)
+    if (reply.data.request_id !== body.request_id || reply.data.snapshot_id !== body.expected_snapshot_id ||
+        reply.data.action !== null && reply.data.action.action_id !== body.bound_action_id)
       throw new Error("native logical submit returned a different request basis");
     this.checkAttribution(reply.data.attribution, originalIdentity);
+    if (onDispatchBinding) this.checkDispatchBinding(reply.data.attribution, dispatchBinding);
     return { status: "terminal", result: reply }; // Never retry, poll, reinterpret partial input or infer an effect.
   }
 
-  async result(requestId: string, signal?: AbortSignal): Promise<NativeLogicalResultLookup> {
+  async result(requestId: string, signal?: AbortSignal, expectedDispatchBinding?: Readonly<NativeLogicalDispatchBinding>): Promise<NativeLogicalResultLookup> {
     const originalIdentity = this.identity();
+    const expected = expectedDispatchBinding === undefined ? undefined
+      : decodeNativeLogicalDispatchBinding({ ...expectedDispatchBinding }).data;
+    if (expected && (expected.runtime_instance_id !== originalIdentity.runtimeInstanceId ||
+        expected.client_session_id !== originalIdentity.clientSessionId))
+      throw new Error("native logical result binding does not belong to the original registration");
     const response = await this.#environment.nativeLogicalRequest("result", { request_id: requestId },
       { signal, maxResponseBytes: 2 * 1024 * 1024 });
     if (response.statusCode === 202 && isNativeLogicalPendingLookup(response.raw))
@@ -274,12 +359,14 @@ export class NativeLogicalSession {
     const reply = decodeNativeLogicalResult(response.raw);
     if (reply.data.request_id !== requestId) throw new Error("native logical result changed original request ID");
     this.checkAttribution(reply.data.attribution, originalIdentity);
+    if (expected) this.checkDispatchBinding(reply.data.attribution, expected);
     return { status: "terminal", result: reply };
   }
 
   async getFull(input: NativeLogicalAssemblyInput): Promise<NativeLogicalFullCapture> {
-    const capabilities = await this.admitAssembly(input);
-    return assembleNativeLogicalCapture({ ...input,
+    const owned = { ...input };
+    const capabilities = await this.admitAssembly(owned);
+    return assembleNativeLogicalCapture({ ...owned,
       chunkBytes: input.chunkBytes ?? Math.min(1024 * 1024, capabilities.limits.max_read_bytes),
       pageLimit: input.pageLimit ?? Math.min(100, capabilities.limits.max_actions),
       maxPageBytes: input.maxPageBytes ?? Math.min(NATIVE_LOGICAL_MAX_PAGE_BYTES, capabilities.limits.max_page_bytes),
@@ -287,8 +374,9 @@ export class NativeLogicalSession {
   }
 
   async getCapture(input: NativeLogicalScopedAssemblyInput): Promise<NativeLogicalCapturedObservation> {
-    const capabilities = await this.admitAssembly(input);
-    return assembleNativeLogicalObservation({ ...input,
+    const owned = { ...input };
+    const capabilities = await this.admitAssembly(owned);
+    return assembleNativeLogicalObservation({ ...owned,
       chunkBytes: input.chunkBytes ?? Math.min(1024 * 1024, capabilities.limits.max_read_bytes) }, this);
   }
 
@@ -330,8 +418,8 @@ export class NativeLogicalSession {
       this.checkCapture(input.capture);
       return capabilities;
     } catch (error) {
-      if (input.retention) {
-        try { await this.release(input.retention.retention_handle_id); }
+      if (input.readerLease || input.retention) {
+        try { if (input.readerLease) await input.readerLease.dispose(); else await this.release(input.retention!.retention_handle_id); }
         catch (cleanup) { throw new AggregateError([error, cleanup], "native logical admission and owned retention cleanup failed"); }
       }
       throw error;
@@ -367,6 +455,12 @@ export class NativeLogicalSession {
     originalIdentity = this.identity()): void {
     if (attribution && (attribution.runtime_instance_id !== originalIdentity.runtimeInstanceId ||
       attribution.client_session_id !== originalIdentity.clientSessionId)) throw new Error("native logical result belongs to another registered client");
+  }
+  private checkDispatchBinding(attribution: NativeLogicalResult["attribution"], expected: Readonly<NativeLogicalDispatchBinding>): void {
+    if (!attribution || attribution.runtime_instance_id !== expected.runtime_instance_id ||
+        attribution.client_session_id !== expected.client_session_id || attribution.controller_lease_id !== expected.controller_lease_id ||
+        attribution.controller_generation !== expected.controller_generation)
+      throw new Error("native logical terminal result changed the original actual dispatch binding");
   }
   private async cancelFor(subscription: NativeLogicalSubscription, waitId: string) {
     if (!/^[0-9a-f]{32}$/u.test(waitId)) throw new Error("native logical wait ID must be lowercase hexadecimal");

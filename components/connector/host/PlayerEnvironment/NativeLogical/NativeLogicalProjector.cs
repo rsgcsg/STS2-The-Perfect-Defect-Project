@@ -108,6 +108,14 @@ public sealed class NativeLogicalProjector
     public NativeLogicalCurrentReply Current(NativeLogicalPublicFrame frame,
         NativeLogicalCurrentRequest request, DateTimeOffset observedAt, long retentionDeadline,
         Func<long> clock, NativeLogicalCaptureStore store, string? gameContinuityId = null)
+        => CurrentCore(frame, request, observedAt, retentionDeadline, clock, store, gameContinuityId, false);
+    public NativeLogicalCurrentReply CurrentOwned(NativeLogicalPublicFrame frame,
+        NativeLogicalCurrentRequest request, DateTimeOffset observedAt, long retentionDeadline,
+        Func<long> clock, NativeLogicalCaptureStore store, string? gameContinuityId = null)
+        => CurrentCore(frame, request, observedAt, retentionDeadline, clock, store, gameContinuityId, true);
+    private NativeLogicalCurrentReply CurrentCore(NativeLogicalPublicFrame frame,
+        NativeLogicalCurrentRequest request, DateTimeOffset observedAt, long retentionDeadline,
+        Func<long> clock, NativeLogicalCaptureStore store, string? gameContinuityId, bool readerOwned)
     {
         try
         {
@@ -117,13 +125,17 @@ public sealed class NativeLogicalProjector
             var projection = Freeze(frame, request.EagerScope, scopeId, observedAt, retentionDeadline, clock);
             if (request.ExpectedSnapshotId is not null && request.ExpectedSnapshotId != projection.SnapshotId)
                 return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "stale", null, null, null, "stale_snapshot");
-            var sealedProjection = store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt, request.ClientSessionId);
+            NativeLogicalCapturedProjection sealedProjection;
+            NativeLogicalRetentionReference? retention = null;
+            if (readerOwned)
+                (sealedProjection, retention) = store.SealOwnedProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt, request.ClientSessionId);
+            else sealedProjection = store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt, request.ClientSessionId);
             var context = new NativeLogicalObservationContext(NativeLogicalContract.ContextSchema,
                 NativeLogicalContract.Profile, sealedProjection.Capture.SnapshotId, sealedProjection.Capture.CaptureId,
                 gameContinuityId, frame.StreamGeneration, null);
             string status = request.EagerScope.Count == 4 ? "captured" : "partial";
             return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, status, context,
-                sealedProjection.Capture, null, status == "partial" ? "scope_omission" : null);
+                sealedProjection.Capture, retention, status == "partial" ? "scope_omission" : null);
         }
         catch (NativeLogicalException e)
         {
