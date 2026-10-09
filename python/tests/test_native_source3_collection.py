@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib
 import json
+import shutil
+import sys
 import tempfile
 import unittest
 from collections import deque
@@ -102,6 +105,10 @@ class CollectionTests(unittest.TestCase):
                         "inputs": 0,
                     },
                 )
+                if self.behavior.get("reuse_source"):
+                    old = self.behavior["reuse_source"]
+                    self.status["recording_session_id"] = old[0]
+                    self.status["source"].update(segment_id=old[1], epoch_id=old[2])
             elif kind == "close":
                 self.status.update(recording_lifecycle="closed", closeout_status="closed")
             return {
@@ -150,6 +157,16 @@ class CollectionTests(unittest.TestCase):
                     "directory": str(test.root / "direct-evidence"),
                     "training_admission": "not_run",
                 }
+                if test.behavior.get("fresh"):
+                    self.runtime["run_id"] = "fresh-run-fixture"
+                    self.runtime["session"].update(
+                        consumption_id=None,
+                        continuity_token="fresh-continuity",
+                        stream_generation="fresh-stream",
+                    )
+                    self.evidence["run_id"] = "fresh-run-fixture"
+                    if test.behavior.get("warm_state"):
+                        self.runtime["session"]["state_version"] = 1
 
             def message(self, kind, **values):
                 self.mid += 1
@@ -253,7 +270,7 @@ class CollectionTests(unittest.TestCase):
                         "ready",
                         runtime_instance_id="runtime",
                         endpoint=test.config.platform_url,
-                        host_identity={},
+                        host_identity=copy.deepcopy(test.behavior.get("host_identity", {})),
                         record_source3=test.request.record_source3,
                         bootstrap_control_release={
                             "schema": "sts2.host-runtime/reference-controller-handoff-1",
@@ -591,3 +608,491 @@ class CollectorCliTests(unittest.TestCase):
                 ):
                     self.assertEqual(developer_cli.main(arguments), 0)
                 self.assertEqual(calls[0].record_source3, not omit)
+
+
+class FreshEpisodeTests(unittest.TestCase):
+    """Existing synthetic owner fixtures, both actual typed verifiers, genuine App fencing."""
+
+    setUp = CollectionTests.setUp
+    tearDown = CollectionTests.tearDown
+    mock = CollectionTests.mock
+    application = CollectionTests.application
+    child = CollectionTests.child
+    run_collection = CollectionTests.run_collection
+
+    def prepare_prior(self):
+        import sts2_platform_evidence as evidence
+
+        owner_tests = Path(module.ROOT).parent / "components/evidence/tests"
+        sys.path.insert(0, str(owner_tests))
+        try:
+            source_helpers = importlib.import_module("test_source_session_bundle_v3")
+            direct_helpers = importlib.import_module("test_agent_session_run_evidence")
+        finally:
+            sys.path.remove(str(owner_tests))
+        s = source_helpers.SourceSessionBundleV3Tests()
+        s.setUp()
+        self.addCleanup(s.tearDown)
+        epoch, segment = (
+            s.rows("source-attachment-epochs.jsonl")[0],
+            s.rows("source-segments.jsonl")[0],
+        )
+        operation = "a" * 32
+        segment["declaration"]["actor_id"] = "source3-teacher-" + operation
+        s.write_rows("source-attachment-epochs.jsonl", [epoch])
+        s.write_rows("source-segments.jsonl", [segment])
+        observations = [
+            r for r in s.rows("public-observations.jsonl") if r["epoch_id"] == epoch["epoch_id"]
+        ]
+        s.write_rows("public-observations.jsonl", observations)
+        closed = s.rows("source-boundaries.jsonl")[-1]
+        closed.update(
+            sequence=1,
+            segment_id=segment["segment_id"],
+            position=observations[-1]["position"],
+            transition=None,
+            paused_intervals=[],
+        )
+        closed["sealed_epochs"] = closed["sealed_epochs"][:1]
+        s.write_rows("source-boundaries.jsonl", [closed])
+        s.write_rows("canonical-transitions.jsonl", [])
+        receipt = s.read("raw/source-close-receipt.json")
+        receipt.update(
+            final_position=closed["position"],
+            sealed_epochs=closed["sealed_epochs"],
+            final_drains=receipt["final_drains"][:1],
+            epoch_count=1,
+            source_kinds=["agent_protocol"],
+        )
+        s.write("raw/source-close-receipt.json", receipt)
+        payloads = set()
+
+        def collect_refs(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "payload_ref":
+                        payloads.add(child)
+                    else:
+                        collect_refs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_refs(child)
+
+        for row in observations + s.rows("native-input-witnesses.jsonl"):
+            collect_refs(row)
+        for family in ("public-captures", "public-catalogs"):
+            for file in (s.bundle / "raw" / family).rglob("*.bin"):
+                if file.relative_to(s.bundle / "raw").as_posix() not in payloads:
+                    file.unlink()
+        manifest = s.read("source-session-bundle-manifest.json")
+        manifest.update(observation_count=len(observations), source_kinds=["agent_protocol"])
+        s.write("source-session-bundle-manifest.json", manifest)
+        coverage = s.read("raw/source-coverage.json")
+        coverage["status"].update(
+            epoch_id=epoch["epoch_id"],
+            segment_id=segment["segment_id"],
+            declaration=segment["declaration"],
+            observations=len(observations),
+            epochs=1,
+        )
+        s.write("raw/source-coverage.json", coverage)
+        identity = s.read("content-identity.json")
+        identity["source_kinds"] = ["agent_protocol"]
+        s.write("content-identity.json", identity)
+        audit = s.read("audit/source-audit.json")
+        audit.update(source_kinds=["agent_protocol"], observation_count=len(observations))
+        s.write("audit/source-audit.json", audit)
+        # Match the stricter Agent environment digest domain in this synthetic Source fixture.
+        recording = s.read("raw/recording-manifest.json")
+        recording["source_environment"].update(
+            environment_fingerprint="a" * 64, modset_fingerprint="b" * 64
+        )
+        s.write("raw/recording-manifest.json", recording)
+        epoch["context"]["environment"].update(
+            environment_fingerprint="a" * 64, modset_fingerprint="b" * 64
+        )
+        s.write_rows("source-attachment-epochs.jsonl", [epoch])
+        changed_payloads = {}
+        for file in (s.bundle / "raw/public-captures").rglob("*.bin"):
+            value = json.loads(file.read_bytes())
+            value["session"]["environment_fingerprint"] = "a" * 64
+            raw = json.dumps(value, separators=(",", ":")).encode()
+            checksum = hashlib.sha256(raw).hexdigest()
+            relative = f"public-captures/sha256/{checksum[:2]}/{checksum}.bin"
+            target = s.bundle / "raw" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            changed_payloads[file.relative_to(s.bundle / "raw").as_posix()] = (
+                relative,
+                checksum,
+                len(raw),
+            )
+            file.unlink()
+
+        def update_payload_refs(value):
+            if isinstance(value, dict):
+                if value.get("payload_ref") in changed_payloads:
+                    relative, checksum, count = changed_payloads[value["payload_ref"]]
+                    value.update(payload_ref=relative, sha256=checksum, byte_count=count)
+                for child in value.values():
+                    update_payload_refs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    update_payload_refs(child)
+
+        for name in ("public-observations.jsonl", "native-input-witnesses.jsonl"):
+            rows = s.rows(name)
+            update_payload_refs(rows)
+            s.write_rows(name, rows)
+        s.reseal()  # Existing owning integrity helper; no packer or new Source verifier.
+        source = evidence.verify_source_session_bundle_v3(s.bundle).require_value()
+        f = direct_helpers.NativeAgentSessionEvidenceTests()
+        f.setUp()
+        self.addCleanup(f.tearDown)
+        attached = f.event("native_session_attached")["payload"]["environment"]
+        env = source.recording["source_environment"]
+        replacements = {
+            attached["runtime_instance_id"]: env["runtime_instance_id"],
+            attached["environment_fingerprint"]: env["environment_fingerprint"],
+            f.result["request_id"]: source.inputs[0]["input_id"],
+        }
+
+        def replace_values(value):
+            if isinstance(value, dict):
+                return {k: replace_values(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [replace_values(v) for v in value]
+            return replacements.get(value, value) if isinstance(value, str) else value
+
+        f.events = replace_values(f.events)
+        attached = f.event("native_session_attached")["payload"]["environment"]
+        connector = env["connector"]
+        pins = {
+            "connector_artifact_sha256": connector["sha256"],
+            "connector_module_version_id": connector["module_version_id"],
+            "connector_source_revision": connector["source_revision"],
+            "connector_version": connector["version"],
+            "modset_fingerprint": env["modset_fingerprint"],
+        }
+        attached.update(pins)
+        f.agent["requirements"]["environment"].update(pins)
+        f.event("stopped")["payload"]["agent_state"] = "uncertain"
+        f.events.insert(
+            -1,
+            {
+                "schema": module.REPORT_SCHEMA,
+                "kind": "fail_closed",
+                "recorded_at": "2026-10-08T00:00:30.000Z",
+                "sequence": 1,
+                "payload": {
+                    "session_id": "session-fixture",
+                    "recovery_epoch": 0,
+                    "reason": "query_current_source_capture_incomplete",
+                    "agent_state": "uncertain",
+                },
+            },
+        )
+        f.events[-2]["schema"] = "sts2.policy-runtime/agent-session-event-1"
+        f.write()
+        self.prior_output = self.root / "prior"
+        direct_path = self.prior_output / "agent-runs" / f.run["run_id"]
+        shutil.copytree(f.directory, direct_path, dirs_exist_ok=True)
+        direct = evidence.verify_agent_session_run_evidence(direct_path).require_value()
+        public = {
+            "schema": "sts2.policy-runtime/agent-session-status-1",
+            "run_id": direct.run_id,
+            "lifecycle": "stopped",
+            "mode": "human",
+            "controller": "released",
+            "tainted": False,
+            "pending_request": None,
+            "environment": copy.deepcopy(attached),
+            "session": {
+                "agent_state": "uncertain",
+                "continuity_token": "old-continuity",
+                "stream_generation": "old-stream",
+            },
+            "runtime": {
+                "version": f.run["runtime_version"],
+                "code_sha256": f.run["runtime_code_sha256"],
+            },
+            "agent": {"adapter": f.agent["adapter"]},
+            "agent_manifest_sha256": direct.manifest["agent_manifest_sha256"],
+            "autonomy_budget": {"submissions_used": 1},
+        }
+        teacher = {"pid": 123, "actual_exit": True, "code": None, "signal": "SIGKILL"}
+        full = {
+            "schema": "spireagent/native-source3-collector-final-full-v2",
+            "operation_id": operation,
+            "counts": {"result_messages": 1, "known_delivered_choices": 1},
+            "runtime_status": public,
+            "teacher_exit": teacher,
+            "source_closed": True,
+            "record_source3": True,
+            "control_release": {"observation": {"runtime_instance_id": env["runtime_instance_id"]}},
+            "host_exit": {"code": 0, "signal": None, "forced": False},
+        }
+        atomic_json(self.prior_output / "collector-final-full.json", full)
+        raw = (self.prior_output / "collector-final-full.json").read_bytes()
+        final = {
+            **full,
+            "control_release": {
+                "confirmed": True,
+                "runtime_instance_id": env["runtime_instance_id"],
+            },
+            "cleanup_errors": [],
+            "full_record_ref": {
+                "path": "collector-final-full.json",
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+        }
+        self.prior = {
+            "schema": module.REPORT_SCHEMA,
+            "status": "unknown",
+            "operation_id": operation,
+            "actor_id": "source3-teacher-" + operation,
+            "runtime_status": public,
+            "runtime_summary": {
+                "agent_state": "uncertain",
+                "tainted": False,
+                "pending_request": None,
+                "controller": "released",
+            },
+            "child_final": final,
+            "child_final_full": full,
+            "submissions": 1,
+            "actual_choices": 1,
+            "known_delivered_choices": 1,
+            "teacher_exit": teacher,
+            "record_source3": True,
+            "source_closed": True,
+            "runtime_quiescence": "observed_exact_Node_quiesced",
+            "unknown_request_id_projection": None,
+            "child": {
+                "exit_code": 0,
+                "forced_by_parent": False,
+                "reader_terminal": True,
+                "diagnostics_terminal": True,
+            },
+            "source_final_status": {
+                "recording_session_id": source.recording["session_id"],
+                "recording_lifecycle": "closed",
+                "closeout_status": "closed",
+                "source": coverage["status"],
+            },
+            "direct_evidence": {
+                "directory": str(direct_path),
+                "run_id": direct.run_id,
+                "manifest_id": f.run["manifest_id"],
+                "artifact_sha256": f.run["agent_artifact_sha256"],
+            },
+        }
+        self.report_path = self.prior_output / "report.json"
+        self.marker = self.config.state_dir / module.MARKER_FILE
+        self.reseal_report()
+        self.request = replace(
+            self.request,
+            predecessor_report_path=self.report_path,
+            predecessor_source3_bundle=s.bundle.resolve(),
+            predecessor_source3_content_id=source.content_id,
+            predecessor_report_sha256=hashlib.sha256(self.report_path.read_bytes()).hexdigest(),
+            predecessor_marker_sha256=hashlib.sha256(self.marker.read_bytes()).hexdigest(),
+        )
+        self.behavior.update(
+            fresh=True,
+            host_identity={
+                "host": {"runtime_instance_id": "runtime"},
+                "profile": {
+                    "status": "instantiated",
+                    "template_id": "defect-a0-s0",
+                    "profile_id": "fresh-profile",
+                    "generation_id": "fresh-generation",
+                },
+            },
+        )
+
+    def reseal_report(self):
+        atomic_json(self.report_path, self.prior)
+        atomic_json(
+            self.marker,
+            {
+                "schema": module.REPORT_SCHEMA,
+                "status": "unknown",
+                "operation_id": "a" * 32,
+                "output": str(self.prior_output),
+                "report_sha256": hashlib.sha256(self.report_path.read_bytes()).hexdigest(),
+            },
+        )
+        if self.request.predecessor_report_path is not None:
+            self.request = replace(
+                self.request,
+                predecessor_report_sha256=hashlib.sha256(self.report_path.read_bytes()).hexdigest(),
+                predecessor_marker_sha256=hashlib.sha256(self.marker.read_bytes()).hexdigest(),
+            )
+
+    def preflight(self, config, request):
+        prepared = CollectionTests.preflight(self, config, request)
+        prepared["fresh_episode_boundary"] = module.verified_fresh_predecessor(self.marker, request)
+        return prepared
+
+    def test_explicit_fresh_episode_preserves_unknown_bytes_and_uses_both_real_verifiers(self):
+        self.prepare_prior()
+        old_marker, old_report = self.marker.read_bytes(), self.report_path.read_bytes()
+        self.assertIsNotNone(module.verified_fresh_predecessor(self.marker, self.request))
+        result = self.run_collection()
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual((self.request.output / "predecessor-marker.json").read_bytes(), old_marker)
+        self.assertEqual(self.report_path.read_bytes(), old_report)
+        archived = json.loads(old_marker)
+        self.assertEqual(archived["status"], "unknown")
+        boundary = result["fresh_episode_boundary"]
+        sealed = (self.request.output / boundary["receipt"]["path"]).read_bytes()
+        self.assertEqual(hashlib.sha256(sealed).hexdigest(), boundary["receipt"]["sha256"])
+        self.assertEqual(boundary["prior_input_consumption"], "unresolved")
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+
+    def test_default_unknown_and_partial_fresh_arguments_still_block_before_App(self):
+        self.prepare_prior()
+        with self.assertRaisesRegex(BoundaryError, "original_collection_outcome_unresolved"):
+            module.require_resolved_predecessor(self.marker)
+        with self.assertRaisesRegex(BoundaryError, "complete_fresh_predecessor_required"):
+            replace(self.request, predecessor_marker_sha256=None).validate()
+        self.assertEqual(self.apps, [])
+
+    def test_delivery_or_cleanup_uncertainty_never_becomes_fresh_eligibility(self):
+        self.prepare_prior()
+        original = copy.deepcopy(self.prior)
+        for mutation in [
+            lambda p: p["runtime_status"].update(tainted=True),
+            lambda p: p["runtime_status"].update(pending_request={"request_id": "old"}),
+            lambda p: p.update(known_delivered_choices=0),
+            lambda p: p["child"].update(forced_by_parent=True),
+            lambda p: p.update(source_close_fallback="unconfirmed"),
+            lambda p: p.update(full_final_reporting_error="bad_hash"),
+        ]:
+            with self.subTest(mutation=mutation):
+                self.prior = copy.deepcopy(original)
+                mutation(self.prior)
+                self.reseal_report()
+                with self.assertRaises(BoundaryError):
+                    module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertEqual(self.apps, [])
+
+    def test_hash_CAS_and_replayed_predecessor_cannot_launch_a_new_owner(self):
+        self.prepare_prior()
+        prepared = self.preflight(self.config, self.request)
+        self.marker.write_bytes(self.marker.read_bytes() + b"\n")
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_marker_changed"):
+            module.collect_source3(
+                self.config,
+                self.root / "config.json",
+                self.request,
+                preflight=lambda *_: prepared,
+                app_factory=self.application,
+                child_factory=self.child,
+            )
+        self.assertEqual(self.apps, [])
+        self.assertFalse(self.request.output.exists())
+
+    def test_foreign_source_content_or_corrupt_direct_evidence_blocks_without_packing(self):
+        self.prepare_prior()
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_source_identity_mismatch"):
+            module.verified_fresh_predecessor(
+                self.marker, replace(self.request, predecessor_source3_content_id="0" * 64)
+            )
+        direct = Path(self.prior["direct_evidence"]["directory"])
+        (direct / "events.jsonl").write_bytes(b"corrupt\n")
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_direct_verification_failed"):
+            module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertEqual(self.apps, [])
+
+    def test_reused_host_or_warm_initial_state_stops_before_gameplay_permission(self):
+        for warm in [False, True]:
+            with self.subTest(warm=warm):
+                self.prepare_prior()
+                if warm:
+                    self.behavior["warm_state"] = True
+                else:
+                    self.behavior["host_identity"]["profile"]["status"] = "reused"
+                result = self.run_collection()
+                self.assertEqual(result["status"], "unknown")
+                self.assertFalse(any(m["type"] == "runtime_continue" for m in self.messages))
+                # A fresh pending/unknown pointer cannot be bypassed using the old authorization.
+                with self.assertRaises(BoundaryError):
+                    module.verified_fresh_predecessor(self.marker, self.request)
+                if self.request.output.exists():
+                    shutil.rmtree(self.request.output)
+                self.messages.clear()
+                self.behavior.clear()
+
+    def test_reused_Source_identity_keeps_original_once_Close_and_no_Runtime_permission(self):
+        self.prepare_prior()
+        old = self.prior["source_final_status"]
+        self.behavior["reuse_source"] = (
+            old["recording_session_id"],
+            old["source"]["segment_id"],
+            old["source"]["epoch_id"],
+        )
+        result = self.run_collection()
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["error_code"], "fresh_source_identity_required")
+        self.assertEqual(result["submissions"], 0)
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+        self.assertFalse(any(m["type"] == "runtime_continue" for m in self.messages))
+
+    def test_explicit_new_Source_optout_does_not_bypass_old_Source_on_closure(self):
+        self.prepare_prior()
+        self.prior["source_closed"] = False
+        self.reseal_report()
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_source_closure_required"):
+            module.verified_fresh_predecessor(
+                self.marker, replace(self.request, record_source3=False)
+            )
+
+    def test_history_directory_barrier_is_before_pending_pointer_and_App_child(self):
+        self.prepare_prior()
+        self.request = replace(self.request, output=self.root / "new" / "nested" / "output")
+        calls = []
+        real_sync, real_atomic = module._sync_directory, module.atomic_json
+
+        def barrier(path):
+            self.assertTrue((self.request.output / "predecessor-marker.json").is_file())
+            self.assertTrue((self.request.output / "fresh-episode-boundary.json").is_file())
+            calls.append(("directory", path))
+            real_sync(path)
+
+        def atomic(path, value):
+            if path == self.marker:
+                calls.append(("pointer", value["status"]))
+            real_atomic(path, value)
+
+        self.mock(module, "_sync_directory", barrier)
+        self.mock(module, "atomic_json", atomic)
+        self.assertEqual(self.run_collection()["status"], "completed")
+        pending = calls.index(("pointer", "pending"))
+        self.assertEqual(
+            [p for kind, p in calls[:pending] if kind == "directory"],
+            [
+                self.request.output,
+                self.request.output.parent,
+                self.request.output.parent.parent,
+                self.root,
+            ],
+        )
+
+    def test_history_directory_sync_failure_retains_exact_old_pointer_without_launch(self):
+        self.prepare_prior()
+        original = self.marker.read_bytes()
+
+        def fail_barrier(_):
+            self.assertTrue((self.request.output / "predecessor-marker.json").is_file())
+            self.assertTrue((self.request.output / "fresh-episode-boundary.json").is_file())
+            raise OSError("faithful_directory_fsync_failure")
+
+        self.mock(module, "_sync_directory", fail_barrier)
+        with self.assertRaisesRegex(BoundaryError, "fresh_history_durability_failed"):
+            self.run_collection()
+        self.assertEqual(self.marker.read_bytes(), original)
+        self.assertEqual(self.apps, [])
+        self.assertEqual(self.children, [])

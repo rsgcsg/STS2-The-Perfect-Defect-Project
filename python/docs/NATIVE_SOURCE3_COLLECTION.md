@@ -27,6 +27,36 @@ The pilot admits at most 100 submissions and 1200 policy calls within 15 minutes
 All module/executable choices are fixed by the trusted application; manifests and
 teacher replies never select an arbitrary module, shell or native operand.
 
+An `unknown` or pending predecessor blocks the default command. A distinct fresh
+episode after unresolved **input consumption** requires all five explicit options:
+`--predecessor-report-path`, `--predecessor-report-sha256`,
+`--predecessor-marker-sha256`, `--predecessor-source3-bundle` and
+`--predecessor-source3-content-id`. The supplied bundle must already be packed by
+the registered CollectionTool; preflight only reads and verifies it. Both owning
+typed Agent/Source3 verifiers, exact report/full-final hashes, original Source
+seals, known native deliveries and known Source/controller/child/Host cleanup
+must agree. A new `--no-source3` request does not omit the previous Source-on
+closure obligation. This route never resolves unknown native delivery or input,
+resumes an old operation, restores its state, or admits old data for training.
+
+The same Application instance lock rechecks the exact predecessor before
+admission. The new private output retains the old marker's exact unknown bytes
+and a sealed boundary receipt; files and directory entries are durably synced
+before the existing active pointer advances to the new pending operation. A crash
+or replay cannot use old authorization past that new pointer. Prior reports and
+recordings are unchanged; the old unknown fact remains immutable history.
+
+The fixed reviewed child delegates startup to the existing Host. That Host
+chooses a fresh UUID profile name and `instantiateProfileTemplate` clears the
+chosen target before copying the checked private template. The absent generation
+file then makes `prepareIsolatedProfile` create a new generation. This owning
+construction is the fresh profile/state basis; a transported `instantiated`
+string alone is not proof. Older reports lack profile IDs, so no old profile ID is
+fabricated. Existing Ready checks additionally require distinct runtime identity
+and actual profile/generation fields, new Source session/segment/epoch, and a new
+Agent run/continuity/stream with state0/no consumption/no used budget before any
+Runtime permission. Fresh startup grants no prior execution/effect/Commit claim.
+
 Source3 is an optional default-on overlay. `--no-source3` explicitly omits it while
 the genuine Application/instance lock and direct Agent evidence remain. A running
 Workbench or nonquiescent Model blocks collection. With Source3 enabled, original
