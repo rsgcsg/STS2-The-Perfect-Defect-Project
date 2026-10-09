@@ -165,6 +165,11 @@ def test_native_import_lost_publication_reply_reopens_same_intent_and_blocks_new
         409, {"error": "original_intent_reconciliation_required"})
     assert post(route, {**request, "directory": "/changed"}) == (
         409, {"error": "intent_payload_mismatch"})
+    assert post("/api/local-recordings/import", {"candidate_id": "a" * 64}) == (
+        409, {"error": "original_intent_reconciliation_required"})
+    assert post("/api/local-recordings/import", {"candidate_id": "a" * 64,
+         "human_origin_attested": True}) == (
+        409, {"error": "original_intent_reconciliation_required"})
     monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
     assert post(route, request)[0] == 200
     completed = settled(app.local_recording_import)
@@ -212,3 +217,36 @@ def test_native_import_intent_capacity_rejects_without_evicting_known_ids(
         409, {"error": "native_import_intent_capacity"})
     assert post(route, request)[1]["artifact_id"] == completed["artifact_id"]
     assert store.manifest_ids() == identities
+
+
+def test_historical_unknown_snapshot_survives_current_legacy_overwrite_and_blocks_all_new_IO(
+    native_data_http, original, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    request = {**body(original), "intent_id": "8" * 32}
+    assert post(route, request)[0] == 200
+    completed = settled(app.local_recording_import)
+    importer = app.local_recording_import
+    journal = json.loads(importer.path.read_bytes())
+    # Reproduce an old journal whose generic caller hid a historical pending
+    # native intent. Reopening cannot relabel that unobserved writer as known.
+    journal["_native_agent_intents"][request["intent_id"]]["status"] = "pending"
+    importer.path.write_text(json.dumps({"schema": local_recording_import.SCHEMA,
+        "status": "completed", "candidate_id": "a" * 64,
+        "recording_type": "source3", "_native_agent_intents": journal["_native_agent_intents"]}))
+    app.local_recording_import = LocalRecordingImporter(app.config, importer.catalog)
+    monkeypatch.setattr(app.local_recording_import, "_fresh_candidate", lambda *_args:
+                        pytest.fail("generic caller cannot perform original candidate IO"))
+    monkeypatch.setattr(app.local_recording_import, "_native_agent_original", lambda *_args:
+                        pytest.fail("new intent cannot perform native original IO"))
+    assert post("/api/local-recordings/import", {"candidate_id": "a" * 64}) == (
+        409, {"error": "original_intent_reconciliation_required"})
+    assert post(route, {**request, "intent_id": "9" * 32}) == (
+        409, {"error": "original_intent_reconciliation_required"})
+    recovery = app.local_recording_import.status()["native_intent_recovery"]
+    assert recovery == [{"intent_id": request["intent_id"], "status": "interrupted_unknown",
+                         "cohort": request["cohort"], "relation_id": request["relation_id"]}]
+    assert str(original.directory) not in json.dumps(app.local_recording_import.status())
+    assert store.get_manifest(completed["artifact_id"]).kind == "evidence"

@@ -7144,9 +7144,11 @@ const nativeAgentPreview = (artifact,extra={}) => ({kind:"native_agent_sampled",
   recommended_recipe_id:commonNativeRecipe,split_status:"not_reserved",...extra});
 function nativeAgentBrowserEnv({artifact=id("a"),detail=true,operation={status:"idle"},
   support=nativeAgentBrowserSupport,raw=nativeAgentRaw(artifact),items=[raw],
-  importStatus={status:"idle"},handler=()=>emptyList()}={}) {
+  importStatus={status:"idle"},storage=new Map(),storageApi=null,handler=()=>emptyList()}={}) {
   return setup({identity:{status:"local_only"},view:"local-workspace",query:detail?`&id=${artifact}`:"",
+    recordingStorage:storage,recordingStorageApi:storageApi,
     importStatus:()=>({schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
+      configuration_id:id("9"),workbench_instance_id:"fixture-workbench-instance",
       native_agent_support:support,...(typeof importStatus==="function"?importStatus():importStatus)}),
     handler:async(url,options)=>{
       if(url==="/api/local-workspace/managed")return{status:"ready",curation_status:"ready"};
@@ -7274,6 +7276,50 @@ test("Native AgentRun completed A cannot acknowledge lost reply B with same coho
   directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
   assert.deepEqual(seen[2],seen[1],"only explicit SAME B intent/body reconciliation is permitted");
   assert.notEqual(seen[1].intent_id,seen[0].intent_id);
+});
+
+test("Native AgentRun hard reload restores scoped unknown fence and only same request reconciliation",async()=>{
+  const storage=new Map(),sent=[];
+  const handler=async(url,options)=>{sent.push(body({options}));throw Error("lost B reply");};
+  const oldStatus={status:"completed",recording_type:"native_agent_sampled",intent_id:"a".repeat(32),
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},artifact_id:id("a")};
+  const first=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  let page=await first.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  const reload=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  page=await reload.render();assert.equal(field(page,"native-agent-import-directory").value,"/original/B-private");
+  assert.equal(sent.length,1);assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  directory=field(page,"native-agent-import-directory");directory.value="/different/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    importStatus:{...oldStatus,configuration_id:id("8")},handler});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"","different config cannot expose private body");
+});
+
+test("Native AgentRun lost browser fence uses server original intent and user body only explicitly",async()=>{
+  const intent="b".repeat(32),sent=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:"publication_unknown",
+    recording_type:"native_agent_sampled",intent_id:intent,cohort:"declared_native_machine_teacher",
+    producer_student_relation:{id:"owner-teacher"}},handler:async(url,options)=>{
+      sent.push(body({options}));return{status:"pending",intent_id:intent};
+    }});
+  const page=await env.render();assert.match(text(page),/浏览器原正文未保留/);assert.equal(sent.length,0);
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  const directory=field(page,"native-agent-import-directory");directory.value="/operator/original-B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent.length,1);
+  assert.equal(sent[0].intent_id,intent,"recovery cannot generate new identity");
+});
+
+for(const failure of ["read","write"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
+  const sent=[],env=nativeAgentBrowserEnv({detail:false,items:[],storageApi:{
+    getItem:()=>{if(failure==="read")throw Error("blocked storage");return null;},
+    setItem:()=>{throw Error("quota/blocked storage");},removeItem:()=>{}},
+    handler:async(url,options)=>{sent.push(body({options}));return{status:"pending"};}});
+  const page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(sent.length,0);assert.match(text(page),/存储/);
 });
 
 for(const [schema,sample_type] of [["stpd/native-agent-sampled-training-source-v1","native_agent_sampled"],

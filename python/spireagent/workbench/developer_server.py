@@ -1193,7 +1193,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
-                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf}
+                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf,
+                         "workbench_instance_id": app.instance_id,
+                         "configuration_id": configuration_id(app.config)}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/preview/status":
                 if not self.authenticated_browser():

@@ -303,6 +303,10 @@ class LocalRecordingImporter:
                         digest(snapshot.get("bundle_content_id"), "local_import.bundle_content_id")
                         Producer.decode(snapshot.get("_producer"))
                     self._native_intents = copy.deepcopy(intents)
+                    for snapshot in self._native_intents.values():
+                        if snapshot["status"] == "pending":
+                            snapshot.update(status="interrupted_unknown",
+                                            error_code="previous_import_interrupted")
                     self.operation = value
                     if value.get("status") == "pending":
                         self.operation = {**value, "status": "interrupted_unknown",
@@ -323,7 +327,28 @@ class LocalRecordingImporter:
         with self.lock:
             return {**{key: value for key, value in self.operation.items()
                        if not key.startswith("_")}, "requires_cloud_account": False,
-                    "native_agent_support": native_agent_import_choices()}
+                    "native_agent_support": native_agent_import_choices(),
+                    "native_intent_recovery": [
+                        {"intent_id": key, "status": snapshot["status"],
+                         "cohort": snapshot["cohort"],
+                         "relation_id": snapshot["producer_student_relation"]["id"]}
+                        for key, snapshot in self._native_intents.items()
+                        if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}]}
+
+    def _native_recovery_guard(self, intent: str | None = None,
+                               requested: dict[str, Any] | None = None) -> None:
+        """All journaled unresolved intents survive changes of the current caller."""
+        blocked = {key for key, snapshot in self._native_intents.items()
+                   if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}}
+        if not blocked:
+            return
+        record = self._native_intents.get(intent) if intent is not None else None
+        # Exact reconciliation may resolve one without discarding other
+        # snapshots. A known completed outcome is read-only and idempotent.
+        if (record is not None and record["_native_agent_request"] == requested
+                and record["status"] in {"completed", "pending", *NATIVE_IMPORT_UNCERTAIN}):
+            return
+        raise BoundaryError("local_import", "original_intent_reconciliation_required")
 
     @staticmethod
     def _native_agent_original(directory: Path, cohort: str, relation: object) -> Any:
@@ -392,15 +417,12 @@ class LocalRecordingImporter:
             record = self._native_intents.get(intent) if intent is not None else None
             if record is not None and record["_native_agent_request"] != requested:
                 raise BoundaryError("local_import", "intent_payload_mismatch")
+            self._native_recovery_guard(intent, requested)
             if self.thread is not None and self.thread.is_alive():
                 if intent is not None and self.operation.get("intent_id") == intent:
                     return self.status()
                 if intent is not None:
                     raise BoundaryError("local_import", "operation_in_progress")
-            if (self.operation.get("intent_id") is not None
-                    and self.operation["status"] in NATIVE_IMPORT_UNCERTAIN
-                    and self.operation.get("intent_id") != intent):
-                raise BoundaryError("local_import", "original_intent_reconciliation_required")
             if record is not None and record["status"] == "completed":
                 store, _ = _selected_store(self.config)
                 owner = _selected_curation_owner(self.config)
@@ -408,10 +430,9 @@ class LocalRecordingImporter:
                         or owner is None or tuple(record["_owner"]) != owner.identity \
                         or owner.store_dir.resolve() != store.blobs.root:
                     raise BoundaryError("local_import", "source3_workspace_owner_changed")
-                self.operation = {**copy.deepcopy(record),
-                                  "_native_agent_intents": self._native_intents}
-                self._save()
-                return self.status()
+                return {**{key: value for key, value in record.items() if not key.startswith("_")},
+                        "requires_cloud_account": False,
+                        "native_agent_support": native_agent_import_choices()}
             if (intent is not None and record is None
                     and len(self._native_intents) >= MAX_NATIVE_IMPORT_INTENTS):
                 raise BoundaryError("local_import", "native_import_intent_capacity")
@@ -433,15 +454,12 @@ class LocalRecordingImporter:
             record = self._native_intents.get(intent) if intent is not None else None
             if record is not None and record["_native_agent_request"] != requested:
                 raise BoundaryError("local_import", "intent_payload_mismatch")
+            self._native_recovery_guard(intent, requested)
             if self.thread is not None and self.thread.is_alive():
                 if (self.operation.get("intent_id") == intent if intent is not None else
                         self.operation.get("candidate_id") == identity):
                     return self.status()
                 raise BoundaryError("local_import", "operation_in_progress")
-            if (self.operation.get("intent_id") is not None
-                    and self.operation["status"] in NATIVE_IMPORT_UNCERTAIN
-                    and self.operation.get("intent_id") != intent):
-                raise BoundaryError("local_import", "original_intent_reconciliation_required")
             if (intent is not None and record is None
                     and len(self._native_intents) >= MAX_NATIVE_IMPORT_INTENTS):
                 raise BoundaryError("local_import", "native_import_intent_capacity")
@@ -817,6 +835,7 @@ class LocalRecordingImporter:
     def start(self, candidate_id: object, human_origin_attested: object = None) -> dict[str, Any]:
         identity = digest(candidate_id, "local_import.candidate_id")
         with self.lock:
+            self._native_recovery_guard()
             if self.operation["status"] == "unavailable":
                 raise BoundaryError("local_import", "operation_file_invalid")
             candidate = self._fresh_candidate(identity)

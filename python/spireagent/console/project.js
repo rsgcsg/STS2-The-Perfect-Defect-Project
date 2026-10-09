@@ -4411,7 +4411,40 @@ window.SpireProject = (() => {
       section.append(el("p", "此程序示范入口尚未开放；现有原件保留。", "small muted"));
       return section;
     }
-    const saved = drafts.get("native-agent-import-request") || {};
+    const account = ctx.identity?.principal?.subject || ctx.identity?.status || "local";
+    const scope = JSON.stringify([status.configuration_id,status.workbench_instance_id,account]);
+    const fenceKey = "spireagent-native-import-unknown:" + scope;
+    let storageAvailable = typeof status.configuration_id === "string"
+      && typeof status.workbench_instance_id === "string", persisted = null;
+    try {
+      if (storageAvailable) {
+        persisted = JSON.parse(sessionStorage.getItem(fenceKey) || "null");
+        if (persisted !== null && (persisted.scope !== scope || !hex(persisted.request?.intent_id,32)
+            || !["directory","cohort","relation_id"].every(key => typeof persisted.request[key] === "string")))
+          storageAvailable = false;
+      }
+    } catch { storageAvailable = false; }
+    const writeFence = value => {
+      if (!storageAvailable) return false;
+      try {
+        value ? sessionStorage.setItem(fenceKey,JSON.stringify({scope,request:value}))
+          : sessionStorage.removeItem(fenceKey);
+        return true;
+      } catch { storageAvailable = false; return false; }
+    };
+    const recovery = (Array.isArray(status.native_intent_recovery) ? status.native_intent_recovery : [])
+      .filter(item => hex(item?.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(item.status));
+    if (!recovery.length && status.recording_type === "native_agent_sampled"
+        && hex(status.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))
+      recovery.push({intent_id:status.intent_id,status:status.status,cohort:status.cohort,relation_id:status.producer_student_relation?.id});
+    let saved = persisted?.request || (drafts.get("native-agent-import-scope") === scope
+      ? drafts.get("native-agent-import-request") : null) || {};
+    const serverOnlyRecovery = !hex(saved.intent_id,32) && recovery.length > 0;
+    const recoverIntent = serverOnlyRecovery ? select(section,"待核对的原始请求","native-agent-recovery-intent",
+      recovery.map(item => [item.intent_id,`${item.intent_id.slice(0,12)} · ${item.status}`]),recovery[0].intent_id) : null;
+    if (serverOnlyRecovery) saved = {intent_id:recovery[0].intent_id,cohort:recovery[0].cohort,relation_id:recovery[0].relation_id};
+    drafts.set("native-agent-import-scope",scope); drafts.set("native-agent-import-request",saved);
+    if (persisted || serverOnlyRecovery) drafts.set("native-agent-import-uncertain",true);
     const directory = input(section, "已结束 Agent 运行目录", "native-agent-import-directory", saved.directory || "");
     const cohort = select(section, "数据来源声明", "native-agent-import-cohort",
       support.cohorts.map(value => [value, support.cohort_labels?.[value] || value]),
@@ -4426,7 +4459,7 @@ window.SpireProject = (() => {
     const submitted = () => drafts.get("native-agent-import-request") || {};
     const matching = () => status.recording_type === "native_agent_sampled"
       && hex(submitted().intent_id,32) && status.intent_id === submitted().intent_id;
-    if (matching() && ["completed","failed"].includes(status.status))
+    if (matching() && ["completed","failed"].includes(status.status) && writeFence(null))
       drafts.delete("native-agent-import-uncertain");
     const sameOriginalRequest = () => {
       const original = submitted();
@@ -4435,25 +4468,32 @@ window.SpireProject = (() => {
     };
     const uncertain = () => drafts.get("native-agent-import-uncertain") === true
       || (matching() && ["publication_unknown", "published_index_unavailable", "interrupted_unknown"].includes(status.status));
-    const valid = () => !dispatched && status.status !== "pending" && !!status.csrf_token
+    const valid = () => !dispatched && storageAvailable && status.status !== "pending" && !!status.csrf_token
       && directory.value.trim().length > 0 && support.relations.some(item =>
         item.relation.id === relation.value && item.cohorts.includes(cohort.value))
-      && (!uncertain() || sameOriginalRequest());
+      && (!uncertain() || sameOriginalRequest() || (serverOnlyRecovery && hex(recoverIntent?.value,32)));
     const options = {primary:true, disabled:!valid()};
     const button = command(ctx, "import-native-agent-run", uncertain() ? "明确核对同一导入请求" : "明确保存程序示范原件", async () => {
       if (!valid() || options.disabled) return;
       const original = submitted();
-      const body = {...requestBody(),intent_id:sameOriginalRequest() ? original.intent_id : trainingIntent()};
+      const body = {...requestBody(),intent_id:serverOnlyRecovery ? recoverIntent.value
+        : sameOriginalRequest() ? original.intent_id : trainingIntent()};
+      if (!writeFence(body)) {
+        options.disabled = true; button.disabled = true;
+        note.textContent = "浏览器无法保留原导入请求，当前没有提交；请恢复存储后明确核对。";
+        return;
+      }
       drafts.set("native-agent-import-request", body);
       dispatched = true; options.disabled = true; button.disabled = true;
       try {
         const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
         if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
-        drafts.delete("native-agent-import-uncertain");
+        if (writeFence(null)) drafts.delete("native-agent-import-uncertain");
         await reload(ctx);
       } catch (error) {
         const unknown = ["request_unknown","request_unavailable","context_changed"].includes(error.message);
         drafts.set("native-agent-import-uncertain", unknown);
+        if (!unknown) writeFence(null);
         if (!unknown) { dispatched = false; options.disabled = !valid(); button.disabled = options.disabled; }
         note.textContent = unknown ? "导入结果尚未确认；请先刷新原操作状态，不会自动重发。"
           : "导入请求未被确认，请核对目录与来源选项后明确重试。";
@@ -4462,10 +4502,17 @@ window.SpireProject = (() => {
     }, options);
     const changed = () => { options.disabled = !valid(); button.disabled = options.disabled; };
     directory.oninput = changed; cohort.onchange = changed; relation.onchange = changed;
+    if (recoverIntent) recoverIntent.onchange = () => {
+      const original = recovery.find(item => item.intent_id === recoverIntent.value);
+      if (original) { cohort.value = original.cohort; relation.value = original.relation_id; }
+      changed();
+    };
     section.append(button);
     if (status.status === "pending") note.textContent = "正在保存原件；刷新只读取状态。";
     if (uncertain()) note.textContent = "此导入请求结果待核对；只可明确使用同一请求身份与原正文核对，不会自动重发。";
     if (uncertain() && !matching()) note.textContent += " 当前服务状态属于另一请求，不能据此确认本次结果。";
+    if (serverOnlyRecovery) note.textContent = "浏览器原正文未保留。请填写原目录与原选项，明确使用服务记录的原请求身份核对；服务会逐字段检查，不会生成新请求。";
+    if (!storageAvailable) note.textContent = "浏览器请求存储不可用或上下文未核对，当前不能提交或猜测恢复身份。";
     if (matching() && hex(status.artifact_id))
       section.append(link("打开已保存的程序示范原件", route("local-workspace", status.artifact_id)));
     if (status.error_code) section.append(technical({error_code:status.error_code}, "查看导入状态"));
