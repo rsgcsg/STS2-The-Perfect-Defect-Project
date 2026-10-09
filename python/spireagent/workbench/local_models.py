@@ -39,6 +39,7 @@ from spireagent.workbench.kit_runtime import (
     KIT_RUNTIME_PAIRS,
     text_runtime_pin,
 )
+from spireagent.workbench.local_model_export import LocalModelExport
 from spireagent.workbench.managed_model_target import (
     confirm_target,
     managed_manifest,
@@ -53,7 +54,6 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
-from stpd.structured_code_scope import is_structured_model_schema
 
 SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
@@ -969,6 +969,15 @@ class LocalModelService:
                     downloaded = Manifest.from_bytes(manifest_path.read_bytes(), directory.name)
                     if downloaded.kind != "model":
                         continue
+                    export_supported = False
+                    try:
+                        support = LocalModelExport(self.config).support(downloaded.artifact_id)
+                        export_supported = (support.get("status") == "supported"
+                                            and support.get("model_type") == "structured")
+                    except (OSError, ValueError, BoundaryError):
+                        # Keep the downloaded artifact visible even when its
+                        # export owner cannot admit the available metadata.
+                        pass
                     downloads.append(
                         {
                             "artifact_id": downloaded.artifact_id,
@@ -977,12 +986,10 @@ class LocalModelService:
                             "local_download": (directory / "download.json").is_file(),
                             "loaded": False,
                             "support_status": ("export_and_registration_required" if
-                                is_structured_model_schema(
-                                    downloaded.parameters.value().get("schema")) else
+                                export_supported else
                                 "unsupported"),
                             "reason": ("s0_text_v2_only" if
-                                is_structured_model_schema(
-                                    downloaded.parameters.value().get("schema")) else
+                                export_supported else
                                 "no_compatible_live_adapter_and_input_parity"),
                         }
                     )

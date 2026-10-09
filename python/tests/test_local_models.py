@@ -715,13 +715,35 @@ def test_structured_catalog_requires_explicit_export_and_registration_for_closed
     directory = service.config.state_dir / "downloads" / model.artifact_id
     directory.mkdir(parents=True)
     (directory / "manifest.json").write_bytes(model.to_bytes())
-    (directory / "download.json").write_text("{}")
+    (directory / "download.json").write_text(json.dumps({
+        "schema": "stpd/result-download-v1", "artifact_id": model.artifact_id,
+    }))
     result = service.catalog()["downloaded_models"][0]
     expected = "unsupported" if version == "v999" else "export_and_registration_required"
     assert result["support_status"] == expected
     assert result["loaded"] is False
     with pytest.raises(BoundaryError, match="unregistered_policy"):
         service.start(model.artifact_id)
+    assert service.process is None
+
+
+@pytest.mark.parametrize("receipt", [None, {}, {
+    "schema": "stpd/result-download-v1", "artifact_id": "f" * 64,
+}])
+def test_structured_catalog_keeps_unadmitted_download_visible(service, receipt):
+    model = Manifest(
+        "model", Producer("test/repository", "a" * 40, "b" * 64),
+        parameters=FrozenObject.of({"schema": "stpd/structured-m2-model-v3"}),
+    )
+    directory = service.config.state_dir / "downloads" / model.artifact_id
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(model.to_bytes())
+    if receipt is not None:
+        (directory / "download.json").write_text(json.dumps(receipt))
+    result, = service.catalog()["downloaded_models"]
+    assert result["artifact_id"] == model.artifact_id
+    assert result["support_status"] == "unsupported" and result["loaded"] is False
+    assert result["local_download"] is (receipt is not None)
     assert service.process is None
 
 
