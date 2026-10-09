@@ -21,12 +21,12 @@
 | E2.1 | 原生 UI 来源与 Human 来源混同；观察/输入/持久化未统一 | Source3 顺序与物理/协议生产者已集成；真实 Agent 协议小录制独立通过，真正 Human 小录制尚待 |
 | E2.2 | 原件→投影/历史/目标/use，无动作/缺口/假设资格 | 顺序训练桥、真实准入/use 与小训练通过；分片索引包源码审查通过，整合与容量实测尚待 |
 | E3.1 | 普通奖励 teacher 与公开 verb 不匹配；runner 丢 Host close 回执 | 旧实例修复与原范围证据保留；新默认连续任务及各类结果/退出仍需实际验收 |
-| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | 原 full-reference 端口与冷会话单步/Stop 有限定证据；新默认 current-decision sampled carry 已集成并通过分层源码测试，正式包收敛测试待独立核验，真实运行和产品状态恢复另验 |
+| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | 原 full-reference 端口与冷会话单步/Stop 有限定证据；新默认 current-decision sampled carry 已集成并通过分层源码测试，`e7dfd694` 正式合成包/真实子进程组合已独立通过，真实 sampled 运行和产品状态恢复另验 |
 | E4.1 | 结构训练仅 final checkpoint、无 exact resume | 结构训练/checkpoint/严格恢复已实现和测试；本轮真实小训练/导出完成，完整中断恢复旅程待验 |
 | E4.2/E6.1 | 新模型不在普通 prepare/train/export/register/load 用例 | 实际应用训练/导出/注册/加载、既有模型单步运行已形成限定闭环；完整 GUI/异常/重复使用旅程尚待 |
 | E4.3 | 原 Stage1a 约 10k 合格交互训练尝试、K/Reset、backbone、N/Z/O 有界比较 | 按数据/目标资格和累计预算安排实际执行；Gate/R 条件触发，缺项未完成 |
 | E5.1 | 本地/远端 intent/attempt/cancel/reconcile、权限/用途/派生传播 | 复用既有 owner；指定资源实际链与故障矩阵待完成 |
-| E6.2 | 游戏内核心用例未贯通，浏览器首页链接不足 | 共用 Source/Model admission 和直接入口已审查集成；rc30 安装/冷载/主菜单/非强退已独立通过，认证界面/共存/日志健康待验；Source3 产品数据与 native Model 复用已集成，后续新 C# 源码需重新构建 |
+| E6.2 | 游戏内核心用例未贯通，浏览器首页链接不足 | 共用 Source/Model admission 和直接入口已审查集成；rc31 安装/冷载/主菜单/非强退已独立通过，认证界面/共存/日志健康待验；Source3 产品数据与 native Model 复用已集成，新增 compiled-source 改动仍需重新构建 |
 | V1.1 | 全机制、角色难度及真实场景资格 | 最短原生用例→连续默认 Agent；setup 单列 |
 | V1.2 | 全用户旅程、恢复、安装回退、远端和权限 | 同一推荐组合；AI 功能操作如实记录来源 |
 | V1.3 | 资源、200/500 功能、10000 压力、30 attempt 稳定性 | pilot 固定测法/资源，再冻结候选与批次，保留全部结果 |
@@ -42,11 +42,11 @@
 | 交付／现有任务 | writer／消费入口 | 状态与下一门 |
 | --- | --- | --- |
 | 文档/管理对齐 E0.1 | lead；规范、CURRENT、入门路由及既有 project-system 工具 | 独立审查并核查按角色开工；不为文档改动部署游戏/Hub |
-| 已构建 E6 候选 | lead 独占安装/游戏；Game Mod rc30 / Live UI rc9 | `44ca35e6` 构建 `6557b5ae` 已安装并通过隔离冷载/主菜单/非强退；旧 `d215799b` 回退保留。后续 C# 改动需新构建；认证界面和日志健康仍待 |
-| Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；最终锁定依赖待收敛 |
+| 已构建 E6 候选 | lead 独占安装/游戏；Game Mod rc31 / Live UI rc10 | `e7dfd694` 构建 `c82306c6` 已安装并通过精确隔离冷载/主菜单/非强退；rc30 回退保留。认证界面和日志健康仍待；不因无关工具改动重建相同 compiled source |
+| Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
 | native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
-| 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；真实构造器/stdio/Runtime 合成包测试 `15857b97` 待独立审查；旧数据/包不改义 |
-| 有用的真实采集 E2.1/E4 | genuine Application + Host/SDK；显式 STPD teacher | collect-only CLI `cfe0356d` 已提交独立审查，尚未运行；先收敛依赖/产物，再执行 100–300-choice 有界尝试；实际 N 由后续原件准入计算 |
+| 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
+| 有用的真实采集 E2.1/E4 | genuine Application + Host/SDK；显式 STPD teacher | 首轮真实尝试仅 1/100，原件与正常 Close 保留；SDK 游标字段错误已修正 `4f55fea5` 并补真实 SDK 回归，待完整后续检查与新独立尝试。实际 N 仍由原件准入计算 |
 | 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
 
 采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。

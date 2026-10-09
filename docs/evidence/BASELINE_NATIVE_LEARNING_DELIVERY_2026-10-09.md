@@ -164,3 +164,56 @@ collect-only CLI candidate `cfe0356d` is also under independent review. Final
 versions/BOM/locked Evidence, required root gates, current native build and actual
 100–300-choice collection/training remain outstanding. Earlier real learning and
 failed/unknown Model attempts above retain their original scope.
+
+
+## Later rc31 and first reusable collector attempt
+
+At clean `e7dfd69429b0a7f7a8fd5f2518ebd46b42aa455f`, local full checks passed:
+Python 3,181 ordinary tests, five existing conditional skips, 21 passing subtests;
+Platform checks, CPU cross-process E2E, synthetic worker smoke and package build
+also passed. Earlier four failed full checks retain their original dispositions.
+Fresh sampled public package/real constructor/stdio/Runtime conformance was
+independently verified against the actually installed Evidence rc26 pin
+`a42bf1e4`, without a source override. Its one label/candidate, zero-loss optimizer
+update proves execution and package composition, not useful parameter learning.
+
+Exact-game checks (Native 106, Annotator core 394 and CLI 13) passed. The new rc31
+DLL SHA256 is `c82306c6b3516369fd41c0057056204605ad77aba9c33a542ef41cd89f213f75`,
+MVID `18ad5ddb-0c9c-43eb-ab96-6f010a076509`. Deployment at
+`2026-10-09T07:20:33.175Z` retained the byte-verified rc30 rollback. Independent
+cold-load review binds runtime `b080ce8bff7e430b957575df2364f28c`, one isolated
+Steam-disabled profile, loaded source/artifact identity, two Ready/no-session/
+no-controller observations, interactive main menu and explicit Host exit0 with
+no signal or force. Root separately observed the rendered menu in CUA; no standalone
+pixels were saved. Authenticated panels and resource health remain unqualified;
+rendering and exit leak diagnostics are retained without an unmodded comparison.
+
+The first reusable collector operation at the same source requested 100 choices.
+It declared `agent_protocol`, used the explicit unlearned public teacher, and
+started recording after native bootstrap, so its prefix is partial. Actual runtime
+`71c3f64b532346748e4215f85a97b95b` and session
+`session-85ff46d3ac224b53966cc2aca99c5745` produced one terminal OpenDeck delivery,
+with execution/effect unknown, before `collector_owner_failed`. No second submit
+or pending request remained. Source Close reported one input, six observations,
+zero gaps and complete accounting; control release and Host/Node exit0 were known.
+This is a failed target attempt with preserved partial data, not 100 samples or
+Human/learned-game evidence. Eligible unique N and research admission were not run.
+
+Exact source diagnosis found `attached.next_cursor` where the real SDK exposes
+only `attached.subscription.starting_cursor`. The fake fixture reproduced the
+same wrong field, masking the error. The real-SDK regression reproduced one
+submission and zero Events transport calls before local request validation failed.
+Repair `4f55fea5` corrects that field and retains bounded private phase/error/cause
+diagnostics without changing original-request or cleanup semantics. The new SDK
+test exercises the actual REST/NativeLogical/Controller classes and duplex pipe;
+its corrected renewal fixture stays within the declared owner TTL. Wired focused
+checks passed 44 Node and 53 Python tests. Follow-up aggregate checks and a new
+actual collection attempt remain separate; e7's full pass is not their pass.
+
+The original attempt's 52 files (711,298 bytes) were copied and hash-verified under
+ignored `.local/g2-v1/archives/2026-10-09-source3-collector-attempt1`, with preservation
+manifest SHA256 `50758016cccd615217cfd6d2dfc7cf25851832a948559edb4f71933e9d830c0a`.
+No raw records, game files or weights enter Git. A six-observation, one-input sample
+and its single roughly 4ms Close flush do not qualify capture throughput, frame
+impact, memory use or 10k capacity. The next useful sample, training and natural
+model attempt remain the primary execution path; required full-G2 gates persist.

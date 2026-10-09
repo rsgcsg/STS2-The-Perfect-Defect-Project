@@ -24,25 +24,27 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   records eight Agent labels, real three-update training/export and two distinct
   Model attempts. Attempt1 remains failed; attempt2 proves one delivery and Stop,
   with execution/effect/cancel unknown. No natural full-game or Human claim.
-- E6 rc30 artifact `6557b5ae`, built on `44ca35e6`, was installed and cold-loaded
-  in an isolated native session; main menu and unforced exit passed independent
-  review. Authenticated panels remain unverified; exit/resource diagnostics remain
-  open. Later Live UI source changes require a new exact build before qualification.
-- Source3 product import/data preparation and native Model reuse are integrated
-  source/test capabilities. Sampled-current Runtime/Agent/Evidence and segmented
-  data/recipe paths are integrated through `659490a9`; old full-reference identities
-  remain unchanged. Version/BOM/locked Evidence convergence is still pending.
-- The selected Agent carries learned W within explicit sampled segments. Synthetic
-  public train/export plus real constructor/stdio/Runtime conformance has a submitted
-  test packet under independent review. No new real-data sampled training or native
-  model run follows from it. A reusable collect-only CLI is also under review.
+- E6 rc31 artifact `c82306c6`, built from clean `e7dfd694`, is installed. Exact
+  loaded identity, isolated main menu and owned unforced Close passed independent
+  review; rc30 rollback remains. Authenticated panels and runtime/resource health
+  remain unverified. Workspace provenance and compiled component identity differ.
+- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full local portable checks
+  passed at `e7dfd694` (Python 3,181 passes, five conditional skips); fresh synthetic
+  sampled train/export/real constructor/stdio/Runtime composition passed independent
+  review. One zero-loss synthetic update proves execution, not useful learning.
+- First new collect-only attempt at that source stopped after one of 100 requested
+  choices: OpenDeck delivery was known, execution/effect unknown. Source closed
+  with one input, six observations and no gaps; control and Host cleanup succeeded.
+  A wrong SDK starting-cursor field caused the consumer stop. Repair `4f55fea5`
+  and real-SDK regression are integrated; final follow-up checks and a new distinct
+  collection attempt remain pending. Originals are retained, never relabeled Human.
 - L34 event/content, special selectors, L64 management, product memory recovery,
   remote use and full coverage/stability still need their scoped gates. Disabled
   candidate reviews do not qualify the active profile. Current c060 is unchanged.
 
 ## Execution priority
 
-Converge collector/package identities → useful 100–300-choice real collection
+Verify the collector repair → useful 100–300-choice real collection
 and explicit sampled training → early natural whole-game attempt and error analysis.
 E6 authenticated panels and a minimum genuine Human record/Close remain separate gates. Independent source/data/model/docs work continues in
 parallel; unrelated final gates do not block this path and remain in the matrix.
