@@ -153,7 +153,8 @@ class ModalProvider:
                 "modal", "execution_timeout",
                 "retain the exact call handle for terminal reconciliation; do not resubmit",
             ) from None
-        except sdk.exception.TimeoutError:
+        except (sdk.exception.TimeoutError, TimeoutError):
+            # SDK 1.5.5's empty-output poll raises the built-in TimeoutError.
             return None
         except BoundaryError:
             raise
