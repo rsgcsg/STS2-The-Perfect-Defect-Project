@@ -1049,5 +1049,26 @@
       "exhausted_reason": null,
       "ended_reason": null
     }
-  }
+  },
+  "terminal_summary_example": {
+    "schema": "sts2.evidence/agent-session-terminal-summary-1",
+    "run_id": "run-fixture",
+    "content_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "original_submission_count": 3,
+    "terminal_result_count": 3,
+    "known_delivered": 0,
+    "known_stale_rejections": 3,
+    "consecutive_known_stale_rejections": 3,
+    "proof_scope": "recorded_dispatch_and_terminal_results",
+    "live_eligibility_proved": false
+  },
+  "child_proof_scope": [
+    "full_grammar",
+    "last_intended_basis_action_consumption_version_snapshot_runtime",
+    "repeated_result_request_id_body_equality"
+  ],
+  "child_non_claims": [
+    "first_actual_dispatch_request_id_join",
+    "original_client_controller_authority_join"
+  ]
 }

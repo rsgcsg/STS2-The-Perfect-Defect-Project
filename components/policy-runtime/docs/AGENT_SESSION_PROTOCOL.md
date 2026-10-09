@@ -709,3 +709,23 @@ the NEW lock SHA. Historical1.0.5/1.0.4 tuples keep their original hashes/locks.
 Version/BOM/package/install/game/data/use/fit decisions belong to Root and their
 owning consumers. This source contract claims no new installed/live/Human/N/
 model-quality or fullG2 qualification.
+
+### Consumer joins and verified terminal summary
+
+The child has its last intention's basis/action/Consume/W/snapshot/runtime, but
+has not observed the actual dispatch request ID or original client/controller
+binding before the result. It validates full outcome grammar and those available
+joins, then the repeated request-ID/body equality. It does not independently
+prove the first request/controller attribution. Runtime/SDK and Evidence own
+that exact recorded dispatch join; no extra child control capability is supplied.
+
+For a newly verified opted-in run, Evidence exposes a fresh dict copy as
+`value.terminal_summary`; legacy verified values expose None. Its exact fields
+are schema (`sts2.evidence/agent-session-terminal-summary-1`), run_id, content_id,
+original_submission_count, terminal_result_count, known_delivered,
+known_stale_rejections, consecutive_known_stale_rejections,
+proof_scope (`recorded_dispatch_and_terminal_results`) and
+live_eligibility_proved (false). Counters are nonboolean nonnegative integers.
+original_submission_count counts recorded intents; it does not prove SDK start
+or used-budget attempts. Collector retains Runtime's budget attempt count
+separately. Unknown/incomplete evidence supplies no guessed verified summary.
