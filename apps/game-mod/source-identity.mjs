@@ -11,6 +11,49 @@ import {
   sourceRevisionForFiles
 } from "../../components/connector/tools/connector-provenance.mjs";
 
+export function evaluateGameModVersions({ packageVersion, manifestVersion, nativeSource, projectSource }) {
+  const native = String(nativeSource).replace(/\/\*[\s\S]*?\*\//gu, "");
+  const project = String(projectSource).replace(/<!--[\s\S]*?-->/gu, "");
+  const nativeValues = [...native.matchAll(/^\s*public const string Version = "([^"\r\n]+)";/gmu)];
+  const projectValues = [...project.matchAll(/<Version>\s*([^<>]+?)\s*<\/Version>/gu)];
+  const versionTags = [...project.matchAll(/<(?:[\w.-]+:)?Version(?=[\s/>])/giu)];
+  const conditionalVersion = [...project.matchAll(/<PropertyGroup\b([^>]*)>([\s\S]*?)<\/PropertyGroup>/giu)]
+    .some(match => /\bCondition\s*=/iu.test(match[1]) && /<Version(?=[\s/>])/iu.test(match[2]));
+  // This owner supports the current declarative project, not conditional or
+  // executable version selection. A new control container requires review.
+  const versionControlContainer = /<(?:[\w.-]+:)?(?:Choose|When|Otherwise|Target)(?=[\s/>])/iu.test(project);
+  const nativeVersion = nativeValues.length === 1 ? nativeValues[0][1] : null;
+  const projectVersion = projectValues.length === 1 && versionTags.length === 1
+    && !conditionalVersion && !versionControlContainer
+    ? projectValues[0][1] : null;
+  const errors = [];
+  if (typeof packageVersion !== "string" || packageVersion.length === 0)
+    errors.push("Game Mod package version is missing");
+  if (manifestVersion !== packageVersion) errors.push("Game Mod manifest version differs from package");
+  if (nativeVersion === null) errors.push("UnifiedPlatformMod.Version requires exactly one literal declaration");
+  else if (nativeVersion !== packageVersion) errors.push("UnifiedPlatformMod.Version differs from package");
+  if (projectVersion === null) errors.push("Game Mod project requires one unconditional literal Version without control containers");
+  else if (projectVersion !== packageVersion) errors.push("Game Mod project Version differs from package");
+  return { ok: errors.length === 0, nativeVersion, projectVersion, errors };
+}
+
+export function readGameModVersions(platformRoot) {
+  const appRoot = path.join(platformRoot, "apps/game-mod");
+  const json = name => JSON.parse(fs.readFileSync(path.join(appRoot, name), "utf8"));
+  return {
+    packageVersion: json("package.json").version,
+    manifestVersion: json("mod_manifest.json").version,
+    nativeSource: fs.readFileSync(path.join(appRoot, "UnifiedPlatformMod.cs"), "utf8"),
+    projectSource: fs.readFileSync(path.join(appRoot, "STS2Platform.GameMod.csproj"), "utf8")
+  };
+}
+
+export function assertGameModVersions(platformRoot) {
+  const result = evaluateGameModVersions(readGameModVersions(platformRoot));
+  if (!result.ok) throw new Error(`Game Mod product version identity failed:\n${result.errors.join("\n")}`);
+  return result;
+}
+
 function digestFiles(componentRoot, files) {
   const digest = crypto.createHash("sha256");
   for (const relative of files) {

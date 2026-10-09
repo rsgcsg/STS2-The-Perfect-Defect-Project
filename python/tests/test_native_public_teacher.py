@@ -100,12 +100,15 @@ def test_card_entry_focus_confirm_and_no_unobserved_focus_repeat():
         action("confirm", "confirm_target", "enemy"),
     ]
     view = observation(
-        actions, "combat_card_operation", "card_targeting", refs=[("enemy", "creature")]
+        actions, "combat_card_operation", "card_targeting", refs=[("enemy", "creature")],
+        surface={"kind": "combat_card_operation", "stage": "card_targeting",
+                 "focused_target_referent_id": None},
+        schema="sts2.player-environment/surface/combat_card_operation_text_menu-1",
     )
     assert teacher.decide(view, actions).action_id == "focus"
     assert teacher.decide(view, actions).directive == "await"
     assert teacher.decide(view, actions).reason == "await_public_target_focus"
-    view["owner_occurrence"]["focus_referent_id"] = "enemy"
+    view["interaction"]["content"]["surface"]["focused_target_referent_id"] = "enemy"
     assert teacher.decide(view, actions).action_id == "confirm"
     actions = [action("end", "end_turn")]
     assert teacher.decide(observation(actions, "combat_turn"), actions).action_id == "end"
@@ -171,6 +174,96 @@ def test_combat_entry_does_not_promote_other_referents_or_pad_with_end_turn(kind
     view["referents"][0]["kind"] = kind
     choice = NativePublicTeacher(browse=False).decide(view, actions)
     assert choice.action_id is None and choice.reason == "native_card_entry_unavailable_or_unproven"
+
+
+def targeting_observation(*, focused="enemy", owner_focus="enemy", confirms="enemy"):
+    actions = [action("focus-current", "focus_target", "enemy"),
+               action("confirm-current", "confirm_target", confirms)]
+    for member in actions:
+        member["kind"] = "native_input"
+    view = observation(
+        actions, "combat_card_operation", "card_targeting",
+        surface={"kind": "combat_card_operation", "stage": "card_targeting",
+                 "held_card_referent_id": "held-card", "displayed_title": "Strike",
+                 "displayed_cost": "1", "displayed_description": "Deal damage.",
+                 "focused_target_referent_id": focused},
+        refs=[("enemy", "creature"), ("other-enemy", "creature")],
+        schema="sts2.player-environment/surface/combat_card_operation_text_menu-1",
+    )
+    view["owner_occurrence"]["focus_referent_id"] = owner_focus
+    return view, actions
+
+
+def test_already_focused_current_target_confirms_without_private_focus_history():
+    # Direct6 sample268 already provided both equal focus fields and Confirm.
+    # Repeating Focus on that same target made no new unit for the next decision.
+    teacher = NativePublicTeacher(browse=False)
+    view, actions = targeting_observation()
+    original = copy.deepcopy((view, actions))
+    assert teacher.focus_target_id is None
+    choice = teacher.decide(view, actions)
+    assert choice.directive == "act" and choice.action_id == "confirm-current"
+    assert (view, actions) == original
+
+
+@pytest.mark.parametrize("owner_focus", [None, "other-enemy", "foreign", 1])
+@pytest.mark.parametrize("pending", [None, "enemy"])
+def test_current_typed_focus_ignores_occurrence_with_no_or_matching_pending(owner_focus, pending):
+    teacher = NativePublicTeacher(browse=False, focus_target_id=pending)
+    view, actions = targeting_observation(owner_focus=owner_focus)
+    assert teacher.decide(view, actions).action_id == "confirm-current"
+
+
+def test_pending_different_focus_waits_for_requested_arrival_before_confirm():
+    teacher = NativePublicTeacher(browse=False, focus_target_id="other-enemy")
+    view, actions = targeting_observation()
+    choice = teacher.decide(view, actions)
+    assert choice.directive == "await" and choice.reason == "await_public_target_focus"
+    assert choice.action_id is None and teacher.focus_target_id == "other-enemy"
+    view["interaction"]["content"]["surface"]["focused_target_referent_id"] = "other-enemy"
+    actions[1]["subject_referent_id"] = "other-enemy"
+    view["catalog"]["digest"] = native_catalog_digest(actions)
+    assert teacher.decide(view, actions).action_id == "confirm-current"
+
+
+def test_unfocused_target_uses_original_focus_then_current_arrival_confirms():
+    teacher = NativePublicTeacher(browse=False)
+    view, actions = targeting_observation(focused=None, owner_focus="enemy")
+    assert teacher.decide(view, actions).action_id == "focus-current"
+    assert teacher.focus_target_id == "enemy"
+    view["interaction"]["content"]["surface"]["focused_target_referent_id"] = "enemy"
+    assert teacher.decide(view, actions).action_id == "confirm-current"
+
+
+@pytest.mark.parametrize("change", [
+    lambda o: o["interaction"]["content"]["surface"].pop("focused_target_referent_id"),
+    lambda o: o["interaction"]["content"]["surface"].update(focused_target_referent_id="foreign"),
+    lambda o: o["interaction"]["content"]["surface"].update(focused_target_referent_id=1),
+    lambda o: o["interaction"].update(content_schema="noncanonical"),
+    lambda o: o["interaction"]["content"]["surface"].update(kind="other"),
+    lambda o: o["interaction"]["content"]["surface"].update(stage="card_confirm"),
+    lambda o: o["referents"][0]["state"].update(visible=False),
+    lambda o: o["referents"][0]["state"].update(enabled=False),
+    lambda o: o.update(status="settling"),
+])
+def test_unknown_unready_foreign_or_noncanonical_focus_never_confirms(change):
+    teacher = NativePublicTeacher(browse=False)
+    view, actions = targeting_observation()
+    change(view)
+    assert teacher.decide(view, actions).action_id != "confirm-current"
+
+
+def test_current_focus_needs_matching_original_confirm_and_complete_input():
+    teacher = NativePublicTeacher(browse=False)
+    view, actions = targeting_observation(focused="other-enemy", confirms="enemy")
+    assert teacher.decide(view, actions).action_id != "confirm-current"
+    view, actions = targeting_observation()
+    actions.pop()
+    view["catalog"].update(total_count=1, digest=native_catalog_digest(actions))
+    assert NativePublicTeacher(browse=False).decide(view, actions).action_id == "focus-current"
+    view["completeness"]["full_reference_complete"] = False
+    with pytest.raises(BoundaryError, match="complete_current_catalog_required"):
+        teacher.decide(view, actions)
 
 
 def test_linked_reward_typed_children_and_native_proceed():

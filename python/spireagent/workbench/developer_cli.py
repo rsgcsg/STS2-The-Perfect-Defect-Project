@@ -164,8 +164,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--deadline-ms", type=int, default=900_000)
     parser.add_argument("--experimental-build-acknowledged", action="store_true")
     parser.add_argument("--experimental-connector-acknowledged", action="store_true")
-    parser.add_argument("--no-source3", action="store_true",
-                        help="explicitly omit Source3 overlay; direct Agent evidence still records")
+    parser.add_argument(
+        "--no-source3",
+        action="store_true",
+        help="explicitly omit Source3 overlay; direct Agent evidence still records",
+    )
+    parser.add_argument(
+        "--predecessor-report-path",
+        type=Path,
+        help="explicit unknown predecessor report for a distinct fresh episode",
+    )
+    parser.add_argument("--predecessor-report-sha256")
+    parser.add_argument("--predecessor-marker-sha256")
+    parser.add_argument(
+        "--predecessor-source3-bundle",
+        type=Path,
+        help="recorded predecessor only; forbidden for Source3-off; no preflight packing",
+    )
+    parser.add_argument(
+        "--predecessor-source3-content-id",
+        help="paired with the recorded predecessor's Source3 bundle",
+    )
     parser.add_argument(
         "--plan-only",
         action="store_true",
@@ -226,6 +245,11 @@ def main(argv: list[str] | None = None) -> int:
                     experimental_build_acknowledged=args.experimental_build_acknowledged,
                     experimental_connector_acknowledged=args.experimental_connector_acknowledged,
                     record_source3=not args.no_source3,
+                    predecessor_report_path=args.predecessor_report_path,
+                    predecessor_report_sha256=args.predecessor_report_sha256,
+                    predecessor_marker_sha256=args.predecessor_marker_sha256,
+                    predecessor_source3_bundle=args.predecessor_source3_bundle,
+                    predecessor_source3_content_id=args.predecessor_source3_content_id,
                 )
                 result = (
                     metadata_preflight(config, request)

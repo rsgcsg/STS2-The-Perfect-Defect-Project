@@ -194,6 +194,12 @@ class TeacherAgentTests(unittest.TestCase):
             refs=[("target", "creature")],
         )
         view["value"]["observation"]["interaction"]["stage"] = "card_targeting"
+        view["value"]["observation"]["interaction"].update(
+            content_schema="sts2.player-environment/surface/combat_card_operation_text_menu-1",
+        )
+        view["value"]["observation"]["interaction"]["content"]["surface"].update(
+            kind="combat_card_operation", stage="card_targeting", focused_target_referent_id=None,
+        )
         decision = teacher.decide(view["value"]["observation"], view["value"]["catalog"])
         self.assertEqual(decision.directive, "await")
         self.assertIsNone(decision.action_id)

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -37,6 +39,7 @@ REPORT_SCHEMA = "spireagent/native-source3-collection-v2"
 MARKER_FILE = "native-source3-collection-operation.json"
 MAX_PIPE_BYTES = 96 * 1024 * 1024
 MAX_CONTROL_BYTES = 16 * 1024
+FRESH_SCHEMA = "spireagent/native-source3-fresh-episode-boundary-1"
 
 
 def fail(code: str) -> BoundaryError:
@@ -59,8 +62,37 @@ class CollectionRequest:
     max_input_bytes: int = 64 * 1024**2
     max_diagnostic_bytes: int = 256 * 1024**2
     record_source3: bool = True
+    predecessor_report_path: Path | None = None
+    predecessor_report_sha256: str | None = None
+    predecessor_marker_sha256: str | None = None
+    predecessor_source3_bundle: Path | None = None
+    predecessor_source3_content_id: str | None = None
 
     def validate(self) -> None:
+        fresh = (
+            self.predecessor_report_path,
+            self.predecessor_report_sha256,
+            self.predecessor_marker_sha256,
+            self.predecessor_source3_bundle,
+            self.predecessor_source3_content_id,
+        )
+        if any(value is not None for value in fresh):
+            if any(value is None for value in fresh[:3]):
+                raise fail("complete_fresh_predecessor_required")
+            if (fresh[3] is None) != (fresh[4] is None):
+                raise fail("fresh_source3_bundle_pair_required")
+            for path in (self.predecessor_report_path, self.predecessor_source3_bundle):
+                if path is None:
+                    continue
+                if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+                    raise fail("fresh_predecessor_path_required")
+                if any(p.is_symlink() for p in (path, *path.parents)):
+                    raise fail("fresh_predecessor_path_unsafe")
+            for checksum in fresh[1:3] + fresh[4:]:
+                if checksum is None:
+                    continue
+                if not isinstance(checksum, str) or re.fullmatch(r"[0-9a-f]{64}", checksum) is None:
+                    raise fail("fresh_predecessor_digest_required")
         for value in (self.installation, self.host_local_root, self.output):
             if not value.is_absolute() or ".." in value.parts:
                 raise fail("absolute_collection_path_required")
@@ -129,6 +161,363 @@ def require_resolved_predecessor(marker: Path) -> None:
             raise fail("original_collection_outcome_unresolved")
 
 
+def _ordinary(path: Path, maximum: int = 4 * 1024**2) -> bytes:
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or any(p.is_symlink() for p in (path, *path.parents))
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= maximum
+    ):
+        raise fail("fresh_predecessor_file_unsafe")
+    with path.open("rb") as handle:
+        raw = handle.read(maximum + 1)
+    if len(raw) > maximum:
+        raise fail("fresh_predecessor_file_unsafe")
+    return raw
+
+
+def _object(raw: bytes) -> dict[str, Any]:
+    value = decode_json(raw)
+    if not isinstance(value, dict):
+        raise fail("fresh_predecessor_object_required")
+    return value
+
+
+def _sync_directory(path: Path) -> None:
+    """The same portable directory durability convention as atomic_json."""
+    if os.name != "nt":
+        handle = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(handle)
+        finally:
+            os.close(handle)
+
+
+def _preserve_file(path: Path, raw: bytes) -> None:
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(handle, "wb") as preserved:
+        preserved.write(raw)
+        preserved.flush()
+        os.fsync(preserved.fileno())
+
+
+def verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dict[str, Any] | None:
+    """Read-only admission proof, never native-result reconciliation or packing."""
+    try:
+        return _verified_fresh_predecessor(marker, request)
+    except BoundaryError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, StopIteration):
+        raise fail("fresh_predecessor_invalid") from None
+
+
+def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dict[str, Any] | None:
+    if request.predecessor_report_path is None:
+        require_resolved_predecessor(marker)
+        return None
+    request.validate()
+    raw_marker = _ordinary(marker, MAX_CONTROL_BYTES)
+    if hashlib.sha256(raw_marker).hexdigest() != request.predecessor_marker_sha256:
+        raise fail("fresh_predecessor_marker_changed")
+    prior = _object(raw_marker)
+    path = request.predecessor_report_path
+    raw_report = _ordinary(path)
+    report_sha = hashlib.sha256(raw_report).hexdigest()
+    report = _object(raw_report)
+    if (
+        prior.get("schema") != REPORT_SCHEMA
+        or prior.get("status") != "unknown"
+        or report.get("schema") != REPORT_SCHEMA
+        or report.get("status") != "unknown"
+        or prior.get("operation_id") != report.get("operation_id")
+        or not isinstance(report.get("operation_id"), str)
+        or re.fullmatch(r"[0-9a-f]{32}", report["operation_id"]) is None
+        or prior.get("output") != str(path.parent)
+        or path.name != "report.json"
+        or prior.get("report_sha256") != report_sha
+        or report_sha != request.predecessor_report_sha256
+    ):
+        raise fail("fresh_predecessor_report_mismatch")
+    public, summary = report.get("runtime_status"), report.get("runtime_summary")
+    final, full = report.get("child_final"), report.get("child_final_full")
+    if not all(isinstance(v, dict) for v in (public, summary, final, full)):
+        raise fail("fresh_predecessor_cleanup_unconfirmed")
+    assert isinstance(public, dict) and isinstance(summary, dict)
+    assert isinstance(final, dict) and isinstance(full, dict)
+    old_runtime = public.get("environment", {}).get("runtime_instance_id")
+    if (
+        not isinstance(old_runtime, str)
+        or not old_runtime
+        or public.get("schema") != "sts2.policy-runtime/agent-session-status-1"
+        or public.get("lifecycle") != "stopped"
+        or public.get("mode") != "human"
+        or public.get("controller") != "released"
+        or public.get("tainted") is not False
+        or public.get("pending_request") is not None
+        or public.get("session", {}).get("agent_state") != "uncertain"
+        or summary.get("agent_state") != "uncertain"
+        or summary.get("tainted") is not False
+        or summary.get("pending_request") is not None
+        or summary.get("controller") != "released"
+        or report.get("unknown_request_id_projection") is not None
+    ):
+        raise fail("fresh_predecessor_native_outcome_unresolved")
+    counts = [report.get(k) for k in ("submissions", "actual_choices", "known_delivered_choices")]
+    if (
+        any(type(v) is not int or not 0 <= v <= 100 for v in counts)
+        or len(set(counts)) != 1
+        or public.get("autonomy_budget", {}).get("submissions_used") != counts[0]
+        or final.get("counts")
+        != {"result_messages": counts[0], "known_delivered_choices": counts[0]}
+    ):
+        raise fail("fresh_predecessor_native_outcome_unresolved")
+    reference = final.get("full_record_ref")
+    if (
+        not isinstance(reference, dict)
+        or reference.get("path") != "collector-final-full.json"
+        or type(reference.get("bytes")) is not int
+    ):
+        raise fail("fresh_predecessor_full_record_required")
+    full_bytes = _ordinary(path.parent / reference["path"])
+    if (
+        len(full_bytes) != reference["bytes"]
+        or hashlib.sha256(full_bytes).hexdigest() != reference.get("sha256")
+        or _object(full_bytes) != full
+        or full.get("operation_id") != report["operation_id"]
+        or full.get("runtime_status") != public
+        or any(
+            full.get(k) != final.get(k)
+            for k in ("counts", "teacher_exit", "source_closed", "record_source3")
+        )
+    ):
+        raise fail("fresh_predecessor_full_record_mismatch")
+    child, teacher = report.get("child"), report.get("teacher_exit")
+    host, released = final.get("host_exit"), final.get("control_release")
+    if (
+        not isinstance(child, dict)
+        or child.get("exit_code") != 0
+        or child.get("forced_by_parent") is not False
+        or child.get("reader_terminal") is not True
+        or child.get("diagnostics_terminal") is not True
+        or not isinstance(teacher, dict)
+        or teacher.get("actual_exit") is not True
+        or type(teacher.get("pid")) is not int
+        or teacher["pid"] <= 0
+        or not isinstance(host, dict)
+        or host != {"code": 0, "signal": None, "forced": False}
+        or not isinstance(released, dict)
+        or released.get("confirmed") is not True
+        or released.get("runtime_instance_id") != old_runtime
+        or full.get("control_release", {}).get("observation", {}).get("runtime_instance_id")
+        != old_runtime
+        or full.get("control_release", {}).get("observation", {}).get("controller") is not None
+        or final.get("cleanup_errors") != []
+        or report.get("runtime_quiescence") != "observed_exact_Node_quiesced"
+        or any(
+            report.get(k)
+            for k in (
+                "error_code",
+                "source_close_fallback",
+                "full_final_reporting_error",
+                "application_close_unconfirmed",
+            )
+        )
+    ):
+        raise fail("fresh_predecessor_cleanup_unconfirmed")
+    # Consume the owning verifiers; the application does not rebuild their native ledger.
+    import sts2_platform_evidence as owner
+
+    direct_ref = report.get("direct_evidence")
+    if not isinstance(direct_ref, dict):
+        raise fail("fresh_predecessor_direct_identity_required")
+    direct_path = path.parent / "agent-runs" / public["run_id"]
+    if (
+        direct_ref.get("directory") != str(direct_path)
+        or direct_ref.get("run_id") != public["run_id"]
+    ):
+        raise fail("fresh_predecessor_direct_identity_required")
+    direct_result = owner.verify_agent_session_run_evidence(
+        direct_path,
+        {
+            "run_id": public["run_id"],
+            "agent_manifest_id": direct_ref["manifest_id"],
+            "agent_artifact_sha256": direct_ref["artifact_sha256"],
+            "agent_manifest_sha256": public["agent_manifest_sha256"],
+            "runtime_version": public["runtime"]["version"],
+            "runtime_code_sha256": public["runtime"]["code_sha256"],
+            "adapter": public["agent"]["adapter"],
+        },
+    )
+    if not direct_result.passed:
+        raise fail("fresh_predecessor_direct_verification_failed")
+    direct = direct_result.require_value()
+    if (
+        not isinstance(direct, owner.AgentSessionRunEvidence)
+        or direct.manifest["status"] != "stopped"
+        or direct.manifest["tainted"] is not False
+    ):
+        raise fail("fresh_predecessor_direct_verification_failed")
+    # Join already-verified immutable owner evidence; do not reproduce its ledger.
+    event_bytes = _ordinary(direct_path / "events.jsonl", 16 * 1024**2)
+    event_seal = next(f for f in direct.evidence_manifest["files"] if f["path"] == "events.jsonl")
+    if (
+        len(event_bytes) != event_seal["bytes"]
+        or hashlib.sha256(event_bytes).hexdigest() != event_seal["sha256"]
+    ):
+        raise fail("fresh_predecessor_direct_changed")
+    events = [_object(line) for line in event_bytes.splitlines()]
+    attachment = next(e["payload"] for e in events if e["kind"] == "native_session_attached")
+    results = [e["payload"]["result"] for e in events if e["kind"] == "native_result"]
+    if (
+        attachment["environment"]["runtime_instance_id"] != old_runtime
+        or attachment["environment"]["environment_fingerprint"]
+        != public["environment"]["environment_fingerprint"]
+        or any(
+            attachment["environment"][k] != public["environment"][k]
+            for k in (
+                "connector_artifact_sha256",
+                "connector_module_version_id",
+                "connector_source_revision",
+                "connector_version",
+                "modset_fingerprint",
+            )
+        )
+        or len(results) != counts[0]
+        or any(r["delivery"] != "delivered" for r in results)
+    ):
+        raise fail("fresh_predecessor_direct_identity_required")
+    boundary = {
+        "schema": FRESH_SCHEMA,
+        "prior_status": "unknown",
+        "prior_input_consumption": "unresolved",
+        "prior_operation_id": report["operation_id"],
+        "prior_report_path": str(path),
+        "prior_report_sha256": report_sha,
+        "prior_marker_sha256": request.predecessor_marker_sha256,
+        "prior_runtime_instance_id": old_runtime,
+        "direct_content_id": direct.content_id,
+        "prior_agent_run_id": direct.run_id,
+        "prior_agent_continuity_token": public["session"]["continuity_token"],
+        "prior_stream_generation": public["session"]["stream_generation"],
+        "can_resume_prior": False,
+        "can_retry_prior": False,
+        "restores_prior_state": False,
+    }
+    if report.get("record_source3") is False:
+        if request.predecessor_source3_bundle is not None:
+            raise fail("fresh_source3_bundle_forbidden_for_optout")
+        original_request_bytes = _ordinary(path.parent / "request.json")
+        quiesced_bytes = _ordinary(path.parent / "quiesced.json")
+        original_request = _object(original_request_bytes)
+        quiesced = _object(quiesced_bytes)
+        if (
+            report.get("actor_id") != "source3-teacher-" + report["operation_id"]
+            or any(
+                k not in report
+                for k in ("source_start", "source_close", "source_closed", "close_sent")
+            )
+            or original_request.get("schema") != REPORT_SCHEMA
+            or original_request.get("status") != "pending"
+            or original_request.get("operation_id") != report["operation_id"]
+            or original_request.get("actor_id") != report.get("actor_id")
+            or original_request.get("source") != report.get("source")
+            or original_request.get("record_source3") is not False
+            or original_request.get("child_path") != report.get("child_path")
+            or original_request.get("child_sha256") != report.get("child_sha256")
+            or original_request.get("options") != report.get("options")
+            or original_request.get("options", {}).get("record_source3") is not False
+            or any(
+                original_request.get(k) is not None
+                for k in ("source_start", "source_close", "source_closed")
+            )
+            or report.get("source_start") is not None
+            or report.get("source_close") is not None
+            or report.get("source_closed") is not None
+            or report.get("close_sent") is not False
+            or report.get("source_final_status") is not None
+            or final.get("record_source3") is not False
+            or full.get("record_source3") is not False
+            or final.get("source_closed") is not True
+            or quiesced != report.get("quiesced")
+            or quiesced.get("schema") != PIPE_SCHEMA
+            or quiesced.get("type") != "quiesced"
+            or quiesced.get("operation_id") != report["operation_id"]
+            or quiesced.get("record_source3") is not False
+            or quiesced.get("counts") != final["counts"]
+            or quiesced.get("direct_evidence") != direct_ref
+            or any(
+                (path.parent / name).exists() or (path.parent / name).is_symlink()
+                for name in (
+                    "source-start-request.json",
+                    "source-start.json",
+                    "source-close-request.json",
+                    "source-close.json",
+                )
+            )
+        ):
+            raise fail("fresh_predecessor_source_optout_mismatch")
+        # source_closed=true in the child records known not_requested handling,
+        # not a recording close. There is deliberately no Source identity or seal.
+        return {
+            **boundary,
+            "prior_record_source3": False,
+            "prior_source3_outcome": "not_requested",
+            "original_request_sha256": hashlib.sha256(original_request_bytes).hexdigest(),
+            "original_quiesced_sha256": hashlib.sha256(quiesced_bytes).hexdigest(),
+        }
+    if report.get("record_source3") is not True or report.get("source_closed") is not True:
+        raise fail("fresh_predecessor_source_closure_required")
+    if request.predecessor_source3_bundle is None:
+        raise fail("fresh_source3_bundle_required_for_recorded_predecessor")
+    from spireagent.workbench.local_recording_import import _verified_source3
+
+    source = _verified_source3(request.predecessor_source3_bundle)
+    final_source = report.get("source_final_status", {})
+    old_source = final_source.get("source", {})
+    if (
+        source.content_id != request.predecessor_source3_content_id
+        or source.recording["session_id"] != final_source.get("recording_session_id")
+        or source.recording["source_environment"]["runtime_instance_id"] != old_runtime
+        or source.recording["source_environment"]["environment_fingerprint"]
+        != public["environment"]["environment_fingerprint"]
+        or source.recording["source_environment"]["connector"]["sha256"]
+        != public["environment"]["connector_artifact_sha256"]
+        or final_source.get("recording_lifecycle") != "closed"
+        or final_source.get("closeout_status") != "closed"
+        or old_source.get("accounting_complete") is not True
+        or old_source.get("pending_inputs") != 0
+        or old_source.get("gaps") != 0
+        or old_source.get("error") is not None
+        or source.gap_count != 0
+        or len(source.inputs) != counts[0]
+        or len(source.epochs) != 1
+        or source.epochs[0]["epoch_id"] != old_source.get("epoch_id")
+        or len(source.observations) != old_source.get("observations")
+        or source.human_origin_verified is not False
+        or len(source.segments) != 1
+        or source.segments[0]["segment_id"] != old_source.get("segment_id")
+        or dict(source.segments[0]["declaration"]) != old_source.get("declaration")
+        or old_source.get("declaration", {}).get("actor_id") != report.get("actor_id")
+        or old_source.get("declaration", {}).get("source_kind") != "agent_protocol"
+        or {i["input_id"] for i in source.inputs} != {r["request_id"] for r in results}
+        or report.get("actor_id") != "source3-teacher-" + report["operation_id"]
+    ):
+        raise fail("fresh_predecessor_source_identity_mismatch")
+    inventory = source.manifest["content_identity"]["raw_file_sha256"]
+    return {
+        **boundary,
+        "prior_record_source3": True,
+        "prior_source_session_id": source.recording["session_id"],
+        "prior_source_segment_id": old_source["segment_id"],
+        "prior_source_epoch_id": old_source["epoch_id"],
+        "source3_content_id": source.content_id,
+        "source3_bundle_path": str(request.predecessor_source3_bundle),
+        "original_manifest_sha256": inventory["recording-manifest.json"],
+        "original_close_sha256": inventory["source-close-receipt.json"],
+    }
+
+
 def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dict[str, Any]:
     """Read-only source/request check. Does not import or create an Application/SDK."""
     request.validate()
@@ -141,10 +530,11 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
     child = ROOT.parent / "tools/native-source3-collector.mjs"
     if not child.is_file() or child.is_symlink():
         raise fail("fixed_collector_child_unavailable")
-    require_resolved_predecessor(config.state_dir / MARKER_FILE)
+    boundary = verified_fresh_predecessor(config.state_dir / MARKER_FILE, request)
     return {
         "schema": REPORT_SCHEMA,
         "status": "plan",
+        "fresh_episode_boundary": boundary,
         "source": selected,
         "endpoint": endpoint,
         "options": request.options(endpoint),
@@ -438,10 +828,46 @@ def collect_source3(
         with instance_lock(config.state_dir / "instance.lock"):
             cancel.check()
             marker = config.state_dir / MARKER_FILE
-            require_resolved_predecessor(marker)
+            boundary = verified_fresh_predecessor(marker, request)
+            if prepared.get("fresh_episode_boundary") != boundary:
+                raise fail("fresh_predecessor_preflight_changed")
             operation = uuid.uuid4().hex
+            if boundary is not None and operation == boundary["prior_operation_id"]:
+                raise fail("fresh_operation_identity_required")
             actor = "source3-teacher-" + operation
+            missing_directories = []
+            parent = request.output
+            while not parent.exists():
+                missing_directories.append(parent)
+                parent = parent.parent
             request.output.mkdir(parents=True, mode=0o700)
+            if boundary is not None:
+                # Exact old pointer bytes survive before this same active pointer advances.
+                old_bytes = _ordinary(marker, MAX_CONTROL_BYTES)
+                if hashlib.sha256(old_bytes).hexdigest() != boundary["prior_marker_sha256"]:
+                    raise fail("fresh_predecessor_marker_changed")
+                _preserve_file(request.output / "predecessor-marker.json", old_bytes)
+                boundary = {
+                    **boundary,
+                    "new_operation_id": operation,
+                    "predecessor_marker_archive": "predecessor-marker.json",
+                }
+                boundary_bytes = (json.dumps(boundary, sort_keys=True, indent=2) + "\n").encode()
+                _preserve_file(request.output / "fresh-episode-boundary.json", boundary_bytes)
+                boundary = {
+                    **boundary,
+                    "receipt": {
+                        "path": "fresh-episode-boundary.json",
+                        "bytes": len(boundary_bytes),
+                        "sha256": hashlib.sha256(boundary_bytes).hexdigest(),
+                    },
+                }
+                try:
+                    _sync_directory(request.output)
+                    for created in missing_directories:
+                        _sync_directory(created.parent)
+                except OSError:
+                    raise fail("fresh_history_durability_failed") from None
             report: dict[str, Any] = {
                 **prepared,
                 "schema": REPORT_SCHEMA,
@@ -467,6 +893,7 @@ def collect_source3(
                 "runtime_status": None,
                 "direct_evidence": None,
                 "teacher_exit": None,
+                "fresh_episode_boundary": boundary,
             }
             app = child = original = None
             runtime: str | None = None
@@ -475,6 +902,7 @@ def collect_source3(
             error_code: str | None = None
             last_message = 0
             seen_results: set[str] = set()
+            initial_fresh_runtime_checked = False
             deadline = time.monotonic() + request.deadline_ms / 1000
 
             def close_original_once() -> tuple[bool, dict | None, str]:
@@ -537,7 +965,32 @@ def collect_source3(
                     return False, status, code
 
             def project_status(value: Any, *, tick: bool = False) -> None:
+                nonlocal initial_fresh_runtime_checked
                 status = runtime_status(value, runtime, request)
+                if boundary is not None and not initial_fresh_runtime_checked:
+                    if (
+                        tick
+                        or status["autonomy_budget"]["submissions_used"] != 0
+                        or status["autonomy_budget"]["policy_calls_used"] != 0
+                        or type(status["session"].get("state_version")) is not int
+                        or status["session"].get("state_version") != 0
+                        or "consumption_id" not in status["session"]
+                        or status["session"].get("consumption_id") is not None
+                        or status["session"].get("agent_state") != "known"
+                        or not isinstance(status.get("run_id"), str)
+                        or not status["run_id"]
+                        or status["run_id"] == boundary["prior_agent_run_id"]
+                        or not isinstance(status["session"].get("continuity_token"), str)
+                        or not status["session"]["continuity_token"]
+                        or status["session"]["continuity_token"]
+                        == boundary["prior_agent_continuity_token"]
+                        or not isinstance(status["session"].get("stream_generation"), str)
+                        or not status["session"]["stream_generation"]
+                        or status["session"]["stream_generation"]
+                        == boundary["prior_stream_generation"]
+                    ):
+                        raise fail("fresh_runtime_initial_state_required")
+                    initial_fresh_runtime_checked = True
                 report["runtime_status"] = status
                 report["submissions"] = status["autonomy_budget"]["submissions_used"]
                 result = status.get("last_result")
@@ -748,6 +1201,7 @@ def collect_source3(
                         "status": "pending",
                         "operation_id": operation,
                         "output": str(request.output),
+                        "fresh_episode_boundary": boundary,
                     },
                 )
                 artifact = write_artifact(request.output / "teacher-code-artifact.json")
@@ -827,6 +1281,23 @@ def collect_source3(
                         )
                         handoff = message["bootstrap_control_release"]
                         runtime = message["runtime_instance_id"]
+                        if boundary is not None:
+                            identity = message["host_identity"]
+                            profile = (
+                                identity.get("profile", {}) if isinstance(identity, dict) else {}
+                            )
+                            if (
+                                runtime == boundary["prior_runtime_instance_id"]
+                                or profile.get("status") != "instantiated"
+                                or profile.get("template_id") != request.template_id
+                                or not isinstance(profile.get("profile_id"), str)
+                                or not profile["profile_id"]
+                                or not isinstance(profile.get("generation_id"), str)
+                                or not profile["generation_id"]
+                                or identity.get("host", {}).get("runtime_instance_id") != runtime
+                            ):
+                                raise fail("fresh_host_identity_required")
+                            report["host_identity"] = identity
                         if (
                             message["endpoint"] != prepared["endpoint"]
                             or message["record_source3"] is not request.record_source3
@@ -859,6 +1330,20 @@ def collect_source3(
                                 and isinstance(owned.get("source"), dict)
                             ):
                                 original = owned
+                            if (
+                                boundary is not None
+                                and boundary["prior_record_source3"] is True
+                                and original is not None
+                                and (
+                                    original["recording_session_id"]
+                                    == boundary["prior_source_session_id"]
+                                    or original["source"]["segment_id"]
+                                    == boundary["prior_source_segment_id"]
+                                    or original["source"]["epoch_id"]
+                                    == boundary["prior_source_epoch_id"]
+                                )
+                            ):
+                                raise fail("fresh_source_identity_required")
                             if (
                                 original is None
                                 or started.get("pending") is not False
@@ -1077,6 +1562,7 @@ def collect_source3(
                     "report_sha256": hashlib.sha256(
                         (request.output / "report.json").read_bytes()
                     ).hexdigest(),
+                    "fresh_episode_boundary": boundary,
                 },
             )
             return report

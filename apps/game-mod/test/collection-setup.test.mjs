@@ -25,17 +25,18 @@ function fixture(t) {
   json(configPath, configuration);
   fs.writeFileSync(path.join(game, "SlayTheSpire2"), "game");
   fs.writeFileSync(path.join(mods, "STS2_PLATFORM.dll"), "mod");
-  json(path.join(mods, "STS2_PLATFORM.json"), { id: "STS2_PLATFORM" });
+  json(path.join(mods, "STS2_PLATFORM.json"), { id: "STS2_PLATFORM", version: "0.2.0-rc.1" });
   json(path.join(mods, "STS2_MCP.conf"), { port: 15526 });
   const artifact = { sha256: crypto.createHash("sha256").update("mod").digest("hex"), module_version_id: "mvid" };
   const provenance = { schema: "sts2.platform/game-mod-build-provenance-1", artifact,
+    package: { manifest: { id: "STS2_PLATFORM", version: "0.2.0-rc.1" } },
     source: { platform: { source_revision: "platform", source_digest_sha256: "platform-digest" }, components: {
       connector: { source_revision: "connector" }, annotator: { source_revision: "annotator" },
       live_ui: { source_revision: "ui", source_digest_sha256: "ui-digest" }
     } } };
   const provenancePath = path.join(base, "build-provenance.json");
   json(provenancePath, provenance);
-  const platformIdentity = { loaded_at: "2026-09-15T00:00:00Z", artifact_sha256: artifact.sha256,
+  const platformIdentity = { version: "0.2.0-rc.1", loaded_at: "2026-09-15T00:00:00Z", artifact_sha256: artifact.sha256,
     module_version_id: "mvid", platform_source_revision: "platform", platform_source_digest_sha256: "platform-digest",
     connector_source_revision: "connector", annotator_source_revision: "annotator", live_ui_source_revision: "ui" };
   const uiIdentity = { artifact_sha256: artifact.sha256, module_version_id: "mvid", source_revision: "ui", source_digest_sha256: "ui-digest" };
