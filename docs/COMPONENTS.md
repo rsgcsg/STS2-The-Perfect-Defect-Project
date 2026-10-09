@@ -83,7 +83,7 @@ loads one `STS2_PLATFORM` manifest; logical authority does not follow DLL count.
 
 The [baseline specification](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)
 owns the common upper terms. Host capability, Agent-facing environment interface
-and internal Agent port are different boundaries mapped to existing components;
+and Runtime-to-Agent program port are different boundaries mapped to existing components;
 they are not additional services. A complete Agent may compose fixed rules,
 optional Models and shared libraries. A Model does not itself acquire lifecycle
 or gameplay permissions, and a research TargetSpec does not enter current inputs.

@@ -61,7 +61,7 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 历史 Human 输入观察 H 保留原义。旧设计的 P/A 是协议核心/环境接口的示意，
 不是新增组件，也不等于历史方案 A 或动作集合 A(S)。
 
-面向 Agent 的环境接口与内部 Agent 端口分开：前者由 Connector 提供游戏交互能力；
+面向 Agent 的环境接口与 Runtime–Agent 程序端口分开：前者由 Connector 提供游戏交互能力；
 后者是 Policy Runtime 与 Agent 程序之间的消息合同。当前通用
 [Agent 端口](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md)支持消费、查询、
 Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要求完整 scores/index。
