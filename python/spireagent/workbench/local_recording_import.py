@@ -272,11 +272,12 @@ class LocalRecordingImporter:
 
     @staticmethod
     def _native_agent_original(directory: Path, cohort: str, relation: object) -> Any:
-        from stpd.fullrun.native_agent_sampled_source import _producer, _verified
+        from stpd.fullrun.native_agent_sampled_source import _events, _producer, _verified
 
         bundle = _verified(directory)
         _producer(bundle, cohort, relation)
-        if not bundle.events or bundle.events[-1]["kind"] != "stopped":
+        events = _events(directory)
+        if not events or events[-1]["kind"] != "stopped":
             raise BoundaryError("local_import", "native_agent_closed_run_required")
         return bundle
 
