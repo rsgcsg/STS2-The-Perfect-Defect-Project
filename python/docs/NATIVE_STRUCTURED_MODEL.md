@@ -1,8 +1,10 @@
 # Native structured M2 input, package and Agent
 
-This is a new synthetic source/conformance instance, not a renamed S0 model or
-native recording qualification. It uses native-logical-v1 directly and the
-reviewed AgentSession protocol. Its source, InputSpec, projection, package and
+This guide owns the shared native structured projection/scorer and its synthetic
+source/conformance package contracts. [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
+owns real recording admission, views and trained Source3 lineage separately.
+Neither path renames S0 or grants runtime/Human qualification. The implementation
+here uses native-logical-v1 and the reviewed AgentSession protocol. Its source, InputSpec, projection, package and
 inference-state identities differ from text-menu-v2/S0. No old data, weights or
 training result are automatically admitted under the new identities.
 

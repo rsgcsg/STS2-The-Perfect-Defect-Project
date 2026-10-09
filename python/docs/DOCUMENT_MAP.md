@@ -5,6 +5,28 @@ facts. Canonical documents describe supported claims; ADRs/plans define accepted
 working memory and historical conversations do not prove implementation. Separate evidence
 classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 
+## Current native learning and application route
+
+Use root [CURRENT](../../docs/memory/CURRENT.md) and the
+[current specification](../../docs/BASELINE_V1_SPEC.zh-CN.md) for the active task
+and selected direction; the [execution matrix](../../docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
+tracks what has actually been implemented/reviewed. Apply `python/AGENTS.md`.
+
+| Work | Owning guide and boundary |
+| --- | --- |
+| Native structured input/Model/Agent | [Native structured model](NATIVE_STRUCTURED_MODEL.md): shared projection, scorer and existing full-reference/synthetic package contracts |
+| Real Source3 record→training representation | [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md): typed originals, exact-delivered N, declared origins, publication-memory/pretraining views and use/split chain |
+| Data/Model application entry | [Project console](PROJECT_CONSOLE.md) and [model task flow](LOCAL_MODEL_TASK_FLOW.md): existing services, actual supported UI/API and operational admission |
+| Shared training, export and recovery | [Structured delivery](STRUCTURED_MODEL_DELIVERY.md) and [workload](STRUCTURED_WORKLOAD.md): shared engine/attempt/checkpoint owners; selected source recipe retains its own meaning |
+| Actual scoped results | Root [STATUS](../../docs/STATUS.md), then the linked exact evidence report |
+
+Source3 exact-delivered N is not a legacy causal transition. Do not require or
+invent Commit/successor to relabel these input-choice examples; Z/O and Human
+claims need their own evidence. Legacy [Full-Run research](FULLRUN_RESEARCH.md)
+and [training](FULLRUN_TRAINING.md) remain valid for the schemas they specify.
+The next sampled-carry design is selected in the root spec but is not implemented
+by relabelling the existing publication-memory recipe or its old model packages.
+
 ## Entry and engineering
 
 | Document | Responsibility |
@@ -22,9 +44,10 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 | [Architecture](ARCHITECTURE.md) | research/environment dependency direction |
 | [Interfaces](INTERFACES.md) | versioned environment, data, model and artifact contracts |
 
-## 当前研究设计与阶段计划
+## 研究路线与历史阶段计划
 
-以下是设计／实施计划，不是已训练或已部署状态；现行合同与 owner 源码继续有效。
+以下是研究路线及历史阶段计划，不是额外的当前实施分母，也不是已训练或已部署状态。
+本轮选择由根规范/执行矩阵明确继承；旧 schema、结果和其他研究方向保留原义。
 
 - [研究路线与历史维护](research/RESEARCH_ROADMAP.zh-CN.md)：阶段问题、交互作用、条件结论和重新验证。
 - [S0 第一阶段：数据基础与 S01 最小闭环](research/S0_STAGE1.zh-CN.md)：历史小样独立评分验收和后续十二配置地图，不代替 1a 真实游戏验收。
@@ -58,7 +81,7 @@ stpd/data/human_annotator.py consumes it without making this map a second schema
 [ADR-0002](adr/0002-versioned-unified-human-serialization.md),
 [Memory Instructions](memory/README.md), [Current Context](memory/CURRENT.md),
 [Decisions](memory/DECISIONS.md), [Open Questions](memory/OPEN_QUESTIONS.md),
-[Latest Handoff](memory/HANDOFF.md), and [Machine Contracts](../schemas/README.md).
+[Historical research handoff](memory/HANDOFF.md), and [Machine Contracts](../schemas/README.md).
 
 Platform owns model-neutral environment/runtime/evidence contracts. STPD owns research,
 data, representation, training and evaluation. Components share a repository and use declared package APIs. Historical release
