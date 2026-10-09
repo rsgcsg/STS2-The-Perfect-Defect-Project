@@ -3,6 +3,7 @@ import type { NativeLogicalAwait, NativeLogicalCapture, NativeLogicalEventAvaila
 import type { RuntimeMode, RuntimeStatus } from "./contracts.js";
 import type { AgentConsumption, AgentConsumeAck, AgentDirectiveOutput } from "./agent-session-contracts.js";
 import type { AgentPendingRequest, AgentReconcileResolution } from "./agent-runtime-contracts.js";
+import type { AgentSampleReceipt } from "./evidence.js";
 import type { AgentStateMetadata } from "./agent-session-state.js";
 
 interface Context { session_id: string; recovery_epoch: number }
@@ -21,6 +22,13 @@ export interface AgentRuntimeEventPayloads {
   native_event_batch_received: Context & { after_cursor: string; next_cursor: string; high_watermark: string;
     retained_start_cursor: string; event_count: number };
   native_acquisition_registered: Context & { witness: AgentAcquisitionWitness };
+  agent_sample_consume_ack_offered: Context & { request_id: string; acknowledgement: AgentConsumeAck };
+  agent_sample_query_offered: Context & { acquisition_id: string; request_id: string };
+  agent_sample_query_discarded: Context & { acquisition_id: string; reason: "readiness_check" | "not_offered" };
+  agent_sample_input_stored: Context & AgentSampleReceipt & { disposition: "query_offered" | "consume_proposed"; proposal: { request_id: string; report: AgentConsumption } | null };
+  agent_sample_segment_started: Context & { continuity_token: string; acquisition_id: string };
+  agent_sample_segment_ended: Context & { continuity_token: string; reason: string; state_version: number };
+  agent_sample_publication_gap: Context & { gap: Record<string, unknown>; received_cursor: string };
   agent_consumed: Context & { report: AgentConsumption; acknowledgement: AgentConsumeAck; witness: AgentAcquisitionWitness };
   agent_directive: Context & { output: AgentDirectiveOutput };
   native_submission_requested: Context & { request_id: string; basis_acquisition_id: string; snapshot_id: string;

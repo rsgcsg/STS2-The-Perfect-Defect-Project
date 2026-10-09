@@ -133,10 +133,10 @@ export class AgentConsumptionLedger {
           if (new Set(ids).size !== ids.length) throw new AgentSessionError("duplicate_action_id");
           if (value.catalog.some(action => !supportsProfileValue(this.manifest.support.action_verbs,
             sessionText(sessionObject(action).verb, 65_536)))) throw new AgentSessionError("unsupported_action_verb");
-        } else if (this.manifest.input.history_mode === "full_reference") throw new AgentSessionError("complete_catalog_required");
+        } else if (this.manifest.input.history_mode !== "scoped_query") throw new AgentSessionError("complete_catalog_required");
         facts.catalog = stable({ digest: descriptor.digest, total_count: descriptor.total_count,
           ordering_semantics: descriptor.ordering_semantics,
-          ...(this.manifest.input.history_mode === "full_reference" ? { actions: value.catalog } : {}) });
+          ...(this.manifest.input.history_mode !== "scoped_query" ? { actions: value.catalog } : {}) });
       } else {
         if (field === "referents") {
           if (!Array.isArray(observation.referents)) throw new AgentSessionError("native_referents_required");
@@ -154,7 +154,7 @@ export class AgentConsumptionLedger {
         facts[field] = stable(observation[field]);
       }
     }
-    if (this.manifest.input.history_mode === "full_reference"
+    if (this.manifest.input.history_mode !== "scoped_query"
       && (!value.catalog_materialized || included.length !== 4 || completeness.status !== "complete"
         || completeness.full_reference_complete !== true || missing.length !== 0))
       throw new AgentSessionError("full_reference_input_required");
@@ -226,6 +226,8 @@ export class AgentConsumptionLedger {
       if (publication !== null && BigInt(publication) < this.lastPublication) throw new AgentSessionError("publication_regressed");
       // Runtime feeds promised occurrences serially; the source cursor is not inferred here.
     }
+    if (this.manifest.input.history_mode === "sampled_current"
+      && (publication !== null || this.requiredGapPending)) throw new AgentSessionError("sampled_current_basis_required");
     // No mutation before all report bindings, mode, ordering and version checks pass.
     if (advanced) {
       const previousOccurrence = this.currentOccurrence;

@@ -1572,6 +1572,111 @@
     "catalog_bytes": "canonical_assembled_ordered_catalog",
     "quota_failure": "handoff_before_ack",
     "segment_start": "first_accepted_sample",
-    "segment_end": "post_sample_human_or_failure"
+    "segment_end": "post_sample_human_or_failure",
+    "event_fields": {
+      "agent_sample_query_offered": [
+        "acquisition_id",
+        "recovery_epoch",
+        "request_id",
+        "session_id"
+      ],
+      "agent_sample_consume_ack_offered": [
+        "acknowledgement",
+        "recovery_epoch",
+        "request_id",
+        "session_id"
+      ],
+      "agent_sample_query_discarded": [
+        "acquisition_id",
+        "reason",
+        "recovery_epoch",
+        "session_id"
+      ],
+      "agent_sample_input_stored": [
+        "disposition",
+        "metadata",
+        "metadata_path",
+        "proposal",
+        "recovery_epoch",
+        "session_id"
+      ],
+      "agent_sample_segment_started": [
+        "acquisition_id",
+        "continuity_token",
+        "recovery_epoch",
+        "session_id"
+      ],
+      "agent_sample_segment_ended": [
+        "continuity_token",
+        "reason",
+        "recovery_epoch",
+        "session_id",
+        "state_version"
+      ],
+      "agent_sample_publication_gap": [
+        "gap",
+        "received_cursor",
+        "recovery_epoch",
+        "session_id"
+      ]
+    },
+    "metadata_fields": [
+      "schema",
+      "acquisition_id",
+      "input_spec",
+      "continuity_token",
+      "publication_index",
+      "capture",
+      "observation",
+      "catalog"
+    ],
+    "ack_semantics": {
+      "agent_consumed": "ledger_transition_durably_recorded_before_ack_write",
+      "agent_sample_consume_ack_offered": "port_write_attempt_not_child_receipt",
+      "agent_directive": "later_exact_watermark_substantiates_child_resumed_after_ack",
+      "interrupted_ack": "uncertain_no_guessed_w_commit_or_reentry"
+    },
+    "metadata_example": {
+      "schema": "sts2.policy-runtime/agent-sample-input-1",
+      "acquisition_id": "acq-map_a",
+      "input_spec": {
+        "id": "stpd-native-sampled-carry-v1",
+        "version": "1.0.0",
+        "sha256": "99996f16dc233ecb52f76f43435a1b064bcd89b61566f1e0b197e86161b6fd28"
+      },
+      "continuity_token": "segment-1",
+      "publication_index": null,
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "map_a-capture",
+        "snapshot_id": "map_a",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1415,
+        "sha256": "08c96e0cc73d797ca400069f84774cb45b5b06ed25f05c7f4a0c04c794590a7b",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "observation": {
+        "path": "agent-sample-26b8b157d976636ec86fee911c81fd3cd8a13639e6e835dbda1d92b42afd8943.observation.json",
+        "bytes": 1415,
+        "sha256": "08c96e0cc73d797ca400069f84774cb45b5b06ed25f05c7f4a0c04c794590a7b"
+      },
+      "catalog": {
+        "path": "agent-sample-26b8b157d976636ec86fee911c81fd3cd8a13639e6e835dbda1d92b42afd8943.catalog.json",
+        "bytes": 154,
+        "sha256": "23e998f1ae9b33f6741f6a2ab6e65cce6a9515dc45186ef602ed62b53b62e8d1",
+        "digest": "6cebddb0659ad71fbdd7a8537122f7dc0d2797cd7ba1ef4a9acfc91707762d1b",
+        "count": 1
+      }
+    },
+    "metadata_path_example": "agent-sample-26b8b157d976636ec86fee911c81fd3cd8a13639e6e835dbda1d92b42afd8943.json"
   }
 }

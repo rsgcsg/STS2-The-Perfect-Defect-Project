@@ -17,7 +17,7 @@ import { agentJsonByteLength } from "./agent-session-json.js";
 import { AgentConsumptionLedger, type AgentAcquisition } from "./agent-session-consumption.js";
 import { NdjsonAgentSessionPort, type AgentPortHandlers } from "./agent-session-port.js";
 import { AgentSessionError, sessionText, supportsProfileValue, validateAgentManifest,
-  type AgentDirectiveOutput, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
+  type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
 import { canonicalStateMetadata, type AgentOpaqueState, type AgentStateMetadata } from "./agent-session-state.js";
 import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, AgentRuntimeTickResult,
   RuntimeServiceOwner } from "./agent-runtime-contracts.js";
@@ -73,6 +73,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private readonly knownActions = new Map<string, Map<string, NativeLogicalAction>>();
   private readonly actionReservations = new Map<string, AgentByteReservation[]>();
   private basisId: string | null = null;
+  private readonly samplePayloads = new Map<string, { bytes: Buffer; reservation: AgentByteReservation; offered: boolean;
+    stored: boolean }>();
+  private sampleOfferEvidence: Promise<void> = Promise.resolve();
+  private sampleSegmentStarted = false;
+  private sampleSegmentEnded = false;
   private lastAckMetadata: AgentStateMetadata | null = null;
   private lastObservation: AgentRuntimeStatus["last_observation"] = null;
   private lastDirective: AgentRuntimeStatus["last_directive"] = null;
@@ -178,7 +183,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (mode !== "human") { await this.checkPreconditions(expected); this.admitMutation(); }
       if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
       await earlyRelease;
-      if (mode === "human") this.owner.end("human_recovery");
+      if (mode === "human") { this.owner.end("human_recovery"); await this.endSampleSegment("human_recovery"); }
       else if (this.mode === "human" || this.owner.state.state !== "active") {
         this.budgetFenced = false; this.budgetHandoff = null;
         this.owner.begin(() => this.expireBudget());
@@ -213,6 +218,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           consumption_id: this.ledger.consumptionId, state_version: this.ledger.stateVersion,
           basis_acquisition_id: this.basisId, received_cursor: this.cursor }, handlers, active.signal, () => { offer.pending = true; });
         offer.pending = false;
+        await this.sampleOfferEvidence;
         this.checkActive(epoch, active.signal);
         this.requireWatermark(output);
         this.lastDirective = output.directive;
@@ -244,7 +250,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         const reason = errorMessage(error);
         await this.failClosed(reason);
         return { type: this.tainted ? "unknown" : "not_admitted", ...(this.tainted ? { error: reason } : { reason }), status: this.status() } as AgentRuntimeTickResult;
-      } finally { if (this.owner.active?.controller === active) this.owner.active = null; }
+      } finally {
+        await this.cleanupSampleQueries(offer.pending || this.agentUncertain);
+        if (this.owner.active?.controller === active) this.owner.active = null;
+      }
     }); } finally { this.tickActive = false; }
   }
 
@@ -341,6 +350,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private budgetStatus() { return this.owner.status(() => this.expireBudget()); }
   private checkActive(epoch: number, signal: AbortSignal): void { this.owner.checkEpoch(epoch); signal.throwIfAborted(); }
   private admitMutation(): void {
+    if (this.sampleSegmentEnded) throw new RuntimeControlPreconditionError("runtime_sample_segment_ended", 409);
     if (this.pending) throw new RuntimeControlPreconditionError("runtime_pending_request_unresolved", 409);
     if (this.tainted) throw new RuntimeControlPreconditionError("runtime_tainted", 409);
     if (this.agentUncertain) throw new RuntimeControlPreconditionError("runtime_agent_state_uncertain", 409);
@@ -405,7 +415,15 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const before = this.cursor;
       const batch = (await this.native.events({ afterCursor: before, limit, signal })).data;
       this.checkActive(epoch, signal);
-      if (batch.gap) { await this.gap(batch.gap); throw new AgentSessionError("native_source_gap"); }
+      if (batch.gap) {
+        if (this.manifest.input.history_mode === "sampled_current") {
+          // Advisory publication retention is not a missing Current sample.
+          this.noteCursor(batch.next_cursor, 0);
+          await this.emit("agent_sample_publication_gap", { ...this.context(), gap: batch.gap, received_cursor: batch.next_cursor });
+          break;
+        }
+        await this.gap(batch.gap); throw new AgentSessionError("native_source_gap");
+      }
       for (const original of batch.events) {
         // Every public source entry carries a captured view or its explicit
         // missing fact. Open event kind classifies Await, not input eligibility.
@@ -456,6 +474,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       observation: capture.observation as unknown as Record<string, unknown>, catalog: catalog as readonly Record<string, unknown>[] | null,
       catalog_materialized: catalog !== null, publication_index: publication };
     this.ledger.register(a); this.knownAcquisitions.add(id);
+    if (this.manifest.input.history_mode === "sampled_current") {
+      const reservation = this.budget.reserve(Buffer.byteLength(capture.serializedObservation, "utf8"));
+      try { this.samplePayloads.set(id, { bytes: Buffer.from(capture.serializedObservation), reservation, offered: false, stored: false }); }
+      catch (error) { reservation.release(); this.releaseAcquisition(id); throw error; }
+    }
     const retained = this.ledger.get(id).catalog as unknown as readonly NativeLogicalAction[] | null;
     this.knownActions.set(id, new Map(retained?.map(action => [action.action_id, action]) ?? []));
     this.lastObservation = { acquisition_id: id, capture_sha256: capture.capture.sha256, snapshot_id: capture.observation.snapshot_id,
@@ -464,6 +487,41 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       catalog_count: capture.observation.catalog.total_count };
     await this.emit("native_acquisition_registered", { ...this.context(), witness: this.witness(id) });
     return id;
+  }
+  private releaseAcquisition(id: string): void {
+    this.ledger.release(id); this.knownAcquisitions.delete(id); this.knownActions.delete(id);
+    for (const held of this.actionReservations.get(id) ?? []) held.release();
+    this.actionReservations.delete(id);
+    this.samplePayloads.get(id)?.reservation.release(); this.samplePayloads.delete(id);
+  }
+  private async persistSample(id: string, disposition: "query_offered" | "consume_proposed", proposal: { request_id: string; report: AgentConsumption } | null = null): Promise<void> {
+    const payload = this.samplePayloads.get(id);
+    if (!payload || !payload.offered) throw new AgentSessionError("sample_original_offer_required");
+    const a = this.ledger.get(id), catalog = a.observation.catalog as Record<string, unknown>;
+    if (a.catalog === null || !a.catalog_materialized || a.publication_index !== null)
+      throw new AgentSessionError("sample_complete_catalog_required");
+    const receipt = await this.options.evidence.storeSampleAcquisition({ acquisition_id: id,
+      input_spec: this.manifest.input.input_spec, continuity_token: this.ledger.continuityToken,
+      capture: a.capture, observation: payload.bytes, catalog: a.catalog, catalog_digest: String(catalog.digest) });
+    payload.stored = true;
+    await this.emit("agent_sample_input_stored", { ...this.context(), ...receipt, disposition, proposal });
+  }
+  private async cleanupSampleQueries(uncertain: boolean): Promise<void> {
+    if (this.manifest.input.history_mode !== "sampled_current") return;
+    await this.sampleOfferEvidence;
+    for (const [id, payload] of [...this.samplePayloads]) {
+      if (id === this.basisId) continue;
+      if (uncertain && payload.offered && !payload.stored) await this.persistSample(id, "query_offered");
+      if (!payload.stored) await this.emit("agent_sample_query_discarded", { ...this.context(), acquisition_id: id,
+        reason: payload.offered ? "readiness_check" : "not_offered" });
+      this.releaseAcquisition(id);
+    }
+  }
+  private async endSampleSegment(reason: string): Promise<void> {
+    if (this.manifest.input.history_mode !== "sampled_current" || !this.sampleSegmentStarted || this.sampleSegmentEnded) return;
+    this.sampleSegmentEnded = true;
+    await this.emit("agent_sample_segment_ended", { ...this.context(), continuity_token: this.ledger.continuityToken,
+      reason, state_version: this.ledger.stateVersion });
   }
   private witness(id: string): AgentAcquisitionWitness {
     const a = this.ledger.get(id), o = a.observation, c = o.catalog as Record<string, unknown>;
@@ -475,9 +533,32 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       catalog_count: c.total_count as number | null, catalog_materialized: a.catalog_materialized };
   }
   private handlers(epoch: number): AgentPortHandlers {
-    return { consumed: async (report, signal) => {
+    return { queryOffered: (result, requestId) => {
+      if (this.manifest.input.history_mode !== "sampled_current" || result.acquisition_id === null) return;
+      const payload = this.samplePayloads.get(result.acquisition_id);
+      if (!payload) throw new AgentSessionError("sample_original_payload_missing");
+      payload.offered = true;
+      const context = this.context();
+      this.sampleOfferEvidence = this.sampleOfferEvidence.then(() => this.emit("agent_sample_query_offered",
+        { ...context, acquisition_id: result.acquisition_id!, request_id: requestId }));
+      void this.sampleOfferEvidence.catch(() => undefined);
+    }, ackOffered: (acknowledgement, requestId) => {
+      if (this.manifest.input.history_mode !== "sampled_current") return;
+      const context = this.context();
+      this.sampleOfferEvidence = this.sampleOfferEvidence.then(() => this.emit("agent_sample_consume_ack_offered",
+        { ...context, acknowledgement, request_id: requestId }));
+      void this.sampleOfferEvidence.catch(() => undefined);
+    }, consumed: async (report, signal, requestId) => {
+      this.checkActive(epoch, signal);
+      await this.sampleOfferEvidence;
+      if (this.manifest.input.history_mode === "sampled_current") await this.persistSample(report.acquisition_id, "consume_proposed", { request_id: requestId, report });
       this.checkActive(epoch, signal);
       const ack = this.ledger.accept(report), witness = this.witness(report.acquisition_id);
+      if (this.manifest.input.history_mode === "sampled_current" && !this.sampleSegmentStarted) {
+        this.sampleSegmentStarted = true;
+        await this.emit("agent_sample_segment_started", { ...this.context(), continuity_token: this.ledger.continuityToken,
+          acquisition_id: report.acquisition_id });
+      }
       await this.emit("agent_consumed", { ...this.context(), report, acknowledgement: ack, witness });
       this.checkActive(epoch, signal);
       const a = this.ledger.get(report.acquisition_id), o = a.observation;
@@ -492,9 +573,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const previous = this.basisId;
       this.basisId = report.acquisition_id;
       if (previous !== null && previous !== this.basisId) {
-        this.ledger.release(previous); this.knownAcquisitions.delete(previous); this.knownActions.delete(previous);
-        for (const reservation of this.actionReservations.get(previous) ?? []) reservation.release();
-        this.actionReservations.delete(previous);
+        this.releaseAcquisition(previous);
       }
       return ack;
     }, query: async (query, signal) => {
@@ -514,12 +593,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         }
         const assembly = { capture: current.capture, context: current.context, retention: current.retention,
           signal, budget: this.assemblyBudget() };
-        const captured = this.manifest.input.history_mode === "full_reference"
+        const captured = this.manifest.input.history_mode !== "scoped_query"
           ? await this.native.getFull({ ...assembly, maxActions: this.manifest.limits.max_catalog_actions })
           : await this.native.getCapture({ ...assembly, eagerScope: body.eager_scope as NativeLogicalScopeField[] });
         try {
           this.checkActive(epoch, signal);
-          const catalog = this.manifest.input.history_mode === "full_reference" ? (captured as NativeLogicalFullCapture).actions : null;
+          const catalog = this.manifest.input.history_mode !== "scoped_query" ? (captured as NativeLogicalFullCapture).actions : null;
           const id = await this.register(captured, catalog, null), a = this.ledger.get(id);
           return { method: query.method, acquisition_id: id, value: { capture: a.capture, observation: a.observation,
             catalog: a.catalog, catalog_materialized: a.catalog_materialized } };
@@ -654,6 +733,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     } finally { this.releaseInFlight -= 1; }
   }
   private async handoff(reason: string): Promise<void> {
+    await this.endSampleSegment(reason);
     this.mode = "human"; this.owner.end("mode_changed");
     await this.release().catch(() => undefined);
     await this.emit("handoff_to_human", { ...this.context(), reason, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
@@ -664,6 +744,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     await this.emit("fail_closed", { ...this.context(), reason, agent_state: this.agentUncertain ? "uncertain" : "known" }).catch(() => undefined);
   }
   private async taint(reason: string): Promise<void> {
+    await this.endSampleSegment(reason);
     this.tainted = true; this.taintReason = reason; this.mode = "human"; this.owner.end("mode_changed");
     await this.release().catch(() => undefined);
     await this.emit("runtime_tainted", { ...this.context(), reason, retry: false });
@@ -674,7 +755,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.owner.cancelActive("autonomy_budget_exhausted"); this.mode = "human";
     const released = this.release().catch(() => undefined);
     this.budgetHandoff = this.owner.serialize(async () => {
-      await released; await this.emit("autonomy_budget_exhausted", { ...this.context(),
+      await released; await this.endSampleSegment("autonomy_budget_exhausted"); await this.emit("autonomy_budget_exhausted", { ...this.context(),
         reason: this.owner.state.exhaustedReason ?? "deadline", autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
     }).catch(error => { this.tainted = true; this.taintReason = `autonomy_budget_handoff_failed:${errorMessage(error)}`; });
   }
@@ -728,7 +809,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const pending = this.renewalHandoff;
     if (!pending) return;
     this.renewalHandoff = null;
-    await pending.released; this.ledger.recordGap(pending.gap);
+    await pending.released; await this.endSampleSegment("native_subscription_unavailable"); this.ledger.recordGap(pending.gap);
     await this.emit("native_gap", { ...this.context(), gap: pending.gap });
     await this.emit("handoff_to_human", { ...this.context(), reason: "native_source_gap",
       autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
@@ -756,6 +837,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private async finishStop(): Promise<void> {
     if (this.stopped) return;
     this.stopping = true; this.owner.end("stopped");
+    await this.endSampleSegment("stopped");
+    try { await this.sampleOfferEvidence; await this.cleanupSampleQueries(this.agentUncertain); }
+    catch (error) { this.tainted = true; this.taintReason = `sample_stop_cleanup_failed:${errorMessage(error)}`; }
     await this.quiesceRenewal();
     await this.flushRenewalFailure();
     await this.release().catch(() => undefined);
@@ -772,6 +856,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.ledger.close(); this.knownAcquisitions.clear(); this.knownActions.clear();
       for (const held of this.actionReservations.values()) for (const reservation of held) reservation.release();
       this.actionReservations.clear();
+      for (const payload of this.samplePayloads.values()) payload.reservation.release();
+      this.samplePayloads.clear();
       try { await this.options.evidence.finalize({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }); }
       finally { this.stopped = true; }
     }

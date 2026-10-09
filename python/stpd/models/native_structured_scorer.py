@@ -16,6 +16,7 @@ from ..fullrun.native_structured_inputs import INPUT_SPEC
 from ..fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
 from ..fullrun.structured_inputs import StructuredFrame
 from ..native_graph_spec import checked_control
+from ..native_sampled_carry_spec import INPUT_SPEC as SAMPLED_INPUT_SPEC, HISTORY_MODE, sample_eligible, sampled_agent_spec
 from .structured_m2 import WIDTH, StructuredM2
 
 MAX_RETIRED_SEGMENTS = 1024
@@ -28,7 +29,7 @@ def _text(value: Any) -> str:
     return value
 
 
-def checked_prefix(value: object, token: str) -> dict[str, Any]:
+def checked_prefix(value: object, token: str, history_mode: str = "full_reference") -> dict[str, Any]:
     prefix = object_fields(
         value,
         {
@@ -48,7 +49,7 @@ def checked_prefix(value: object, token: str) -> dict[str, Any]:
     )
     if (
         prefix["continuity_token"] != token
-        or prefix["history_mode"] != "full_reference"
+        or prefix["history_mode"] != history_mode
         or prefix["consumption_mode"] != "once_per_occurrence"
         or omissions["gap"] is not None
         or omissions["missing_scopes"] != []
@@ -59,6 +60,8 @@ def checked_prefix(value: object, token: str) -> dict[str, Any]:
     if prefix["received_cursor"] is not None:
         _text(prefix["received_cursor"])
     index = prefix["consumed_publication_index"]
+    if history_mode == HISTORY_MODE and index is not None:
+        raise BoundaryError("native_model", "sampled_null_publication_required")
     if index is not None and (
         not isinstance(index, str)
         or not index.isascii()
@@ -71,7 +74,14 @@ def checked_prefix(value: object, token: str) -> dict[str, Any]:
 
 
 class NativeStructuredScorer:
-    def __init__(self, model: StructuredM2, model_id: str, weights_sha256: str) -> None:
+    def __init__(self, model: StructuredM2, model_id: str, weights_sha256: str, *,
+                 input_spec: dict[str, Any] = INPUT_SPEC) -> None:
+        if input_spec not in (INPUT_SPEC, SAMPLED_INPUT_SPEC):
+            raise BoundaryError("native_model", "unsupported_input_spec")
+        self.input_spec = copy.deepcopy(input_spec)
+        self.sampled = input_spec == SAMPLED_INPUT_SPEC
+        if self.sampled:
+            sampled_agent_spec(model.model_control)
         self.model = model.eval()
         self.model.validate_parameters()
         self.model_id, self.weights_sha256 = model_id, weights_sha256
@@ -109,7 +119,7 @@ class NativeStructuredScorer:
         acquisition, token = _text(value["acquisition_id"]), _text(value["continuity_token"])
         reset = token != self.continuity
         if (
-            value["input_spec"] != INPUT_SPEC
+            value["input_spec"] != self.input_spec
             or token in self.retired
             or value["previous_consumption_id"] != (None if reset else self.consumption_id)
             or reset
@@ -118,6 +128,8 @@ class NativeStructuredScorer:
             raise BoundaryError("native_model", "input_spec_or_continuity_binding")
         frame, unit = qualify_native(value["observation"], value["catalog"])
         advance = native_advance(None if reset else self.unit, unit)
+        if self.sampled and (not advance or not sample_eligible(value["observation"], value["catalog"])):
+            raise BoundaryError("native_model", "sampled_readiness_check_is_not_consumption")
         version = (0 if reset else self.state_version) + int(advance)
         if version > MAX_STATE_VERSION:
             raise BoundaryError("native_model", "state_version_overflow")
@@ -127,7 +139,7 @@ class NativeStructuredScorer:
             memory = self.model.advance(entities, old) if advance else old
         report = {
             "acquisition_id": acquisition,
-            "input_spec": INPUT_SPEC,
+            "input_spec": self.input_spec,
             "continuity_token": token,
             "previous_consumption_id": value["previous_consumption_id"],
             "consumption_id": uuid.uuid4().hex if advance else self.consumption_id,
@@ -158,7 +170,8 @@ class NativeStructuredScorer:
             for key in ("consumption_id", "acquisition_id", "state_version", "advanced")
         ):
             raise BoundaryError("native_model", "consume_ack_binding")
-        prefix = checked_prefix(value["prefix"], report["continuity_token"])
+        prefix = checked_prefix(value["prefix"], report["continuity_token"],
+                                HISTORY_MODE if self.sampled else "full_reference")
         if self.pending["reset"] and self.continuity is not None:
             self.retired.add(self.continuity)
         self.memory, self.unit, self.frame = (
@@ -184,6 +197,8 @@ class NativeStructuredScorer:
         return values
 
     def state(self) -> dict[str, Any]:
+        if self.sampled:
+            raise BoundaryError("native_model", "sampled_state_recovery_none")
         if (
             self.pending is not None
             or self.input is None
@@ -205,6 +220,8 @@ class NativeStructuredScorer:
         }
 
     def restore(self, value: dict[str, Any]) -> None:
+        if self.sampled:
+            raise BoundaryError("native_model", "sampled_state_recovery_none")
         if self.unit is not None or self.pending is not None:
             raise BoundaryError("native_model", "fresh_state_restore_required")
         value = object_fields(

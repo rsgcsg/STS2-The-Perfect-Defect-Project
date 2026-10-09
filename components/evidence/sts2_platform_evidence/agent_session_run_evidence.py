@@ -24,6 +24,7 @@ from .agent_run_evidence import (
     _load_json_object_bytes,
     _read_checksums,
 )
+from .source_session_bundle import (SourceSessionError, _catalog_digest, _capture_shape, _json as _source_json)
 from .core import VerificationFinding, VerificationResult, VerifierDescriptor
 
 RUN_SCHEMA = "sts2.policy-runtime/agent-session-run-1"
@@ -36,6 +37,9 @@ PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 SCOPE = ["persistent", "interaction", "referents", "catalog"]
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _INDEX = re.compile(r"^(?:0|[1-9][0-9]*)$")
+_SAMPLE_FILE = re.compile(r"^agent-sample-([0-9a-f]{64})\.(?:(?:observation|catalog)\.)?json$")
+_SAMPLE_LIMITS = {"max_samples": 1024, "max_files": 3072, "max_total_bytes": 512 * 1024 * 1024,
+                  "max_pending_bytes": 128 * 1024 * 1024, "max_pending_samples": 8, "max_metadata_bytes": 64 * 1024}
 _STATE_FILE = re.compile(r"^agent-state-([0-9a-f]{64})\.(bin|json)$")
 _BASE_FILES = {"adapter-attestation.json", "agent-manifest.json", "events.jsonl", "manifest.json"}
 _EXTRA_FILES = {"checksums.sha256", "evidence-manifest.json"}
@@ -51,6 +55,13 @@ _EVENT_FIELDS = {
         "event_count",
     },
     "native_acquisition_registered": {"witness"},
+    "agent_sample_query_offered": {"acquisition_id", "request_id"},
+    "agent_sample_consume_ack_offered": {"acknowledgement", "request_id"},
+    "agent_sample_query_discarded": {"acquisition_id", "reason"},
+    "agent_sample_input_stored": {"metadata_path", "metadata", "disposition", "proposal"},
+    "agent_sample_segment_started": {"continuity_token", "acquisition_id"},
+    "agent_sample_segment_ended": {"continuity_token", "reason", "state_version"},
+    "agent_sample_publication_gap": {"gap", "received_cursor"},
     "agent_consumed": {"report", "acknowledgement", "witness"},
     "agent_directive": {"output"},
     "native_submission_requested": {
@@ -279,7 +290,7 @@ def _agent_manifest(value: object) -> dict[str, Any]:
     _text(projection["version"], maximum=256)
     _text(input_["state_format_version"], maximum=256)
     _require(
-        input_["history_mode"] in {"full_reference", "scoped_query"}
+        input_["history_mode"] in {"full_reference", "scoped_query", "sampled_current"}
         and input_["consumption_mode"] in {"once_per_occurrence", "incremental_view"}
         and input_["gap_policy"] in {"handoff", "explicit_reset"},
         "native_session_input_modes",
@@ -321,6 +332,11 @@ def _agent_manifest(value: object) -> dict[str, Any]:
             and input_["consumption_mode"] == "once_per_occurrence",
             "native_session_full_reference",
         )
+    if input_["history_mode"] == "sampled_current":
+        _require(scope == [] and attachment["delivery_mode"] == "scoped"
+                 and input_["consumption_mode"] == "once_per_occurrence"
+                 and input_["gap_policy"] == "handoff" and recovery["mode"] == "none",
+                 "native_session_sampled_contract")
     seams = attachment["required_seams"]
     _require(isinstance(seams, list) and 0 < len(seams) <= 256, "native_session_required_seams")
     seam_ids = set()
@@ -373,7 +389,9 @@ def _agent_manifest(value: object) -> dict[str, Any]:
         "result",
         "renew",
     }
-    if input_["history_mode"] == "full_reference":
+    if input_["history_mode"] == "sampled_current":
+        minimum.update({"current", "read", "catalog", "retain", "release"})
+    elif input_["history_mode"] == "full_reference":
         minimum.update({"read", "catalog", "retain", "release"})
     elif "current" in methods:
         minimum.update({"read", "retain", "release"})
@@ -593,6 +611,9 @@ class _DeclaredConsumptionStream:
                 and (publication is None or publication >= self.last_publication),
                 "native_session_consumption_publication",
             )
+        if self.agent["input"]["history_mode"] == "sampled_current":
+            _require(publication is None and self.gap is None and advanced,
+                     "native_session_sampled_consumption")
         if advanced:
             if new_occurrence:
                 self.scopes.clear()
@@ -965,19 +986,23 @@ class AgentSessionRunEvidenceVerifier:
             "native_session_inventory",
         )
         names = {path.name for path in entries}
-        state_files = names - _BASE_FILES - _EXTRA_FILES
+        extra_payloads = names - _BASE_FILES - _EXTRA_FILES
+        sample_files = {name for name in extra_payloads if _SAMPLE_FILE.fullmatch(name)}
+        state_files = extra_payloads - sample_files
         _require(
             names >= _BASE_FILES | _EXTRA_FILES
             and len(state_files) <= 256
-            and all(_STATE_FILE.fullmatch(name) for name in state_files),
+            and all(_STATE_FILE.fullmatch(name) for name in state_files)
+            and len(sample_files) <= _SAMPLE_LIMITS["max_files"]
+            and sum((directory / name).stat().st_size for name in sample_files) <= _SAMPLE_LIMITS["max_total_bytes"],
             "native_session_inventory",
         )
         _require(
-            (directory / "checksums.sha256").stat().st_size <= 256 * 1024
+            (directory / "checksums.sha256").stat().st_size <= (1024 * 1024 if sample_files else 256 * 1024)
             and (directory / "events.jsonl").stat().st_size <= 256 * 1024 * 1024
             and all(
                 (directory / name).stat().st_size <= 1024 * 1024
-                for name in names - state_files - {"events.jsonl"}
+                for name in names - state_files - sample_files - {"events.jsonl"}
             )
             and all(
                 (directory / name).stat().st_size
@@ -990,6 +1015,9 @@ class AgentSessionRunEvidenceVerifier:
             <= 256 * 1024 * 1024,
             "native_session_file_capacity",
         )
+        for name in sample_files:
+            _require((directory / name).stat().st_size <= (64 * 1024 if name.count(".") == 1 else 96 * 1024 * 1024),
+                     "native_session_sample_file_capacity")
         for name in state_files:
             stem, extension = name.rsplit(".", 1)
             _require(
@@ -1120,7 +1148,7 @@ class AgentSessionRunEvidenceVerifier:
             _integer(entry["bytes"])
             _digest(entry["sha256"])
         expected_entries = [
-            _file_entry(directory / name, name) for name in sorted(_BASE_FILES | state_files)
+            _file_entry(directory / name, name) for name in sorted(_BASE_FILES | state_files | sample_files)
         ]
         _require(
             immutable["schema"] == "sts2.policy-runtime/immutable-evidence-manifest-1"
@@ -1137,7 +1165,7 @@ class AgentSessionRunEvidenceVerifier:
             "native_session_immutable_manifest",
         )
         events = self._events(
-            directory, run, agent, attestation["status"] == "attested", state_files
+            directory, run, agent, attestation["status"] == "attested", state_files, sample_files
         )
         identity = {
             "schema": "sts2.evidence/store-directory-1",
@@ -1159,6 +1187,7 @@ class AgentSessionRunEvidenceVerifier:
         agent: dict[str, Any],
         attested: bool,
         state_files: set[str],
+        sample_files: set[str],
     ) -> list[dict[str, Any]]:
         # The executable producer's exported AgentRuntimeEventPayloads map is closed.
         raw = (directory / "events.jsonl").read_bytes()
@@ -1173,6 +1202,15 @@ class AgentSessionRunEvidenceVerifier:
         pending: dict[str, Any] | None = None
         stored_files: set[str] = set()
         stored_metadata: list[dict[str, Any]] = []
+        stored_samples: set[str] = set()
+        sample_records: dict[str, tuple[dict[str, Any], str]] = {}
+        sample_proposals: dict[str, dict[str, Any]] = {}
+        offered_samples: set[str] = set()
+        discarded_samples: set[str] = set()
+        ack_offers: set[str] = set()
+        child_requests: set[str] = set()
+        sample_segment: str | None = None
+        sample_ended = False
         last_report: dict[str, Any] | None = None
         last_ack: dict[str, Any] | None = None
         last_witness: dict[str, Any] | None = None
@@ -1220,7 +1258,75 @@ class AgentSessionRunEvidenceVerifier:
                 "agent_state_restored",
             }:
                 _require(attested, "native_session_adapter_not_attested")
-            if kind == "native_session_attached":
+            if kind.startswith("agent_sample_"):
+                _require(agent["input"]["history_mode"] == "sampled_current", "native_session_sample_event_mode")
+            if kind == "agent_sample_query_offered":
+                acquisition = _text(payload["acquisition_id"], maximum=256)
+                request = _text(payload["request_id"], maximum=256)
+                _require(acquisition in witnesses and request.startswith("child-")
+                         and request not in child_requests and acquisition not in offered_samples
+                         and not sample_ended, "native_session_sample_offer")
+                child_requests.add(request); offered_samples.add(acquisition)
+            elif kind == "agent_sample_query_discarded":
+                acquisition = _text(payload["acquisition_id"], maximum=256)
+                _require(acquisition in witnesses and acquisition not in sample_records
+                         and acquisition not in discarded_samples
+                         and payload["reason"] in {"readiness_check", "not_offered"}
+                         and (payload["reason"] == "readiness_check") == (acquisition in offered_samples),
+                         "native_session_sample_discard")
+                discarded_samples.add(acquisition)
+            elif kind == "agent_sample_input_stored":
+                acquisition = payload["metadata"].get("acquisition_id")
+                _require(acquisition in offered_samples and acquisition not in discarded_samples,
+                         "native_session_sample_not_offered")
+                disposition = payload["disposition"]
+                _require(disposition in {"query_offered", "consume_proposed"}, "native_session_sample_disposition")
+                pair, metadata = self._sample_files(directory, payload, agent, witnesses[acquisition])
+                if disposition == "consume_proposed":
+                    proposal = _object(payload["proposal"], {"request_id", "report"})
+                    request = _text(proposal["request_id"], maximum=256)
+                    _require(request.startswith("child-") and acquisition not in sample_proposals,
+                             "native_session_sample_proposal_request")
+                    report = _object(proposal["report"], {"acquisition_id", "input_spec", "continuity_token",
+                        "previous_consumption_id", "consumption_id", "state_version", "advanced"})
+                    _require(report["acquisition_id"] == acquisition and _input_spec(report["input_spec"]) == metadata["input_spec"]
+                             and report["continuity_token"] == metadata["continuity_token"], "native_session_sample_proposal_binding")
+                    _nullable_text(report["previous_consumption_id"]); _text(report["consumption_id"], maximum=256)
+                    _integer(report["state_version"]); _boolean(report["advanced"])
+                    sample_proposals[acquisition] = proposal
+                else:
+                    _require(payload["proposal"] is None, "native_session_sample_offer_without_proposal")
+                previous_sample = sample_records.get(acquisition)
+                _require(previous_sample is None or previous_sample[0] == metadata,
+                         "native_session_sample_metadata_changed")
+                sample_records[acquisition] = (metadata, disposition); stored_samples.update(pair)
+            elif kind == "agent_sample_segment_started":
+                token = _text(payload["continuity_token"], maximum=256)
+                _require(sample_segment is None and not sample_ended and last_report is None
+                         and sample_records.get(payload["acquisition_id"], (None, None))[1] == "consume_proposed",
+                         "native_session_sample_segment_start")
+                sample_segment = token
+            elif kind == "agent_sample_segment_ended":
+                _text(payload["reason"])
+                _require(sample_segment is not None and not sample_ended
+                         and payload["continuity_token"] == sample_segment
+                         and payload["state_version"] == (0 if last_report is None else last_report["state_version"]),
+                         "native_session_sample_segment_end")
+                sample_ended = True
+            elif kind == "agent_sample_consume_ack_offered":
+                request = _text(payload["request_id"], maximum=256)
+                acknowledgement = payload["acknowledgement"]
+                _require(request.startswith("child-") and request not in child_requests
+                         and last_ack is not None and acknowledgement == last_ack
+                         and acknowledgement["consumption_id"] not in ack_offers
+                         and sample_proposals.get(acknowledgement["acquisition_id"], {}).get("request_id") == request,
+                         "native_session_sample_ack_offer")
+                child_requests.add(request); ack_offers.add(acknowledgement["consumption_id"])
+            elif kind == "agent_sample_publication_gap":
+                _object(payload["gap"])
+                stream.received_cursor = _text(payload["received_cursor"], maximum=1024)
+                stream.interrupted_batch()
+            elif kind == "native_session_attached":
                 _require(attachment is None, "native_session_duplicate_attachment")
                 attachment = self._attachment(payload, agent)
                 stream.attached(attachment[0]["starting_cursor"])
@@ -1260,7 +1366,7 @@ class AgentSessionRunEvidenceVerifier:
                     witnesses.get(witness["acquisition_id"]) == witness,
                     "native_session_consumption_witness",
                 )
-                if agent["input"]["history_mode"] == "full_reference":
+                if agent["input"]["history_mode"] != "scoped_query":
                     _require(
                         witness["included"] == SCOPE
                         and not witness["missing"]
@@ -1268,11 +1374,20 @@ class AgentSessionRunEvidenceVerifier:
                         "native_session_full_reference_consumption",
                     )
                 report, ack = self._consumption(payload, agent, last_report)
+                if agent["input"]["history_mode"] == "sampled_current":
+                    sample = sample_records.get(witness["acquisition_id"])
+                    _require(sample is not None and sample[1] == "consume_proposed"
+                             and sample[0]["continuity_token"] == report["continuity_token"]
+                             and sample_segment == report["continuity_token"] and not sample_ended
+                             and sample_proposals.get(witness["acquisition_id"], {}).get("report") == report,
+                             "native_session_ack_sample_required")
                 stream.accept(report, ack, witness)
                 last_report, last_ack, last_witness = report, ack, witness
             elif kind == "agent_directive":
                 output = self._directive(payload["output"], last_report, witnesses)
                 stream.watermark(output)
+                if agent["input"]["history_mode"] == "sampled_current" and last_report is not None:
+                    _require(last_report["consumption_id"] in ack_offers, "native_session_directive_without_sample_ack")
                 last_act = output if output["directive"]["type"] == "act" else None
                 last_act_epoch = current_epoch if last_act is not None else None
             elif kind == "native_submission_requested":
@@ -1515,7 +1630,63 @@ class AgentSessionRunEvidenceVerifier:
         _require(not outstanding or tainted, "native_session_unclosed_submission")
         _require(not tainted or run["tainted"], "native_session_taint_erased")
         _require(stored_files == state_files, "native_session_undeclared_state")
+        _require(stored_samples == sample_files, "native_session_undeclared_sample")
+        _require(offered_samples <= set(sample_records) | discarded_samples, "native_session_undisposed_sample_offer")
+        if agent["input"]["history_mode"] == "sampled_current":
+            _require(sample_segment is None or sample_ended, "native_session_open_sample_segment")
         return events
+
+    @staticmethod
+    def _sample_files(directory: Path, payload: dict[str, Any], agent: dict[str, Any],
+                      witness: dict[str, Any]) -> tuple[set[str], dict[str, Any]]:
+        metadata = _object(payload["metadata"], {"schema", "acquisition_id", "input_spec", "continuity_token",
+                                                   "publication_index", "capture", "observation", "catalog"})
+        _require(metadata["schema"] == "sts2.policy-runtime/agent-sample-input-1"
+                 and metadata["acquisition_id"] == witness["acquisition_id"]
+                 and metadata["input_spec"] == agent["input"]["input_spec"]
+                 and metadata["capture"] == witness["capture"]
+                 and metadata["publication_index"] is None and witness["publication_index"] is None,
+                 "native_session_sample_binding")
+        _text(metadata["continuity_token"], maximum=256)
+        binding = {key: metadata[key] for key in ("acquisition_id", "input_spec", "continuity_token", "publication_index", "capture")}
+        stem = "agent-sample-" + _sha(_canonical_json(binding).encode("utf-8"))
+        _require(payload["metadata_path"] == stem + ".json", "native_session_sample_address")
+        metadata_raw = (directory / (stem + ".json")).read_bytes()
+        _require(_json(metadata_raw, stem + ".json") == metadata, "native_session_sample_metadata")
+        observation = _object(metadata["observation"], {"path", "bytes", "sha256"})
+        catalog = _object(metadata["catalog"], {"path", "bytes", "sha256", "digest", "count"})
+        files = {stem + ".json"}
+        payload_bytes = {}
+        for kind, record in (("observation", observation), ("catalog", catalog)):
+            path = stem + "." + kind + ".json"
+            _require(record["path"] == path, "native_session_sample_path")
+            raw = (directory / path).read_bytes()
+            _require(len(raw) == _integer(record["bytes"]) and _sha(raw) == _digest(record["sha256"]),
+                     "native_session_sample_integrity")
+            files.add(path); payload_bytes[kind] = raw
+        _require(observation["bytes"] == witness["capture"]["byte_count"]
+                 and observation["sha256"] == witness["capture"]["sha256"], "native_session_sample_original_capture")
+        body = _object(_source_json(payload_bytes["observation"]), {
+            "protocol_version", "schema", "input_profile", "snapshot_id", "revision", "observed_at", "status",
+            "persistent", "interaction", "referents", "completeness", "session", "information_policy", "owner_occurrence", "catalog"})
+        actions = _source_json(payload_bytes["catalog"])
+        try:
+            structural = _catalog_digest(actions)
+            _capture_shape(body, metadata["capture"], True, actions)
+        except SourceSessionError as error:
+            raise AgentRunEvidenceError("native_session_sample_native_content", str(error)) from error
+        _require(_canonical_json(actions).encode("utf-8") == payload_bytes["catalog"], "native_session_sample_catalog_encoding")
+        _require(body["schema"] == "sts2.player-environment/native-logical-observation-1"
+                 and body["input_profile"] == PROFILE and body["protocol_version"] == "1.0.0"
+                 and body["snapshot_id"] == witness["snapshot_id"]
+                 and type(body["revision"]) is int and body["revision"] == witness["revision"]
+                 and body["owner_occurrence"] == witness["owner_occurrence"] and body["status"] == witness["status"]
+                 and body["session"] == witness["capture"]["session"]
+                 and body["information_policy"].get("includes_hidden_information") is False
+                 and catalog["digest"] == structural == body["catalog"]["digest"] == witness["catalog_digest"]
+                 and type(catalog["count"]) is int and catalog["count"] == len(actions) == body["catalog"]["total_count"] == witness["catalog_count"],
+                 "native_session_sample_native_binding")
+        return files, metadata
 
     @staticmethod
     def _attachment(
