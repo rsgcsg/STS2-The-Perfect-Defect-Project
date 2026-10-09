@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { makePlan, scopeCommands } from "./check-plan.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const AGENT_CHAIN_BUDGET_BYTES = 16 * 1024;
@@ -13,7 +14,7 @@ const ignoredDirectories = new Set([
 ]);
 
 const componentRoutes = [
-  { id: "project-apps", prefix: "python/spireagent/", guide: "docs/MONOREPO_MIGRATION.md", check: "npm run check:python" },
+  { id: "project-apps", prefix: "python/spireagent/", guide: "python/docs/DOCUMENT_MAP.md", check: "npm run check:python" },
   { id: "research", prefix: "python/stpd/", guide: "python/docs/FULLRUN_RESEARCH.md", check: "npm run check:python" },
   {
     id: "native-foundation",
@@ -354,15 +355,24 @@ function ancestorsFromRoot(workspaceRoot, directory) {
   return directories.reverse();
 }
 
+function agentsForDirectory(workspaceRoot, directory) {
+  return ancestorsFromRoot(workspaceRoot, directory)
+    .map((ancestor) => path.join(ancestor, "AGENTS.md"))
+    .filter((file) => fs.existsSync(file))
+    .map((file) => relativePath(workspaceRoot, file));
+}
+
+function instructionChainBytes(workspaceRoot, agents) {
+  return agents.reduce((total, relative) => total + fs.statSync(path.join(workspaceRoot, relative)).size, 0)
+    + Math.max(0, agents.length - 1) * 2;
+}
+
 export function agentBudgetFindings(workspaceRoot = root) {
   const findings = [];
   const agentFiles = walkFiles(workspaceRoot).filter((file) => path.basename(file) === "AGENTS.md");
   for (const leaf of agentFiles) {
-    const chain = ancestorsFromRoot(workspaceRoot, path.dirname(leaf))
-      .map((directory) => path.join(directory, "AGENTS.md"))
-      .filter((file) => fs.existsSync(file));
-    const bytes = chain.reduce((total, file) => total + fs.statSync(file).size, 0)
-      + Math.max(0, chain.length - 1) * 2;
+    const chain = agentsForDirectory(workspaceRoot, path.dirname(leaf));
+    const bytes = instructionChainBytes(workspaceRoot, chain);
     if (bytes > AGENT_CHAIN_BUDGET_BYTES) {
       findings.push(finding(
         "agents-instruction-budget-exceeded",
@@ -468,14 +478,7 @@ function routeForPath(relative) {
 }
 
 function localAgentsForRoute(workspaceRoot, route) {
-  if (!route) return [];
-  const candidate = `${route.prefix}AGENTS.md`;
-  return fs.existsSync(path.join(workspaceRoot, candidate)) ? [candidate] : [];
-}
-
-function instructionChainBytes(workspaceRoot, route) {
-  return ["AGENTS.md", ...localAgentsForRoute(workspaceRoot, route)]
-    .reduce((total, relative) => total + fs.statSync(path.join(workspaceRoot, relative)).size, 0);
+  return agentsForDirectory(workspaceRoot, route ? path.join(workspaceRoot, route.prefix) : workspaceRoot);
 }
 
 function parseContextArgs(args) {
@@ -507,7 +510,8 @@ export function formatContext(workspaceRoot = root, options = {}) {
     }
     return false;
   });
-  const agents = ["AGENTS.md", ...localAgentsForRoute(workspaceRoot, route)];
+  const agents = localAgentsForRoute(workspaceRoot, route);
+  const plan = makePlan({ base: "origin/develop", cwd: workspaceRoot });
   const branch = git(workspaceRoot, ["branch", "--show-current"], "detached");
   const sha = git(workspaceRoot, ["rev-parse", "HEAD"]);
   const base = git(workspaceRoot, ["rev-parse", "origin/develop"]);
@@ -521,15 +525,17 @@ export function formatContext(workspaceRoot = root, options = {}) {
     `- Known integration base: origin/develop at ${base}`,
     `- Worktree: ${status ? "dirty; inspect before editing" : "clean"}`,
     `- Owning component: ${owner}`,
-    `- Instruction chain: ${instructionChainBytes(workspaceRoot, route)} / ${AGENT_CHAIN_BUDGET_BYTES} bytes`,
+    `- Instruction chain: ${instructionChainBytes(workspaceRoot, agents)} / ${AGENT_CHAIN_BUDGET_BYTES} bytes`,
     "",
     "## Read",
     "",
     ...agents.map((file) => `- ${file}`),
+    "- README.md",
     "- docs/memory/CURRENT.md",
     "- docs/ARCHITECTURE.md",
     "- docs/COMPONENTS.md",
     "- docs/DEVELOPMENT_WORKFLOW.md",
+    "- docs/TESTING.md",
     ...(route ? [`- ${route.guide}`] : ["- docs/DOCUMENT_MAP.md"]),
     "",
     "Load docs/STATUS.md and dated evidence only when current claims or exact proof matter.",
@@ -542,9 +548,12 @@ export function formatContext(workspaceRoot = root, options = {}) {
     "",
     "## Recommended checks",
     "",
+    `Selected check plan: ${plan.scope} (${plan.reason}); docs/TESTING.md owns selection and evidence limits.`,
+    "",
     ...(route ? [`- ${route.check}`] : []),
     "- npm run project:check",
-    "- npm run check",
+    "- npm run check:plan -- --base origin/develop --run",
+    ...scopeCommands(plan.scope).map((command) => `- npm run ${command}`),
     "- npm run project:closeout",
     "- git diff --check",
     "",
@@ -585,22 +594,30 @@ function anyMatch(files, patterns) {
 export function formatCloseout(workspaceRoot = root) {
   const files = changedFiles(workspaceRoot);
   const owners = ownersForFiles(files);
-  const checks = new Set(["npm run project:check", "npm run check", "git diff --check"]);
+  const plan = makePlan({ base: "origin/develop", cwd: workspaceRoot });
+  const checks = new Set(["npm run project:check", "npm run check:plan -- --base origin/develop --run",
+    ...scopeCommands(plan.scope).map((command) => `npm run ${command}`), "git diff --check"]);
   for (const owner of owners) {
     const route = routeForId(owner);
     if (route) checks.add(route.check);
   }
   const docsChanged = files.filter((file) => file.endsWith(".md"));
-  const statusImpact = anyMatch(files, [
+  const pythonSourceImpact = files.some((file) => /^python\/(?:spireagent|stpd)\//u.test(file)
+    && !/\.md$/iu.test(file));
+  const componentSourceImpact = files.some((file) => {
+    const route = routeForPath(file);
+    return route?.prefix.startsWith("components/") || route?.prefix.startsWith("apps/");
+  });
+  const statusImpact = pythonSourceImpact || anyMatch(files, [
     /^components\//u, /^apps\//u, /^contracts\//u, /^platform-bom\.json$/u, /^docs\/evidence\//u
   ]);
   const adrImpact = anyMatch(files, [
     /AGENTS\.md$/u, /^docs\/ARCHITECTURE\.md$/u, /^docs\/COMPONENTS\.md$/u, /^contracts\//u
   ]);
-  const identityImpact = anyMatch(files, [
+  const identityImpact = pythonSourceImpact || componentSourceImpact || anyMatch(files, [
     /^contracts\//u, /package\.json$/u, /pyproject\.toml$/u, /\.csproj$/u, /^platform-bom\.json$/u
   ]);
-  const evidenceImpact = anyMatch(files, [
+  const evidenceImpact = pythonSourceImpact || anyMatch(files, [
     /^components\/(?:native-foundation|connector|host-runtime|annotator|evidence|policy-runtime)\//u,
     /^apps\/game-mod\//u,
     /^docs\/(?:STATUS|TESTING)\.md$/u,
@@ -621,6 +638,8 @@ export function formatCloseout(workspaceRoot = root) {
     `- Owning components/layers: ${owners.length ? owners.join(", ") : "none detected"}`,
     "",
     "## Likely checks",
+    "",
+    `Selected check plan: ${plan.scope} (${plan.reason}); docs/TESTING.md owns selection and evidence limits.`,
     "",
     ...[...checks].map((command) => `- ${command}`),
     "",
