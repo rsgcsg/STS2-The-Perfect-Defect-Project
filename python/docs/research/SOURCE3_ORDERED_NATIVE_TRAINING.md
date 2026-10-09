@@ -306,3 +306,29 @@ and declares no cross-process memory restoration. Source/test composition, actua
 private child/use/export/registration, native load/game, and visible product
 delivery are separate gates. Synthetic checks never establish real-data training,
 Human origin, natural task completion or policy quality.
+
+The application backend exposes sealed AgentRun import through the existing
+`LocalRecordingImporter.start_native_agent_run`, with explicit directory, cohort
+and one fixed producer-relation ID. It requires a typed original stopped record,
+preserves the original bytes and reuses an already saved exact raw after an
+explicit retry/reconciliation. The importer Producer remains the actual importer;
+recorded producer identity is retained separately. This machine route does not
+invoke the Human packer or require a Human-origin declaration.
+
+`LocalDatasetService.start_native_agent_preview` replays selected immutable raws
+through their owning admissions and one-runtime train-only projection. Preview
+reports known context, original offers, eligible N, readiness exclusions, censored
+tails and native-origin status, plus nontrainable page/verb/multi-candidate counts.
+Saving uses the same existing publish journal and verified reservation owner to
+index every original offer and clear the import's pending inventory marker.
+Preview creates no training claim; reservation creates no actual training-use
+receipt or optimizer update. Interrupted publication retains its original refs,
+Producer and partition for explicit reconciliation.
+
+The browser APIs are `/api/local-recordings/import/native-agent` and
+`/api/local-datasets/native-agent-preview`; the existing dataset publish route is
+reused. Browser session, Origin/CSRF, exact request bodies, current configuration
+and running-instance checks remain mandatory. The capability's
+`product_entry_enabled` stays false while the real public manifest compatibility
+and current Runtime product gates remain pending. These backend source/tests do
+not qualify a visible in-game flow or installed model load.
