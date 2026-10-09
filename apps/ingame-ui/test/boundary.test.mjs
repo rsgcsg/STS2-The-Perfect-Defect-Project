@@ -58,7 +58,7 @@ test("Workbench registration bridge is exact-loopback, game-instance-bound metad
 });
 
 test("Product navigation retains model and Human surfaces and adds the native Workbench", () => {
-  assert.match(mod, /new\[\] \{ "模型实战", "真人采集", "工作台" \}/u);
+  assert.match(mod, /new\[\] \{ "运行状态与恢复", "真人采集", "工作台" \}/u);
   assert.match(mod, /BuildAgentRunPage\(_surfaceViewport\)/u);
   assert.match(mod, /BuildRecorderPage\(_surfaceViewport\)/u);
   assert.match(mod, /_surfaces\.Add\(_agentRunPage\)/u);
