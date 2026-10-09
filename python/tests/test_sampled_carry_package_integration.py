@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 import torch
 from test_native_structured_model import ack as full_reference_ack
+from test_native_structured_model import agent_files as agent_files
 from test_native_structured_model import offer as full_reference_offer
 from test_native_structured_training import origin
 from test_native_teacher_agent import action as public_action
@@ -384,8 +385,8 @@ def test_real_sampled_map_timing_does_not_defer_child_or_missing_fact(closed_pac
     assert directive["type"] == "act" and len(directive["scores"]["values"]) == 12
 
 
-def test_actual_generic_package_does_not_silently_gain_sampled_map_timing(generic_agent_files):
-    folder, path, _, manifest = generic_agent_files
+def test_actual_generic_package_does_not_silently_gain_sampled_map_timing(agent_files):
+    folder, path, _, manifest = agent_files
     # The actual caller supplies public support; package/model bytes stay intact.
     manifest["support"]["interaction_kinds"] = ["*"]
     manifest["support"]["action_verbs"] = ["*"]
