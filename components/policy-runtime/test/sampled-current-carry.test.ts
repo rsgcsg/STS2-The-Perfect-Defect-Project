@@ -61,9 +61,13 @@ async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow"
 }
 async function events(evidence: AgentRunEvidence) { return (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").map(value => JSON.parse(value)); }
 function verify(directory: string): string {
-  return execFileSync(process.env.STS2_EVIDENCE_PYTHON ?? "python3", ["-c",
+  return execFileSync(process.execPath, [
+    fileURLToPath(new URL("../../../tools/run-python-component.mjs", import.meta.url)),
+    "components/evidence", "-c",
     "import sys;from pathlib import Path;from sts2_platform_evidence import verify_agent_session_run_evidence;r=verify_agent_session_run_evidence(Path(sys.argv[1]));print(r.status);print(r.findings);sys.exit(0 if r.status=='pass' else 1)", directory],
-    { encoding: "utf8", env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../evidence", import.meta.url)) } });
+    { encoding: "utf8", env: { ...process.env,
+      ...(process.env.STS2_EVIDENCE_PYTHON ? { PYTHON: process.env.STS2_EVIDENCE_PYTHON } : {}),
+      PYTHONPATH: fileURLToPath(new URL("../../evidence", import.meta.url)) } });
 }
 afterEach(async () => { vi.restoreAllMocks(); for (const owner of owners.splice(0)) await owner.stop().catch(() => undefined); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
