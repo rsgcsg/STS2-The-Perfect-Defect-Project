@@ -35,7 +35,11 @@ interface StateCall {
 
 export interface AgentPortHandlers {
   query(input: AgentQuery, signal: AbortSignal): Promise<AgentQueryResult>;
-  consumed(report: AgentConsumption, signal: AbortSignal): Promise<AgentConsumeAck> | AgentConsumeAck;
+  /** Invoked synchronously at the actual query-result write-attempt boundary.
+   * Recording an offer does not prove the child read or consumed it. */
+  ackOffered?(ack: AgentConsumeAck, requestId: string): void;
+  queryOffered?(result: AgentQueryResult, requestId: string): void;
+  consumed(report: AgentConsumption, signal: AbortSignal, requestId: string): Promise<AgentConsumeAck> | AgentConsumeAck;
 }
 interface Pending {
   kind: "consume" | "next" | "export_state" | "restore_state";
@@ -133,7 +137,7 @@ export class NdjsonAgentSessionPort {
   }
 
   consume(context: AgentSessionContext, input: AgentConsumeInput, handlers: AgentPortHandlers,
-    signal: AbortSignal, onOffer: () => void): Promise<AgentConsumeAck> {
+    signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentConsumeAck> {
     sessionObject(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog"]);
     sessionText(input.acquisition_id); sessionText(input.continuity_token);
     sessionObject(input.observation);
@@ -141,18 +145,18 @@ export class NdjsonAgentSessionPort {
   }
 
   next(context: AgentSessionContext, input: AgentNextInput, handlers: AgentPortHandlers,
-    signal: AbortSignal, onOffer: () => void): Promise<AgentDirectiveOutput> {
+    signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentDirectiveOutput> {
     validateAgentNextInput(input);
     return this.request("next", context, input, handlers, signal, onOffer) as Promise<AgentDirectiveOutput>;
   }
 
   exportState(context: AgentSessionContext, manifest: AgentManifest, authorization: AgentStateAuthorization,
-    signal: AbortSignal, onOffer: () => void): Promise<AgentExportedState> {
+    signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentExportedState> {
     return this.requestState("export_state", context, manifest, authorization, signal, onOffer) as Promise<AgentExportedState>;
   }
 
   restoreState(context: AgentSessionContext, manifest: AgentManifest, authorization: AgentStateAuthorization,
-    state: AgentOpaqueState, signal: AbortSignal, onOffer: () => void): Promise<AgentStateMetadata> {
+    state: AgentOpaqueState, signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentStateMetadata> {
     if (manifest.input.state_recovery.mode === "none") return Promise.reject(new AgentSessionError("stateless_state_unsupported"));
     if (this.consumedInChild) return Promise.reject(new AgentSessionError("restore_after_consume"));
     requireAgentStateMetadata(state.metadata, authorization.expected_metadata, manifest);
@@ -165,7 +169,7 @@ export class NdjsonAgentSessionPort {
 
   private request(kind: Pending["kind"], context: AgentSessionContext,
     input: AgentConsumeInput | AgentNextInput, handlers: AgentPortHandlers,
-    signal: AbortSignal, onOffer: () => void): Promise<AgentConsumeAck | AgentDirectiveOutput> {
+    signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentConsumeAck | AgentDirectiveOutput> {
     if (this.closed) return Promise.reject(new AgentSessionError("agent_port_closed"));
     if (!this.readyIdentity) return Promise.reject(new AgentSessionError("agent_not_attested"));
     if (signal.aborted) return Promise.reject(new AgentSessionError("agent_call_cancelled"));
@@ -186,7 +190,7 @@ export class NdjsonAgentSessionPort {
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) { prepared.reservation.release(); onAbort(); return; }
       try {
-        onOffer(); // Any subsequent failure leaves child consumption state uncertain.
+        onOffer(requestId); // Any subsequent failure leaves child consumption state uncertain.
         this.writeEncoded(prepared.encoded, prepared.reservation);
       } catch (error) { prepared.reservation.release(); this.fail(error); }
     });
@@ -194,7 +198,7 @@ export class NdjsonAgentSessionPort {
 
   private requestState(kind: "export_state" | "restore_state", context: AgentSessionContext,
     manifest: AgentManifest, authorization: AgentStateAuthorization, signal: AbortSignal,
-    onOffer: () => void, state?: AgentOpaqueState): Promise<AgentExportedState | AgentStateMetadata> {
+    onOffer: (requestId: string) => void, state?: AgentOpaqueState): Promise<AgentExportedState | AgentStateMetadata> {
     if (manifest.input.state_recovery.mode === "none") return Promise.reject(new AgentSessionError("stateless_state_unsupported"));
     if (this.closed || !this.readyIdentity || this.pending.size !== 0 || signal.aborted)
       return Promise.reject(new AgentSessionError("state_call_not_ready"));
@@ -224,7 +228,7 @@ export class NdjsonAgentSessionPort {
         stateCall: { manifest, authorization, input } });
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) { prepared.reservation.release(); onAbort(); return; }
-      try { authorization.assertCurrent(); onOffer(); this.writeEncoded(prepared.encoded, prepared.reservation); }
+      try { authorization.assertCurrent(); onOffer(requestId); this.writeEncoded(prepared.encoded, prepared.reservation); }
       catch (error) { prepared.reservation.release(); this.fail(error); }
     });
   }
@@ -336,11 +340,11 @@ export class NdjsonAgentSessionPort {
     pending.queryBytes += bytes;
     if (pending.queryBytes > this.limits.max_query_bytes_per_turn) throw new AgentSessionError("agent_query_byte_capacity");
     // Bind completion before the write can synchronously deliver to a child seam.
-    pending.pendingQueries -= 1; this.write(message);
+    pending.pendingQueries -= 1; this.write(message, () => pending.handlers!.queryOffered?.(result, requestId));
   }
 
   private async handleConsumed(requestId: string, pending: Pending, report: AgentConsumption, childRequest: boolean): Promise<void> {
-    const ack = await pending.handlers!.consumed(report, pending.signal);
+    const ack = await pending.handlers!.consumed(report, pending.signal, requestId);
     if (this.closed || pending.signal.aborted) return;
     sessionObject(ack, ["consumption_id", "acquisition_id", "state_version", "advanced", "prefix"]);
     if (ack.consumption_id !== report.consumption_id || ack.acquisition_id !== report.acquisition_id
@@ -349,7 +353,7 @@ export class NdjsonAgentSessionPort {
     pending.latestAck = ack; pending.reportPending = false;
     this.consumedInChild = true;
     this.write({ schema: AGENT_SESSION_SCHEMA, message_type: "consume_ack", ...pending.context,
-      request_id: requestId, completion: ack });
+      request_id: requestId, completion: ack }, () => pending.handlers!.ackOffered?.(ack, requestId));
     if (!childRequest) this.finish(requestId, pending, ack);
   }
 
@@ -363,13 +367,14 @@ export class NdjsonAgentSessionPort {
     try { return { encoded: encodeBoundedAgentJson(value, this.limits.max_message_bytes), reservation }; }
     catch (error) { reservation.release(); throw error; }
   }
-  private write(value: unknown): void {
+  private write(value: unknown, onOffer?: () => void): void {
     const prepared = this.prepareWrite(value);
-    try { this.writeEncoded(prepared.encoded, prepared.reservation); }
+    try { this.writeEncoded(prepared.encoded, prepared.reservation, onOffer); }
     catch (error) { prepared.reservation.release(); throw error; }
   }
-  private writeEncoded(encoded: Buffer, reservation: AgentByteReservation): void {
+  private writeEncoded(encoded: Buffer, reservation: AgentByteReservation, onOffer?: () => void): void {
     if (this.closed) throw new AgentSessionError("agent_port_closed");
+    onOffer?.();
     this.child.stdin.write(Buffer.concat([encoded, Buffer.from("\n")]), error => {
       reservation.release();
       if (error) this.fail(error);

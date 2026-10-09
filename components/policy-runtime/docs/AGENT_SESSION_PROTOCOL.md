@@ -49,7 +49,7 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
 - `input`: `profile:"native-logical-v1"`, `input_spec` (`id`, `version`, `sha256`),
   `projection` (`id`, `version`), `state_format_version`, and `attachment` with exactly
   `eager_scope`, `required_seams`, `delivery_mode`. The latter three reuse native
-  Attach grammar. `history_mode` is `full_reference` or `scoped_query`, and
+  Attach grammar. `history_mode` is `full_reference`, `scoped_query`, or `sampled_current`, and
   `gap_policy` is `handoff` or `explicit_reset`. History/scope modes must agree.
   `consumption_mode` is `once_per_occurrence` or `incremental_view`, registered
   with the exact InputSpec. Full-reference uses once_per_occurrence; scoped-query
@@ -57,8 +57,9 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
   Model recurrence or a requirement that a Model exists.
   `state_recovery` has exactly `mode`, `max_state_bytes`, `model_bindings`.
   Mode is `opaque` or `none`; opaque permits 1–16 MiB and up to 16 exact
-  `{model_id,weights_sha256}` bindings. The learned default must implement opaque
-  export/restore; none declares stateless behavior with zero bytes/empty bindings.
+  `{model_id,weights_sha256}` bindings. Full-reference learned Agents use opaque
+  export/restore. None declares no restoration with zero bytes/empty bindings;
+  sampled Agents still carry W within their live segment.
 - `requirements`: the existing exact Connector protocol/environment pin shape,
   plus `required_methods`, a duplicate-free list of native methods. It contains
   no score/index/successor requirement. Runtime checks exact environment and
@@ -128,7 +129,7 @@ consumed/consume_ack use completion; directive uses output; query_result uses
 result; error uses `{code,message}`. A child-initiated consumed report is a
 request, not an unsolicited response; its own request namespace is validated.
 State requests use input; `state_exported`/`state_restored` use output.
-The physical `session_id` stays fixed across an idle Human/operational handoff.
+For the original full-reference/scoped modes, the physical `session_id` stays fixed across an idle Human/operational handoff.
 A fresh correlated parent command may carry a strictly newer owner recovery epoch
 only while no earlier Consume proposal, query or acknowledgement is pending.
 The child then binds that operational epoch without resetting or advancing W or
@@ -143,7 +144,7 @@ lock, register the subscription at reserved publication N, then reserve its
 core dependency is `AttachWithInitialReservation`. A rejected Attach creates no
 initial position. A failed initial capture remains an explicit missing N+1.
 
-Runtime starts Events from Attach `starting_cursor` N. It waits for the ordered
+Full-reference Runtime starts Events from Attach `starting_cursor` N. It waits for the ordered
 initial projection N+1 and verifies/assembles that capture before offering it.
 It must not bootstrap with a separate Current GET or await an encoder while
 holding the main-thread/source lock. The subscription promises no pre-attach
@@ -483,3 +484,75 @@ same-scope coherence drift; ambiguity; Stop during Await/Model hang; idle deadli
 delivery; gap/reset/handoff; bootstrap events between Attach/initial encoding;
 and both full-reference and actual multi-query consumers. Source/portable checks
 precede and never replace native trigger, installation or full G2/V1 qualification.
+
+
+## Sampled Current carry addition
+
+The shared [sampled contract and vectors](../contracts/fixtures/sampled-current-carry-v1.json)
+freeze the acquisition law, complete-C frames, exact InputSpec/AgentSpec and
+cross-language message chain. This is an additive source candidate; earlier
+full-reference/scoped artifacts and records keep their original meaning.
+
+`sampled_current` requires `once_per_occurrence`, `gap_policy:handoff`,
+`state_recovery:none`, `delivery_mode:scoped` and an empty eager attachment
+scope. In addition to the lifecycle/action methods it requires `current`, `read`,
+`catalog`, `retain` and `release`. Attachment/seam pins are wakeup capabilities;
+they do not promise complete history exposure. Every sampled child Current query
+requests all four scopes and receives the existing SDK's whole frozen capture
+and every ordered action. Partial Current fails. Full-reference null-publication
+advance rejection remains unchanged.
+
+One fresh live Runtime session is one sampled segment. Next can begin at version0
+without an initial publication basis: parent Next N → child query Q → query_result Q
+→ child consumed C → consume_ack C → directive N. Q/C IDs use the existing
+`child-` namespace. Sample acquisitions and ACK prefixes have null publication
+index. Versions count accepted memory advances, not Source/native positions.
+A consecutive unchanged NativeUnit is a readiness check, with no consumed report
+or W advance; Runtime releases its unused acquisition after Next. Map→Inspect→Map
+has three ordered advances even when both Map feature encodings agree. An Agent
+uses native wakeups plus a fixed 250 ms bounded Current recheck, with no visited
+list. A complete empty-C nonterminal input is readiness-only; an actual qualified
+ready-summary input is a final unlabelled sample, ACKed before the existing task's
+Close. No timer, empty C or budget stop establishes completion.
+
+Post-start Human, OneStep completion, failure or interruption ends the segment.
+Same-session Auto reentry is fenced; the existing Stop/fresh-load owner starts a
+new one. Initial Human before any sample does not end a nonexistent segment.
+Unknown delivery, an original pending request and uncertain controller disposition
+remain fenced and cannot be erased by a segment reset. Advisory publication
+retention gaps use the explicitly labelled `agent_sample_publication_gap`; they
+are not fabricated missing Current samples or full-history evidence. Required
+Current/control/environment failures still hand off.
+
+### Original sample evidence
+
+`AgentRunEvidence.storeSampleAcquisition` persists the original validated UTF-8
+observation bytes and canonical SDK-assembled ordered catalog bytes before an
+accepted proposal can ACK. It uses three run-local content-addressed files per
+sample and closed `sts2.policy-runtime/agent-sample-input-1` metadata; the shared
+fixture owns every field. Observation SHA/size bind the original capture;
+catalog payload SHA/size and native structural digest/count independently bind
+all complete members and their order. Assembled catalog bytes are not literal
+network page bytes. No native object, closure, credential or model state is stored.
+
+Typed events distinguish acquisition, actual query-result write attempt,
+consume-proposed stored payload, ledger acceptance, ACK write attempt, later valid
+directive, discarded readiness and ended segment. `agent_consumed` retains its
+original ledger-transition meaning. Neither it nor ACK write-attempt proves
+that the child read ACK or committed W; a later exact directive watermark can
+substantiate resumed known state. Sampled Next requested/completed events bind that
+reply to the original parent request, context, basis and watermark. Agent state
+remains uncertain throughout an unresolved Next, including after ACK write.
+On an interrupted call, preserve offered or
+proposed original payloads and uncertainty rather than guess continuation.
+Disk failure before ACK prevents ACK; partial storage cannot be sealed complete.
+The independent Evidence verifier rejects missing, tampered, extra or unbound
+samples and any sampled directive without its stored original input/ACK join.
+
+Local sample limits are 1024 samples/3072 files/512 MiB aggregate, 8 pending
+samples/128 MiB pending copies and 64 KiB metadata, separately from unchanged
+opaque state limits. Runtime's acquisition/assembly budget also charges retained
+original sample buffers. Quotas cause explicit failure, never payload truncation.
+The legacy 16 MiB Agent-evidence share-upload compatibility limit is unchanged;
+a locally verified large sample run is not thereby shareable. Future transfer
+support and actual representative game payload measurements remain owner gates.

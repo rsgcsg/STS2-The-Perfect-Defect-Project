@@ -4,9 +4,9 @@ import { createReadStream } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { validateManagedEnvironmentBinding, type AgentRunManifest, type EvidenceFileEntry, type ImmutableEvidenceManifest, type ManagedEnvironmentBinding, type PolicyManifest, type RuntimeMode } from "./contracts.js";
 import { AGENT_RUN_SCHEMA, EVIDENCE_MANIFEST_SCHEMA } from "./contracts.js";
-import { validateAgentManifest, type AgentAdapterIdentity, type AgentManifest } from "./agent-session-contracts.js";
+import { validateAgentManifest, type AgentAdapterIdentity, type AgentManifest, type AgentInputSpec } from "./agent-session-contracts.js";
 import { validateAgentStateMetadata, type AgentStateMetadata } from "./agent-session-state.js";
-import { encodeBoundedAgentJson } from "./agent-session-json.js";
+import { agentJsonByteLength, encodeBoundedAgentJson } from "./agent-session-json.js";
 
 export interface EvidenceOptions {
   root: string;
@@ -29,6 +29,19 @@ interface AgentSessionRunManifest extends Omit<AgentRunManifest, "schema" | "pol
   agent_artifact_sha256: string;
 }
 
+export const AGENT_SAMPLE_STORAGE_LIMITS = Object.freeze({
+  max_samples: 1024, max_files: 3072, max_total_bytes: 512 * 1024 * 1024,
+  max_pending_bytes: 128 * 1024 * 1024, max_pending_samples: 8, max_metadata_bytes: 64 * 1024
+});
+export interface AgentSampleMetadata {
+  schema: "sts2.policy-runtime/agent-sample-input-1";
+  acquisition_id: string; input_spec: AgentInputSpec; continuity_token: string; publication_index: null;
+  capture: Record<string, unknown>;
+  observation: { path: string; bytes: number; sha256: string };
+  catalog: { path: string; bytes: number; sha256: string; digest: string; count: number };
+}
+export interface AgentSampleReceipt { metadata_path: string; metadata: AgentSampleMetadata }
+
 export class AgentRunEvidence {
   readonly directory: string;
   readonly runId: string;
@@ -48,6 +61,11 @@ export class AgentRunEvidence {
   private stateStorageFailed = false;
   private pendingStateBytes = 0;
   private pendingStateFiles = 0;
+  private readonly sampleFiles = new Set<string>();
+  private sampleBytes = 0;
+  private pendingSampleBytes = 0;
+  private pendingSamples = 0;
+  private sampleStorageFailed = false;
 
   private constructor(
     directory: string,
@@ -211,9 +229,70 @@ export class AgentRunEvidence {
     }).finally(() => { this.pendingStateBytes -= buffer.length; this.pendingStateFiles -= 2; });
   }
 
+  /** Exact original observation bytes plus SDK-assembled ordered catalog. No opaque W API. */
+  async storeSampleAcquisition(input: {
+    acquisition_id: string; input_spec: AgentInputSpec; continuity_token: string;
+    capture: Record<string, unknown>; observation: Uint8Array;
+    catalog: readonly Record<string, unknown>[]; catalog_digest: string;
+  }): Promise<AgentSampleReceipt> {
+    if (this.sealed || this.policyManifest.schema !== "sts2.policy-runtime/agent-manifest-1"
+      || this.policyManifest.input.history_mode !== "sampled_current") throw new Error("sample store requires sampled session");
+    if (!input.acquisition_id || !input.continuity_token
+      || canonicalJson(input.input_spec) !== canonicalJson(this.policyManifest.input.input_spec)
+      || input.observation.byteLength !== input.capture.byte_count
+      || input.observation.byteLength < 1 || input.observation.byteLength > this.policyManifest.limits.max_capture_bytes
+      || input.catalog.length > this.policyManifest.limits.max_catalog_actions)
+      throw new Error("sample acquisition binding or size");
+    const catalogBytes = agentJsonByteLength(input.catalog, this.policyManifest.limits.max_message_bytes);
+    const charged = input.observation.byteLength + catalogBytes + AGENT_SAMPLE_STORAGE_LIMITS.max_metadata_bytes;
+    if (this.sampleFiles.size / 3 + this.pendingSamples >= AGENT_SAMPLE_STORAGE_LIMITS.max_samples
+      || this.sampleFiles.size + (this.pendingSamples + 1) * 3 > AGENT_SAMPLE_STORAGE_LIMITS.max_files
+      || this.sampleBytes + this.pendingSampleBytes + charged > AGENT_SAMPLE_STORAGE_LIMITS.max_total_bytes
+      || this.pendingSampleBytes + charged > AGENT_SAMPLE_STORAGE_LIMITS.max_pending_bytes
+      || this.pendingSamples >= AGENT_SAMPLE_STORAGE_LIMITS.max_pending_samples)
+      throw new Error("sample storage capacity");
+    // Charge before copying either pending original payload; never borrow opaque limits.
+    this.pendingSamples += 1; this.pendingSampleBytes += charged;
+    try {
+      const observation = Buffer.from(input.observation);
+      const catalog = Buffer.from(canonicalJson(input.catalog), "utf8");
+      const capture = JSON.parse(canonicalJson(input.capture)) as Record<string, unknown>;
+      const observationSha = sha256Bytes(observation), catalogSha = sha256Bytes(catalog);
+      if (observationSha !== capture.sha256) throw new Error("sample original observation integrity");
+      const binding = { acquisition_id: input.acquisition_id, input_spec: input.input_spec,
+        continuity_token: input.continuity_token, publication_index: null, capture };
+      const id = sha256Bytes(Buffer.from(canonicalJson(binding), "utf8"));
+      const stem = `agent-sample-${id}`;
+      const metadata: AgentSampleMetadata = { schema: "sts2.policy-runtime/agent-sample-input-1", ...binding,
+        publication_index: null, observation: { path: `${stem}.observation.json`, bytes: observation.length, sha256: observationSha },
+        catalog: { path: `${stem}.catalog.json`, bytes: catalog.length, sha256: catalogSha,
+          digest: input.catalog_digest, count: input.catalog.length } };
+      const metadataPath = `${stem}.json`, meta = encodeBoundedAgentJson(metadata, AGENT_SAMPLE_STORAGE_LIMITS.max_metadata_bytes);
+      const payloads = [[metadata.observation.path, observation], [metadata.catalog.path, catalog],
+        [metadataPath, Buffer.concat([meta, Buffer.from("\n")])]] as const;
+      return await this.serialize(async () => {
+        if (this.sealed) throw new Error("sample store sealed");
+        if (this.sampleFiles.has(metadataPath)) {
+          for (const [path, bytes] of payloads) if (!(await readFile(join(this.directory, path))).equals(bytes))
+            throw new Error("immutable sample collision");
+          return { metadata_path: metadataPath, metadata };
+        }
+        try {
+          for (const [path, bytes] of payloads) {
+            const handle = await open(join(this.directory, path), "wx");
+            try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+          }
+        } catch (error) { this.sampleStorageFailed = true; throw error; }
+        for (const [path, bytes] of payloads) { this.sampleFiles.add(path); this.sampleBytes += bytes.length; }
+        return { metadata_path: metadataPath, metadata };
+      });
+    } finally { this.pendingSamples -= 1; this.pendingSampleBytes -= charged; }
+  }
+
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is already sealed");
+      if (this.sampleStorageFailed) throw new Error("sample storage incomplete; evidence cannot be sealed");
       if (this.stateStorageFailed) throw new Error("opaque state storage incomplete; evidence cannot be sealed");
       this.manifest = { ...this.manifest, ended_at: input.now ?? new Date().toISOString(), status: input.status, tainted: input.tainted, mode: input.mode };
       await writeFile(this.manifestPath, `${canonicalJson(this.manifest)}\n`);
@@ -222,7 +301,7 @@ export class AgentRunEvidence {
         "adapter-attestation.json",
         "events.jsonl",
         "manifest.json",
-        executionManifestName, ...this.stateFiles
+        executionManifestName, ...this.stateFiles, ...this.sampleFiles
       ], this.directory);
       const manifestSha256 = sha256Bytes(Buffer.from(canonicalJson({ run_id: this.runId, files }), "utf8"));
       const evidenceManifest: ImmutableEvidenceManifest = {
@@ -239,7 +318,7 @@ export class AgentRunEvidence {
         "events.jsonl",
         "evidence-manifest.json",
         "manifest.json",
-        executionManifestName, ...this.stateFiles
+        executionManifestName, ...this.stateFiles, ...this.sampleFiles
       ], this.directory);
       const lines = checksummed.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n");
       await writeFile(join(this.directory, "checksums.sha256"), `${lines}\n`, { flag: "wx" });

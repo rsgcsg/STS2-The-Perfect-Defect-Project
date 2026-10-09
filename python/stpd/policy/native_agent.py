@@ -7,6 +7,7 @@ import base64
 import copy
 import hashlib
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -16,6 +17,11 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest, json_by
 
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROFILE, PROJECTION_VERSION, SCOPE
 from ..models.native_structured_scorer import NativeStructuredScorer
+from ..fullrun.native_structured_sequences import qualify_native, native_advance
+from ..native_sampled_carry_spec import (
+    INPUT_SPEC as SAMPLED_INPUT_SPEC, HISTORY_MODE, RECHECK_TIMEOUT_MS,
+    sample_eligible, sampled_agent_spec,
+)
 from ..native_code_scope import REQUIRED_METHODS, native_code_sha256
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
@@ -122,6 +128,8 @@ class NativeStructuredAgent:
         if target.resolve() != (package / MANIFEST_NAME).resolve():
             raise BoundaryError("native_agent", "trusted_package_path_binding")
         metadata, model = load_native_package(package, expected_manifest_sha256=artifact["sha256"])
+        self.sampled = metadata["input_spec"] == SAMPLED_INPUT_SPEC
+        selected_input_spec = SAMPLED_INPUT_SPEC if self.sampled else INPUT_SPEC
         input_spec = object_fields(
             manifest["input"],
             {
@@ -193,15 +201,15 @@ class NativeStructuredAgent:
             or artifact["id"] != metadata["model_id"]
             or not isinstance(input_spec, dict)
             or input_spec.get("profile") != PROFILE
-            or input_spec.get("input_spec") != INPUT_SPEC
+            or input_spec.get("input_spec") != selected_input_spec
             or input_spec.get("projection")
             != {"id": INPUT_SPEC["id"], "version": PROJECTION_VERSION}
             or input_spec.get("state_format_version") != metadata["state_format_version"]
-            or input_spec.get("history_mode") != "full_reference"
+            or input_spec.get("history_mode") != (HISTORY_MODE if self.sampled else "full_reference")
             or input_spec.get("consumption_mode") != "once_per_occurrence"
             or input_spec.get("gap_policy") != "handoff"
-            or input_spec.get("attachment", {}).get("eager_scope") != list(SCOPE)
-            or input_spec.get("attachment", {}).get("delivery_mode") != "full_reference"
+            or input_spec.get("attachment", {}).get("eager_scope") != ([] if self.sampled else list(SCOPE))
+            or input_spec.get("attachment", {}).get("delivery_mode") != ("scoped" if self.sampled else "full_reference")
             or manifest["agent"].get("id") != metadata["agent_spec"]["id"]
             or manifest["agent"].get("version") != metadata["agent_spec"]["version"]
         ):
@@ -259,9 +267,11 @@ class NativeStructuredAgent:
         bindings = [
             {"model_id": metadata["model_id"], "weights_sha256": metadata["weights"]["sha256"]}
         ]
+        expected_recovery = ({"mode": "none", "max_state_bytes": 0, "model_bindings": []}
+                             if self.sampled else {"mode": "opaque", "max_state_bytes": MAX_STATE_BYTES,
+                                                  "model_bindings": bindings})
         if (
-            recovery
-            != {"mode": "opaque", "max_state_bytes": MAX_STATE_BYTES, "model_bindings": bindings}
+            recovery != expected_recovery
             or type(manifest["limits"].get("max_message_bytes")) is not int
             or not 1 <= manifest["limits"]["max_message_bytes"] <= MAX_MESSAGE_BYTES
         ):
@@ -270,14 +280,17 @@ class NativeStructuredAgent:
         task_spec = metadata["agent_spec"].get("task_spec")
         if task_spec is not None and (
             task_spec != ready_summary_task_spec()
-            or metadata["agent_spec"]["version"] != "1.2.0"
+            or metadata["agent_spec"]["version"] != ("1.0.0" if self.sampled else "1.2.0")
         ):
             raise BoundaryError("native_agent", "unsupported_task_spec")
+        if self.sampled and metadata["agent_spec"] != sampled_agent_spec(model.model_control):
+            raise BoundaryError("native_agent", "sampled_agent_spec_binding")
         self.ready_summary_task = task_spec is not None
         self.scorer = NativeStructuredScorer(
-            model, metadata["model_id"], metadata["weights"]["sha256"]
+            model, metadata["model_id"], metadata["weights"]["sha256"], input_spec=selected_input_spec
         )
         self.closed = False
+        self.issued_acquisition: str | None = None
 
     def verify_weights(self) -> None:
         if (
@@ -321,6 +334,8 @@ class NativeStructuredAgent:
         ):
             raise BoundaryError("native_agent", "acknowledged_next_basis_required")
         self.verify_weights()
+        if self.sampled and self.issued_acquisition == scorer.acquisition_id:
+            return self.sampled_wait(value)
         # Programmed task completion is part of this explicit AgentSpec. It does
         # not turn a native terminal/summary into an empty action catalog, nor
         # silently change legacy generic Agents. The stateless predicate uses
@@ -337,6 +352,8 @@ class NativeStructuredAgent:
         directive: dict[str, Any]
         if values:
             selected = max(range(len(values)), key=values.__getitem__)
+            if self.sampled:
+                self.issued_acquisition = scorer.acquisition_id
             directive = {
                 "type": "act",
                 "basis_acquisition_id": scorer.acquisition_id,
@@ -358,6 +375,52 @@ class NativeStructuredAgent:
             "state_version": scorer.state_version,
             "directive": directive,
         }
+
+    def begin_sampled_next(self, value: dict[str, Any]) -> None:
+        value = object_fields(value, {"continuity_token", "consumption_id", "state_version",
+                                    "basis_acquisition_id", "received_cursor"}, "native_agent.sampled_next")
+        scorer = self.scorer
+        if (not self.sampled or scorer.pending is not None
+                or not isinstance(value["continuity_token"], str) or not value["continuity_token"]
+                or value["consumption_id"] != scorer.consumption_id
+                or type(value["state_version"]) is not int or value["state_version"] != scorer.state_version
+                or value["basis_acquisition_id"] != scorer.acquisition_id
+                or scorer.continuity is not None and value["continuity_token"] != scorer.continuity):
+            raise BoundaryError("native_agent", "sampled_next_prefix_binding")
+
+    def sampled_wait(self, value: dict[str, Any]) -> dict[str, Any]:
+        cursor = value["received_cursor"]
+        if not isinstance(cursor, str) or not cursor:
+            raise BoundaryError("native_agent", "known_source_cursor_required")
+        return {"continuity_token": value["continuity_token"], "consumption_id": self.scorer.consumption_id,
+                "state_version": self.scorer.state_version,
+                "directive": {"type": "await", "after_cursor": cursor, "condition": "any_event",
+                              "timeout_ms": RECHECK_TIMEOUT_MS}}
+
+    def sampled_query_result(self, result: dict[str, Any], next_input: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        result = object_fields(result, {"method", "value", "acquisition_id"}, "native_agent.current_result")
+        value = object_fields(result["value"], {"capture", "observation", "catalog", "catalog_materialized"},
+                              "native_agent.current_value")
+        if (result["method"] != "current" or not isinstance(result["acquisition_id"], str)
+                or not result["acquisition_id"] or value["catalog_materialized"] is not True):
+            raise BoundaryError("native_agent", "whole_current_result_required")
+        observation, capture = value["observation"], value["capture"]
+        if (not isinstance(capture, dict) or capture.get("schema") != "sts2.player-environment/native-logical-capture-1"
+                or capture.get("input_profile") != PROFILE
+                or capture.get("snapshot_id") != observation.get("snapshot_id")
+                or capture.get("session") != observation.get("session")
+                or capture.get("stream_generation") != observation.get("catalog", {}).get("stream_generation")
+                or capture.get("scope_id") != observation.get("catalog", {}).get("scope_id")):
+            raise BoundaryError("native_agent", "sampled_current_capture_binding")
+        _, unit = qualify_native(observation, value["catalog"])
+        advance = native_advance(self.scorer.unit, unit)
+        if not advance or not sample_eligible(value["observation"], value["catalog"]):
+            return "directive", self.sampled_wait(next_input)
+        report = self.consume({"acquisition_id": result["acquisition_id"], "input_spec": SAMPLED_INPUT_SPEC,
+                               "continuity_token": next_input["continuity_token"],
+                               "previous_consumption_id": self.scorer.consumption_id,
+                               "observation": value["observation"], "catalog": value["catalog"]})
+        return "consumed", report
 
     def check_metadata(
         self, expected: dict[str, Any], *, restoring: bool = False
@@ -401,6 +464,8 @@ class NativeStructuredAgent:
         return copy.deepcopy(expected)
 
     def export_state(self, expected: dict[str, Any]) -> dict[str, Any]:
+        if self.sampled:
+            raise BoundaryError("native_agent", "sampled_state_recovery_none")
         self.verify_weights()
         metadata = self.check_metadata(expected)
         raw = encode_checkpoint(
@@ -420,6 +485,8 @@ class NativeStructuredAgent:
         }
 
     def restore_state(self, expected: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        if self.sampled:
+            raise BoundaryError("native_agent", "sampled_state_recovery_none")
         if self.scorer.unit is not None or self.scorer.pending is not None:
             raise BoundaryError("native_agent", "fresh_state_restore_required")
         self.verify_weights()
@@ -480,6 +547,7 @@ def bind_native_agent(
     required_seams: list[dict[str, str]],
 ) -> dict[str, Any]:
     metadata, model = load_native_package(package)
+    sampled = metadata["input_spec"] == SAMPLED_INPUT_SPEC
     if manifest_path.exists() or manifest_path.is_symlink():
         raise BoundaryError("native_agent", "manifest_destination_exists")
     manifest = {
@@ -499,13 +567,13 @@ def bind_native_agent(
         },
         "input": {
             "profile": PROFILE,
-            "input_spec": INPUT_SPEC,
+            "input_spec": metadata["input_spec"],
             "projection": {"id": INPUT_SPEC["id"], "version": PROJECTION_VERSION},
             "state_format_version": metadata["state_format_version"],
-            "history_mode": "full_reference",
+            "history_mode": HISTORY_MODE if sampled else "full_reference",
             "consumption_mode": "once_per_occurrence",
             "gap_policy": "handoff",
-            "state_recovery": {
+            "state_recovery": {"mode": "none", "max_state_bytes": 0, "model_bindings": []} if sampled else {
                 "mode": "opaque",
                 "max_state_bytes": MAX_STATE_BYTES,
                 "model_bindings": [
@@ -516,9 +584,9 @@ def bind_native_agent(
                 ],
             },
             "attachment": {
-                "eager_scope": list(SCOPE),
+                "eager_scope": [] if sampled else list(SCOPE),
                 "required_seams": required_seams,
-                "delivery_mode": "full_reference",
+                "delivery_mode": "scoped" if sampled else "full_reference",
             },
         },
         "requirements": requirements,
@@ -550,6 +618,8 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
     emit({"schema": SESSION_SCHEMA, "message_type": "ready", "adapter": agent.manifest["adapter"]})
     context: tuple[str, int] | None = None
     pending_request: str | None = None
+    pending_next: tuple[dict[str, Any], dict[str, Any]] | None = None
+    pending_query: str | None = None
     seen: set[str] = set()
     while True:
         line = source.readline(agent.manifest["limits"]["max_message_bytes"] + 1)
@@ -562,7 +632,7 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             raise BoundaryError("native_agent", "message_size_or_framing")
         message = decode_json(line)
         kind = message.get("message_type")
-        content = "completion" if kind == "consume_ack" else "input"
+        content = "completion" if kind == "consume_ack" else ("result" if kind == "query_result" else "input")
         message = object_fields(
             message,
             {"schema", "message_type", "session_id", "recovery_epoch", "request_id", content},
@@ -590,11 +660,32 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
                 raise BoundaryError("native_agent", "consume_ack_request_binding")
             agent.scorer.acknowledge(message["completion"])
             pending_request = None
+            if pending_next is not None:
+                next_common, next_input = pending_next
+                next_input = {**next_input, "consumption_id": agent.scorer.consumption_id,
+                              "state_version": agent.scorer.state_version,
+                              "basis_acquisition_id": agent.scorer.acquisition_id}
+                output = agent.next(next_input)
+                emit({"schema": SESSION_SCHEMA, "message_type": "directive", **next_common, "output": output})
+                pending_next = None
+            continue
+        if kind == "query_result":
+            if current != context or request != pending_query or pending_next is None or pending_request is not None:
+                raise BoundaryError("native_agent", "query_result_request_binding")
+            pending_query = None
+            output_kind, result = agent.sampled_query_result(message["result"], pending_next[1])
+            if output_kind == "consumed":
+                pending_request = "child-consume-" + uuid.uuid4().hex
+                emit({"schema": SESSION_SCHEMA, "message_type": "consumed", **common,
+                      "request_id": pending_request, "completion": result})
+            else:
+                emit({"schema": SESSION_SCHEMA, "message_type": "directive", **pending_next[0], "output": result})
+                pending_next = None
             continue
         if request in seen or len(seen) >= 65536:
             raise BoundaryError("native_agent", "request_reuse_or_capacity")
         seen.add(request)
-        if pending_request is not None:
+        if pending_request is not None or pending_next is not None:
             raise BoundaryError("native_agent", "consume_ack_before_next_required")
         # Recovery epoch is the parent's operational fence, not model history.
         # Only a fresh idle command can advance it in this physical session.
@@ -604,6 +695,14 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             result, output_kind, field = agent.consume(message["input"]), "consumed", "completion"
             pending_request = request
         elif kind == "next":
+            if agent.sampled:
+                agent.begin_sampled_next(message["input"])
+                pending_next = (common, copy.deepcopy(message["input"]))
+                pending_query = "child-query-" + uuid.uuid4().hex
+                emit({"schema": SESSION_SCHEMA, "message_type": "query", **common,
+                      "request_id": pending_query, "input": {"method": "current", "arguments": {
+                          "eager_scope": list(SCOPE), "expected_snapshot_id": None}}})
+                continue
             result, output_kind, field = agent.next(message["input"]), "directive", "output"
         elif kind == "export_state":
             value = object_fields(message["input"], {"expected_metadata"}, "native_agent.export")

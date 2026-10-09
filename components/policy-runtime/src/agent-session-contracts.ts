@@ -7,7 +7,7 @@ export const NATIVE_SCOPE = ["persistent", "interaction", "referents", "catalog"
 export type AgentScope = typeof NATIVE_SCOPE[number];
 export type AgentQueryMethod = "current" | "read" | "catalog" | "resolve";
 export type ConsumptionMode = "once_per_occurrence" | "incremental_view";
-export type AgentHistoryMode = "full_reference" | "scoped_query";
+export type AgentHistoryMode = "full_reference" | "scoped_query" | "sampled_current";
 export interface AgentInputSpec { id: string; version: string; sha256: string }
 export interface AgentAdapterIdentity { id: string; version: string; protocol: typeof AGENT_SESSION_PROTOCOL; code_sha256: string }
 export const AGENT_LIMIT_MAXIMA = Object.freeze({
@@ -177,7 +177,7 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   if (new Set(recovery.model_bindings.map(value => (value as Record<string, unknown>).model_id)).size !== recovery.model_bindings.length)
     throw new AgentSessionError("duplicate_model_binding");
   if (recoveryMode === "none" && (recovery.max_state_bytes !== 0 || recovery.model_bindings.length !== 0)) throw new AgentSessionError("stateless_state_binding");
-  const history = choice(input.history_mode, ["full_reference", "scoped_query"]);
+  const history = choice(input.history_mode, ["full_reference", "scoped_query", "sampled_current"]);
   const mode = choice(input.consumption_mode, ["once_per_occurrence", "incremental_view"]);
   choice(input.gap_policy, ["handoff", "explicit_reset"]);
   const attachment = sessionObject(input.attachment, ["eager_scope", "required_seams", "delivery_mode"]);
@@ -195,6 +195,9 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   if ((history === "full_reference") !== (delivery === "full_reference")
     || (history === "full_reference" && (mode !== "once_per_occurrence" || scope.length !== 4 || seams.some(seam => seam.coverage !== "complete_at_seam"))))
     throw new AgentSessionError("history_scope_mismatch");
+  if (history === "sampled_current" && (mode !== "once_per_occurrence" || scope.length !== 0
+    || delivery !== "scoped" || recoveryMode !== "none" || input.gap_policy !== "handoff"))
+    throw new AgentSessionError("sampled_current_contract_mismatch");
   const requirements = sessionObject(manifest.requirements, ["connector_protocol_version", "environment", "required_methods"]);
   sessionText(requirements.connector_protocol_version);
   const environment = sessionObject(requirements.environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]);
@@ -205,7 +208,8 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   const methods = strings(requirements.required_methods, true);
   const allowed = ["capabilities", "attach", "current", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
   const minimum = ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
-  if (history === "full_reference") minimum.push("read", "catalog", "retain", "release");
+  if (history === "sampled_current") minimum.push("current", "read", "catalog", "retain", "release");
+  else if (history === "full_reference") minimum.push("read", "catalog", "retain", "release");
   else if (methods.includes("current")) minimum.push("read", "retain", "release");
   if (methods.some(method => !allowed.includes(method)) || minimum.some(method => !methods.includes(method)))
     throw new AgentSessionError("required_methods_mismatch");

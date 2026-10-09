@@ -170,3 +170,27 @@ interaction remain rejected. The shared regression derives the actual Core wire
 fixture shape and binds its rederived capture bytes/hash. Fresh contract/typecheck,
 all 240 Runtime tests (49 session tests), and build pass; this is source compatibility,
 not native installation or Model qualification.
+
+
+## Sampled Current carry source candidate (2026-10-09)
+
+Bounded packet base `0aedf3491d75d550740736d3b1373600dcde0ce5`; independent
+writer branch `codex/e6-sampled-carry-runtime`. The new shared sampled definition
+and complete synthetic vectors precede dependent Runtime/Agent/data work.
+The original full-reference/scoped fixtures and publication rules remain fixed.
+
+Runtime selects existing full Current assembly, stores exact original input
+payloads before sampled proposal ACK, disposes unchanged queries, and fences
+post-sample Human/OneStep/failure segments. Duplex port hooks record write-attempt
+boundaries without upgrading them to child receipt. Independent Evidence checks
+closed sample inventories, original capture/catalog content and ACK/directive joins.
+The Python Agent stages actual carry and commits only exact ACK; the original
+feature encoder and full ordered catalog are unchanged. No visited list or
+opaque-state recovery was introduced.
+
+Checks are focused pure TypeScript/Node scripted-child/SDK and independent
+Python Evidence verification. Numerical tests require the separately assigned
+lead heavy slot; no generic component gate implicitly starts them. The lead owns
+final source review, component version/BOM/source pins, package convergence,
+exact native installation, real training/canary and qualification. This source
+candidate has no game, installed, Human, useful learning or natural-run claim.
