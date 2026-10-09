@@ -213,7 +213,6 @@ internal sealed class PlatformLivePanel : IDisposable
     private Button _externalWorkbenchButton = null!;
     private PlatformNativeWorkbenchPanel _nativeWorkbench = null!;
     private bool _policyCommandPending;
-    private bool _nativeRuntimeRecoveryRequired;
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
@@ -398,7 +397,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _tabBar.AddThemeFontSizeOverride("font_size", 13);
         _tabBar.AddThemeColorOverride("font_selected_color", TextPrimary);
         _tabBar.AddThemeColorOverride("font_unselected_color", TextSecondary);
-        foreach (string name in new[] { "模型实战", "真人采集", "工作台" })
+        foreach (string name in new[] { "运行状态与恢复", "真人采集", "工作台" })
             _tabBar.AddTab(name);
         _tabBar.TabClicked += OnTabClicked;
         _workspaceContent.AddChild(_tabBar);
@@ -565,28 +564,28 @@ internal sealed class PlatformLivePanel : IDisposable
             ClipContents = true
         };
         modeRow.AddThemeConstantOverride("separation", 4);
-        modeRow.AddChild(BuildModeButton("开始测试", PlatformCommandMode.Auto));
+        modeRow.AddChild(BuildModeButton("在工作台开始测试", PlatformCommandMode.Auto));
         modeRow.AddChild(BuildModeButton("暂停并接管", PlatformCommandMode.Human));
         _endTestButton = BuildCommandButton("结束测试", () => _ = EndRuntimeAsync(), "停止模型并封存本次实战记录。");
         _endTestButton.Disabled = true;
         modeRow.AddChild(_endTestButton);
         body.AddChild(modeRow);
         var advancedModes = new HBoxContainer { Visible = false };
-        advancedModes.AddChild(BuildModeButton("只评分", PlatformCommandMode.Shadow));
-        advancedModes.AddChild(BuildModeButton("单步执行", PlatformCommandMode.OneStep));
+        advancedModes.AddChild(BuildModeButton("在工作台只评分", PlatformCommandMode.Shadow));
+        advancedModes.AddChild(BuildModeButton("在工作台单步执行", PlatformCommandMode.OneStep));
         body.AddChild(BuildHeaderButton("高级控制", () => advancedModes.Visible = !advancedModes.Visible,
             "按需查看只评分与单步调试。"));
         _tickButton = BuildCommandButton(
-            "Tick",
-            () => _ = TickRuntimeAsync(),
-            "Ask Policy Runtime for one bounded tick; action authority remains Connector/Runtime.");
+            "在工作台推进 Tick",
+            () => OpenNativeWorkbenchPage("play"),
+            "在工作台按当前模式推进一次 Tick。");
         _tickButton.Disabled = true;
         advancedModes.AddChild(_tickButton);
         body.AddChild(advancedModes);
 
         _command = new Label
         {
-            Text = "先在本机工作台选择并准备模型，再点开始测试。准备模型不会自动操作游戏。",
+            Text = "模型执行与 Source3 录制统一在工作台实战/采集页操作。这里保留运行诊断和独立 Human/Stop 恢复。",
             MouseFilter = MouseFilterEnum.Ignore,
             AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
@@ -1101,6 +1100,10 @@ internal sealed class PlatformLivePanel : IDisposable
             var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
             var before = owner.QueryStatus();
             bool sourceStart = kind == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession && _recordingProfile.Selected == 1;
+            bool activeSource3 = before.Session?.CaptureProfileId == STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId;
+            bool inactive = before.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
+            if (sourceStart || (activeSource3 && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive)))
+            { OpenNativeWorkbenchPage("data"); return; }
             var declaration = sourceStart || kind == STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource
                 ? ReadSourceDeclaration() : null;
             var command = PlatformRecordingCommands.ForStatus(before, kind, Guid.NewGuid().ToString("D"),
@@ -1187,11 +1190,17 @@ internal sealed class PlatformLivePanel : IDisposable
     });
 
     private Task EndRuntimeAsync() => RunPolicyCommandAsync(PlatformPolicyCommand.Stop);
-    private Task TickRuntimeAsync() => RunPolicyCommandAsync(PlatformPolicyCommand.Tick);
+    private void OpenNativeWorkbenchPage(string page)
+    {
+        SelectSurface(2);
+        _nativeWorkbench.OpenPage(page);
+        _command.Text = page == "play" ? "请在工作台实战页选择实际模型任务控制。" : "请在工作台采集页明确操作来源与录制。";
+    }
 
     private async Task RunPolicyCommandAsync(PlatformPolicyCommand command)
     {
         bool recovery = command is PlatformPolicyCommand.Human or PlatformPolicyCommand.Stop;
+        if (!recovery) { OpenNativeWorkbenchPage("play"); return; }
         if (_policyCommandPending && !recovery) return;
         long intent = Interlocked.Increment(ref _policyUiIntent);
         _policyCommandPending = true;
@@ -1200,30 +1209,11 @@ internal sealed class PlatformLivePanel : IDisposable
         {
             string expected = _displayedPolicyRunId
                 ?? throw new InvalidOperationException("请先加载模型并读取其状态。");
-            PlatformPolicyBinding? binding = null;
             IPlatformRuntimeStatus response = await _policyCommands.RunAsync(
                 expected, command,
-                async () => {
-                    string game = STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
-                    var recording = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();
-                    binding = await _statusClient.ObserveBindingAsync(expected, game);
-                    if (intent != Interlocked.Read(ref _policyUiIntent) || _disposed)
-                        throw new PlatformPolicyCommandSupersededException();
-                    var prepared = await PlatformRecordingCommands.OnMainThread(() => {
-                        if (intent != Interlocked.Read(ref _policyUiIntent) || _disposed)
-                            throw new PlatformPolicyCommandSupersededException();
-                        if (STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId != game)
-                            throw new InvalidOperationException("recording_game_instance_changed");
-                        return PlatformCollectionHandoff.Prepare(recording.Lifecycle.SessionId,
-                            Guid.NewGuid().ToString("D"),
-                            STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus,
-                            STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.ExecuteForSession);
-                    }, STS2Connector.ConnectorMod.RunOnMainThread);
-                    if (!PlatformCollectionHandoff.Ready(prepared))
-                        throw new InvalidOperationException("真人录制正在封存。完成后再开始测试；模型尚未接管。");
-                },
-                mode => _statusClient.SetModeAsync(mode, expected, binding),
-                () => _statusClient.TickAsync(expected, binding ?? throw new InvalidOperationException("Game binding unavailable.")),
+                () => throw new InvalidOperationException("Direct preparation is recovery-only."),
+                mode => _statusClient.SetModeAsync(mode, expected),
+                () => throw new InvalidOperationException("Direct Tick is not a product entry."),
                 () => _statusClient.StopAsync(expected));
             if (intent != Interlocked.Read(ref _policyUiIntent) || _disposed) return;
             _mode = ParseRuntimeMode(response.Mode);
@@ -1293,9 +1283,6 @@ internal sealed class PlatformLivePanel : IDisposable
         _connection.Text =
             $"Connector: {status.TransportStatus} | Policy Runtime: {status.PolicyRuntimeTransportStatus} | observed {status.ObservedAt:HH:mm:ss} UTC";
         string policyReason = PlatformLiveLayout.PolicyUnavailableReason(status);
-        _nativeRuntimeRecoveryRequired = status.PolicyRuntime is NativeAgentRuntimeStatus native
-            && (native.Tainted || native.PendingRequest is not null || native.Controller == "unknown"
-                || native.Session?.AgentState == "uncertain");
         SetPolicyControlsAvailable(status.PolicyRuntime != null, policyReason);
         if (status.PolicyRuntime != null)
             _mode = ParseRuntimeMode(status.PolicyRuntime.Mode);
@@ -1315,20 +1302,20 @@ internal sealed class PlatformLivePanel : IDisposable
     private void SetPolicyControlsAvailable(bool available, string? reason = null)
     {
         bool uncertain = _policyCommands.HasUnknownCommand(_displayedPolicyRunId);
+        bool recoveryAvailable = _displayedPolicyRunId is not null && !_disposed;
         foreach ((PlatformCommandMode mode, Button button) in _modeButtons)
         {
-            button.Disabled = mode == PlatformCommandMode.Human
-                ? !(available || uncertain) : !available || uncertain || _nativeRuntimeRecoveryRequired;
+            button.Disabled = mode == PlatformCommandMode.Human ? !recoveryAvailable : _disposed;
             button.TooltipText = available
                 ? button.TooltipText
                 : $"Unavailable: {reason ?? "Policy Runtime is unavailable."}";
         }
-        _compactHumanButton.Disabled = !(available || uncertain);
-        _endTestButton.Disabled = !(available || uncertain);
-        _tickButton.Disabled = !available || uncertain || _nativeRuntimeRecoveryRequired;
+        _compactHumanButton.Disabled = !recoveryAvailable;
+        _endTestButton.Disabled = !recoveryAvailable;
+        _tickButton.Disabled = _disposed;
         _tickButton.TooltipText = uncertain
             ? "上次操作未确认，请先暂停并接管或结束测试。"
-            : available ? "Ask Policy Runtime for one bounded tick; action authority remains Connector/Runtime."
+            : available ? "在工作台明确推进当前模式的一次 Tick。"
             : $"Unavailable: {reason ?? "Policy Runtime is unavailable."}";
         ApplyModeButtonState();
     }
@@ -1368,13 +1355,16 @@ internal sealed class PlatformLivePanel : IDisposable
         STS2HumanAnnotator.Core.RecordingLifecycleState state = recording.Lifecycle.State;
         bool inactive = state is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
         bool isSource = recording.SourceV2 is not null || recording.Source is not null;
-        bool sourceFields = (inactive && _recordingProfile.Selected == 1) || (!inactive && isSource);
+        bool source3Controls = (inactive && _recordingProfile.Selected == 1)
+            || recording.Session?.CaptureProfileId == STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId;
+        bool sourceFields = !source3Controls && ((inactive && _recordingProfile.Selected == 1) || (!inactive && isSource));
         _recordingProfile.Disabled = !inactive;
-        _recordingSourceKind.Visible = _recordingActor.Visible = _sourceDeclarationNotice.Visible = sourceFields;
+        _recordingSourceKind.Visible = _recordingActor.Visible = sourceFields;
+        _sourceDeclarationNotice.Visible = sourceFields || source3Controls;
         _recordingSourceKind.Disabled = !inactive && state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused;
         _recordingActor.Editable = !_recordingSourceKind.Disabled;
         var sourceDeclaration = recording.SourceV2?.Declaration ?? recording.Source?.Declaration;
-        _sourceDeclarationNotice.Text = "来源仅由操作员声明，不是机器验证的真人证明。"
+        _sourceDeclarationNotice.Text = (source3Controls ? "Source3 录制在工作台采集页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
             + (isSource && sourceDeclaration is not null ? $" 当前：{SourceKindLabel(sourceDeclaration.SourceKind)} · {sourceDeclaration.ActorId}" : "");
         if (isSource)
         {
@@ -1398,7 +1388,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _actionFeedList.Visible = !isSource;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession].Disabled =
             recording.Continuous?.Armed == true || !inactive
-                || (_recordingProfile.Selected == 1 && !HasSourceDeclaration());
+                || (_recordingProfile.Selected == 1 && !source3Controls && !HasSourceDeclaration());
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Pause].Disabled =
             state != STS2HumanAnnotator.Core.RecordingLifecycleState.Recording;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Resume].Disabled =
@@ -1407,7 +1397,16 @@ internal sealed class PlatformLivePanel : IDisposable
             recording.Continuous?.Armed != true && state is not (STS2HumanAnnotator.Core.RecordingLifecycleState.Recording
                 or STS2HumanAnnotator.Core.RecordingLifecycleState.Paused);
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource].Disabled =
-            !isSource || state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused || !HasSourceDeclaration();
+            !isSource || state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused || (!source3Controls && !HasSourceDeclaration());
+        foreach (var entry in _recordingButtons)
+        {
+            bool navigate = source3Controls && (entry.Key != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || _recordingProfile.Selected == 1 || !inactive);
+            string label = entry.Key switch { STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession => "开始录制",
+                STS2HumanAnnotator.Core.RecordingCommandKind.Pause => "暂停", STS2HumanAnnotator.Core.RecordingCommandKind.Resume => "继续",
+                STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource => "更改来源", _ => "结束并封存" };
+            entry.Value.Text = navigate ? "在工作台" + label : label;
+        }
+
     }
 
     private void RefreshActionFeed(

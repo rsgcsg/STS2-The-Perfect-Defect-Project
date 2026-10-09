@@ -17,9 +17,11 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
     internal const string ResultSchema = "spireagent/native-workbench-command-result-v1";
     internal static readonly HashSet<string> Actions = new(StringComparer.Ordinal) {
         "workspace.create", "curation.prepare", "recordings.refresh", "recordings.import",
+        "recording.start", "recording.pause", "recording.resume", "recording.change_source", "recording.close",
         "datasets.preview", "datasets.human-preview", "datasets.publish", "training.start",
         "training.pause", "training.cancel", "training.reconcile", "training.resume", "evaluation.start",
         "models.export", "models.register", "models.download", "models.load", "models.takeover",
+        "models.auto", "models.shadow", "models.one_step", "models.tick",
         "models.human", "models.stop", "models.reconcile", "identity.login", "identity.poll", "identity.logout",
         "collection.consent", "collection.prepare", "collection.upload", "downloads.start"
     };
@@ -184,14 +186,24 @@ internal sealed class PlatformNativeWorkbenchCommands
     private readonly Dictionary<string, int> _pendingOwners = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _unknown = new(StringComparer.Ordinal);
     internal static bool Recovery(string action) => action is "models.human" or "models.stop" or "models.reconcile"
-        or "training.pause" or "training.cancel" or "training.reconcile" or "training.resume" or "identity.poll";
+        or "training.pause" or "training.cancel" or "training.reconcile" or "training.resume" or "identity.poll"
+        or "recording.close" or "recording.start";
     private static string Owner(string action) => action switch { "models.export" => "export", "models.register" => "registration",
         "evaluation.start" => "evaluation", "recordings.import" => "import", "recordings.refresh" => "recording_catalog",
         "downloads.start" => "member_download", _ => action.Split('.')[0] };
-    private static string Scope(string config, string action) => config + ":" + Owner(action);
-    internal bool CanSubmit(string config, string action)
+    private static string Scope(string config, string action, string? recordingContext = null) =>
+        config + ":" + Owner(action) + (action.StartsWith("recording.", StringComparison.Ordinal) ? ":" + recordingContext : "");
+    internal static string RecordingContext(string? runtime, string? session) => runtime + ":" + (session ?? "ready");
+    private static string? PayloadContext(string action, object payload)
     {
-        string owner = Scope(config, action);
+        if (!action.StartsWith("recording.", StringComparison.Ordinal)) return null;
+        JsonElement body = JsonSerializer.SerializeToElement(payload);
+        return RecordingContext(body.GetProperty("runtime_instance_id").GetString(),
+            body.GetProperty("recording_session_id").GetString());
+    }
+    internal bool CanSubmit(string config, string action, string? recordingContext = null)
+    {
+        string owner = Scope(config, action, recordingContext);
         lock (_gate) return !_pending.Contains(config + ":" + action)
             && (Recovery(action) || (!_pendingOwners.ContainsKey(owner) && !_unknown.ContainsKey(owner)));
     }
@@ -200,7 +212,7 @@ internal sealed class PlatformNativeWorkbenchCommands
     internal async Task<PlatformNativeWorkbenchCommandResult> RunAsync(PlatformNativeWorkbenchClient client,
         PlatformNativeWorkbenchConnection connection, string action, object payload, CancellationToken token)
     {
-        string scope = Scope(connection.Binding.ConfigurationId, action);
+        string scope = Scope(connection.Binding.ConfigurationId, action, PayloadContext(action, payload));
         string pendingKey = connection.Binding.ConfigurationId + ":" + action;
         lock (_gate)
         {
@@ -215,7 +227,7 @@ internal sealed class PlatformNativeWorkbenchCommands
         lock (_gate)
         {
             previousModel = _nativeModel;
-            if (action is "models.load" or "models.takeover") _nativeModel = new(connection, requestId);
+            if (action is "models.load" or "models.takeover" or "models.auto" or "models.shadow" or "models.one_step" or "models.tick") _nativeModel = new(connection, requestId);
         }
         try
         {

@@ -23,7 +23,10 @@ and causal-root lineage, selector metadata, action and state identities remain
 available in those details. Missing metadata stays unavailable. Canonical
 recording does not itself establish Full-Run qualification or research admission.
 
-The Recorder now offers **兼容语义录制** and **原生交互与观察**. The latter selects
+The Recorder retains **兼容语义录制** as its original native Human capability.
+**原生交互与观察** controls navigate explicitly to the paired Workbench Data page;
+active Source3 lifecycle always uses that owner, regardless of profile dropdown.
+The Workbench selects
 the explicit `native-logical-source-v3` profile. Select a source declaration
 (本人操作 / AI 界面操作 / Agent 协议 / 未知来源) and enter an operator ID before
 Start; no Human source is selected automatically. IDs use 1–128 ASCII letters,
@@ -39,13 +42,54 @@ Human origin, physical coverage, Commit, causal successor or research admission.
 Legacy controls retain their existing capture format. Source3 entry is a source
 candidate until its exact package/native runtime canaries pass.
 
-Direct native controls and the local TaskBridge share typed command composition.
+Workbench Source3 controls and the local TaskBridge share typed command composition;
+the diagnostic Recorder does not create a second Source3 mutation path.
 The bridge and async model preparation use the existing bounded native queue;
 queued cancellation can prove non-dispatch, while uncertain started work is never
-automatically retried. The browser/native Workbench lifecycle forms remain a
-follow-up in this same entry packet; the current browser still lists ended records.
+automatically retried. The browser and paired native Workbench Data page use the same application methods
+and fixed lifecycle API. Start/Change require an explicit source and actor; neither
+form defaults to Human. Refresh never retries an unknown write. Explicit Close and
+then a deliberate fresh session after durable Closed retain the earlier uncertainty
+notice. A fresh runtime/session isolates the presentation fence; it does not prove
+the prior request. Starting or changing away from Agent Protocol while a known
+Workbench model is active requires explicit Human/Stop recovery first.
 
-Agent Run uses only typed Policy Runtime controls. Its compact view keeps mode,
+Model preparation uses `/v2/tasks/status` (`task-status-2`) and
+`/v2/tasks/prepare-model` (`task-model-request-2` / `task-model-result-2`). Only a
+healthy Recording Source3 declared `agent_protocol` may remain Recording with a
+fresh compatible `agent-session-status-1` / `native-logical-v1` context. Paused
+Agent Protocol remains paused and blocks preparation until explicit Resume/Close;
+accounting errors block readiness. Other supported profiles/kinds or known legacy
+model input use owner Close and wait for durable completion. The original v1
+Ready/Closed readiness invariant is unchanged. Context is caller-provided
+compatibility metadata, never authentication, model Consume or Human proof. Runtime
+Mode/Tick still carry the original run/game/recovery epoch; preparation cannot grant
+a newer epoch to a stale intent.
+
+Shared browser and paired native Workbench model admission uses the existing
+LocalModelService intent owner. Every Source lifecycle intent reserves that
+application boundary through its final outcome while new non-recovery model
+intents reject before admission; Human/Stop/reconcile remain independent. Only
+Start/Change away from Agent Protocol requires Human/model-recovery eligibility.
+Already active Auto may still Pause/Resume/Close its recording, and an already
+admitted model intent is not cancelled by a later Agent Source control. An
+unknown Source result keeps the existing notice and model admission fence after
+the request returns. Same-runtime refresh cannot release it; exact accepted
+durable Close or a separately verified new runtime may release the applicable
+scope while retaining the original unknown. External Runtime/SDK callers remain outside this Workbench owner; legacy Human
+recording keeps its original native boundary. This does not claim universal
+cross-process or every legacy recording-format exclusion.
+
+The **运行状态与恢复** tab shows typed Runtime status and retains independent direct
+Human/Stop recovery against its remembered exact run, even with unavailable pairing
+or a failed status refresh. Auto/Shadow/OneStep/Tick entries are clearly labelled
+navigation to native Workbench play. That page's fixed actions call the existing
+LocalModelService with an original run/game/recovery context; stale context rejects
+before admission. Genuine Tick advances the current mode once without changing mode,
+and OneStep remains Mode plus at most one follow-up Tick. Pair failure never restores
+a direct non-recovery HTTP path or adopts an externally started Runtime.
+
+Agent Run diagnostics use only typed Policy Runtime status and recovery controls. Its compact view keeps mode,
 controller, policy, last selected action, Receipt and **Return to Human** visible.
 It never resolves or submits a gameplay action directly. The Runtime loopback
 defaults to `http://127.0.0.1:15527`; modes and model status require a compatible

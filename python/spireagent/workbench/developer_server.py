@@ -261,6 +261,14 @@ class Application:
             config, hub=self.hub,
             managed_target=self.local_environment.managed_runtime_target,
         )
+        # Presentation intent fence only; Recorder retains its sole command ledger/lifecycle.
+        self._recording_intent_lock = self.models.lock
+        self._recording_intent_pending = False
+        self._recording_unknown_notice: dict[str, Any] | None = None
+        self._recording_unknown_blocks = False
+        self._recording_runtime_context: str | None = None
+        self._recording_previous_unknown: list[dict[str, Any]] = []
+        self.models.bind_recording_admission_guard(self._recording_model_admission_blocked)
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
@@ -535,6 +543,195 @@ class Application:
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_curation", "running_configuration_mismatch")
         return self.local_curation_preparation.start()
+
+    def _recording_endpoint(self) -> str:
+        from spireagent.workbench.native_tasks import NativeTasks
+
+        return NativeTasks.bound_connector(self.config.platform_url or "http://127.0.0.1:15526")
+
+    def _recording_model_admission_blocked(self) -> bool:
+        # Called only under models.lock. The notice remains the sole unknown fact;
+        # a separately validated new runtime merely makes its old scope inapplicable.
+        notice = self._recording_unknown_notice
+        return (
+            self._recording_unknown_blocks
+            and notice is not None
+            and (
+                self._recording_runtime_context is None
+                or notice["runtime_instance_id"] == self._recording_runtime_context
+            )
+        )
+
+    def _recording_model_recovery_required(self, *, fresh: bool = False) -> bool:
+        return self.models.recording_recovery_required(fresh=fresh)
+
+    def native_recording_status(self) -> dict[str, Any]:
+        endpoint = self._recording_endpoint()
+        owner = self.models.native_tasks.recording_status(endpoint)
+        with self._recording_intent_lock:
+            self._recording_runtime_context = owner["runtime_instance_id"]
+            notice = (
+                dict(self._recording_unknown_notice) if self._recording_unknown_notice else None
+            )
+            pending = self._recording_intent_pending
+            blocked = (
+                self._recording_unknown_blocks
+                and notice is not None
+                and (notice["runtime_instance_id"] == owner["runtime_instance_id"])
+            )
+            previous = [dict(item) for item in self._recording_previous_unknown]
+        # Scalar owner query only. This view does not poll the whole game or a model Snapshot.
+        return {
+            "schema": "spireagent/native-recording-view-1",
+            "status": owner,
+            "connection": endpoint,
+            "model_recovery_required": self._recording_model_recovery_required(),
+            "command_pending": pending,
+            "unconfirmed": notice,
+            "recovery_required": blocked,
+            "previous_unconfirmed": previous,
+        }
+
+    def control_native_recording(self, body: dict[str, Any]) -> dict[str, Any]:
+        from uuid import UUID, uuid4
+
+        from spireagent.workbench.native_tasks import NativeTasks
+
+        fields = {
+            "kind",
+            "runtime_instance_id",
+            "recording_session_id",
+            "source_segment_id",
+            "source_kind",
+            "actor_id",
+            "command_id",
+        }
+        if (
+            not isinstance(body, dict)
+            or set(body) != fields
+            or not isinstance(body["kind"], str)
+            or body["kind"]
+            not in {"start_new_session", "pause", "resume", "change_source", "close"}
+            or not NativeTasks._recording_identifier(body["runtime_instance_id"])
+            or not NativeTasks._recording_identifier(body["recording_session_id"], nullable=True)
+            or not NativeTasks._recording_identifier(body["source_segment_id"], nullable=True)
+        ):
+            raise BoundaryError("recording", "invalid_native_recording_command")
+        try:
+            if (
+                not isinstance(body["command_id"], str)
+                or str(UUID(body["command_id"])) != body["command_id"]
+            ):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise BoundaryError("recording", "invalid_native_recording_command") from None
+        declaration = None
+        if body["kind"] in {"start_new_session", "change_source"}:
+            declaration = {
+                "source_kind": body["source_kind"],
+                "actor_id": body["actor_id"],
+                "declaration_id": str(uuid4()),
+                "machine_verifiable": False,
+            }
+            if not NativeTasks._source_declaration(declaration):
+                raise BoundaryError("recording", "invalid_native_recording_command")
+        elif body["source_kind"] is not None or body["actor_id"] is not None:
+            raise BoundaryError("recording", "invalid_native_recording_command")
+        reservation = self.models.reserve_recording_source_mutation(
+            require_human=declaration is not None and body["source_kind"] != "agent_protocol"
+        )
+        with reservation:
+            endpoint = self._recording_endpoint()
+            observed = self.models.native_tasks.recording_status(endpoint)
+            if (
+                observed["runtime_instance_id"] != body["runtime_instance_id"]
+                or observed["recording_session_id"] != body["recording_session_id"]
+                or (observed["source"]["segment_id"] if observed["source"] is not None else None)
+                != body["source_segment_id"]
+            ):
+                raise BoundaryError("recording", "native_recording_context_changed")
+            with self._recording_intent_lock:
+                self._recording_runtime_context = observed["runtime_instance_id"]
+                if (
+                    declaration is not None
+                    and body["source_kind"] != "agent_protocol"
+                    and self._recording_model_recovery_required()
+                ):
+                    raise BoundaryError("recording", "model_recovery_required")
+                if self._recording_intent_pending:
+                    raise BoundaryError("recording", "native_recording_command_pending")
+                blocked = (
+                    self._recording_unknown_blocks
+                    and self._recording_unknown_notice is not None
+                    and (
+                        self._recording_unknown_notice["runtime_instance_id"]
+                        == observed["runtime_instance_id"]
+                    )
+                )
+                fresh_session = (
+                    body["kind"] == "start_new_session"
+                    and observed["recording_lifecycle"] == "closed"
+                    and observed["closeout_status"] == "closed"
+                )
+                if blocked and body["kind"] != "close" and not fresh_session:
+                    raise BoundaryError("recording", "native_recording_recovery_required")
+                self._recording_intent_pending = True
+            try:
+                value = self.models.native_tasks.recording_command(
+                    endpoint,
+                    observed,
+                    body["kind"],
+                    source_declaration=declaration,
+                    command_id=body["command_id"],
+                )
+                if not value["accepted"]:
+                    raise BoundaryError("recording", "native_recording_rejected")
+                with self._recording_intent_lock:
+                    after = value["status"]
+                    known_close = (
+                        body["kind"] == "close"
+                        and after["runtime_instance_id"] == observed["runtime_instance_id"]
+                        and after["recording_session_id"] == observed["recording_session_id"]
+                        and after["recording_lifecycle"] == "closed"
+                        and after["closeout_status"] == "closed"
+                    )
+                    isolated_start = (
+                        body["kind"] == "start_new_session"
+                        and after["recording_session_id"] is not None
+                        and after["recording_session_id"] != observed["recording_session_id"]
+                        and (
+                            fresh_session
+                            or (
+                                self._recording_unknown_notice is not None
+                                and after["runtime_instance_id"]
+                                != self._recording_unknown_notice["runtime_instance_id"]
+                            )
+                        )
+                    )
+                    # A distinct known Close/isolation can release sequencing; the
+                    # original unknown notice/history is never resolved or erased.
+                    if known_close or isolated_start:
+                        self._recording_unknown_blocks = False
+                return value
+            except BoundaryError as error:
+                if error.code == "native_recording_command_unknown":
+                    with self._recording_intent_lock:
+                        if self._recording_unknown_notice is not None:
+                            self._recording_previous_unknown = [
+                                *self._recording_previous_unknown[-7:],
+                                self._recording_unknown_notice,
+                            ]
+                        self._recording_unknown_notice = {
+                            "command_id": body["command_id"],
+                            "kind": body["kind"],
+                            "runtime_instance_id": body["runtime_instance_id"],
+                            "recording_session_id": body["recording_session_id"],
+                        }
+                        self._recording_unknown_blocks = True
+                raise
+            finally:
+                with self._recording_intent_lock:
+                    self._recording_intent_pending = False
 
     def start_local_recording_import(self, candidate_id: object,
                                      human_origin_attested: object) -> dict[str, Any]:
@@ -924,6 +1121,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
+            elif parsed.path == "/api/native-recording/status":
+                if not self.local_host() or not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                    return
+                try:
+                    value = {**app.native_recording_status(), "csrf_token": app.account.csrf}
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-recordings":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1381,6 +1590,22 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_curation_request"}')
+                return
+            if self.path.startswith("/api/native-recording/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/native-recording/command":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=4096, reject_duplicate=True)
+                    value = app.control_native_recording(body)
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_native_recording_command"}')
                 return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():

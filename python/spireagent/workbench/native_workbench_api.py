@@ -28,6 +28,11 @@ ACTIONS = frozenset(
         "curation.prepare",
         "recordings.refresh",
         "recordings.import",
+        "recording.start",
+        "recording.pause",
+        "recording.resume",
+        "recording.change_source",
+        "recording.close",
         "datasets.preview",
         "datasets.human-preview",
         "datasets.publish",
@@ -42,6 +47,10 @@ ACTIONS = frozenset(
         "models.download",
         "models.load",
         "models.takeover",
+        "models.auto",
+        "models.shadow",
+        "models.one_step",
+        "models.tick",
         "models.human",
         "models.stop",
         "models.reconcile",
@@ -71,6 +80,7 @@ _PRECONDITION_CODES = frozenset(
         "cumulative_limits_must_be_preserved",
         "cumulative_budget_exhausted",
         "previous_training_outcome_unknown",
+        "previous_operation_requires_recovery",
         "prior_writer_terminal_required",
         "writer_still_running",
         "writer_reconciliation_required",
@@ -80,8 +90,21 @@ _PRECONDITION_CODES = frozenset(
         "unknown_local_model",
         "new_experiment_precondition_failed",
         "native_model_intent_superseded",
+        "native_model_context_changed",
+        "invalid_model_control_context",
+        "invalid_runtime_control_binding",
+        "runtime_run_mismatch",
+        "runtime_game_mismatch",
+        "runtime_recovery_epoch_mismatch",
         "native_pending_request_required",
         "native_pending_request_changed",
+        "invalid_native_recording_command",
+        "model_recovery_required",
+        "native_recording_context_changed",
+        "native_recording_command_pending",
+        "native_recording_recovery_required",
+        "native_recording_not_dispatched",
+        "native_recording_rejected",
     }
 )
 _PRIVATE_KEYS = frozenset(
@@ -218,7 +241,9 @@ class NativeWorkbenchApi:
             raise fail("invalid_native_query")
         if context_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", context_id):
             raise fail("invalid_native_context")
-        cards, items, controls = [], [], []
+        cards: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        controls: list[dict[str, Any]] = []
         total = 0
         app = self.app
         training = app.local_training.capabilities()
@@ -246,6 +271,40 @@ class NativeWorkbenchApi:
                 and isinstance(request_id, str)
                 and bool(request_id)
                 and pending.get("run_id") == runtime.get("run_id")
+            )
+
+            control: dict[str, Any] = (
+                self.card("model_control", app.models.control_context)
+                if session.get("loaded") and not loading
+                else {
+                    "owner": "model_control",
+                    "schema": None,
+                    "data": {"availability": "unavailable", "reason": "model_not_loaded"},
+                }
+            )
+            cards.append(control)
+            context = control["data"]
+            can_control = (
+                control.get("schema") == "spireagent/local-model-control-context-1"
+                and context.get("runtime_instance_id") == pair.runtime_instance_id
+                and session.get("status") not in {"command_unknown", "recovery_required"}
+                and isinstance(runtime, dict)
+                and not runtime.get("tainted")
+                and pending is None
+            )
+            controls.extend(
+                action(
+                    "models." + mode,
+                    label,
+                    enabled=can_control,
+                    reason=None if can_control else "owner_control_not_available",
+                )
+                for mode, label in (
+                    ("auto", "开始测试"),
+                    ("shadow", "只评分（不操作）"),
+                    ("one_step", "执行一个决策"),
+                    ("tick", "当前模式推进一次 Tick"),
+                )
             )
 
             controls.extend(
@@ -325,6 +384,72 @@ class NativeWorkbenchApi:
                 cards.append(self.card("workspace", app.managed_local_workspace))
                 controls.append(action("workspace.create", "建立本机资料空间"))
             if page == "data":
+                live_recording = self.card("native_recording", app.native_recording_status)
+                cards.append(live_recording)
+                owner_view = live_recording["data"]
+                owner_status = owner_view.get("status", {})
+                state = (
+                    owner_status.get("recording_lifecycle")
+                    if isinstance(owner_status, dict)
+                    else None
+                )
+                source3 = owner_status.get("capture_profile_id") == "native-logical-source-v3"
+                pending = owner_view.get("command_pending") is True
+                recovery = owner_view.get("recovery_required") is True
+                fresh = state in {"ready", "closed"} and (
+                    not recovery
+                    or (state == "closed" and owner_status.get("closeout_status") == "closed")
+                )
+                declaration_fields = [
+                    field(
+                        "source_kind",
+                        "操作来源",
+                        "enum",
+                        "",
+                        [
+                            {"value": "declared_human", "label": "本人操作"},
+                            {"value": "agent_native_ui", "label": "AI 界面操作"},
+                            {"value": "agent_protocol", "label": "Agent 协议"},
+                            {"value": "unknown", "label": "未知来源"},
+                        ],
+                    ),
+                    field("actor_id", "操作者 ID"),
+                ]
+                controls.extend(
+                    [
+                        action(
+                            "recording.start",
+                            "开始原生交互与观察录制",
+                            declaration_fields,
+                            enabled=fresh and not pending,
+                            reason=None if fresh else "recording_start_unavailable",
+                        ),
+                        action(
+                            "recording.pause",
+                            "暂停录制",
+                            enabled=source3
+                            and state == "recording"
+                            and not pending
+                            and not recovery,
+                        ),
+                        action(
+                            "recording.resume",
+                            "继续录制",
+                            enabled=source3 and state == "paused" and not pending and not recovery,
+                        ),
+                        action(
+                            "recording.change_source",
+                            "更改操作来源",
+                            declaration_fields,
+                            enabled=source3 and state == "paused" and not pending and not recovery,
+                        ),
+                        action(
+                            "recording.close",
+                            "结束并封存录制",
+                            enabled=source3 and state in {"recording", "paused"} and not pending,
+                        ),
+                    ]
+                )
                 cards.extend(
                     [
                         self.card("curation", app.local_curation_preparation.status),
@@ -650,6 +775,29 @@ class NativeWorkbenchApi:
             observed = app.local_recordings.read()
             self._recordings = public(observed)
             return {**observed, "candidates": observed.get("candidates", [])[:50]}
+        if action_id.startswith("recording."):
+            exact(
+                body,
+                {
+                    "kind",
+                    "runtime_instance_id",
+                    "recording_session_id",
+                    "source_segment_id",
+                    "source_kind",
+                    "actor_id",
+                    "command_id",
+                },
+            )
+            expected = {
+                "recording.start": "start_new_session",
+                "recording.pause": "pause",
+                "recording.resume": "resume",
+                "recording.change_source": "change_source",
+                "recording.close": "close",
+            }[action_id]
+            if body["kind"] != expected or body["runtime_instance_id"] != pair.runtime_instance_id:
+                raise fail("invalid_native_payload")
+            return app.control_native_recording(body)
         if action_id == "recordings.import":
             exact(body, {"candidate_id", "human_origin_attested"})
             return app.start_local_recording_import(**body)
@@ -707,6 +855,18 @@ class NativeWorkbenchApi:
                 body["run_profile"],
                 native_context=context,
                 native_authorizer=authorize,
+            )
+        if action_id in {"models.auto", "models.shadow", "models.one_step", "models.tick"}:
+            exact(body, {"runtime_run_id", "runtime_instance_id", "recovery_epoch"})
+            app.models.read_control_context(body)
+            if body["runtime_instance_id"] != pair.runtime_instance_id:
+                raise fail("native_model_context_changed")
+            context = {"request_id": request_id, "binding": pair.to_dict()}
+            return app.models.command(
+                action_id.split(".", 1)[1],
+                expected_context=body,
+                native_context=context,
+                native_authorizer=lambda: app.native_access.authorize_intent(context),
             )
         if action_id in {"models.human", "models.stop"}:
             mode = "human" if action_id == "models.human" else "stop"

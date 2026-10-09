@@ -202,7 +202,9 @@ def native_load(app, monkeypatch, runtime):
     app.models.state["connector_endpoint"] = "http://127.0.0.1:19191"
     monkeypatch.setattr(app.models.native_tasks, "connector_instance", lambda _: "game-1")
     monkeypatch.setattr(
-        app.models.native_tasks, "prepare_model", lambda *_: {"runtime_instance_id": "game-1"}
+        app.models.native_tasks,
+        "prepare_model",
+        lambda *_, **kwargs: {"runtime_instance_id": "game-1"},
     )
     monkeypatch.setattr(
         app.models,

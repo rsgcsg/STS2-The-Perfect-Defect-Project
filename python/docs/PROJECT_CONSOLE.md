@@ -81,6 +81,48 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
 this inventory alone does not make it a usable training set, installed model or validated result.
 
+The local Data page and paired native Workbench also expose **原生交互与观察**
+lifecycle controls through one Application/NativeTasks path. They query only scalar
+recording status and use the configured local Connector (or its documented Mod
+default) to check the exact game instance. Start and ChangeSource require an explicit
+本人操作 / AI界面操作 / Agent协议 / 未知来源 plus actor ID; no Human default or
+machine-verifiable origin is introduced. ChangeSource requires Pause and the
+observed session/segment. Resume is explicit. Close remains pending until owner
+durable completion. An unknown write retains its notice through refresh and pair
+renewal, never replays, and permits a deliberate isolated next session only after
+known durable Closed. Known active Workbench model recovery is required before
+Start/Change away from Agent Protocol; Human/Stop recovery stays independent.
+
+Model activation passes fresh run/input-profile/recovery context to the typed v2
+handoff. Healthy Recording Source3 Agent Protocol is retained only with exact Native
+Agent `native-logical-v1` compatibility; Paused and accounting failure block model
+preparation. Human/AI UI/unknown, older profiles and incompatible known legacy inputs
+still Close through the Recorder owner. These are application sequencing checks,
+not research admission, origin attestation or new gameplay legality. Context is
+caller metadata and the original Runtime recovery binding is retained for Mode/Tick.
+All Source lifecycle intents and new non-recovery Workbench model intents now
+share atomic admission in LocalModelService; only Start/Change away from Agent
+Protocol requires Human/model-recovery eligibility. Existing Auto may still
+Pause/Resume/Close its recording, without cancelling an already admitted model intent. Source I/O holds a logical
+reservation, not an HTTP-duration lock, so Human/Stop/reconcile remain available.
+Unknown Source outcomes keep the existing admission fence after client timeout;
+same-runtime refresh does not clear it. Accepted exact durable Close can release
+sequencing, and a typed recording-status query that verifies a new runtime before
+and after against Connector can make an old notice inapplicable without Source
+Start or rewriting the unknown. Shared browser/paired native Workbench owns product Source3 and model execution.
+The Mod's duplicate non-recovery Policy entries and Source3 Recorder controls now
+navigate explicitly to Workbench play/data. Legacy native Human recording and
+direct Human/Stop retain their original independent recovery boundary; external
+Runtime/SDK callers remain outside this coordination.
+
+The browser persists a pending confirmation marker before non-recovery Source
+POST. If browser storage cannot preserve it, the action rejects before submission.
+A live fallback retains notices through same-page auth renewal; a full reload with
+unavailable storage instead blocks new Source changes, without claiming it recovered
+old notices. Close remains an explicit recovery lane. A failed marker cleanup retains
+a conservative fence; no status refresh or browser retry resolves the original
+unknown. These markers are presentation state, not a second Recorder command ledger.
+
 The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
 byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported
 recordings root; it does not read Game Mod configuration files directly or guess a default path.
@@ -429,6 +471,17 @@ It requires its original checkpoint/support files and CUDA/BF16 backend; a Mac d
 compatible by installing the UI. Current Full-Run offline views have no qualified online-input
 parity/adapter here, so **Full-Run online evaluation remains BLOCKED** until that separate owner
 work is implemented and qualified. Do not manufacture missing features or filter the native catalog.
+
+Native Workbench play exposes fixed Auto/Shadow/OneStep/Tick commands for its owned
+loaded model. The original run/game/recovery tuple comes from a readonly typed owner
+status/environment query; strict payload validation and fresh matching happen before
+admission and again before recorder preparation. The same captured tuple accompanies
+the effect. Unknown outcomes do not retry; pair renewal cannot clear the UI fence.
+Direct diagnostic UI keeps Human/Stop and status, and links ordinary execution to
+this same task owner. Tick is one bounded current-mode tick with no Mode POST;
+OneStep still performs Mode then at most one tick. Browser advanced Tick uses the
+existing local-model command endpoint and owner. Existing native/default, S1 and
+text-menu adapter, artifact, profile and backend limits are unchanged.
 
 A compatible local selection loads in Human mode first. Shadow, One-Step, Auto, Human and Stop
 use typed Platform Runtime requests; deliberate execution is distinct from loading. Cloud pages

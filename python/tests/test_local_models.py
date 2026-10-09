@@ -32,8 +32,9 @@ def service(tmp_path, monkeypatch):
     # Synthetic native acceptance isolates the Runtime transport tests. The actual
     # bridge and fail-closed handoff have their own wire-level regression suite.
     monkeypatch.setattr(
-        result.native_tasks, "prepare_model",
-        lambda observed, endpoint: {"runtime_instance_id": "game-1"},
+        result.native_tasks,
+        "prepare_model",
+        lambda observed, endpoint, **kwargs: {"runtime_instance_id": "game-1"},
     )
     return result
 
@@ -811,7 +812,7 @@ def test_native_close_failure_never_requests_model_mode(service, runtime_http, m
     service.client = client
     service.state.update(status="loaded", loaded=True)
 
-    def failed(observed, connector_endpoint):
+    def failed(observed, connector_endpoint, **kwargs):
         raise BoundaryError("local_model", error)
 
     monkeypatch.setattr(service.native_tasks, "prepare_model", failed)
@@ -834,7 +835,7 @@ def test_runtime_environment_observed_during_native_close_must_match(
     service.state.update(status="loaded", loaded=True)
     runtime["environment"] = None
 
-    def closed(observed, endpoint):
+    def closed(observed, endpoint, **kwargs):
         assert observed["environment"] is None
         # Another Runtime caller populated its environment while this handoff
         # was closing the Recorder. Do not authorize a different cached game.
@@ -909,7 +910,7 @@ def test_human_cancels_old_intent_while_native_close_is_pending(service, monkeyp
             calls.append((route, body))
             return environment() if route == "/environment" else {"status": status()}
 
-    def native_close(_, connector_endpoint):
+    def native_close(_, connector_endpoint, **kwargs):
         entered.set()
         assert release.wait(timeout=3)
         return {"ready_for_model": True, "runtime_instance_id": "game-1"}
@@ -1173,7 +1174,9 @@ def test_old_runtime_requires_upgrade_before_native_close_but_recovery_still_wor
     client, runtime, requests = runtime_http
     client.fixture_control["environment_available"] = False
     closed = []
-    monkeypatch.setattr(service.native_tasks, "prepare_model", lambda *args: closed.append(args))
+    monkeypatch.setattr(
+        service.native_tasks, "prepare_model", lambda *args, **kwargs: closed.append(args)
+    )
     service.client = client
     service.state.update(status="loaded", loaded=True)
     service.command(action)
@@ -1197,7 +1200,9 @@ def test_runtime_actual_connector_must_match_saved_endpoint_before_native_close(
     client, _, requests = runtime_http
     client.fixture_control["instance"] = "other-game"
     closed = []
-    monkeypatch.setattr(service.native_tasks, "prepare_model", lambda *args: closed.append(args))
+    monkeypatch.setattr(
+        service.native_tasks, "prepare_model", lambda *args, **kwargs: closed.append(args)
+    )
     service.client = client
     service.state.update(status="loaded", loaded=True)
     service.command("auto")
@@ -1213,7 +1218,7 @@ def test_other_ui_recovery_during_native_prepare_rejects_late_model_mode(
     client, runtime, requests = runtime_http
     entered, release = threading.Event(), threading.Event()
 
-    def prepare(_status, endpoint):
+    def prepare(_status, endpoint, **kwargs):
         assert endpoint == "http://127.0.0.1:19191"
         entered.set()
         assert release.wait(timeout=3)

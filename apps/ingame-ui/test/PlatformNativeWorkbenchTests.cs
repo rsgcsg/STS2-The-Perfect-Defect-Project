@@ -246,4 +246,26 @@ public sealed class PlatformNativeWorkbenchTests
         Assert.Single(commands.Unconfirmed);
     }
 
+    [Fact]
+    public async Task RecordingUnknownIsScopedToOriginalRuntimeSessionAndPreservedAfterRenewal()
+    {
+        var connection = Connection(); var commands = new PlatformNativeWorkbenchCommands(); int posts = 0;
+        using var http = new HttpClient(new Handler((_, _) => { posts++; throw new HttpRequestException("reply lost"); }));
+        using var client = new PlatformNativeWorkbenchClient(http);
+        var payload = new { runtime_instance_id = "game-1", recording_session_id = "recording-1" };
+        var result = await commands.RunAsync(client, connection, "recording.pause", payload, CancellationToken.None);
+        Assert.Equal("unconfirmed", result.Status);
+        string original = PlatformNativeWorkbenchCommands.RecordingContext("game-1", "recording-1");
+        var renewed = Connection(connection.Binding with { PairId = new string('4', 32) });
+        Assert.False(commands.CanSubmit(renewed.Binding.ConfigurationId, "recording.pause", original));
+        Assert.True(commands.CanSubmit(renewed.Binding.ConfigurationId, "recording.close", original));
+        Assert.True(commands.CanSubmit(renewed.Binding.ConfigurationId, "recording.start", original));
+        Assert.Equal("rejected", (await commands.RunAsync(client, renewed, "recording.pause", payload, CancellationToken.None)).Status);
+        Assert.Equal(1, posts); Assert.Single(commands.Unconfirmed);
+        // A fresh session may proceed; the server still requires the deliberate known-Closed Start.
+        Assert.True(commands.CanSubmit(renewed.Binding.ConfigurationId, "recording.pause",
+            PlatformNativeWorkbenchCommands.RecordingContext("game-1", "new-isolated-session")));
+        Assert.Single(commands.Unconfirmed);
+    }
+
 }
