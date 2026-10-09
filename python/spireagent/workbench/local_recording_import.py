@@ -366,8 +366,8 @@ class LocalRecordingImporter:
     def _legacy_native_request(self) -> dict[str, Any]:
         # Before opaque intents existed, only the canonical directory was
         # retained. Do not guess aliases or invent the original literal body.
-        request = self.operation.get("_native_agent_request")
-        if request is not None:
+        if "_native_agent_request" in self.operation:
+            request = self.operation["_native_agent_request"]
             if not isinstance(request, dict) or set(request) != {
                     "directory", "cohort", "relation_id"}:
                 raise ValueError

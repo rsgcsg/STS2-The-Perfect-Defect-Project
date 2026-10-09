@@ -319,6 +319,14 @@ def test_three_field_native_unknown_preserves_original_anchor_and_blocks_all_new
     assert store.manifest_ids() == identities and store.get_manifest(raw_id).producer == producer
     assert post("/api/local-recordings/import", {"candidate_id": candidate})[0] == 200
     assert settled(recovered)["status"] == "completed" and len(tool.calls) == 1
+    if not historical_missing_body:
+        # A corrupt retained literal body is not a historical absent body and
+        # must never fall back to guessing its canonical-directory request.
+        journal["_native_agent_request"] = None
+        importer.path.write_text(json.dumps(journal))
+        app.local_recording_import = LocalRecordingImporter(app.config, catalog)
+        assert app.local_recording_import.status()["status"] == "unavailable"
+        assert post(route, exact_request) == (409, {"error": "operation_file_invalid"})
 
 
 def test_native_import_old_intent_after_later_request_cannot_be_rebound_on_reopen(
