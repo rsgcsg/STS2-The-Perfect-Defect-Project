@@ -86,6 +86,8 @@ describe("sampled current carry, source/contract only", () => {
         catalog: f.catalog, catalog_materialized: true, publication_index: null });
       expect(ledger.accept(report).state_version).toBe(report.state_version);
     }
+    expect(() => ledger.accept({ ...shared.duplex_chain[2].messages[3].completion,
+      previous_consumption_id: ledger.consumptionId, state_version: 3, advanced: false })).toThrow("sampled_current_basis_required");
     const old = structuredClone(shared.manifest); old.input.history_mode = "full_reference"; old.input.attachment.delivery_mode = "full_reference";
     old.input.attachment.eager_scope = ["persistent", "interaction", "referents", "catalog"];
     const full = new AgentConsumptionLedger(old, "segment-1"), f = shared.frames.map_a;

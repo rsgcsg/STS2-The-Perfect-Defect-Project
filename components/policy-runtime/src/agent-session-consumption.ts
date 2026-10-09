@@ -227,7 +227,7 @@ export class AgentConsumptionLedger {
       // Runtime feeds promised occurrences serially; the source cursor is not inferred here.
     }
     if (this.manifest.input.history_mode === "sampled_current"
-      && (publication !== null || this.requiredGapPending)) throw new AgentSessionError("sampled_current_basis_required");
+      && (publication !== null || this.requiredGapPending || !advanced)) throw new AgentSessionError("sampled_current_basis_required");
     // No mutation before all report bindings, mode, ordering and version checks pass.
     if (advanced) {
       const previousOccurrence = this.currentOccurrence;
