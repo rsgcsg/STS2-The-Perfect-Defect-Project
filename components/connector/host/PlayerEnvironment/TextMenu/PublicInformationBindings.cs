@@ -60,6 +60,22 @@ internal sealed class PublicInformationBindings
         Missing(scope);
         return null;
     }
+
+    internal PlayerEnvironmentReferent? CreatureTooltipSubject(
+        Func<bool> nativeAvailable, Func<string> currentSubjectId)
+    {
+        try
+        {
+            if (!nativeAvailable()) return null;
+        }
+        catch (Exception)
+        {
+            // An unreadable source is not a known native-unavailable tooltip.
+            Missing("creature_tip_source_unreadable");
+            return null;
+        }
+        return Existing(currentSubjectId(), "creature_subject");
+    }
     private PlayerEnvironmentReferent? Declare(string id, string role, string? label,
         JsonObject properties, string? owner = null)
     {
@@ -187,6 +203,7 @@ internal sealed class PublicInformationBindings
     {
         if (slot < 0 || slot >= nativeSlots)
         { Missing("orb_slot_membership"); return null; }
+        if (!BindFrozenEmptyOrbPlayer(owner)) return null;
         var subject = Declare(id, "orb_slot", "Empty orb slot", new JsonObject
         {
             ["presentation_basis"] = "native_current_orb_ui",
@@ -194,6 +211,25 @@ internal sealed class PublicInformationBindings
         }, owner);
         if (subject != null) visible[id] = subject = subject with { Kind = "control" };
         return subject;
+    }
+
+    private bool BindFrozenEmptyOrbPlayer(string owner)
+    {
+        if (visible.TryGetValue(owner, out PlayerEnvironmentReferent? current))
+        {
+            if (current.State.Visible) return true;
+            Missing("empty_orb_owner");
+            return false;
+        }
+        // The native local empty-slot callback can exist before combat context.
+        // Only this capture's persistent player already supplies its exact alias.
+        if (Hud?["player"] is not JsonObject player || Text(player["entity_id"]) != owner)
+        {
+            Missing("empty_orb_owner");
+            return false;
+        }
+        return Declare(owner, "player", Text(player["character_name"]),
+            Copy(player, "entity_id", "character_id", "character_name")) != null;
     }
 
     internal PlayerEnvironmentReferent? Power(string id, string owner, string definition,

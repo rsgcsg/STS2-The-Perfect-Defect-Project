@@ -9,6 +9,116 @@ namespace STS2Connector;
 
 public sealed class PublicInformationBindingsTests
 {
+    [Fact]
+    public void NativeUnavailableCreatureTooltipDoesNotRequireAFrozenSubject()
+    {
+        var page = Page() with
+        {
+            Status = "settling", Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Interaction = Page().Interaction with
+            {
+                Content = new(new JsonObject { ["kind"] = "no_action" },
+                    new JsonObject { ["kind"] = "combat_transition", ["phase"] = "setup" })
+            }
+        };
+        var bindings = new PublicInformationBindings(page);
+        int subjectReads = 0;
+        // v0.111 Creature.HoverTips returns empty before IsInProgress, despite a
+        // visible current hitbox. Exercise the same production binding seam.
+        Assert.Null(bindings.CreatureTooltipSubject(() => false,
+            () => { subjectReads++; return "creature-not-in-setup-context"; }));
+        Assert.Equal(0, subjectReads);
+        Assert.True(bindings.Complete);
+        Assert.Empty(bindings.Page.Completeness.Missing);
+        Assert.Equal("settling", bindings.Page.Status);
+    }
+
+    [Fact]
+    public void UnreadableNativeCreatureTooltipCapabilityRemainsPartialWithoutSubjectLookup()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        int subjectReads = 0;
+        Assert.Null(bindings.CreatureTooltipSubject(
+            () => throw new InvalidOperationException("native capability unreadable"),
+            () => { subjectReads++; return "player"; }));
+        Assert.Equal(0, subjectReads);
+        Assert.Contains("public_information_binding_creature_tip_source_unreadable",
+            bindings.Page.Completeness.Missing);
+        Assert.False(bindings.Complete);
+        Assert.Equal("partial", bindings.Page.Completeness.Status);
+    }
+
+    [Fact]
+    public void AvailableNativeCreatureTooltipStillRequiresItsExactFrozenSubject()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var order = new List<string>();
+        Assert.Equal("enemy", bindings.CreatureTooltipSubject(
+            () => { order.Add("native capability"); return true; },
+            () => { order.Add("subject"); return "enemy"; })!.ReferentId);
+        Assert.Equal(new[] { "native capability", "subject" }, order);
+        Assert.True(bindings.Complete);
+        Assert.Null(bindings.CreatureTooltipSubject(() => true, () => "foreign-creature"));
+        Assert.Contains("public_information_binding_creature_subject", bindings.Page.Completeness.Missing);
+        Assert.False(bindings.Complete);
+    }
+
+    [Fact]
+    public void NativeLocalEmptyOrbKeepsItsFrozenHudPlayerDuringCombatSetup()
+    {
+        var page = Page() with
+        {
+            Status = "settling", Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Interaction = Page().Interaction with
+            {
+                Content = new(new JsonObject { ["kind"] = "no_action" },
+                    new JsonObject { ["kind"] = "combat_transition", ["phase"] = "setup" })
+            }
+        };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        PlayerEnvironmentReferent slot = bindings.EmptyOrb("ui-empty-slot", "player", 0, 3)!;
+        Assert.NotNull(slot);
+        Assert.Equal("player", slot.Properties!["owner_referent_id"]!.GetValue<string>());
+        PlayerEnvironmentReferent owner = bindings.Page.Referents.Single(value => value.ReferentId == "player");
+        Assert.Equal("Defect", owner.Label);
+        Assert.Equal("player", owner.Role);
+        Assert.Equal(new[] { "character_name", "entity_id" },
+            ((JsonObject)owner.Properties!).Select(pair => pair.Key).Order().ToArray());
+        Assert.True(bindings.Complete);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        // The new subject is not a substitute for absent active combat facts.
+        Assert.Null(bindings.Power("power", "player", "STRENGTH", 2, true));
+        Assert.Null(bindings.Intent("intent", "player", 0, 1, true));
+        Assert.False(bindings.Complete);
+    }
+
+    [Theory]
+    [InlineData("foreign")]
+    [InlineData("missing-hud")]
+    [InlineData("wrong-id")]
+    [InlineData("missing-name")]
+    [InlineData("invisible-owner")]
+    public void EmptyOrbCannotInventAnOwnerFromUnrelatedOrMissingHud(string missing)
+    {
+        var page = Page() with { Referents = Array.Empty<PlayerEnvironmentReferent>() };
+        string owner = missing == "foreign" ? "foreign-creature" : "player";
+        if (missing == "missing-hud") page = page with { Persistent = null };
+        else if (missing == "invisible-owner")
+            page = page with { Referents = new[] { Ref("player", "player", "Defect") with
+                { State = new(false, false, false, false, "unavailable") } } };
+        else if (missing is "wrong-id" or "missing-name")
+        {
+            JsonObject hud = (JsonObject)page.Persistent!.Content.DeepClone();
+            if (missing == "wrong-id") hud["player"]!["entity_id"] = "other-player";
+            else hud["player"]!.AsObject().Remove("character_name");
+            page = page with { Persistent = page.Persistent with { Content = hud } };
+        }
+        var bindings = new PublicInformationBindings(page);
+        Assert.Null(bindings.EmptyOrb("ui-empty-slot", owner, 0, 3));
+        Assert.False(bindings.Complete);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "ui-empty-slot");
+    }
     private static PlayerEnvironmentReferent Ref(string id, string role, string? label) =>
         new(id, role, "entity", label, new(true, true, false, false, "native_visible_fact"), null, null);
 

@@ -971,7 +971,12 @@ internal static class NativeTextMenuInformation
                             evokeVisible, evokeVisible ? evoke!.Text : null);
                     }
                     else
+                    {
+                        // NOrb's empty-slot focus callback is local-only, even
+                        // when an otherwise visible remote placeholder exists.
+                        if (!manager.IsLocal) continue;
                         subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
+                    }
                     AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
                         subject, owner, bindings.OwnerLabel(owner!), selectorOwner: selectorOwner);
                 }
@@ -1116,12 +1121,57 @@ internal static class NativeTextMenuInformation
             if (!ConnectorMod.IsNodeVisible(creature) || creature.Hitbox.MouseFilter == Control.MouseFilterEnum.Ignore
                 || !ConnectorMod.IsNodeVisible(creature.Hitbox)) continue;
             AddSignalTipLeaf(entities, leaves, creature.Hitbox, "creature_tips", Control.SignalName.FocusEntered,
-                bindings.Existing(entities.GetId(creature.Entity, "creature"), "creature_subject"), selectorOwner: selectorOwner);
+                bindings.CreatureTooltipSubject(
+                    () => CreatureTooltipAvailable(room, creature, selectorOwner),
+                    () => entities.GetId(creature.Entity, "creature")),
+                selectorOwner: selectorOwner,
+                exactSource: () => CreatureTooltipSourceCurrent(room, creature, selectorOwner),
+                entryAvailable: () => CreatureTooltipAvailable(room, creature, selectorOwner));
         }
         foreach (NStarCounter counter in VisibleNodes<NStarCounter>(room))
             AddSignalTipLeaf(entities, leaves, counter, "resource_tips", Control.SignalName.MouseEntered,
                 bindings.PublicControl(entities.GetId(counter, "resource_control"), "resource", "Stars",
                     NativeLogicalPresentation.ResourceFacts(counter, page.Interaction.Content.Context)), selectorOwner: selectorOwner);
+    }
+
+    private static bool CreatureTooltipAvailable(
+        NCombatRoom room, NCreature creature, NCardGridSelectionScreen? selectorOwner)
+    {
+        if (!CreatureTooltipSourceCurrent(room, creature, selectorOwner)) return false;
+        bool permittedPeek = selectorOwner != null && NativeLogicalGridState.ExactOwner(selectorOwner)
+            && selectorOwner.GetNodeOrNull<NPeekButton>("%PeekButton")?.IsPeeking == true;
+        if (NOverlayStack.Instance?.Peek() != null && !permittedPeek
+            || NMapScreen.Instance?.IsOpen == true || NHoverTipSet.shouldBlockHoverTips)
+            return false;
+        if (!ConnectorMod.IsNodeVisible(creature) || !ConnectorMod.IsNodeVisible(creature.Hitbox)
+            || creature.Hitbox.MouseFilter == Control.MouseFilterEnum.Ignore
+            || NTargetManager.Instance.IsInSelection || room.Ui.Hand.InCardPlay)
+            return false;
+        // This game-owned getter is empty before combat is in progress. Do not
+        // manufacture a required subject for a tooltip its callback cannot show.
+        return creature.Entity.HoverTips.Any();
+    }
+
+    private static bool CreatureTooltipSourceCurrent(
+        NCombatRoom room, NCreature creature, NCardGridSelectionScreen? selectorOwner)
+    {
+        if (!ReferenceEquals(NCombatRoom.Instance, room) || !ConnectorMod.IsNodeVisible(room)
+            || !ConnectorMod.IsLiveNode(creature) || !ConnectorMod.IsLiveNode(creature.Hitbox)
+            || NCapstoneContainer.Instance is { InUse: true }
+            || NMapScreen.Instance?.IsOpen == true)
+            return false;
+        if (selectorOwner != null ? !NativeLogicalGridState.ExactOwner(selectorOwner)
+            : NOverlayStack.Instance?.Peek() != null)
+            return false;
+        var owner = NativeCreatureTipOwner.Resolve(new[] { creature },
+            room.CreatureNodes.ToArray(), room.RemovingCreatureNodes.ToArray());
+        if (owner.Scope == NativeCreatureTipOwnerScope.Retired) return false;
+        if (owner.Scope != NativeCreatureTipOwnerScope.Current
+            || !ReferenceEquals(room.GetCreatureNode(creature.Entity), creature))
+            throw new InvalidOperationException("The exact creature tooltip owner is unresolved.");
+        // Entry can become unavailable while the retained source still owns its
+        // existing tooltip. Unfocus/return must not require entry capability.
+        return true;
     }
 
     private static T? VisibleAncestor<T>(Node source) where T : Control
@@ -1156,14 +1206,34 @@ internal static class NativeTextMenuInformation
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
         Control source, string group, StringName signal, PlayerEnvironmentReferent? subject,
         string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false,
-        NCardGridSelectionScreen? selectorOwner = null, Func<bool>? exactSource = null)
+        NCardGridSelectionScreen? selectorOwner = null, Func<bool>? exactSource = null,
+        Func<bool>? entryAvailable = null)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
         if (subject == null) return; // Binding owner marked the required catalog partial.
         string id = entities.GetId(source, "tip_source");
         leaves.Add(PublicInformationBindings.Leaf($"show_{group}:{id}", group, $"show_{group}", subject,
-            () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner, exactSource), owner, ownerLabel));
+            () => EnterAvailableTip(entryAvailable,
+                () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner, exactSource)),
+            owner, ownerLabel));
+    }
+
+    internal static NativeInputResult EnterAvailableTip(
+        Func<bool>? entryAvailable, Func<NativeInputResult> enter)
+    {
+        try
+        {
+            if (entryAvailable != null && !entryAvailable())
+                return NativeInputResult.Rejected("native_tip_entry_unavailable",
+                    "The original native tooltip entry capability is no longer available.");
+        }
+        catch (Exception)
+        {
+            return NativeInputResult.Rejected("native_tip_entry_unreadable",
+                "The native tooltip entry capability could not be read before input.");
+        }
+        return enter();
     }
 
     private static NativeInputResult OpenSignalTip(
@@ -1802,7 +1872,8 @@ internal static class NativeTextMenuInformation
 
     internal static bool IsTipKind(string kind) =>
         kind is "native_tip" or "relic_tips" or "card_tips"
-            or "potion_tips" or "power_tips" or "intent_tips" or "orb_tips" or "topbar_tips";
+            or "potion_tips" or "power_tips" or "intent_tips" or "orb_tips" or "topbar_tips"
+            or "creature_tips" or "resource_tips";
 
     private static bool IsExactOwner(object screen, string kind) =>
         screen switch
