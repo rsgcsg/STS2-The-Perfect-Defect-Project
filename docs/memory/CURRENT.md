@@ -31,20 +31,23 @@ watermark case. Ordered training bridge `81f56b96` and recording entry
 `700af68f` are integrated. Locked Evidence rc25 at `8d9745ee`, its complete
 installed closure and the shipped combination pin are verified. Combined exact-game
 checks passed before the scoped real capture below; Human origin remains separate.
-Phase2 shared Workbench concurrency/forms `4672e1fe` passed independent source/test
-review and remain unmerged during the first model loop. Direct product control
-consolidation is subsequent work on that branch.
+Phase2 shared Workbench concurrency/forms `4672e1fe` and direct product control
+consolidation `94c8f912` are now integrated by normal merge `bc2bbc3a` after
+independent source/compile review. Current-dependency Python293 and pure Node243
+checks passed. New Live UI rc9/Game Mod rc30 build/install/runtime qualification
+remains separate from the installed rc29 evidence below.
 
 Public health/power repair `a5dced99` is integrated. The prospective L34 public
 combat event/content profile, special mechanisms, L64 and the full matrix remain
 active. Current c060 records keep their original meaning; no callback-count or
 private-refresh history is promoted into a new fair-player profile.
-Current versions/BOM are checked; package promotion and full runtime gates remain
-pending. Runtime rc24 installed-package checks `2c40d6d8` are integrated, with
+The E6 candidate requires its own version/BOM/build checks before installation;
+package promotion and full runtime gates remain pending. Runtime rc24
+installed-package checks `2c40d6d8` are integrated, with
 319 passing tests and two explicitly skipped numerical tests. Its clean archive
 is sealed, and the primary offline pin matches a verified isolated install;
-existing-user installation and real model execution remain separate. One native
-build/train slot and one game/install owner remain.
+the bounded existing-selection model run below adds actual execution evidence.
+One native build/train slot and one game/install owner remain.
 
 ## Installed evidence and next execution
 
@@ -69,8 +72,23 @@ post-exit owner locks are released. This is train-only engineering evidence, wit
 no Human, held-out quality, Model/game, all-family, 200/500 or whole-game qualification.
 The separate lock-cleanup correction does not rewrite or repeat this attempt.
 
-Immediate path: install the sealed Runtime → register/load the actual exported model →
-Model/Runtime native canary → minimum Human check → larger collection/training.
+Two separately audited actual Model attempts used that same model and rc24 Runtime.
+The first installed/registered/loaded it and scored complete C16 in Shadow, with
+zero Model submissions. Human cancelled an offered call and correctly left Agent
+state uncertain; the same-session OneStep was not attempted. Its failed canary and
+private Host-driver exit timeout remain failures, not repaired historical evidence.
+The second reused the existing installation/selection in a fresh cold session:
+complete C16 scoring, one original `return_native_information` delivery, known
+Human state, released control and sealed Stop passed independent review. Delivery
+was `delivered`; execution/effect/cancel remained `unknown`, with no observed
+successor. Node, Workbench, game and private driver exited0; the numerical child
+was terminated by the Runtime's existing SIGKILL shutdown. No effect/Commit,
+same-W resume, Human, whole-game or model-quality claim follows. See the
+[bounded delivery report](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md).
+
+Immediate path: qualify the integrated E6 product entry → minimum genuine Human
+record/learn check → measured larger collection/training. Product same-W recovery
+is still required; library opaque-state methods are not yet a Workbench/HTTP use case.
 The reviewed indexed-corpus packet `358fcda5` stays unmerged through this first
 flat-model loop to preserve its inference code identity. Its source/test acceptance
 does not establish 10k capacity; a measured 100–300-choice pilot remains necessary.
