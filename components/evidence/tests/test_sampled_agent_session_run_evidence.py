@@ -307,10 +307,26 @@ class OwnedStaleEvidenceFixture:
     def close(self) -> None:
         self.base.doCleanups()
 
+    def initial_action_id(self, action_id: str) -> None:
+        """Rebuild only this newly generated synthetic initial Current/C."""
+        frame = self.base.shared["frames"]["map_a"]
+        frame["catalog"][0]["action_id"] = action_id
+        frame["observation"]["catalog"]["digest"] = _catalog_digest(frame["catalog"])
+        raw = json.dumps(frame["observation"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        frame["observation_utf8"] = raw.decode("utf-8")
+        frame["capture"].update(sha256=sha(raw), byte_count=len(raw))
+        self.f.events = self.f.events[:2]
+        for file in self.directory.glob("agent-sample-*.json"):
+            file.unlink()  # Owned temporary synthetic files, never an original run.
+        self.base.add_sample("map_a", 1)
+        self.f.events[2]["payload"]["input"]["operational_outcome"] = None
+
     def sample(self, name: str = "inspect_b") -> None:
         previous = self.basis
         self.version += 1
         frame = copy.deepcopy(self.owned["frames"][name])
+        frame["observation"]["session"]["runtime_instance_id"] = self.binding["runtime_instance_id"]
+        frame["capture"]["session"]["runtime_instance_id"] = self.binding["runtime_instance_id"]
         key = name + "-" + str(self.version)
         body = frame["observation"]
         body.update(snapshot_id=key, revision=self.version)
@@ -366,7 +382,7 @@ class OwnedStaleEvidenceFixture:
                    "snapshot_id": frame["observation"]["snapshot_id"],
                    "action_id": frame["catalog"][0]["action_id"],
                    "catalog_digest": frame["observation"]["catalog"]["digest"],
-                   "run_id": self.f.run["run_id"], "runtime_instance_id": "runtime-fixture",
+                   "run_id": self.f.run["run_id"], "runtime_instance_id": self.binding["runtime_instance_id"],
                    "dispatch_binding": copy.deepcopy(self.binding)}
         self.f.add("native_submission_requested", **attempt)
         return attempt
@@ -374,6 +390,7 @@ class OwnedStaleEvidenceFixture:
     def terminal(self, attempt: dict, *, delivery: str = "not_started", defer: bool = False,
                  reason: str | None = "stale_snapshot_or_binding") -> dict:
         result = copy.deepcopy(self.owned["result"])
+        result["attribution"].update(self.binding)
         result.update(request_id=attempt["request_id"], snapshot_id=attempt["snapshot_id"],
                       delivery=delivery, reason=reason)
         if delivery in {"delivered", "partially_delivered", "unknown"}:
@@ -727,6 +744,120 @@ class OwnedStaleAgentSessionEvidenceTests(unittest.TestCase):
                 reason="stale_snapshot_or_binding")
         f.stop(); summary = self.assert_fixture(f).value.terminal_summary
         self.assertEqual((summary["terminal_result_count"], summary["known_stale_rejections"]), (0, 0))
+
+    def test_notification_retires_only_after_advanced_ack_and_matching_completion(self) -> None:
+        f = self.fresh(); f.terminal(f.submission(), defer=True)
+        old_outcome = copy.deepcopy(f.outcome)
+        f.sample(); f.readiness(); f.stop()
+        self.assert_fixture(f)
+        # Re-offering the old original after the complete fresh ACK/Next is not
+        # a new refusal and cannot reopen its retired operational notification.
+        next_event = [e for e in f.f.events if e["kind"] == "agent_sample_next_requested"][-1]
+        next_event["payload"]["input"]["operational_outcome"] = old_outcome
+        f.f.write(); self.assert_fixture(f, False)
+        f = self.fresh(); f.terminal(f.submission(), defer=True); f.sample(); f.stop()
+        # A new recorded ACK with no child completion leaves the offer uncertain.
+        f.f.events = [e for e in f.f.events if not (
+            e["kind"] in {"agent_sample_next_completed", "agent_directive"}
+            and e["payload"]["output"]["state_version"] == 2)]
+        f.f.write(); self.assert_fixture(f, False)
+        f.f.events[-1]["payload"]["agent_state"] = "uncertain"
+        f.f.write(); self.assert_fixture(f)  # No private correction/known-W claim.
+
+    def test_result_without_deferred_marker_cannot_authorize_another_next(self) -> None:
+        f = self.fixture; f.terminal(f.submission(), defer=True); f.readiness(); f.stop()
+        f.f.events = [e for e in f.f.events if e["kind"] != "native_stale_decision_deferred"]
+        for event in f.f.events:
+            if event["kind"] == "agent_sample_next_requested":
+                event["payload"]["input"]["operational_outcome"] = None
+        f.f.write(); self.check(False)
+
+    def test_original_stale_predicate_requires_null_action_empty_stages_and_exact_reason(self) -> None:
+        for mutation in [lambda r: r.update(action={
+            "action_id": "map_a-action", "kind": "native_input", "verb": "inspect", "label": "inspect",
+            "subject_referent_id": None, "arguments": [], "effect_domain": "native"}),
+                         lambda r: r.update(stages=[{"stage": "attempted", "delivery": "not_started", "evidence": "fixture"}]),
+                         lambda r: r.update(reason="not_a_stale_refusal")]:
+            f = self.fresh(); f.terminal(f.submission()); f.stop()
+            mutation(f.f.event("native_result")["payload"]["result"])
+            f.f.write(); summary = self.assert_fixture(f).value.terminal_summary
+            self.assertEqual((summary["known_stale_rejections"], summary["consecutive_known_stale_rejections"]), (0, 0))
+            event = copy.deepcopy(f.owned["deferred"])
+            event.update(session_id="session-fixture", request_id="request-1", consumption_id="consume-1")
+            f.f.events.insert(-3, {"schema": "sts2.policy-runtime/agent-session-event-1", "sequence": 0,
+                                  "recorded_at": f.f.events[0]["recorded_at"], "kind": "native_stale_decision_deferred",
+                                  "payload": event})
+            f.f.write(); self.assert_fixture(f, False)
+
+    def test_original_action_handle_65536_bytes_survives_full_outcome_and_fresh_ack(self) -> None:
+        f = self.fixture
+        handle = "h" * 65536
+        f.initial_action_id(handle)
+        attempt = f.submission()
+        self.assertEqual(attempt["action_id"], handle)
+        f.terminal(attempt, defer=True); f.readiness()
+        self.assertEqual(f.outcome["action_id"], handle)
+        f.sample(); f.terminal(f.submission(), delivery="delivered"); f.stop()
+        summary = self.check().value.terminal_summary
+        self.assertEqual((summary["known_stale_rejections"], summary["known_delivered"]), (1, 1))
+        event = next(e for e in f.f.events if e["kind"] == "agent_sample_next_requested"
+                     and e["payload"]["input"]["operational_outcome"] is not None)
+        event["payload"]["input"]["operational_outcome"]["action_id"] = "h" * 65537
+        f.f.write(); self.check(False)
+
+    def test_recorded_readiness_unit_revision_and_metadata_falsifiers(self) -> None:
+        mutations = [lambda w: w.update(revision=2), lambda w: w.update(revision=0),
+                     lambda w: w["owner_occurrence"].update(owner_id="other-owner"),
+                     lambda w: w.update(catalog_digest="0" * 64),
+                     lambda w: w.update(included=["catalog"], missing=["persistent", "interaction", "referents"])]
+        for mutation in mutations:
+            f = self.fresh(); f.terminal(f.submission(), defer=True); f.readiness(); f.stop()
+            witness = [e["payload"]["witness"] for e in f.f.events if e["kind"] == "native_acquisition_registered"][-1]
+            mutation(witness); f.f.write(); self.assert_fixture(f, False)
+        f = self.fresh(); f.terminal(f.submission(), defer=True); f.readiness(); f.stop()
+        witness = [e["payload"]["witness"] for e in f.f.events if e["kind"] == "native_acquisition_registered"][-1]
+        witness["capture"].update(capture_id="new-mechanical-capture", scope_id="new-mechanical-scope")
+        f.f.write(); self.assert_fixture(f)  # Capture/scope do not retire the notification.
+
+    def test_opted_pending_preserves_long_original_action_but_legacy_limit_stays(self) -> None:
+        f = self.fixture; handle = "h" * 65536
+        f.initial_action_id(handle)
+        attempt = f.submission(); original = self.original(attempt)
+        f.f.add("native_request_pending", original=copy.deepcopy(original))
+        f.f.add("mode_changed", mode="human", autonomy_budget=f.f.budget, controller="released")
+        result = copy.deepcopy(f.owned["result"])
+        result.update(request_id=attempt["request_id"], snapshot_id=attempt["snapshot_id"])
+        f.f.add("native_request_reconciled", original=copy.deepcopy(original), resolution="resolved", result=result)
+        f.stop(); self.assertEqual(self.check().value.terminal_summary["known_stale_rejections"], 1)
+        f.f.event("native_request_pending")["payload"]["original"]["action_id"] = "h" * 65537
+        f.f.write(); self.check(False)
+        # An unchanged historical carrier still rejects >256; opt-in is additive.
+        from sts2_platform_evidence.agent_run_evidence import AgentRunEvidenceError
+        from sts2_platform_evidence.agent_session_run_evidence import _pending
+        with self.assertRaises(AgentRunEvidenceError):
+            _pending({key: value for key, value in original.items() if key != "dispatch_binding"},
+                     f.f.run["run_id"], "session-fixture", {attempt["request_id"]: {
+                         **attempt, "session_id": "session-fixture", "recovery_epoch": 0}})
+
+    def test_dispatch_three_ids_match_sdk_utf16_boundaries_in_complete_trace(self) -> None:
+        for text in ("c" * 128, "界" * 128, "🐉" * 64):
+            with self.subTest(text=text[:4]):
+                f = self.fresh(); f.binding.update(client_session_id=text, controller_lease_id=text)
+                f.terminal(f.submission(), defer=True); f.readiness()
+                f.sample(); f.terminal(f.submission(), delivery="delivered"); f.stop()
+                self.assert_fixture(f)
+                attempt = f.f.event("native_submission_requested")["payload"]
+                attempt["dispatch_binding"]["client_session_id"] = text + "x"
+                f.f.write(); self.assert_fixture(f, False)
+        f = self.fresh(); runtime = "r" * 128
+        f.binding["runtime_instance_id"] = runtime
+        frame = f.base.shared["frames"]["map_a"]
+        frame["observation"]["session"]["runtime_instance_id"] = runtime
+        frame["capture"]["session"]["runtime_instance_id"] = runtime
+        f.f.events[0]["payload"]["environment"]["runtime_instance_id"] = runtime
+        f.initial_action_id("map_a-action")
+        f.terminal(f.submission(), defer=True); f.readiness(); f.sample()
+        f.terminal(f.submission(), delivery="delivered"); f.stop(); self.assert_fixture(f)
 
 
 if __name__ == "__main__":
