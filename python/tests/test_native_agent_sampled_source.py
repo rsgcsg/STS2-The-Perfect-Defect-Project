@@ -948,13 +948,23 @@ def owned_stale_original(monkeypatch):
         helper.close()
 
 
-def test_typed_owned_stale_context_and_fresh_N_share_original_known_prefix(owned_stale_original):
+@pytest.mark.parametrize("duplicate_delivery", [None, "not_started", "delivered"])
+def test_typed_owned_stale_context_and_fresh_N_share_original_known_prefix(
+    owned_stale_original, duplicate_delivery
+):
     helper, relation, _, _ = owned_stale_original
     refused = helper.terminal(helper.submission(), defer=True)
     helper.readiness()
     helper.sample()
     helper.terminal(helper.submission(), delivery="delivered")
     helper.stop()
+    if duplicate_delivery is not None:
+        position = next(i for i, event in enumerate(helper.f.events)
+                        if event["kind"] == "native_result"
+                        and event["payload"]["result"]["delivery"] == duplicate_delivery)
+        helper.f.events.insert(position + 1, copy.deepcopy(helper.f.events[position]))
+        helper.f.write()
+    original_bytes = {path.name: path.read_bytes() for path in helper.directory.iterdir()}
     verified = sources._verified(helper.directory)
     summary = verified.terminal_summary
     assert {key: summary[key] for key in (
@@ -981,6 +991,78 @@ def test_typed_owned_stale_context_and_fresh_N_share_original_known_prefix(owned
     assert report["counts"]["eligible_unique_N"] == 1
     assert report["counts"]["readiness_exclusions"] == 1 and report["censored_tail"] is None
     assert report["counts"]["real_native_samples"] == 0
+    for step in (first, later):
+        target = step["evidence"]["target"]
+        carriers = [event for event in helper.f.events if event["kind"] == "native_result"
+                    and event["payload"]["result"]["request_id"]
+                    == target["original_submission"]["request_id"]]
+        assert target["result_sequence"] == min(event["sequence"] for event in carriers)
+        assert all(event["payload"]["result"] == target["original_result"] for event in carriers)
+    assert original_bytes == {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+
+
+@pytest.mark.parametrize("duplicate_direct", [False, True])
+def test_typed_reconciled_delivery_keeps_one_N_and_earliest_original_carrier(
+    owned_stale_original, duplicate_direct
+):
+    helper, relation, _, pending_original = owned_stale_original
+    attempt = helper.submission()
+    original = pending_original(attempt)
+    helper.f.add("native_request_pending", original=copy.deepcopy(original))
+    helper.f.add("mode_changed", mode="human", autonomy_budget=helper.f.budget,
+                 controller="released")
+    result = copy.deepcopy(helper.owned["result"])
+    result.update(request_id=attempt["request_id"], snapshot_id=attempt["snapshot_id"],
+                  delivery="delivered", execution="native_accepted", effect="pending",
+                  cancel="not_requested", reason=None,
+                  action=copy.deepcopy(helper.base.shared["frames"][helper.frame_name]["catalog"][0]))
+    helper.f.add("native_request_reconciled", original=copy.deepcopy(original),
+                 resolution="resolved", result=result)
+    if duplicate_direct:
+        helper.f.add("native_result", result=copy.deepcopy(result))
+    helper.stop()
+    original_bytes = {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+    verified = sources._verified(helper.directory)
+    assert verified.terminal_summary["terminal_result_count"] == 1
+    assert verified.terminal_summary["known_delivered"] == 1
+    runs, report = sources._projection(verified, "a" * 64, FIXTURE_COHORT, relation)
+    assert report["counts"]["known_context_samples"] == report["counts"]["eligible_unique_N"] == 1
+    assert report["censored_tail"] is None
+    step = runs[0]["steps"][0]
+    assert step["chosen_action_id"] == result["action"]["action_id"]
+    assert step["evidence"]["target"]["original_result"] == result
+    earliest = next(event for event in helper.f.events
+                    if event["kind"] == "native_request_reconciled")
+    assert step["evidence"]["target"]["result_sequence"] == earliest["sequence"]
+    assert original_bytes == {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+
+
+def test_conflicting_terminal_body_fails_owner_and_defensive_source_selector(owned_stale_original):
+    helper, _, _, _ = owned_stale_original
+    helper.terminal(helper.submission(), defer=True)
+    helper.stop()
+    position = next(i for i, event in enumerate(helper.f.events)
+                    if event["kind"] == "native_result")
+    duplicate = copy.deepcopy(helper.f.events[position])
+    duplicate["payload"]["result"]["effect"] = "not_observed"
+    helper.f.events.insert(position + 1, duplicate)
+    helper.f.write()
+    assert not sources.evidence_owner.verify_agent_session_run_evidence(helper.directory).passed
+    with pytest.raises(BoundaryError, match="native_agent_bundle_verification_failed"):
+        sources._verified(helper.directory)
+    carriers = [event for event in helper.f.events if event["kind"] == "native_result"]
+    with pytest.raises(BoundaryError, match="original_terminal_result_changed"):
+        sources._terminal_result(carriers, True)
+
+
+def test_terminal_selector_does_not_change_legacy_duplicate_cardinality(owned_stale_original):
+    helper, _, _, _ = owned_stale_original
+    helper.terminal(helper.submission(), defer=True)
+    helper.stop()
+    event = next(event for event in helper.f.events if event["kind"] == "native_result")
+    assert sources._terminal_result([event], False) is event
+    assert sources._terminal_result([event, copy.deepcopy(event)], False) is None
+    assert sources._terminal_result([], True) is None
 
 
 @pytest.mark.parametrize("binding", ["different_valid_policy", "legacy_relation"])
@@ -1006,9 +1088,11 @@ def test_new_typed_verifier_does_not_open_source_producer_policy_admission(
     assert not store.manifest_ids(), "typed grammar acceptance cannot bypass the closed producer"
 
 
-@pytest.mark.parametrize("delivery", ["unknown", "partially_delivered", "pending"])
+@pytest.mark.parametrize("delivery,duplicate_terminal", [
+    ("unknown", False), ("unknown", True),
+    ("partially_delivered", False), ("partially_delivered", True), ("pending", False)])
 def test_typed_owned_policy_keeps_uncertain_or_pending_original_tail_censored(
-    owned_stale_original, delivery
+    owned_stale_original, delivery, duplicate_terminal
 ):
     helper, relation, _, pending_original = owned_stale_original
     attempt = helper.submission()
@@ -1017,7 +1101,9 @@ def test_typed_owned_policy_keeps_uncertain_or_pending_original_tail_censored(
         helper.f.add("native_request_pending", original=copy.deepcopy(pending))
         helper.stop(pending=pending)
     else:
-        helper.terminal(attempt, delivery=delivery)
+        result = helper.terminal(attempt, delivery=delivery)
+        if duplicate_terminal:
+            helper.f.add("native_result", result=copy.deepcopy(result))
         helper.stop()
     verified = sources._verified(helper.directory)
     runs, report = sources._projection(verified, "a" * 64, FIXTURE_COHORT, relation)
@@ -1026,6 +1112,9 @@ def test_typed_owned_policy_keeps_uncertain_or_pending_original_tail_censored(
     assert report["censored_tail"]["reason"] == (
         "original_delivery_outstanding_tail" if delivery == "pending"
         else "original_delivery_uncertain_tail")
+    if delivery != "pending":
+        first_result = next(event for event in helper.f.events if event["kind"] == "native_result")
+        assert report["censored_tail"]["sequence"] == first_result["sequence"]
 
 
 @pytest.mark.parametrize("name", ["fixture", "TEACHER", "MAP_TEACHER", "FOCUS_TEACHER"])

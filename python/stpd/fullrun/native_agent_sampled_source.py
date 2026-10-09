@@ -410,11 +410,25 @@ def _known_join(
     }, "known_sample"
 
 
+def _terminal_result(
+    outcomes: list[dict[str, Any]], deduplicate_terminals: bool
+) -> dict[str, Any] | None:
+    """Select an original Result, preserving the owning verifier's opt-in law."""
+    if not deduplicate_terminals or not outcomes:
+        return _unique(outcomes)
+    first = min(outcomes, key=lambda event: event["sequence"])
+    result = first["payload"]["result"]
+    if any(not _same(event["payload"]["result"], result) for event in outcomes):
+        _fail("original_terminal_result_changed")
+    return first
+
+
 def _target(
     join: dict[str, Any],
     actions: list[dict[str, Any]],
     kinds: dict[str, list[dict[str, Any]]],
     terminal: bool,
+    deduplicate_terminals: bool = False,
 ) -> tuple[str | None, str, dict[str, Any], int | None]:
     directive_event = join["directive"]
     directive = directive_event["payload"]["output"]["directive"]
@@ -464,7 +478,7 @@ def _target(
         if e["payload"]["result"] is not None
         and e["payload"]["original"]["request_id"] == attempt["request_id"]
     )
-    outcome = _unique(outcomes)
+    outcome = _terminal_result(outcomes, deduplicate_terminals)
     evidence.update(
         submission_sequence=submission["sequence"],
         original_submission=attempt,
@@ -652,7 +666,9 @@ def _projection(
                         else:
                             terminal = observe_ready_summary(observation).agent_task_complete
                             label, target_reason, target_evidence, target_cut = _target(
-                                join, actions, kinds, terminal
+                                join, actions, kinds, terminal,
+                                deduplicate_terminals="execution_policy"
+                                in producer["agent_manifest"],
                             )
                             evidence = {
                                 **row["evidence"],

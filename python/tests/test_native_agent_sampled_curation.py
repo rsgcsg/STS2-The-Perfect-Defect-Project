@@ -31,8 +31,9 @@ SOURCE3 = ROOT / "components/evidence/tests/fixtures/source_session_v3/bundle"
 RECORDER = Producer("fixture://original-Source3-production-path", "e" * 40, "a" * 64)
 
 
+@pytest.mark.parametrize("duplicate_delivery", [None, "not_started", "delivered"])
 def test_owned_stale_synthetic_prefix_replays_and_reserves_every_original_offer(
-    tmp_path, owned_stale_original
+    tmp_path, owned_stale_original, duplicate_delivery
 ):
     """Source-local owning Evidence + private synthetic tuple, never production admission."""
     helper, relation, _, _ = owned_stale_original
@@ -41,6 +42,12 @@ def test_owned_stale_synthetic_prefix_replays_and_reserves_every_original_offer(
     helper.sample()
     helper.terminal(helper.submission(), delivery="delivered")
     helper.stop()
+    if duplicate_delivery is not None:
+        position = next(i for i, event in enumerate(helper.f.events)
+                        if event["kind"] == "native_result"
+                        and event["payload"]["result"]["delivery"] == duplicate_delivery)
+        helper.f.events.insert(position + 1, copy.deepcopy(helper.f.events[position]))
+        helper.f.write()
     original_bytes = {path.name: path.read_bytes() for path in helper.directory.iterdir()}
     store, owner = setup_store(tmp_path)
     raw = direct.publish_native_agent_sampled_raw(
