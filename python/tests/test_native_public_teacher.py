@@ -207,9 +207,22 @@ def test_already_focused_current_target_confirms_without_private_focus_history()
 
 
 @pytest.mark.parametrize("owner_focus", [None, "other-enemy", "foreign", 1])
-def test_current_typed_focus_and_confirm_do_not_depend_on_occurrence_or_private_focus(owner_focus):
-    teacher = NativePublicTeacher(browse=False, focus_target_id="other-enemy")
+@pytest.mark.parametrize("pending", [None, "enemy"])
+def test_current_typed_focus_ignores_occurrence_with_no_or_matching_pending(owner_focus, pending):
+    teacher = NativePublicTeacher(browse=False, focus_target_id=pending)
     view, actions = targeting_observation(owner_focus=owner_focus)
+    assert teacher.decide(view, actions).action_id == "confirm-current"
+
+
+def test_pending_different_focus_waits_for_requested_arrival_before_confirm():
+    teacher = NativePublicTeacher(browse=False, focus_target_id="other-enemy")
+    view, actions = targeting_observation()
+    choice = teacher.decide(view, actions)
+    assert choice.directive == "await" and choice.reason == "await_public_target_focus"
+    assert choice.action_id is None and teacher.focus_target_id == "other-enemy"
+    view["interaction"]["content"]["surface"]["focused_target_referent_id"] = "other-enemy"
+    actions[1]["subject_referent_id"] = "other-enemy"
+    view["catalog"]["digest"] = native_catalog_digest(actions)
     assert teacher.decide(view, actions).action_id == "confirm-current"
 
 
@@ -230,6 +243,7 @@ def test_unfocused_target_uses_original_focus_then_current_arrival_confirms():
     lambda o: o["interaction"]["content"]["surface"].update(kind="other"),
     lambda o: o["interaction"]["content"]["surface"].update(stage="card_confirm"),
     lambda o: o["referents"][0]["state"].update(visible=False),
+    lambda o: o["referents"][0]["state"].update(enabled=False),
     lambda o: o.update(status="settling"),
 ])
 def test_unknown_unready_foreign_or_noncanonical_focus_never_confirms(change):

@@ -265,10 +265,11 @@ class NativePublicTeacher:
                     return self._stop("native_card_targeting_facts_unavailable")
                 focused = surface.get("focused_target_referent_id")
                 confirm = find("confirm_target", focused) if isinstance(focused, str) else None
-                if isinstance(focused, str) and visible(focused) and confirm is not None:
+                if (isinstance(focused, str) and visible(focused) and confirm is not None
+                        and self.focus_target_id in (None, focused)):
                     # Current public focus and its original Confirm member are
-                    # sufficient; a private prior-Focus flag can force a no-op
-                    # focus followed by unchanged-input readiness forever.
+                    # sufficient without prior Focus history. An actual pending
+                    # different target still waits for its observed arrival.
                     self.focus_target_id = None
                     return self._choose(confirm)
                 if self.focus_target_id is not None:
