@@ -281,7 +281,11 @@ def _execution_policy(value: object) -> dict[str, Any]:
 def _dispatch_binding(value: object, runtime_instance_id: str) -> dict[str, Any]:
     binding = _object(value, _DISPATCH_FIELDS)
     for key in _DISPATCH_FIELDS - {"controller_generation"}:
-        _text(binding[key], maximum=256)
+        text = _text(binding[key])
+        # SDK id = nonempty Unicode scalar string, max128 UTF-16 units.
+        # UTF-8 bytes are not JavaScript string.length, especially for BMP/astral.
+        _require(len(text.encode("utf-16-le")) // 2 <= 128,
+                 "native_session_dispatch_id_size")
     _integer(binding["controller_generation"], positive=True)
     _require(binding["runtime_instance_id"] == runtime_instance_id,
              "native_session_dispatch_runtime")
@@ -642,14 +646,7 @@ class _DeclaredConsumptionStream:
             == (None if previous is None else previous["consumption_id"]),
             "native_session_consumption_prefix",
         )
-        owner = witness["owner_occurrence"]
-        occurrence = (
-            witness["capture"]["stream_generation"],
-            witness["snapshot_id"],
-            owner["occurrence_id"],
-            owner["binding_revision"],
-            owner["focus_occurrence"],
-        )
+        occurrence = _witness_occurrence(witness)
         new_occurrence = occurrence != self.occurrence
         revision = witness["revision"]
         _require(
@@ -802,6 +799,31 @@ def _witness(value: object) -> dict[str, Any]:
     return witness
 
 
+def _witness_occurrence(witness: Mapping[str, Any]) -> tuple[Any, ...]:
+    owner = witness["owner_occurrence"]
+    return (witness["capture"]["stream_generation"], witness["snapshot_id"],
+            owner["occurrence_id"], owner["binding_revision"], owner["focus_occurrence"])
+
+
+def _recorded_readiness(witness: Mapping[str, Any], refused: Mapping[str, Any]) -> None:
+    """Check available witness facts, not unpersisted full public coherence.
+
+    Runtime must independently qualify and compare the complete original input
+    before offering it. Discarded query witnesses expose only this metadata.
+    """
+    _require(witness["included"] == SCOPE and not witness["missing"]
+             and witness["catalog_materialized"] is True
+             and witness["capture"]["stream_generation"] == refused["capture"]["stream_generation"],
+             "native_session_refused_query_scope")
+    same = _witness_occurrence(witness) == _witness_occurrence(refused)
+    _require(witness["revision"] == refused["revision"] if same else witness["revision"] > refused["revision"],
+             "native_session_refused_query_revision")
+    if same:
+        _require(all(witness[key] == refused[key] for key in (
+            "owner_occurrence", "status", "included", "missing", "catalog_digest", "catalog_count")),
+            "native_session_refused_query_metadata")
+
+
 def _budget(value: object) -> dict[str, Any]:
     budget = _object(
         value,
@@ -842,7 +864,7 @@ def _pending(
         "snapshot_id",
         "action_id",
     ):
-        _text(original[key], maximum=256)
+        _text(original[key], maximum=65536 if opted_in and key == "action_id" else 256)
     _integer(original["submission_epoch"])
     _require(original["status"] in {"pending", "unresolved"}, "native_session_pending_status")
     _nullable_text(original["reason"])
@@ -1019,8 +1041,9 @@ def _operational_outcome(
     outcome = _object(value, _OUTCOME_FIELDS)
     _require(outcome["schema"] == "sts2.policy-runtime/known-not-started-outcome-1",
              "native_session_operational_outcome_schema")
-    for key in ("basis_acquisition_id", "action_id", "consumption_id"):
+    for key in ("basis_acquisition_id", "consumption_id"):
         _text(outcome[key], maximum=256)
+    _text(outcome["action_id"])
     _integer(outcome["state_version"], positive=True)
     _require(_result(outcome["result"], attempt) == result and _known_stale(result)
              and outcome["basis_acquisition_id"] == attempt["basis_acquisition_id"]
@@ -1488,6 +1511,8 @@ class AgentSessionRunEvidenceVerifier:
                          and request not in child_requests and acquisition not in offered_samples
                          and sample_pending_next is not None and sample_completed_next is None and not sample_ended
                          and all(payload[key] == sample_pending_next[key] for key in _CONTEXT), "native_session_sample_offer")
+                if refusal_fence is not None:
+                    _recorded_readiness(witnesses[acquisition], witnesses[refusal_fence["basis_acquisition_id"]])
                 child_requests.add(request); offered_samples.add(acquisition)
             elif kind == "agent_sample_query_discarded":
                 acquisition = _text(payload["acquisition_id"], maximum=256)
