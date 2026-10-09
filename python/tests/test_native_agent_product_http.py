@@ -131,9 +131,14 @@ def test_native_import_intent_binds_exact_body_and_known_completion_before_origi
 
 
 def test_native_import_lost_publication_reply_reopens_same_intent_and_blocks_new_or_legacy(
-    native_data_http, original, monkeypatch
+    native_data_http, original, monkeypatch, tmp_path
 ):
+    from source3_product_fixture import setup
+
     app, store, root, client, post = native_data_http
+    importer, _, catalog, candidate, _, _, _, tool = setup(
+        tmp_path / "supported-source3", monkeypatch, config=app.config)
+    app.local_recording_import = importer
     client.open(root + "/").close()
     route = "/api/local-recordings/import/native-agent"
     request = {**body(original), "intent_id": "2" * 32}
@@ -165,16 +170,62 @@ def test_native_import_lost_publication_reply_reopens_same_intent_and_blocks_new
         409, {"error": "original_intent_reconciliation_required"})
     assert post(route, {**request, "directory": "/changed"}) == (
         409, {"error": "intent_payload_mismatch"})
-    assert post("/api/local-recordings/import", {"candidate_id": "a" * 64}) == (
-        409, {"error": "original_intent_reconciliation_required"})
-    assert post("/api/local-recordings/import", {"candidate_id": "a" * 64,
-         "human_origin_attested": True}) == (
-        409, {"error": "original_intent_reconciliation_required"})
+    with monkeypatch.context() as guarded:
+        guarded.setattr(catalog, "read", lambda *_args:
+                        pytest.fail("registered uncertainty precedes catalog IO"))
+        assert post("/api/local-recordings/import", {"candidate_id": candidate}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+        assert post("/api/local-recordings/import", {"candidate_id": candidate,
+             "human_origin_attested": True}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+        assert post(route, {**request, "intent_id": "3" * 32}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+    assert not tool.calls
     monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
     assert post(route, request)[0] == 200
     completed = settled(app.local_recording_import)
     assert completed["intent_id"] == request["intent_id"] and completed["artifact_id"] == raw_id
     assert store.manifest_ids() == identities and store.get_manifest(raw_id).producer == producer
+    assert post("/api/local-recordings/import", {"candidate_id": candidate})[0] == 200
+    source3 = settled(app.local_recording_import)
+    assert source3["status"] == "completed" and source3["recording_type"] == "source3"
+    assert len(tool.calls) == 1
+    assert store.get_manifest(raw_id).producer == producer
+
+
+def test_completed_intent_replay_is_readonly_while_another_persisted_intent_is_unknown(
+    native_data_http, original, tmp_path, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    first = {**body(original), "intent_id": "c" * 32}
+    assert post(route, first)[0] == 200
+    completed = settled(app.local_recording_import)
+    copied = tmp_path / "same-original-B"
+    shutil.copytree(original.directory, copied)
+    second = {**first, "directory": str(copied), "intent_id": "d" * 32}
+    assert post(route, second)[0] == 200
+    settled(app.local_recording_import)
+    importer = app.local_recording_import
+    journal = json.loads(importer.path.read_bytes())
+    # A durable pending snapshot means the process ended without observing B's
+    # terminal outcome, even when immutable publication is already present.
+    journal["status"] = "pending"
+    journal["_native_agent_intents"][second["intent_id"]]["status"] = "pending"
+    importer.path.write_text(json.dumps(journal))
+    app.local_recording_import = LocalRecordingImporter(app.config, importer.catalog)
+    before = app.local_recording_import.status()
+    journal_bytes = importer.path.read_bytes()
+    monkeypatch.setattr(app.local_recording_import, "_native_agent_original", lambda *_args:
+                        pytest.fail("completed A cannot read originals or recover B"))
+    assert post(route, first)[1]["artifact_id"] == completed["artifact_id"]
+    assert app.local_recording_import.status() == before
+    assert importer.path.read_bytes() == journal_bytes
+    assert before["intent_id"] == second["intent_id"]
+    assert before["status"] == "interrupted_unknown"
+    assert post(route, {**second, "intent_id": "e" * 32}) == (
+        409, {"error": "original_intent_reconciliation_required"})
 
 
 def test_native_import_old_intent_after_later_request_cannot_be_rebound_on_reopen(

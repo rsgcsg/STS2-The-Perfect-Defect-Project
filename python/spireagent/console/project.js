@@ -4488,7 +4488,8 @@ window.SpireProject = (() => {
       try {
         const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
         if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
-        if (writeFence(null)) drafts.delete("native-agent-import-uncertain");
+        if (["completed","failed"].includes(observed.status) && writeFence(null))
+          drafts.delete("native-agent-import-uncertain");
         await reload(ctx);
       } catch (error) {
         const unknown = ["request_unknown","request_unavailable","context_changed"].includes(error.message);

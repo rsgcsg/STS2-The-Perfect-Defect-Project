@@ -7144,8 +7144,8 @@ const nativeAgentPreview = (artifact,extra={}) => ({kind:"native_agent_sampled",
   recommended_recipe_id:commonNativeRecipe,split_status:"not_reserved",...extra});
 function nativeAgentBrowserEnv({artifact=id("a"),detail=true,operation={status:"idle"},
   support=nativeAgentBrowserSupport,raw=nativeAgentRaw(artifact),items=[raw],
-  importStatus={status:"idle"},storage=new Map(),storageApi=null,handler=()=>emptyList()}={}) {
-  return setup({identity:{status:"local_only"},view:"local-workspace",query:detail?`&id=${artifact}`:"",
+  importStatus={status:"idle"},storage=new Map(),storageApi=null,identity={status:"local_only"},handler=()=>emptyList()}={}) {
+  return setup({identity,view:"local-workspace",query:detail?`&id=${artifact}`:"",
     recordingStorage:storage,recordingStorageApi:storageApi,
     importStatus:()=>({schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
       configuration_id:id("9"),workbench_instance_id:"fixture-workbench-instance",
@@ -7310,6 +7310,27 @@ test("Native AgentRun lost browser fence uses server original intent and user bo
   const directory=field(page,"native-agent-import-directory");directory.value="/operator/original-B";directory.oninput();
   await action(page,"import-native-agent-run").onclick();assert.equal(sent.length,1);
   assert.equal(sent[0].intent_id,intent,"recovery cannot generate new identity");
+});
+
+test("Native AgentRun account reset retains only same owner original pending fence",async()=>{
+  const storage=new Map(),sent=[],owner={status:"signed_in",principal:{subject:"original-owner",role:"researcher"}};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    handler:async(url,options)=>{const request=body({options});sent.push(request);return{status:"pending",intent_id:request.intent_id};}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/pending-B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,1,"known pending reply must retain original body until terminal outcome");
+  env.account({status:"signed_out"});await env.render();
+  env.account(owner);page=await env.render();
+  assert.equal(sent.length,1,"account renewal and render only read the original fence");
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/pending-B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    identity:{status:"signed_in",principal:{subject:"other-owner",role:"researcher"}}});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"");
+  const otherInstance=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    importStatus:{workbench_instance_id:"other-instance"}});
+  assert.equal(field(await otherInstance.render(),"native-agent-import-directory").value,"");
 });
 
 for(const failure of ["read","write"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{

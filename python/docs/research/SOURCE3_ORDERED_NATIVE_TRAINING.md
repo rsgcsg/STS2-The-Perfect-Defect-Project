@@ -327,6 +327,18 @@ explicit retry/reconciliation. The importer Producer remains the actual importer
 recorded producer identity is retained separately. This machine route does not
 invoke the Human packer or require a Human-origin declaration.
 
+Browser imports bind an opaque intent to the exact original directory, cohort
+and producer relation in the existing private importer journal. The browser
+retains that body before submission in session storage scoped to configuration,
+running instance and account; refresh and account renewal never submit it.
+Without that browser body, the UI offers the server's original unresolved intent
+and requires the operator to reenter its original fields explicitly. Changed
+fields reject before original IO. Unavailable browser storage closes submission.
+Every registered pending or unknown intent blocks ordinary Source3, legacy and
+new native imports until explicit original reconciliation reaches a terminal
+outcome. A completed historical intent returns its original outcome without
+replacing another unresolved operation. No bounded journal entry is evicted.
+
 `LocalDatasetService.start_native_agent_preview` replays selected immutable raws
 through their owning admissions and one-runtime train-only projection. Preview
 reports known context, original offers, eligible N, readiness exclusions, censored
