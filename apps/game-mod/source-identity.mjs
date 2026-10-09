@@ -19,8 +19,12 @@ export function evaluateGameModVersions({ packageVersion, manifestVersion, nativ
   const versionTags = [...project.matchAll(/<(?:[\w.-]+:)?Version(?=[\s/>])/giu)];
   const conditionalVersion = [...project.matchAll(/<PropertyGroup\b([^>]*)>([\s\S]*?)<\/PropertyGroup>/giu)]
     .some(match => /\bCondition\s*=/iu.test(match[1]) && /<Version(?=[\s/>])/iu.test(match[2]));
+  // This owner supports the current declarative project, not conditional or
+  // executable version selection. A new control container requires review.
+  const versionControlContainer = /<(?:[\w.-]+:)?(?:Choose|When|Otherwise|Target)(?=[\s/>])/iu.test(project);
   const nativeVersion = nativeValues.length === 1 ? nativeValues[0][1] : null;
-  const projectVersion = projectValues.length === 1 && versionTags.length === 1 && !conditionalVersion
+  const projectVersion = projectValues.length === 1 && versionTags.length === 1
+    && !conditionalVersion && !versionControlContainer
     ? projectValues[0][1] : null;
   const errors = [];
   if (typeof packageVersion !== "string" || packageVersion.length === 0)
@@ -28,7 +32,7 @@ export function evaluateGameModVersions({ packageVersion, manifestVersion, nativ
   if (manifestVersion !== packageVersion) errors.push("Game Mod manifest version differs from package");
   if (nativeVersion === null) errors.push("UnifiedPlatformMod.Version requires exactly one literal declaration");
   else if (nativeVersion !== packageVersion) errors.push("UnifiedPlatformMod.Version differs from package");
-  if (projectVersion === null) errors.push("Game Mod project requires exactly one literal Version");
+  if (projectVersion === null) errors.push("Game Mod project requires one unconditional literal Version without control containers");
   else if (projectVersion !== packageVersion) errors.push("Game Mod project Version differs from package");
   return { ok: errors.length === 0, nativeVersion, projectVersion, errors };
 }
