@@ -133,6 +133,7 @@ TRAINING_PATHS = tuple(
             "stpd/native_training_source_spec.py",
             "stpd/fullrun/native_agent_sampled_source.py",
             "stpd/policy/__init__.py",
+            "stpd/policy/native_operational_outcome.py",
             "stpd/policy/native_task.py",
             "stpd/fullrun/ordered_source.py",
             "stpd/fullrun/native_structured_inputs.py",

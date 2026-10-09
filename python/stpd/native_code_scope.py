@@ -37,6 +37,8 @@ PATHS = tuple(
     sorted(
         set(INFERENCE_PATHS) - {"stpd/policy/structured_port.py"}
         | {
+            "spireagent/storage/__init__.py",
+            "spireagent/storage/blobs.py",
             "stpd/native_code_scope.py",
             "stpd/ordered_source_spec.py",
             "stpd/native_sampled_carry_spec.py",
