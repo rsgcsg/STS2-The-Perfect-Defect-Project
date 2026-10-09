@@ -70,6 +70,20 @@ submits native actions itself. The programmed policy greedily selects from the
 whole catalog or returns bounded Await for empty C. This timing policy is explicit,
 not learned. A terminal status alone does not imply task completion or force Close.
 
+The new sampled Source3 AgentSpec 1.1.0 adds the same fixed Map timing descriptor
+as program Teacher 1.0.4. After a changed complete nonempty-C input is consumed and
+exactly ACKed, only the exact native Map information page/map-navigation schema
+with public `traveling:true` defers the chooser to a bounded 250ms Await. All
+information candidates remain in C; W already advanced once. Ready-summary Close
+wins first, and unchanged/empty readiness checks still do not advance W. This is
+declared Agent strategy, not legality, learned timing, general effect settlement
+or a native Wait/N label. Child selectors and other owners retain their existing
+choice behavior. Timed TaskSpec 1.1 changes only the navigation composition;
+generic/full-reference packages keep TaskSpec 1.0 and their original runner.
+Existing package schemas carry the nested new AgentSpec; InputSpec, feature
+projection, graph, weight codec, state/reset and targets remain unchanged. Exact
+code-closure checks still reject historical bytes in a different current runner.
+
 State uses the existing safe tensor-tree codec with a 16 MiB bound, finite K1/d96
 W, actual weight/InputSpec/profile/generation and durable acknowledgement prefix,
 plus the last complete public input for exact score/binding replay. Runtime copies

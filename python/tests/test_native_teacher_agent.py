@@ -232,14 +232,32 @@ class TeacherAgentTests(unittest.TestCase):
         )
         for referent in value["value"]["observation"]["referents"][1:]:
             referent["kind"] = "control"
+        value["value"]["observation"]["interaction"].update(
+            stage="native_information_page",
+            content_schema="sts2.player-environment/surface/map_navigation-1",
+        )
         before = next_input(self.agent)
         kind, report = self.agent.propose_current(value, before)
         self.assertEqual(kind, "consumed")
         self.assertEqual(self.agent.state_version, 0)
+        with self.assertRaisesRegex(BoundaryError, "known_ACK_before_directive"):
+            self.agent.directive(before)
         self.agent.acknowledge(ack(report))
-        self.assertEqual(self.agent.directive(before)["directive"]["type"], "await")
+        waiting = self.agent.directive(before)
+        self.assertEqual(waiting["directive"], {
+            "type": "await", "after_cursor": "cursor-known",
+            "condition": "any_event", "timeout_ms": 250,
+        })
+        self.assertEqual(waiting["consumption_id"], report["consumption_id"])
+        self.assertEqual(waiting["state_version"], 1)
         self.assertEqual(self.agent.teacher.decisions, 0)
         self.assertEqual(self.agent.state_version, 1)
+        kind, repeated = self.agent.propose_current(value, next_input(self.agent))
+        self.assertEqual((kind, repeated["directive"]["type"]), ("directive", "await"))
+        self.assertEqual(self.agent.state_version, 1)
+        arrived = self.consume(current(2))
+        self.assertEqual(arrived["directive"]["type"], "act")
+        self.assertEqual(self.agent.teacher.decisions, 1)
 
     def test_executed_qualification_helper_mutation_invalidates_real_artifact(self):
         closure = self.root / "closure"

@@ -36,7 +36,12 @@ from .native_structured_export import (
     load_native_package,
     native_architecture,
 )
-from .native_task import observe_ready_summary, ready_summary_task_spec
+from .native_task import (
+    observe_ready_summary,
+    public_map_travel_pending,
+    public_map_travel_timing_spec,
+    ready_summary_task_spec,
+)
 
 SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1"
 MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1"
@@ -288,15 +293,15 @@ class NativeStructuredAgent:
             raise BoundaryError("native_agent", "opaque_state_contract_required")
         self.metadata, self.manifest = metadata, manifest
         task_spec = metadata["agent_spec"].get("task_spec")
-        if task_spec is not None and (
-            task_spec != ready_summary_task_spec()
-            or metadata["agent_spec"]["version"] != ("1.0.0" if self.sampled else "1.2.0")
-        ):
-            raise BoundaryError("native_agent", "unsupported_task_spec")
         if self.sampled:
             control = model.model_control
             if control is None or metadata["agent_spec"] != sampled_agent_spec(control):
                 raise BoundaryError("native_agent", "sampled_agent_spec_binding")
+        elif task_spec is not None and (
+            task_spec != ready_summary_task_spec()
+            or metadata["agent_spec"]["version"] != "1.2.0"
+        ):
+            raise BoundaryError("native_agent", "unsupported_task_spec")
         self.ready_summary_task = task_spec is not None
         self.scorer = NativeStructuredScorer(
             model,
@@ -363,6 +368,13 @@ class NativeStructuredAgent:
                 "state_version": scorer.state_version,
                 "directive": {"type": "close", "reason": "native_ready_summary_task_complete"},
             }
+        if (self.sampled and scorer.input is not None
+                and self.metadata["agent_spec"].get("timing_policy")
+                == public_map_travel_timing_spec()
+                and public_map_travel_pending(scorer.input["observation"])):
+            # Defer only this explicit sampled Agent composition after exact ACK.
+            # The accepted observation already advanced W; no score or Act here.
+            return self.sampled_wait(value)
         values = scorer.scores()
         directive: dict[str, Any]
         if values:

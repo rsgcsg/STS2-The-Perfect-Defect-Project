@@ -12,10 +12,10 @@ from typing import Any, Literal
 
 from spireagent.json_boundary import BoundaryError
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
-from stpd.policy.native_task import observe_ready_summary
+from stpd.policy.native_task import observe_ready_summary, public_map_travel_pending
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.3"
+TEACHER_VERSION = "1.0.4"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -143,15 +143,8 @@ class NativePublicTeacher:
         }
         kind, stage = page.get("kind"), page.get("stage")
 
-        # The native map producer suppresses route leaves while IsTraveling,
-        # even though independent information leaves keep complete C nonempty.
-        # Missing routes alone do not justify waiting on an unsupported owner.
-        if (
-            kind in {"native_map", "map_navigation"}
-            and surface.get("kind") == "map_navigation"
-            and isinstance(surface.get("next_options"), list)
-            and surface.get("traveling") is True
-        ):
+        # Shared declared Agent timing; independent information leaves stay in C.
+        if public_map_travel_pending(observation):
             return self._await("await_public_map_travel")
 
         def find(verb: str, subject: str | None = None) -> dict[str, Any] | None:

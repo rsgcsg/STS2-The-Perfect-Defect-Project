@@ -23,7 +23,11 @@ from .fullrun.native_structured_inputs import (
     PROJECTION as FEATURE_PROJECTION,
 )
 from .native_graph_spec import NativeGraphControl, checked_control
-from .policy.native_task import observe_ready_summary, ready_summary_task_spec
+from .policy.native_task import (
+    map_timed_ready_summary_task_spec,
+    observe_ready_summary,
+    public_map_travel_timing_spec,
+)
 
 HISTORY_MODE = "sampled_current"
 VIEW = "decision_sample_carry"
@@ -78,24 +82,25 @@ INPUT_SPEC = {
 
 
 def sampled_agent_spec(model_control: NativeGraphControl) -> dict[str, Any]:
-    """The initial supported sampled Agent is exactly K1/D96 carry."""
+    """Current sampled Agent: K1/D96 carry and explicit fixed Map timing."""
     control = checked_control(model_control.to_dict())
     if control != NativeGraphControl():
         raise BoundaryError("sampled_carry", "k1d96_carry_required")
     return {
         "id": "stpd-native-sampled-carry-m2-agent",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "acquisition": "eligible_current_decision_samples",
-        "choice": "complete_catalog_greedy",
+        "choice": "fixed_public_map_travel_timing_then_complete_catalog_greedy",
         "empty_catalog": "bounded_current_recheck",
         "timing_learned": False,
+        "timing_policy": public_map_travel_timing_spec(),
         "memory_slots": 1,
         "memory_width": 96,
         "model_control": control.to_dict(),
         "history_mode": HISTORY_MODE,
         "recheck_timeout_ms": RECHECK_TIMEOUT_MS,
         "segment": "one_live_runtime_session_until_post_sample_human_or_failure",
-        "task_spec": ready_summary_task_spec(),
+        "task_spec": map_timed_ready_summary_task_spec(),
     }
 
 

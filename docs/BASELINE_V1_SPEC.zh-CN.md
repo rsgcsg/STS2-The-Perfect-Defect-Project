@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.4 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.5 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -130,6 +130,21 @@ ReadCurrent 在请求时捕获，ReadSealed 读取原冻结值。目录查询不
 选定的默认完整 Agent 组合当前决策采样、共享取得库、段内 learned carry、结构 M2、选择和受限 Runtime；以下为目标合同，现有 full-reference 包尚未因此改变。I/F 关闭：自身 request/receipt/reason/control/动作日志不改名进入 P/E/W；当前真实 HP、selected、focus、公开总结仍可输入。独立 receipt 不触发 W。
 
 完整端口支持无动作观察消费和 Act/Await/Abstain/Close；scores 是可选诊断。旧评分端口按旧 Manifest 保留。不评分/生成式消费者仍从同一关系 Resolve，不能生成 native operand。程序侧固定时机策略属于 AgentSpec，不冒充模型学会时机。
+
+新 Teacher 与取样 Student 选择一项共享的固定 Map 时机策略：只有实际公开观察严格为
+`native_map` / `native_information_page`、内容 schema 为 `map_navigation-1`、surface
+为 `map_navigation` 且 `traveling is True` 时，在原输入已知 ACK 后 Await 同一水位/游标，
+按既有 250ms 上限重新检查。此时完整 C 仍可含合法资料操作；本 Agent 明确放弃旅行期间
+这些信息机会，以等待下一次公开观察。策略不改 C、原生合法性或 Runtime 控制，不用
+缺路线、disabled travel、空 next_options 或父效果 pending 推断通用等待。
+
+该 changed、完整且非空 C 的观察照旧消费并推进一次 W；未变/空 C 检查不额外推进，
+ready-summary Close 优先。Await 不产生原生 Wait 动作或 N 标签。当前 N 只预测 C 成员，
+不能要求它学出未表示的 Await。新 Student AgentSpec 1.1.0 与 Teacher 策略/Agent 身份
+明确登记固定时机；目标、summary 和删失不变，新的 TaskSpec 1.1 仅声明此导航组合。
+旧 generic/full-reference 与 TaskSpec 1.0 保持原义，旧包继续绑定其原 runner。InputSpec、
+特征、K1/D96 图、权重格式、carry/reset 和 N 目标不因该策略改义。其他 pending 机制仍按
+各自公开事实与 Agent 策略处理；本选择不是全场景 readiness 引擎或已完成运行资格。
 
 结构模型复用 typed 对象/字段/关系、共享 byte encoder、当前实体与持久 W、候选只读评分。opaque ID、时间、seed、lease、当前标签不是可学习输入；公开顺序与任意 ordinal 分开。新 profile/InputSpec 产生新投影和包身份，旧权重不自动兼容。文本 LightAction 保留为配对参考，不阻止结构模型早期实现。
 

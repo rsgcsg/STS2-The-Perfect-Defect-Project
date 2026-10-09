@@ -1,4 +1,4 @@
-"""One explicit natural-run task over already qualified public native input.
+"""Explicit natural-run task and fixed timing over qualified public native input.
 
 This program control belongs to the delivered Agent, not to its learned model.
 It neither selects gameplay actions nor changes the complete current catalog.
@@ -10,6 +10,38 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+
+def public_map_travel_timing_spec() -> dict[str, Any]:
+    """Fixed Agent choice, never native readiness or legality authority."""
+    return {
+        "id": "stpd-native-public-map-travel-timing-v1",
+        "version": "1.0.0",
+        "predicate": "exact_native_map_information_page_map_navigation_schema_traveling_true",
+        "positive": "Await_known_cursor_any_event_after_exact_ACK",
+        "otherwise": "AgentSpec_declared_choice",
+        "recheck_timeout_ms": 250,
+        "catalog": "complete_unchanged",
+        "learned": False,
+    }
+
+
+def public_map_travel_pending(observation: dict[str, Any]) -> bool:
+    """Defer only this exact public Map state, after owning input qualification."""
+    if (observation.get("schema") != "sts2.player-environment/native-logical-observation-1"
+            or observation.get("input_profile") != "native-logical-v1"):
+        return False
+    interaction = observation.get("interaction")
+    if (not isinstance(interaction, dict)
+            or interaction.get("kind") != "native_map"
+            or interaction.get("stage") != "native_information_page"
+            or interaction.get("content_schema")
+            != "sts2.player-environment/surface/map_navigation-1"):
+        return False
+    content = interaction.get("content")
+    surface = content.get("surface") if isinstance(content, dict) else None
+    return (isinstance(surface, dict) and surface.get("kind") == "map_navigation"
+            and surface.get("traveling") is True)
 
 
 def ready_summary_task_spec() -> dict[str, Any]:
@@ -28,6 +60,15 @@ def ready_summary_task_spec() -> dict[str, Any]:
             "budget", "disconnect", "unknown_delivery", "source_gap",
             "unsupported_surface", "external_stop",
         ],
+    }
+
+
+def map_timed_ready_summary_task_spec() -> dict[str, Any]:
+    """New navigation composition; the original 1.0 task remains the default."""
+    return {
+        **ready_summary_task_spec(),
+        "version": "1.1.0",
+        "navigation": "fixed_public_map_travel_timing_then_AgentSpec_choice_until_summary_ready",
     }
 
 
