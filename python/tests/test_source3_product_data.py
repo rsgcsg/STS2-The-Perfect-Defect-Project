@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from metadata_import_guard import install_torch_import_guard
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from source3_product_fixture import DERIVED, ORIGINAL, ROOT, settled, setup
 
 from spireagent.json_boundary import BoundaryError
@@ -88,7 +94,6 @@ def test_source3_import_and_training_ready_preserve_originals_and_never_start_tr
     assert importer.start(candidate)["artifact_id"] == raw.artifact_id
     with owner.transaction() as db:
         assert db.execute("SELECT COUNT(*) FROM local_source_pending").fetchone() == (0,)
-    assert "torch" not in sys.modules
 
 
 def test_zero_labels_do_not_switch_view_and_explicit_pretraining_stays_distinct(
@@ -113,7 +118,6 @@ def test_zero_labels_do_not_switch_view_and_explicit_pretraining_stays_distinct(
     assert ready["source_view"] == PRETRAIN_VIEW
     assert store.get_manifest(ready["training_source_id"]).parameters.value()["qualification"] == (
         pretrain["qualification"])
-    assert "torch" not in sys.modules
 
 
 @pytest.mark.parametrize("change", ["close", "tool", "support", "accounting"])
@@ -311,3 +315,60 @@ def test_original_commit_lock_is_associated_exactly_without_current_lock_substit
         local_recording_import._original_recorder_producer("e" * 40)
     with pytest.raises(BoundaryError, match="provenance_required"):
         local_recording_import._original_recorder_producer("HEAD")
+
+
+def test_metadata_guard_blocks_import_requests_and_allows_backend_discovery(monkeypatch):
+    before = sys.modules.get("torch")
+    with monkeypatch.context() as scoped:
+        guard = install_torch_import_guard(scoped)
+        # Discovery is metadata; it does not import a tensor backend.
+        importlib.util.find_spec("torch")
+        for name in ("torch", "torch.nn"):
+            with pytest.raises(AssertionError, match="attempted a Torch import"):
+                builtins.__import__(name)
+            with pytest.raises(AssertionError, match="attempted a Torch import"):
+                importlib.import_module(name)
+        with pytest.raises(AssertionError, match="attempted a Torch import"):
+            importlib.import_module(".nn", package="torch")
+        with pytest.raises(AssertionError, match="attempted a Torch import"):
+            builtins.__import__("nn", {"__package__": "torch"}, level=1)
+        assert guard.attempts == ["torch", "torch", "torch.nn", "torch.nn", "torch.nn", "torch.nn"]
+    assert sys.modules.get("torch") is before
+
+
+def test_metadata_guard_accepts_preloaded_module_without_unloading_or_importing_it():
+    script = """
+import builtins
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+import pytest
+from metadata_import_guard import install_torch_import_guard
+assert 'torch' not in sys.modules
+existing = ModuleType('torch')
+existing.__spec__ = importlib.machinery.ModuleSpec('torch', loader=None)
+sys.modules['torch'] = existing
+with pytest.MonkeyPatch.context() as patch:
+    guard = install_torch_import_guard(patch)
+    assert sys.modules['torch'] is existing
+    assert importlib.util.find_spec('torch') is existing.__spec__
+    for operation in (lambda: builtins.__import__('torch'),
+                      lambda: importlib.import_module('torch.nn')):
+        try:
+            operation()
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('preloaded Torch import request bypassed guard')
+    assert guard.attempts == ['torch', 'torch.nn']
+    assert sys.modules['torch'] is existing
+assert sys.modules['torch'] is existing
+assert not any(name.startswith('torch.') for name in sys.modules)
+print('preloaded metadata guard selftest passed; no backend import or unload')
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parent, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "preloaded metadata guard selftest passed" in result.stdout

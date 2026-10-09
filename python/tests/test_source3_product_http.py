@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import sys
 import threading
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 import pytest
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from source3_product_fixture import settled, setup
 from test_native_workbench_access import paired_app
 
@@ -96,7 +96,7 @@ def test_source3_browser_import_prepare_routes_keep_auth_and_exact_body(source3_
     assert post("/api/local-datasets/publish", {"preview_id": preview["preview_id"]})[0] == 200
     ready = settled(dataset)
     assert ready["status"] == "completed" and ready["actual_training_use"] is False
-    assert app.hub is None and "torch" not in sys.modules
+    assert app.hub is None
 
 
 def test_source3_native_pair_actions_share_original_import_and_dataset_owners(source3_http):
@@ -143,4 +143,4 @@ def test_source3_native_pair_actions_share_original_import_and_dataset_owners(so
     _, accepted = command("datasets.publish", {"preview_id": preview["preview_id"]})
     assert accepted["status"] == "accepted", accepted
     assert settled(dataset)["status"] == "completed"
-    assert app.hub is None and "torch" not in sys.modules
+    assert app.hub is None

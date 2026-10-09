@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import copy
-import sys
 import threading
 
 import pytest
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_local_models import runtime_http as runtime_http
 from test_native_recording_application import body
 from test_native_recording_application import browser_app as browser_app
@@ -31,9 +31,7 @@ def shared(browser_app, runtime_http, bridge, monkeypatch):
     )
     monkeypatch.setattr(app, "_recording_endpoint", lambda: behavior["connector_endpoint"])
     monkeypatch.setattr(app.models, "_evaluation_handoff", lambda: None)
-    assert "torch" not in sys.modules
     yield app, client, runtime, runtime_calls, native, native_calls, behavior
-    assert "torch" not in sys.modules
 
 
 def worker(operation):
