@@ -385,7 +385,11 @@ def test_real_sampled_map_timing_does_not_defer_child_or_missing_fact(closed_pac
 
 
 def test_actual_generic_package_does_not_silently_gain_sampled_map_timing(generic_agent_files):
-    folder, path, _, _ = generic_agent_files
+    folder, path, _, manifest = generic_agent_files
+    # The actual caller supplies public support; package/model bytes stay intact.
+    manifest["support"]["interaction_kinds"] = ["*"]
+    manifest["support"]["action_verbs"] = ["*"]
+    path.write_bytes(json_bytes(manifest))
     child = NativeStructuredAgent(folder, path)
     assert not child.sampled and "timing_policy" not in child.metadata["agent_spec"]
     query = map_information_query()
