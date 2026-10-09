@@ -10,22 +10,28 @@ import gzip
 import hashlib
 import json
 import re
+import subprocess
 import tarfile
 import tempfile
 import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from sts2_platform_evidence import DirectoryTransferManifest, verify_human_session_bundle
+import sts2_platform_evidence as evidence_owner
+from sts2_platform_evidence import (
+    DirectoryTransferManifest,
+    verify_human_session_bundle,
+)
 from sts2_platform_evidence.collection_tool import CollectionTool
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.hub.uploads import MAX_ARCHIVE, transfer_from_json, unpack
 from spireagent.json_boundary import BoundaryError, FrozenObject, digest, json_bytes
 from spireagent.local_verified_bundle import EVIDENCE_SCHEMA
-from spireagent.source import source_identity
+from spireagent.source import REPOSITORY, source_identity
+from spireagent.storage.archives import MAX_BYTES, _extract
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
@@ -39,9 +45,68 @@ from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_mana
 
 SCHEMA = "stpd/local-recording-import-operation-v1"
 IDENTITY_SCHEMA = "stpd/local-recording-import-labels-v1"
+SOURCE3_RECEIPT_SCHEMA = "stpd/local-source3-import-receipt-v1"
 OPERATION_FILE = "local-recording-import-operation.json"
 IDENTITY_FILE = "local-recording-import-labels.json"
 LABEL_PATTERN = re.compile(r"local-(?:worker|campaign)-[a-f0-9]{32}\Z")
+
+if TYPE_CHECKING:
+    from sts2_platform_evidence import SourceSessionBundleV3
+
+
+def _source3_api() -> tuple[Any, type]:
+    verifier = getattr(evidence_owner, "verify_source_session_bundle_v3", None)
+    value_type = getattr(evidence_owner, "SourceSessionBundleV3", None)
+    if not callable(verifier) or not isinstance(value_type, type):
+        raise BoundaryError("local_import", "source3_evidence_api_required")
+    return verifier, value_type
+
+
+def _verified_source3(directory: Path) -> SourceSessionBundleV3:
+    verifier, value_type = _source3_api()
+    result = verifier(directory)
+    if not result.passed:
+        raise BoundaryError("local_import", "typed_source3_verification_failed")
+    verified = result.require_value()
+    if not isinstance(verified, value_type):
+        raise BoundaryError("local_import", "typed_source3_verification_failed")
+    return cast("SourceSessionBundleV3", verified)
+
+
+def _original_recorder_producer(revision: str) -> Producer:
+    """Associate the original native commit with its immutable committed lock."""
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise BoundaryError("local_import", "original_recorder_provenance_required")
+    try:
+        kind = subprocess.check_output(
+            ["git", "cat-file", "-t", revision], cwd=ROOT, timeout=10,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if kind != b"commit":
+            raise ValueError
+        original_lock = subprocess.check_output(
+            ["git", "show", revision + ":python/uv.lock"], cwd=ROOT, timeout=10,
+            stderr=subprocess.DEVNULL,
+        )
+        if not original_lock:
+            raise ValueError
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise BoundaryError("local_import", "original_recorder_provenance_unavailable") from None
+    return Producer(REPOSITORY, revision, hashlib.sha256(original_lock).hexdigest())
+
+
+def _source3_identity(bundle: Path, candidate: dict[str, Any],
+                      verified: SourceSessionBundleV3) -> None:
+    if (
+        verified.manifest["session_id"] != candidate["session_id"]
+        or verified.manifest["timeline_id"] != candidate["timeline_id"]
+        or verified.recording["capture_profile_id"] != "native-logical-source-v3"
+        or verified.recording["recorder_source_revision"] != candidate["recorder_source_revision"]
+        or _sha256_file(bundle / "raw" / "recording-manifest.json") != candidate["manifest_sha256"]
+        or _sha256_file(bundle / "raw" / "source-close-receipt.json") != candidate["close_sha256"]
+        or verified.human_origin_verified is not False
+    ):
+        raise BoundaryError("local_import", "packed_source3_identity_mismatch")
 
 
 def _now() -> str:
@@ -164,7 +229,17 @@ class LocalRecordingImporter:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
-            return {**self.operation, "requires_cloud_account": False}
+            return {**{key: value for key, value in self.operation.items()
+                       if not key.startswith("_")}, "requires_cloud_account": False}
+
+    def _source3_owner(self, store: ManifestArtifactStore) -> LocalCurationOwner:
+        owner = _selected_curation_owner(self.config)
+        expected = self.operation.get("_owner")
+        if (owner is None or not isinstance(store.blobs, LocalBlobStore)
+                or owner.store_dir.resolve() != store.blobs.root
+                or expected is not None and tuple(expected) != owner.identity):
+            raise BoundaryError("local_import", "source3_workspace_owner_changed")
+        return owner
 
     def _save(self) -> None:
         atomic_json(self.path, self.operation)
@@ -195,24 +270,282 @@ class LocalRecordingImporter:
             raise BoundaryError("local_import", "candidate_publication_ambiguous")
         return matches[0] if matches else None
 
-    def start(self, candidate_id: object, human_origin_attested: object) -> dict[str, Any]:
-        if human_origin_attested is not True:
-            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+    def _existing_candidate(self, store: ManifestArtifactStore, candidate_id: str,
+                            candidate: dict[str, Any]) -> str | None:
+        if candidate.get("recording_type") != "source3":
+            return self._existing(store, candidate_id)
+        from stpd.ordered_source_spec import RAW_SCHEMA
+
+        owner = self._source3_owner(store)
+        bound: str | None = None
+        if owner is not None:
+            with owner.transaction() as db:
+                row = db.execute("SELECT artifact FROM local_source_pending WHERE candidate=?",
+                                 (candidate_id,)).fetchone()
+                bound = row[0] if row is not None else None
+        matches: list[str] = []
+        for identity in ((bound,) if bound else store.manifest_ids()):
+            raw = store.get_manifest(identity)
+            info = raw.parameters.value()
+            recording = info.get("original_recording", {})
+            if (raw.kind != "evidence" or info.get("schema") != RAW_SCHEMA
+                    or not isinstance(recording, dict)
+                    or recording.get("session_id") != candidate["session_id"]
+                    or recording.get("timeline_id") != candidate["timeline_id"]):
+                if bound:
+                    raise BoundaryError("local_import", "existing_source3_manifest_invalid")
+                continue
+            payload = raw.payload("archive")
+            if payload.size > MAX_BYTES or payload.sha256 != info.get("archive_sha256"):
+                raise BoundaryError("local_import", "existing_source3_manifest_invalid")
+            with tempfile.TemporaryDirectory(prefix="source3-import-reconcile-",
+                                             dir=self.config.state_dir) as name:
+                directory = Path(name)
+                _extract(store.bytes(payload), directory)
+                verified = _verified_source3(directory)
+                _source3_identity(directory, candidate, verified)
+                if (verified.content_id != info.get("bundle_content_id")
+                        or info.get("human_origin_verified") is not False
+                        or raw.producer != _original_recorder_producer(
+                            candidate["recorder_source_revision"])):
+                    raise BoundaryError("local_import", "existing_source3_manifest_invalid")
+            matches.append(identity)
+        if len(matches) > 1:
+            raise BoundaryError("local_import", "candidate_publication_ambiguous")
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _receipt_metadata(candidate_id: str, candidate: dict[str, Any], raw: Manifest,
+                          invocation: str, packing_release: str | None,
+                          original_receipt: str | None) -> dict[str, Any]:
+        return {
+            "schema": SOURCE3_RECEIPT_SCHEMA, "candidate_id": candidate_id,
+            "session_id": candidate["session_id"], "timeline_id": candidate["timeline_id"],
+            "manifest_sha256": candidate["manifest_sha256"],
+            "close_sha256": candidate["close_sha256"], "raw_artifact_id": raw.artifact_id,
+            "bundle_content_id": raw.parameters.value()["bundle_content_id"],
+            "registered_tool_release_id": candidate["tool_release_id"],
+            "tool_invocation": invocation, "packing_tool_release_id": packing_release,
+            "original_packing_receipt_id": original_receipt, "human_origin_verified": False,
+        }
+
+    @staticmethod
+    def _source3_receipts(store: ManifestArtifactStore, raw: Manifest,
+                          candidate: dict[str, Any]) -> list[Manifest]:
+        matches = []
+        for identity in store.manifest_ids():
+            receipt = store.get_manifest(identity)
+            info = receipt.parameters.value()
+            if (info.get("schema") != SOURCE3_RECEIPT_SCHEMA
+                    or info.get("raw_artifact_id") != raw.artifact_id):
+                continue
+            invocation = info.get("tool_invocation")
+            if not isinstance(invocation, str) or invocation not in {
+                "packed", "reused_no_tool_invocation"
+            }:
+                raise BoundaryError("local_import", "source3_import_receipt_invalid")
+            receipt_candidate = digest(info.get("candidate_id"), "local_import.receipt_candidate")
+            expected = LocalRecordingImporter._receipt_metadata(
+                receipt_candidate, candidate, raw, invocation,
+                info.get("packing_tool_release_id"), info.get("original_packing_receipt_id"))
+            # Registration is a prerequisite of this particular import intent;
+            # it may differ from the currently registered release during reuse.
+            expected["registered_tool_release_id"] = info.get("registered_tool_release_id")
+            if (receipt.kind != "analysis" or receipt.payloads
+                    or receipt.parents != (Parent("raw", raw.artifact_id),)
+                    or info != expected or info.get("human_origin_verified") is not False):
+                raise BoundaryError("local_import", "source3_import_receipt_invalid")
+            for key in ("candidate_id", "registered_tool_release_id"):
+                digest(info[key], "local_import.receipt." + key)
+            for key in ("packing_tool_release_id", "original_packing_receipt_id"):
+                if info[key] is not None:
+                    digest(info[key], "local_import.receipt." + key)
+            if (info["tool_invocation"] == "packed"
+                    and (info["packing_tool_release_id"] != info["registered_tool_release_id"]
+                         or info["original_packing_receipt_id"] is not None)):
+                raise BoundaryError("local_import", "source3_import_receipt_invalid")
+            if (info["tool_invocation"] == "reused_no_tool_invocation"
+                    and ((info["packing_tool_release_id"] is None)
+                         != (info["original_packing_receipt_id"] is None))):
+                raise BoundaryError("local_import", "source3_import_receipt_invalid")
+            matches.append(receipt)
+        return matches
+
+    def _ensure_receipt(self, store: ManifestArtifactStore, raw: Manifest,
+                        params: dict[str, Any], existing: list[Manifest]) -> Manifest:
+        matches = [receipt for receipt in existing if receipt.parameters.value() == params]
+        if len(matches) > 1:
+            raise BoundaryError("local_import", "source3_import_receipt_ambiguous")
+        if matches:
+            producer = matches[0].producer
+            if (self.operation.get("_receipt_reconciliation") is True
+                    and producer != Producer.decode(self.operation["_receipt_producer"])):
+                raise BoundaryError("local_import", "source3_receipt_producer_mismatch")
+            # A first encounter can reuse an already immutable receipt. Its
+            # existing producer then becomes the captured fact of this intent.
+            self.operation["_receipt_producer"] = producer.to_dict()
+            return matches[0]
+        producer = Producer.decode(self.operation["_receipt_producer"])
+        receipt = Manifest("analysis", producer, parents=(Parent("raw", raw.artifact_id),),
+                           parameters=FrozenObject.of(params))
+        self._source3_owner(store)
+        store.publish(receipt)
+        return receipt
+
+    def _source3_receipt(self, candidate_id: str, candidate: dict[str, Any],
+                         artifact_id: str, store: ManifestArtifactStore,
+                         *, packed: bool = False) -> Manifest:
+        raw = store.get_manifest(artifact_id)
+        receipts = self._source3_receipts(store, raw, candidate)
+        originals = [receipt for receipt in receipts
+                     if receipt.parameters.value()["tool_invocation"] == "packed"]
+        if len(originals) > 1:
+            raise BoundaryError("local_import", "source3_original_packing_receipt_ambiguous")
+        fact = self.operation.get("_packing_fact")
+        if isinstance(fact, dict):
+            # Successful pack facts and the derived producer were committed to
+            # the existing private operation before raw publication. Reconcile
+            # that exact fact, never infer a release from packer source revision.
+            packed_candidate = digest(fact.get("candidate_id"), "local_import.packed_candidate")
+            packed_release = digest(fact.get("tool_release_id"), "local_import.packed_release")
+            fact_candidate = {**candidate, "tool_release_id": packed_release}
+            expected = self._receipt_metadata(
+                packed_candidate, fact_candidate, raw, "packed", packed_release, None)
+            if fact.get("closed_metadata") != {
+                    key: value for key, value in expected.items() if key != "raw_artifact_id"}:
+                raise BoundaryError("local_import", "source3_packing_fact_mismatch")
+            if originals:
+                # A prior receipt can survive a lost publication reply. Its
+                # presence does not supersede the exact successful-pack fact
+                # already saved before raw publication, including its Producer.
+                if originals[0].parameters.value() != expected:
+                    raise BoundaryError("local_import", "source3_packing_fact_mismatch")
+                if originals[0].producer != Producer.decode(self.operation["_receipt_producer"]):
+                    raise BoundaryError("local_import", "source3_receipt_producer_mismatch")
+            else:
+                originals = [self._ensure_receipt(store, raw, expected, receipts)]
+                receipts += originals
+        for previous in receipts:
+            info = previous.parameters.value()
+            if info["original_packing_receipt_id"] is not None and (
+                not originals or info["original_packing_receipt_id"] != originals[0].artifact_id
+                or info["packing_tool_release_id"] != originals[0].parameters.value()[
+                    "packing_tool_release_id"]
+            ):
+                raise BoundaryError("local_import", "source3_import_receipt_original_mismatch")
+        if packed:
+            if not originals:
+                raise BoundaryError("local_import", "source3_packing_fact_required")
+            receipt = originals[0]
+            if receipt.producer != Producer.decode(self.operation["_receipt_producer"]):
+                raise BoundaryError("local_import", "source3_receipt_producer_mismatch")
+        else:
+            original = originals[0] if originals else None
+            params = self._receipt_metadata(
+                candidate_id, candidate, raw, "reused_no_tool_invocation",
+                original.parameters.value()["packing_tool_release_id"] if original else None,
+                original.artifact_id if original else None)
+            receipt = self._ensure_receipt(store, raw, params, receipts)
+        self.operation["_import_receipt_id"] = receipt.artifact_id
+        self._save()
+        return receipt
+
+    def _completed(self, candidate_id: str, artifact_id: str,
+                   candidate: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "schema": SCHEMA, "status": "completed", "candidate_id": candidate_id,
+            "artifact_id": artifact_id, "finished_at": _now(),
+        }
+        if candidate.get("recording_type") == "source3":
+            store, _ = _selected_store(self.config)
+            raw = store.get_manifest(artifact_id)
+            receipt_id = digest(self.operation.get("_import_receipt_id"), "local_import.receipt")
+            receipt = store.get_manifest(receipt_id)
+            if receipt not in self._source3_receipts(store, raw, candidate):
+                raise BoundaryError("local_import", "source3_import_receipt_required")
+            info = receipt.parameters.value()
+            if info["candidate_id"] != candidate_id:
+                raise BoundaryError("local_import", "source3_import_receipt_candidate_mismatch")
+            result.update(
+                recording_type="source3", source_profile="native-logical-source-v3",
+                session_id=candidate["session_id"], timeline_id=candidate["timeline_id"],
+                tool_release_id=info["packing_tool_release_id"], human_origin_verified=False,
+                registered_tool_release_id=info["registered_tool_release_id"],
+                packing_tool_release_id=info["packing_tool_release_id"],
+                tool_invocation=info["tool_invocation"], import_receipt_id=receipt_id,
+                bundle_content_id=raw.parameters.value()["bundle_content_id"],
+                next_action="datasets.source3-preview",
+            )
+        return result
+
+    def _prepare_source3_receipt(self, candidate_id: str, candidate: dict[str, Any],
+                                owner: LocalCurationOwner) -> None:
+        # Persist the producer before any immutable receipt write. Retain the
+        # captured producer/fact across explicit reconciliation of a partial import.
+        fact = self.operation.get("_packing_fact")
+        closed = fact.get("closed_metadata", {}) if isinstance(fact, dict) else {}
+        related = (self.operation.get("candidate_id") == candidate_id
+                   or all(closed.get(key) == candidate[key] for key in (
+                       "session_id", "timeline_id", "manifest_sha256", "close_sha256")))
+        producer = (Producer.decode(self.operation["_receipt_producer"])
+                    if related and self.operation.get("_receipt_producer")
+                    else source_identity(ROOT))
+        self.operation = {"schema": SCHEMA, "status": "pending", "started_at": _now(),
+                          "candidate_id": candidate_id, "recording_type": "source3",
+                          "_owner": owner.identity, "_receipt_producer": producer.to_dict(),
+                          "_receipt_reconciliation": bool(
+                              related and self.operation.get("_receipt_producer")),
+                          **({"_packing_fact": fact} if related and fact is not None else {})}
+        self._save()
+
+    def _bind_source3_candidate(self, candidate_id: str, artifact_id: str,
+                                store: ManifestArtifactStore) -> None:
+        owner = self._source3_owner(store)
+        owner.begin_source(candidate_id)
+        owner.published_source(candidate_id, artifact_id)
+        with owner.transaction() as db:
+            indexed = db.execute(
+                "SELECT 1 FROM curation_sources s JOIN curation_exact_source_index i "
+                "ON i.source=s.id WHERE s.id=? AND s.complete=1", (artifact_id,),
+            ).fetchone() is not None
+        if indexed:
+            owner.complete_index(candidate_id, artifact_id)
+
+    def start(self, candidate_id: object, human_origin_attested: object = None) -> dict[str, Any]:
         identity = digest(candidate_id, "local_import.candidate_id")
         with self.lock:
             if self.operation["status"] == "unavailable":
                 raise BoundaryError("local_import", "operation_file_invalid")
+            candidate = self._fresh_candidate(identity)
+            if candidate.get("recording_type") == "source3":
+                if human_origin_attested is not None and human_origin_attested is not False:
+                    raise BoundaryError("local_import", "source3_attestation_not_supported")
+                if candidate.get("source3_tool_supported") is not True:
+                    raise BoundaryError("local_import", "source3_tool_support_required")
+                _source3_api()
+            elif human_origin_attested is not True:
+                raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
             if self.thread is not None and self.thread.is_alive():
                 if self.operation.get("candidate_id") == identity:
                     return self.status()
                 raise BoundaryError("local_import", "operation_in_progress")
-            candidate = self._fresh_candidate(identity)
             store, registry = _selected_store(self.config)
-            existing = self._existing(store, identity)
+            existing = self._existing_candidate(store, identity, candidate)
             if existing is not None:
+                if candidate.get("recording_type") == "source3":
+                    self._prepare_source3_receipt(identity, candidate, self._source3_owner(store))
+                    try:
+                        self._source3_receipt(identity, candidate, existing, store)
+                        self._bind_source3_candidate(identity, existing, store)
+                        _sync(store, registry)
+                        self.operation = {**self.operation,
+                                          **self._completed(identity, existing, candidate)}
+                        self._save()
+                    except Exception as error:
+                        self._failed(identity, candidate, error)
+                    return self.status()
                 _sync(store, registry)
-                self.operation = {"schema": SCHEMA, "status": "completed", "candidate_id": identity,
-                                  "artifact_id": existing, "finished_at": _now()}
+                self.operation = self._completed(identity, existing, candidate)
                 self._save()
                 return self.status()
             owner = _selected_curation_owner(self.config)
@@ -221,7 +554,10 @@ class LocalRecordingImporter:
                 # pending row visible to the Gold inventory transaction.
                 owner.begin_source(identity)
             self.operation = {"schema": SCHEMA, "status": "pending", "candidate_id": identity,
-                              "started_at": _now()}
+                              "started_at": _now(),
+                              "recording_type": candidate.get("recording_type", "legacy_human"),
+                              **({"_owner": owner.identity} if owner is not None
+                                 and candidate.get("recording_type") == "source3" else {})}
             self._save()
             self.thread = threading.Thread(
                 target=self._run, args=(identity, candidate), daemon=True,
@@ -233,38 +569,48 @@ class LocalRecordingImporter:
         try:
             artifact_id = self._import(candidate_id, candidate)
             with self.lock:
-                self.operation = {**self.operation, "status": "completed",
-                                  "artifact_id": artifact_id, "finished_at": _now()}
+                self.operation = {**self.operation,
+                                  **self._completed(candidate_id, artifact_id, candidate)}
                 self._save()
         except Exception as error:
-            code = error.code if isinstance(error, BoundaryError) else "local_import_failed"
-            published = None
-            reconciliation_unknown = False
-            try:
-                store, _ = _selected_store(self.config)
-                published = self._existing(store, candidate_id)
-            except Exception:
-                reconciliation_unknown = True
-            with self.lock:
-                # Publication may have succeeded before an index or status failure.
-                state = ("published_index_unavailable" if published else
-                         "publication_unknown" if reconciliation_unknown else "failed")
-                self.operation = {**self.operation, "status": state,
-                                  "error_code": ("publication_state_unavailable"
-                                                 if reconciliation_unknown else code),
-                                  "finished_at": _now(),
-                                  **({"artifact_id": published} if published else {})}
-                self._save()
+            self._failed(candidate_id, candidate, error)
+
+    def _failed(self, candidate_id: str, candidate: dict[str, Any], error: Exception) -> None:
+        code = error.code if isinstance(error, BoundaryError) else "local_import_failed"
+        published = None
+        reconciliation_unknown = False
+        try:
+            store, _ = _selected_store(self.config)
+            published = self._existing_candidate(store, candidate_id, candidate)
+        except Exception:
+            reconciliation_unknown = True
+        with self.lock:
+            # Publication may have succeeded before an index or status failure.
+            state = ("published_index_unavailable" if published else
+                     "publication_unknown" if reconciliation_unknown else "failed")
+            self.operation = {**self.operation, "status": state,
+                              "error_code": ("publication_state_unavailable"
+                                             if reconciliation_unknown else code),
+                              "finished_at": _now(),
+                              **({"artifact_id": published} if published else {})}
+            self._save()
+
 
     def _import(self, candidate_id: str, candidate: dict[str, Any]) -> str:
         fresh = self._fresh_candidate(candidate_id)
         if fresh != candidate:
             raise BoundaryError("local_import", "candidate_changed_or_unavailable")
         store, registry = _selected_store(self.config)
-        existing = self._existing(store, candidate_id)
+        existing = self._existing_candidate(store, candidate_id, candidate)
         if existing is not None:
+            if candidate.get("recording_type") == "source3":
+                self._prepare_source3_receipt(candidate_id, candidate, self._source3_owner(store))
+                self._source3_receipt(candidate_id, candidate, existing, store)
+                self._bind_source3_candidate(candidate_id, existing, store)
             _sync(store, registry)
             return existing
+        if candidate.get("recording_type") == "source3":
+            return self._import_source3(candidate_id, candidate, store, registry)
         producer = source_identity(ROOT)
         labels = _labels(self.config)
         tool_directory, release_id = current_collection_tool(self.config)
@@ -330,3 +676,58 @@ class LocalRecordingImporter:
                 owner.published_source(candidate_id, artifact_id)
             _sync(store, registry)
             return artifact_id
+
+    def _import_source3(self, candidate_id: str, candidate: dict[str, Any],
+                        store: ManifestArtifactStore, registry: SQLiteRegistry) -> str:
+        from stpd.fullrun.ordered_source import publish_ordered_source_raw
+
+        original = _original_recorder_producer(candidate["recorder_source_revision"])
+        owner = self._source3_owner(store)
+        tool_directory, release_id = current_collection_tool(self.config)
+        if release_id != candidate["tool_release_id"]:
+            raise BoundaryError("local_import", "candidate_tool_changed")
+        tool = CollectionTool(tool_directory, release_id)
+        if not tool.supports_source_v3():
+            raise BoundaryError("local_import", "source3_tool_support_required")
+        self._prepare_source3_receipt(candidate_id, candidate, owner)
+        labels = _labels(self.config)
+        with tempfile.TemporaryDirectory(prefix="source3-recording-import-",
+                                         dir=self.config.state_dir) as name:
+            bundle = Path(name) / "bundle"
+            tool.pack_source_v3(candidate["source_directory"], bundle,
+                                labels["worker_id"], labels["campaign_id"])
+            if self._fresh_candidate(candidate_id) != candidate:
+                raise BoundaryError("local_import", "candidate_changed_during_pack")
+            verified = _verified_source3(bundle)
+            _source3_identity(bundle, candidate, verified)
+            if (verified.manifest["worker_id"] != labels["worker_id"]
+                    or verified.manifest["campaign_id"] != labels["campaign_id"]
+                    or verified.manifest["content_identity"]["packer_source_revision"]
+                    != tool.manifest["identity"]["source_revision"]):
+                raise BoundaryError("local_import", "packed_source3_tool_identity_mismatch")
+            self._source3_owner(store)
+            # The raw identity is deterministic, but the actual packing fact
+            # must precede publication so a crash cannot erase its provenance.
+            fact = {
+                "schema": SOURCE3_RECEIPT_SCHEMA, "candidate_id": candidate_id,
+                "session_id": candidate["session_id"], "timeline_id": candidate["timeline_id"],
+                "manifest_sha256": candidate["manifest_sha256"],
+                "close_sha256": candidate["close_sha256"],
+                "bundle_content_id": verified.content_id,
+                "registered_tool_release_id": release_id, "tool_invocation": "packed",
+                "packing_tool_release_id": release_id, "original_packing_receipt_id": None,
+                "human_origin_verified": False,
+            }
+            self.operation["_packing_fact"] = {
+                "candidate_id": candidate_id, "tool_release_id": release_id,
+                "closed_metadata": fact,
+            }
+            self._save()
+            raw = publish_ordered_source_raw(store, bundle, original)
+            self._source3_owner(store)
+            # Recovery matches the immutable bundle and original seal even if
+            # raw publication raised after writing its manifest.
+            self._source3_receipt(candidate_id, candidate, raw.artifact_id, store, packed=True)
+            owner.published_source(candidate_id, raw.artifact_id)
+            _sync(store, registry)
+            return raw.artifact_id

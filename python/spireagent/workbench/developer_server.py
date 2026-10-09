@@ -734,9 +734,7 @@ class Application:
                     self._recording_intent_pending = False
 
     def start_local_recording_import(self, candidate_id: object,
-                                     human_origin_attested: object) -> dict[str, Any]:
-        if human_origin_attested is not True:
-            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+                                     human_origin_attested: object = None) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_import", "running_instance_unavailable")
         try:
@@ -778,6 +776,21 @@ class Application:
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_dataset", "running_configuration_mismatch")
         return self.local_datasets.start_human_preview(artifact_ids)
+
+    def start_local_source3_dataset_preview(self, artifact_ids: object, cohort: object,
+                                          view: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_dataset", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_dataset", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_dataset", "running_configuration_mismatch")
+        return self.local_datasets.start_source3_preview(artifact_ids, cohort, view)
 
     def start_local_dataset_publish(self, preview_id: object) -> dict[str, Any]:
         if self.config_path is None:
@@ -1649,10 +1662,12 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=256)
-                    if set(body) != {"candidate_id", "human_origin_attested"}:
+                    if set(body) not in (
+                        {"candidate_id"}, {"candidate_id", "human_origin_attested"},
+                    ):
                         raise ValueError
                     value = app.start_local_recording_import(
-                        body["candidate_id"], body["human_origin_attested"],
+                        body["candidate_id"], body.get("human_origin_attested"),
                     )
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
@@ -1665,7 +1680,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
-                    maximum = 32768 if self.path == "/api/local-datasets/human-preview" else 256
+                    maximum = (32768 if self.path in {
+                        "/api/local-datasets/human-preview", "/api/local-datasets/source3-preview",
+                    } else 256)
                     body = self.json_body(maximum=maximum)
                     if self.path == "/api/local-datasets/preview":
                         if set(body) != {"artifact_id", "purpose", "paired_training"}:
@@ -1677,6 +1694,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         if set(body) != {"artifact_ids"}:
                             raise ValueError
                         value = app.start_local_human_dataset_preview(body["artifact_ids"])
+                    elif self.path == "/api/local-datasets/source3-preview":
+                        if set(body) != {"artifact_ids", "cohort", "view"}:
+                            raise ValueError
+                        value = app.start_local_source3_dataset_preview(**body)
                     elif self.path == "/api/local-datasets/publish":
                         if set(body) != {"preview_id"}:
                             raise ValueError
