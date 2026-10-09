@@ -29,6 +29,7 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.instance_lock import instance_lock
 from spireagent.workbench.trusted_recipes import (
+    NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
     structured_recipe_is_scoped,
     structured_recipe_run_schema,
@@ -232,7 +233,13 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     fenced_store = FencedStore(store, fence)
     if operation["mode"] == "start":
         source = store.get_manifest(operation["dataset_id"])
-        if source.parameters.value().get("partition_schema") == "stpd/source3-ordered-partition-v1":
+        if operation["recipe"] == NATIVE_SAMPLED_RECIPE:
+            from stpd.structured_profiles import verify_sampled_partition
+
+            dataset = verify_sampled_partition(store, source.artifact_id).dataset
+        elif source.parameters.value().get("partition_schema") == (
+            "stpd/source3-ordered-partition-v1"
+        ):
             from stpd.fullrun.ordered_source import verify_ordered_source_partition
             from stpd.ordered_source_spec import checked_view, recipe_view
 
@@ -258,6 +265,7 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
             dataset = parse_structured_dataset(b"".join(store.read_payload(payload)))
         if any(run.split != "train" for run in dataset.runs):
             raise BoundaryError("structured_child", "train_only_source_required")
+        from stpd.native_graph_spec import NativeGraphControl
         from stpd.ordered_source_spec import recipe_control
 
         run = prepare_structured_workload(
@@ -275,6 +283,7 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
             source_id=source.artifact_id,
             code_scope=scope,
             model_control=(
+                NativeGraphControl() if operation["recipe"] == NATIVE_SAMPLED_RECIPE else
                 recipe_control(operation["recipe"])
                 if operation["recipe"] in ORDERED_RECIPES
                 else None

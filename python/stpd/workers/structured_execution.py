@@ -55,6 +55,7 @@ from ..structured_code_scope import (
 from ..structured_profiles import (
     NATIVE_SCOPES,
     ORDERED_SCOPE,
+    common_sampled_source,
     native_experiment,
     native_input_schema,
     native_model_schema,
@@ -63,6 +64,8 @@ from ..structured_profiles import (
     parse_dataset,
     qualification,
     source_verification,
+    trained_source,
+    verify_training_partition,
 )
 from ..structured_workload_contracts import MAX_RESUME_ANCESTRY
 from .checkpoint_codec import decode_checkpoint
@@ -155,6 +158,8 @@ def _load(
         verified = verify_ordered_source_partition(store, source.artifact_id)
         if verified.dataset != dataset or verified.split != "train":
             raise BoundaryError("structured_workload", "source3_partition_dataset_binding")
+    elif common_sampled_source(dataset, scope):
+        verify_training_partition(store, source.artifact_id, dataset, scope)
     native = scope in NATIVE_SCOPES
     if (
         dataset.source_sha256 != info["source_sha256"]
@@ -196,10 +201,10 @@ def _load(
         raise BoundaryError("structured_workload", "training_input_metadata_mismatch")
     if (
         native
-        and scope != ORDERED_SCOPE
+        and scope != ORDERED_SCOPE and not common_sampled_source(dataset, scope)
         and source.parameters.value()
         != {
-            "schema": native_source_schema(scope),
+            "schema": native_source_schema(scope, dataset),
             "source_kind": dataset.source_kind,
             "source_sha256": dataset.source_sha256,
             "qualification": qualification(dataset),
@@ -471,7 +476,7 @@ def _completed(
         or model.producer != completed_producer
         or model_info["schema"]
         != (
-            native_model_schema(scope)
+            native_model_schema(scope, dataset)
             if native
             else SCOPED_MODEL_SCHEMA
             if scoped
@@ -523,13 +528,7 @@ def _completed(
             metadata["model_id"] != model_info["model_id"]
             or metadata["source"]
             != (
-                {
-                    "kind": dataset.source_kind,
-                    "data_sha256": dataset.source_sha256,
-                    "source_artifact_id": training.parent("source"),
-                    "training_input_id": training.artifact_id,
-                    "verification_identity": source_verification(dataset),
-                }
+                trained_source(dataset, scope, training.parent("source"), training.artifact_id)
                 if native
                 else {
                     "source_revision": run.producer.source_revision,
@@ -896,10 +895,13 @@ def execute_structured_workload(
             if native:
                 from ..policy.native_structured_export import (
                     export_native_trained_package,
+                    export_native_trained_sampled_package,
                     export_ordered_native_trained_package,
                 )
 
                 exporter = (
+                    export_native_trained_sampled_package
+                    if common_sampled_source(dataset, scope) else
                     export_ordered_native_trained_package
                     if scope == ORDERED_SCOPE
                     else export_native_trained_package
@@ -909,13 +911,8 @@ def execute_structured_workload(
                     package,
                     producer=publisher,
                     data_sha256=dataset.source_sha256,
-                    source={
-                        "kind": dataset.source_kind,
-                        "data_sha256": dataset.source_sha256,
-                        "source_artifact_id": training.parent("source"),
-                        "training_input_id": training.artifact_id,
-                        "verification_identity": source_verification(dataset),
-                    },
+                    source=trained_source(
+                        dataset, scope, training.parent("source"), training.artifact_id),
                     training={"config": asdict(config), "metrics": engine.metrics()},
                     provenance={
                         "training_producer": run.producer.to_dict(),

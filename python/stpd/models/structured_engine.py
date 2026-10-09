@@ -104,7 +104,7 @@ def execution_identity(
         **({"input_spec": dataset.input_spec.value()} if native and dataset.input_spec else {}),
         **(
             {
-                "source_schema": native_source_schema(code_scope),
+                "source_schema": native_source_schema(code_scope, dataset),
                 "source_verification": source_verification(dataset),
             }
             if native

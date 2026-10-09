@@ -20,6 +20,7 @@ from spireagent.workbench.developer import ROOT
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
+    NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
     structured_recipe_is_scoped,
     structured_recipe_run_schema,
@@ -96,6 +97,16 @@ class StructuredRecipeAdapter:
 
         source = store.get_manifest(source_id)
         info = source.parameters.value()
+        if self.recipe_id == NATIVE_SAMPLED_RECIPE:
+            from stpd.structured_profiles import verify_sampled_partition
+
+            verified = verify_sampled_partition(store, source_id)
+            if owner.ledger.dataset(source_id) != ("training", set(verified.runs)):
+                raise BoundaryError("local_training", "source_not_reserved_for_training")
+            if not any(step.chosen_action_id is not None
+                       for run in verified.dataset.runs for step in run.steps):
+                raise BoundaryError("local_training", "sampled_no_eligible_N_for_training")
+            return verified.dataset
         if info.get("partition_schema") == "stpd/source3-ordered-partition-v1":
             from stpd.fullrun.ordered_source import verify_ordered_source_partition
             from stpd.ordered_source_spec import checked_view, recipe_view
@@ -177,7 +188,11 @@ class StructuredRecipeAdapter:
         protocol_source = "partition_schema" in store.get_manifest(source_id).parameters.value()
         ordered_source = store.get_manifest(source_id).parameters.value().get(
             "partition_schema") == "stpd/source3-ordered-partition-v1"
-        if ordered_source:
+        if self.recipe_id == NATIVE_SAMPLED_RECIPE and not ordered_source:
+            if operation["mode"] == "start":
+                owner.record_verified_native_agent_sampled_training_use(store, source_id, identity)
+            owner.require_verified_native_agent_sampled_training_use(store, source_id, identity)
+        elif ordered_source:
             if operation["mode"] == "start":
                 owner.record_verified_ordered_training_use(store, source_id, identity)
             owner.require_verified_ordered_training_use(store, source_id, identity)

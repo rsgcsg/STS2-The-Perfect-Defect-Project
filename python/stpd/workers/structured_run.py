@@ -39,6 +39,7 @@ from ..structured_profiles import (
     CONTROL_SCOPES,
     NATIVE_SCOPES,
     ORDERED_SCOPE,
+    common_sampled_source,
     native_experiment,
     native_input_schema,
     native_run_schema,
@@ -48,6 +49,7 @@ from ..structured_profiles import (
     qualification,
     source_verification,
     validate_profile,
+    verify_training_partition,
 )
 from .checkpoint_codec import encode_checkpoint
 from .reporting import RunReporter
@@ -73,6 +75,9 @@ def prepare_structured_run(
     if (model_control is not None) != (code_scope in CONTROL_SCOPES):
         raise BoundaryError("structured_run", "control_scope_mismatch")
     native = validate_profile(dataset, code_scope)
+    common = common_sampled_source(dataset, code_scope)
+    if common and model_control != NativeGraphControl():
+        raise BoundaryError("structured_run", "sampled_k1d96_carry_required")
     if code_scope == ORDERED_SCOPE:
         from ..fullrun.ordered_source import verify_ordered_source_partition
 
@@ -81,6 +86,8 @@ def prepare_structured_run(
         verified = verify_ordered_source_partition(store, source_id)
         if verified.dataset != dataset or verified.split != "train":
             raise BoundaryError("structured_run", "source3_partition_dataset_binding")
+    elif common:
+        verify_training_partition(store, source_id, dataset, code_scope)
     scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     if (
         parse_dataset(dataset.source_bytes, code_scope) != dataset
@@ -106,7 +113,7 @@ def prepare_structured_run(
             raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
         execution_parameters = {"operation_id": operation_id, "execution_identity": identity}
     source_info = {
-        "schema": native_source_schema(code_scope) if native else SOURCE_SCHEMA,
+        "schema": native_source_schema(code_scope, dataset) if native else SOURCE_SCHEMA,
         "source_kind": dataset.source_kind,
         "source_sha256": dataset.source_sha256,
         "qualification": qualification(dataset),
@@ -137,7 +144,7 @@ def prepare_structured_run(
             or payload.sha256 != dataset.source_sha256
             or b"".join(store.read_payload(payload)) != dataset.source_bytes
             or native
-            and code_scope != ORDERED_SCOPE
+            and code_scope != ORDERED_SCOPE and not common
             and (
                 source.kind != "dataset"
                 or source.parameters.value() != source_info
