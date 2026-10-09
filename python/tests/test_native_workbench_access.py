@@ -263,3 +263,29 @@ def test_launcher_republication_requires_explicit_native_binding_revalidation(
                 NativeBootstrap.read(root, app.config_path)
     finally:
         app.close()
+
+
+def test_installer_reenable_rotates_even_when_neither_peer_observed_disable(tmp_path, monkeypatch):
+    from tools import install_developer_kit as installer
+
+    app, pair, root, secret, peer = paired_app(tmp_path, monkeypatch)
+    try:
+        selected = json.loads((root / "launcher.json").read_bytes())
+        monkeypatch.setattr(installer, "_launcher_directory", lambda: root)
+        monkeypatch.setattr(installer, "_launcher_binding", lambda *_: selected)
+        prepared = {"mod_sha256": "8" * 64}
+        before = (root / "native-access.json").read_bytes()
+        installer.configure_native_access(tmp_path, app.config_path, prepared, enabled=True)
+        assert (root / "native-access.json").read_bytes() == before
+        installer.configure_native_access(tmp_path, app.config_path, prepared, enabled=False)
+        installer.configure_native_access(tmp_path, app.config_path, prepared, enabled=True)
+        renewed = (root / "native-access.json").read_bytes()
+        new_secret = json.loads(renewed)["secret"]
+        assert new_secret != secret
+        with pytest.raises(BoundaryError, match="native_selected_workbench_changed"):
+            app.native_access.authenticate(pair.headers(secret))
+        installer.configure_native_access(tmp_path, app.config_path, prepared, enabled=True)
+        assert (root / "native-access.json").read_bytes() == renewed
+        assert peer.calls == []
+    finally:
+        app.close()

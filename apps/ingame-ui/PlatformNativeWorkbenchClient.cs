@@ -35,19 +35,24 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
     };
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly Func<PlatformNativeWorkbenchConnection, bool> _current;
 
-    internal PlatformNativeWorkbenchClient(HttpClient? client = null)
+    internal PlatformNativeWorkbenchClient(HttpClient? client = null,
+        Func<PlatformNativeWorkbenchConnection, bool>? current = null)
     {
         _http = client ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false });
         _ownsHttp = client is null;
+        _current = current ?? PlatformNativeWorkbenchConnection.IsCurrent;
         if (_ownsHttp) _http.Timeout = Timeout.InfiniteTimeSpan;
     }
 
     public void Dispose() { if (_ownsHttp) _http.Dispose(); }
 
-    private static HttpRequestMessage Request(PlatformNativeWorkbenchConnection connection, HttpMethod method, string route, bool originalRecovery = false)
+    private HttpRequestMessage Request(PlatformNativeWorkbenchConnection connection, HttpMethod method, string route, bool originalRecovery = false)
     {
         connection.Binding.Validate();
+        if (!originalRecovery && !_current(connection))
+            throw new InvalidOperationException("native_pair_changed");
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (connection.Binding.ExpiresAt <= now && (!originalRecovery || now > connection.Binding.ExpiresAt + 600))
             throw new InvalidOperationException("native_pair_expired_or_missing");
@@ -151,6 +156,17 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
             catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException or IOException)
             { return new(requestId, "unconfirmed", null, "native_command_unconfirmed"); }
         }
+    }
+
+    internal async Task<string> ExternalAsync(PlatformNativeWorkbenchConnection connection,
+        string page, int offset, string? contextId, CancellationToken token = default)
+    {
+        JsonElement view = await ViewAsync(connection, page, offset, contextId, token).ConfigureAwait(false);
+        JsonElement context = view.GetProperty("context");
+        if (!_current(connection) || (contextId is not null
+            && (!context.TryGetProperty("id", out JsonElement identity) || identity.GetString() != contextId)))
+            throw new InvalidOperationException("native_external_context_changed");
+        return ExternalUrl(connection, context);
     }
 
     internal static string ExternalUrl(PlatformNativeWorkbenchConnection connection, JsonElement context)

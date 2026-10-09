@@ -44,7 +44,13 @@ remove the bootstrap to revoke access; never expose its contents in status/logs.
 The trust boundary is the existing trusted local OS account, not hostile code
 already running as that account.
 
-After legacy registration, Workbench submits `POST /v1/workbench/native-register`
+Selected Workbench submits `POST /v1/workbench/native-register` independently of
+legacy browser registration. The latter remains non-authorizing presentation:
+its registration, URL and unregister cannot select or revoke a signed peer.
+A foreign legacy Workbench can coexist unchanged. Before signing, Workbench
+revalidates selected clean source/lock, saved ProjectConfig, runtime record,
+instance and own server port. It reads the current game runtime from the bounded
+existing bridge status and never signs an arbitrary callback origin. It submits
 to the fixed game bridge. Exact request fields are `schema=sts2.platform/native-workbench-pair-1`,
 `runtime_instance_id`, `workbench_instance_id`, `configuration_id`, `workbench_url`,
 `pair_id`, `expires_at`, `signature`. IDs/hashes use bounded lowercase hex,
@@ -52,8 +58,9 @@ All signing/bootstrap string fields reject control characters before hashing;
 Runtime ID is bounded 1..128 UTF-8 chars without controls, origin is exactly
 `http://127.0.0.1:<port>/`, expiry integer is now+1..600 seconds. No Origin header,
 redirect, proxy, arbitrary port scan or broad Workbench control token is used.
-The bridge requires the current exact legacy registration, matching loaded
-artifact and bootstrap opt-in before accepting the pair.
+The bridge requires matching loaded artifact and selected bootstrap opt-in before
+accepting the pair. A different live native context conflicts independently of
+legacy presentation. Invalid selection, signature, clock or expiry fails closed.
 
 Signing bytes are UTF-8 lines with one final newline, in this exact order:
 role, Runtime ID, Workbench instance, configuration ID, Workbench URL, pair ID,
@@ -63,15 +70,56 @@ secret bytes. Distinct roles prevent response/token substitution. ACK returns
 exact `schema=sts2.platform/native-workbench-pair-ack-1`, the six binding fields
 and `signature`. Workbench verifies before installing its active pair. The Mod
 stores the derived scoped bearer only in an in-process connection accessible to
-its native UI; public bridge status/health never expose it. Repeated registration
-of the exact pair is idempotent; renewal authenticates a fresh bounded pair.
+its native UI; public bridge status/health never expose it. An exact active pair
+duplicate is idempotent; same-context renewal requires strictly later expiry.
+Equal-expiry different pairs and older renewals cannot replace it. The existing
+connection owner serializes acceptance, current proof and exact close with one
+lock and a protocol-clock high-water; clock regression never restores access.
+
+`POST /v1/workbench/native-unregister` is authentication cleanup only. JSON body
+contains exactly the six binding fields, at most 4096 bytes, with the existing
+native-access bearer and four exact headers. Current bootstrap, game and ordinary
+expiry apply. Exact current full-pair close terminally retires its entire
+credential/game/Workbench/config/URL context across all pair IDs. With no current
+pair, authenticated close retires the possibly accepted candidate and returns
+`already_closed`. A different current pair returns 409 without changing it.
+Response is exactly `schema=sts2.platform/native-workbench-close-1`,
+`status=closed|already_closed`, `binding=<six fields>`; no secret/bearer and no
+job/controller completion claim.
+
+Retirement remains terminal after 600 seconds for that credential/game generation.
+Delayed registration, in-flight later renewal and freshly signed reuse of a closed
+context are rejected. At most 32 contexts are retired; admission reserves a free
+retirement entry before installing a new current context. Renewal and duplicate
+close consume no additional entry. Entries are never evicted by slot replacement,
+time or capacity pressure. Further new contexts fail closed at capacity until an
+explicit new secret or confirmed new game runtime invalidates all old requests
+before reset. A new Workbench instance is a new bounded context; reopening the
+same closed context requires a new credential. This is ephemeral authentication,
+not an action/job/event ledger.
+
+Before graceful close, Workbench snapshots current/pending possibly accepted pair,
+peer and lifecycle generation, fences candidate creation/sign/send/install, and
+revokes local access. Late ACK cannot reinstall it. Bounded join timeout retains
+revocation and unconfirmed cleanup. Once in-flight registration is terminal,
+cleanup addresses at most two exact snapshotted candidates, including a lost ACK,
+without creating a fresh pair or clearing operation uncertainty. A close may be
+reconciled idempotently; conflict never becomes replacement closure.
+
+Explicit installer `native-access` disabled-to-enabled creates a fresh secret,
+even when launcher/Mod/config path match. Unchanged enabled-to-enabled stays
+idempotent; accepted rebind creates a new grant. Same-path configuration selection
+changes use explicit disable/enable. Ordinary registration and launcher publication
+never rotate credentials. The existing private native-authorizer callback captures
+the authenticated credential generation at admission so a fresh grant cannot
+authorize old pending Load/Auto. No model DTO, admission rule or action is added.
 
 Native requests carry `Authorization: Bearer <native-access-v1 HMAC>` and
 `X-STS2-Game-Instance-ID`, `X-SpireAgent-Workbench-Instance-ID`,
 `X-SpireAgent-Configuration-ID`, `X-SpireAgent-Pair-ID`. Server validates constant-time
 token, active pair, expiry, current saved/runtime configuration and exact current
-game pair before every dispatch. Restart/config change/expiry/unregister revokes
-that pair. No CORS, cookies, CSRF values, Hub credentials or admin token enter the
+game pair before every dispatch. Restart/config change/expiry or signed close
+revokes ordinary access. No CORS, cookies, CSRF values, Hub credentials or admin token enter the
 native channel. Hub and curation/use/Gold authorities still revalidate actions.
 Local signed-out access is supported; local pairing does not grant team access.
 
@@ -151,6 +199,13 @@ unconfirmed fence scoped to exact owner/context; status polling cannot erase it
 or automatically resubmit. Auth renewal/restart preserves visible unconfirmed-command fences and selected
 owner/context references; a new pair never clears uncertainty or replays a command.
 Existing direct Policy Human/Stop remains available when pairing is stale.
+The global external-window header is explicitly the legacy compatibility browser
+entry and keeps its existing URL/health/launcher behavior. A native object's
+external link instead re-reads selected current connection, verifies the existing
+authenticated bounded view/context, then revalidates selection before opening only
+its typed paired-origin link. Stale native links never fall back to a foreign
+legacy URL. An old Python client's unsigned graceful unregister no longer clears
+native access; its native slot may remain until expiry, at most 600 seconds.
 Reopen reads owner state; supported explicit owner
 reconcile/recovery is required. Closing panel cancels observation, not an admitted
 job. Game exit leaves independent Workbench jobs alone and never promotes them
