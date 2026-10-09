@@ -144,6 +144,21 @@ persisted pending/completed/failed/interrupted status; page refresh never retrie
 This local manifest has no Hub receipt and is not itself a Dataset or training input.
 The separate purpose-bound Dataset path below rechecks the source before selecting samples.
 
+Closed Source 3 recordings use the same **验证并导入本机** action with Human attestation
+disabled; the request sends `human_origin_attested: false` and preserves the originals'
+declared origins. Unsupported CollectionTool capability shows its owner's reason and blocks
+import. Open the verified raw artifact, or select raw Source 3 artifacts across catalog pages,
+then explicitly choose an owner-advertised cohort and data view in **从 Source 3 录制准备训练例子**.
+The default view, labels and history/qualification scope come from `source3_support`; the product
+default is the sampled carry view. **检查所选 Source 3 训练例子** submits exactly the selected raw IDs,
+cohort and view. The resulting counts, exclusions and exact-delivered N coverage stay separate
+from legacy Human labels and canonical transitions. Changing any selection invalidates the
+save action. **确认保存训练用途数据集** uses the existing checked-preview publication and use-reservation
+owner; failed/interrupted publication requires explicit reconciliation. Open the resulting
+partition for the existing explicit training controls, with the owner's matching recommended
+recipe selected when advertised by the training service. Imported originals, preview and
+training-use reservation do not start training, upload data or prove Human origin or model quality.
+
 Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
 The local browser POST starts one bounded background read of the selected store; GET only reads
 the current in-memory status and never starts projection. The command rechecks the manifest,

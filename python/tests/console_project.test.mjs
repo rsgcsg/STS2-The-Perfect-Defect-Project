@@ -6888,3 +6888,224 @@ test("structured v1 export keeps its actual structured type and owner profile", 
   assert.equal(action(page,"use-local-model").disabled,false);
   assert.equal(post(env.calls).length,0);
 });
+
+const source3BrowserSupport = {
+  source_profile:"native-logical-source-v3", cohorts:["agent_protocol", "declared_human"],
+  default_cohort:"declared_human", default_view:"decision_sample_carry",
+  views:[{view:"publication_memory",label:"Owner published history",
+    history_scope:"original_admitted_attachment_epoch_prefix",qualification:"owner-published",recommended_recipe_id:"owner-published-recipe"},
+  {view:"decision_sample_carry",label:"Owner sampled memory",
+    history_scope:"declared_original_input_basis_sampled_segments",qualification:"owner-sampled",recommended_recipe_id:"owner-sampled-recipe"}],
+};
+const source3Raw = artifact => ({kind:"evidence",artifact_id:artifact,
+  parameters:{schema:"stpd/source3-original-bundle-v1",source_kinds:["agent_protocol", "unknown"],human_origin_verified:false}});
+const source3Preview = (artifact, extra = {}) => ({kind:"ordered_source3",status:"preview_ready",
+  artifact_id:artifact,artifact_ids:[artifact],cohort:"declared_human",view:"decision_sample_carry",
+  sample_type:"ordered_source3",source_kind:"declared_human",source_view:"decision_sample_carry",
+  selected:3,accepted_labels:3,can_publish:true,preview_id:"1".repeat(32),
+  history_scope:"declared_original_input_basis_sampled_segments",qualification:"owner-sampled",
+  recommended_recipe_id:"owner-sampled-recipe",counts:{eligible_unique_N:3},
+  N_coverage:{cohort:"declared_human",eligible:3,denominator:4},exclusions:{unknown_delivery:1},
+  human_origin_verified:false,split_status:"not_reserved",...extra});
+function source3BrowserEnv({artifact = id("a"), detail = true, operation = {status:"idle"},
+  support = source3BrowserSupport, availability = "ready", csrf = "source3-csrf",
+  items = [source3Raw(artifact)], handler = () => emptyList()} = {}) {
+  return setup({identity:{status:"local_only"},view:"local-workspace",query:detail ? `&id=${artifact}` : "",
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready",curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return source3Raw(artifact);
+      if (url.startsWith("/api/local-workspace?")) return {items,total:items.length};
+      if (url === "/api/local-datasets/status") return {schema:"stpd/local-dataset-operation-v1",
+        availability,source3_support:support,csrf_token:csrf,
+        operation:typeof operation === "function" ? operation() : operation};
+      return handler(url, options);
+    }});
+}
+
+test("Source3 import preserves original declarations without Human attestation and blocks unsupported tools", async () => {
+  const supported = id("a"), blocked = id("b"), legacy = id("c");
+  const env = setup({identity:{status:"local_only"},view:"local-workspace",handler:async url => {
+    if (url === "/api/local-workspace/managed") return {status:"ready"};
+    if (url.startsWith("/api/local-workspace?")) return emptyList();
+    if (url === "/api/local-recordings") return {status:"ready",candidate_count:3,candidates:[
+      {candidate_id:supported,session_id:"source3-a",recording_type:"source3",created_at:"owner-created-time",import_supported:true},
+      {candidate_id:blocked,session_id:"source3-b",recording_type:"source3",import_supported:false,import_reason:"source3_tool_support_required"},
+      {candidate_id:legacy,session_id:"legacy",recording_type:"legacy_human"}]};
+    if (url === "/api/local-recordings/import") return {status:"pending"};
+    return emptyList();
+  }});
+  await action(await env.render(), "read-local-recordings").onclick();
+  const page = await env.render();
+  const choice = field(page,"local-recording-selection"), checkbox = field(page,"local-recording-attestation");
+  const button = action(page,"import-local-recording");
+  choice.value = legacy; choice.onchange(); checkbox.checked = true; checkbox.onchange();
+  assert.equal(button.disabled,false);
+  choice.value = blocked; choice.onchange();
+  assert.equal(checkbox.checked,false); assert.equal(checkbox.disabled,true); assert.equal(button.disabled,true);
+  assert.match(text(page),/source3_tool_support_required/);
+  await button.onclick(); assert.equal(post(env.calls).length,0);
+  choice.value = supported; choice.onchange();
+  assert.equal(checkbox.disabled,true); assert.equal(button.disabled,false);
+  assert.match(text(page),/owner-created-time/); assert.match(text(page),/原始来源声明/);
+  await button.onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{candidate_id:supported,human_origin_attested:false});
+  choice.value = legacy; choice.onchange();
+  assert.equal(checkbox.disabled,false); assert.equal(checkbox.checked,false); assert.equal(button.disabled,true);
+});
+
+test("Source3 raw detail uses owner sampled default and explicit exact preview, publication and result link", async () => {
+  const artifact = id("a"), partition = id("f");
+  let operation = {status:"idle"};
+  const env = source3BrowserEnv({artifact,operation:() => operation,handler:async (url, options) => {
+    if (url === "/api/local-datasets/source3-preview") {
+      assert.deepEqual(body({options}),{artifact_ids:[artifact],cohort:"declared_human",view:"decision_sample_carry"});
+      operation = source3Preview(artifact); return {status:"pending"};
+    }
+    if (url === "/api/local-datasets/publish") {
+      assert.deepEqual(body({options}),{preview_id:"1".repeat(32)});
+      operation = source3Preview(artifact,{status:"completed",result_artifact_id:partition,actual_training_use:false});
+      return {status:"pending"};
+    }
+    throw new Error(`unexpected Source3 route ${url}`);
+  }});
+  let page = await env.render();
+  assert.equal(field(page,"local-source3-view").value,"decision_sample_carry");
+  assert.equal(field(page,"local-source3-cohort").value,"declared_human","content origins do not override the owner's cohort default");
+  assert.match(text(page),/agent_protocol · unknown/);
+  assert.match(text(page),/declared_original_input_basis_sampled_segments/);
+  assert.match(text(page),/Owner sampled memory/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(env.calls.some(call => /local-recordings\/preview|local-training|upload/.test(call.url)),false);
+  await action(page,"preview-source3-dataset").onclick();
+  page = await env.render();
+  assert.match(text(page),/unknown_delivery/); assert.match(text(page),/owner-sampled-recipe/);
+  assert.equal(post(env.calls).length,1);
+  await action(page,"publish-source3-dataset").onclick();
+  page = await env.render();
+  assert.match(text(page),/尚未开始训练/);
+  const result = find(page,item => item.textContent === "打开 Source 3 训练数据集");
+  assert.match(result.href,new RegExp(partition));
+  assert.deepEqual(post(env.calls).map(call => call.url),["/api/local-datasets/source3-preview","/api/local-datasets/publish"]);
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"source3-csrf");
+});
+
+test("Source3 selection changes invalidate preview even if restored, and retain cross-page source selection", async () => {
+  const first = id("a"), second = id("b");
+  const env = source3BrowserEnv({detail:false,items:[source3Raw(first),source3Raw(second)]});
+  let page = await env.render();
+  assert.equal(action(page,"preview-source3-dataset").disabled,true);
+  for (const artifact of [second,first]) {
+    const checkbox = field(page,`local-source3-source-${artifact}`); checkbox.checked = true; checkbox.onchange();
+  }
+  assert.equal(action(page,"preview-source3-dataset").disabled,false);
+  await action(page,"local-workspace-category-datasets").onclick();
+  page = await env.render();
+  assert.equal(field(page,`local-source3-source-${first}`).checked,true);
+  assert.equal(field(page,`local-source3-source-${second}`).checked,true);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{artifact_ids:[first,second],cohort:"declared_human",view:"decision_sample_carry"});
+
+  for (const controlName of ["local-source3-cohort", "local-source3-view", `local-source3-source-${first}`]) {
+    const matching = source3BrowserEnv({operation:source3Preview(first)});
+    const current = await matching.render(), button = action(current,"publish-source3-dataset");
+    const control = field(current,controlName), original = control.value;
+    if (control.type === "checkbox") control.checked = false;
+    else control.value = controlName.endsWith("cohort") ? "agent_protocol" : "publication_memory";
+    control.onchange(); assert.equal(button.disabled,true);
+    if (control.type === "checkbox") control.checked = true;
+    else control.value = original;
+    control.onchange(); await button.onclick();
+    assert.equal(post(matching.calls).length,0,"restoring controls never reuses an invalidated preview");
+  }
+});
+
+for (const override of [
+  {availability:"recovery_required"}, {csrf:null}, {support:null},
+  {operation:{status:"pending"}},
+  {operation:source3Preview(id("a"),{status:"failed",can_publish:false,recovery_available:true})},
+]) test(`Source3 blocked preparation remains GET-only: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv(override), page = await env.render();
+  const preview = walk(page).find(item => item.dataset?.action === "preview-source3-dataset");
+  if (preview) { assert.equal(preview.disabled,true); await preview.onclick(); }
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const override of [
+  {artifact_ids:[id("b")]}, {cohort:"agent_protocol"}, {view:"publication_memory"},
+  {sample_type:"human_input"}, {source_view:"publication_memory"},
+  {can_publish:false,selected:0,accepted_labels:0,error_code:"no_eligible_source3_N"},
+]) test(`Source3 publication refuses stale or ineligible result: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv({operation:source3Preview(id("a"),override)}), page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "publish-source3-dataset"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const status of ["failed", "interrupted"])
+  test(`Source3 publication recovery reconciles exact ${status} preview despite can_publish false`, async () => {
+    const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+      status,can_publish:false,recovery_available:true,error_code:"publish_failed",
+    })});
+    const page = await env.render();
+    assert.equal(action(page,"preview-source3-dataset").disabled,true);
+    assert.match(text(page),/核对上次 Source 3 保存结果/);
+    assert.equal(post(env.calls).length,0,"reading a recoverable failure never retries publication");
+    await action(page,"publish-source3-dataset").onclick();
+    assert.equal(post(env.calls).length,1);
+    assert.deepEqual(body(post(env.calls)[0]),{preview_id:"1".repeat(32)});
+    assert.equal(post(env.calls)[0].url,"/api/local-datasets/publish");
+    assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"source3-csrf");
+  });
+
+for (const override of [
+  {recovery_available:false,error_code:"publication_recovery_required"},
+  {recovery_available:undefined,error_code:"publication_recovery_required"}, {preview_id:null},
+  {artifact_ids:[id("b")]}, {cohort:"agent_protocol"}, {view:"publication_memory"},
+  {sample_type:"human_input"}, {source_kind:"agent_protocol"}, {source_view:"publication_memory"},
+]) test(`Source3 publication recovery rejects unavailable permission or mismatched preview: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+    status:"failed",can_publish:false,recovery_available:true,error_code:"publish_failed",...override,
+  })});
+  const page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "publish-source3-dataset"),false);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+test("Source3 saved partition exposes existing typed training with matching owner recipe and no automatic training", async () => {
+  const artifact = id("f");
+  const env = setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+    trainingCapabilitiesData:{schema:"spireagent/training-capabilities-v1",automatic_retry:false,
+      placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+      recipes:["unrelated-recipe","owner-sampled-recipe"].map(recipe_id => ({recipe_id,placement_ids:["local-cpu"],
+        dependencies_available:true,supported_actions:[],config_defaults:{steps:3},config_fields:{},limits:{}}))},
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return {kind:"dataset",artifact_id:artifact,
+        parameters:{schema:"stpd/source3-ordered-native-training-source-v1",partition_schema:"stpd/source3-ordered-partition-v1",
+          qualification:"owner-sampled",source_kind:"agent_protocol"}};
+      if (url === "/api/local-training/status") return {schema:"stpd/local-training-operation-v1",
+        availability:"ready",operation:{status:"idle"},csrf_token:"train-csrf"};
+      if (url === "/api/local-datasets/status") return {source3_support:source3BrowserSupport};
+      if (url === "/api/local-training/start") return {status:"pending"};
+      throw new Error(`unexpected partition route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page),/明确开始本机训练/);
+  assert.equal(field(page,"local-training-recipe").value,"owner-sampled-recipe");
+  assert.equal(post(env.calls).length,0);
+  await action(page,"start-local-training").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.equal(post(env.calls)[0].url,"/api/local-training/start");
+  assert.equal(body(post(env.calls)[0]).source_id,artifact);
+  assert.equal(body(post(env.calls)[0]).recipe_id,"owner-sampled-recipe");
+});
+
+test("Source3 data preview uses new owner-advertised choices without browser taxonomy copies", async () => {
+  const artifact = id("a"), support = {cohorts:["owner-new-cohort"],default_cohort:"owner-new-cohort",
+    default_view:"owner-new-view",views:[{view:"owner-new-view",label:"Owner new view label",history_scope:"Owner history contract"}]};
+  const env = source3BrowserEnv({support}), page = await env.render();
+  assert.match(text(page),/Owner new view label/); assert.match(text(page),/Owner history contract/);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{artifact_ids:[artifact],cohort:"owner-new-cohort",view:"owner-new-view"});
+  assert.equal(post(env.calls).length,1);
+});
