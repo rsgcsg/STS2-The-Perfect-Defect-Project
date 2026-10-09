@@ -7,11 +7,11 @@ import copy
 import hashlib
 import json
 import re
-import sys
 from collections import deque
 from pathlib import Path
 
 import pytest
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_native_public_teacher import action, observation
 
 from spireagent.json_boundary import BoundaryError
@@ -333,7 +333,6 @@ def test_genuine_application_shared_start_close_and_independent_N(collection):
     assert isinstance(seen["apps"][0], Application)
     original = json.loads((request.output / "original-result-0001.json").read_text())
     assert original["result"]["effect"] == "unknown"
-    assert "torch" not in sys.modules
     assert report["source_final_status"]["source"]["inputs"] == 0
 
 
