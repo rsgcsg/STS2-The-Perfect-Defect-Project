@@ -22,6 +22,7 @@ from ..native_code_scope import is_native_model_schema as is_native_model_schema
 from ..native_graph_spec import NativeGraphControl, checked_control, optional_control
 from ..native_sampled_carry_spec import (
     FEATURE_PROJECTION,
+    sampled_agent_execution_policy,
     sampled_agent_spec,
 )
 from ..native_sampled_carry_spec import (
@@ -49,6 +50,7 @@ from ..ordered_source_spec import (
 from ..ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from ..ordered_source_spec import PACKAGE_SCHEMA as ORDERED_PACKAGE_SCHEMA
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
+from .native_operational_outcome import checked_execution_policy
 from .native_task import ready_summary_task_spec
 from .structured_export import GRAPH, MAX_MANIFEST_BYTES, MAX_WEIGHTS_BYTES, _regular_bytes
 
@@ -94,14 +96,17 @@ def native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any
 
 
 def ordered_native_agent_spec(
-    model_control: NativeGraphControl | None, *, view: str = DEFAULT_VIEW
+    model_control: NativeGraphControl | None, *, view: str = DEFAULT_VIEW,
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Only the new Source3 package adopts the explicit ready-summary task."""
     control = optional_control(model_control)
     if control is None:
         raise BoundaryError("native_package", "source3_trained_control_required")
     if view == SAMPLED_VIEW:
-        return sampled_agent_spec(control)
+        return sampled_agent_spec(control, execution_policy=execution_policy)
+    if execution_policy is not None:
+        raise BoundaryError("native_package", "sampled_execution_policy_required")
     return {**native_agent_spec(control), "version": "1.2.0",
             "task_spec": ready_summary_task_spec()}
 
@@ -285,6 +290,7 @@ def export_ordered_native_trained_package(
     training: dict[str, Any],
     source: dict[str, Any],
     provenance: dict[str, Any],
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Separate recorded Source3 package; synthetic package admission stays strict."""
     return _export_package(
@@ -296,16 +302,19 @@ def export_ordered_native_trained_package(
         source=source,
         provenance=provenance,
         ordered=True,
+        execution_policy=execution_policy,
     )
 
 
 def export_native_trained_sampled_package(
     model: StructuredM2, destination: Path, *, producer: Producer, data_sha256: str,
     training: dict[str, Any], source: dict[str, Any], provenance: dict[str, Any],
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One sampled Student package with a closed source-specific validation union."""
     return _export_package(model, destination, producer=producer, data_sha256=data_sha256,
-                           training=training, source=source, provenance=provenance, common=True)
+                           training=training, source=source, provenance=provenance, common=True,
+                           execution_policy=execution_policy)
 
 
 def _export_package(
@@ -319,6 +328,7 @@ def _export_package(
     provenance: dict[str, Any] | None,
     ordered: bool = False,
     common: bool = False,
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     digest(data_sha256, "native_package.data_sha256")
     if not isinstance(producer, Producer) or not isinstance(training, dict) or model.seed != 0:
@@ -347,6 +357,9 @@ def _export_package(
         raise BoundaryError("native_package", "standalone_provenance_forbidden")
     view = (SAMPLED_VIEW if common else
             _ordered_view(source) if ordered and source is not None else DEFAULT_VIEW)
+    policy = checked_execution_policy(execution_policy) if execution_policy is not None else None
+    if policy is not None and view != SAMPLED_VIEW:
+        raise BoundaryError("native_package", "sampled_execution_policy_required")
     body = {
         "schema": (
             COMMON_PACKAGE_SCHEMA if common else ORDERED_PACKAGE_SCHEMA
@@ -361,8 +374,10 @@ def _export_package(
         "projection": FEATURE_PROJECTION if view == SAMPLED_VIEW else PROJECTION,
         "input_spec": view_input_spec(view) if ordered or common else INPUT_SPEC,
         "agent_spec": (
-            sampled_agent_spec(control) if common and control is not None else
-            ordered_native_agent_spec(control, view=view) if ordered else native_agent_spec(control)
+            sampled_agent_spec(control, execution_policy=policy)
+            if common and control is not None else
+            ordered_native_agent_spec(control, view=view, execution_policy=policy)
+            if ordered else native_agent_spec(control)
         ),
         "state_format_version": SAMPLED_STATE_FORMAT if view == SAMPLED_VIEW else
             STATE_FORMAT if control is None else GRAPH_STATE_FORMAT,
@@ -457,6 +472,8 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
             raise BoundaryError("native_package", "source3_trained_control_required")
     view = (SAMPLED_VIEW if common else
             _ordered_view(ordered_source) if ordered_source is not None else DEFAULT_VIEW)
+    policy = (sampled_agent_execution_policy(value["agent_spec"], control)
+              if view == SAMPLED_VIEW and control is not None else None)
     if (
         encoded != json_bytes(value)
         or value["schema"]
@@ -475,8 +492,9 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
         or json_bytes(value["input_spec"]) != json_bytes(
             view_input_spec(view) if ordered or common else INPUT_SPEC)
         or json_bytes(value["agent_spec"]) != json_bytes(
-            sampled_agent_spec(control) if common and control is not None else
-            ordered_native_agent_spec(control, view=view)
+            sampled_agent_spec(control, execution_policy=policy)
+            if common and control is not None else
+            ordered_native_agent_spec(control, view=view, execution_policy=policy)
             if ordered else native_agent_spec(control))
         or value["state_format_version"]
         != (SAMPLED_STATE_FORMAT if view == SAMPLED_VIEW else

@@ -16,6 +16,7 @@ from stpd.policy.native_task import observe_ready_summary, public_map_travel_pen
 
 TEACHER_ID = "native-public-demonstration-v1"
 TEACHER_VERSION = "1.0.5"
+OWNED_STALE_TEACHER_VERSION = "1.0.6"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -57,11 +58,12 @@ class NativePublicTeacher:
     combat_pile_viewed: bool = False
     focus_target_id: str | None = None
     counts: dict[str, int] = field(default_factory=dict)
+    version: str = TEACHER_VERSION
 
     def state(self) -> dict[str, Any]:
         return {
             "teacher_id": TEACHER_ID,
-            "version": TEACHER_VERSION,
+            "version": self.version,
             "browse": self.browse,
             "phase": self.phase,
             "browse_choices": self.browse_choices,
