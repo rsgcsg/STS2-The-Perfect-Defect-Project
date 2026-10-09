@@ -12,10 +12,10 @@ from typing import Any, Literal
 
 from spireagent.json_boundary import BoundaryError
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
-from stpd.policy.native_task import observe_ready_summary
+from stpd.policy.native_task import observe_ready_summary, public_map_travel_pending
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.2"
+TEACHER_VERSION = "1.0.4"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -142,6 +142,10 @@ class NativePublicTeacher:
             if isinstance(ref, dict) and isinstance(ref.get("referent_id"), str)
         }
         kind, stage = page.get("kind"), page.get("stage")
+
+        # Shared declared Agent timing; independent information leaves stay in C.
+        if public_map_travel_pending(observation):
+            return self._await("await_public_map_travel")
 
         def find(verb: str, subject: str | None = None) -> dict[str, Any] | None:
             return next(

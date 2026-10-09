@@ -18,7 +18,12 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_native_structured_model import ack as full_reference_ack
+from test_native_structured_model import agent_files as agent_files
+from test_native_structured_model import offer as full_reference_offer
 from test_native_structured_training import origin
+from test_native_teacher_agent import action as public_action
+from test_native_teacher_agent import current as public_current
 from test_ordered_source_training import source
 from test_protocol_source import setup_store
 from test_structured_resume import Authority
@@ -277,6 +282,124 @@ def test_public_export_real_constructor_exact_weights_and_ack_carry(closed_packa
     )
     assert kind == "directive" and directive["directive"]["type"] == "await"
     assert child.scorer.state_version == 3 and torch.equal(child.scorer.memory, memories[-1])
+
+
+def map_information_query(*, traveling=True):
+    """Producer-shaped public info C12 while route actions are unavailable."""
+    roles = ["topbar_deck", "topbar_floor", "topbar_boss", "topbar_gold", "topbar_hp",
+             "topbar_settings", "topbar_potion_slot", "topbar_potion_slot", "topbar_potion_slot"]
+    actions = [public_action("deck", "open_run_deck"),
+               public_action("relic", "inspect_relic", "public-relic"),
+               public_action("relic-tips", "show_relic_tips", "public-relic"),
+               *[public_action(f"info-{i}", "show_topbar_tips", f"public-topbar-{i}")
+                 for i in range(9)]]
+    query = public_current(
+        10, actions=actions,
+        surface={"kind": "map_navigation", "traveling": traveling,
+                 "travel_enabled": False, "next_options": []},
+        refs=[("public-relic", "relic")]
+        + [(f"public-topbar-{i}", role) for i, role in enumerate(roles)],
+    )
+    observation = query["value"]["observation"]
+    for referent in observation["referents"][1:]:
+        referent["kind"] = "control"
+    observation["interaction"].update(
+        stage="native_information_page",
+        content_schema="sts2.player-environment/surface/map_navigation-1",
+    )
+    return query
+
+
+def test_real_sampled_map_timing_ACK_W_once_arrival_and_summary(closed_package, monkeypatch):
+    folder, path, _ = closed_package
+    child = NativeStructuredAgent(folder, path)
+    assert child.metadata["agent_spec"]["version"] == "1.1.0"
+    assert child.metadata["agent_spec"]["task_spec"]["version"] == "1.1.0"
+    query = map_information_query()
+    original = copy.deepcopy(query)
+    before = child.scorer.memory.clone()
+    kind, report = child.sampled_query_result(query, next_input(child))
+    assert kind == "consumed" and report["advanced"] and report["state_version"] == 1
+    assert torch.equal(before, child.scorer.memory)
+    with pytest.raises(BoundaryError, match="acknowledged_next_basis_required"):
+        child.next(next_input(child))
+    encoded, _ = qualify_native(query["value"]["observation"], query["value"]["catalog"])
+    with torch.inference_mode():
+        expected = child.scorer.model.advance(child.scorer.model.encode(encoded), before)
+    child.scorer.acknowledge(acknowledgement(report))
+    assert torch.equal(expected, child.scorer.memory)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(child.scorer, "scores", lambda: pytest.fail("Map deferral must not score"))
+        output = child.next(next_input(child))
+    assert output == {"continuity_token": "segment-1", "consumption_id": report["consumption_id"],
+                      "state_version": 1,
+                      "directive": {"type": "await", "after_cursor": "cursor",
+                                    "condition": "any_event", "timeout_ms": 250}}
+    assert child.issued_acquisition is None and query == original and len(encoded.action_ids) == 12
+    kind, repeat = child.sampled_query_result(query, next_input(child))
+    assert kind == "directive" and repeat["directive"]["type"] == "await"
+    assert child.scorer.state_version == 1 and torch.equal(expected, child.scorer.memory)
+    arrived = copy.deepcopy(query)
+    observation = arrived["value"]["observation"]
+    observation.update(snapshot_id="snapshot-arrived", revision=11)
+    observation["owner_occurrence"]["occurrence_id"] = "map-arrived"
+    observation["interaction"]["content"]["surface"]["traveling"] = False
+    observation["catalog"]["snapshot_id"] = observation["snapshot_id"]
+    arrived["value"]["capture"]["snapshot_id"] = observation["snapshot_id"]
+    arrived["acquisition_id"] = "acq-arrived"
+    kind, report = child.sampled_query_result(arrived, next_input(child))
+    assert kind == "consumed" and report["state_version"] == 2
+    child.scorer.acknowledge(acknowledgement(report))
+    directive = child.next(next_input(child))["directive"]
+    assert directive["type"] == "act" and directive["selection"]["action_id"] in encoded.action_ids
+    summary = NativeStructuredAgent(folder, path)
+    frame = copy.deepcopy(SHARED["frames"]["ready_summary"])
+    report = summary.consume({"acquisition_id": "summary", "input_spec": INPUT_SPEC,
+                              "continuity_token": "segment-1", "previous_consumption_id": None,
+                              "observation": frame["observation"], "catalog": frame["catalog"]})
+    summary.scorer.acknowledge(acknowledgement(report))
+    with monkeypatch.context() as scoped:
+        scoped.setattr(summary.scorer, "scores", lambda: pytest.fail("Summary must Close first"))
+        assert summary.next(next_input(summary))["directive"]["type"] == "close"
+
+
+@pytest.mark.parametrize("change", [
+    lambda o: o["interaction"]["content"]["surface"].update(traveling=False),
+    lambda o: o["interaction"]["content"]["surface"].pop("traveling"),
+    lambda o: o["interaction"].update(content_schema="public-other"),
+    lambda o: o["interaction"].update(kind="native_card_selection", stage="selecting"),
+    lambda o: o["interaction"].update(kind="native_card_selection", stage="preview"),
+    lambda o: o["interaction"].update(kind="native_held_card", stage="targeting"),
+])
+def test_real_sampled_map_timing_does_not_defer_child_or_missing_fact(closed_package, change):
+    folder, path, _ = closed_package
+    child = NativeStructuredAgent(folder, path)
+    query = map_information_query()
+    observation = query["value"]["observation"]
+    observation["interaction"]["content"]["context"] = {"kind": "combat", "is_play_phase": False}
+    change(observation)
+    kind, report = child.sampled_query_result(query, next_input(child))
+    assert kind == "consumed"
+    child.scorer.acknowledge(acknowledgement(report))
+    directive = child.next(next_input(child))["directive"]
+    assert directive["type"] == "act" and len(directive["scores"]["values"]) == 12
+
+
+def test_actual_generic_package_does_not_silently_gain_sampled_map_timing(agent_files):
+    folder, path, _, manifest = agent_files
+    # The actual caller supplies public support; package/model bytes stay intact.
+    manifest["support"]["interaction_kinds"] = ["*"]
+    manifest["support"]["action_verbs"] = ["*"]
+    path.write_bytes(json_bytes(manifest))
+    child = NativeStructuredAgent(folder, path)
+    assert not child.sampled and "timing_policy" not in child.metadata["agent_spec"]
+    query = map_information_query()
+    report = child.consume(full_reference_offer(
+        query["value"]["observation"], query["value"]["catalog"], continuity="segment-1",
+    ))
+    child.scorer.acknowledge(full_reference_ack(report))
+    directive = child.next(next_input(child))["directive"]
+    assert directive["type"] == "act" and len(directive["scores"]["values"]) == 12
 
 
 def test_fresh_real_stdio_child_query_consume_ack_original_member_and_summary(closed_package):

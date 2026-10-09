@@ -9,6 +9,12 @@ import pytest
 from spireagent.json_boundary import BoundaryError
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_public_teacher import NativePublicTeacher
+from stpd.policy.native_task import (
+    map_timed_ready_summary_task_spec,
+    public_map_travel_pending,
+    public_map_travel_timing_spec,
+    ready_summary_task_spec,
+)
 
 
 def action(identity, verb, subject=None):
@@ -239,3 +245,97 @@ def test_unsupported_owner_has_no_generic_label_or_end_turn_fallback():
     assert (
         NativePublicTeacher(browse=False).decide(view, actions).reason == "unsupported_public_owner"
     )
+
+
+def test_explicit_map_travel_waits_with_complete_information_catalog_and_no_route():
+    # Native information leaves remain independently actionable during travel.
+    actions = [
+        action("deck", "open_run_deck"),
+        action("relic", "inspect_relic", "public-relic"),
+        action("relic-tips", "show_relic_tips", "public-relic"),
+        *[action(f"info-{i}", "show_topbar_tips", f"public-topbar-{i}") for i in range(9)],
+    ]
+    for member in actions:
+        member["kind"] = "native_input"
+    original = copy.deepcopy(actions)
+    view = observation(
+        actions,
+        stage="native_information_page",
+        schema="sts2.player-environment/surface/map_navigation-1",
+        surface={
+            "kind": "map_navigation",
+            "traveling": True,
+            "travel_enabled": False,
+            "next_options": [],
+            "drawing_mode": "none",
+        },
+    )
+    teacher = NativePublicTeacher(browse=False)
+    before = teacher.state()
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "await" and decision.reason == "await_public_map_travel"
+    assert decision.action_id is None and teacher.state() == before
+    assert actions == original and len(actions) == 12
+    view["interaction"]["content"]["surface"]["traveling"] = False
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "close" and decision.reason == "required_native_action_unavailable"
+    view["interaction"]["content"]["surface"].update(traveling=True, next_options=None)
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "await" and decision.reason == "await_public_map_travel"
+
+
+@pytest.mark.parametrize("change", [
+    lambda o: o.update(schema="wrong"),
+    lambda o: o.update(input_profile="text-menu-v2"),
+    lambda o: o["interaction"].update(content_schema="wrong"),
+    lambda o: o["interaction"].update(stage="selecting"),
+    lambda o: o["interaction"].update(kind="map_navigation"),
+    lambda o: o["interaction"].update(kind="native_card_selection", stage="preview"),
+    lambda o: o["interaction"].update(kind="native_card_selection", stage="peek"),
+    lambda o: o["interaction"].update(kind="native_held_card", stage="targeting"),
+    lambda o: o["interaction"]["content"]["surface"].update(kind="other"),
+    lambda o: o["interaction"]["content"]["surface"].update(traveling=False),
+    lambda o: o["interaction"]["content"]["surface"].pop("traveling"),
+    lambda o: o["interaction"]["content"]["surface"].update(traveling=1),
+    lambda o: o["interaction"]["content"]["surface"].update(traveling="true"),
+])
+def test_shared_map_timing_does_not_infer_other_owners_flags_or_parent_pending(change):
+    view = observation(
+        [action("info", "open_run_deck")], stage="native_information_page",
+        schema="sts2.player-environment/surface/map_navigation-1",
+        surface={"kind": "map_navigation", "traveling": True,
+                 "travel_enabled": False, "next_options": []},
+    )
+    view["interaction"]["content"]["context"] = {"kind": "combat", "is_play_phase": False}
+    assert public_map_travel_pending(view)
+    change(view)
+    assert not public_map_travel_pending(view)
+
+
+def test_shared_timing_versions_only_agent_navigation_not_input_or_original_task():
+    from stpd.native_graph_spec import NativeGraphControl
+    from stpd.native_sampled_carry_spec import INPUT_SPEC, sampled_agent_spec
+    from stpd.policy.native_teacher_agent import AGENT_SPEC
+    from stpd.policy.native_teacher_agent import INPUT_SPEC as TEACHER_INPUT
+
+    assert INPUT_SPEC["sha256"] == (
+        "99996f16dc233ecb52f76f43435a1b064bcd89b61566f1e0b197e86161b6fd28")
+    assert TEACHER_INPUT["sha256"] == (
+        "d31163fbfe29bfec0be0c8c92ae5b13e4266fbe8915ff4c1762686e8cf7a6eb4")
+    student = sampled_agent_spec(NativeGraphControl())
+    assert student["version"] == AGENT_SPEC["version"] == "1.1.0"
+    assert student["timing_policy"] == AGENT_SPEC["timing_policy"] == (
+        public_map_travel_timing_spec())
+    old, timed = ready_summary_task_spec(), map_timed_ready_summary_task_spec()
+    assert old["version"] == "1.0.0" and timed["version"] == "1.1.0"
+    assert {k: v for k, v in old.items() if k not in {"version", "navigation"}} == {
+        k: v for k, v in timed.items() if k not in {"version", "navigation"}}
+    assert student["task_spec"] == AGENT_SPEC["task_spec"] == timed
+
+
+def test_disabled_map_routes_without_explicit_travel_fact_are_not_blind_pending():
+    actions = [action("info", "open_run_deck")]
+    view = observation(
+        actions, surface={"kind": "map_navigation", "travel_enabled": False, "next_options": []}
+    )
+    assert NativePublicTeacher(browse=False).decide(view, actions).directive == "close"
