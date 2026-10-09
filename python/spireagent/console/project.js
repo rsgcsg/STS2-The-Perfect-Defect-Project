@@ -4437,14 +4437,24 @@ window.SpireProject = (() => {
     if (!recovery.length && status.recording_type === "native_agent_sampled"
         && hex(status.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))
       recovery.push({intent_id:status.intent_id,status:status.status,cohort:status.cohort,relation_id:status.producer_student_relation?.id});
-    let saved = persisted?.request || (drafts.get("native-agent-import-scope") === scope
-      ? drafts.get("native-agent-import-request") : null) || {};
-    const serverOnlyRecovery = !hex(saved.intent_id,32) && recovery.length > 0;
+    const cached = drafts.get("native-agent-import-scope") === scope
+      ? drafts.get("native-agent-import-request") : null;
+    if (persisted?.request?.intent_id === status.intent_id
+        && ["completed","failed"].includes(status.status)
+        && !recovery.some(item => item.intent_id === status.intent_id) && writeFence(null))
+      persisted = null;
+    // A syntactically valid completed draft is not a recovery correspondence.
+    // Retain an unacknowledged browser fence; otherwise choose only the owner's
+    // unresolved IDs, preserving a cached body only for that selected ID.
+    const selectedOwner = recovery.find(item => item.intent_id === cached?.intent_id) || recovery[0];
+    let recoveryTarget = persisted ? {mode:"fenced",request:persisted.request}
+      : selectedOwner ? {mode:"owner",request:{...selectedOwner,
+        ...(cached?.intent_id === selectedOwner.intent_id ? cached : {})}} : null;
+    const saved = recoveryTarget?.request || cached || {};
+    const serverOnlyRecovery = recoveryTarget?.mode === "owner";
     const recoverIntent = serverOnlyRecovery ? select(section,"待核对的原始请求","native-agent-recovery-intent",
-      recovery.map(item => [item.intent_id,`${item.intent_id.slice(0,12)} · ${item.status}`]),recovery[0].intent_id) : null;
-    if (serverOnlyRecovery) saved = {intent_id:recovery[0].intent_id,cohort:recovery[0].cohort,relation_id:recovery[0].relation_id};
+      recovery.map(item => [item.intent_id,`${item.intent_id.slice(0,12)} · ${item.status}`]),selectedOwner.intent_id) : null;
     drafts.set("native-agent-import-scope",scope); drafts.set("native-agent-import-request",saved);
-    if (persisted || serverOnlyRecovery) drafts.set("native-agent-import-uncertain",true);
     const directory = input(section, "已结束 Agent 运行目录", "native-agent-import-directory", saved.directory || "");
     const cohort = select(section, "数据来源声明", "native-agent-import-cohort",
       support.cohorts.map(value => [value, support.cohort_labels?.[value] || value]),
@@ -4459,24 +4469,21 @@ window.SpireProject = (() => {
     const submitted = () => drafts.get("native-agent-import-request") || {};
     const matching = () => status.recording_type === "native_agent_sampled"
       && hex(submitted().intent_id,32) && status.intent_id === submitted().intent_id;
-    if (matching() && ["completed","failed"].includes(status.status) && writeFence(null))
-      drafts.delete("native-agent-import-uncertain");
     const sameOriginalRequest = () => {
       const original = submitted();
       return hex(original.intent_id,32) && JSON.stringify(requestBody()) === JSON.stringify({
         directory:original.directory,cohort:original.cohort,relation_id:original.relation_id});
     };
-    const uncertain = () => drafts.get("native-agent-import-uncertain") === true
-      || (matching() && ["publication_unknown", "published_index_unavailable", "interrupted_unknown"].includes(status.status));
+    const uncertain = () => recoveryTarget !== null;
     const valid = () => !dispatched && storageAvailable && status.status !== "pending" && !!status.csrf_token
       && directory.value.trim().length > 0 && support.relations.some(item =>
         item.relation.id === relation.value && item.cohorts.includes(cohort.value))
-      && (!uncertain() || sameOriginalRequest() || (serverOnlyRecovery && hex(recoverIntent?.value,32)));
+      && (!uncertain() || recoveryTarget.mode === "owner" || sameOriginalRequest());
     const options = {primary:true, disabled:!valid()};
     const button = command(ctx, "import-native-agent-run", uncertain() ? "明确核对同一导入请求" : "明确保存程序示范原件", async () => {
       if (!valid() || options.disabled) return;
       const original = submitted();
-      const body = {...requestBody(),intent_id:serverOnlyRecovery ? recoverIntent.value
+      const body = {...requestBody(),intent_id:recoveryTarget ? recoverIntent?.value || recoveryTarget.request.intent_id
         : sameOriginalRequest() ? original.intent_id : trainingIntent()};
       if (!writeFence(body)) {
         options.disabled = true; button.disabled = true;
@@ -4488,13 +4495,19 @@ window.SpireProject = (() => {
       try {
         const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
         if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
-        if (["completed","failed"].includes(observed.status) && writeFence(null))
-          drafts.delete("native-agent-import-uncertain");
+        if (["completed","failed"].includes(observed.status)) writeFence(null);
         await reload(ctx);
       } catch (error) {
         const unknown = ["request_unknown","request_unavailable","context_changed"].includes(error.message);
-        drafts.set("native-agent-import-uncertain", unknown);
         if (!unknown) writeFence(null);
+        if (error.message === "intent_payload_mismatch") {
+          // This known pre-IO rejection identifies the registered intent, but
+          // proves the entered body was not its original. Permit explicit body
+          // correction under that same ID instead of fencing the wrong body.
+          recoveryTarget = {mode:"owner",request:{intent_id:body.intent_id,
+            cohort:body.cohort,relation_id:body.relation_id}};
+          drafts.set("native-agent-import-request",recoveryTarget.request);
+        }
         if (!unknown) { dispatched = false; options.disabled = !valid(); button.disabled = options.disabled; }
         note.textContent = unknown ? "导入结果尚未确认；请先刷新原操作状态，不会自动重发。"
           : "导入请求未被确认，请核对目录与来源选项后明确重试。";
@@ -4505,7 +4518,12 @@ window.SpireProject = (() => {
     directory.oninput = changed; cohort.onchange = changed; relation.onchange = changed;
     if (recoverIntent) recoverIntent.onchange = () => {
       const original = recovery.find(item => item.intent_id === recoverIntent.value);
-      if (original) { cohort.value = original.cohort; relation.value = original.relation_id; }
+      if (original) {
+        recoveryTarget = {mode:"owner",request:original};
+        directory.value = cached?.intent_id === original.intent_id ? cached.directory || "" : "";
+        cohort.value = original.cohort; relation.value = original.relation_id;
+        drafts.set("native-agent-import-request",original);
+      }
       changed();
     };
     section.append(button);

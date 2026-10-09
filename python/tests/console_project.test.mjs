@@ -7333,9 +7333,66 @@ test("Native AgentRun account reset retains only same owner original pending fen
   assert.equal(field(await otherInstance.render(),"native-agent-import-directory").value,"");
 });
 
-for(const failure of ["read","write"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
+test("Native AgentRun completed drafts never mask remaining owner intents and wrong body corrects same ID",async()=>{
+  const storage=new Map(),sent=[],B="b".repeat(32),C="c".repeat(32);
+  const unresolved=intent_id=>({intent_id,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"});
+  let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{
+      const request=body({options});sent.push(request);
+      if(request.intent_id===B && request.directory!=="/original/B")
+        return{httpStatus:409,error:"intent_payload_mismatch"};
+      status={status:"completed",recording_type:"native_agent_sampled",intent_id:request.intent_id,
+        cohort:request.cohort,producer_student_relation:{id:request.relation_id},artifact_id:id("a"),
+        native_intent_recovery:request.intent_id===B?[unresolved(C)]:[]};
+      return status;
+    }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,0,"completed A clears its fence but its draft remains in the same VM");
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:B,
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},
+    native_intent_recovery:[unresolved(B),unresolved(C)]};
+  page=await env.render();assert.equal(sent.length,1,"redraw does not POST or manufacture a new intent");
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/wrong/B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[1].intent_id,B);
+  assert.equal(storage.size,0,"known pre-IO mismatch cannot fence an incorrect original body");
+  directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false,"known mismatch permits same-page explicit correction");
+  page=await env.render();assert.equal(sent.length,2);
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false);
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[2].intent_id,B);
+  assert.equal(storage.size,0);
+  page=await env.render();assert.equal(sent.length,3);
+  assert.equal(field(page,"native-agent-recovery-intent").value,C,"completed B draft cannot hide unresolved C");
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[3].intent_id,C);
+  assert.deepEqual(sent.slice(1).map(item=>item.intent_id),[B,B,C]);
+});
+
+test("Native AgentRun unacknowledged local fence cannot be adopted by another owner recovery",async()=>{
+  const storage=new Map(),sent=[],C="c".repeat(32);let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{sent.push(body({options}));throw Error("original B reply lost");}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:C,
+    native_intent_recovery:[{intent_id:C,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"}]};
+  page=await env.render();assert.equal(sent.length,1);
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/B");
+  assert.equal(walk(page).some(item=>item.name==="native-agent-recovery-intent"),false);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+});
+
+for(const failure of ["read","write","invalid"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
   const sent=[],env=nativeAgentBrowserEnv({detail:false,items:[],storageApi:{
-    getItem:()=>{if(failure==="read")throw Error("blocked storage");return null;},
+    getItem:()=>{if(failure==="read")throw Error("blocked storage");return failure==="invalid"?JSON.stringify({request:null}):null;},
     setItem:()=>{throw Error("quota/blocked storage");},removeItem:()=>{}},
     handler:async(url,options)=>{sent.push(body({options}));return{status:"pending"};}});
   const page=await env.render(),directory=field(page,"native-agent-import-directory");
