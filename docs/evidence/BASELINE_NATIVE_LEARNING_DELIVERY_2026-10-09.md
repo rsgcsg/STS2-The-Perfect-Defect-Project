@@ -262,3 +262,42 @@ Full7 then passed at clean `e7759f28`: 3,193 ordinary Python tests, five conditi
 skips, 21 subtests, Runtime 336 tests with three opt-in skips, the remaining Platform
 gates, CPU E2E, synthetic worker smoke and source/wheel build. Full6 stays failed;
 this is a new local source/test result, not hosted CI or useful real-data learning.
+
+## Runtime teacher and third actual collection
+
+Full8 passed at clean `e4665b69`: Python 3,187 ordinary passes, five conditional
+skips and 23 passing subtests; Runtime 336 passes/three opt-in skips. Its actual
+XML SHA256 is `779d682acf6026c704ae3221f50229959137dfaa246fa9f311a2c43218abb434`.
+The public Runtime now owns teacher acquisition, exact ACK, Act/Await, original
+results, budgets and Stop. Source3 is a default-on optional overlay. This local
+gate was independently reviewed; it does not establish hosted or native qualification.
+
+Actual third attempt used this source, unlearned teacher1.0.2, seed `E6SRC3A3`,
+runtime `f6757b22e05942d0b5f383550d560f4e` and Source session
+`session-aa98586c18d04f2e93a707a81ffe481e`. New Host stdout verified loaded rc31
+`c82306c6`/MVID `18ad5ddb-0c9c-43eb-ab96-6f010a076509`. It retained six submissions/
+known deliveries and eight known input consumptions: six Act, one Await, one
+Close. All six execution/effect/cancel fields remain unknown.
+
+The last sample exposed native_map/map_navigation with `traveling=true`, disabled
+travel and no route choices, while complete C retained twelve legal information
+actions. Teacher closed with `required_native_action_unavailable`. This is a
+confirmed teacher timing limitation, not a demonstrated omitted Connector action.
+The attempt is partial6/100; source Close sealed six inputs,19 observations and
+zero gaps/pending inputs. Same-runtime control release, Node exit0 and unforced
+Host exit0 passed; the public port's teacher exit was actual SIGKILL, code null.
+
+Installed public Evidence verified the direct immutable run:114 events, content
+`d7f4ef09266e45e7b0209f6f3c2f10bcb038099f0ec6cc348a4e50d8eacf3fb1`. Its preservation
+archive has109 files/1,411,162 bytes and manifest SHA256
+`d9ac4976421319904ed8091489eca7de9337ba597480c03e8d44b25f1554ae8a`.
+Private PhaseA projection at `e61381a4` reverified these originals into eight
+known contexts/six eligible N, retaining unlabelled Await/Close. No reservation,
+training use, optimizer job or model was created. Native-origin qualification is
+separate from this typed data verifier; originals retain the old producer tuple.
+
+The narrowly reviewed teacher1.0.3 repair changes the eighth offline directive
+to Await using the explicit travel fact. That replay proves no ninth arrival,
+100-choice collection or corrected native run. Shared Teacher/Student timing is
+being developed as a new declared Agent candidate before the next learning slice.
+Earlier failures and their exact identities remain unchanged.

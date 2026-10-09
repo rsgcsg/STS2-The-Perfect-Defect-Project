@@ -12,6 +12,12 @@ the [execution matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns ful
 scope, active packets, permissions and the aggregate USD20 budget (spent USD0).
 The [task index](../plans/BASELINE_TASKS.zh-CN.md) keeps the stable IDs.
 
+The owner selected the current delivery slice: 100–300 admitted real choices,
+explicit training/checkpoint/results, export/registration/load, a new continuous
+learned-Agent game with visible in-game model integration, failure analysis,
+independent review, PR integration and reproducible handoff. A budget/loop stop
+remains incomplete. Full G2/V1 obligations remain outside this slice's sign-off.
+
 Reuse lead topic `codex/g2-v1-core-integration` in its development worktree;
 `git worktree list` locates it. It contains `develop@4e16e54e`; refresh before
 integration. Each other writer has a separate branch/worktree. Preserve private
@@ -28,8 +34,10 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   loaded identity, isolated main menu and owned unforced Close passed independent
   review; rc30 rollback remains. Authenticated panels and runtime/resource health
   remain unverified. Workspace provenance and compiled component identity differ.
-- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full local portable checks
-  passed at `e7759f28` (Python 3,193 passes, five conditional skips, 21 subtests).
+- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full8 local checks
+  passed at `e4665b69` (Python 3,187 passes, five conditional skips, 23 subtests;
+  Runtime 336 passes, three opt-in skips). This covers the integrated public-Runtime
+  program teacher and normal SDK→Runtime consumer-build prerequisite.
   Full6 remains failed; its live temporary-scratch race was repaired in the owning
   inventory reader and the real child pause/resume regression passed. Earlier fresh synthetic
   sampled train/export/real constructor/stdio/Runtime composition passed independent
@@ -43,12 +51,19 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   the scripted teacher lacked Await for expected owner arrival. All four deliveries
   were known; effects remain unknown. Source closed with four inputs, 15 observations,
   zero gaps and known control/Host cleanup. Originals are retained, never relabeled Human.
-- The first recording was imported and explicitly published through the genuine
-  Workbench into a sampled Agent-protocol training source: one eligible N, train
-  reservation, no actual training use. A completed-reservation display correction
-  and canonical terminology alignment are under review. The teacher is being moved
-  onto the existing generic Agent Runtime; direct native AgentRun data admission
-  remains a separate implementation gap, with Source3 retained as an explicit bridge.
+- Third collection at `e4665b69` reached six of 100 deliveries, with eight known
+  ACKed samples. Map travel retained legal information actions but no route;
+  teacher 1.0.2 closed prematurely. Source sealed six inputs/19 observations/zero
+  gaps; exact control/Host/Node cleanup passed. All result effects remain unknown.
+  The narrow map Await repair is reviewed; shared Teacher/Student timing is in
+  a separate candidate. Originals and the old teacher identity remain intact.
+- First Source3 product publication retains one N and train reservation without
+  fit. Common terminology is integrated; the corrected reservation display was
+  verified through actual HTTP. Direct native PhaseA `e61381a4` is independently
+  accepted but not yet integrated: actual third-round originals lower to eight
+  known contexts/six eligible N in a private store, without reservation/use/train.
+  Source3 remains the current product training bridge; direct recipe/export/UI
+  dispatch needs its separate PhaseB.
 - L34 event/content, special selectors, L64 management, product memory recovery,
   remote use and full coverage/stability still need their scoped gates. Disabled
   candidate reviews do not qualify the active profile. Current c060 is unchanged.
@@ -57,6 +72,10 @@ integration. Each other writer has a separate branch/worktree. Preserve private
 
 Verify the Runtime-backed teacher → useful 100–300-choice real collection
 and explicit sampled training → early natural whole-game attempt and error analysis.
+Count multi-candidate labels, owner/action coverage and exclusions separately;
+report train-fit versus new-game performance. Script imitation does not establish
+policy quality. The owner must be able to see this trained model loaded/running
+inside the game before delivery, with its actual identity and Stop control.
 E6 authenticated panels and a minimum genuine Human record/Close remain separate gates. Independent source/data/model/docs work continues in
 parallel; unrelated final gates do not block this path and remain in the matrix.
 One game/install owner and one heavy local build/train slot remain coordinated.

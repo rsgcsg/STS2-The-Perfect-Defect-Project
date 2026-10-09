@@ -8,6 +8,14 @@
 
 每项区分设计、implemented、source-tested、exact-built/installed/loaded、runtime、capture/data/learning、独立 review 和用户批准。基线、actor、setup/自主、sampled/完整曝光不同不能互借。`不适用`需要确切原生/配置理由和独立核对，不能代替未实现。
 
+当前用户选定的交付切片：积累 100–300 个经准入的真实选择，报告总数、排除项、来源和
+多候选/场景分布；用固定数据版本完成实际训练、checkpoint 和结果，导出/注册/加载，
+让学习 Agent 在新游戏任务中连续推进到自然胜负/summary，并提供游戏内可见的本轮模型
+身份、运行接入和 Stop。若循环、预算或 unsupported 停止，保留未完成与环境/Agent 时机/
+训练/数据覆盖/模型归因；不把脚本示范或 train-fit 当新局策略质量。最后完成适用检查、
+独立审查、PR 合并/对齐和可复现交接。其他并行工作继续；完整 G2/V1 的剩余矩阵不删除，
+本切片通过也不自动批准完整 G2/V1。
+
 历史 S0 的[实证报告](../evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md)保留 174 offers/172 labels、45 updates、11 native play、确认 Stop 等原范围证据。新 profile/产物/数据重新核受影响资格。全部 required 格补齐后才标 `ready_for_owner_review`，用户批准后才填 G2/V1 通过。
 
 ## 2. 工作包、连接与顺序
@@ -46,7 +54,8 @@
 | Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
 | native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
 | 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
-| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher，迁入既有 Agent Runtime | 首轮 1/100 的 SDK 游标问题已修；第二轮 `e7759f28` 达 4/100，因脚本 teacher 缺少 Return 后的 owner-arrival Await 停止，原件与正常 Close 保留。当前完整本地检查已过，Runtime teacher 正在实现。首轮原件经真实产品入口发布 1 个合格 N、预留 train，未训练；实际 N 由准入计算 |
+| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | Runtime teacher 已集成于 `e4665b69` 并通过 Full8；前三次分别达 1/4/6 次已知投递。第三轮八个 ACKed context，地图 travelling 时提前 Close，窄修复已审查；Source 六输入/19观察/零缺口和清理通过。首轮真实产品发布一 N/train 预留未训练；实际 N 与多候选覆盖由准入计算，不拿投递次数替代 |
+| 直接 Agent 数据 E2.2 | typed Evidence→固定 producer/student 投影→既有 curation | PhaseA `e61381a4` 已独立审查；真实第三轮私有原件准入八 context/六 N，无预留/训练。旧 teacher1.0.2 tuple 保留；尚未集成及接通 PhaseB recipe/export/UI，不冒充 Source3 或原生来源验证 |
 | 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
 
 采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。
