@@ -90,11 +90,20 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
     } finally { await f.close(); }
   });
   it("does not record a completed batch tail when an offered full-reference Consume is interrupted", async () => {
-    const f = await nativeRuntimeFixture({ child: "hang_consume", mode: "shadow", deadlineMs: 300 });
+    const f = await nativeRuntimeFixture({ child: "hang_consume", mode: "shadow" });
+    const offered = gate(), consume = f.port.consume.bind(f.port);
+    // Observe the real port offer, then interrupt that call through Human recovery.
+    // Startup speed is not the interrupted-batch contract; deadline tests are separate.
+    f.port.consume = (context, input, handlers, signal, onOffer) => consume(
+      context, input, handlers, signal, requestId => { onOffer(requestId); offered.release(); });
     try {
       const tick = f.runtime.tick();
-      await eventually(async () => (await f.events()).some(e => e.kind === "native_acquisition_registered"));
-      await tick;
+      await Promise.race([offered.promise, tick.then(() => {
+        throw new Error("Consume was not offered before the tick finished");
+      })]);
+      const human = f.runtime.setMode("human");
+      await tick; await human;
+      expect(f.runtime.status()).toMatchObject({ mode: "human", session: { agent_state: "uncertain" } });
       const events = await f.events();
       expect(events.filter(e => e.kind === "native_event_received")).toHaveLength(1);
       expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(0);
