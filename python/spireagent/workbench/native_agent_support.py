@@ -49,6 +49,19 @@ def _config(path: Path) -> dict[str, Any]:
     return value
 
 
+def native_package_execution_policy(package: dict[str, Any]) -> dict[str, Any] | None:
+    """Select an execution policy only from the already validated immutable package."""
+    spec = package["agent_spec"]
+    if spec.get("id") != "stpd-native-sampled-carry-m2-agent":
+        if "execution_policy" in spec:
+            raise BoundaryError("native_agent_support", "sampled_execution_policy_required")
+        return None
+    from stpd.native_graph_spec import checked_control
+    from stpd.native_sampled_carry_spec import sampled_agent_execution_policy
+
+    return sampled_agent_execution_policy(spec, checked_control(package["graph"]["model_control"]))
+
+
 def bind_native_export(root: Path, export_path: Path, config_path: Path,
                        manifest_path: Path, *, artifact_id: str, manifest_id: str,
                        requirements: dict[str, Any], support: dict[str, Any],
@@ -65,6 +78,7 @@ def bind_native_export(root: Path, export_path: Path, config_path: Path,
         raise BoundaryError("native_agent_support", "invalid_binding_destination")
     package, model = load_native_package(export_path)
     del model
+    execution_policy = native_package_execution_policy(package)
     config = {"schema": CONFIG_SCHEMA, "export_path": str(export_path.resolve()),
               "artifact_id": digest(artifact_id, "native_agent_support.artifact_id"),
               "package_model_id": package["model_id"],
@@ -77,7 +91,8 @@ def bind_native_export(root: Path, export_path: Path, config_path: Path,
     try:
         manifest = bind_native_agent(export_path, manifest_path, manifest_id=manifest_id,
                                      requirements=requirements, support=support,
-                                     required_seams=required_seams)
+                                     required_seams=required_seams,
+                                     execution_policy=execution_policy)
         config_path.write_bytes(json_bytes(config))
         validate(root, config_path, manifest_path, binding_root=owner)
     except Exception:
@@ -100,7 +115,9 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     package, model = load_native_package(export)
     # The domain loader validates the complete package/control/weight binding.
     # Match the adapter closure selected by that model, never by a config flag.
-    expected_adapter = adapter_identity(graph=model.model_control is not None)
+    execution_policy = native_package_execution_policy(package)
+    expected_adapter = adapter_identity(graph=model.model_control is not None,
+                                        execution_policy=execution_policy)
     if (config["package_model_id"] != package["model_id"]
             or config["weights_sha256"] != package["weights"]["sha256"]
             or config["package_manifest_sha256"] != file_sha256(export / "model.json")
@@ -108,6 +125,8 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
                    ("input_spec", "agent_spec", "state_format_version", "code_identity"))
             or manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
             or manifest.get("adapter") != expected_adapter
+            or (("execution_policy" in manifest) != (execution_policy is not None))
+            or manifest.get("execution_policy") != execution_policy
             or manifest.get("artifact") != {
                 "id": config["package_model_id"], "path": str((export / "model.json").resolve()),
                 "sha256": config["package_manifest_sha256"]}):

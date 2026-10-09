@@ -161,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed")
     parser.add_argument("--target-choices", type=int, default=100)
     parser.add_argument("--max-submissions", type=int, default=100)
+    parser.add_argument(
+        "--execution-policy", choices=("owned-current-known-stale-v1",),
+        help="explicit reader-owned Current and bounded fresh decisions after known stale refusals",
+    )
     parser.add_argument("--deadline-ms", type=int, default=900_000)
     parser.add_argument("--experimental-build-acknowledged", action="store_true")
     parser.add_argument("--experimental-connector-acknowledged", action="store_true")
@@ -241,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
                     seed=args.seed,
                     target_choices=args.target_choices,
                     max_submissions=args.max_submissions,
+                    execution_policy=args.execution_policy,
                     deadline_ms=args.deadline_ms,
                     experimental_build_acknowledged=args.experimental_build_acknowledged,
                     experimental_connector_acknowledged=args.experimental_connector_acknowledged,

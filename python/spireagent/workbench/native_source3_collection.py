@@ -25,10 +25,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from spireagent.json_boundary import BoundaryError, decode_json, object_fields
+from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, tool_identity
 from spireagent.workbench.instance_lock import instance_lock
-from stpd.policy.native_public_teacher import TEACHER_ID, TEACHER_VERSION
+from stpd.policy.native_public_teacher import TEACHER_ID
 from stpd.policy.native_teacher_agent import descriptor, write_artifact
 
 if TYPE_CHECKING:
@@ -36,6 +36,9 @@ if TYPE_CHECKING:
 
 PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v2"
 REPORT_SCHEMA = "spireagent/native-source3-collection-v2"
+OWNED_PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v3"
+OWNED_REPORT_SCHEMA = "spireagent/native-source3-collection-v3"
+OWNED_EXECUTION_POLICY = "owned-current-known-stale-v1"
 MARKER_FILE = "native-source3-collection-operation.json"
 MAX_PIPE_BYTES = 96 * 1024 * 1024
 MAX_CONTROL_BYTES = 16 * 1024
@@ -67,8 +70,28 @@ class CollectionRequest:
     predecessor_marker_sha256: str | None = None
     predecessor_source3_bundle: Path | None = None
     predecessor_source3_content_id: str | None = None
+    execution_policy: str | None = None
+
+    @property
+    def pipe_schema(self) -> str:
+        return OWNED_PIPE_SCHEMA if self.execution_policy is not None else PIPE_SCHEMA
+
+    @property
+    def report_schema(self) -> str:
+        return OWNED_REPORT_SCHEMA if self.execution_policy is not None else REPORT_SCHEMA
+
+    def policy(self) -> dict[str, Any] | None:
+        if self.execution_policy is None:
+            return None
+        if self.execution_policy != OWNED_EXECUTION_POLICY:
+            raise fail("unsupported_collection_execution_policy")
+        from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+        return owned_current_known_stale_policy()
 
     def validate(self) -> None:
+        if self.execution_policy not in {None, OWNED_EXECUTION_POLICY}:
+            raise fail("unsupported_collection_execution_policy")
         fresh = (
             self.predecessor_report_path,
             self.predecessor_report_sha256,
@@ -112,7 +135,7 @@ class CollectionRequest:
             raise fail("fixed_collection_request_required")
         for limit_value, lower, upper in (
             (self.target_choices, 1, 100),
-            (self.max_submissions, 1, 100),
+            (self.max_submissions, 1, 200 if self.execution_policy is not None else 100),
             (self.deadline_ms, 1, 900_000),
             (self.max_input_bytes, 1024, 64 * 1024**2),
             (self.max_diagnostic_bytes, 1024, 768 * 1024**2),
@@ -129,7 +152,7 @@ class CollectionRequest:
             raise fail("explicit_host_acknowledgement_required")
 
     def options(self, endpoint: str) -> dict[str, Any]:
-        return {
+        options = {
             "installation": str(self.installation),
             "host_local_root": str(self.host_local_root),
             "output": str(self.output),
@@ -146,8 +169,13 @@ class CollectionRequest:
             "record_source3": self.record_source3,
             "python_executable": sys.executable,
             "teacher_artifact": None,
-            "teacher_descriptor": descriptor(),
+            "teacher_descriptor": descriptor()
+            if self.execution_policy is None
+            else descriptor(execution_policy=self.policy()),
         }
+        if self.execution_policy is not None:
+            options["execution_policy"] = self.policy()
+        return options
 
 
 def require_resolved_predecessor(marker: Path) -> None:
@@ -155,7 +183,8 @@ def require_resolved_predecessor(marker: Path) -> None:
         prior = decode_json(marker.read_bytes())
         if (
             not isinstance(prior, dict)
-            or prior.get("schema") not in {REPORT_SCHEMA, "spireagent/native-source3-collection-v1"}
+            or prior.get("schema")
+            not in {REPORT_SCHEMA, OWNED_REPORT_SCHEMA, "spireagent/native-source3-collection-v1"}
             or prior.get("status") not in {"completed", "partial", "failed"}
         ):
             raise fail("original_collection_outcome_unresolved")
@@ -531,16 +560,17 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
     if not child.is_file() or child.is_symlink():
         raise fail("fixed_collector_child_unavailable")
     boundary = verified_fresh_predecessor(config.state_dir / MARKER_FILE, request)
-    return {
-        "schema": REPORT_SCHEMA,
+    options = request.options(endpoint)
+    result: dict[str, Any] = {
+        "schema": request.report_schema,
         "status": "plan",
         "fresh_episode_boundary": boundary,
         "source": selected,
         "endpoint": endpoint,
-        "options": request.options(endpoint),
+        "options": options,
         "teacher": {
             "id": TEACHER_ID,
-            "version": TEACHER_VERSION,
+            "version": options["teacher_descriptor"]["agent_spec"]["teacher"]["version"],
             "sha256": hashlib.sha256(
                 (ROOT / "stpd/policy/native_public_teacher.py").read_bytes()
             ).hexdigest(),
@@ -565,6 +595,169 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
         "automatic_training": False,
         "automatic_upload": False,
     }
+    if request.execution_policy is not None:
+        result["execution_policy"] = request.policy()
+        result["acquisition"]["transport_operation"] = "current_owned"
+        result["counter_proof"] = "finalized_original_AgentRunEvidence_public_typed_verifier"
+        result["promotion_gate"] = {
+            "installed_terminal_summary_available": installed_terminal_summary_available(),
+            "closed_producer_relation": closed_collection_producer(
+                options["teacher_descriptor"], request.policy()
+            ),
+        }
+        result["target_known_deliveries"] = request.target_choices
+        result["admitted_N_target_is_separate"] = True
+    return result
+
+
+def closed_collection_producer(
+    candidate: dict[str, Any], policy: dict[str, Any] | None
+) -> dict | None:
+    """Match exact bytes to a closed existing owner relation; no proposed producer admission."""
+    from spireagent.workbench.local_recording_import import native_agent_import_choices
+    from stpd.native_agent_sampled_source_spec import (
+        TEACHER_COHORT,
+        checked_relation,
+        relation_body,
+    )
+
+    artifact_sha = hashlib.sha256(json_bytes(candidate)).hexdigest()
+    selected = {
+        "artifact_schema": candidate["schema"],
+        "artifact_id": candidate["agent_spec"]["id"] + "-" + artifact_sha[:16],
+        "artifact_sha256": artifact_sha,
+        **{
+            key: candidate[key]
+            for key in (
+                "adapter",
+                "input_spec",
+                "input_spec_body",
+                "agent_spec",
+                "runtime_provenance",
+                "code_files",
+            )
+        },
+        "state_format_version": "stpd/native-program-teacher-state-v1",
+        "state_recovery": {"mode": "none", "max_state_bytes": 0, "model_bindings": []},
+        "history_mode": "sampled_current",
+        "consumption_mode": "once_per_occurrence",
+        "scores": None,
+        "execution_policy": policy,
+    }
+    if (
+        candidate["agent_spec"]["teacher"]["version"] != "1.0.6"
+        or candidate["adapter"]["version"] != "1.2.0"
+    ):
+        return None
+    matches = []
+    for choice in native_agent_import_choices()["relations"]:
+        if TEACHER_COHORT not in choice["cohorts"]:
+            continue
+        relation = checked_relation(choice["relation"], TEACHER_COHORT)
+        body = relation_body(relation, TEACHER_COHORT)
+        producer = body.get("producer_definition")
+        if isinstance(producer, dict) and all(
+            producer.get(key) == value for key, value in selected.items()
+        ):
+            matches.append(relation)
+    return matches[0] if len(matches) == 1 else None
+
+
+def installed_terminal_summary_available() -> bool:
+    """Read the installed public typed API; never use a repository verifier fallback."""
+    import sts2_platform_evidence as owner
+
+    return isinstance(getattr(owner.AgentSessionRunEvidence, "terminal_summary", None), property)
+
+
+def terminal_summary_fields(value: Any, run_id: str) -> dict[str, Any]:
+    """Validate only the owner's public summary envelope, never the native trace."""
+    object_fields(
+        value,
+        {
+            "schema",
+            "run_id",
+            "content_id",
+            "original_submission_count",
+            "terminal_result_count",
+            "known_delivered",
+            "known_stale_rejections",
+            "consecutive_known_stale_rejections",
+            "proof_scope",
+            "live_eligibility_proved",
+        },
+        "source3_collection.terminal_summary",
+    )
+    if (
+        value["schema"] != "sts2.evidence/agent-session-terminal-summary-1"
+        or value["run_id"] != run_id
+        or not isinstance(value["content_id"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["content_id"]) is None
+        or value["proof_scope"] != "recorded_dispatch_and_terminal_results"
+        or value["live_eligibility_proved"] is not False
+        or any(
+            type(value[key]) is not int or value[key] < 0
+            for key in (
+                "original_submission_count",
+                "terminal_result_count",
+                "known_delivered",
+                "known_stale_rejections",
+                "consecutive_known_stale_rejections",
+            )
+        )
+        or value["terminal_result_count"] > value["original_submission_count"]
+        or value["known_delivered"] + value["known_stale_rejections"]
+        > value["terminal_result_count"]
+        or value["consecutive_known_stale_rejections"] > value["known_stale_rejections"]
+    ):
+        raise fail("terminal_summary_invalid")
+    return dict(value)
+
+
+def verify_terminal_summary(
+    directory: Path, expected: dict[str, Any], policy: dict[str, Any]
+) -> dict[str, Any]:
+    """Use the installed public verifier after finalization. No source-selected fallback."""
+    import sts2_platform_evidence as owner
+
+    verified = owner.verify_agent_session_run_evidence(directory, expected)
+    if not verified.passed:
+        raise fail("terminal_evidence_verification_failed")
+    value = verified.require_value()
+    if value.agent_manifest.get("execution_policy") != policy:
+        raise fail("terminal_evidence_execution_policy_mismatch")
+    summary = terminal_summary_fields(value.terminal_summary, expected["run_id"])
+    if summary["content_id"] != value.content_id:
+        raise fail("terminal_evidence_content_id_mismatch")
+    return summary
+
+
+def terminal_expected(status: dict[str, Any], direct: dict[str, Any]) -> dict[str, Any]:
+    if direct.get("run_id") != status.get("run_id"):
+        raise fail("terminal_evidence_run_mismatch")
+    return {
+        "run_id": status["run_id"],
+        "agent_manifest_id": direct["manifest_id"],
+        "agent_artifact_sha256": direct["artifact_sha256"],
+        "agent_manifest_sha256": status["agent_manifest_sha256"],
+        "runtime_version": status["runtime"]["version"],
+        "runtime_code_sha256": status["runtime"]["code_sha256"],
+        "adapter": status["agent"]["adapter"],
+    }
+
+
+def terminal_summary_main() -> None:
+    """Fixed metadata-only subprocess entry point for the Node collector."""
+    raw = sys.stdin.buffer.read(MAX_CONTROL_BYTES + 1)
+    if len(raw) > MAX_CONTROL_BYTES:
+        raise fail("terminal_summary_request_capacity")
+    request = decode_json(raw)
+    object_fields(request, {"directory", "expected", "execution_policy"}, "source3_terminal_helper")
+    directory = Path(request["directory"])
+    if not directory.is_absolute() or any(p.is_symlink() for p in (directory, *directory.parents)):
+        raise fail("terminal_evidence_directory_required")
+    result = verify_terminal_summary(directory, request["expected"], request["execution_policy"])
+    sys.stdout.write(json.dumps(result, allow_nan=False) + "\n")
 
 
 class Cancellation:
@@ -818,6 +1011,7 @@ def collect_source3(
     app_factory: Callable = _application,
     child_factory: Callable = OwnedPipeChild,
     preflight: Callable = metadata_preflight,
+    terminal_verifier: Callable = verify_terminal_summary,
     cancel: Cancellation | None = None,
 ) -> dict[str, Any]:
     """One genuine application lifetime; public Runtime owns the whole Agent execution."""
@@ -825,6 +1019,18 @@ def collect_source3(
     with cancellation_signals(cancel):
         cancel.check()
         prepared = preflight(config, request)
+        if request.execution_policy is not None:
+            if not installed_terminal_summary_available():
+                raise fail("installed_terminal_summary_unavailable")
+            candidate = descriptor(execution_policy=request.policy())
+            relation = closed_collection_producer(candidate, request.policy())
+            if relation is None:
+                raise fail("closed_collection_producer_unavailable")
+            if prepared.get("promotion_gate") != {
+                "installed_terminal_summary_available": True,
+                "closed_producer_relation": relation,
+            }:
+                raise fail("collection_promotion_preflight_changed")
         with instance_lock(config.state_dir / "instance.lock"):
             cancel.check()
             marker = config.state_dir / MARKER_FILE
@@ -870,7 +1076,7 @@ def collect_source3(
                     raise fail("fresh_history_durability_failed") from None
             report: dict[str, Any] = {
                 **prepared,
-                "schema": REPORT_SCHEMA,
+                "schema": request.report_schema,
                 "status": "pending",
                 "operation_id": operation,
                 "actor_id": actor,
@@ -895,7 +1101,19 @@ def collect_source3(
                 "teacher_exit": None,
                 "fresh_episode_boundary": boundary,
             }
-            app = child = original = None
+            if request.execution_policy is not None:
+                report.update(
+                    execution_policy=request.policy(),
+                    terminal_summary=None,
+                    counter_proof_error=None,
+                    terminal_result_count=None,
+                    known_stale_rejections=None,
+                    consecutive_known_stale_rejections=None,
+                    known_delivered_terminal_count=None,
+                    budget_submissions_used=0,
+                    termination_reason=None,
+                )
+            app = child = original = owned_artifact = None
             runtime: str | None = None
             close_sent = source_closed = False
             terminal = False
@@ -993,6 +1211,8 @@ def collect_source3(
                     initial_fresh_runtime_checked = True
                 report["runtime_status"] = status
                 report["submissions"] = status["autonomy_budget"]["submissions_used"]
+                if request.execution_policy is not None:
+                    report["budget_submissions_used"] = report["submissions"]
                 result = status.get("last_result")
                 if isinstance(result, dict) and result.get("request_id") not in seen_results:
                     if not isinstance(result.get("request_id"), str) or not result["request_id"]:
@@ -1059,11 +1279,16 @@ def collect_source3(
                         "partial_source_prefix",
                         "learned_evaluation",
                         "unknown_request_id_projection",
-                    },
+                    }
+                    | (
+                        {"execution_policy", "terminal_summary", "counter_proof_error"}
+                        if request.execution_policy is not None
+                        else set()
+                    ),
                     "source3_pipe.closed_v2",
                 )
                 if (
-                    message["schema"] != PIPE_SCHEMA
+                    message["schema"] != request.pipe_schema
                     or message["operation_id"] != operation
                     or message["record_source3"] is not request.record_source3
                     or message["partial_source_prefix"] is not True
@@ -1119,6 +1344,53 @@ def collect_source3(
                     message["teacher_exit"],
                 )
                 report["unknown_request_id_projection"] = message["unknown_request_id_projection"]
+                if request.execution_policy is not None:
+                    if message["execution_policy"] != request.policy():
+                        raise fail("terminal_execution_policy_mismatch")
+                    report["termination_reason"] = message["reason"]
+                    report["budget_submissions_used"] = report["submissions"]
+                    report["counter_proof_error"] = message["counter_proof_error"]
+                    proof = message["terminal_summary"]
+                    if proof is None:
+                        if (
+                            not isinstance(message["counter_proof_error"], str)
+                            or not message["counter_proof_error"]
+                            or "terminal_counter_proof_unavailable" not in message["cleanup_errors"]
+                        ):
+                            raise fail("terminal_counter_proof_unavailable_unreported")
+                    else:
+                        if message["counter_proof_error"] is not None:
+                            raise fail("terminal_counter_proof_conflicting")
+                        direct = message["direct_evidence"]
+                        public = report["runtime_status"]
+                        if (
+                            not isinstance(direct, dict)
+                            or not isinstance(public, dict)
+                            or not isinstance(owned_artifact, dict)
+                            or direct.get("artifact_sha256") != owned_artifact["sha256"]
+                            or direct.get("manifest_id")
+                            != "native-program-teacher-" + owned_artifact["sha256"][:16]
+                        ):
+                            raise fail("terminal_counter_proof_identity_missing")
+                        expected = terminal_expected(public, direct)
+                        directory = request.output / "agent-runs" / expected["run_id"]
+                        if direct.get("directory") != str(directory):
+                            raise fail("terminal_counter_proof_directory_mismatch")
+                        projected = terminal_summary_fields(proof, expected["run_id"])
+                        independently_verified = terminal_verifier(
+                            directory, expected, request.policy()
+                        )
+                        if independently_verified != projected:
+                            raise fail("terminal_counter_proof_disagrees")
+                        report.update(
+                            terminal_summary=projected,
+                            terminal_result_count=projected["terminal_result_count"],
+                            known_stale_rejections=projected["known_stale_rejections"],
+                            consecutive_known_stale_rejections=projected[
+                                "consecutive_known_stale_rejections"
+                            ],
+                            known_delivered_terminal_count=projected["known_delivered"],
+                        )
                 try:
                     reference = message["full_record_ref"]
                     if reference is not None:
@@ -1146,7 +1418,11 @@ def collect_source3(
                         if (
                             not isinstance(full, dict)
                             or full.get("schema")
-                            != "spireagent/native-source3-collector-final-full-v2"
+                            != (
+                                "spireagent/native-source3-collector-final-full-v3"
+                                if request.execution_policy is not None
+                                else "spireagent/native-source3-collector-final-full-v2"
+                            )
                             or full.get("operation_id") != operation
                             or any(
                                 full.get(key) != message[key]
@@ -1159,6 +1435,11 @@ def collect_source3(
                                     "partial_source_prefix",
                                     "learned_evaluation",
                                     "unknown_request_id_projection",
+                                )
+                                + (
+                                    ("execution_policy", "terminal_summary", "counter_proof_error")
+                                    if request.execution_policy is not None
+                                    else ()
                                 )
                             )
                         ):
@@ -1197,21 +1478,43 @@ def collect_source3(
                 atomic_json(
                     marker,
                     {
-                        "schema": REPORT_SCHEMA,
+                        "schema": request.report_schema,
                         "status": "pending",
                         "operation_id": operation,
                         "output": str(request.output),
                         "fresh_episode_boundary": boundary,
                     },
                 )
-                artifact = write_artifact(request.output / "teacher-code-artifact.json")
+                artifact_path = request.output / "teacher-code-artifact.json"
+                artifact = (
+                    write_artifact(artifact_path)
+                    if request.execution_policy is None
+                    else (write_artifact(artifact_path, execution_policy=request.policy()))
+                )
+                owned_artifact = artifact
                 options = {
                     **prepared["options"],
                     "teacher_artifact": artifact,
-                    "teacher_descriptor": descriptor(),
+                    "teacher_descriptor": descriptor()
+                    if request.execution_policy is None
+                    else descriptor(execution_policy=request.policy()),
                     "record_source3": request.record_source3,
                     "python_executable": sys.executable,
                 }
+                if request.execution_policy is not None:
+                    approved_bytes = json_bytes(candidate)
+                    approved_sha = hashlib.sha256(approved_bytes).hexdigest()
+                    if (
+                        options["teacher_descriptor"] != candidate
+                        or artifact_path.read_bytes() != approved_bytes
+                        or artifact
+                        != {
+                            "id": candidate["agent_spec"]["id"] + "-" + approved_sha[:16],
+                            "path": str(artifact_path),
+                            "sha256": approved_sha,
+                        }
+                    ):
+                        raise fail("closed_collection_producer_artifact_changed")
                 atomic_json(request.output / "request.json", report)
                 cancel.check()
                 app = app_factory(config, config_path)
@@ -1228,7 +1531,7 @@ def collect_source3(
                 cancel.check()
                 child.send(
                     {
-                        "schema": PIPE_SCHEMA,
+                        "schema": request.pipe_schema,
                         "type": "init",
                         "operation_id": operation,
                         "options": options,
@@ -1244,7 +1547,7 @@ def collect_source3(
                     if message is None:
                         continue
                     if (
-                        message.get("schema") != PIPE_SCHEMA
+                        message.get("schema") != request.pipe_schema
                         or message.get("operation_id") != operation
                     ):
                         raise fail("invalid_child_operation_message")
@@ -1258,7 +1561,7 @@ def collect_source3(
                         raise fail("child_message_order_changed")
                     last_message = current_id
                     common = {
-                        "schema": PIPE_SCHEMA,
+                        "schema": request.pipe_schema,
                         "operation_id": operation,
                         "message_id": current_id,
                     }
@@ -1448,7 +1751,7 @@ def collect_source3(
                             if message is None:
                                 continue
                             if (
-                                message.get("schema") != PIPE_SCHEMA
+                                message.get("schema") != request.pipe_schema
                                 or message.get("operation_id") != operation
                             ):
                                 continue
@@ -1465,7 +1768,7 @@ def collect_source3(
                                 known, status, outcome = close_original_once()
                                 child.send(
                                     {
-                                        "schema": PIPE_SCHEMA,
+                                        "schema": request.pipe_schema,
                                         "type": "source_closed",
                                         "operation_id": operation,
                                         "message_id": message["message_id"],
@@ -1542,6 +1845,13 @@ def collect_source3(
                 and not unknown
                 and error_code is None
                 and final.get("reason") == "target_choices_reached"
+                and (
+                    request.execution_policy is None
+                    or (
+                        report["terminal_summary"] is not None
+                        and report["known_delivered_terminal_count"] >= request.target_choices
+                    )
+                )
                 else "partial"
                 if known_cleanup and not unknown
                 else "failed"
@@ -1555,7 +1865,7 @@ def collect_source3(
             atomic_json(
                 marker,
                 {
-                    "schema": REPORT_SCHEMA,
+                    "schema": request.report_schema,
                     "status": report["status"],
                     "operation_id": operation,
                     "output": str(request.output),
@@ -1566,3 +1876,16 @@ def collect_source3(
                 },
             )
             return report
+
+
+if __name__ == "__main__":
+    try:
+        if sys.argv[1:] != ["--verify-terminal-summary"]:
+            raise fail("fixed_terminal_summary_entry_required")
+        terminal_summary_main()
+    except Exception as error:
+        code = error.code if isinstance(error, BoundaryError) else "terminal_summary_helper_failed"
+        sys.stderr.write(
+            json.dumps({"schema": "spireagent/terminal-summary-error-v1", "code": code}) + "\n"
+        )
+        raise SystemExit(1) from None

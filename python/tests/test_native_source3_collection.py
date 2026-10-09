@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import importlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from metadata_import_guard import no_torch_imports as no_torch_imports
@@ -157,6 +160,24 @@ class CollectionTests(unittest.TestCase):
                     "directory": str(test.root / "direct-evidence"),
                     "training_admission": "not_run",
                 }
+                if test.request.execution_policy is not None:
+                    self.runtime.update(
+                        agent_manifest_sha256="a" * 64,
+                        runtime={"version": "fixture", "code_sha256": "b" * 64},
+                        agent={
+                            "adapter": {
+                                "id": "fixture",
+                                "version": "1",
+                                "protocol": "fixture",
+                                "code_sha256": "c" * 64,
+                            }
+                        },
+                    )
+                    self.evidence.update(
+                        directory=str(test.request.output / "agent-runs" / self.runtime["run_id"]),
+                        manifest_id="fixture",
+                        artifact_sha256="d" * 64,
+                    )
                 if test.behavior.get("fresh"):
                     self.runtime["run_id"] = "fresh-run-fixture"
                     self.runtime["session"].update(
@@ -172,7 +193,7 @@ class CollectionTests(unittest.TestCase):
                 self.mid += 1
                 self.queue.append(
                     {
-                        "schema": module.PIPE_SCHEMA,
+                        "schema": test.request.pipe_schema,
                         "type": kind,
                         "operation_id": self.operation,
                         "message_id": self.mid,
@@ -216,7 +237,7 @@ class CollectionTests(unittest.TestCase):
                     "last_result": self.result,
                 }
                 wire = {
-                    "schema": module.PIPE_SCHEMA,
+                    "schema": test.request.pipe_schema,
                     "type": "closed",
                     "operation_id": self.operation,
                     "reason": reason,
@@ -244,9 +265,19 @@ class CollectionTests(unittest.TestCase):
                     if self.runtime["tainted"] and self.result is None
                     else None,
                 }
+                if test.request.execution_policy is not None:
+                    wire.update(
+                        execution_policy=test.request.policy(),
+                        terminal_summary=copy.deepcopy(test.behavior.get("terminal_summary")),
+                        counter_proof_error=test.behavior.get("counter_proof_error"),
+                    )
+                    if wire["terminal_summary"] is None:
+                        wire["cleanup_errors"].append("terminal_counter_proof_unavailable")
                 complete = {
                     **wire,
-                    "schema": "spireagent/native-source3-collector-final-full-v2",
+                    "schema": "spireagent/native-source3-collector-final-full-v3"
+                    if test.request.execution_policy is not None
+                    else "spireagent/native-source3-collector-final-full-v2",
                     "runtime_status": self.runtime,
                 }
                 raw = json.dumps(complete).encode()
@@ -265,6 +296,15 @@ class CollectionTests(unittest.TestCase):
                 kind = value["type"]
                 if kind == "init":
                     self.operation = value["operation_id"]
+                    if test.request.execution_policy is not None:
+                        artifact = value["options"]["teacher_artifact"]
+                        self.evidence.update(
+                            artifact_sha256=artifact["sha256"],
+                            manifest_id="native-program-teacher-" + artifact["sha256"][:16],
+                        )
+                        self.runtime["agent"]["adapter"] = value["options"]["teacher_descriptor"][
+                            "adapter"
+                        ]
                     assert value["options"]["teacher_descriptor"]["agent_spec"]["learned"] is False
                     self.message(
                         "ready",
@@ -348,13 +388,19 @@ class CollectionTests(unittest.TestCase):
 
     def preflight(self, config, request):
         request.validate()
-        return {
+        prepared = {
             "child_path": str(self.root / "fixed-node.mjs"),
             "endpoint": config.platform_url,
             "options": request.options(config.platform_url),
         }
+        if request.execution_policy is not None:
+            prepared["promotion_gate"] = {
+                "installed_terminal_summary_available": True,
+                "closed_producer_relation": {"id": "synthetic_closed_relation"},
+            }
+        return prepared
 
-    def run_collection(self):
+    def run_collection(self, *, terminal_verifier=module.verify_terminal_summary):
         return module.collect_source3(
             self.config,
             self.root / "config.json",
@@ -362,8 +408,148 @@ class CollectionTests(unittest.TestCase):
             app_factory=self.application,
             child_factory=self.child,
             preflight=self.preflight,
+            terminal_verifier=terminal_verifier,
             cancel=self.cancel,
         )
+
+    def owned_proof(self):
+        self.request = replace(self.request, execution_policy=module.OWNED_EXECUTION_POLICY)
+        summary = {
+            "schema": "sts2.evidence/agent-session-terminal-summary-1",
+            "run_id": "run-fixture",
+            "content_id": "f" * 64,
+            "original_submission_count": 1,
+            "terminal_result_count": 1,
+            "known_delivered": 1,
+            "known_stale_rejections": 0,
+            "consecutive_known_stale_rejections": 0,
+            "proof_scope": "recorded_dispatch_and_terminal_results",
+            "live_eligibility_proved": False,
+        }
+        self.behavior["terminal_summary"] = copy.deepcopy(summary)
+        self.mock(module, "installed_terminal_summary_available", lambda: True)
+        self.mock(
+            module, "closed_collection_producer", lambda *args: {"id": "synthetic_closed_relation"}
+        )
+        return summary
+
+    def test_v3_parent_reverifies_exact_owned_final_evidence_and_keeps_N_separate(self):
+        summary, calls = self.owned_proof(), []
+
+        def verifier(directory, expected, policy):
+            calls.append((directory, expected, policy))
+            self.assertEqual(directory, self.request.output / "agent-runs/run-fixture")
+            self.assertEqual(
+                expected["agent_artifact_sha256"], self.children[0].evidence["artifact_sha256"]
+            )
+            self.assertEqual(policy, self.request.policy())
+            return copy.deepcopy(summary)
+
+        report = self.run_collection(terminal_verifier=verifier)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report["schema"], module.OWNED_REPORT_SCHEMA)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["budget_submissions_used"], 1)
+        self.assertEqual(report["terminal_result_count"], 1)
+        self.assertEqual(report["known_delivered_terminal_count"], 1)
+        self.assertEqual(report["known_stale_rejections"], 0)
+        self.assertFalse(report["terminal_summary"]["live_eligibility_proved"])
+        self.assertIsNone(report["eligible_unique_N"])
+        self.assertEqual(report["admission"], "not_run")
+        self.assertTrue(all(value["schema"] == module.OWNED_PIPE_SCHEMA for value in self.messages))
+
+    def test_v3_parent_rejects_a_child_counter_claim_that_disagrees_with_the_public_owner(self):
+        summary = self.owned_proof()
+        self.behavior["terminal_summary"].update(known_delivered=0, known_stale_rejections=1)
+        report = self.run_collection(terminal_verifier=lambda *args: summary)
+        self.assertNotEqual(report["status"], "completed")
+        self.assertEqual(report["error_code"], "terminal_counter_proof_disagrees")
+        self.assertIsNone(report["terminal_result_count"])
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+
+    def test_v3_missing_terminal_proof_retains_actual_cleanup_and_unavailable_counters(self):
+        self.owned_proof()
+        self.behavior.update(
+            terminal_summary=None, counter_proof_error="original_evidence_finalize_failed"
+        )
+        report = self.run_collection(
+            terminal_verifier=lambda *args: self.fail("unavailable proof must not be synthesized")
+        )
+        self.assertNotEqual(report["status"], "completed")
+        self.assertTrue(report["source_closed"])
+        self.assertTrue(report["child_final"]["control_release"]["confirmed"])
+        self.assertEqual(report["counter_proof_error"], "original_evidence_finalize_failed")
+        self.assertIsNone(report["terminal_result_count"])
+        self.assertIsNone(report["known_stale_rejections"])
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+
+    def test_v3_teacher_descriptor_or_artifact_drift_after_closed_gate_stops_before_App(self):
+        summary = self.owned_proof()
+        original_descriptor, original_writer = module.descriptor, module.write_artifact
+        for mode in ("descriptor", "artifact"):
+            self.request = replace(self.request, output=self.root / mode)
+            self.config = replace(self.config, state_dir=self.root / (mode + "-state"))
+            calls = 0
+            apps_before, children_before, commands_before = (
+                len(self.apps), len(self.children), len(self.commands)
+            )
+
+            def changing_descriptor(*, execution_policy=None, mode=mode):
+                nonlocal calls
+                calls += 1
+                value = original_descriptor(execution_policy=execution_policy)
+                if mode == "descriptor" and calls == 3:
+                    value["runtime_provenance"]["dependency_lock_sha256"] = "0" * 64
+                return value
+
+            def changing_writer(path, *, execution_policy=None, mode=mode):
+                result = original_writer(path, execution_policy=execution_policy)
+                if mode == "artifact":
+                    value = module.decode_json(path.read_bytes())
+                    value["runtime_provenance"]["dependency_lock_sha256"] = "0" * 64
+                    raw = module.json_bytes(value)
+                    path.write_bytes(raw)
+                    digest = hashlib.sha256(raw).hexdigest()
+                    result.update(id=value["agent_spec"]["id"] + "-" + digest[:16], sha256=digest)
+                return result
+
+            with (
+                self.subTest(mode=mode),
+                patch.object(module, "descriptor", changing_descriptor),
+                patch.object(module, "write_artifact", changing_writer),
+            ):
+                report = self.run_collection(terminal_verifier=lambda *args: summary)
+                self.assertEqual(len(self.apps), apps_before)
+                self.assertEqual(len(self.children), children_before)
+                self.assertEqual(len(self.commands), commands_before)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(
+                    report["error_code"], "closed_collection_producer_artifact_changed"
+                )
+
+    def test_v3_unpromoted_installed_verifier_or_closed_producer_blocks_before_App_Host_or_output(
+        self,
+    ):
+        self.request = replace(self.request, execution_policy=module.OWNED_EXECUTION_POLICY)
+        for installed, producer, code in (
+            (False, {"id": "synthetic"}, "installed_terminal_summary_unavailable"),
+            (True, None, "closed_collection_producer_unavailable"),
+        ):
+            with (
+                self.subTest(installed=installed),
+                patch.object(
+                    module, "installed_terminal_summary_available", lambda value=installed: value
+                ),
+                patch.object(
+                    module, "closed_collection_producer", lambda *args, value=producer: value
+                ),
+                self.assertRaisesRegex(BoundaryError, code),
+            ):
+                self.run_collection()
+            self.assertEqual(self.apps, [])
+            self.assertEqual(self.children, [])
+            self.assertEqual(self.commands, [])
+            self.assertFalse(self.request.output.exists())
 
     def test_genuine_App_admission_full_status_and_direct_evidence_are_separate_from_N(self):
         report = self.run_collection()
@@ -570,6 +756,334 @@ if __name__ == "__main__":
 
 
 class CollectorCliTests(unittest.TestCase):
+    def test_fixed_helper_verifies_source_owner_fixture_with_explicit_dependency(
+        self,
+    ):
+        evidence = module.ROOT.parent / "components/evidence"
+        script = """
+import json, subprocess, sys
+from pathlib import Path
+from test_sampled_agent_session_run_evidence import OwnedStaleEvidenceFixture
+fixture = OwnedStaleEvidenceFixture()
+try:
+    fixture.terminal(fixture.submission(), defer=True)
+    fixture.readiness()
+    fixture.sample()
+    fixture.terminal(fixture.submission(), delivery='delivered')
+    fixture.stop()
+    request = {'directory': str(fixture.directory.resolve()), 'expected': fixture.f.startup,
+               'execution_policy': fixture.f.agent['execution_policy']}
+    result = subprocess.run([sys.executable, '-m', 'spireagent.workbench.native_source3_collection',
+                             '--verify-terminal-summary'], input=json.dumps(request),
+                            capture_output=True, text=True, check=False, timeout=10)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert [summary[k] for k in ('original_submission_count', 'terminal_result_count',
+                                'known_delivered', 'known_stale_rejections',
+                                'consecutive_known_stale_rejections')] == [2, 2, 1, 1, 0]
+    assert summary['live_eligibility_proved'] is False
+    print(json.dumps(summary))
+finally:
+    fixture.close()
+"""
+        import os
+
+        # Explicit source-only Evidence dependency. The installed production pin
+        # is unchanged, and its preflight remains unavailable until promotion.
+        environment = {
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                (str(module.ROOT), str(evidence), str(evidence / "tests"))
+            ),
+        }
+        checked = subprocess.run(
+            [sys.executable, "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(json.loads(checked.stdout)["terminal_result_count"], 2)
+
+    def test_model_composer_selects_policy_only_from_the_exact_immutable_sampled_spec(self):
+        from spireagent.workbench.native_agent_support import native_package_execution_policy
+        from stpd.native_graph_spec import NativeGraphControl
+        from stpd.native_sampled_carry_spec import sampled_agent_spec
+        from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+        control = NativeGraphControl()
+        package = {
+            "agent_spec": sampled_agent_spec(control),
+            "graph": {"model_control": control.to_dict()},
+        }
+        self.assertIsNone(native_package_execution_policy(package))
+        policy = owned_current_known_stale_policy()
+        package["agent_spec"] = sampled_agent_spec(control, execution_policy=policy)
+        self.assertEqual(native_package_execution_policy(package), policy)
+        for change in (
+            lambda value: value["agent_spec"].update(version="1.1.0"),
+            lambda value: value["agent_spec"].pop("execution_policy"),
+            lambda value: value["agent_spec"].update(I=True),
+            lambda value: value["agent_spec"]["execution_policy"].update(
+                max_known_stale_rejections=True
+            ),
+        ):
+            changed = copy.deepcopy(package)
+            change(changed)
+            with self.subTest(change=change), self.assertRaises(BoundaryError):
+                native_package_execution_policy(changed)
+
+    def test_selected_package_owned_current_capability_is_checked_before_registration_writes(self):
+        from spireagent.workbench import local_model_registration as registration
+        from spireagent.workbench.native_agent_support import PUBLICATION_PROFILE_SHA256
+        from stpd.native_code_scope import REQUIRED_METHODS
+        from stpd.native_graph_spec import NativeGraphControl
+        from stpd.native_sampled_carry_spec import sampled_agent_spec
+
+        # The existing requirements projector imports two literal support exports
+        # from the numerical Agent module. Inject their actual source values;
+        # importing that module would violate this pure test's no-Torch boundary.
+        names = {"SUPPORTED_ACTION_VERBS", "SUPPORTED_INTERACTION_KINDS"}
+        owner_source = module.ROOT / "stpd/policy/native_agent.py"
+        owner_bytes = owner_source.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(owner_bytes).hexdigest(),
+            "059977971ff0c264ab5067f203d540ab38bbcf2e3328f50b121a4ee27fbad796",
+        )
+        static_exports = {}
+        for statement in ast.parse(owner_bytes).body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name) and target.id in names:
+                        static_exports[target.id] = ast.literal_eval(statement.value)
+        self.assertEqual(set(static_exports), names)
+        self.enterContext(
+            patch.dict(sys.modules, {"stpd.policy.native_agent": SimpleNamespace(**static_exports)})
+        )
+        from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+        control, policy = NativeGraphControl(), owned_current_known_stale_policy()
+        contracts = module.ROOT.parent / "components/connector/contracts"
+        profile = json.loads(
+            (contracts / "native-logical-publication-profile-v1.json").read_bytes()
+        )
+        wire = json.loads((contracts / "fixtures/native-logical-v1.json").read_bytes())
+        caps = wire["wire_samples"]["capabilities"]
+        caps["host"].update(
+            host_kind="test",
+            implementation={
+                "source_revision": "a" * 40,
+                "artifact_sha256": "b" * 64,
+                "module_version_id": "synthetic-mvid",
+            },
+        )
+        caps["game"].update(version="synthetic-game", commit="synthetic-game-commit")
+        caps["game"]["modset"].update(
+            status="exact", fingerprint="c" * 64, loaded_mod_ids=["synthetic-fixture"]
+        )
+        caps["supported_methods"] = list(REQUIRED_METHODS)
+        caps["capture_coverage"] = copy.deepcopy(profile["required_seams"])
+        reply = {
+            "capabilities": caps,
+            "publication_profile": profile,
+            "publication_profile_sha256": PUBLICATION_PROFILE_SHA256,
+        }
+        legacy = registration._native_requirements(reply)[0]
+        self.assertNotIn("current_owned", legacy["required_methods"])
+        with self.assertRaises(BoundaryError):
+            registration._native_requirements(reply, execution_policy=policy)
+        owned_reply = copy.deepcopy(reply)
+        owned_reply["capabilities"]["supported_methods"].append("current_owned")
+        selected = registration._native_requirements(owned_reply, execution_policy=policy)[0]
+        self.assertEqual(
+            selected["required_methods"], [*legacy["required_methods"], "current_owned"]
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            export = root / "already-verified-export"
+            export.mkdir()
+            (export / "model.json").write_text(
+                json.dumps(
+                    {
+                        "agent_spec": sampled_agent_spec(control, execution_policy=policy),
+                        "graph": {"model_control": control.to_dict()},
+                    }
+                )
+            )
+            config = ProjectConfig(
+                root / "state", "", "http://127.0.0.1:15526", None, combination()
+            )
+            # The numerical export owner is an explicit injected prerequisite.
+            # This test verifies the actual metadata/capability pre-write route.
+            calls = []
+            service = registration.LocalModelRegistration(
+                config,
+                SimpleNamespace(
+                    verified_for_registration=lambda identity: (
+                        calls.append("verified_export") or export
+                    )
+                ),
+                SimpleNamespace(private_root=root / "private", root=root),
+            )
+            with (
+                patch.object(registration, "require_native_models", lambda stage: None),
+                patch.object(service, "_native_runtime", lambda **kwargs: (None, root / "sdk")),
+                patch.object(service, "_capabilities", lambda *args, **kwargs: reply),
+                self.assertRaises(BoundaryError),
+            ):
+                service._register_native("a" * 64, environment_kind="native", deadline=float("inf"))
+            self.assertEqual(calls, ["verified_export"])
+            self.assertFalse((root / "private").exists())
+            self.assertEqual(set(root.iterdir()), {export})
+            from spireagent.workbench import native_agent_support
+
+            wrong_policy = {**policy, "max_known_stale_rejections": 7}
+            for existing in (False, True):
+                public_checks = []
+                old_manifest = export / "already-selected-manifest.json"
+                old_manifest.write_text(json.dumps({"execution_policy": wrong_policy}))
+                models = SimpleNamespace(
+                    private_root=root / "private",
+                    root=root,
+                    selection=lambda selected, path=old_manifest: {"manifest": str(path)},
+                    entry_path=lambda entry, field: Path(entry[field]),
+                    _public_manifest_contract=lambda *args, destination=public_checks: (
+                        destination.append(args)
+                    ),
+                )
+                service.models = models
+                with (
+                    self.subTest(existing=existing),
+                    patch.object(registration, "require_native_models", lambda stage: None),
+                    patch.object(service, "_native_runtime", lambda **kwargs: (None, root / "sdk")),
+                    patch.object(service, "_capabilities", lambda *args, **kwargs: owned_reply),
+                    patch.object(
+                        service,
+                        "_matching_native",
+                        lambda *args, value=existing, **kwargs: (
+                            "existing-selection" if value else None,
+                            False,
+                        ),
+                    ),
+                    patch.object(
+                        native_agent_support,
+                        "bind_native_export",
+                        lambda *args, **kwargs: ({}, {"execution_policy": wrong_policy}),
+                    ),
+                    self.assertRaisesRegex(
+                        BoundaryError, "selected_package_execution_policy_changed"
+                    ),
+                ):
+                    service._register_native(
+                        "a" * 64, environment_kind="native", deadline=module.time.monotonic() + 60
+                    )
+                self.assertEqual(public_checks, [])
+                self.assertFalse((models.private_root / registration.REGISTRY).exists())
+                if (models.private_root / registration.REGISTRATIONS).exists():
+                    self.assertEqual(
+                        list((models.private_root / registration.REGISTRATIONS).iterdir()), []
+                    )
+
+    def test_installed_summary_capability_checks_only_the_public_property_without_evaluation(self):
+        class PublicTypedValue:
+            @property
+            def terminal_summary(self):
+                raise AssertionError("capability inspection must not evaluate a fabricated value")
+
+        with patch.dict(
+            sys.modules,
+            {"sts2_platform_evidence": SimpleNamespace(AgentSessionRunEvidence=PublicTypedValue)},
+        ):
+            self.assertTrue(module.installed_terminal_summary_available())
+        with patch.dict(
+            sys.modules,
+            {
+                "sts2_platform_evidence": SimpleNamespace(
+                    AgentSessionRunEvidence=type("LegacyTypedValue", (), {})
+                )
+            },
+        ):
+            self.assertFalse(module.installed_terminal_summary_available())
+
+    def test_owned_policy_is_explicit_and_does_not_raise_an_omitted_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            legacy = module.CollectionRequest(root / "game", root / "host", root / "output", "TEST")
+            legacy.validate()
+            with self.assertRaises(BoundaryError):
+                replace(legacy, max_submissions=200).validate()
+            owned = replace(legacy, execution_policy=module.OWNED_EXECUTION_POLICY)
+            owned.validate()
+            self.assertEqual(owned.max_submissions, 100)
+            replace(owned, max_submissions=200).validate()
+            self.assertEqual(owned.report_schema, module.OWNED_REPORT_SCHEMA)
+            self.assertEqual(legacy.report_schema, module.REPORT_SCHEMA)
+            for candidate in (
+                replace(owned, max_submissions=201),
+                replace(owned, target_choices=101),
+                replace(legacy, execution_policy="silently_retry"),
+            ):
+                with self.subTest(candidate=candidate), self.assertRaises(BoundaryError):
+                    candidate.validate()
+
+    def test_version_only_proposed_teacher_cannot_pass_the_existing_closed_producer_registry(self):
+        candidate = module.descriptor()
+        candidate["agent_spec"]["teacher"]["version"] = "1.0.6"
+        candidate["adapter"]["version"] = "1.2.0"
+        self.assertIsNone(module.closed_collection_producer(candidate, {"proposed": True}))
+
+    def test_terminal_helper_consumes_public_typed_value_and_rejects_policy_or_content_substitution(
+        self,
+    ):
+        summary = {
+            "schema": "sts2.evidence/agent-session-terminal-summary-1",
+            "run_id": "run-fixture",
+            "content_id": "f" * 64,
+            "original_submission_count": 4,
+            "terminal_result_count": 3,
+            "known_delivered": 1,
+            "known_stale_rejections": 2,
+            "consecutive_known_stale_rejections": 1,
+            "proof_scope": "recorded_dispatch_and_terminal_results",
+            "live_eligibility_proved": False,
+        }
+        policy, expected, calls = {"synthetic_declared_policy": True}, {"run_id": "run-fixture"}, []
+        value = SimpleNamespace(
+            terminal_summary=summary,
+            content_id=summary["content_id"],
+            agent_manifest={"execution_policy": policy},
+        )
+
+        def public_verifier(directory, checked_expected):
+            calls.append((directory, checked_expected))
+            return SimpleNamespace(passed=True, require_value=lambda: value)
+
+        owner = SimpleNamespace(verify_agent_session_run_evidence=public_verifier)
+        with patch.dict(sys.modules, {"sts2_platform_evidence": owner}):
+            self.assertEqual(
+                module.verify_terminal_summary(Path("/synthetic/owner/run"), expected, policy),
+                summary,
+            )
+            self.assertEqual(calls, [(Path("/synthetic/owner/run"), expected)])
+            with self.assertRaises(BoundaryError):
+                module.verify_terminal_summary(
+                    Path("/synthetic/owner/run"), expected, {"wrong_policy": True}
+                )
+            value.content_id = "a" * 64
+            with self.assertRaises(BoundaryError):
+                module.verify_terminal_summary(Path("/synthetic/owner/run"), expected, policy)
+        for corrupt in (
+            {**summary, "known_stale_rejections": True},
+            {**summary, "live_eligibility_proved": True},
+            {**summary, "known_delivered": 2},
+            {**summary, "deferred_events": 2},
+        ):
+            with self.subTest(corrupt=corrupt), self.assertRaises(BoundaryError):
+                module.terminal_summary_fields(corrupt, expected["run_id"])
+
     def test_no_source3_is_explicit_and_default_remains_recording(self):
         from contextlib import redirect_stdout
         from io import StringIO
