@@ -556,3 +556,156 @@ original sample buffers. Quotas cause explicit failure, never payload truncation
 The legacy 16 MiB Agent-evidence share-upload compatibility limit is unchanged;
 a locally verified large sample run is not thereby shareable. Future transfer
 support and actual representative game payload measurements remain owner gates.
+
+## Opt-in owned Current and bounded fresh decisions
+
+The default remains legacy Current and handoff on non-delivery. This addition
+separates an exact known stale refusal from uncertainty while preserving the
+accepted observation prefix. It does not automatically retry an old action.
+Its normative examples are
+[owned-current-known-stale-v1.json](../contracts/fixtures/owned-current-known-stale-v1.json).
+
+### Closed manifest, port and Next
+
+Only sampled_current/once_per_occurrence/scoped-empty attachment with
+state_recovery:none can declare this optional top-level manifest field:
+
+```json
+{"execution_policy":{"schema":"sts2.policy-runtime/agent-execution-policy-1",
+ "current_mode":"reader_owned_v1","known_stale":"fresh_changed_current_v1",
+ "operational_outcome":"known_not_started_v1",
+ "max_known_stale_rejections":8,"max_consecutive_known_stale_rejections":3}}
+```
+
+Total is an integer1..16; consecutive is1..min(total,4). No boolean/zero/extra
+fields. Absence means legacy, without inserting a default into historical
+manifest bytes. Required methods include both visible child `current` and
+transport `current_owned`, plus existing lifecycle/read/catalog/retain/release.
+Initialization of an opted-in manifest records the existing mode_changed event
+after native_session_attached with the actual initial mode/budget/controller,
+before any deferral. Evidence does not guess Auto from mode=None. Legacy
+initialization remains unchanged.
+
+Missing capability fails; Query remains `current`, all four scopes and the whole
+original orderedC. No feature/InputSpec/I/F/tensor/NativeUnit law changes.
+
+`NdjsonAgentSessionPort` takes explicit optional executionPolicy as constructor
+argument5 after byteBudget; staticspawn forwards options.executionPolicy. It
+validates/clones/freezes a read-only getter. Runtime requires exact policy
+equality with the validated manifest before ready/native registration/mutation.
+A restore replacement must match before old-port/epoch/native changes; this new
+none-recovery policy adds no restore capability. No mode is inferred from input
+field presence. Old absence requires exactly the existing five Next fields.
+New policy requires exactly those five plus nullable `operational_outcome`.
+The public native port is exported by the main package; the existing ./child-port
+export is a legacy decision-only launcher and is not repurposed.
+Python adapters bind this parser to their declared artifact/spec policy; old
+actual immutable adapter/package bytes remain legacy.
+
+Outcome fields are exactly `schema`, `basis_acquisition_id`, `action_id`,
+`consumption_id`, `state_version`, `result`. Schema is
+`sts2.policy-runtime/known-not-started-outcome-1`; result is the full exact SDK
+NativeLogicalResult. It joins the original submission/basis/watermark and repeats
+idempotently through unchanged readiness until a new accepted input commits.
+It is control metadata outside Consume features, not previous_actual_action or
+feedback. A learned I/F-off adapter validates/ignores it for W/scoring. Teacher
+may stage an exact refused-intent correction only with a genuinely changed new
+input and commit it on that new ConsumeACK; Runtime never edits/rewinds its state.
+
+### Ownership and qualified readiness
+
+Runtime owns the SDK reader lease per acquisition. The SDK temporary reply owner
+precedes all throwing post-reply checks; assembly adopts before admission; a
+stack owner/map-commit flag protects register/evidence/byte/map insertion. It
+transfers only the reader lease, then disposes large assembly buffers. Readiness
+discard, acknowledged replacement and Stop release it. Release takes/removes the
+lease first and finally releases despite local/evidence failure. Offered
+uncertain bytes are persisted before dropping local bytes; write failure taints
+but cannot withhold native cleanup. Stop revokes control immediately; serialized
+resolve/started-submit ownership is unchanged. Final cleanup attempts every lease
+before closing registration, regardless of renewal/detach/Evidence failure.
+
+Freshness uses the existing qualified NativeUnit: occurrence=(stream_generation,
+snapshot_id,owner.occurrence_id,binding_revision,focus_occurrence), revision and
+normalized complete coherence. Coherence excludes observation observed_at and
+catalog_ref/scope_id mechanics; it retains the original complete facts/catalog.
+An unchanged occurrence requires equal revision/coherence. A new occurrence
+requires a strictly newer revision in the same generation. Runtime explicitly
+checks the refused accepted unit before offering a readiness query/allowing
+Await: existing ledger field-coherence checks alone do not cover readiness
+revision drift. Generation/regression/same-unit drift fails. New capture/scope/
+time/IDs alone and child advanced booleans do not suffice. Legitimate Map→Inspect→Map
+may still advance even when model features agree.
+
+An exact new advanced ConsumeACK/completedNext can enable a new independent
+choice from its fresh originalC. An unchanged unit only Awaits/Closes/Abstains;
+old action/request/basis IDs cannot be repeated/rebound. No W/continuity/epoch
+reset, copied directive, old-ID retry or success inference. Unknown/partial,
+pending/expired, transport-after-start, controller uncertainty, arbitrary
+not_started reasons and required Current/source failures still fence/handoff.
+
+### Original dispatch event and result
+
+Opted-in Runtime supplies SDK onDispatchBinding over the actual prepared body.
+It emits ONE existing native_submission_requested event with the old fields plus
+`dispatch_binding` (exact runtime/client/lease/generation). Legacy shape/timing is
+unchanged. It awaits this hook before the existing synchronous budget callback
+and transport. Hook/evidence failure before start has no hidden HTTP/start
+charge. A native_submission_not_started closure requires a corresponding
+durable intent; failed intent proof is unavailable, not an orphan invented event.
+Terminal SDK attribution and Evidence joins all four original fields even after
+renewal or Stop. Opted-in pending original/reconciliation stores that same binding;
+no new request/authority ledger. Human reconciliation never enables deferral.
+
+### Count first, then decide whether continuation is allowed
+
+Preserve every full joined original terminal native_result. For each original
+request exactly once, classify only delivery=not_started,
+reason=stale_snapshot_or_binding, action=null, stages=[], retry=never_automatic,
+with exact original attribution. Count matching results BEFORE checking Auto,
+control, epoch, known state, no-pending/taint, deadline/budget. Thus threshold and
+late Stop/deadline refusals count. Delivered resets consecutive only; total never
+resets. Other dispositions do not increment/reset stale counts. Existing terminal
+reconciliation shares this dedup/classifier, never a Human continuation.
+
+Only an otherwise authorized Auto owner strictly below both ceilings may emit
+`native_stale_decision_deferred`, whose payload has exactly normal context plus
+`request_id`, `basis_acquisition_id`, `consumption_id`, `state_version`,
+`known_stale_rejections`, `consecutive_known_stale_rejections`. These counts equal
+independently rebuilt full original results. Deferral-event count is not refusal
+count. The threshold result counts but has no deferral/new decision. Return
+`fresh_decision_required` with original_request_id and status, allowing the next
+ordinary Next cycle only. An already winning Human/Stop/deadline/control reason
+is retained, not replaced with stale handoff.
+
+For ceilings8/3: below-limit stale takes total2/streak0→3/1 and may defer;
+unchanged Awaits leave3/1; changed-unit independent delivered resets3/0. A third
+consecutive stale takes2/2→3/3, counts and stops without deferral. Total7/0→8/1
+likewise counts/stops. A result after Human/Stop/deadline still counts, cannot
+defer/reacquire/reset, and keeps the actual stop reason.
+
+### Evidence and migration limits
+
+The Evidence owner must explicitly support conditional closed manifest/Next/
+submission/pending/deferred shapes; old shapes/producer tuples remain accepted
+unchanged. It validates original mode/epoch/prefix/no-pending/taint, exact original
+four-field binding and rebuilt counts/contract-consistent deferral. Existing
+records do NOT prove live lease expiry/current budget validity: those mandatory
+checks are source-tested Runtime owner facts with final native admission, not
+independent proof from omitted fields. Evidence outputs/tests retain this limit;
+no extra current-expiry witness/framework is added. Incomplete evidence makes
+final count proof unavailable/tainted, never reconstructed from a status projection.
+
+Collector attempts retain the existing used-submission budget, including a
+started request without terminal result. Terminal results, stale counts and
+known deliveries are distinct. Default max100 is unchanged; an explicit opted-in
+request may select max200 with target100 and the original deadline. No automatic
+increase/reset. Collector stops at100 known deliveries; later100–300 admittedN,
+coverage/exclusions/training are separate gates, not promised by delivery count.
+
+Source/test acceptance precedes exact integration of the new Evidence verifier;
+Root then pins/locks/installs it before freezing the final Teacher1.0.6 tuple with
+the NEW lock SHA. Historical1.0.5/1.0.4 tuples keep their original hashes/locks.
+Version/BOM/package/install/game/data/use/fit decisions belong to Root and their
+owning consumers. This source contract claims no new installed/live/Human/N/
+model-quality or fullG2 qualification.
