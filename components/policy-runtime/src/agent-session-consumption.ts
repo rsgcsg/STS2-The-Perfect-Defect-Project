@@ -6,6 +6,7 @@ import {
 } from "./agent-session-contracts.js";
 import { agentJsonByteLength, encodeBoundedAgentJson } from "./agent-session-json.js";
 import { AgentByteBudget, type AgentByteReservation } from "./agent-session-budget.js";
+import { createHash } from "node:crypto";
 
 /** SDK-decoded acquisition; this ledger is not a replacement native-wire verifier. */
 export interface AgentAcquisition {
@@ -26,6 +27,7 @@ interface Known {
   bytes: number;
   reservation: AgentByteReservation;
 }
+export interface AgentNativeUnitWitness { occurrence: string; generation: string; revision: number; coherence: string }
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value !== null && typeof value === "object") {
@@ -186,6 +188,22 @@ export class AgentConsumptionLedger {
     const known = this.acquisitions.get(acquisitionId);
     if (!known) throw new AgentSessionError("unknown_acquisition");
     return known.acquisition;
+  }
+  /** Existing full native unit law, excluding capture/scope/time mechanics. */
+  nativeUnit(acquisitionId: string): Readonly<AgentNativeUnitWitness> {
+    const known = this.acquisitions.get(acquisitionId);
+    if (!known) throw new AgentSessionError("unknown_acquisition");
+    const observation = { ...known.acquisition.observation };
+    const descriptor = { ...sessionObject(observation.catalog) };
+    delete observation.observed_at; delete observation.catalog;
+    delete descriptor.catalog_ref; delete descriptor.scope_id;
+    const normalized = { observation, catalog: descriptor };
+    const scratch = this.byteBudget.reserve(agentJsonByteLength(normalized, this.manifest.limits.max_message_bytes));
+    try {
+      return Object.freeze({ occurrence: known.occurrence, revision: known.revision,
+        generation: String(known.acquisition.capture.stream_generation),
+        coherence: createHash("sha256").update(stable(normalized)).digest("hex") });
+    } finally { scratch.release(); }
   }
 
   release(acquisitionId: string): void {

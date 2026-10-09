@@ -14,6 +14,27 @@ candidate indices. See the [Agent session contract](docs/AGENT_SESSION_PROTOCOL.
 for current implementation limits, exact pending-request reconciliation and
 source/test evidence boundaries.
 
+A sampled-current Agent may explicitly select the closed `execution_policy`
+in the Agent session contract. This enables `current_owned` reader lifetimes and
+bounded new decisions after the exact `not_started / stale_snapshot_or_binding`
+result. An unchanged NativeUnit only waits; a new decision requires a changed
+unit, an advanced ConsumeACK, and a completed Next in the same accepted prefix.
+The original request/action/basis is never replayed. Unknown/partial delivery,
+source loss, Human/Stop, controller or budget loss still ends the path.
+
+The native port is exported from the package main entry. Pass the validated
+manifest policy explicitly; omission keeps the legacy five-field Next grammar.
+
+```ts
+import { NdjsonAgentSessionPort } from "@rsgcsg/sts2-policy-runtime";
+
+const port = new NdjsonAgentSessionPort(
+  child, manifest.adapter, manifest.limits, undefined, manifest.execution_policy
+);
+// Or: NdjsonAgentSessionPort.spawn(command, args, manifest.adapter,
+//   manifest.limits, { executionPolicy: manifest.execution_policy });
+```
+
 The Connector supplies one complete ordered `BoundAction` catalog. A policy
 adapter receives that exact Snapshot and Read bundle, echoes the catalog digest,
 returns one score per candidate and an optional selected index, and never returns
@@ -400,3 +421,15 @@ This transport does not change input timing: the current stateful port offers
 only admitted, interactive, nonempty action menus. Internal waits and successor
 observations are not Model inputs. A sampled-offer dataset must retain that
 distinction and must not reconstruct Model history from every transport capture.
+
+The required owned-Current lifetime tests compose the real game-free C#
+Store/Projector, REST SDK and an OS Ndjson fixture child. They require the existing
+.NET 9 source-test toolchain; the test helper builds its zero-package portable
+bridge once, or uses `STS2_OWNED_CURRENT_BRIDGE_DLL` when explicitly supplied.
+Controller/capability/Await fixture responses are synthetic; no game or model
+inference is executed.
+
+The Runtime test command serializes test files. The suite includes independent
+fsync-heavy evidence admission tests and a portable bridge build; simultaneous
+files can exhaust the unchanged per-test deadline through filesystem contention.
+Assertions, timeouts, admission limits and optional-case conditions are preserved.

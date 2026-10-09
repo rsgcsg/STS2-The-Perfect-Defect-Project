@@ -33,8 +33,8 @@ internal static partial class PlayerEnvironmentService
         return new(PlayerEnvironmentContract.ProtocolVersion, NativeLogicalContract.CapabilitiesSchema,
             NativeLogicalContract.Profile, ToHostIdentity(host), ToGameIdentity(game), ToSessionReference(host, game),
             publication.StreamGeneration,
-            new[] { "capabilities", "current", "read", "catalog", "resolve", "attach", "events", "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result" },
-            new[] { "native_current_frame" }.Concat(publication.Coverage.Where(s => s.Coverage != "unsupported")
+            new[] { "capabilities", "current", "current_owned", "read", "catalog", "resolve", "attach", "events", "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result" },
+            new[] { "native_current_frame", "native_current_reader_owned_v1" }.Concat(publication.Coverage.Where(s => s.Coverage != "unsupported")
                 .Select(s => s.SourceSeam)).Distinct(StringComparer.Ordinal).ToArray(),
             publication.Coverage,
             new("u64_decimal_string", "u64_decimal_string", "native_source_occurrence", "contiguous_completed_projections_not_causal_commit_order"),
@@ -267,7 +267,11 @@ internal sealed partial class NativeLogicalService : IDisposable
         }
         return reply;
     }
-    internal async Task<NativeLogicalCurrentReply> CurrentAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
+    internal Task<NativeLogicalCurrentReply> CurrentAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
+        => CurrentCoreAsync(request, false, cancellation);
+    internal Task<NativeLogicalCurrentReply> CurrentOwnedAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
+        => CurrentCoreAsync(request, true, cancellation);
+    private async Task<NativeLogicalCurrentReply> CurrentCoreAsync(NativeLogicalCurrentRequest request, bool readerOwned, CancellationToken cancellation)
     {
         RequireActiveClient(request.ClientSessionId);
         if (!encodingAdmission.Wait(0)) return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "capacity_exceeded", null, null, null, "encoding_capacity_exceeded");
@@ -285,11 +289,16 @@ internal sealed partial class NativeLogicalService : IDisposable
                 // behind a later source callback and change handle identity.
                 Enqueue(() =>
                 {
+                    NativeLogicalCurrentReply? reply = null;
                     try
                     {
+                        if (readerOwned) cancellation.ThrowIfCancellationRequested();
                         RequireActiveClient(request.ClientSessionId);
-                        var reply = projector.Current(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
-                            () => Environment.TickCount64, Store, prepared.Continuity);
+                        reply = readerOwned
+                            ? projector.CurrentOwned(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
+                                () => Environment.TickCount64, Store, prepared.Continuity)
+                            : projector.Current(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
+                                () => Environment.TickCount64, Store, prepared.Continuity);
                         if (!clientActive(request.ClientSessionId))
                         {
                             ExpireClient(request.ClientSessionId, "client_session_expired");
@@ -298,9 +307,20 @@ internal sealed partial class NativeLogicalService : IDisposable
                         if (reply.Capture is { } value)
                             AcceptBasis(prepared, request.EagerScope.Contains("catalog") ? Store.Catalog(value.CaptureId) : null);
                         if (reply.Status == "source_capture_incomplete") reply = reply with { Reason = prepared.Facts.SourceCompleteness.Missing.FirstOrDefault() ?? reply.Reason };
+                        if (readerOwned) cancellation.ThrowIfCancellationRequested();
                         source.SetResult(reply);
                     }
-                    catch (Exception e) { source.SetException(e); }
+                    catch (Exception e)
+                    {
+                        Exception failure = e;
+                        try
+                        {
+                            if (readerOwned && reply?.Retention is { } retention)
+                                Store.Release(request.ClientSessionId, retention.RetentionHandleId);
+                        }
+                        catch (Exception cleanup) { failure = new AggregateException(e, cleanup); }
+                        source.TrySetException(failure);
+                    }
                 });
                 queued = true;
                 return prepared;

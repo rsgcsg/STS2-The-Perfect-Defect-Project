@@ -45,7 +45,7 @@ async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow"
   } as unknown as PlayerEnvironmentRestClient;
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, mode, runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
   const manifestPath = join(root, "agent.json"); await writeFile(manifestPath, JSON.stringify(manifest));
-  const port = NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, scenario], manifest.adapter, manifest.limits);
+  const port = NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, scenario], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   const runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
     runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, mode,
     autoBudget: { maxSubmissions: 400, maxPolicyCalls: 1000, deadlineMs: 60000 } });

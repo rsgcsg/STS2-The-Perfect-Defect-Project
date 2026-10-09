@@ -40,7 +40,7 @@ function fixture(manifest = shared.manifest) {
   const stdin = new Writable({ write(chunk, _encoding, callback) { written.push(JSON.parse(Buffer.from(chunk).toString())); callback(); } });
   const stdout = new PassThrough(), stderr = new PassThrough();
   const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, exitCode: null, kill: vi.fn(() => true) });
-  const port = new NdjsonAgentSessionPort(child as unknown as ConstructorParameters<typeof NdjsonAgentSessionPort>[0], manifest.adapter, manifest.limits);
+  const port = new NdjsonAgentSessionPort(child as unknown as ConstructorParameters<typeof NdjsonAgentSessionPort>[0], manifest.adapter, manifest.limits, undefined, manifest.execution_policy);
   stdout.write(JSON.stringify({ schema: AGENT_SESSION_SCHEMA, message_type: "ready", adapter: manifest.adapter }) + "\n");
   const authorization: AgentStateAuthorization = { expected_metadata: metadata(manifest),
     pending_request: "reconciled", retained_prefix: "complete", assertCurrent: vi.fn() };
