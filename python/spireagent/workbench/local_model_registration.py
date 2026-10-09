@@ -256,7 +256,8 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
         ) from error
 
 
-def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
+def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None = None
+                         ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
     """Bind the fixed code-owned publication target, never an advertised subset."""
     from spireagent.json_boundary import object_fields
     from spireagent.workbench.native_agent_support import (
@@ -299,6 +300,18 @@ def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], li
         ):
             raise ValueError
         methods = list(REQUIRED_METHODS)
+        if execution_policy is not None:
+            from stpd.policy.native_operational_outcome import checked_execution_policy
+
+            checked_execution_policy(execution_policy)
+            methods.append("current_owned")
+            mechanisms = capabilities.get("implemented_mechanisms")
+            if (
+                not isinstance(mechanisms, list)
+                or any(not isinstance(item, str) or not item for item in mechanisms)
+                or "native_current_reader_owned_v1" not in mechanisms
+            ):
+                raise ValueError
         advertised_methods = capabilities.get("supported_methods")
         if not isinstance(advertised_methods, list) or not set(methods) <= set(advertised_methods):
             raise ValueError
@@ -374,6 +387,14 @@ def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], li
         raise BoundaryError(
             "local_model_registration", "native_capabilities_incompatible"
         ) from error
+
+
+def _selected_native_execution_policy(
+    manifest: dict[str, Any], policy: dict[str, Any] | None
+) -> None:
+    if (("execution_policy" in manifest) != (policy is not None)
+            or manifest.get("execution_policy") != policy):
+        raise BoundaryError("local_model_registration", "selected_package_execution_policy_changed")
 
 
 def bind_memory_export(*args: Any, **kwargs: Any) -> Any:
@@ -915,7 +936,10 @@ class LocalModelRegistration:
 
     def _register_native(self, identity: str, *, environment_kind: str,
                          deadline: float) -> dict[str, Any]:
-        from spireagent.workbench.native_agent_support import bind_native_export
+        from spireagent.workbench.native_agent_support import (
+            bind_native_export,
+            native_package_execution_policy,
+        )
 
         if environment_kind != "native":
             raise BoundaryError(
@@ -923,10 +947,15 @@ class LocalModelRegistration:
             )
         require_native_models("local_model_registration")
         export = self.export.verified_for_registration(identity)
+        # The completed immutable export was just reverified by its owning loader.
+        # Binding loads it again; no config flag upgrades an historical package.
+        execution_policy = native_package_execution_policy(_object_file(export / "model.json"))
         node_modules, sdk = self._native_runtime(deadline=deadline)
         del node_modules
         capabilities = self._capabilities(sdk, deadline=deadline, input_profile=NATIVE_PROFILE)
-        requirements, support, required_seams = _native_requirements(capabilities)
+        requirements, support, required_seams = _native_requirements(
+            capabilities, execution_policy=execution_policy
+        )
         private = self.models.private_root
         if private.exists() or private.is_symlink():
             if not _ordinary(private, directory=True):
@@ -945,6 +974,10 @@ class LocalModelRegistration:
                                                  support=support, required_seams=required_seams)
                 if found is not None:
                     found_entry = self.models.selection(found)
+                    _selected_native_execution_policy(
+                        _object_file(self.models.entry_path(found_entry, "manifest")),
+                        execution_policy,
+                    )
                     self.models._public_manifest_contract(
                         self.models.entry_path(found_entry, "manifest")
                     )
@@ -963,10 +996,12 @@ class LocalModelRegistration:
                 target.mkdir(mode=0o700)
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
                 try:
-                    bind_native_export(self.models.root, export, config_path, manifest_path,
+                    _, bound_manifest = bind_native_export(
+                                       self.models.root, export, config_path, manifest_path,
                                        artifact_id=identity, manifest_id=selection,
                                        requirements=requirements, support=support,
                                        required_seams=required_seams, binding_root=private)
+                    _selected_native_execution_policy(bound_manifest, execution_policy)
                     self.models._public_manifest_contract(manifest_path)
                     entry = {"id": selection, "label": "本机原生 M2 有界 Agent " + identity[:8],
                              "adapter": NATIVE_ADAPTER, "runtime_profile": NATIVE_PROFILE,
