@@ -77,7 +77,7 @@ def test_browser_import_preview_publish_keep_auth_exact_body_and_closed_UI(
     assert post(route, request)[0] == 200
     saved = settled(app.local_recording_import)
     assert saved["status"] == "completed", saved
-    assert saved["native_agent_support"]["product_entry_enabled"] is False
+    assert saved["native_agent_support"]["product_entry_enabled"] is True
     preview_route = "/api/local-datasets/native-agent-preview"
     payload = {"artifact_ids": [saved["artifact_id"]]}
     assert post(preview_route, payload, csrf="wrong")[0] == 403

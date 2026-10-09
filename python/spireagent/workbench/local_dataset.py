@@ -44,7 +44,12 @@ PURPOSES = frozenset({"training", "test", "gold"})
 
 
 def _ordered_recipe(view: str) -> str:
-    from stpd.ordered_source_spec import RECIPES
+    from stpd.ordered_source_spec import RECIPES, SAMPLED_VIEW
+
+    if view == SAMPLED_VIEW:
+        from stpd.native_training_source_spec import RECIPE
+
+        return RECIPE
 
     for recipe, (slots, reset, selected_view) in RECIPES.items():
         if (slots, reset, selected_view) == (1, "carry", view):
@@ -389,13 +394,39 @@ class LocalDatasetService:
         identity = digest(artifact_id, "local_dataset.artifact_id")
         owner, store, _ = self._selected()
         item = store.get_manifest(identity)
-        if item.kind != "dataset" or item.parameters.value().get("schema") != HUMAN_SOURCE_SCHEMA:
+        info = item.parameters.value()
+        source_schema = info.get("schema")
+        from stpd.native_agent_sampled_source_spec import PARTITION_SCHEMA as DIRECT_PARTITION
+        from stpd.native_agent_sampled_source_spec import PROFILE as DIRECT_PROFILE
+        from stpd.native_agent_sampled_source_spec import SOURCE_SCHEMA as DIRECT_SOURCE
+        from stpd.native_training_source_spec import RECIPE
+        from stpd.ordered_source_spec import PARTITION_SCHEMA as ORDERED_PARTITION
+        from stpd.ordered_source_spec import SOURCE_SCHEMA as ORDERED_SOURCE
+        from stpd.ordered_source_spec import checked_view
+
+        details: dict[str, Any] = {}
+        sample_type = "human_input"
+        if (source_schema == DIRECT_SOURCE and info.get("partition_schema") == DIRECT_PARTITION
+                and info.get("source_profile") == DIRECT_PROFILE and info.get("split") == "train"):
+            sample_type = "native_agent_sampled"
+            details = {"source_schema": DIRECT_SOURCE, "source_profile": DIRECT_PROFILE,
+                       "recommended_recipe_id": RECIPE}
+        elif (source_schema == ORDERED_SOURCE and info.get("partition_schema") == ORDERED_PARTITION
+                and info.get("split") in {"train", "dev", "test"}):
+            view = checked_view(info.get("projection_spec"), info.get("target_spec"))
+            sample_type = "ordered_source3"
+            details = {"source_schema": ORDERED_SOURCE, "source_view": view,
+                       "recommended_recipe_id": _ordered_recipe(view)}
+        elif source_schema != HUMAN_SOURCE_SCHEMA:
+            raise BoundaryError("local_dataset", "human_input_source_required")
+        if item.kind != "dataset":
             raise BoundaryError("local_dataset", "human_input_source_required")
         with closing(sqlite3.connect(owner.path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
             row = db.execute("SELECT purpose FROM curation_claims WHERE artifact=?",
                              (identity,)).fetchone()
         return {"schema": "stpd/local-dataset-binding-v1", "artifact_id": identity,
-                "sample_type": "human_input", "curation_purpose": row[0] if row else None}
+                "sample_type": sample_type, "curation_purpose": row[0] if row else None,
+                **details}
 
     def start_human_preview(self, artifact_ids: object) -> dict[str, Any]:
         if (not isinstance(artifact_ids, list) or not 1 <= len(artifact_ids) <= 256

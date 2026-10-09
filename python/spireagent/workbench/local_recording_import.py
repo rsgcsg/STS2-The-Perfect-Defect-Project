@@ -53,24 +53,36 @@ LABEL_PATTERN = re.compile(r"local-(?:worker|campaign)-[a-f0-9]{32}\Z")
 
 
 def native_agent_import_choices() -> dict[str, Any]:
-    """Closed research producer relations; the product entry is still gated."""
+    """Closed producer metadata for the reviewed native data UI capability."""
     from stpd.native_agent_sampled_source_spec import (
         FIXTURE_COHORT,
         MAP_TEACHER_RELATION_SPEC,
+        MAX_RAW_REFERENCES,
+        PARTITION_SCHEMA,
         PROFILE,
+        RAW_SCHEMA,
         RELATION_SPEC,
+        SOURCE_SCHEMA,
         TEACHER_COHORT,
         TEACHER_RELATION_SPEC,
     )
+    from stpd.native_training_source_spec import RECIPE
 
     return copy.deepcopy({
-        "source_profile": PROFILE, "product_entry_enabled": False,
+        "source_profile": PROFILE, "product_entry_enabled": True,
         "cohorts": [TEACHER_COHORT, FIXTURE_COHORT], "default_cohort": TEACHER_COHORT,
+        "cohort_labels": {TEACHER_COHORT: "程序示范（声明来源）",
+                          FIXTURE_COHORT: "合成协议测试"},
+        "raw_schema": RAW_SCHEMA, "max_raw_references": MAX_RAW_REFERENCES,
+        "training_source_schema": SOURCE_SCHEMA, "partition_schema": PARTITION_SCHEMA,
+        "recommended_recipe_id": RECIPE,
         "default_relation_id": MAP_TEACHER_RELATION_SPEC["id"],
         "relations": [
-            {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4"},
-            {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2"},
-            {"relation": RELATION_SPEC, "label": "合成协议测试"},
+            {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": RELATION_SPEC, "label": "合成协议测试", "cohorts": [FIXTURE_COHORT]},
         ],
         "automatic_training": False, "human_origin_verified": False,
     })
