@@ -24,6 +24,7 @@ from spireagent.workbench.native_workbench_api import (
     MAX_RESPONSE_BYTES,
     PREFIX,
     VIEW_SCHEMA,
+    NativeWorkbenchApi,
     bounded_response,
     public,
 )
@@ -199,6 +200,34 @@ def test_native_projection_strips_nested_secrets_and_enforces_response_bytes():
     ) == {"safe": {"value": 3}}
     with pytest.raises(ValueError, match="native_response_limit"):
         bounded_response({"large": "a" * MAX_RESPONSE_BYTES})
+
+
+def test_native_source_labels_share_data_owner_without_changing_cohort_default(
+    tmp_path, monkeypatch,
+):
+    from metadata_import_guard import install_torch_import_guard
+
+    from spireagent.workbench.local_dataset import source3_capabilities
+
+    guard = install_torch_import_guard(monkeypatch)
+    app, pair, *_ = paired_app(tmp_path, monkeypatch)
+    before = app.local_training.status()
+    monkeypatch.setattr(app, "native_recording_status", lambda: {
+        "status": {"recording_lifecycle": "ready", "capture_profile_id": None},
+    })
+    support = source3_capabilities()
+    view = NativeWorkbenchApi(app).view("page=data", pair)
+    controls = {row["action_id"]: row for row in view["capabilities"]["actions"]}
+    recording = {row["name"]: row for row in controls["recording.start"]["fields"]}
+    cohort = {row["name"]: row for row in controls["datasets.source3-preview"]["fields"]}
+    assert {row["value"]: row["label"] for row in recording["source_kind"]["options"]} == (
+        support["source_labels"])
+    assert {row["value"]: row["label"] for row in cohort["cohort"]["options"]} == {
+        value: support["source_labels"][value] for value in support["cohorts"]
+    }
+    assert cohort["cohort"]["default"] == "declared_human"
+    assert app.local_training.status() == before
+    assert guard.attempts == []
 
 
 def native_load(app, monkeypatch, runtime):

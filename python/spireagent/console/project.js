@@ -3961,7 +3961,9 @@ window.SpireProject = (() => {
   }
 
   async function nativeRecordingCard(ctx) {
-    const box = panel("原生交互与观察", "直接控制当前本机游戏的录制。来源由操作员明确声明，不是机器验证的真人证明。不会自动开始模型、上传或训练。");
+    const box = panel("原生交互与观察", "记录当前本机游戏的键鼠/UI 或程序协议交互。请选择操作者声明与输入入口；不会自动开始模型、上传或训练。");
+    const sourceLabels = {declared_human:"人操作·原生键鼠/UI（本人声明）",
+      agent_native_ui:"机器操作·原生键鼠/UI", agent_protocol:"机器操作·Agent 程序协议", unknown:"未知来源"};
     let view;
     try { view = await request(ctx, "/api/native-recording/status"); }
     catch (error) { box.append(el("p", failure(error), "small muted")); return box; }
@@ -3990,20 +3992,19 @@ window.SpireProject = (() => {
     if (status.source) {
       const source = status.source;
       box.append(el("p", `公开观察 ${count(source.observations)} · 输入 ${count(source.inputs)} · 待完成 ${count(source.pending_inputs)} · 缺口 ${count(source.gaps)}`, "small muted"));
-      box.append(el("p", source.accounting_complete ? "当前无记账失败；不代表零缺口、覆盖资格或 Human 起源。" : "记账不完整，请查看录制诊断。", "small muted"));
-      box.append(el("p", `当前来源：${({declared_human:"本人操作", agent_native_ui:"AI界面操作", agent_protocol:"Agent协议", unknown:"未知来源"})[source.declaration.source_kind]} · ${source.declaration.actor_id}`, "small muted"));
+      box.append(el("p", source.accounting_complete ? "当前无记账失败；缺口与覆盖范围分别见诊断。" : "记账不完整，请查看录制诊断。", "small muted"));
+      box.append(el("p", `当前来源：${sourceLabels[source.declaration.source_kind]} · ${source.declaration.actor_id}`, "small muted"));
     }
     if (view.model_recovery_required)
-      box.append(el("p", "本机模型正在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先在模型页明确归还 Human 或 Stop。", "small muted"));
+      box.append(el("p", "本机模型正在实战或需要恢复。更改为原生键鼠/UI 或未知来源前，请先在模型页明确归还控制或 Stop。", "small muted"));
     if (view.unconfirmed)
       box.append(el("p", `保留未确认录制请求 ${view.unconfirmed.command_id}。刷新不重发，也不证明它执行。可明确结束当前会话，再开始隔离的新会话。`, "small muted"));
     if (!confirmationStorage)
       box.append(el("p", "浏览器确认存储不可用。开始、暂停、继续和更改来源已阻断；结束录制仍可使用。此页会保留提示；重新载入后无法恢复本页提示，新的录制变更仍会阻断。", "small muted"));
     const form = el("div", null, "project-form");
-    const kind = select(form, "操作来源", "native-recording-kind", [["", "请选择来源"],
-      ["declared_human", "本人操作"], ["agent_native_ui", "AI界面操作"],
-      ["agent_protocol", "Agent协议"], ["unknown", "未知来源"]], drafts.get("native-recording-kind") || "");
-    const actor = input(form, "操作者 ID（字母、数字、_、-、.）", "native-recording-actor", drafts.get("native-recording-actor") || "");
+    const kind = select(form, "操作者声明与输入入口", "native-recording-kind", [["", "请选择来源"],
+      ...Object.entries(sourceLabels)], drafts.get("native-recording-kind") || "");
+    const actor = input(form, "记录内操作者代号（可自定；字母、数字、_、-、.）", "native-recording-actor", drafts.get("native-recording-actor") || "");
     actor.maxLength = 128;
     const declared = () => kind.value && /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
       && ![".", ".."].includes(actor.value)
@@ -4427,9 +4428,11 @@ window.SpireProject = (() => {
       return {section, selectors};
     }
     const savedCohort = drafts.get("local-source3-cohort"), savedView = drafts.get("local-source3-view");
-    cohort = select(section, "操作来源声明", "local-source3-cohort",
-      support.cohorts.map(value => [value, value]),
+    cohort = select(section, "目标标签的操作来源", "local-source3-cohort",
+      support.cohorts.map(value => [value, typeof support.source_labels?.[value] === "string"
+        ? support.source_labels[value] : value]),
       support.cohorts.includes(savedCohort) ? savedCohort : support.default_cohort);
+    section.append(el("p", "此选项筛选目标标签来源；默认选项不会改判原始记录的来源。", "small muted"));
     view = select(section, "训练数据视图", "local-source3-view",
       support.views.map(item => [item.view, item.label || item.view]),
       support.views.some(item => item.view === savedView) ? savedView : support.default_view);

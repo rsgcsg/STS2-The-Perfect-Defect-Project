@@ -398,6 +398,9 @@ class NativeWorkbenchApi:
                 cards.append(self.card("workspace", app.managed_local_workspace))
                 controls.append(action("workspace.create", "建立本机资料空间"))
             if page == "data":
+                from spireagent.workbench.local_dataset import source3_capabilities
+
+                source_support = source3_capabilities()
                 live_recording = self.card("native_recording", app.native_recording_status)
                 cards.append(live_recording)
                 owner_view = live_recording["data"]
@@ -417,17 +420,13 @@ class NativeWorkbenchApi:
                 declaration_fields = [
                     field(
                         "source_kind",
-                        "操作来源",
+                        "操作者声明与输入入口",
                         "enum",
                         "",
-                        [
-                            {"value": "declared_human", "label": "本人操作"},
-                            {"value": "agent_native_ui", "label": "AI 界面操作"},
-                            {"value": "agent_protocol", "label": "Agent 协议"},
-                            {"value": "unknown", "label": "未知来源"},
-                        ],
+                        [{"value": value, "label": label}
+                         for value, label in source_support["source_labels"].items()],
                     ),
-                    field("actor_id", "操作者 ID"),
+                    field("actor_id", "记录内操作者代号（可自定）"),
                 ]
                 controls.extend(
                     [
@@ -473,9 +472,6 @@ class NativeWorkbenchApi:
                 )
                 dataset_operation = cards[-1]["data"].get("operation", {})
                 preview_id = dataset_operation.get("preview_id", "")
-                from spireagent.workbench.local_dataset import source3_capabilities
-
-                source_support = source3_capabilities()
                 from spireagent.workbench.local_recording_import import _source3_api
 
                 data_availability = cards[-1]["data"].get("availability", "unavailable")
@@ -558,13 +554,11 @@ class NativeWorkbenchApi:
                             [
                                 field("artifact_ids", "已保存录制", "artifact-list",
                                       context_id or ""),
-                                field("cohort", "操作来源声明", "enum",
+                                field("cohort", "目标标签的操作来源", "enum",
                                       source_support["default_cohort"],
-                                      [{"value": value, "label": {
-                                          "declared_human": "本人声明由 Human 操作",
-                                          "agent_protocol": "Agent 协议操作",
-                                          "agent_native_ui": "Agent 界面操作",
-                                      }.get(value, value)} for value in source_support["cohorts"]]),
+                                      [{"value": value,
+                                        "label": source_support["source_labels"].get(value, value)}
+                                       for value in source_support["cohorts"]]),
                                 field("view", "训练数据视图", "enum",
                                       source_support["default_view"],
                                       [{"value": value["view"], "label": value["label"]}

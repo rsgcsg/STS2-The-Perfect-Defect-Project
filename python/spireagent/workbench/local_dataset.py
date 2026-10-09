@@ -66,13 +66,19 @@ def source3_capabilities() -> dict[str, Any]:
     # Presentation of owner-defined views; historical function/recipe defaults
     # retain their meaning. The product explicitly selects its new default.
     presentation = {
-        DEFAULT_VIEW: ("已发布内容的历史", "original_admitted_attachment_epoch_prefix"),
-        PRETRAIN_VIEW: ("录制画面预训练", "original_admitted_attachment_epoch_prefix"),
+        DEFAULT_VIEW: ("公开发布观察历史", "original_admitted_attachment_epoch_prefix"),
+        PRETRAIN_VIEW: ("录制公开观察预训练", "original_admitted_attachment_epoch_prefix"),
         SAMPLED_VIEW: ("决策取样与连续记忆", "declared_original_input_basis_sampled_segments"),
     }
     return {
         "source_profile": "native-logical-source-v3",
         "cohorts": sorted(COHORTS), "default_cohort": "declared_human",
+        "source_labels": {
+            "declared_human": "人操作·原生键鼠/UI（本人声明）",
+            "agent_native_ui": "机器操作·原生键鼠/UI",
+            "agent_protocol": "机器操作·Agent 程序协议",
+            "unknown": "未知来源",
+        },
         "default_view": SAMPLED_VIEW,
         "views": [{"view": view, "qualification": view_qualification(view),
                    "recommended_recipe_id": _ordered_recipe(view),
@@ -269,6 +275,17 @@ class LocalDatasetService:
                 and self.operation.get("_producer")
                 and self.operation.get("error_code") != "publication_recovery_required"
             )
+        reservation = operation.get("use_reservation")
+        if (operation.get("kind") == "ordered_source3"
+                and operation.get("status") == "completed"
+                and isinstance(reservation, dict)
+                and reservation.get("split") == "train"
+                and reservation.get("artifact_id") == operation.get("training_source_id")
+                == operation.get("result_artifact_id")
+                and operation.get("result_artifact_id") is not None):
+            # Publication retained its successful reservation. Preview status is
+            # older; projecting it here also fixes reopened historical operations.
+            operation["split_status"] = "reserved"
         recovery = False
         if possible_recovery and operation.get("kind") == "ordered_source3":
             # Exact immutable refs/producer permit explicit publication reconciliation.

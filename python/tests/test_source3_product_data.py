@@ -73,6 +73,7 @@ def test_source3_import_and_training_ready_preserve_originals_and_never_start_tr
     }
     assert preview["counts"]["original_publications"] == 6
     assert preview["counts"]["excluded_frames"] == 1
+    assert preview["split_status"] == "not_reserved"
     with owner.transaction() as db:
         assert db.execute("SELECT COUNT(*) FROM curation_claims").fetchone() == (0,)
     datasets.start_publish(preview["preview_id"])
@@ -81,6 +82,13 @@ def test_source3_import_and_training_ready_preserve_originals_and_never_start_tr
     assert ready["training_source_id"] == ready["result_artifact_id"]
     assert ready["recommended_recipe_id"] == DEFAULT_RECIPE
     assert ready["actual_training_use"] is False
+    assert ready["split_status"] == "reserved"
+    assert ready["use_reservation"]["split"] == "train"
+    assert ready["use_reservation"]["artifact_id"] == ready["training_source_id"]
+    saved_operation = datasets.path.read_bytes()
+    reopened_datasets = LocalDatasetService(datasets.config)
+    assert reopened_datasets.status()["operation"]["split_status"] == "reserved"
+    assert datasets.path.read_bytes() == saved_operation
     partition = verify_ordered_source_partition(store, ready["training_source_id"])
     assert owner.ledger.dataset(partition.manifest.artifact_id) == ("training", set(partition.runs))
     with owner.transaction() as db:
@@ -94,6 +102,38 @@ def test_source3_import_and_training_ready_preserve_originals_and_never_start_tr
     assert importer.start(candidate)["artifact_id"] == raw.artifact_id
     with owner.transaction() as db:
         assert db.execute("SELECT COUNT(*) FROM local_source_pending").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("missing", [
+    "failed", "artifact_mismatch", "no_reservation", "wrong_split", "no_training_source",
+])
+def test_source3_status_never_promotes_an_unproved_train_reservation(
+    tmp_path, monkeypatch, missing,
+):
+    _, datasets, _, _, _, owner, *_ = setup(tmp_path, monkeypatch)
+    # The public shape of a completed publication with the older preview status.
+    datasets.operation = {
+        "kind": "ordered_source3", "status": "completed", "split_status": "not_reserved",
+        "result_artifact_id": "a" * 64, "training_source_id": "a" * 64,
+        "use_reservation": {"artifact_id": "a" * 64, "split": "train"},
+        "actual_training_use": False,
+    }
+    if missing == "failed":
+        datasets.operation["status"] = "failed"
+    elif missing == "artifact_mismatch":
+        datasets.operation["use_reservation"]["artifact_id"] = "b" * 64
+    elif missing == "no_reservation":
+        datasets.operation.pop("use_reservation")
+    elif missing == "wrong_split":
+        datasets.operation["use_reservation"]["split"] = "dev"
+    else:
+        datasets.operation.pop("training_source_id")
+    status = datasets.status()["operation"]
+    assert status["split_status"] == "not_reserved"
+    assert status["actual_training_use"] is False
+    with owner.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM curation_claims").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM curation_uses").fetchone() == (0,)
 
 
 def test_zero_labels_do_not_switch_view_and_explicit_pretraining_stays_distinct(
