@@ -38,7 +38,7 @@ async function collect(t, { renewal = false, generationDrift = false } = {}) {
     runtime_instance_id: runtime };
   const capabilities = { ...clone(wire.capabilities),
     capture_coverage: clone(sdk.NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams) };
-  if (renewal) capabilities.limits.retention_ms = 1000;
+  if (renewal) capabilities.limits.retention_ms = 2000;
   const subscription = { ...clone(wire.attach.subscription), eager_scope: [], delivery_mode: "scoped",
     coverage: clone(capabilities.capture_coverage) };
   // This strict authoritative response intentionally has NO top-level next_cursor.
@@ -133,6 +133,8 @@ async function collect(t, { renewal = false, generationDrift = false } = {}) {
     if (method === "attach") {
       assert.deepEqual(body, { client_session_id: client.client_session_id, eager_scope: [],
         required_seams: sdk.NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams, delivery_mode: "scoped" });
+      // The owner grants the declared TTL at Attach, not the expired source-example timestamp.
+      subscription.expires_at = new Date(Date.now() + capabilities.limits.retention_ms).toISOString();
       return response(attached);
     }
     if (method === "current") {
@@ -175,12 +177,13 @@ async function collect(t, { renewal = false, generationDrift = false } = {}) {
         high_watermark: activeCursor, retained_start_cursor: subscription.starting_cursor });
     }
     if (method === "renew") {
+      assert.ok(Date.now() < Date.parse(subscription.expires_at), "renewal must precede owner expiry");
       assert.equal(body.after_cursor, activeCursor);
       seen.renewCursors.push(body.after_cursor);
       renewedCursor = "opaque-event-renewed-next";
       activeCursor = renewedCursor;
+      subscription.expires_at = new Date(Date.now() + capabilities.limits.retention_ms).toISOString();
       return response({ ...clone(wire.renew), subscription: { ...clone(subscription),
-        expires_at: wire.renew.subscription.expires_at,
         stream_generation: generationDrift ? "changed-generation" : subscription.stream_generation },
       next_cursor: activeCursor, high_watermark: activeCursor,
       retained_start_cursor: subscription.starting_cursor });
