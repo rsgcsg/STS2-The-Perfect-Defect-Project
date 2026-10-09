@@ -499,6 +499,28 @@ installed native Agent-session Evidence verifier. It reads capabilities without
 attaching or acquiring a controller. The native lane uses the existing primary
 Runtime installation pin; it does not choose an executable from model bytes.
 
+The browser model detail reads
+`GET /api/local-model-exports/support?model_id=<ArtifactID>` through the same
+LocalModelExport owner. The versioned metadata descriptor recognizes the closed
+token, memory, structured and native families and their registration profiles.
+`verification_state=not_checked` is deliberate: this read never opens weights,
+imports the numerical backend, exports, registers or declares a model ready.
+Unknown metadata or an unavailable source exposes no export/use controls. Native
+and structured exports keep their existing v1 operation schema and explicit
+`model_type`; memory exports keep v2. Existing artifact identities are unchanged.
+
+For the matching completed export and current registered selection, **使用这个模型**
+requests the existing `prepare_and_load` application action once, in Human mode,
+then opens that exact selection on the model page. It reuses the export and
+registration; the existing preparation owner reuses a valid Runtime installation
+and still checks actual loading conditions. Rendering never repeats these stages.
+Missing prerequisites retain explicit export/registration actions under **详情**;
+Runtime setup is also under details. There is no browser cold-preparation chain.
+Changed source bindings, incompatible profiles and unknown/pending Runtime state
+block use. An unconfirmed preparation opens the original status and cannot be
+redispatched from the old button. Loading does not take game control or prove
+model quality, Human origin, runtime qualification or G2/V1 acceptance.
+
 The current primary pin is the sealed rc.24 candidate with bundled Connector SDK
 rc.7. It currently supports explicit offline archive installation; no download URL
 is declared before publication. Automatic download therefore remains unavailable.
