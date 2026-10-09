@@ -60,6 +60,7 @@ def native_agent_import_choices() -> dict[str, Any]:
     """Closed producer metadata for the reviewed native data UI capability."""
     from stpd.native_agent_sampled_source_spec import (
         FIXTURE_COHORT,
+        FOCUS_TEACHER_RELATION_SPEC,
         MAP_TEACHER_RELATION_SPEC,
         MAX_RAW_REFERENCES,
         PARTITION_SCHEMA,
@@ -80,8 +81,10 @@ def native_agent_import_choices() -> dict[str, Any]:
         "raw_schema": RAW_SCHEMA, "max_raw_references": MAX_RAW_REFERENCES,
         "training_source_schema": SOURCE_SCHEMA, "partition_schema": PARTITION_SCHEMA,
         "recommended_recipe_id": RECIPE,
-        "default_relation_id": MAP_TEACHER_RELATION_SPEC["id"],
+        "default_relation_id": FOCUS_TEACHER_RELATION_SPEC["id"],
         "relations": [
+            {"relation": FOCUS_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.5",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
             {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4",
              "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
             {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2",

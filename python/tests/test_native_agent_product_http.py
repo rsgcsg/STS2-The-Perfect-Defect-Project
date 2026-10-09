@@ -250,3 +250,35 @@ def test_historical_unknown_snapshot_survives_current_legacy_overwrite_and_block
                          "cohort": request["cohort"], "relation_id": request["relation_id"]}]
     assert str(original.directory) not in json.dumps(app.local_recording_import.status())
     assert store.get_manifest(completed["artifact_id"]).kind == "evidence"
+
+
+def test_frozen_FOCUS_teacher_relation_is_owner_default_and_accepted_by_browser_import(
+    native_data_http, original
+):
+    from test_native_agent_sampled_source import declared_teacher_fixture
+
+    from stpd.native_agent_sampled_source_spec import (
+        FOCUS_TEACHER_PRODUCER,
+        FOCUS_TEACHER_RELATION_SPEC,
+        MAP_TEACHER_RELATION_SPEC,
+        TEACHER_COHORT,
+        TEACHER_RELATION_SPEC,
+    )
+
+    declared_teacher_fixture(original, FOCUS_TEACHER_PRODUCER)
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    choices = app.local_recording_import.status()["native_agent_support"]
+    assert choices["default_relation_id"] == FOCUS_TEACHER_RELATION_SPEC["id"]
+    assert {item["relation"]["id"] for item in choices["relations"]} >= {
+        FOCUS_TEACHER_RELATION_SPEC["id"], MAP_TEACHER_RELATION_SPEC["id"],
+        TEACHER_RELATION_SPEC["id"], RELATION_SPEC["id"]}
+    request = {"directory": str(original.directory), "cohort": TEACHER_COHORT,
+               "relation_id": FOCUS_TEACHER_RELATION_SPEC["id"], "intent_id": "b" * 32}
+    assert post("/api/local-recordings/import/native-agent", request)[0] == 200
+    completed = settled(app.local_recording_import)
+    assert completed["status"] == "completed", completed
+    info = store.get_manifest(completed["artifact_id"]).parameters.value()
+    assert info["producer_student_relation"] == FOCUS_TEACHER_RELATION_SPEC
+    assert info["cohort"] == TEACHER_COHORT
+    assert FOCUS_TEACHER_PRODUCER["agent_spec"]["teacher"]["version"] == "1.0.5"
