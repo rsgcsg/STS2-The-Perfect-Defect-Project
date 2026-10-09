@@ -15,7 +15,7 @@ import {
 } from "../../components/annotator/tools/workstation-platform.mjs";
 import { evaluateLoadedEvidence, extractGameProcessIds } from "./loaded-evidence.mjs";
 import { waitForLoadedReadiness } from "./loaded-readiness.mjs";
-import { sourceSetIdentity, sourceSetMatches } from "./source-identity.mjs";
+import { assertGameModVersions, sourceSetIdentity, sourceSetMatches } from "./source-identity.mjs";
 import { readAnnotatorConfiguration, effectiveAnnotatorConfiguration } from "./annotator-configuration.mjs";
 
 const appRoot = import.meta.dirname;
@@ -104,6 +104,7 @@ function gameRunning() {
 }
 
 function requireBuild() {
+  assertGameModVersions(platformRoot);
   if (!fs.existsSync(buildProvenance) || !fs.existsSync(builtDll)) {
     throw new Error("Run npm run game-mod:build first.");
   }
@@ -191,6 +192,7 @@ function rollbackDirectory(value) {
 }
 
 function doctor() {
+  assertGameModVersions(platformRoot);
   const report = {
     status: fs.existsSync(installation.executable) ? "ok" : "action_required",
     platform: process.platform,

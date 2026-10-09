@@ -39,6 +39,13 @@ function evaluateIdentityEvidence({
   const activeProcessIds = new Set(gameProcessIds.map(String));
 
   if (!platformIdentity) errors.push("platform_loaded_identity_absent");
+  const expectedVersion = installed.schema === "sts2.platform/game-mod-installed-provenance-1"
+    ? installed.manifest?.version
+    : installed.schema === "sts2.platform/game-mod-build-provenance-1"
+      ? installed.package?.manifest?.version : null;
+  if (typeof expectedVersion !== "string" || !expectedVersion
+      || platformIdentity?.version !== expectedVersion)
+    errors.push("platform_loaded_version_mismatch");
   if (platformIdentity?.artifact_sha256 !== expected.sha256) errors.push("platform_loaded_sha_mismatch");
   if (platformIdentity?.module_version_id !== expected.module_version_id) errors.push("platform_loaded_mvid_mismatch");
   if (platformIdentity?.platform_source_revision !== source.platform.source_revision) errors.push("platform_loaded_source_revision_mismatch");

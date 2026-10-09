@@ -35,6 +35,11 @@ Restore with:
 npm run game-mod:rollback
 ```
 
+Build and deployment require the package, native manifest, initializer literal
+and project version to agree. Loaded verification separately compares the actual
+initializer version with the manifest of the exact installed or packaged artifact.
+Matching SHA/MVID and source provenance do not waive a version mismatch.
+
 After cold load, click the visible Platform launcher to open the two-tab Workspace; `Escape`
 also closes it. Verification requires one exact `STS2_PLATFORM` Modset, one
 common loaded SHA/MVID for Connector/Annotator/UI, component-specific embedded
