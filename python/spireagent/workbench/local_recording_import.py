@@ -404,7 +404,8 @@ class LocalRecordingImporter:
             if record is not None and record["status"] == "completed":
                 store, _ = _selected_store(self.config)
                 owner = _selected_curation_owner(self.config)
-                if owner is None or tuple(record["_owner"]) != owner.identity \
+                if not isinstance(store.blobs, LocalBlobStore) \
+                        or owner is None or tuple(record["_owner"]) != owner.identity \
                         or owner.store_dir.resolve() != store.blobs.root:
                     raise BoundaryError("local_import", "source3_workspace_owner_changed")
                 self.operation = {**copy.deepcopy(record),
