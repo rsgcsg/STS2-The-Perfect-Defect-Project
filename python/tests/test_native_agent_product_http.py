@@ -228,6 +228,99 @@ def test_completed_intent_replay_is_readonly_while_another_persisted_intent_is_u
         409, {"error": "original_intent_reconciliation_required"})
 
 
+@pytest.mark.parametrize("historical_missing_body", [False, True])
+def test_three_field_native_unknown_preserves_original_anchor_and_blocks_all_new_IO(
+    native_data_http, original, monkeypatch, tmp_path, historical_missing_body
+):
+    from source3_product_fixture import setup
+
+    app, store, root, client, post = native_data_http
+    importer, _, catalog, candidate, _, _, _, tool = setup(
+        tmp_path / "legacy-source3", monkeypatch, config=app.config)
+    app.local_recording_import = importer
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    request = {**body(original), "directory": str(
+        original.directory / ".." / original.directory.name)}
+    publish = ManifestArtifactStore.publish
+    arrived, release = threading.Event(), threading.Event()
+    lost = False
+
+    def reply_lost(self, manifest):
+        nonlocal lost
+        result = publish(self, manifest)
+        if (manifest.parameters.value().get("schema") ==
+                "stpd/native-agent-sampled-original-bundle-v1" and not lost):
+            lost = True
+            arrived.set()
+            assert release.wait(timeout=5)
+            raise OSError("legacy reply lost after actual immutable publication")
+        return result
+
+    monkeypatch.setattr(ManifestArtifactStore, "publish", reply_lost)
+    try:
+        assert post(route, request)[0] == 200
+        assert arrived.wait(timeout=5)
+        with monkeypatch.context() as guarded:
+            guarded.setattr(importer, "_native_agent_original", lambda *_args:
+                            pytest.fail("pending exact observation/new-ID precedes original IO"))
+            assert post(route, request)[1]["status"] == "pending"
+            assert post(route, {**request, "intent_id": "f" * 32}) == (
+                409, {"error": "original_intent_reconciliation_required"})
+            assert post(route, {**request, "directory": "/changed"}) == (
+                409, {"error": "intent_payload_mismatch"})
+        assert post("/api/local-recordings/import", {"candidate_id": candidate}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+    finally:
+        release.set()
+    failed = settled(importer)
+    assert failed["status"] == "published_index_unavailable" and "intent_id" not in failed
+    raw_id, identities = failed["artifact_id"], store.manifest_ids()
+    producer = store.get_manifest(raw_id).producer
+    journal = json.loads(importer.path.read_bytes())
+    assert journal["_native_agent_request"] == request
+    if historical_missing_body:
+        del journal["_native_agent_request"]
+        journal["status"] = "pending"
+        importer.path.write_text(json.dumps(journal))
+        exact_request = {**request, "directory": journal["_directory"]}
+    else:
+        exact_request = request
+    app.local_recording_import = LocalRecordingImporter(app.config, catalog)
+    recovered = app.local_recording_import
+    status = recovered.status()
+    assert status["native_legacy_recovery"] == {"required": True,
+        "status": ("interrupted_unknown" if historical_missing_body
+                   else "published_index_unavailable"),
+        "requires_original_three_fields": True,
+        "body_binding": ("canonical_original_directory" if historical_missing_body
+                         else "exact_literal")}
+    assert str(original.directory) not in json.dumps(status)
+    with monkeypatch.context() as guarded:
+        guarded.setattr(catalog, "read", lambda *_args:
+                        pytest.fail("legacy uncertainty precedes supported Source3 catalog IO"))
+        guarded.setattr(recovered, "_native_agent_original", lambda *_args:
+                        pytest.fail("new body/ID cannot verify an original while legacy unknown"))
+        assert post(route, {**exact_request, "intent_id": "f" * 32}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+        assert post(route, {**exact_request, "directory": "/changed"}) == (
+            409, {"error": "intent_payload_mismatch"})
+        alias = (request if historical_missing_body
+                 else {**request, "directory": journal["_directory"]})
+        assert alias != exact_request
+        assert post(route, alias) == (409, {"error": "intent_payload_mismatch"})
+        assert post("/api/local-recordings/import", {"candidate_id": candidate}) == (
+            409, {"error": "original_intent_reconciliation_required"})
+    monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
+    assert post(route, exact_request)[0] == 200
+    completed = settled(recovered)
+    assert completed["status"] == "completed" and completed["artifact_id"] == raw_id
+    assert completed["native_legacy_recovery"] is None
+    assert store.manifest_ids() == identities and store.get_manifest(raw_id).producer == producer
+    assert post("/api/local-recordings/import", {"candidate_id": candidate})[0] == 200
+    assert settled(recovered)["status"] == "completed" and len(tool.calls) == 1
+
+
 def test_native_import_old_intent_after_later_request_cannot_be_rebound_on_reopen(
     native_data_http, original, tmp_path, monkeypatch
 ):

@@ -4411,6 +4411,13 @@ window.SpireProject = (() => {
       section.append(el("p", "此程序示范入口尚未开放；现有原件保留。", "small muted"));
       return section;
     }
+    if (status.native_legacy_recovery?.required === true
+        || (status.recording_type === "native_agent_sampled" && !hex(status.intent_id,32)
+          && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))) {
+      section.append(el("p", "旧版三字段导入请求仍待核对，当前不能保存新请求。请通过原三字段接口明确核对原目录、原来源与原程序；历史记录仅接受保存的原始规范目录，不推测目录别名。", "small muted"));
+      section.append(command(ctx,"refresh-native-agent-import","刷新目录导入状态",()=>reload(ctx),{type:"secondary"}));
+      return section;
+    }
     const account = ctx.identity?.principal?.subject || ctx.identity?.status || "local";
     const scope = JSON.stringify([status.configuration_id,status.workbench_instance_id,account]);
     const fenceKey = "spireagent-native-import-unknown:" + scope;

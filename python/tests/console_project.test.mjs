@@ -7390,6 +7390,19 @@ test("Native AgentRun unacknowledged local fence cannot be adopted by another ow
   await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
 });
 
+for(const state of ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"])
+  test(`Native AgentRun original legacy three-field ${state} closes modern save without invented ID`,async()=>{
+    const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:state,
+      recording_type:"native_agent_sampled",cohort:"declared_native_machine_teacher",
+      producer_student_relation:{id:"owner-teacher"},native_legacy_recovery:{required:true,
+        body_binding:"canonical_original_directory",requires_original_three_fields:true}},
+      handler:async()=>assert.fail("legacy owner recovery cannot create a modern request")});
+    const page=await env.render();assert.match(text(page),/旧版三字段导入请求仍待核对/);
+    assert.match(text(page),/原始规范目录/);
+    assert.equal(walk(page).some(item=>item.dataset?.action==="import-native-agent-run"),false);
+    await action(page,"refresh-native-agent-import").onclick();assert.equal(post(env.calls).length,0);
+  });
+
 for(const failure of ["read","write","invalid"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
   const sent=[],env=nativeAgentBrowserEnv({detail:false,items:[],storageApi:{
     getItem:()=>{if(failure==="read")throw Error("blocked storage");return failure==="invalid"?JSON.stringify({request:null}):null;},

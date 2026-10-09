@@ -339,6 +339,17 @@ new native imports until explicit original reconciliation reaches a terminal
 outcome. A completed historical intent returns its original outcome without
 replacing another unresolved operation. No bounded journal entry is evicted.
 
+The supported original three-field native import route has no opaque intent.
+Its current pending/unknown operation therefore also closes new native and
+ordinary Source3/legacy imports. New three-field calls retain their literal
+directory/cohort/relation body privately; only that exact explicit body may
+reconcile. Historical records without the literal body conservatively accept
+the stored original canonical directory, cohort and relation, then revalidate
+the frozen owner, candidate, content and Producer. Directory aliases and new
+intent IDs are rejected before original IO. The browser reports this limited
+legacy recovery requirement and closes modern save; recovery uses the original
+three-field API. No migration ID or guessed original body is manufactured.
+
 `LocalDatasetService.start_native_agent_preview` replays selected immutable raws
 through their owning admissions and one-runtime train-only projection. Preview
 reports known context, original offers, eligible N, readiness exclusions, censored
