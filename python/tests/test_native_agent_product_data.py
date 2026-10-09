@@ -208,15 +208,17 @@ def test_import_owner_drift_retains_pending_without_other_store_write(
 
 
 def test_Gold_cannot_be_reserved_as_training_through_new_publish_owner(tmp_path, original):
-    from stpd.fullrun.native_agent_sampled_source import NativeAgentSampledRef, _partition
+    from stpd.fullrun.native_agent_sampled_source import _projection, _verified
 
-    _, datasets, store, owner, raw_id = imported(tmp_path, original)
+    importer, datasets, store, owner = setup(tmp_path)
+    runs, _ = _projection(_verified(original.directory), "a" * 64, FIXTURE_COHORT)
+    # Establish the older Gold claim before this new original import. Once an
+    # import is pending, the existing inventory guard correctly blocks new Gold.
+    owner.ledger.claim("gold-original-machine-fixture", "gold", {run["run_id"] for run in runs})
+    importer.start_native_agent_run(str(original.directory), FIXTURE_COHORT, RELATION_SPEC["id"])
+    raw_id = settled(importer)["artifact_id"]
     datasets.start_native_agent_preview([raw_id])
     preview = settled(datasets)
-    refs = tuple(NativeAgentSampledRef(**ref) for ref in datasets.operation["_admission_refs"])
-    encoded, _ = _partition(store, refs, "train")
-    runs = {run["run_id"] for run in json.loads(encoded)["runs"]}
-    owner.ledger.claim("gold-original-machine-fixture", "gold", runs)
     datasets.start_publish(preview["preview_id"])
     result = settled(datasets)
     assert result["status"] == "failed" and result["error_code"] == "gold_reserved_data"
