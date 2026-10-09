@@ -567,10 +567,7 @@ class NativeWorkbenchApi:
                                       }.get(value, value)} for value in source_support["cohorts"]]),
                                 field("view", "训练数据视图", "enum",
                                       source_support["default_view"],
-                                      [{"value": value["view"], "label": {
-                                          "publication_memory": "已发布内容的历史",
-                                          "recorded_capture_pretraining": "录制画面预训练",
-                                      }.get(value["view"], value["view"])}
+                                      [{"value": value["view"], "label": value["label"]}
                                        for value in source_support["views"]]),
                             ],
                             enabled=source_prepare["enabled"], reason=source_prepare["reason"],

@@ -226,7 +226,7 @@ AGENTS / project:context
 -> task-specific canonical docs
 -> optional matching Skill
 -> implementation and owning tests
--> doctor / root check
+-> selected TESTING / check:plan gate
 -> project:check
 -> project:closeout
 -> pull request

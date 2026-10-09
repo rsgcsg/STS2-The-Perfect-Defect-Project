@@ -54,14 +54,31 @@ def _ordered_recipe(view: str) -> str:
 
 def source3_capabilities() -> dict[str, Any]:
     """Closed choices are projected from the research owner, without tensor imports."""
-    from stpd.ordered_source_spec import COHORTS, DEFAULT_VIEW, VIEW_SPECS, view_qualification
+    from stpd.ordered_source_spec import (
+        COHORTS,
+        DEFAULT_VIEW,
+        PRETRAIN_VIEW,
+        SAMPLED_VIEW,
+        VIEW_SPECS,
+        view_qualification,
+    )
 
+    # Presentation of owner-defined views; historical function/recipe defaults
+    # retain their meaning. The product explicitly selects its new default.
+    presentation = {
+        DEFAULT_VIEW: ("已发布内容的历史", "original_admitted_attachment_epoch_prefix"),
+        PRETRAIN_VIEW: ("录制画面预训练", "original_admitted_attachment_epoch_prefix"),
+        SAMPLED_VIEW: ("决策取样与连续记忆", "declared_original_input_basis_sampled_segments"),
+    }
     return {
         "source_profile": "native-logical-source-v3",
         "cohorts": sorted(COHORTS), "default_cohort": "declared_human",
-        "default_view": DEFAULT_VIEW,
+        "default_view": SAMPLED_VIEW,
         "views": [{"view": view, "qualification": view_qualification(view),
-                   "recommended_recipe_id": _ordered_recipe(view)} for view in VIEW_SPECS],
+                   "recommended_recipe_id": _ordered_recipe(view),
+                   "label": presentation.get(view, ("显式研究数据视图", ""))[0],
+                   "history_scope": presentation.get(view, ("", "declared_by_projection_spec"))[1]}
+                  for view in VIEW_SPECS],
         "human_origin_verified": False, "automatic_training": False,
     }
 
@@ -620,7 +637,9 @@ class LocalDatasetService:
                            "denominator": denominator,
                            "fraction": eligible / denominator if denominator else None},
             "excluded_labels": denominator - eligible,
-            "history_scope": "original_admitted_attachment_epoch_prefix",
+            "history_scope": next(value["history_scope"]
+                                  for value in source3_capabilities()["views"]
+                                  if value["view"] == request["view"]),
             "qualification": view_qualification(request["view"]),
             "projection_spec": projection, "target_spec": target,
             "human_origin_verified": False, "split_status": "not_reserved",
