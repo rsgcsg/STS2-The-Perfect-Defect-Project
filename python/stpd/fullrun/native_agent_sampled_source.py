@@ -237,6 +237,12 @@ def _producer(bundle: Any, cohort: str, relation: object) -> dict[str, Any]:
     ):
         _fail("producer_input_spec_relation")
     definition = body.get("producer_definition")
+    expected_policy = definition is not None and "execution_policy" in definition
+    if ("execution_policy" in agent) != expected_policy or (
+        definition is not None and expected_policy
+        and not _same(agent["execution_policy"], definition["execution_policy"])
+    ):
+        _fail("producer_execution_policy_relation")
     if definition is not None and (
         not _same(agent["adapter"], definition["adapter"])
         or agent["artifact"]["id"] != definition["artifact_id"]

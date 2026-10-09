@@ -810,51 +810,44 @@ FOCUS_TEACHER_PROJECTION_SPEC = {
 }
 
 
-def relation_body(relation: object, cohort: object) -> dict[str, Any]:
+def _closed_relations() -> tuple[
+    tuple[tuple[str, ...], dict[str, Any], dict[str, Any], dict[str, Any]], ...
+]:
+    """Only frozen producer/relation/projection tuples; no executable registry."""
+    return (
+        ((FIXTURE_COHORT, TEACHER_COHORT), FOCUS_TEACHER_RELATION_BODY,
+         FOCUS_TEACHER_RELATION_SPEC, FOCUS_TEACHER_PROJECTION_SPEC),
+        ((FIXTURE_COHORT, TEACHER_COHORT), MAP_TEACHER_RELATION_BODY,
+         MAP_TEACHER_RELATION_SPEC, MAP_TEACHER_PROJECTION_SPEC),
+        ((FIXTURE_COHORT,), RELATION_BODY, RELATION_SPEC, PROJECTION_SPEC),
+        ((FIXTURE_COHORT, TEACHER_COHORT), TEACHER_RELATION_BODY,
+         TEACHER_RELATION_SPEC, TEACHER_PROJECTION_SPEC),
+    )
+
+
+def _relation_tuple(
+    relation: object, cohort: object
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     if not isinstance(cohort, str) or not isinstance(relation, dict):
         raise BoundaryError("native_agent_sampled_source", "unsupported_producer_student_relation")
-    if cohort in {FIXTURE_COHORT, TEACHER_COHORT} and json_bytes(relation) == json_bytes(
-        FOCUS_TEACHER_RELATION_SPEC
-    ):
-        return copy.deepcopy(FOCUS_TEACHER_RELATION_BODY)
-    if cohort in {FIXTURE_COHORT, TEACHER_COHORT} and json_bytes(relation) == json_bytes(
-        MAP_TEACHER_RELATION_SPEC
-    ):
-        return copy.deepcopy(MAP_TEACHER_RELATION_BODY)
-    if cohort == FIXTURE_COHORT and json_bytes(relation) == json_bytes(RELATION_SPEC):
-        return copy.deepcopy(RELATION_BODY)
-    if cohort in {FIXTURE_COHORT, TEACHER_COHORT} and json_bytes(relation) == json_bytes(
-        TEACHER_RELATION_SPEC
-    ):
-        return copy.deepcopy(TEACHER_RELATION_BODY)
+    for cohorts, body, spec, projection in _closed_relations():
+        if cohort in cohorts and json_bytes(relation) == json_bytes(spec):
+            return body, spec, projection
     raise BoundaryError("native_agent_sampled_source", "unsupported_producer_student_relation")
 
 
+def relation_body(relation: object, cohort: object) -> dict[str, Any]:
+    body, _, _ = _relation_tuple(relation, cohort)
+    return copy.deepcopy(body)
+
+
 def checked_relation(relation: object, cohort: object) -> dict[str, Any]:
-    relation_body(relation, cohort)
-    expected = (
-        FOCUS_TEACHER_RELATION_SPEC
-        if json_bytes(relation) == json_bytes(FOCUS_TEACHER_RELATION_SPEC)
-        else MAP_TEACHER_RELATION_SPEC
-        if json_bytes(relation) == json_bytes(MAP_TEACHER_RELATION_SPEC)
-        else TEACHER_RELATION_SPEC
-        if json_bytes(relation) == json_bytes(TEACHER_RELATION_SPEC)
-        else RELATION_SPEC
-    )
-    return copy.deepcopy(expected)
+    _, spec, _ = _relation_tuple(relation, cohort)
+    return copy.deepcopy(spec)
 
 
 def relation_specs(relation: object, cohort: object) -> tuple[dict[str, Any], dict[str, Any]]:
-    relation_body(relation, cohort)
-    projection = (
-        FOCUS_TEACHER_PROJECTION_SPEC
-        if json_bytes(relation) == json_bytes(FOCUS_TEACHER_RELATION_SPEC)
-        else MAP_TEACHER_PROJECTION_SPEC
-        if json_bytes(relation) == json_bytes(MAP_TEACHER_RELATION_SPEC)
-        else TEACHER_PROJECTION_SPEC
-        if json_bytes(relation) == json_bytes(TEACHER_RELATION_SPEC)
-        else PROJECTION_SPEC
-    )
+    _, _, projection = _relation_tuple(relation, cohort)
     return copy.deepcopy(projection), copy.deepcopy(TARGET_SPEC)
 
 

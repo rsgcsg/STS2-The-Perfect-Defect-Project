@@ -7,9 +7,11 @@ import hashlib
 import io
 import json
 import runpy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_protocol_source import setup_store
 
 from spireagent.artifact_contracts import Manifest, Producer
@@ -880,6 +882,83 @@ def declared_teacher_fixture(original, definition=None):
         )
     original.f.write()
     assert sources.evidence_owner.verify_agent_session_run_evidence(original.directory).passed
+
+
+def _synthetic_policy_relation(monkeypatch):
+    """Private unit-test tuple only; never an offered production producer."""
+    from stpd import native_agent_sampled_source_spec as spec
+    from stpd.canonical import semantic_hash
+
+    policy = json.loads((ROOT / "components/policy-runtime/contracts/fixtures/"
+                        "owned-current-known-stale-v1.json").read_bytes())["execution_policy"]
+    definition = copy.deepcopy(spec.FOCUS_TEACHER_PRODUCER)
+    definition.update(source_commit="e" * 40, artifact_id="synthetic-owned-stale-fixture",
+                      artifact_sha256="d" * 64, execution_policy=copy.deepcopy(policy))
+    definition["adapter"].update(id="synthetic-owned-stale-adapter", code_sha256="c" * 64)
+    definition["agent_spec"].update(id="synthetic-owned-stale-program", version="0.0.0-synthetic")
+    body = {**copy.deepcopy(spec.FOCUS_TEACHER_RELATION_BODY),
+            "id": "synthetic-owned-stale-producer-relation-unit-test",
+            "producer_definition": definition}
+    relation = {"id": body["id"], "version": "1.0.0", "sha256": semantic_hash(body)}
+    projection_body = {**copy.deepcopy(spec.PROJECTION_BODY),
+                       "id": "synthetic-owned-stale-projection-unit-test",
+                       "producer_student_relation": relation}
+    projection = {"id": projection_body["id"], "version": "1.0.0",
+                  "sha256": semantic_hash(projection_body)}
+    tuples = spec._closed_relations()
+    monkeypatch.setattr(spec, "_closed_relations", lambda: (
+        *tuples, ((FIXTURE_COHORT,), body, relation, projection)))
+    return definition, relation, projection
+
+
+@pytest.mark.parametrize("name", ["fixture", "TEACHER", "MAP_TEACHER", "FOCUS_TEACHER"])
+def test_legacy_closed_producer_rejects_execution_policy_presence_in_identity_join(original, name):
+    """Producer closure unit law; a changed in-memory manifest is not new verified evidence."""
+    from stpd import native_agent_sampled_source_spec as spec
+
+    relation = spec.RELATION_SPEC if name == "fixture" else getattr(spec, name + "_RELATION_SPEC")
+    if name != "fixture":
+        declared_teacher_fixture(original, getattr(spec, name + "_PRODUCER"))
+    verified = sources._verified(original.directory)
+    sources._producer(verified, FIXTURE_COHORT, relation)
+    changed = sources._plain(verified.agent_manifest)
+    declared_policy = json.loads(
+        (ROOT / "components/policy-runtime/contracts/fixtures/owned-current-known-stale-v1.json")
+        .read_bytes())["execution_policy"]
+    for policy in (declared_policy, None):
+        changed["execution_policy"] = policy
+        with pytest.raises(BoundaryError, match="producer_execution_policy_relation"):
+            sources._producer(replace(verified, agent_manifest=changed), FIXTURE_COHORT, relation)
+
+
+def test_private_synthetic_future_tuple_requires_exact_policy_without_opening_production(
+    original, monkeypatch
+):
+    """Identity binding only, separate from the new Evidence grammar/Source qualification gate."""
+    from stpd import native_agent_sampled_source_spec as spec
+
+    closed = spec._closed_relations
+    definition, relation, projection = _synthetic_policy_relation(monkeypatch)
+    declared_teacher_fixture(original, definition)
+    verified = sources._verified(original.directory)
+    with pytest.raises(BoundaryError, match="producer_execution_policy_relation"):
+        sources._producer(verified, FIXTURE_COHORT, relation)
+    changed = sources._plain(verified.agent_manifest)
+    changed["execution_policy"] = copy.deepcopy(definition["execution_policy"])
+    candidate = replace(verified, agent_manifest=changed)
+    joined = sources._producer(candidate, FIXTURE_COHORT, relation)
+    assert joined["producer_relation_body"]["producer_definition"] == definition
+    assert spec.checked_relation(relation, FIXTURE_COHORT) == relation
+    assert spec.relation_specs(relation, FIXTURE_COHORT)[0] == projection
+    altered = copy.deepcopy(changed)
+    altered["execution_policy"]["max_known_stale_rejections"] -= 1
+    with pytest.raises(BoundaryError, match="producer_execution_policy_relation"):
+        sources._producer(replace(verified, agent_manifest=altered), FIXTURE_COHORT, relation)
+    with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
+        spec.checked_relation(relation, spec.TEACHER_COHORT)
+    monkeypatch.setattr(spec, "_closed_relations", closed)
+    with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
+        spec.checked_relation(relation, FIXTURE_COHORT)
 
 
 def test_fixed_teacher_descriptor_relation_keeps_synthetic_origin_explicit(tmp_path, original):

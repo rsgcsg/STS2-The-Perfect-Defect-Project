@@ -81,6 +81,7 @@ remains in the task until its separate task-complete boundary.
 | attach | client session, requested eager scope, required seam coverage, delivery mode | immutable accepted subscription scope or explicit unsupported/capacity; no implicit fallback |
 | renew | client session, subscription_id, scope_id, after cursor | extend only an active subscription resource lease; preserve scope, generation, history and event cursors |
 | current | client_session_id, eager_scope, nullable expected_snapshot_id | fresh actual coherent capture or stale/partial/capacity; never pretend it is an earlier notice |
+| current_owned | same three closed Current fields; explicitly advertised capability | fresh capture with an exact reader-owned retention handle; its initial pin is transferred atomically, old Current remains unchanged |
 | read | capture_id, opaque cursor, max_bytes | immutable same-capture bytes/chunks and digest; no game access |
 | catalog | catalog_ref, cursor, limit, optional structural prefix | ordered matching actions, next cursor, full-relation and filtered counts/digests; prefix is not strategy |
 | resolve | catalog_ref and complete public structural expression | unique original action handle; no-match/ambiguous/expired explicit |
@@ -424,3 +425,76 @@ First implement projection/catalog/sealed access and the publication/Await mecha
 with faithful fixtures. Add each exact native trigger and each missing L mechanism,
 then qualify the loaded artifact and full consumer/recorder/data paths. Existence of
 the stream API does not by itself qualify all required native exposure coverage.
+
+## Reader-owned Current and original dispatch binding
+
+This additive source contract addresses two separate lifecycle facts. Legacy
+Current creates an initial capture pin for the announced120s retention; releasing
+a reader handle does not remove that initial pin. Repeated complete readiness
+reads can therefore fill the finite store despite correct reader cleanup. The
+new method transfers the initial pin to one explicit reader owner. It changes
+resource ownership, not captured facts, native legality or Source history.
+
+### Explicit method and unchanged legacy behavior
+
+`POST /api/player-environment/native-logical/current_owned` requires exactly
+`client_session_id`, `eager_scope`, `expected_snapshot_id`. Capabilities advertise
+`current_owned` and mechanism `native_current_reader_owned_v1`. An SDK caller must
+negotiate the method; absence fails explicitly, without a fallback Current call.
+The existing `native-logical-current-1` reply shape/status/error mapping remains.
+A captured or partial owned success requires joined Context, Capture and a
+nonnull RetentionReference over that exact capture; failures have all three null.
+`expected_snapshot_id` retains its equality/stale meaning, not an unchanged probe.
+
+The Store seals the fresh projection, creates a reader handle for the original
+active client, and releases only the new capture's initial pin under its existing
+gate. Failed retain/client/byte admission rolls back every newly owned reference.
+Independent reader/hub/source pins survive. Reader expiry stays120s; no automatic
+renewal or limit increase. Legacy `current`, original cursor expiry, `retain` and
+`release` semantics stay unchanged. Public release still removes only its
+client-owned handle; no Source position/input token or gameplay action is created.
+
+### One SDK owner through errors and transfers
+
+`NativeLogicalSession.currentOwned()` returns `NativeLogicalOwnedCurrentReply`: a
+SDK sidecar over the unchanged decoded reply, with `dispose()` and one-shot
+`takeRetention()`. A fully decoded coherent owned reply receives a temporary
+`NativeLogicalRetentionLease` immediately, before post-reply identity, generation,
+scope, cancellation or byte checks can throw. The release callback is fixed to
+the admitted original client and transport/session/runtime/capture/retention; it
+never uses a later registration or dynamic current-identity lookup.
+
+Assembly takes the sidecar through optional SDK input `readerLease` before its
+admission checks. Its returned capture supports one-shot `transferRetention()`.
+The same lease moves reply→assembly→Runtime acquisition. Assembly disposal still
+zeroes its large buffers/releases byte reservations after transfer; the small
+lease holds only immutable original descriptors and idempotent async disposal.
+No extra retain, refcount manager or cache is added. Known non-offered failures
+release that exact owner in finally. A lost, malformed or unjoinable response
+has no safe handle to guess; unavailable original release remains explicit
+failure/known expiry or bounded120s orphan, not reported successful cleanup.
+
+### Actual SDK dispatch binding
+
+The optional SDK.submit hook is
+`onDispatchBinding(binding: Readonly<NativeLogicalDispatchBinding>) => void | Promise<void>`.
+Binding has exactly `runtime_instance_id`, `client_session_id`,
+`controller_lease_id`, `controller_generation`. SDK captures it from the actual
+validated immutable submit body and original registration. Only when supplied,
+it checks pre-submit cancellation, awaits the hook, checks cancellation again,
+then invokes the existing synchronous `onSubmitStart` and final cancellation
+check before the one transport call. The hook cannot transform input/body.
+A hook failure precedes dispatch/start-hook budget charge. No-hook legacy timing
+is unchanged. Opted-in terminal attribution must equal all four captured fields,
+not the subsequently renewed/current lease.
+
+Recovery can pass this original binding as the optional third argument to
+`result(requestId, signal?, expectedDispatchBinding?)`; it does not authorize
+another submit. Result and Source wire schemas stay unchanged. Operational
+identifiers are not permission to invent native operands.
+
+The [owned Current vectors](../contracts/fixtures/native-logical-owned-current-v1.json)
+freeze exact request/reply shapes and legacy compatibility. They are synthetic
+source/test examples, not native runtime or performance qualification. Root owns
+version/BOM/package/install promotion. Old artifacts remain pinned until an
+explicit compatible candidate is selected.
