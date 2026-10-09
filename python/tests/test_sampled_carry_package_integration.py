@@ -156,13 +156,31 @@ def build_package(directory: Path) -> tuple[Path, Path, dict]:
 def closed_package(tmp_path_factory):
     previous = torch.get_num_threads()
     torch.set_num_threads(2)
-    directory = (
-        Path(os.environ["E6_SAMPLED_PACKAGE_ROOT"])
-        if "E6_SAMPLED_PACKAGE_ROOT" in os.environ
-        else tmp_path_factory.mktemp("sampled-package")
-    )
-    directory = directory.resolve()
-    if (directory / "receipt.json").exists():
+    try:
+        directory = (
+            Path(os.environ["E6_SAMPLED_PACKAGE_ROOT"])
+            if "E6_SAMPLED_PACKAGE_ROOT" in os.environ
+            else tmp_path_factory.mktemp("sampled-package")
+        ).resolve()
+        if not (directory / "receipt.json").exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            # Inter-op configuration is process-global and cannot be restored.
+            # Apply the explicit numerical profile only in its fresh builder.
+            script = """
+import sys
+from pathlib import Path
+import torch
+torch.set_num_threads(2)
+torch.set_num_interop_threads(1)
+sys.path.insert(0, str(Path.cwd() / 'tests'))
+from test_sampled_carry_package_integration import build_package
+build_package(Path(sys.argv[1]))
+"""
+            built = subprocess.run(
+                [sys.executable, "-c", script, str(directory)], cwd=ROOT / "python",
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            assert built.returncode == 0, built.stdout + built.stderr
         value = (
             directory / "package",
             directory / "agent.json",
@@ -170,11 +188,10 @@ def closed_package(tmp_path_factory):
         )
         # Reuse only its closed bytes; the real constructor revalidates current code.
         NativeStructuredAgent(value[0], value[1])
-    else:
-        directory.mkdir(parents=True, exist_ok=True)
-        value = build_package(directory)
-    yield value
-    torch.set_num_threads(previous)
+        assert value[2]["intra_threads"] == 2 and value[2]["interop_threads"] == 1
+        yield value
+    finally:
+        torch.set_num_threads(previous)
 
 
 def acknowledgement(report: dict) -> dict:

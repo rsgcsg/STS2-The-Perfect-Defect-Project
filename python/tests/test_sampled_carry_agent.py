@@ -11,6 +11,8 @@ import copy
 import hashlib
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,9 +27,6 @@ from stpd.native_sampled_carry_spec import INPUT_SPEC, sampled_agent_spec
 from stpd.policy.native_agent import SESSION_SCHEMA, NativeStructuredAgent, serve
 from stpd.policy.native_structured_export import encode_native_weights
 
-torch.set_num_threads(2)
-torch.set_num_interop_threads(1)
-
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = json.loads(
     (
@@ -36,9 +35,36 @@ FIXTURE = json.loads(
 )
 
 
+@pytest.fixture(autouse=True)
+def bounded_threads():
+    previous = torch.get_num_threads()
+    torch.set_num_threads(2)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(previous)
+
+
+def test_sampled_module_collection_preserves_numerical_runtime():
+    script = """
+import pytest
+from stpd.workers.memory_ranking import _runtime_identity
+before = _runtime_identity()
+result = pytest.main(['--collect-only', '-q', '-p', 'no:cacheprovider',
+                     'tests/test_sampled_carry_agent.py',
+                     'tests/test_sampled_carry_package_integration.py'])
+assert result == 0, result
+assert _runtime_identity() == before, (before, _runtime_identity())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=ROOT / "python",
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.fixture
 def agent() -> NativeStructuredAgent:
-    torch.set_num_threads(2)
     model = StructuredM2(seed=7, model_control=NativeGraphControl())
     weights = hashlib.sha256(encode_native_weights(model)).hexdigest()
     scorer = NativeStructuredScorer(model, "test-model", weights, input_spec=INPUT_SPEC)
