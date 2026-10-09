@@ -16,7 +16,8 @@ from ..fullrun.native_structured_inputs import INPUT_SPEC
 from ..fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
 from ..fullrun.structured_inputs import StructuredFrame
 from ..native_graph_spec import checked_control
-from ..native_sampled_carry_spec import INPUT_SPEC as SAMPLED_INPUT_SPEC, HISTORY_MODE, sample_eligible, sampled_agent_spec
+from ..native_sampled_carry_spec import HISTORY_MODE, sample_eligible, sampled_agent_spec
+from ..native_sampled_carry_spec import INPUT_SPEC as SAMPLED_INPUT_SPEC
 from .structured_m2 import WIDTH, StructuredM2
 
 MAX_RETIRED_SEGMENTS = 1024
@@ -29,7 +30,9 @@ def _text(value: Any) -> str:
     return value
 
 
-def checked_prefix(value: object, token: str, history_mode: str = "full_reference") -> dict[str, Any]:
+def checked_prefix(
+    value: object, token: str, history_mode: str = "full_reference"
+) -> dict[str, Any]:
     prefix = object_fields(
         value,
         {
@@ -81,7 +84,10 @@ class NativeStructuredScorer:
         self.input_spec = copy.deepcopy(input_spec)
         self.sampled = input_spec == SAMPLED_INPUT_SPEC
         if self.sampled:
-            sampled_agent_spec(model.model_control)
+            control = model.model_control
+            if control is None:
+                raise BoundaryError("native_model", "sampled_carry_control_required")
+            sampled_agent_spec(control)
         self.model = model.eval()
         self.model.validate_parameters()
         self.model_id, self.weights_sha256 = model_id, weights_sha256
@@ -128,7 +134,9 @@ class NativeStructuredScorer:
             raise BoundaryError("native_model", "input_spec_or_continuity_binding")
         frame, unit = qualify_native(value["observation"], value["catalog"])
         advance = native_advance(None if reset else self.unit, unit)
-        if self.sampled and (not advance or not sample_eligible(value["observation"], value["catalog"])):
+        if self.sampled and (
+            not advance or not sample_eligible(value["observation"], value["catalog"])
+        ):
             raise BoundaryError("native_model", "sampled_readiness_check_is_not_consumption")
         version = (0 if reset else self.state_version) + int(advance)
         if version > MAX_STATE_VERSION:

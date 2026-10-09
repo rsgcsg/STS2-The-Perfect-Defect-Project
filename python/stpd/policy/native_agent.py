@@ -16,13 +16,18 @@ import torch
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
 
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROFILE, PROJECTION_VERSION, SCOPE
+from ..fullrun.native_structured_sequences import native_advance, qualify_native
 from ..models.native_structured_scorer import NativeStructuredScorer
-from ..fullrun.native_structured_sequences import qualify_native, native_advance
-from ..native_sampled_carry_spec import (
-    INPUT_SPEC as SAMPLED_INPUT_SPEC, HISTORY_MODE, RECHECK_TIMEOUT_MS,
-    sample_eligible, sampled_agent_spec,
-)
 from ..native_code_scope import REQUIRED_METHODS, native_code_sha256
+from ..native_sampled_carry_spec import (
+    HISTORY_MODE,
+    RECHECK_TIMEOUT_MS,
+    sample_eligible,
+    sampled_agent_spec,
+)
+from ..native_sampled_carry_spec import (
+    INPUT_SPEC as SAMPLED_INPUT_SPEC,
+)
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .native_structured_export import (
@@ -205,11 +210,14 @@ class NativeStructuredAgent:
             or input_spec.get("projection")
             != {"id": INPUT_SPEC["id"], "version": PROJECTION_VERSION}
             or input_spec.get("state_format_version") != metadata["state_format_version"]
-            or input_spec.get("history_mode") != (HISTORY_MODE if self.sampled else "full_reference")
+            or input_spec.get("history_mode")
+            != (HISTORY_MODE if self.sampled else "full_reference")
             or input_spec.get("consumption_mode") != "once_per_occurrence"
             or input_spec.get("gap_policy") != "handoff"
-            or input_spec.get("attachment", {}).get("eager_scope") != ([] if self.sampled else list(SCOPE))
-            or input_spec.get("attachment", {}).get("delivery_mode") != ("scoped" if self.sampled else "full_reference")
+            or input_spec.get("attachment", {}).get("eager_scope")
+            != ([] if self.sampled else list(SCOPE))
+            or input_spec.get("attachment", {}).get("delivery_mode")
+            != ("scoped" if self.sampled else "full_reference")
             or manifest["agent"].get("id") != metadata["agent_spec"]["id"]
             or manifest["agent"].get("version") != metadata["agent_spec"]["version"]
         ):
@@ -267,9 +275,11 @@ class NativeStructuredAgent:
         bindings = [
             {"model_id": metadata["model_id"], "weights_sha256": metadata["weights"]["sha256"]}
         ]
-        expected_recovery = ({"mode": "none", "max_state_bytes": 0, "model_bindings": []}
-                             if self.sampled else {"mode": "opaque", "max_state_bytes": MAX_STATE_BYTES,
-                                                  "model_bindings": bindings})
+        expected_recovery = (
+            {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
+            if self.sampled
+            else {"mode": "opaque", "max_state_bytes": MAX_STATE_BYTES, "model_bindings": bindings}
+        )
         if (
             recovery != expected_recovery
             or type(manifest["limits"].get("max_message_bytes")) is not int
@@ -283,11 +293,16 @@ class NativeStructuredAgent:
             or metadata["agent_spec"]["version"] != ("1.0.0" if self.sampled else "1.2.0")
         ):
             raise BoundaryError("native_agent", "unsupported_task_spec")
-        if self.sampled and metadata["agent_spec"] != sampled_agent_spec(model.model_control):
-            raise BoundaryError("native_agent", "sampled_agent_spec_binding")
+        if self.sampled:
+            control = model.model_control
+            if control is None or metadata["agent_spec"] != sampled_agent_spec(control):
+                raise BoundaryError("native_agent", "sampled_agent_spec_binding")
         self.ready_summary_task = task_spec is not None
         self.scorer = NativeStructuredScorer(
-            model, metadata["model_id"], metadata["weights"]["sha256"], input_spec=selected_input_spec
+            model,
+            metadata["model_id"],
+            metadata["weights"]["sha256"],
+            input_spec=selected_input_spec,
         )
         self.closed = False
         self.issued_acquisition: str | None = None
@@ -377,49 +392,79 @@ class NativeStructuredAgent:
         }
 
     def begin_sampled_next(self, value: dict[str, Any]) -> None:
-        value = object_fields(value, {"continuity_token", "consumption_id", "state_version",
-                                    "basis_acquisition_id", "received_cursor"}, "native_agent.sampled_next")
+        value = object_fields(
+            value,
+            {"continuity_token", "consumption_id", "state_version",
+             "basis_acquisition_id", "received_cursor"},
+            "native_agent.sampled_next",
+        )
         scorer = self.scorer
-        if (not self.sampled or scorer.pending is not None
-                or not isinstance(value["continuity_token"], str) or not value["continuity_token"]
-                or value["consumption_id"] != scorer.consumption_id
-                or type(value["state_version"]) is not int or value["state_version"] != scorer.state_version
-                or value["basis_acquisition_id"] != scorer.acquisition_id
-                or scorer.continuity is not None and value["continuity_token"] != scorer.continuity):
+        if (
+            not self.sampled
+            or scorer.pending is not None
+            or not isinstance(value["continuity_token"], str)
+            or not value["continuity_token"]
+            or value["consumption_id"] != scorer.consumption_id
+            or type(value["state_version"]) is not int
+            or value["state_version"] != scorer.state_version
+            or value["basis_acquisition_id"] != scorer.acquisition_id
+            or scorer.continuity is not None and value["continuity_token"] != scorer.continuity
+        ):
             raise BoundaryError("native_agent", "sampled_next_prefix_binding")
 
     def sampled_wait(self, value: dict[str, Any]) -> dict[str, Any]:
         cursor = value["received_cursor"]
         if not isinstance(cursor, str) or not cursor:
             raise BoundaryError("native_agent", "known_source_cursor_required")
-        return {"continuity_token": value["continuity_token"], "consumption_id": self.scorer.consumption_id,
-                "state_version": self.scorer.state_version,
-                "directive": {"type": "await", "after_cursor": cursor, "condition": "any_event",
-                              "timeout_ms": RECHECK_TIMEOUT_MS}}
+        return {
+            "continuity_token": value["continuity_token"],
+            "consumption_id": self.scorer.consumption_id,
+            "state_version": self.scorer.state_version,
+            "directive": {
+                "type": "await", "after_cursor": cursor, "condition": "any_event",
+                "timeout_ms": RECHECK_TIMEOUT_MS,
+            },
+        }
 
-    def sampled_query_result(self, result: dict[str, Any], next_input: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        result = object_fields(result, {"method", "value", "acquisition_id"}, "native_agent.current_result")
-        value = object_fields(result["value"], {"capture", "observation", "catalog", "catalog_materialized"},
-                              "native_agent.current_value")
-        if (result["method"] != "current" or not isinstance(result["acquisition_id"], str)
-                or not result["acquisition_id"] or value["catalog_materialized"] is not True):
+    def sampled_query_result(
+        self, result: dict[str, Any], next_input: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        result = object_fields(
+            result, {"method", "value", "acquisition_id"}, "native_agent.current_result"
+        )
+        value = object_fields(
+            result["value"], {"capture", "observation", "catalog", "catalog_materialized"},
+            "native_agent.current_value",
+        )
+        if (
+            result["method"] != "current"
+            or not isinstance(result["acquisition_id"], str)
+            or not result["acquisition_id"]
+            or value["catalog_materialized"] is not True
+        ):
             raise BoundaryError("native_agent", "whole_current_result_required")
         observation, capture = value["observation"], value["capture"]
-        if (not isinstance(capture, dict) or capture.get("schema") != "sts2.player-environment/native-logical-capture-1"
-                or capture.get("input_profile") != PROFILE
-                or capture.get("snapshot_id") != observation.get("snapshot_id")
-                or capture.get("session") != observation.get("session")
-                or capture.get("stream_generation") != observation.get("catalog", {}).get("stream_generation")
-                or capture.get("scope_id") != observation.get("catalog", {}).get("scope_id")):
+        if (
+            not isinstance(capture, dict)
+            or capture.get("schema") != "sts2.player-environment/native-logical-capture-1"
+            or capture.get("input_profile") != PROFILE
+            or capture.get("snapshot_id") != observation.get("snapshot_id")
+            or capture.get("session") != observation.get("session")
+            or capture.get("stream_generation")
+            != observation.get("catalog", {}).get("stream_generation")
+            or capture.get("scope_id") != observation.get("catalog", {}).get("scope_id")
+        ):
             raise BoundaryError("native_agent", "sampled_current_capture_binding")
         _, unit = qualify_native(observation, value["catalog"])
         advance = native_advance(self.scorer.unit, unit)
         if not advance or not sample_eligible(value["observation"], value["catalog"]):
             return "directive", self.sampled_wait(next_input)
-        report = self.consume({"acquisition_id": result["acquisition_id"], "input_spec": SAMPLED_INPUT_SPEC,
-                               "continuity_token": next_input["continuity_token"],
-                               "previous_consumption_id": self.scorer.consumption_id,
-                               "observation": value["observation"], "catalog": value["catalog"]})
+        report = self.consume({
+            "acquisition_id": result["acquisition_id"], "input_spec": SAMPLED_INPUT_SPEC,
+            "continuity_token": next_input["continuity_token"],
+            "previous_consumption_id": self.scorer.consumption_id,
+            "observation": value["observation"], "catalog": value["catalog"],
+        })
         return "consumed", report
 
     def check_metadata(
@@ -573,7 +618,8 @@ def bind_native_agent(
             "history_mode": HISTORY_MODE if sampled else "full_reference",
             "consumption_mode": "once_per_occurrence",
             "gap_policy": "handoff",
-            "state_recovery": {"mode": "none", "max_state_bytes": 0, "model_bindings": []} if sampled else {
+            "state_recovery": {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
+            if sampled else {
                 "mode": "opaque",
                 "max_state_bytes": MAX_STATE_BYTES,
                 "model_bindings": [
@@ -632,7 +678,10 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             raise BoundaryError("native_agent", "message_size_or_framing")
         message = decode_json(line)
         kind = message.get("message_type")
-        content = "completion" if kind == "consume_ack" else ("result" if kind == "query_result" else "input")
+        content = (
+            "completion" if kind == "consume_ack"
+            else ("result" if kind == "query_result" else "input")
+        )
         message = object_fields(
             message,
             {"schema", "message_type", "session_id", "recovery_epoch", "request_id", content},
@@ -666,11 +715,17 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
                               "state_version": agent.scorer.state_version,
                               "basis_acquisition_id": agent.scorer.acquisition_id}
                 output = agent.next(next_input)
-                emit({"schema": SESSION_SCHEMA, "message_type": "directive", **next_common, "output": output})
+                emit({
+                    "schema": SESSION_SCHEMA, "message_type": "directive",
+                    **next_common, "output": output,
+                })
                 pending_next = None
             continue
         if kind == "query_result":
-            if current != context or request != pending_query or pending_next is None or pending_request is not None:
+            if (
+                current != context or request != pending_query
+                or pending_next is None or pending_request is not None
+            ):
                 raise BoundaryError("native_agent", "query_result_request_binding")
             pending_query = None
             output_kind, result = agent.sampled_query_result(message["result"], pending_next[1])
@@ -679,7 +734,10 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
                 emit({"schema": SESSION_SCHEMA, "message_type": "consumed", **common,
                       "request_id": pending_request, "completion": result})
             else:
-                emit({"schema": SESSION_SCHEMA, "message_type": "directive", **pending_next[0], "output": result})
+                emit({
+                    "schema": SESSION_SCHEMA, "message_type": "directive",
+                    **pending_next[0], "output": result,
+                })
                 pending_next = None
             continue
         if request in seen or len(seen) >= 65536:
