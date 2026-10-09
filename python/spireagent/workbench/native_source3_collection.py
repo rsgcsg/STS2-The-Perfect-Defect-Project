@@ -783,6 +783,9 @@ def collect_source3(
                 while True:
                     if time.monotonic() >= deadline and not cancel.requested.is_set():
                         cancel.stop("deadline")
+                    # A silent child cannot keep cancellation in the main receive
+                    # loop forever; the exception path owns the bounded drain.
+                    cancel.check()
                     message = child.receive()
                     if message is None:
                         continue

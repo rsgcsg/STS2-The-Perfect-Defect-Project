@@ -12,6 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from metadata_import_guard import no_torch_imports as no_torch_imports
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench import native_source3_collection as module
 from spireagent.workbench.developer import ProjectConfig, atomic_json, combination
@@ -476,6 +478,64 @@ class CollectionTests(unittest.TestCase):
         report = self.run_collection()
         self.assertEqual(report["status"], "failed")
         self.assertEqual(self.children, [])
+
+    def test_silent_child_deadline_enters_bounded_cleanup_without_any_next_submission(self):
+        clock = {"now": 0.0}
+        self.request = replace(self.request, deadline_ms=1000)
+        receive_calls = []
+        finishing = []
+        original_factory = self.child
+
+        def silent_factory(path, cancellation):
+            child = original_factory(path, cancellation)
+            original_send = child.send
+            original_receive = child.receive
+            stopping = {"requested": False}
+
+            def send(value):
+                if value["type"] == "source_ready":
+                    # Known App Start is retained, but the Node child then stops
+                    # answering without EOF/quiesced/closed. No Runtime permission.
+                    self.messages.append(copy.deepcopy(value))
+                    return
+                original_send(value)
+
+            def receive():
+                receive_calls.append(clock["now"])
+                if len(receive_calls) > 4:
+                    raise AssertionError("silent receive loop escaped bounded cleanup")
+                if child.queue:
+                    return original_receive()
+                clock["now"] += 121.0 if stopping["requested"] else 2.0
+                return None
+
+            def stop(reason):
+                stopping["requested"] = True  # Deliberately no quiescence/EOF reply.
+
+            def finish():
+                finishing.append(True)
+                raise module.fail("child_exit_unconfirmed")
+
+            child.send, child.receive, child.stop, child.finish = send, receive, stop, finish
+            return child
+
+        with (
+            patch.object(module.time, "monotonic", lambda: clock["now"]),
+            patch.object(self, "child", silent_factory),
+        ):
+            report = self.run_collection()
+        self.assertEqual(report["error_code"], "deadline")
+        self.assertEqual(len(receive_calls), 3)
+        self.assertEqual(finishing, [True])
+        self.assertEqual(report["status"], "unknown")
+        self.assertTrue(report["child_exit_unconfirmed"])
+        self.assertEqual(report["runtime_quiescence"], "unconfirmed")
+        self.assertEqual(
+            report["source_close_fallback"], "bounded_cleanup_without_confirmed_Runtime_quiescence"
+        )
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+        self.assertFalse(any(value["type"] == "runtime_continue" for value in self.messages))
+        self.assertEqual(report["submissions"], 0)
 
     def test_pipe_reader_EOF_drains_bounded_queue_without_leaking_process(self):
         script = self.root / "pure-child.mjs"

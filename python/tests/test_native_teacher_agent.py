@@ -5,11 +5,12 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from metadata_import_guard import no_torch_imports as no_torch_imports
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
@@ -205,7 +206,6 @@ class TeacherAgentTests(unittest.TestCase):
         unsupported = self.consume(current(2, "event_option", [action("option", "activate")]))
         self.assertEqual(unsupported["directive"]["type"], "close")
         self.assertEqual(unsupported["directive"]["reason"], "scripted_owner_arrival_not_observed")
-        self.assertNotIn("torch", sys.modules)
 
     def test_executed_qualification_helper_mutation_invalidates_real_artifact(self):
         closure = self.root / "closure"
