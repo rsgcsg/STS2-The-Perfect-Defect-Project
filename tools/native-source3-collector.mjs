@@ -174,8 +174,9 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
   validateOptions(options);
   if (!id(operationId)) throw new Error("invalid_collection_operation");
   let deps, profile;
-  let episode, controller, native, capabilities, sourceReady = false, sourceClosed = false;
+  let episode, controller, native, capabilities, admissionRequested = false, sourceClosed = false;
   let hostStarted = false, hostExit = null, controlRelease = null, messageId = 0, pendingRequest = null;
+  let bootstrapHandoff = null;
   let sourceReason = "collection_owner_failed", timer, cursor, subscriptionRenewed = 0, outputBytes = 0;
   let releasePromise;
   const errors = [], counts = { submissions: 0, known_delivered_choices: 0, result_queries: 0 };
@@ -242,7 +243,9 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     if (episode.identity.endpoint !== options.endpoint) throw new Error("host_endpoint_changed");
     const runtime = episode.identity.host.runtime_instance_id;
     const handoff = await episode.releaseController();
+    bootstrapHandoff = handoff;
     check();
+    admissionRequested = true;
     const response = await reply("ready", { runtime_instance_id: runtime, endpoint: options.endpoint,
       host_identity: safeHostIdentity(episode.identity), bootstrap_control_release: handoff }, "source_ready");
     exact(response, ["schema", "type", "operation_id", "message_id", "source_context"]);
@@ -256,7 +259,6 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
           .some(value => typeof value !== "string" || !value)
         || context.declaration?.source_kind !== "agent_protocol"
         || context.declaration?.machine_verifiable !== false) throw new Error("known_source_start_required");
-    sourceReady = true;
     check();
     const client = new deps.PlayerEnvironmentRestClient(options.endpoint, 15_000);
     controller = new deps.EnvironmentControllerSession(client, { productId: "spireagent-source3-collector",
@@ -392,7 +394,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     clearTimeout(timer);
     // App Close belongs to the parent, including canceled/partial attempts. Never bypass it on EOF.
     try {
-      if (sourceReady) {
+      if (admissionRequested) {
         const response = await reply("quiesced", { reason: sourceReason, counts,
           pending_request_id: pendingRequest }, "source_closed", true);
         exact(response, ["schema", "type", "operation_id", "message_id", "known_closed",
@@ -413,6 +415,17 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
         controlRelease = { confirmed: true, observation: observed };
       } catch { errors.push("original_control_release_unconfirmed"); }
       try { await controller.close(); } catch { errors.push("controller_close_unconfirmed"); }
+    } else if (episode && bootstrapHandoff) {
+      // Admission can fail after Host handoff but before SDK controller construction.
+      // A fresh exact-runtime control view still checks the real bootstrap release;
+      // absence is not used to settle any native input or unknown Start.
+      try {
+        const observed = (await new deps.PlayerEnvironmentRestClient(options.endpoint, 5000).controlSnapshot()).data;
+        if (observed.runtime_instance_id !== episode.identity.host.runtime_instance_id || observed.controller != null)
+          throw new Error("original_control_release_unconfirmed");
+        controlRelease = { confirmed: true, observation: observed,
+          native_controller_constructed: false };
+      } catch { errors.push("original_control_release_unconfirmed"); }
     }
     if (episode) {
       try { hostExit = await episode.close(); }

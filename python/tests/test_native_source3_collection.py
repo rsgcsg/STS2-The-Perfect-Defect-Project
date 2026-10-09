@@ -227,9 +227,7 @@ def collection(tmp_path, monkeypatch):
         def stop(self, reason):
             seen["stops"].append(reason)
             if len(seen["stops"]) == 1:
-                if current["recording_session_id"] is None or seen["behavior"].get(
-                    "source_ready_failure"
-                ):
+                if current["recording_session_id"] is None:
                     self.final("original_source_start_unconfirmed")
                 else:
                     self.message(
@@ -240,6 +238,9 @@ def collection(tmp_path, monkeypatch):
                     )
 
         def finish(self):
+            if seen["behavior"].get("source_ready_failure"):
+                assert seen["commands"][-1] == "close"
+                assert self.source_closed
             return {"pid": 12345, "exit_code": 0, "signal": None, "forced_by_parent": False}
 
     def prepared(cfg, req):

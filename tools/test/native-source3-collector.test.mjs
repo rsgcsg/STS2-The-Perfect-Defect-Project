@@ -23,7 +23,7 @@ async function fixture(t, behavior = {}) {
     experimental_connector_acknowledged: false, ...behavior.options };
   const lifetime = createCollectionLifetime();
   const seen = { messages: [], submissions: [], queries: [], captures: [], disposals: 0,
-    releases: 0, closes: 0, hostCloses: 0, attaches: [], events: 0 };
+    releases: 0, closes: 0, hostCloses: 0, attaches: [], events: 0, order: [] };
   const catalog = Array.from({ length: 40 }, (_, index) => action(index));
   let nextReply, original;
   const peer = {
@@ -44,6 +44,7 @@ async function fixture(t, behavior = {}) {
       } else if (value.type === "result") {
         nextReply = { ...common, type: "continue", continue: true, reason: "known_original_source" };
       } else if (value.type === "quiesced") {
+        seen.order.push("application_close");
         nextReply = { ...common, type: "source_closed", known_closed: true,
           source_status: { recording_lifecycle: "closed" }, close_outcome: "known_closed" };
       }
@@ -117,7 +118,7 @@ async function fixture(t, behavior = {}) {
       }
       return { identity: { endpoint: options.endpoint, host: { runtime_instance_id: "runtime" } },
         async releaseController() { return { controller: null }; },
-        async close() { seen.hostCloses++; return receipt; } };
+        async close() { seen.hostCloses++; seen.order.push("host_close"); return receipt; } };
     }
   };
   return { options, lifetime, peer, deps, seen };
@@ -222,4 +223,16 @@ test("native rejection at the target remains a failed/censored reason, never tar
   assert.equal(seen.submissions.length, 1);
   assert.equal(final.counts.known_delivered_choices, 1);
   assert.equal(final.reason, "native_choice_not_delivered_or_rejected");
+});
+
+
+test("failed SourceReady ACK quiesces App admission before Host close, with zero native choices", async t => {
+  const { final, seen } = await run(t, { unknownStart: true });
+  assert.deepEqual(seen.order, ["application_close", "host_close"]);
+  assert.equal(seen.submissions.length, 0);
+  assert.equal(final.source_closed, true);
+  assert.equal(final.control_release.confirmed, true);
+  assert.equal(final.control_release.native_controller_constructed, false);
+  assert.equal(seen.releases, 0);
+  assert.equal(seen.messages.find(message => message.type === "quiesced").pending_request_id, null);
 });

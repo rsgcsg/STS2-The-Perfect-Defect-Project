@@ -550,7 +550,11 @@ def collect_source3(
                 nonlocal close_sent, source_closed
                 status = None
                 if original is None or close_sent:
-                    return source_closed, status, "not_owned_or_already_requested"
+                    return (
+                        source_closed,
+                        report.get("source_final_status"),
+                        "not_owned_or_already_requested",
+                    )
                 close_sent = True
                 try:
                     status = _status(app, original, for_close=True)
@@ -893,6 +897,9 @@ def collect_source3(
                 )
                 if child is not None:
                     child.stop(error_code)
+                    # Accepted Start remains ours before SourceReady transmission;
+                    # Node quiesces after requesting admission, even without its ACK.
+                    close_original_once()
                     # Keep the genuine App alive to service a final quiesced Close if possible.
                     end = time.monotonic() + 120
                     while not terminal and time.monotonic() < end:
