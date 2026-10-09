@@ -57,8 +57,9 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
   Model recurrence or a requirement that a Model exists.
   `state_recovery` has exactly `mode`, `max_state_bytes`, `model_bindings`.
   Mode is `opaque` or `none`; opaque permits 1–16 MiB and up to 16 exact
-  `{model_id,weights_sha256}` bindings. The learned default must implement opaque
-  export/restore; none declares stateless behavior with zero bytes/empty bindings.
+  `{model_id,weights_sha256}` bindings. Full-reference learned Agents use opaque
+  export/restore. None declares no restoration with zero bytes/empty bindings;
+  sampled Agents still carry W within their live segment.
 - `requirements`: the existing exact Connector protocol/environment pin shape,
   plus `required_methods`, a duplicate-free list of native methods. It contains
   no score/index/successor requirement. Runtime checks exact environment and
@@ -539,7 +540,10 @@ consume-proposed stored payload, ledger acceptance, ACK write attempt, later val
 directive, discarded readiness and ended segment. `agent_consumed` retains its
 original ledger-transition meaning. Neither it nor ACK write-attempt proves
 that the child read ACK or committed W; a later exact directive watermark can
-substantiate resumed known state. On an interrupted call, preserve offered or
+substantiate resumed known state. Sampled Next requested/completed events bind that
+reply to the original parent request, context, basis and watermark. Agent state
+remains uncertain throughout an unresolved Next, including after ACK write.
+On an interrupted call, preserve offered or
 proposed original payloads and uncertainty rather than guess continuation.
 Disk failure before ACK prevents ACK; partial storage cannot be sealed complete.
 The independent Evidence verifier rejects missing, tampered, extra or unbound

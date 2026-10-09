@@ -78,6 +78,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private sampleOfferEvidence: Promise<void> = Promise.resolve();
   private sampleSegmentStarted = false;
   private sampleSegmentEnded = false;
+  private sampleNextRequestId: string | null = null;
   private lastAckMetadata: AgentStateMetadata | null = null;
   private lastObservation: AgentRuntimeStatus["last_observation"] = null;
   private lastDirective: AgentRuntimeStatus["last_directive"] = null;
@@ -94,6 +95,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private renewalHandoff: { gap: Record<string, unknown>; released: Promise<void> } | null = null;
   private releaseInFlight = 0;
   private renewalFailed = false;
+  private readonly renewalAdvisories: Record<string, unknown>[] = [];
 
   constructor(private readonly options: NativeAgentRuntimeOptions) {
     const validated = validateAgentManifest(options.manifest);
@@ -214,15 +216,31 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         if (this.manifest.input.history_mode === "full_reference" && this.basisId === null)
           return { type: "observation", status: this.status() };
         if (!this.owner.consumeCall()) { this.expireBudget(); return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() }; }
-        const output = await this.port.next(this.context(), { continuity_token: this.ledger.continuityToken,
+        const nextInput = { continuity_token: this.ledger.continuityToken,
           consumption_id: this.ledger.consumptionId, state_version: this.ledger.stateVersion,
-          basis_acquisition_id: this.basisId, received_cursor: this.cursor }, handlers, active.signal, () => { offer.pending = true; });
+          basis_acquisition_id: this.basisId, received_cursor: this.cursor };
+        const output = await this.port.next(this.context(), nextInput, handlers, active.signal, requestId => {
+          offer.pending = true;
+          if (this.manifest.input.history_mode === "sampled_current") {
+            this.agentUncertain = true; this.sampleNextRequestId = requestId;
+            const context = this.context();
+            this.sampleOfferEvidence = this.sampleOfferEvidence.then(() => this.emit("agent_sample_next_requested",
+              { ...context, request_id: requestId, input: nextInput }));
+            void this.sampleOfferEvidence.catch(() => undefined);
+          }
+        });
         offer.pending = false;
         await this.sampleOfferEvidence;
         this.checkActive(epoch, active.signal);
         this.requireWatermark(output);
+        if (this.manifest.input.history_mode === "sampled_current") {
+          if (this.sampleNextRequestId === null) throw new AgentSessionError("sample_next_request_binding");
+          await this.emit("agent_sample_next_completed", { ...this.context(), request_id: this.sampleNextRequestId, output });
+          this.checkActive(epoch, active.signal);
+        }
         this.lastDirective = output.directive;
         await this.emit("agent_directive", { ...this.context(), output });
+        if (this.manifest.input.history_mode === "sampled_current") { this.agentUncertain = false; this.sampleNextRequestId = null; }
         this.checkActive(epoch, active.signal);
         switch (output.directive.type) {
           case "act": return await this.act(output, epoch, active.signal);
@@ -236,7 +254,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
               controlDependent: this.mode === "auto" && this.controllerStatus() === "held", signal: active.signal })).data;
             this.checkActive(epoch, active.signal);
             await this.emit("native_await_result", { ...this.context(), wait_id: waitId, after_cursor: output.directive.after_cursor, result });
-            if (result.status === "gap" && result.gap) await this.gap(result.gap);
+            if (result.status === "gap" && result.gap) {
+              if (this.manifest.input.history_mode === "sampled_current")
+                await this.emit("agent_sample_publication_gap", { ...this.context(), gap: result.gap, received_cursor: this.cursor! });
+              else await this.gap(result.gap);
+            }
             else if (!["event", "timeout"].includes(result.status)) await this.handoff(`native_await_${result.status}`);
             // Conditional Await can match a later publication. Its event never
             // skips earlier promised occurrences; receive() uses the old cursor.
@@ -494,7 +516,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.actionReservations.delete(id);
     this.samplePayloads.get(id)?.reservation.release(); this.samplePayloads.delete(id);
   }
-  private async persistSample(id: string, disposition: "query_offered" | "consume_proposed", proposal: { request_id: string; report: AgentConsumption } | null = null): Promise<void> {
+  private async persistSample(id: string, disposition: "query_offered" | "consume_proposed", proposal: AgentSessionContext & { request_id: string; report: AgentConsumption } | null = null): Promise<void> {
     const payload = this.samplePayloads.get(id);
     if (!payload || !payload.offered) throw new AgentSessionError("sample_original_offer_required");
     const a = this.ledger.get(id), catalog = a.observation.catalog as Record<string, unknown>;
@@ -551,7 +573,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     }, consumed: async (report, signal, requestId) => {
       this.checkActive(epoch, signal);
       await this.sampleOfferEvidence;
-      if (this.manifest.input.history_mode === "sampled_current") await this.persistSample(report.acquisition_id, "consume_proposed", { request_id: requestId, report });
+      if (this.manifest.input.history_mode === "sampled_current") await this.persistSample(report.acquisition_id, "consume_proposed", { session_id: this.sessionId, recovery_epoch: epoch, request_id: requestId, report });
       this.checkActive(epoch, signal);
       const ack = this.ledger.accept(report), witness = this.witness(report.acquisition_id);
       if (this.manifest.input.history_mode === "sampled_current" && !this.sampleSegmentStarted) {
@@ -780,7 +802,19 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const flight: Promise<void> = (async () => {
         const result = (await this.native.renew(cursor, controller.signal)).data;
         if (generation !== this.renewalGeneration || this.stopped || this.stopping) return;
-        if (result.status !== "renewed" || result.gap) this.failRenewal(result.gap ?? { reason: `subscription_${result.status}` });
+        if (result.status !== "renewed") this.failRenewal(result.gap ?? { reason: `subscription_${result.status}` });
+        else if (result.gap) {
+          if (this.manifest.input.history_mode !== "sampled_current") this.failRenewal(result.gap);
+          else if (this.renewalAdvisories.length >= 8) this.failRenewal({ reason: "advisory_gap_pending_capacity" });
+          else {
+            this.renewalAdvisories.push(result.gap);
+            // Preserve exact replies but serialize their accounting after any
+            // in-flight event batch. The network flight never waits on this queue.
+            void this.owner.serialize(() => this.flushRenewalAdvisories()).catch(error => {
+              this.tainted = true; this.taintReason = `advisory_gap_evidence_failed:${errorMessage(error)}`;
+            });
+          }
+        }
       })().catch(error => {
         if (generation === this.renewalGeneration && !this.stopped && !this.stopping)
           this.failRenewal({ reason: `native_renew_failed:${errorMessage(error)}` });
@@ -814,6 +848,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     await this.emit("handoff_to_human", { ...this.context(), reason: "native_source_gap",
       autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
+  private async flushRenewalAdvisories(): Promise<void> {
+    while (this.renewalAdvisories.length) {
+      const gap = this.renewalAdvisories.shift()!;
+      await this.emit("agent_sample_publication_gap", { ...this.context(), gap, received_cursor: this.cursor! });
+    }
+  }
   private async quiesceRenewal(): Promise<void> {
     this.renewalGeneration += 1;
     if (this.renewalTimer !== undefined) { clearTimeout(this.renewalTimer); this.renewalTimer = undefined; }
@@ -841,6 +881,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     try { await this.sampleOfferEvidence; await this.cleanupSampleQueries(this.agentUncertain); }
     catch (error) { this.tainted = true; this.taintReason = `sample_stop_cleanup_failed:${errorMessage(error)}`; }
     await this.quiesceRenewal();
+    await this.flushRenewalAdvisories();
     await this.flushRenewalFailure();
     await this.release().catch(() => undefined);
     if (this.pending) { this.tainted = true; this.taintReason = "stopped_with_unresolved_request"; }

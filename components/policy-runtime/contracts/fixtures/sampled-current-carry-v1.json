@@ -1574,6 +1574,18 @@
     "segment_start": "first_accepted_sample",
     "segment_end": "post_sample_human_or_failure",
     "event_fields": {
+      "agent_sample_next_requested": [
+        "input",
+        "recovery_epoch",
+        "request_id",
+        "session_id"
+      ],
+      "agent_sample_next_completed": [
+        "output",
+        "recovery_epoch",
+        "request_id",
+        "session_id"
+      ],
       "agent_sample_query_offered": [
         "acquisition_id",
         "recovery_epoch",
@@ -1677,6 +1689,14 @@
         "count": 1
       }
     },
-    "metadata_path_example": "agent-sample-26b8b157d976636ec86fee911c81fd3cd8a13639e6e835dbda1d92b42afd8943.json"
+    "metadata_path_example": "agent-sample-26b8b157d976636ec86fee911c81fd3cd8a13639e6e835dbda1d92b42afd8943.json",
+    "proposal_fields": [
+      "recovery_epoch",
+      "report",
+      "request_id",
+      "session_id"
+    ],
+    "known_state_proof": "same_pending_parent_next_completed_then_matching_agent_directive_after_exact_ack_write",
+    "member_binding": "handle_and_submission_in_original_acquisition_catalog_nonnull_result_full_member_equal"
   }
 }

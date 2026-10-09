@@ -177,6 +177,38 @@ describe("sampled current carry, source/contract only", () => {
     expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
     expect((await readdir(f.evidence.directory)).filter(x => x.startsWith("agent-sample-"))).toHaveLength(24);
   });
+  it("labels Events/Await publication gaps as advisory and still obtains a new complete Current sample", async () => {
+    const f = await fixture(); expect((await f.runtime.tick()).type).toBe("delivered");
+    const original = f.source.route.bind(f.source);
+    vi.spyOn(f.source, "route").mockImplementation((url, body) => {
+      const response = original(url, body);
+      const gap = { reason: "retained_publication_gap", from_publication_index: "1", through_publication_index: "2" };
+      if (url.pathname.endsWith("events")) Object.assign(response.value as object, { events: [], gap,
+        next_cursor: "cursor-1", high_watermark: "cursor-1" });
+      if (url.pathname.endsWith("await")) Object.assign(response.value as object, { status: "gap", event: null, gap });
+      return response;
+    });
+    expect((await f.runtime.tick()).type).toBe("awaited"); expect(f.runtime.status().mode).toBe("auto");
+    expect(f.runtime.status().session.prefix.omissions.gap).toBeNull();
+    f.setFrame("inspect_b"); expect((await f.runtime.tick()).type).toBe("delivered");
+    await f.runtime.stop();
+    expect((await events(f.evidence)).filter(e => e.kind === "agent_sample_publication_gap")).toHaveLength(3);
+    expect(verify(f.evidence.directory)).toContain("pass");
+  });
+  it("keeps a renewed sampled subscription through an advisory gap without ending its live memory segment", async () => {
+    const f = await fixture(); expect((await f.runtime.tick()).type).toBe("delivered");
+    const original = f.source.route.bind(f.source);
+    vi.spyOn(f.source, "route").mockImplementation((url, body) => {
+      const response = original(url, body);
+      if (url.pathname.endsWith("renew")) Object.assign(response.value as object,
+        { gap: { reason: "retained_publication_gap", from_publication_index: "1", through_publication_index: "2" } });
+      return response;
+    });
+    await vi.waitFor(() => expect(f.calls).toContain("renew"), { timeout: 6000, interval: 100 });
+    expect(f.runtime.status().mode).toBe("auto"); expect(f.runtime.status().session.state_version).toBe(1);
+    f.setFrame("inspect_b"); expect((await f.runtime.tick()).type).toBe("delivered");
+    await f.runtime.stop(); expect(verify(f.evidence.directory)).toContain("pass");
+  }, 10000);
   it("stores 300 representative 64 KiB original samples beyond opaque file limits without truncation", async () => {
     const root = await mkdtemp(join(tmpdir(), "sample-capacity-")); roots.push(root);
     const manifest = structuredClone(shared.manifest) as AgentManifest;
@@ -209,6 +241,17 @@ describe("sampled current carry, source/contract only", () => {
       catalog_digest: frame.observation.catalog.digest })).rejects.toThrow();
     expect(await readFile(join(f.evidence.directory, address + ".observation.json"))).toEqual(raw);
     await expect(f.evidence.finalize({ status: "tainted", tainted: true, mode: "human" })).rejects.toThrow("sample storage incomplete");
+  });
+  it("an ACK write without a returned child directive remains uncertain through Human/Stop", async () => {
+    const f = await fixture("hang_after_ack"); const tick = f.runtime.tick();
+    await vi.waitFor(async () => expect((await events(f.evidence)).some(e => e.kind === "agent_sample_consume_ack_offered")).toBe(true));
+    expect(f.runtime.status().session.state_version).toBe(1);
+    expect(f.runtime.status().session.agent_state).toBe("uncertain");
+    await f.runtime.setMode("human"); await tick; await f.runtime.stop();
+    const recorded = await events(f.evidence);
+    expect(recorded.some(e => e.kind === "agent_sample_next_completed")).toBe(false);
+    expect(recorded.find(e => e.kind === "stopped").payload.agent_state).toBe("uncertain");
+    expect(verify(f.evidence.directory)).toContain("pass");
   });
   it("cancelled offered Current preserves unacknowledged original payload and does not call it consumed", async () => {
     const f = await fixture("hang_after_query"); const tick = f.runtime.tick();

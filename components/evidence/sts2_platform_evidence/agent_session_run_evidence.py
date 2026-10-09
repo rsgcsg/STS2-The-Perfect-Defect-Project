@@ -55,6 +55,8 @@ _EVENT_FIELDS = {
         "event_count",
     },
     "native_acquisition_registered": {"witness"},
+    "agent_sample_next_requested": {"request_id", "input"},
+    "agent_sample_next_completed": {"request_id", "output"},
     "agent_sample_query_offered": {"acquisition_id", "request_id"},
     "agent_sample_consume_ack_offered": {"acknowledgement", "request_id"},
     "agent_sample_query_discarded": {"acquisition_id", "reason"},
@@ -1205,6 +1207,12 @@ class AgentSessionRunEvidenceVerifier:
         stored_samples: set[str] = set()
         sample_records: dict[str, tuple[dict[str, Any], str]] = {}
         sample_proposals: dict[str, dict[str, Any]] = {}
+        sample_proposal_requests: set[str] = set()
+        sample_catalogs: dict[str, dict[str, dict[str, Any]]] = {}
+        sample_next_ids: set[str] = set()
+        sample_pending_next: dict[str, Any] | None = None
+        sample_completed_next: dict[str, Any] | None = None
+        sample_known = True
         offered_samples: set[str] = set()
         discarded_samples: set[str] = set()
         ack_offers: set[str] = set()
@@ -1260,12 +1268,38 @@ class AgentSessionRunEvidenceVerifier:
                 _require(attested, "native_session_adapter_not_attested")
             if kind.startswith("agent_sample_"):
                 _require(agent["input"]["history_mode"] == "sampled_current", "native_session_sample_event_mode")
-            if kind == "agent_sample_query_offered":
+            if kind == "agent_sample_next_requested":
+                request = _text(payload["request_id"], maximum=256)
+                input_ = _object(payload["input"], {"continuity_token", "consumption_id", "state_version", "basis_acquisition_id", "received_cursor"})
+                _require(request.startswith("parent-") and request not in sample_next_ids
+                         and sample_pending_next is None and sample_completed_next is None and not sample_ended
+                         and input_["consumption_id"] == (None if last_report is None else last_report["consumption_id"])
+                         and input_["state_version"] == (0 if last_report is None else last_report["state_version"])
+                         and type(input_["state_version"]) is int
+                         and input_["basis_acquisition_id"] == (None if last_report is None else last_report["acquisition_id"])
+                         and input_["received_cursor"] == stream.received_cursor,
+                         "native_session_sample_next_request")
+                _text(input_["continuity_token"], maximum=256)
+                _require(last_report is None or input_["continuity_token"] == last_report["continuity_token"],
+                         "native_session_sample_next_continuity")
+                sample_next_ids.add(request); sample_pending_next = payload; sample_known = False
+            elif kind == "agent_sample_next_completed":
+                _require(sample_pending_next is not None and sample_completed_next is None
+                         and payload["request_id"] == sample_pending_next["request_id"]
+                         and all(payload[key] == sample_pending_next[key] for key in _CONTEXT)
+                         and not sample_ended, "native_session_sample_next_completion")
+                output = self._directive(payload["output"], last_report, witnesses)
+                _require(output["continuity_token"] == sample_pending_next["input"]["continuity_token"]
+                         and (last_report is None or last_report["consumption_id"] in ack_offers),
+                         "native_session_sample_next_ack")
+                sample_completed_next = payload
+            elif kind == "agent_sample_query_offered":
                 acquisition = _text(payload["acquisition_id"], maximum=256)
                 request = _text(payload["request_id"], maximum=256)
                 _require(acquisition in witnesses and request.startswith("child-")
                          and request not in child_requests and acquisition not in offered_samples
-                         and not sample_ended, "native_session_sample_offer")
+                         and sample_pending_next is not None and sample_completed_next is None and not sample_ended
+                         and all(payload[key] == sample_pending_next[key] for key in _CONTEXT), "native_session_sample_offer")
                 child_requests.add(request); offered_samples.add(acquisition)
             elif kind == "agent_sample_query_discarded":
                 acquisition = _text(payload["acquisition_id"], maximum=256)
@@ -1281,11 +1315,15 @@ class AgentSessionRunEvidenceVerifier:
                          "native_session_sample_not_offered")
                 disposition = payload["disposition"]
                 _require(disposition in {"query_offered", "consume_proposed"}, "native_session_sample_disposition")
-                pair, metadata = self._sample_files(directory, payload, agent, witnesses[acquisition])
+                pair, metadata, actions = self._sample_files(directory, payload, agent, witnesses[acquisition])
+                sample_catalogs[acquisition] = {action["action_id"]: action for action in actions}
                 if disposition == "consume_proposed":
-                    proposal = _object(payload["proposal"], {"request_id", "report"})
+                    proposal = _object(payload["proposal"], _CONTEXT | {"request_id", "report"})
                     request = _text(proposal["request_id"], maximum=256)
-                    _require(request.startswith("child-") and acquisition not in sample_proposals,
+                    _require(request.startswith("child-") and acquisition not in sample_proposals
+                             and request not in sample_proposal_requests and request not in child_requests
+                             and sample_pending_next is not None and sample_completed_next is None and not sample_ended
+                             and all(proposal[key] == sample_pending_next[key] for key in _CONTEXT),
                              "native_session_sample_proposal_request")
                     report = _object(proposal["report"], {"acquisition_id", "input_spec", "continuity_token",
                         "previous_consumption_id", "consumption_id", "state_version", "advanced"})
@@ -1293,7 +1331,7 @@ class AgentSessionRunEvidenceVerifier:
                              and report["continuity_token"] == metadata["continuity_token"], "native_session_sample_proposal_binding")
                     _nullable_text(report["previous_consumption_id"]); _text(report["consumption_id"], maximum=256)
                     _integer(report["state_version"]); _boolean(report["advanced"])
-                    sample_proposals[acquisition] = proposal
+                    sample_proposals[acquisition] = proposal; sample_proposal_requests.add(request)
                 else:
                     _require(payload["proposal"] is None, "native_session_sample_offer_without_proposal")
                 previous_sample = sample_records.get(acquisition)
@@ -1318,6 +1356,9 @@ class AgentSessionRunEvidenceVerifier:
                 acknowledgement = payload["acknowledgement"]
                 _require(request.startswith("child-") and request not in child_requests
                          and last_ack is not None and acknowledgement == last_ack
+                         and sample_pending_next is not None and sample_completed_next is None and not sample_ended
+                         and all(payload[key] == sample_pending_next[key] for key in _CONTEXT)
+                         and all(payload[key] == sample_proposals.get(acknowledgement["acquisition_id"], {}).get(key) for key in _CONTEXT)
                          and acknowledgement["consumption_id"] not in ack_offers
                          and sample_proposals.get(acknowledgement["acquisition_id"], {}).get("request_id") == request,
                          "native_session_sample_ack_offer")
@@ -1386,8 +1427,18 @@ class AgentSessionRunEvidenceVerifier:
             elif kind == "agent_directive":
                 output = self._directive(payload["output"], last_report, witnesses)
                 stream.watermark(output)
-                if agent["input"]["history_mode"] == "sampled_current" and last_report is not None:
-                    _require(last_report["consumption_id"] in ack_offers, "native_session_directive_without_sample_ack")
+                if agent["input"]["history_mode"] == "sampled_current":
+                    _require(sample_completed_next is not None and sample_pending_next is not None
+                             and sample_completed_next["output"] == output
+                             and all(payload[key] == sample_completed_next[key] for key in _CONTEXT),
+                             "native_session_directive_without_completed_next")
+                    if last_report is not None:
+                        _require(last_report["consumption_id"] in ack_offers, "native_session_directive_without_sample_ack")
+                    directive = output["directive"]
+                    if directive["type"] == "act" and directive["selection"]["kind"] == "handle":
+                        _require(directive["selection"]["action_id"] in sample_catalogs.get(directive["basis_acquisition_id"], {}),
+                                 "native_session_sample_directive_member")
+                    sample_pending_next = sample_completed_next = None; sample_known = True
                 last_act = output if output["directive"]["type"] == "act" else None
                 last_act_epoch = current_epoch if last_act is not None else None
             elif kind == "native_submission_requested":
@@ -1434,6 +1485,9 @@ class AgentSessionRunEvidenceVerifier:
                     ),
                     "native_session_submission_basis",
                 )
+                if agent["input"]["history_mode"] == "sampled_current":
+                    _require(payload["action_id"] in sample_catalogs.get(payload["basis_acquisition_id"], {}),
+                             "native_session_sample_submission_member")
                 submissions[request_id] = payload
                 outstanding.add(request_id)
                 last_act, last_act_epoch = None, None
@@ -1465,6 +1519,9 @@ class AgentSessionRunEvidenceVerifier:
                 )
                 assert attempt is not None
                 result = _result(result, attempt)
+                if agent["input"]["history_mode"] == "sampled_current" and result["action"] is not None:
+                    _require(result["action"] == sample_catalogs.get(attempt["basis_acquisition_id"], {}).get(attempt["action_id"]),
+                             "native_session_sample_result_member")
                 completed.add(result["request_id"])
                 outstanding.remove(result["request_id"])
                 tainted |= result["delivery"] in {"partially_delivered", "unknown"}
@@ -1508,7 +1565,11 @@ class AgentSessionRunEvidenceVerifier:
                             "native_session_pending_is_not_result",
                         )
                     else:
-                        result = _result(payload["result"], submissions[original["request_id"]])
+                        attempt = submissions[original["request_id"]]
+                        result = _result(payload["result"], attempt)
+                        if agent["input"]["history_mode"] == "sampled_current" and result["action"] is not None:
+                            _require(result["action"] == sample_catalogs.get(attempt["basis_acquisition_id"], {}).get(attempt["action_id"]),
+                                     "native_session_sample_result_member")
                         unknown = result["delivery"] in {
                             "partially_delivered",
                             "unknown",
@@ -1551,6 +1612,8 @@ class AgentSessionRunEvidenceVerifier:
                         payload["mode"] in {"human", "shadow", "one_step", "auto"},
                         "native_session_mode",
                     )
+                    if agent["input"]["history_mode"] == "sampled_current" and sample_ended:
+                        _require(payload["mode"] == "human", "native_session_sample_reentry")
                     mode = payload["mode"]
                 else:
                     mode = "human"
@@ -1563,6 +1626,9 @@ class AgentSessionRunEvidenceVerifier:
                         and payload["agent_state"] in {"known", "uncertain"},
                         "native_session_stop",
                     )
+                    if agent["input"]["history_mode"] == "sampled_current":
+                        _require(payload["agent_state"] != "known" or sample_known,
+                                 "native_session_sample_known_without_child_directive")
                     tainted |= pending is not None
                     tainted |= controller != "released"
             elif kind == "runtime_tainted":
@@ -1576,6 +1642,9 @@ class AgentSessionRunEvidenceVerifier:
                     payload["agent_state"] in {"known", "uncertain"},
                     "native_session_agent_state",
                 )
+                if agent["input"]["history_mode"] == "sampled_current":
+                    _require(payload["agent_state"] != "known" or sample_known,
+                             "native_session_sample_known_without_child_directive")
                 agent_uncertain = payload["agent_state"] == "uncertain"
                 stream.interrupted_batch()
             elif kind == "native_gap":
@@ -1638,7 +1707,7 @@ class AgentSessionRunEvidenceVerifier:
 
     @staticmethod
     def _sample_files(directory: Path, payload: dict[str, Any], agent: dict[str, Any],
-                      witness: dict[str, Any]) -> tuple[set[str], dict[str, Any]]:
+                      witness: dict[str, Any]) -> tuple[set[str], dict[str, Any], list[dict[str, Any]]]:
         metadata = _object(payload["metadata"], {"schema", "acquisition_id", "input_spec", "continuity_token",
                                                    "publication_index", "capture", "observation", "catalog"})
         _require(metadata["schema"] == "sts2.policy-runtime/agent-sample-input-1"
@@ -1686,7 +1755,7 @@ class AgentSessionRunEvidenceVerifier:
                  and catalog["digest"] == structural == body["catalog"]["digest"] == witness["catalog_digest"]
                  and type(catalog["count"]) is int and catalog["count"] == len(actions) == body["catalog"]["total_count"] == witness["catalog_count"],
                  "native_session_sample_native_binding")
-        return files, metadata
+        return files, metadata, actions
 
     @staticmethod
     def _attachment(
