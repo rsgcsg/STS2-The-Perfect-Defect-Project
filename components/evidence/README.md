@@ -149,6 +149,10 @@ Auto/epoch/known/no-pending/untainted accepted prefix. Notifications repeat the
 entire original result through unchanged readiness. An Act on the refused basis
 fails; only a new advanced ACK and matching completed Next retire the notification.
 These records do not prove private Teacher correction or numerical W contents.
+Readiness witnesses additionally constrain their recorded occurrence, revision
+and available catalog/owner metadata. Discarded queries do not retain full
+public input bytes, so complete normalized coherence remains Runtime's required
+check; this metadata validation is not a substitute for that guard.
 
 A verified opted-in value exposes a fresh `terminal_summary` dict copy; legacy
 values return `None`. Schema is `sts2.evidence/agent-session-terminal-summary-1`.
