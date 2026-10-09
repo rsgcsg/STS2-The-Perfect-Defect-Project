@@ -28,9 +28,11 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.instance_lock import instance_lock
+from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
+    checked_recipe_execution_policy,
     structured_recipe_is_scoped,
     structured_recipe_run_schema,
     structured_recipe_scope,
@@ -68,6 +70,45 @@ class ReadOnlyAttemptFence:
         self.started_clock = time.monotonic()
         self.reservation_number = 0
         self.channel: ChildChannel | None = None
+        self._admitted = False
+        self._run_binding: tuple[str, str] | None = None
+        self._awaiting_parent_run = False
+        initial = self.operation()
+        request = TrainingRequest.from_dict(initial["request"])
+        if (request.recipe_id != initial["recipe"] or request.source_id != initial["dataset_id"]
+                or initial.get("mode") not in {"start", "resume", "reconcile"}):
+            raise BoundaryError("structured_child", "attempt_request_binding_mismatch")
+        # Independent of later replaceable journal reads; absent is explicit.
+        self._policy_bytes = json_bytes(request.execution_policy)
+        self._recipe_id, self._source_id = request.recipe_id, request.source_id
+        self._mode = initial["mode"]
+        self._admitted = True
+        if self._mode == "start":
+            self.operation()
+        else:
+            self.bind_run(store.get_manifest(initial["run_id"]))
+
+    @property
+    def execution_policy(self) -> dict[str, Any] | None:
+        return cast(dict[str, Any] | None, decode_json(self._policy_bytes))
+
+    def bind_run(self, run: Any) -> None:
+        info = run.parameters.value()
+        policy = (checked_recipe_execution_policy(self._recipe_id, info["execution_policy"])
+                  if "execution_policy" in info else None)
+        training = self.store.get_manifest(run.parent("training_input"))
+        if (run.kind != "run"
+                or info.get("schema") != structured_recipe_run_schema(self._recipe_id)
+                or info.get("operation_id") != self.operation_id
+                or json_bytes(policy) != self._policy_bytes
+                or training.kind != "training_input" or training.producer != run.producer
+                or training.parent("source") != self._source_id):
+            raise BoundaryError("structured_child", "attempt_run_binding_mismatch")
+        if self._run_binding is not None:
+            raise BoundaryError("structured_child", "attempt_run_already_bound")
+        self._run_binding = run.artifact_id, training.artifact_id
+        self._awaiting_parent_run = self._mode == "start"
+        self.operation()
 
     def operation(self) -> dict[str, Any]:
         if self.path.is_symlink():
@@ -87,14 +128,37 @@ class ReadOnlyAttemptFence:
             raise BoundaryError("structured_child", "attempt_fence_lost")
         if value.get("_owner", [None])[-1] != str(self.store.blobs.root.resolve()):
             raise BoundaryError("structured_child", "store_owner_binding_mismatch")
+        if self._admitted:
+            request = TrainingRequest.from_dict(value["request"])
+            if (request.recipe_id != self._recipe_id or request.source_id != self._source_id
+                    or value.get("recipe") != self._recipe_id
+                    or value.get("dataset_id") != self._source_id or value.get("mode") != self._mode
+                    or json_bytes(request.execution_policy) != self._policy_bytes):
+                raise BoundaryError("structured_child", "attempt_execution_selection_mismatch")
+            references = value.get("run_id"), value.get("input_id")
+            missing = "run_id" not in value and "input_id" not in value
+            if self._run_binding is None:
+                valid = missing
+            else:
+                valid = (references == self._run_binding
+                         or self._awaiting_parent_run and missing)
+            if not valid:
+                raise BoundaryError("structured_child", "attempt_run_binding_mismatch")
         return value
 
     def assert_current(self, run_id: str | None, operation_id: str, attempt_id: str) -> None:
         if operation_id != self.operation_id or attempt_id != self.attempt_id:
             raise BoundaryError("structured_child", "attempt_fence_lost")
         value = self.operation()
-        if run_id is not None and value.get("run_id") != run_id:
+        if run_id is not None and (
+                self._run_binding is None or self._run_binding[0] != run_id
+                or value.get("run_id") != run_id or self._awaiting_parent_run):
             raise BoundaryError("structured_child", "attempt_run_binding_mismatch")
+
+    def assert_publication_current(self) -> None:
+        self.assert_current(None, self.operation_id, self.attempt_id)
+        if self._awaiting_parent_run:
+            raise BoundaryError("structured_child", "prepared_run_ack_required")
 
     def authorize_resume(self, run_id: str, attempt_id: str, checkpoint_id: str) -> None:
         self.assert_current(run_id, self.operation_id, attempt_id)
@@ -116,7 +180,7 @@ class ReadOnlyAttemptFence:
         return cast(Literal["continue", "pause", "cancel"], action)
 
     def reserve_artifact(self, role: str, size: int) -> None:
-        self.assert_current(None, self.operation_id, self.attempt_id)
+        self.assert_publication_current()
         if self.channel is None:
             raise BoundaryError("structured_child", "parent_channel_required")
         self.reservation_number += 1
@@ -127,16 +191,21 @@ class ReadOnlyAttemptFence:
         while True:
             value = self.operation()
             if value.get("artifact_reservation") == expected:
+                self.assert_publication_current()
                 return
             if time.monotonic() >= deadline:
                 raise BoundaryError("structured_child", "artifact_reservation_ack_timeout")
             time.sleep(0.005)
 
     def wait_for_parent_run(self, run_id: str, input_id: str) -> None:
+        if self._run_binding != (run_id, input_id) or not self._awaiting_parent_run:
+            raise BoundaryError("structured_child", "attempt_run_binding_mismatch")
         deadline = time.monotonic()+5.0
         while True:
             value = self.operation()
             if value.get("run_id") == run_id and value.get("input_id") == input_id:
+                self._awaiting_parent_run = False
+                self.operation()
                 return
             if time.monotonic() >= deadline:
                 raise BoundaryError("structured_child", "prepared_run_ack_timeout")
@@ -151,7 +220,7 @@ class FencedStore:
         return getattr(self.store, name)
 
     def put_payload(self, *args: Any, **kwargs: Any) -> Any:
-        self.fence.assert_current(None, self.fence.operation_id, self.fence.attempt_id)
+        self.fence.assert_publication_current()
         stream = args[1] if len(args) > 1 else kwargs["stream"]
         if not stream.seekable():
             raise BoundaryError("structured_child", "bounded_seekable_payload_required")
@@ -160,12 +229,14 @@ class FencedStore:
         size = stream.tell()-start
         stream.seek(start)
         self.fence.reserve_artifact("payload", size)
+        self.fence.assert_publication_current()
         return self.store.put_payload(*args, **kwargs)
 
     def publish(self, *args: Any, **kwargs: Any) -> Any:
-        self.fence.assert_current(None, self.fence.operation_id, self.fence.attempt_id)
+        self.fence.assert_publication_current()
         manifest = args[0] if args else kwargs["manifest"]
         self.fence.reserve_artifact("manifest", len(manifest.to_bytes()))
+        self.fence.assert_publication_current()
         return self.store.publish(*args, **kwargs)
 
 
@@ -178,6 +249,7 @@ class FencedSlots:
 
     def put_if_absent(self, key: str, value: bytes) -> Any:
         self.fence.reserve_artifact("slot", len(value))
+        self.fence.assert_publication_current()
         return self.slots.put_if_absent(key, value)
 
 
@@ -288,8 +360,10 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
                 if operation["recipe"] in ORDERED_RECIPES
                 else None
             ),
+            execution_policy=fence.execution_policy,
         )
         input_id = run.parent("training_input")
+        fence.bind_run(run)
         channel.emit("prepared", run_id=run.artifact_id, input_id=input_id)
         fence.wait_for_parent_run(run.artifact_id, input_id)
     else:

@@ -17,6 +17,7 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
 from test_native_agent_sampled_source import ROOT, SHARED, publish
 from test_native_agent_sampled_source import original as original
 from test_protocol_source import setup_store
@@ -237,3 +238,142 @@ def test_actual_common_private_child_use_export_registry_and_ordinary_stdio(
             receipt["package_manifest_sha256"])
     finally:
         models.close()
+
+
+def test_explicit_policy_first_model_private_child_publication_pause_resume_reconcile(
+    tmp_path, original, monkeypatch,
+):
+    from test_training_service_contracts import child_script
+
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import BoundaryError, FrozenObject
+    from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+    store, owner = setup_store(tmp_path)
+    _raw, _admission, partition = publish(store, original)
+    owner.reserve_verified_native_agent_sampled_source(store, partition.manifest.artifact_id)
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    service = LocalTrainingService(config)
+    policy = owned_current_known_stale_policy()
+    paused_boundary = []
+
+    def pause_at_publication(raw, callback):
+        callback(raw)
+        message = json.loads(raw)
+        if message["kind"] != "event":
+            return
+        event = store.get_manifest(message["details"]["event_id"])
+        info = event.parameters.value()
+        if (info["kind"] == "checkpoint" and info["details"]["phase"] == "publication"
+                and not paused_boundary):
+            paused_boundary.append(info["details"]["checkpoint_id"])
+            service.pause(message["operation_id"], message["attempt_id"])
+
+    # Synchronize only the real publication/control boundary. Numerical engine,
+    # typed Source/use, parent ACK, Store/Reporter and private lifecycle stay real.
+    child_script(monkeypatch, """
+import time
+original_emit = child.ChildReporter.emit
+def emit(self, event):
+    identity = original_emit(self, event)
+    info = event.parameters.value()
+    if (info['kind'] == 'checkpoint' and info['details']['phase'] == 'publication'
+            and self.fence.operation()['mode'] == 'start'):
+        deadline = time.monotonic()+5
+        while self.fence.operation()['requested_action'] == 'continue':
+            if time.monotonic() >= deadline:
+                raise AssertionError('publication pause synchronization timeout')
+            time.sleep(0.005)
+    return identity
+child.ChildReporter.emit = emit
+""", on_line=pause_at_publication)
+    request = TrainingRequest("1" * 32, RECIPE, partition.manifest.artifact_id,
+                              {"epochs": 1, "max_updates": 1},
+                              limits={"wall_seconds": 60}, execution_policy=policy)
+    service.start(request)
+
+    def settle():
+        assert service._thread is not None
+        service._thread.join(timeout=65)
+        assert not service._thread.is_alive()
+        return service.status()["operation"]
+
+    paused = settle()
+    assert paused["status"] == "paused" and paused_boundary, paused
+    checkpoint = store.get_manifest(paused["checkpoint_id"])
+    assert checkpoint.parameters.value()["phase"] == "publication"
+    assert checkpoint.parameters.value()["optimizer_updates"] == 1
+    run = store.get_manifest(paused["run_id"])
+    info = run.parameters.value()
+    assert info["execution_policy"] == paused["execution_policy"] == policy
+    assert "execution_policy" not in info["config"]
+    assert "execution_policy" not in info["execution_identity"]
+    assert not any(store.get_manifest(identity).kind == "model"
+                   for identity in store.manifest_ids())
+    service.resume(paused["operation_id"], paused["attempt_id"], paused["checkpoint_id"],
+                   "2" * 32, paused["limits"])
+    completed = settle()
+    assert completed["status"] == "completed", completed
+    assert completed["run_id"] == paused["run_id"]
+    assert completed["execution_policy"] == policy
+    assert completed["progress"]["completed"] == 1
+    model = store.get_manifest(completed["model_id"])
+    assert model.parameters.value()["agent_spec"]["version"] == "1.2.0"
+    assert model.parameters.value()["agent_spec"]["execution_policy"] == policy
+    result = store.get_manifest(completed["result_id"])
+    report = json.loads(b"".join(store.read_payload(result.payload("report"))))
+    assert report["execution_policy"] == policy
+    assert report["metrics"]["optimizer_updates"] == 1
+    before = set(store.manifest_ids())
+    service.reconcile(completed["operation_id"], completed["attempt_id"])
+    reconciled = settle()
+    assert reconciled["status"] == "completed", reconciled
+    assert reconciled["result_id"] == completed["result_id"]
+    assert reconciled["model_id"] == completed["model_id"]
+    assert reconciled["execution_policy"] == policy
+    assert set(store.manifest_ids()) == before
+
+    # Preserve original immutable results. New tampered fixtures use the exact
+    # same weights/checkpoint but a different deployment policy declaration.
+    from stpd.canonical import semantic_hash
+    from stpd.models.structured_training import StructuredTrainingConfig
+    from stpd.native_graph_spec import NativeGraphControl
+    from stpd.native_sampled_carry_spec import sampled_agent_spec
+    from stpd.policy.native_structured_export import (
+        export_native_model,
+        load_native_package,
+        native_model_parameters,
+    )
+    from stpd.workers.structured_execution import _completed
+
+    folder = tmp_path / "policy-package"
+    export_native_model(store, model.artifact_id, folder)
+    package, _model = load_native_package(folder)
+    assert package["agent_spec"]["execution_policy"] == policy
+    altered_policy = {**policy, "max_known_stale_rejections": 7}
+    altered = copy.deepcopy(package)
+    altered["agent_spec"] = sampled_agent_spec(
+        NativeGraphControl(), execution_policy=altered_policy)
+    altered["model_id"] = semantic_hash(
+        {key: value for key, value in altered.items() if key != "model_id"})
+    manifest = store.put_bytes("package_manifest", json_bytes(altered), "application/json")
+    forged_model = Manifest("model", model.producer, model.parents,
+                            (manifest, model.payload("weights")),
+                            FrozenObject.of(native_model_parameters(altered, report["attempt"])))
+    store.publish(forged_model)
+    forged_result = Manifest(
+        "run_result", result.producer,
+        tuple(Parent(parent.role, forged_model.artifact_id if parent.role == "model"
+                     else parent.artifact_id) for parent in result.parents),
+        result.payloads, result.parameters,
+    )
+    training = store.get_manifest(run.parent("training_input"))
+    numeric_config = StructuredTrainingConfig(**info["config"])
+    with pytest.raises(BoundaryError, match="package_execution_policy_mismatch"):
+        _completed(store, forged_result, run, training, partition.dataset, numeric_config)
+    altered_report = {**report, "execution_policy": altered_policy}
+    report_payload = store.put_bytes("report", json_bytes(altered_report), "application/json")
+    forged_report = Manifest("run_result", result.producer, result.parents,
+                             (report_payload,), result.parameters)
+    with pytest.raises(BoundaryError, match="completed_report_binding_mismatch"):
+        _completed(store, forged_report, run, training, partition.dataset, numeric_config)

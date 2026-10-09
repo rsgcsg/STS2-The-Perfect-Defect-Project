@@ -301,7 +301,8 @@ class LocalTrainingService:
             request = TrainingRequest(request.intent_id, request.recipe_id, request.source_id,
                                       canonical, request.placement_id,
                                       validate_limits(request.limits),
-                                      request.after_completed_operation_id)
+                                      request.after_completed_operation_id,
+                                      request.execution_policy)
             if request.recipe_id in STRUCTURED_RECIPES:
                 if not request.limits:
                     raise BoundaryError("local_training", "wall_limit_required")
@@ -550,6 +551,9 @@ class LocalTrainingService:
                 operation[key] = value[key]
         if value.get("error_code"):
             operation["error"] = {"code": value["error_code"], "automatic_retry": False}
+        if "execution_policy" in value["request"]:
+            operation["execution_policy"] = TrainingRequest.from_dict(
+                value["request"]).execution_policy
         if "previous_completed" in value:
             operation["previous_completed"] = value["previous_completed"]
         return {"schema": SNAPSHOT_SCHEMA, "availability": "ready", "operation": operation}
@@ -801,6 +805,9 @@ class LocalTrainingService:
                     # Acquiring the same owner lock proves no prior writer retains
                     # publication authority. Keep its outcome unknown until verified.
                     value["writer_terminal"] = True
+                from spireagent.workbench.recipes.structured import verify_run_execution_policy
+
+                verify_run_execution_policy(store.get_manifest(value["run_id"]), value)
                 if "selected_result" not in value:
                     value["selected_result"] = value["status"] != "cancelled"
                 prior = {key: value.get(key) for key in ("attempt_id", "intent_id", "status",
@@ -890,6 +897,9 @@ class LocalTrainingService:
                     and run.producer != Producer.decode(operation["attempt_producer"])):
                 raise BoundaryError("local_training", "prepared_run_producer_mismatch")
             training = store.get_manifest(run.parent("training_input"))
+            from spireagent.workbench.recipes.structured import verify_run_execution_policy
+
+            verify_run_execution_policy(run, operation)
             if (training.kind != "training_input" or training.producer != run.producer
                     or training.parent("source") != operation["dataset_id"]):
                 raise BoundaryError("local_training", "prepared_run_binding_mismatch")

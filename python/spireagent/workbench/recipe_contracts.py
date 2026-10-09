@@ -38,6 +38,14 @@ class TrainingRequest:
     placement_id: str = LOCAL_PLACEMENT
     limits: dict[str, int] = field(default_factory=lambda: {"wall_seconds": 600})
     after_completed_operation_id: str | None = None
+    execution_policy: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.execution_policy is not None:
+            from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
+
+            object.__setattr__(self, "execution_policy", checked_recipe_execution_policy(
+                self.recipe_id, self.execution_policy))
 
     def validate(self) -> None:
         digest(self.intent_id, "local_training.intent_id", length=32)
@@ -47,6 +55,10 @@ class TrainingRequest:
         if self.placement_id != LOCAL_PLACEMENT:
             raise BoundaryError("local_training", "unsupported_placement")
         validate_limits(self.limits)
+        if self.execution_policy is not None:
+            from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
+
+            checked_recipe_execution_policy(self.recipe_id, self.execution_policy)
         if self.after_completed_operation_id is not None:
             digest(self.after_completed_operation_id,
                    "local_training.after_completed_operation_id", length=32)
@@ -57,15 +69,24 @@ class TrainingRequest:
                 "recipe_id": self.recipe_id, "source_id": self.source_id,
                 "config": dict(self.config), "placement_id": self.placement_id,
                 "limits": dict(self.limits),
-                "after_completed_operation_id": self.after_completed_operation_id}
+                "after_completed_operation_id": self.after_completed_operation_id,
+                **({"execution_policy": dict(self.execution_policy)}
+                   if self.execution_policy is not None else {})}
 
     @classmethod
     def from_dict(cls, value: object) -> TrainingRequest:
-        if not isinstance(value, dict) or set(value) != {
+        required = {
             "schema", "intent_id", "recipe_id", "source_id", "config", "placement_id",
             "limits", "after_completed_operation_id",
-        } or value["schema"] != REQUEST_SCHEMA:
+        }
+        if (not isinstance(value, dict)
+                or set(value) not in (required, required | {"execution_policy"})
+                or value["schema"] != REQUEST_SCHEMA):
             raise BoundaryError("local_training", "invalid_training_request")
+        if "execution_policy" in value:
+            from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
+
+            checked_recipe_execution_policy(value["recipe_id"], value["execution_policy"])
         result = cls(**{key: item for key, item in value.items() if key != "schema"})
         result.validate()
         return result

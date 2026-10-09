@@ -17,11 +17,13 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
+from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
+    checked_recipe_execution_policy,
     structured_recipe_is_scoped,
     structured_recipe_run_schema,
     structured_recipe_scope,
@@ -30,9 +32,21 @@ from spireagent.workbench.trusted_recipes import (
 _private_child = private_child
 
 
+def verify_run_execution_policy(run: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
+    """The admitted request and immutable Run select the same package policy."""
+    request = TrainingRequest.from_dict(operation["request"])
+    info = run.parameters.value()
+    policy = (checked_recipe_execution_policy(operation["recipe"], info["execution_policy"])
+              if "execution_policy" in info else None)
+    if request.recipe_id != operation["recipe"] or request.execution_policy != policy:
+        raise BoundaryError("local_training", "training_execution_policy_mismatch")
+    return policy
+
+
 def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_id: Any) -> None:
     checkpoint = store.get_manifest(checkpoint_id)
     run = store.get_manifest(operation["run_id"])
+    verify_run_execution_policy(run, operation)
     from stpd.structured_code_scope import checkpoint_schema, run_code_scope
 
     info = checkpoint.parameters.value()
@@ -178,6 +192,9 @@ class StructuredRecipeAdapter:
     def execute(self, service: Any, path: Any, identity: str, owner: Any,
                 store: Any, mark_started: Any) -> None:
         operation = service._read(path, owner.identity)
+        expected_policy = TrainingRequest.from_dict(operation["request"]).execution_policy
+        if operation["mode"] != "start":
+            verify_run_execution_policy(store.get_manifest(operation["run_id"]), operation)
         dataset = self.preflight(store, owner, operation["dataset_id"])
         runs = {run.run_id for run in dataset.runs}
         source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
@@ -212,6 +229,8 @@ class StructuredRecipeAdapter:
                     or value.get("status") != "pending" or value.get("writer_terminal")
                     or service._active_attempt != attempt_id):
                 raise BoundaryError("local_training", "attempt_fence_lost")
+            if TrainingRequest.from_dict(value["request"]).execution_policy != expected_policy:
+                raise BoundaryError("local_training", "training_execution_policy_mismatch")
             return value
 
         with service._lock:
@@ -265,6 +284,7 @@ class StructuredRecipeAdapter:
                     run_id = digest(details["run_id"], "local_training.run_id")
                     input_id = digest(details["input_id"], "local_training.input_id")
                     run, training = store.get_manifest(run_id), store.get_manifest(input_id)
+                    verify_run_execution_policy(run, recorded)
                     if (recorded["mode"] != "start" or recorded.get("run_id")
                             or run.kind != "run" or run.producer != attempt_producer
                             or run.parameters.value().get("schema") != expected_run_schema
