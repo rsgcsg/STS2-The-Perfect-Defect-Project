@@ -44,9 +44,27 @@ reliable original pre-capture and advances on it under the same native rule.
 This is a reexpression/pretraining view with its own ProjectionSpec, TargetSpec,
 recipe and qualification. It has a different acquisition history from the
 deployed Agent and cannot be pooled with default-view evaluation denominators.
-Both presets use the same numerical engine and full-reference InputSpec.
+Both historical presets use the same numerical engine and full-reference InputSpec.
 
-New Source3 packages alone declare AgentSpec 1.2 and the explicit
+The explicit `decision_sample_carry` view uses the shared
+`native_sampled_carry_spec.py` InputSpec and the fixed
+`source3-native-m2-k1d96-carry-N-sampled-v1` recipe. It consumes independently
+complete original input pre-captures and their complete C in verified native
+input order. Publications remain in the original exposure/accounting index;
+they do not become numerical samples. Every eligible changed input basis carries
+W, including reliable browse/Inspect/Return context without N. Consecutive
+unchanged NativeUnits and nonterminal empty-C reads are explicitly indexed
+readiness exclusions. A complete original ready-summary input can be the final
+unlabelled sample; a missing terminal input is never manufactured from a timer,
+publication, or recording Close.
+
+This view declares a Source3 reexpression. Its features, complete-C binding,
+NativeUnit law, carry recurrence, eligibility and segment resets match the shared
+sampled contract. It does not prove teacher attention or actual Agent acquisition,
+proposal, ACK or complete deployment history. Those claims need the Runtime's
+original offered/proposed/acknowledged sample payload evidence.
+
+The historical Source3 packages declare AgentSpec 1.2 and the explicit
 `native-standard-run-ready-summary` TaskSpec. A qualified ready terminal summary
 is consumed as public context but its recorded menu-return action receives no N:
 the delivered Agent completes that task at the acknowledged summary. Original C
@@ -73,8 +91,8 @@ prefix duplication; the selected view controls which validated exposures become
 model steps. The existing occurrence/revision/coherence validator remains
 mandatory; this adapter never rewrites revisions or backfills from Current.
 
-The versioned conservative admission retains the complete recorded prefix of an
-original attachment epoch. A missing/incomplete publication or input basis,
+The versioned conservative admission for the two historical views retains the
+complete recorded prefix of an original attachment epoch. A missing/incomplete publication or input basis,
 unproven basis order, or recording pause excludes that event and the remaining
 epoch. A new original attachment epoch starts a new explicit W reset. An actor
 change alone supplies no native reset proof. Omitted rows and boundaries remain
@@ -91,12 +109,36 @@ declared origins. Mixed-origin raw recordings remain intact and context is not
 relabelled Human or Agent. Source kind never grants permission or
 machine proof of Human origin. Legacy recordings cannot be backdated into Source3.
 
-Later reliable spans after a prefix gap would need a separately versioned
-context-truncated/W0 representation with an explicit research assumption. They
-would retain the same original run, exposure and split relationships. Assumed,
+The new sampled view admits independently valid later input spans with explicit
+W0 segment cuts. Missing/unproven input bases, input-order barriers, recording
+pause, actor handoff, environment changes and unknown/partial delivery use the
+shared finite reset vocabulary. Reliable pre-input context from an uncertain
+delivery may survive unlabelled; the uncertain continuation never carries W into
+the next span. Actor/outcome/boundary semantics are processed even on a duplicate
+readiness input, so deduplication cannot hide a cut. Missing publication payloads
+alone do not cut independently proved inputs; failed raw verification or original
+ordinal/accounting identity always rejects the bundle before projection.
+
+Derived segment records use the closed `stpd/source3-derived-sample-segment-v1`
+subtype inside the existing run identity, with original raw/content/epoch/first
+input/cut/capture and ProjectionSpec/InputSpec pins. They preserve every original
+cut cause. `evidence.segment_id` still names the original actor segment. Multiple
+explicit resets occur inside one original run; they do not fabricate native games,
+Source epochs or separate train/test units. The original full P+I index and related
+run/timeline/runtime keys remain available to the existing use/split/Gold owner.
+
+Assumed,
 inferred, teacher-derived or synthetic targets likewise need a new TargetSpec
 that records the method, confidence and limits. This implementation does not
 relax exact delivered N or implement those weak-target extensions.
+
+The sampled package selects the sole shared sampled AgentSpec and non-restorable
+`stpd/native-sampled-carry-state-v1` label. The numeric feature projection, graph
+and safe weight tensor format remain unchanged. New acquisition/package/input
+identities do not authorize loading an old W or claiming checkpoint continuation.
+One existing encoder/scorer/trainer/exporter remains the numerical owner; the
+initial sampled recipe admits K1/D96 carry only. Historical default-call view and
+recipe identities stay fixed; product default selection is explicit.
 
 ## Lineage, use and evaluation
 
@@ -133,7 +175,8 @@ the original target cohort; input-basis mismatches, task masks, unlabelled and
 excluded counts remain separate. Frozen-model N evaluation uses eligible unique
 choices as its loss denominator. A whole-game recorded-capture
 denominator additionally requires original new-launch and terminal boundaries and
-an uninterrupted admitted epoch. That is recorded coverage, not native gameplay,
+an uninterrupted admitted epoch in a historical full-reference view. Sampled
+segments do not claim this whole-game recorded-capture qualification. That is recorded coverage, not native gameplay,
 Human, Commit/successor, victory, policy quality or G2/V1 qualification. A larger
 cohort and a natural whole-game evaluation remain separate actual execution gates.
 

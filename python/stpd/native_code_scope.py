@@ -38,6 +38,7 @@ PATHS = tuple(
         | {
             "stpd/native_code_scope.py",
             "stpd/ordered_source_spec.py",
+            "stpd/native_sampled_carry_spec.py",
             "stpd/fullrun/native_structured_inputs.py",
             "stpd/fullrun/native_structured_sequences.py",
             "stpd/models/native_structured_scorer.py",

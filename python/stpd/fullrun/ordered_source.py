@@ -30,6 +30,7 @@ from spireagent.storage.archives import MAX_BYTES, _extract, archive_bundle
 from spireagent.storage.store import ArtifactStore
 
 from ..canonical import semantic_hash
+from ..native_sampled_carry_spec import SCOPE, checked_reset_reason, sample_eligible
 from ..ordered_source_spec import (
     ADMISSION_SCHEMA,
     COHORTS,
@@ -38,13 +39,14 @@ from ..ordered_source_spec import (
     PARTITION_SCHEMA,
     PRETRAIN_VIEW,
     RAW_SCHEMA,
+    SAMPLED_VIEW,
     SOURCE_SCHEMA,
     checked_view,
+    view_input_spec,
     view_qualification,
     view_specs,
 )
 from ..policy.native_task import observe_ready_summary
-from .native_structured_inputs import INPUT_SPEC
 from .native_structured_sequences import NativeUnit, native_advance, qualify_native
 from .structured_sequences import (
     MAX_RUNS,
@@ -81,6 +83,7 @@ PROJECTION_FILES = (
     "stpd/linear_q.py",
     "stpd/representation.py",
     "stpd/ordered_source_spec.py",
+    "stpd/native_sampled_carry_spec.py",
     "stpd/native_graph_spec.py",
     "stpd/fullrun/__init__.py",
     "stpd/fullrun/native_structured_inputs.py",
@@ -153,7 +156,7 @@ def verifier_identity(root: Path = PROJECTION_ROOT) -> dict[str, Any]:
         "projection_code_sha256": semantic_hash(projection),
         "supported_view_specs": [{"projection_spec": view_specs(view)[0],
                                   "target_spec": view_specs(view)[1]}
-                                 for view in (DEFAULT_VIEW, PRETRAIN_VIEW)],
+                                 for view in (DEFAULT_VIEW, PRETRAIN_VIEW, SAMPLED_VIEW)],
     }
 
 
@@ -227,6 +230,11 @@ def _project_epoch(
     cohort: str,
     view: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]], int]:
+    if view == SAMPLED_VIEW:
+        return _project_sampled_epoch(
+            bundle, epoch, raw_id, original_publications, original_inputs,
+            original_boundaries, cohort,
+        )
     index: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
     eligible = 0
@@ -451,6 +459,232 @@ def _project_epoch(
     return result, index, exclusions, eligible
 
 
+SAMPLED_RUN_SCHEMA = "stpd/source3-sampled-run-view-v1"
+SAMPLE_SEGMENT_SCHEMA = "stpd/source3-derived-sample-segment-v1"
+SAMPLED_RUN_FIELDS = {
+    "schema", "raw_id", "bundle_content_id", "epoch", "related_keys",
+    "source_declarations", "boundaries", "capture_history",
+    "whole_game_recorded_capture_eligible", "prefix_exclusion", "sample_segments", "cuts",
+}
+SAMPLE_CUT_FIELDS = {"reason", "stream", "sequence", "original"}
+SAMPLE_SEGMENT_FIELDS = {
+    "schema", "raw_id", "bundle_content_id", "epoch_id", "first_input_id",
+    "first_input_prefix_ordinal", "first_publication_index", "first_capture_sha256",
+    "reset_reason", "projection_spec", "input_spec", "cuts", "id",
+}
+
+
+def _sample_segment(evidence: dict[str, Any], reason: str,
+                    cuts: list[dict[str, Any]]) -> dict[str, Any]:
+    body = {
+        "schema": SAMPLE_SEGMENT_SCHEMA,
+        "raw_id": evidence["raw_id"], "bundle_content_id": evidence["bundle_content_id"],
+        "epoch_id": evidence["epoch_id"], "first_input_id": evidence["input_id"],
+        "first_input_prefix_ordinal": evidence["input_prefix_ordinal"],
+        "first_publication_index": evidence["publication_index"],
+        "first_capture_sha256": evidence["capture"]["sha256"],
+        "reset_reason": checked_reset_reason(reason),
+        "projection_spec": view_specs(SAMPLED_VIEW)[0],
+        "input_spec": view_input_spec(SAMPLED_VIEW), "cuts": cuts,
+    }
+    return {**body, "id": semantic_hash(body)}
+
+
+def _project_sampled_epoch(
+    bundle: Any, epoch: Mapping[str, Any], raw_id: str,
+    original_publications: list[Mapping[str, Any]],
+    original_inputs: list[Mapping[str, Any]],
+    original_boundaries: list[Mapping[str, Any]], cohort: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Declared input-basis reexpression; raw verification precedes this adapter.
+
+    Original publications remain in the exposure/use index. Only independently
+    complete changed decision bases enter this new numerical view.
+    """
+    run_id, group, related = _run_identity(bundle, epoch)
+    epoch_id = epoch["epoch_id"]
+    declarations = {row["segment_id"]: row["declaration"] for row in bundle.segments}
+    index: list[dict[str, Any]] = []
+    exclusions: list[dict[str, Any]] = []
+    steps: list[dict[str, Any]] = []
+    segments: list[dict[str, Any]] = []
+    cuts: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    previous: NativeUnit | None = None
+    actor: str | None = None
+    prior_environment: Any = None
+    prior_ordinal = int(epoch.get("after_input_ordinal", "0"))
+    eligible = 0
+    initial_reason = "context_truncated_start" if prior_ordinal else "sample_segment_start"
+
+    def cut(reason: str, row: Mapping[str, Any], stream: str) -> None:
+        nonlocal previous
+        record = {"reason": checked_reset_reason(reason), "stream": stream,
+                  "sequence": row["sequence"], "original": _plain(row)}
+        cuts.append(record)
+        pending.append(record)
+        previous = None
+
+    ordered = sorted(original_inputs, key=lambda row: (
+        int(row["pre_position"]["publication_index"]), int(row["input_prefix_ordinal"])))
+    fences = sorted(original_boundaries, key=lambda row: (
+        int(row["position"]["publication_index"]), int(row["after_input_ordinal"]),
+        row["sequence"]))
+    fence_offset = 0
+
+    def fence(row: Mapping[str, Any]) -> None:
+        if row["kind"] == "pause" or row.get("paused_intervals"):
+            cut("recording_pause", row, "source-boundaries.jsonl")
+        elif row["kind"] in {"epoch_transition", "launch", "terminal"} and steps:
+            cut("environment_boundary", row, "source-boundaries.jsonl")
+
+    # The accounting index keeps all original records and their unchanged IDs.
+    records: list[tuple[Mapping[str, Any], bool]] = [(r, False) for r in original_publications]
+    records.extend((r, True) for r in ordered)
+    records.sort(key=lambda pair: (
+        int(pair[0]["pre_position" if pair[1] else "position"]["publication_index"]),
+        int(pair[0]["input_prefix_ordinal"]) if pair[1] else -1))
+    for row, is_input in records:
+        stream = "native-input-witnesses.jsonl" if is_input else "public-observations.jsonl"
+        capture = row["pre_capture"] if is_input else row["capture"]
+        catalog = row["catalog"]
+        point = row["pre_position"] if is_input else row["position"]
+        evidence = {
+            "raw_id": raw_id, "bundle_content_id": bundle.content_id,
+            "original_run_id": run_id, "epoch_id": epoch_id,
+            "segment_id": row["segment_id"],
+            "source_declaration": _plain(declarations[row["segment_id"]]),
+            "publication_index": point["publication_index"],
+            "input_prefix_ordinal": row["input_prefix_ordinal"] if is_input else None,
+            "stream": stream, "stream_sequence": row["sequence"],
+            "capture": _plain(capture), "catalog": _plain(catalog),
+            "input_id": row["input_id"] if is_input else None,
+        }
+        reason = None
+        label = None
+        exposed = False
+        target = "publication_not_decision_sample"
+        if is_input:
+            ordinal = int(row["input_prefix_ordinal"])
+            current_point = (int(point["publication_index"]), ordinal)
+            while fence_offset < len(fences) and (
+                int(fences[fence_offset]["position"]["publication_index"]),
+                int(fences[fence_offset]["after_input_ordinal"]),
+            ) < current_point:
+                fence(fences[fence_offset])
+                fence_offset += 1
+            if actor is not None and actor != row["segment_id"]:
+                cut("actor_handoff", row, stream)
+            actor = row["segment_id"]
+            if ordinal != prior_ordinal + 1:
+                # Public raw verification rejects absent ordinals globally. This
+                # guard also prevents an internal caller hiding an order barrier.
+                cut("input_order_unproven", row, stream)
+            prior_ordinal = ordinal
+            if row["basis_order"] != {"status": "native_prefix_frozen", "reason_code": None}:
+                reason = "input_order_unproven"
+            elif capture is None or catalog is None:
+                reason = "input_basis_missing"
+            else:
+                observation = decode_json(_blob(bundle, capture, "sha256"))
+                actions = decode_json(_blob(bundle, catalog, "payload_sha256"))
+                completeness = object_fields(
+                    observation["completeness"],
+                    {"status", "included", "missing", "full_reference_complete"},
+                    "source3.sampled_basis_completeness",
+                )
+                if (completeness != {
+                    "status": "complete", "included": list(SCOPE), "missing": [],
+                    "full_reference_complete": True,
+                } or completeness["full_reference_complete"] is not True):
+                    reason = "input_basis_missing"
+            if reason is not None:
+                cut(reason, row, stream)
+                target = reason
+            else:
+                frame, unit = qualify_native(observation, actions)
+                environment = (observation["session"], unit.occurrence[0])
+                if prior_environment is not None and environment != prior_environment:
+                    cut("environment_boundary", row, stream)
+                prior_environment = environment
+                advance = native_advance(previous, unit)
+                if not sample_eligible(observation, actions):
+                    reason = "empty_C_readiness_not_sample"
+                elif not advance:
+                    reason = "unchanged_current_readiness_not_sample"
+                else:
+                    exposed = True
+                    terminal = observe_ready_summary(observation).agent_task_complete
+                    outcome = row["outcome"]
+                    target = ("ready_summary_task_complete_no_N" if terminal else
+                              "other_original_declared_cohort" if
+                              declarations[row["segment_id"]]["source_kind"] != cohort else
+                              "mapping_or_delivery_not_exact_delivered")
+                    if (not terminal and declarations[row["segment_id"]]["source_kind"] == cohort
+                            and outcome["mapping_status"] == "exact"
+                            and outcome["delivery"] == "delivered"):
+                        selected = _plain(outcome["selected_action"])
+                        if outcome["match_count"] != 1 or sum(a == selected for a in actions) != 1:
+                            _fail("N_full_original_action_binding")
+                        label = selected["action_id"]
+                        eligible += 1
+                        target = "eligible_exact_delivered_N"
+                    reset = previous is None
+                    reset_reason = (
+                        (pending[-1]["reason"] if pending else initial_reason) if reset else None
+                    )
+                    if reset:
+                        assert reset_reason is not None
+                        segments.append(_sample_segment(evidence, reset_reason, list(pending)))
+                        pending.clear()
+                    steps.append({"observation": observation, "catalog": actions,
+                                  "chosen_action_id": label, "reset_before": reset,
+                                  "reset_reason": reset_reason, "evidence": evidence})
+                    previous = unit
+                    assert frame.action_ids == tuple(a["action_id"] for a in actions)
+                if reason is not None:
+                    target = reason
+            # Process uncertainty even for unchanged/readiness/excluded inputs.
+            # Known pre-input context can survive, uncertain continuation cannot.
+            if row["outcome"]["delivery"] in {"unknown", "partially_delivered"}:
+                cut("delivery_unknown", row, stream)
+        if reason is not None:
+            exclusions.append({"run_id": run_id, "stream": stream, "sequence": row["sequence"],
+                               "reason": reason, "original": _plain(row)})
+        index.append({
+            "raw_id": raw_id, "run_id": run_id, "source_group": group, "related_keys": related,
+            "capture_id": capture["capture_id"] if capture is not None else
+                          row.get("input_id", "missing-publication"),
+            "record_ref": stream + ":" + str(row["sequence"]),
+            "occurrence_id": semantic_hash([bundle.content_id, stream, row["sequence"]]),
+            "admitted": reason is None, "model_exposed": exposed,
+            "N_eligible": label is not None, "target_eligibility": target,
+            "original_N_candidate": is_input and
+                declarations[row["segment_id"]]["source_kind"] == cohort and
+                row["outcome"]["mapping_status"] == "exact" and
+                row["outcome"]["delivery"] == "delivered",
+            "evidence": evidence,
+        })
+    for row in fences[fence_offset:]:
+        fence(row)
+    if len(steps) > MAX_STEPS_PER_RUN:
+        _fail("projected_epoch_capacity")
+    result = None
+    if steps:
+        result = {"run_id": run_id, "source_group": group, "split": "train",
+                  "identity": {
+                      "schema": SAMPLED_RUN_SCHEMA, "raw_id": raw_id,
+                      "bundle_content_id": bundle.content_id, "epoch": _plain(epoch),
+                      "related_keys": related,
+                      "source_declarations": [_plain(row) for row in bundle.segments],
+                      "boundaries": _plain(original_boundaries),
+                      "capture_history": "declared_original_input_basis_sampled_segments",
+                      "whole_game_recorded_capture_eligible": False,
+                      "prefix_exclusion": None, "sample_segments": segments, "cuts": cuts,
+                  }, "steps": steps}
+    return result, index, exclusions, eligible
+
+
 def _projection(
     bundle: Any, raw_id: str, cohort: str, view: str = DEFAULT_VIEW
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -496,7 +730,7 @@ def _projection(
         "raw_id": raw_id,
         "bundle_content_id": bundle.content_id,
         "cohort": cohort,
-        "input_spec": INPUT_SPEC,
+        "input_spec": view_input_spec(view),
         "projection_spec": projection_spec,
         "target_spec": target_spec,
         "qualification": view_qualification(view),
@@ -562,15 +796,15 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
         },
         "source3_projected",
     )
+    view = checked_view(source["projection_spec"], source["target_spec"])
     if (
         source["schema"] != SOURCE_SCHEMA
         or source["source_kind"] not in COHORTS
-        or source["input_spec"] != INPUT_SPEC
+        or source["input_spec"] != view_input_spec(view)
         or not isinstance(source["runs"], list)
         or not 0 < len(source["runs"]) <= MAX_RUNS
     ):
         _fail("projected_source_contract")
-    view = checked_view(source["projection_spec"], source["target_spec"])
     refs = source["raw_refs"]
     if (
         not isinstance(refs, list)
@@ -606,6 +840,36 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
         ):
             _fail("projected_run_contract_or_split")
         steps, previous = [], None
+        sample_segments = []
+        sample_reset_count = 0
+        sample_cut_count = 0
+        if view == SAMPLED_VIEW:
+            identity = object_fields(run["identity"], SAMPLED_RUN_FIELDS, "source3.sampled_run")
+            if (identity["schema"] != SAMPLED_RUN_SCHEMA
+                    or identity["capture_history"]
+                    != "declared_original_input_basis_sampled_segments"
+                    or identity["whole_game_recorded_capture_eligible"] is not False
+                    or identity["prefix_exclusion"] is not None
+                    or not isinstance(identity["sample_segments"], list)
+                    or not 0 < len(identity["sample_segments"]) <= len(run["steps"])
+                    or not isinstance(identity["cuts"], list)):
+                _fail("sampled_run_identity")
+            for raw_cut in identity["cuts"]:
+                sample_cut = object_fields(raw_cut, SAMPLE_CUT_FIELDS, "source3.sample_cut")
+                checked_reset_reason(sample_cut["reason"])
+                if (sample_cut["stream"] not in {
+                            "source-boundaries.jsonl", "native-input-witnesses.jsonl"}
+                        or type(sample_cut["sequence"]) is not int
+                        or sample_cut["sequence"] < 1
+                        or not isinstance(sample_cut["original"], dict)
+                        or sample_cut["original"].get("sequence") != sample_cut["sequence"]):
+                    _fail("sampled_cut_original_binding")
+            sample_segments = [
+                object_fields(segment, SAMPLE_SEGMENT_FIELDS, "source3.sample_segment")
+                for segment in identity["sample_segments"]
+            ]
+            if len({segment["id"] for segment in sample_segments}) != len(sample_segments):
+                _fail("sampled_segment_reuse")
         for position, raw_step in enumerate(run["steps"]):
             step = object_fields(
                 raw_step,
@@ -640,15 +904,51 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
             )
             if (
                 type(step["reset_before"]) is not bool
-                or step["reset_before"] != (position == 0)
-                or step["reset_reason"]
-                != ("original_attachment_epoch_start" if position == 0 else None)
                 or evidence["raw_id"] != run["identity"]["raw_id"]
                 or evidence["original_run_id"] != name
+                or (view != SAMPLED_VIEW and (
+                    step["reset_before"] != (position == 0)
+                    or step["reset_reason"] != (
+                        "original_attachment_epoch_start" if position == 0 else None)))
             ):
                 _fail("projected_reset_or_original_run_binding")
+            if view == SAMPLED_VIEW:
+                if (evidence["stream"] != "native-input-witnesses.jsonl"
+                        or evidence["input_id"] is None
+                        or evidence["bundle_content_id"] != run["identity"]["bundle_content_id"]
+                        or evidence["epoch_id"] != run["identity"]["epoch"]["epoch_id"]
+                        or position == 0 and not step["reset_before"]):
+                    _fail("sampled_input_original_binding")
+                if step["reset_before"]:
+                    checked_reset_reason(step["reset_reason"])
+                    if sample_reset_count >= len(sample_segments):
+                        _fail("sampled_segment_reset_binding")
+                    segment = sample_segments[sample_reset_count]
+                    segment_cuts = segment["cuts"]
+                    if (not isinstance(segment_cuts, list)
+                            or json_bytes(segment_cuts) != json_bytes(
+                                run["identity"]["cuts"][sample_cut_count:
+                                    sample_cut_count + len(segment_cuts)])
+                            or json_bytes(segment) != json_bytes(
+                                _sample_segment(evidence, step["reset_reason"], segment_cuts))
+                            or (segment_cuts and step["reset_reason"] != segment_cuts[-1]["reason"])
+                            or position > 0 and not segment_cuts
+                            or not segment_cuts and step["reset_reason"] != (
+                                "context_truncated_start"
+                                if int(run["identity"]["epoch"].get("after_input_ordinal", "0"))
+                                else "sample_segment_start")):
+                        _fail("sampled_segment_reset_binding")
+                    sample_reset_count += 1
+                    sample_cut_count += len(segment_cuts)
+                    previous = None
+                elif step["reset_reason"] is not None:
+                    _fail("sampled_segment_reset_binding")
             frame, unit = qualify_native(step["observation"], step["catalog"])
             advance = native_advance(previous, unit)
+            if view == SAMPLED_VIEW and (
+                not sample_eligible(step["observation"], step["catalog"]) or not advance
+            ):
+                _fail("sampled_readiness_is_not_sample")
             if (
                 view == DEFAULT_VIEW
                 and evidence["stream"] == "native-input-witnesses.jsonl"
@@ -683,6 +983,8 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
                 )
             )
             previous = unit
+        if view == SAMPLED_VIEW and sample_reset_count != len(sample_segments):
+            _fail("sampled_segment_reset_binding")
         seen.add(name)
         groups[group] = run["split"]
         runs.append(
@@ -694,7 +996,7 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
         tuple(runs),
         _sha(raw),
         raw,
-        FrozenObject.of(INPUT_SPEC),
+        FrozenObject.of(view_input_spec(view)),
     )
 
 
@@ -901,7 +1203,7 @@ def _partition(
     source = {
         "schema": SOURCE_SCHEMA,
         "source_kind": cohort,
-        "input_spec": INPUT_SPEC,
+        "input_spec": view_input_spec(selected_view),
         "projection_spec": projection_spec,
         "target_spec": target_spec,
         "teacher": _teacher(cohort),
@@ -940,7 +1242,7 @@ def publish_ordered_source_partition(
                 "split": split,
                 "source_kind": dataset.source_kind,
                 "source_sha256": dataset.source_sha256,
-                "input_spec": INPUT_SPEC,
+                "input_spec": view_input_spec(view),
                 "projection_spec": projected["projection_spec"],
                 "target_spec": projected["target_spec"],
                 "qualification": view_qualification(view),
@@ -974,12 +1276,13 @@ def verify_ordered_source_partition(store: ArtifactStore, source_id: str) -> Ver
         }
         or info["schema"] != SOURCE_SCHEMA
         or info["partition_schema"] != PARTITION_SCHEMA
-        or info["input_spec"] != INPUT_SPEC
         or not isinstance(info["raw_refs"], list)
         or not info["raw_refs"]
     ):
         _fail("typed_source3_partition_required")
     view = checked_view(info["projection_spec"], info["target_spec"])
+    if info["input_spec"] != view_input_spec(view):
+        _fail("typed_source3_partition_required")
     if info["qualification"] != view_qualification(view):
         _fail("partition_qualification_identity")
     refs = tuple(
