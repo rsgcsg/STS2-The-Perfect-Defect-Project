@@ -187,3 +187,68 @@ weights and no optimizer, and records evaluation exposure in the same curation
 ledger. Original run, timeline, raw content and cross-representation runtime
 relationships prevent related train/held-out reuse. The report remains
 descriptive; it cannot manufacture an unseen-test or policy-quality receipt.
+
+## Direct native machine samples: pure admission boundary
+
+`native_agent_sampled_source_spec.py` and `fullrun/native_agent_sampled_source.py`
+define the separate `native_agent_sampled_v1` research source profile. Its raw,
+admission, train-only partition and projected-source schemas are new identities;
+they do not reinterpret Source3 or select a different computational Model. PhaseA
+only lowers to the existing StructuredDataset/Run/Step. No production training
+recipe, export/package branch or UI route is added here; those need a separately
+reviewed PhaseB. The existing Source3 pilot remains available under its exact pins.
+
+The installed public Evidence `AgentSessionRunEvidence` verifier owns original
+inventory, hashes and protocol grammar. STPD retains the exact original archive,
+Agent manifest, adapter attestation and sample triples, then joins original offer,
+consume proposal, ACK write offer and matching completed Next/directive to identify
+known context. ACK alone is insufficient. N additionally needs a unique original
+handle Act member, exact original submission and matching terminal Result with
+delivery `delivered` and execution other than `native_rejected`. Execution/effect
+may be unknown: this does not prove Commit, successor, reward or policy quality.
+Known unlabelled context and actual complete ready summaries remain samples.
+Discarded readiness queries have no student advance; no missing prefix, payload,
+uncertain tail or terminal input is rebuilt from a later Current.
+
+The current sampled Evidence grammar already requires a new occurrence/advance,
+one attachment generation and monotonic revision for every consumed known sample.
+Same-occurrence drift therefore fails at that public owner before STPD admission;
+it is not a separate STPD censoring demonstration. STPD still invokes the shared
+whole-input qualifier and NativeUnit law, and their failures remain fail-closed.
+Its additional authority is the fixed producer/student relation, input feature
+contract, known-prefix eligibility and exact N target qualification.
+
+Two fixed relations are supported. The synthetic identity relation pins the
+existing sampled Student InputSpec as both fixture producer and student. The
+program-teacher relation pins its distinct reviewed TeacherInputSpec/body,
+AgentSpec/script-state format, artifact/adapter/code closure and interpreter/lock
+tuple while selecting the same Student InputSpec. Its synthetic fixtures remain
+explicitly synthetic; a `declared_native_machine_teacher` declaration is separate
+from that identity. Known-context and eligible N counts come from the original
+joins. Native-origin count is zero for synthetic conformance and unknown for a
+declared teacher run, because this integrity verifier does not establish actual
+native execution. Host/collector execution receipts remain a separate evidence
+level without adding an origin authentication framework. The archive Producer
+identifies the importer. An absent recorded Git revision remains absent, and
+teacher private script state is never student W or an I/F input. The frozen
+teacher descriptor uses canonical JSON with terminal LF for its input/artifact
+byte digests; the existing Student InputSpec uses semantic hashing without LF.
+Neither existing digest recipe is rewritten to make the names uniform.
+
+All original offers, including discarded or censored ones, enter the existing
+curation index. The conservative related key is
+`protocol-runtime:<original runtime_instance_id>`, shared with Source3 and S0.
+Original game continuity is absent from these sample records and is not inferred
+from a seed, Agent session, continuity token or later Current. Existing curation
+transactions keep restarted Agent sessions and optional Source3 records from the
+same runtime in one exposure family. Train reservation and actual training use
+remain separate; incompatible source claims, held-out selection and Gold overlap
+fail closed. The one-runtime check covers every selected original raw, including
+fully censored refs that have an exposure index but no projected steps. This slice
+offers no independent split or whole-game qualification.
+
+Materialization has explicit file/event/original/projected-byte bounds and retains
+the existing 16 MiB individual artifact-blob transport bound. Capacity failure
+rejects the operation; no payload, history or target is truncated to fit. Rolling
+back PhaseA removes its new profile and typed curation methods without rewriting
+old originals, Source3 views, model packages, codecs or numerical identities.
