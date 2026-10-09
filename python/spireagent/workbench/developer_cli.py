@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             "credential",
             "collection-tool",
             "collection-upgrade",
+            "collect-source3",
         ),
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -155,6 +156,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="operator-provided exact private Host package pin JSON")
     parser.add_argument("--input-profile", choices=("text-menu-v1", "text-menu-v2"),
                         help="explicit Managed text-menu profile in the private Host setup")
+    parser.add_argument("--host-local-root", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--seed")
+    parser.add_argument("--target-choices", type=int, default=100)
+    parser.add_argument("--max-submissions", type=int, default=100)
+    parser.add_argument("--deadline-ms", type=int, default=900_000)
+    parser.add_argument("--experimental-build-acknowledged", action="store_true")
+    parser.add_argument("--experimental-connector-acknowledged", action="store_true")
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="validate collector metadata without Application, SDK or game launch",
+    )
     args = parser.parse_args(argv)
     try:
         result: Any
@@ -185,7 +199,37 @@ def main(argv: list[str] | None = None) -> int:
             config = ProjectConfig.load(
                 args.config, require_current_combination=args.command not in {"status", "stop"}
             )
-            if args.command == "model":
+            if args.command == "collect-source3":
+                from spireagent.workbench.native_source3_collection import (
+                    CollectionRequest,
+                    collect_source3,
+                    metadata_preflight,
+                )
+
+                if (
+                    args.game_directory is None
+                    or args.host_local_root is None
+                    or args.output is None
+                    or args.seed is None
+                ):
+                    raise BoundaryError("source3_collection", "collection_paths_and_seed_required")
+                request = CollectionRequest(
+                    installation=args.game_directory,
+                    host_local_root=args.host_local_root,
+                    output=args.output,
+                    seed=args.seed,
+                    target_choices=args.target_choices,
+                    max_submissions=args.max_submissions,
+                    deadline_ms=args.deadline_ms,
+                    experimental_build_acknowledged=args.experimental_build_acknowledged,
+                    experimental_connector_acknowledged=args.experimental_connector_acknowledged,
+                )
+                result = (
+                    metadata_preflight(config, request)
+                    if args.plan_only
+                    else collect_source3(config, args.config, request)
+                )
+            elif args.command == "model":
                 from spireagent.workbench.local_model_cli import model_command
 
                 result = model_command(
@@ -269,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
                     tuple(args.role) if args.role is not None else None,
                 )
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 1 if result.get("status") == "BLOCKED" else 0
+        return 1 if (result.get("status") == "BLOCKED" or args.command == "collect-source3"
+                     and result.get("status") in {"failed", "unknown"}) else 0
     except (BoundaryError, OSError, ValueError, subprocess.SubprocessError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__
         print(json.dumps({"status": "FAIL", "code": code}))
