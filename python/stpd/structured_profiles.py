@@ -15,7 +15,13 @@ from .native_graph_spec import MODEL_SCHEMA as GRAPH_MODEL_SCHEMA
 from .native_graph_spec import REPORT_SCHEMA as GRAPH_REPORT_SCHEMA
 from .native_graph_spec import RUN_SCHEMA as GRAPH_RUN_SCHEMA
 from .native_graph_spec import TRAINING_SCOPE as NATIVE_GRAPH_SCOPE
-from .ordered_source_spec import COHORTS, checked_view, validation_identity, view_qualification
+from .ordered_source_spec import (
+    COHORTS,
+    checked_view,
+    validation_identity,
+    view_input_spec,
+    view_qualification,
+)
 from .ordered_source_spec import INPUT_SCHEMA as ORDERED_INPUT_SCHEMA
 from .ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from .ordered_source_spec import REPORT_SCHEMA as ORDERED_REPORT_SCHEMA
@@ -47,9 +53,15 @@ def validate_profile(dataset: StructuredDataset, scope: str) -> bool:
 
     if not isinstance(dataset.input_spec, FrozenObject):
         raise BoundaryError("structured_profile", "frozen_input_spec_required")
+    expected_input = INPUT_SPEC
+    if scope == ORDERED_SCOPE:
+        source = decode_json(dataset.source_bytes)
+        expected_input = view_input_spec(
+            checked_view(source["projection_spec"], source["target_spec"])
+        )
     if (
         scope not in NATIVE_SCOPES
-        or dataset.input_spec.value() != INPUT_SPEC
+        or dataset.input_spec.value() != expected_input
         or (
             dataset.source_kind not in COHORTS
             if scope == ORDERED_SCOPE

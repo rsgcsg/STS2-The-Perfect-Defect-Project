@@ -20,7 +20,22 @@ from ..native_code_scope import GRAPH_MODEL_SCHEMA, native_code_identity, native
 from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
 from ..native_code_scope import is_native_model_schema as is_native_model_schema
 from ..native_graph_spec import NativeGraphControl, checked_control, optional_control
-from ..ordered_source_spec import COHORTS, checked_view, validation_identity, view_qualification
+from ..native_sampled_carry_spec import (
+    FEATURE_PROJECTION,
+    sampled_agent_spec,
+)
+from ..native_sampled_carry_spec import (
+    STATE_FORMAT as SAMPLED_STATE_FORMAT,
+)
+from ..ordered_source_spec import (
+    COHORTS,
+    DEFAULT_VIEW,
+    SAMPLED_VIEW,
+    checked_view,
+    validation_identity,
+    view_input_spec,
+    view_qualification,
+)
 from ..ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from ..ordered_source_spec import PACKAGE_SCHEMA as ORDERED_PACKAGE_SCHEMA
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
@@ -68,11 +83,15 @@ def native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any
             "model_control": model_control.to_dict()}
 
 
-def ordered_native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any]:
+def ordered_native_agent_spec(
+    model_control: NativeGraphControl | None, *, view: str = DEFAULT_VIEW
+) -> dict[str, Any]:
     """Only the new Source3 package adopts the explicit ready-summary task."""
     control = optional_control(model_control)
     if control is None:
         raise BoundaryError("native_package", "source3_trained_control_required")
+    if view == SAMPLED_VIEW:
+        return sampled_agent_spec(control)
     return {**native_agent_spec(control), "version": "1.2.0",
             "task_spec": ready_summary_task_spec()}
 
@@ -183,6 +202,11 @@ def _ordered_trained_source(source: object, data_sha256: str) -> dict[str, Any]:
 def _ordered_qualification(source: dict[str, Any]) -> str:
     identity = source["verification_identity"]
     return view_qualification(checked_view(identity["projection_spec"], identity["target_spec"]))
+
+
+def _ordered_view(source: dict[str, Any]) -> str:
+    identity = source["verification_identity"]
+    return checked_view(identity["projection_spec"], identity["target_spec"])
 
 
 def _trained_provenance(
@@ -297,6 +321,7 @@ def _export_package(
         provenance = _trained_provenance(provenance, source, producer)
     elif provenance is not None:
         raise BoundaryError("native_package", "standalone_provenance_forbidden")
+    view = _ordered_view(source) if ordered and source is not None else DEFAULT_VIEW
     body = {
         "schema": (
             ORDERED_PACKAGE_SCHEMA
@@ -308,10 +333,13 @@ def _export_package(
             else GRAPH_PACKAGE_SCHEMA
         ),
         "graph": native_graph(control),
-        "projection": PROJECTION,
-        "input_spec": INPUT_SPEC,
-        "agent_spec": ordered_native_agent_spec(control) if ordered else native_agent_spec(control),
-        "state_format_version": STATE_FORMAT if control is None else GRAPH_STATE_FORMAT,
+        "projection": FEATURE_PROJECTION if view == SAMPLED_VIEW else PROJECTION,
+        "input_spec": view_input_spec(view) if ordered else INPUT_SPEC,
+        "agent_spec": (
+            ordered_native_agent_spec(control, view=view) if ordered else native_agent_spec(control)
+        ),
+        "state_format_version": SAMPLED_STATE_FORMAT if view == SAMPLED_VIEW else
+            STATE_FORMAT if control is None else GRAPH_STATE_FORMAT,
         "seed": 0,
         "code_identity": identity,
         "adapter_code_sha256": native_code_sha256(ROOT, graph=control is not None),
@@ -390,6 +418,7 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
         ordered_source = _ordered_trained_source(candidate, candidate["data_sha256"])
         if control is None:
             raise BoundaryError("native_package", "source3_trained_control_required")
+    view = _ordered_view(ordered_source) if ordered_source is not None else DEFAULT_VIEW
     if (
         encoded != json_bytes(value)
         or value["schema"]
@@ -403,12 +432,16 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
             else GRAPH_PACKAGE_SCHEMA
         )
         or json_bytes(value["graph"]) != json_bytes(native_graph(control))
-        or json_bytes(value["projection"]) != json_bytes(PROJECTION)
-        or json_bytes(value["input_spec"]) != json_bytes(INPUT_SPEC)
+        or json_bytes(value["projection"]) != json_bytes(
+            FEATURE_PROJECTION if view == SAMPLED_VIEW else PROJECTION)
+        or json_bytes(value["input_spec"]) != json_bytes(
+            view_input_spec(view) if ordered else INPUT_SPEC)
         or json_bytes(value["agent_spec"]) != json_bytes(
-            ordered_native_agent_spec(control) if ordered else native_agent_spec(control))
+            ordered_native_agent_spec(control, view=view)
+            if ordered else native_agent_spec(control))
         or value["state_format_version"]
-        != (STATE_FORMAT if control is None else GRAPH_STATE_FORMAT)
+        != (SAMPLED_STATE_FORMAT if view == SAMPLED_VIEW else
+            STATE_FORMAT if control is None else GRAPH_STATE_FORMAT)
         or type(value["seed"]) is not int
         or value["seed"] != 0
         or value["code_identity"] != native_code_identity(ROOT, graph=control is not None)

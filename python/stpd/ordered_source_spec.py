@@ -12,6 +12,18 @@ from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_f
 
 from .canonical import semantic_hash
 from .fullrun.native_structured_inputs import INPUT_SPEC
+from .native_sampled_carry_spec import (
+    INPUT_SPEC as SAMPLED_INPUT_SPEC,
+)
+from .native_sampled_carry_spec import (
+    RECIPE as SAMPLED_RECIPE,
+)
+from .native_sampled_carry_spec import (
+    RESET_REASONS,
+)
+from .native_sampled_carry_spec import (
+    VIEW as SAMPLED_VIEW,
+)
 from .policy.native_task import ready_summary_task_spec
 
 if TYPE_CHECKING:
@@ -33,6 +45,7 @@ VALIDATION_SCHEMA = "stpd/source3-ordered-source-validation-v1"
 SCOPE = "source3-ordered-native-training-code-closure-v1"
 QUALIFICATION = "source3_publication_memory_exact_N_recorded_only"
 PRETRAIN_QUALIFICATION = "ordered_recorded_capture_N_pretraining_only"
+SAMPLED_QUALIFICATION = "source3_decision_sample_carry_N_reexpression_only"
 DEFAULT_VIEW = "publication_memory"
 PRETRAIN_VIEW = "recorded_capture_pretraining"
 COHORTS = frozenset({"declared_human", "agent_protocol", "agent_native_ui"})
@@ -127,9 +140,42 @@ TARGET_BODY = {
     "exposure_match": "original_basis_NativeUnit_and_complete_C_equal_preceding_publication",
 }
 TARGET_SPEC = {"id": TARGET_BODY["id"], "version": "1.0.0", "sha256": semantic_hash(TARGET_BODY)}
+SAMPLED_PROJECTION_BODY = {
+    **PRETRAIN_PROJECTION_BODY,
+    "id": "source3-decision-sample-carry-input",
+    "mode": "original_input_basis_sampled_carry_reexpression",
+    "input_spec": SAMPLED_INPUT_SPEC,
+    "input_basis": "independent_complete_original_pre_capture_and_full_C",
+    "reset": "explicit_derived_sample_segments_within_original_run",
+    "reset_reasons": list(RESET_REASONS),
+    "admission": "raw_verified_original_input_order_then_independently_valid_spans",
+    "actor_change": "explicit_actor_handoff_cut",
+    "missing": "explicit_cut_then_next_independent_basis_starts_W0",
+    "unlabelled": "retain_every_eligible_changed_input_basis_without_N",
+    "advance": "shared_native_unit_once_per_occurrence_for_eligible_inputs_only",
+    "features": "shared_native_feature_projection_with_sampled_InputSpec",
+    "history_claim": "declared_input_basis_reexpression_not_actual_Agent_consumption",
+    "deployment_relation": "same_features_complete_C_sample_rule_carry_and_segment_resets",
+    "deployment_acquisition": "eligible_changed_Current_samples_exact_ACK_evidence_separate",
+}
+SAMPLED_PROJECTION_SPEC = {
+    "id": SAMPLED_PROJECTION_BODY["id"], "version": "1.0.0",
+    "sha256": semantic_hash(SAMPLED_PROJECTION_BODY),
+}
+SAMPLED_TARGET_BODY = {
+    **PRETRAIN_TARGET_BODY,
+    "id": "source3-sampled-basis-exact-delivered-N",
+    "exposure_match": "eligible_changed_original_basis_and_complete_original_C",
+    "mask": "unlabelled_context_readiness_duplicate_and_inexact_delivery_have_no_N_loss",
+}
+SAMPLED_TARGET_SPEC = {
+    "id": SAMPLED_TARGET_BODY["id"], "version": "1.0.0",
+    "sha256": semantic_hash(SAMPLED_TARGET_BODY),
+}
 VIEW_SPECS = {
     DEFAULT_VIEW: (PROJECTION_SPEC, TARGET_SPEC),
     PRETRAIN_VIEW: (PRETRAIN_PROJECTION_SPEC, PRETRAIN_TARGET_SPEC),
+    SAMPLED_VIEW: (SAMPLED_PROJECTION_SPEC, SAMPLED_TARGET_SPEC),
 }
 
 # The graph/reset is the existing closed numerical preset. The recipe also fixes
@@ -140,6 +186,7 @@ RECIPES = {
     for reset in ("carry", "reset")
     for suffix, view in (("", DEFAULT_VIEW), ("-pretrain", PRETRAIN_VIEW))
 }
+RECIPES[SAMPLED_RECIPE] = (1, "carry", SAMPLED_VIEW)
 DEFAULT_RECIPE = "source3-native-m2-k1d96-carry-N-v1"
 
 
@@ -179,7 +226,13 @@ def recipe_view(recipe: str) -> str:
 
 def view_qualification(view: str) -> str:
     view_specs(view)
-    return QUALIFICATION if view == DEFAULT_VIEW else PRETRAIN_QUALIFICATION
+    return (QUALIFICATION if view == DEFAULT_VIEW else SAMPLED_QUALIFICATION
+            if view == SAMPLED_VIEW else PRETRAIN_QUALIFICATION)
+
+
+def view_input_spec(view: str) -> dict[str, Any]:
+    view_specs(view)
+    return dict(SAMPLED_INPUT_SPEC if view == SAMPLED_VIEW else INPUT_SPEC)
 
 
 def validation_identity(
@@ -208,7 +261,7 @@ def validation_identity(
     return {
         "schema": VALIDATION_SCHEMA,
         "source_sha256": source_sha256,
-        "input_spec_sha256": INPUT_SPEC["sha256"],
+        "input_spec_sha256": view_input_spec(view)["sha256"],
         "cohort": cohort,
         "projection_spec": view_specs(view)[0],
         "target_spec": view_specs(view)[1],
