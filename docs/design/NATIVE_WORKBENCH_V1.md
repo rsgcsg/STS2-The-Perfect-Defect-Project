@@ -76,6 +76,18 @@ Equal-expiry different pairs and older renewals cannot replace it. The existing
 connection owner serializes acceptance, current proof and exact close with one
 lock and a protocol-clock high-water; clock regression never restores access.
 
+The one production auth owner captures the process-immutable runtime once in
+TaskBridge startup, before the listener or any auth lock. The existing controller
+Snapshot can expire leases, so it must never be called under the auth lock.
+Register/close consume raw body/headers; the owner acquires its lock first, reads
+the authoritative selected bootstrap there, and validates signature/scope before
+any credential transition, install, proof or retirement. Current/IsCurrent and
+native link completion use that same owner/read boundary. Caller-provided pre-read
+bootstrap/runtime snapshots cannot reset generation or retirement. Uninitialized,
+disabled, missing or drifted selection fails closed. Independent test owners bind
+their own immutable runtime and private authoritative fixture reader; production
+has one instance and no additional Connector API or epoch/lease ledger.
+
 `POST /v1/workbench/native-unregister` is authentication cleanup only. JSON body
 contains exactly the six binding fields, at most 4096 bytes, with the existing
 native-access bearer and four exact headers. Current bootstrap, game and ordinary

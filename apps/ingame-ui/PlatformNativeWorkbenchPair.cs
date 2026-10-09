@@ -164,147 +164,178 @@ internal sealed record PlatformNativeWorkbenchConnection(PlatformNativeWorkbench
     [property: JsonIgnore] string Token, [property: JsonIgnore] string SelectionIdentity)
 {
     public override string ToString() => "Native Workbench connection (credential withheld)";
-    internal const int MaximumRetiredContexts = 32;
     internal const string CloseSchema = "sts2.platform/native-workbench-close-1";
-    private sealed record Context(string Runtime, string Workbench, string Configuration, string Url);
-    private static readonly object Gate = new();
-    private static readonly HashSet<Context> Retired = [];
-    private static PlatformNativeWorkbenchConnection? _current;
-    private static string? _credentialGeneration, _selectionIdentity, _runtime;
-    private static long _clockHighWater;
-    private static bool _selectionRequiresNewGeneration;
+    private static Authority? _production;
 
-    private static Context Key(PlatformNativeWorkbenchPair pair) =>
-        new(pair.RuntimeInstanceId, pair.WorkbenchInstanceId, pair.ConfigurationId, pair.WorkbenchUrl);
-
-    // Only a cryptographically new selected credential or confirmed game identity
-    // can reset terminal retirement. Same-credential selection drift is not a grant.
-    private static void Select(PlatformNativeWorkbenchBootstrap bootstrap, string runtime, long now)
+    // TaskBridge captures the process-immutable runtime before starting its listener.
+    // No controller Snapshot/expiry callback is invoked under an authentication lock.
+    internal static void Initialize(string runtime)
     {
-        if (_credentialGeneration != bootstrap.CredentialGeneration || _runtime != runtime)
+        if (!PlatformNativeWorkbenchPair.Bounded(runtime, 128))
+            throw new InvalidOperationException("invalid_native_runtime");
+        var created = new Authority(runtime, () => PlatformNativeWorkbenchBootstrap.Read(
+            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable"));
+        Authority? prior = Interlocked.CompareExchange(ref _production, created, null);
+        if (prior is not null && prior.Runtime != runtime)
+            throw new InvalidOperationException("native_runtime_owner_changed");
+    }
+
+    internal static Authority Production => _production
+        ?? throw new InvalidOperationException("native_workbench_not_initialized");
+    internal static PlatformNativeWorkbenchConnection? Current => _production?.Current;
+    internal static bool IsCurrent(PlatformNativeWorkbenchConnection connection) => Current == connection;
+
+    // One production instance; tests instantiate this same owner with a fresh private
+    // bootstrap fixture. No caller-supplied pre-read authority can reset retirement.
+    internal sealed class Authority(string runtime, Func<PlatformNativeWorkbenchBootstrap> bootstrapReader,
+        Func<long>? clock = null)
+    {
+        internal const int MaximumRetiredContexts = 32;
+        private sealed record Context(string Workbench, string Configuration, string Url);
+        private readonly object _gate = new();
+        private readonly HashSet<Context> _retired = [];
+        private readonly Func<long> _clock = clock ?? (() => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        private PlatformNativeWorkbenchConnection? _current;
+        private string? _credentialGeneration, _selectionIdentity;
+        private long _clockHighWater;
+        private bool _selectionRequiresNewGeneration;
+        internal string Runtime { get; } = runtime;
+
+        private static Context Key(PlatformNativeWorkbenchPair pair) =>
+            new(pair.WorkbenchInstanceId, pair.ConfigurationId, pair.WorkbenchUrl);
+
+        private void Select(PlatformNativeWorkbenchBootstrap bootstrap, long now)
         {
-            _credentialGeneration = bootstrap.CredentialGeneration;
-            _selectionIdentity = bootstrap.SelectionIdentity;
-            _runtime = runtime;
-            _clockHighWater = now;
-            _selectionRequiresNewGeneration = false;
-            _current = null;
-            Retired.Clear();
-        }
-        else
-        {
-            if (now < _clockHighWater) throw new InvalidOperationException("native_clock_regressed");
-            _clockHighWater = now;
-            if (_selectionIdentity != bootstrap.SelectionIdentity)
+            if (_credentialGeneration != bootstrap.CredentialGeneration)
             {
+                _credentialGeneration = bootstrap.CredentialGeneration;
+                _selectionIdentity = bootstrap.SelectionIdentity;
+                _clockHighWater = now;
+                _selectionRequiresNewGeneration = false;
                 _current = null;
-                _selectionRequiresNewGeneration = true;
+                _retired.Clear();
             }
-        }
-        if (_selectionRequiresNewGeneration)
-            throw new InvalidOperationException("native_selection_generation_required");
-    }
-
-    private static void Scope(PlatformNativeWorkbenchPair pair, string runtime, long now)
-    {
-        pair.Validate();
-        if (pair.RuntimeInstanceId != runtime || pair.ExpiresAt <= now || pair.ExpiresAt > now + 600)
-            throw new InvalidOperationException("native_pair_identity_mismatch");
-    }
-
-    internal static object Register(PlatformNativeWorkbenchPair pair,
-        PlatformNativeWorkbenchBootstrap bootstrap, string runtime, long now)
-    {
-        lock (Gate)
-        {
-            Select(bootstrap, runtime, now);
-            Scope(pair, runtime, now);
-            Context context = Key(pair);
-            if (Retired.Contains(context)) throw new InvalidOperationException("native_context_retired");
-            PlatformNativeWorkbenchPair? active = _current?.Binding;
-            if (active is not null && active.ExpiresAt > now)
+            else
             {
-                if (Key(active) != context) throw new InvalidOperationException("native_pair_conflict");
-                if (pair != active && pair.ExpiresAt <= active.ExpiresAt)
-                    throw new InvalidOperationException("native_pair_renewal_rejected");
-            }
-            else if (Retired.Count >= MaximumRetiredContexts)
-                throw new InvalidOperationException("native_auth_capacity_reached");
-            // Retired.Count+the current context's reserved retirement entry <=32.
-            _current = new(pair, pair.Sign(bootstrap.Secret, "native-access-v1"), bootstrap.SelectionIdentity);
-            return pair.Signed(PlatformNativeWorkbenchPair.AckSchema, "native-register-ack-v1", bootstrap.Secret);
-        }
-    }
-
-    private static void Headers(System.Collections.Specialized.NameValueCollection headers,
-        PlatformNativeWorkbenchPair pair, string secret)
-    {
-        if (headers["Origin"] is not null || headers["Cookie"] is not null
-            || !PlatformNativeWorkbenchPair.EqualSecret(headers["Authorization"],
-                "Bearer " + pair.Sign(secret, "native-access-v1"))
-            || headers["X-STS2-Game-Instance-ID"] != pair.RuntimeInstanceId
-            || headers["X-SpireAgent-Workbench-Instance-ID"] != pair.WorkbenchInstanceId
-            || headers["X-SpireAgent-Configuration-ID"] != pair.ConfigurationId
-            || headers["X-SpireAgent-Pair-ID"] != pair.PairId)
-            throw new InvalidOperationException("native_pair_changed");
-    }
-
-    internal static object CurrentProof(System.Collections.Specialized.NameValueCollection headers,
-        PlatformNativeWorkbenchBootstrap bootstrap, string runtime, long now)
-    {
-        lock (Gate)
-        {
-            Select(bootstrap, runtime, now);
-            PlatformNativeWorkbenchPair pair = _current?.Binding
-                ?? throw new InvalidOperationException("native_pair_required");
-            Scope(pair, runtime, now);
-            Headers(headers, pair, bootstrap.Secret);
-            // Compare and signature share this authentication linearization point.
-            return pair.Signed(PlatformNativeWorkbenchPair.CurrentSchema, "native-current-v1", bootstrap.Secret);
-        }
-    }
-
-    internal static object Close(PlatformNativeWorkbenchPair pair,
-        System.Collections.Specialized.NameValueCollection headers,
-        PlatformNativeWorkbenchBootstrap bootstrap, string runtime, long now)
-    {
-        lock (Gate)
-        {
-            Select(bootstrap, runtime, now);
-            Scope(pair, runtime, now);
-            Headers(headers, pair, bootstrap.Secret);
-            if (_current is not null && _current.Binding != pair)
-                throw new InvalidOperationException("native_pair_conflict");
-            Context context = Key(pair);
-            if (!Retired.Contains(context) && Retired.Count >= MaximumRetiredContexts)
-                throw new InvalidOperationException("native_auth_capacity_reached");
-            string status = _current is null ? "already_closed" : "closed";
-            Retired.Add(context);
-            _current = null;
-            return new { schema = CloseSchema, status, binding = pair };
-        }
-    }
-
-    internal static PlatformNativeWorkbenchConnection? Current
-    {
-        get
-        {
-            try
-            {
-                PlatformNativeWorkbenchBootstrap bootstrap = PlatformNativeWorkbenchBootstrap.Read(
-                    PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
-                lock (Gate)
+                if (now < _clockHighWater) throw new InvalidOperationException("native_clock_regressed");
+                _clockHighWater = now;
+                if (_selectionIdentity != bootstrap.SelectionIdentity)
                 {
-                    if (_runtime is null) return null;
-                    Select(bootstrap, _runtime, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-                    return _current?.Binding.ExpiresAt > _clockHighWater ? _current : null;
+                    _current = null;
+                    _selectionRequiresNewGeneration = true;
                 }
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException
-                or JsonException or InvalidOperationException or ArgumentException)
-            { return null; }
+            if (_selectionRequiresNewGeneration)
+                throw new InvalidOperationException("native_selection_generation_required");
+        }
+
+        private void Scope(PlatformNativeWorkbenchPair pair, long now)
+        {
+            pair.Validate();
+            if (pair.RuntimeInstanceId != Runtime || pair.ExpiresAt <= now || pair.ExpiresAt > now + 600)
+                throw new InvalidOperationException("native_pair_identity_mismatch");
+        }
+
+        internal object Register(JsonElement body)
+        {
+            lock (_gate)
+            {
+                PlatformNativeWorkbenchBootstrap bootstrap = bootstrapReader();
+                PlatformNativeWorkbenchPair pair = PlatformNativeWorkbenchPair.ReadSigned(body,
+                    PlatformNativeWorkbenchPair.Schema, "native-register-v1", bootstrap.Secret);
+                long now = _clock();
+                Scope(pair, now);
+                // Signature/scope are checked against this fresh authoritative read
+                // before any generation transition or terminal-state reset.
+                Select(bootstrap, now);
+                Context context = Key(pair);
+                if (_retired.Contains(context)) throw new InvalidOperationException("native_context_retired");
+                PlatformNativeWorkbenchPair? active = _current?.Binding;
+                if (active is not null && active.ExpiresAt > now)
+                {
+                    if (Key(active) != context) throw new InvalidOperationException("native_pair_conflict");
+                    if (pair != active && pair.ExpiresAt <= active.ExpiresAt)
+                        throw new InvalidOperationException("native_pair_renewal_rejected");
+                }
+                else if (_retired.Count >= MaximumRetiredContexts)
+                    throw new InvalidOperationException("native_auth_capacity_reached");
+                _current = new(pair, pair.Sign(bootstrap.Secret, "native-access-v1"), bootstrap.SelectionIdentity);
+                return pair.Signed(PlatformNativeWorkbenchPair.AckSchema, "native-register-ack-v1", bootstrap.Secret);
+            }
+        }
+
+        private static void Headers(System.Collections.Specialized.NameValueCollection headers,
+            PlatformNativeWorkbenchPair pair, string secret)
+        {
+            if (headers["Origin"] is not null || headers["Cookie"] is not null
+                || !PlatformNativeWorkbenchPair.EqualSecret(headers["Authorization"],
+                    "Bearer " + pair.Sign(secret, "native-access-v1"))
+                || headers["X-STS2-Game-Instance-ID"] != pair.RuntimeInstanceId
+                || headers["X-SpireAgent-Workbench-Instance-ID"] != pair.WorkbenchInstanceId
+                || headers["X-SpireAgent-Configuration-ID"] != pair.ConfigurationId
+                || headers["X-SpireAgent-Pair-ID"] != pair.PairId)
+                throw new InvalidOperationException("native_pair_changed");
+        }
+
+        internal object CurrentProof(System.Collections.Specialized.NameValueCollection headers)
+        {
+            lock (_gate)
+            {
+                PlatformNativeWorkbenchBootstrap bootstrap = bootstrapReader();
+                PlatformNativeWorkbenchConnection current = _current
+                    ?? throw new InvalidOperationException("native_pair_required");
+                long now = _clock();
+                Scope(current.Binding, now);
+                Headers(headers, current.Binding, bootstrap.Secret);
+                if (current.SelectionIdentity != bootstrap.SelectionIdentity)
+                    throw new InvalidOperationException("native_pair_changed");
+                Select(bootstrap, now);
+                return current.Binding.Signed(PlatformNativeWorkbenchPair.CurrentSchema,
+                    "native-current-v1", bootstrap.Secret);
+            }
+        }
+
+        internal object Close(JsonElement body, System.Collections.Specialized.NameValueCollection headers)
+        {
+            lock (_gate)
+            {
+                PlatformNativeWorkbenchBootstrap bootstrap = bootstrapReader();
+                PlatformNativeWorkbenchPair pair = PlatformNativeWorkbenchPair.Read(body);
+                long now = _clock();
+                Scope(pair, now);
+                Headers(headers, pair, bootstrap.Secret);
+                Select(bootstrap, now);
+                if (_current is not null && _current.Binding != pair)
+                    throw new InvalidOperationException("native_pair_conflict");
+                Context context = Key(pair);
+                if (!_retired.Contains(context) && _retired.Count >= MaximumRetiredContexts)
+                    throw new InvalidOperationException("native_auth_capacity_reached");
+                string status = _current is null ? "already_closed" : "closed";
+                _retired.Add(context);
+                _current = null;
+                return new { schema = CloseSchema, status, binding = pair };
+            }
+        }
+
+        internal PlatformNativeWorkbenchConnection? Current
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    try
+                    {
+                        // The read itself shares the auth linearization point. An old
+                        // read delayed before I/O can never rewind a newer selection.
+                        PlatformNativeWorkbenchBootstrap bootstrap = bootstrapReader();
+                        Select(bootstrap, _clock());
+                        return _current?.Binding.ExpiresAt > _clockHighWater ? _current : null;
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException
+                        or JsonException or InvalidOperationException or ArgumentException)
+                    { return null; }
+                }
+            }
         }
     }
-
-    internal static bool IsCurrent(PlatformNativeWorkbenchConnection connection) => Current == connection;
 }

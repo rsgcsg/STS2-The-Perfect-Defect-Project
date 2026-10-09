@@ -60,13 +60,13 @@ namespace STS2PlatformLiveUiTests
             internal readonly Task<HttpResponseMessage> Response;
             private readonly Task handled;
             internal Call(string route, string? body = null, string? origin = null, string? cookie = null,
-                IReadOnlyDictionary<string, string>? headers = null, Func<PlatformNativeWorkbenchBootstrap>? bootstrap = null)
+                IReadOnlyDictionary<string, string>? headers = null, PlatformNativeWorkbenchConnection.Authority? authority = null)
             {
                 using var port = new TcpListener(IPAddress.Loopback, 0); port.Start();
                 int number = ((IPEndPoint)port.LocalEndpoint).Port; port.Stop();
                 string address = $"http://127.0.0.1:{number}/";
                 listener.Prefixes.Add(address); listener.Start();
-                handled = Task.Run(async () => await PlatformTaskBridge.Handle(await listener.GetContextAsync(), bootstrap));
+                handled = Task.Run(async () => await PlatformTaskBridge.Handle(await listener.GetContextAsync(), authority));
                 var request = new HttpRequestMessage(body is null ? HttpMethod.Get : HttpMethod.Post, address.TrimEnd('/') + route);
                 request.Headers.Host = "127.0.0.1:15528";
                 if (origin is not null) request.Headers.Add("Origin", origin);
@@ -247,10 +247,11 @@ namespace STS2PlatformLiveUiTests
         }
         private sealed class NativeFixture : IDisposable
         {
-            internal readonly string Secret = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+            internal string Secret = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
             internal readonly string DirectoryPath;
             internal readonly string Runtime = "native-game-" + Guid.NewGuid().ToString("N");
             internal readonly string Artifact = new('8', 64);
+            internal readonly PlatformNativeWorkbenchConnection.Authority Authority;
             internal NativeFixture()
             {
                 Reset(); STS2Connector.PlayerEnvironment.PlayerEnvironmentService.Runtime = Runtime;
@@ -265,11 +266,22 @@ namespace STS2PlatformLiveUiTests
                 Write(Path.Combine(DirectoryPath, "native-access.json"), JsonSerializer.Serialize(new {
                     schema = PlatformNativeWorkbenchBootstrap.Schema, enabled = true, config_path = config,
                     launcher_sha256 = hash, game_mod_sha256 = Artifact, secret = Secret }));
+                Authority = new(Runtime, Bootstrap);
             }
             private static void Write(string path, string value)
             {
                 File.WriteAllText(path, value);
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            internal void Rotate(bool enabled = true)
+            {
+                string config = Path.Combine(DirectoryPath, "project.json");
+                string launcher = Path.Combine(DirectoryPath, "launcher.json");
+                if (enabled) Secret = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+                string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(launcher))).ToLowerInvariant();
+                Write(Path.Combine(DirectoryPath, "native-access.json"), JsonSerializer.Serialize(new {
+                    schema = PlatformNativeWorkbenchBootstrap.Schema, enabled, config_path = config,
+                    launcher_sha256 = hash, game_mod_sha256 = Artifact, secret = Secret }));
             }
             internal PlatformNativeWorkbenchBootstrap Bootstrap() => PlatformNativeWorkbenchBootstrap.Read(Artifact, DirectoryPath);
             internal PlatformNativeWorkbenchPair Pair(long? expiry = null, string? workbench = null, string? pair = null) => new(
@@ -282,10 +294,10 @@ namespace STS2PlatformLiveUiTests
                 ["X-SpireAgent-Configuration-ID"] = pair.ConfigurationId,
                 ["X-SpireAgent-Pair-ID"] = pair.PairId };
             internal Call Register(PlatformNativeWorkbenchPair pair) => new("/v1/workbench/native-register",
-                JsonSerializer.Serialize(pair.Signed(PlatformNativeWorkbenchPair.Schema, "native-register-v1", Secret)), bootstrap: Bootstrap);
+                JsonSerializer.Serialize(pair.Signed(PlatformNativeWorkbenchPair.Schema, "native-register-v1", Secret)), authority: Authority);
             internal Call Close(PlatformNativeWorkbenchPair pair) => new("/v1/workbench/native-unregister",
-                JsonSerializer.Serialize(pair), headers: Headers(pair), bootstrap: Bootstrap);
-            internal Call Current(PlatformNativeWorkbenchPair pair) => new("/v1/workbench/native-status", headers: Headers(pair), bootstrap: Bootstrap);
+                JsonSerializer.Serialize(pair), headers: Headers(pair), authority: Authority);
+            internal Call Current(PlatformNativeWorkbenchPair pair) => new("/v1/workbench/native-status", headers: Headers(pair), authority: Authority);
             public void Dispose() => Directory.Delete(DirectoryPath, true);
         }
 
@@ -342,25 +354,42 @@ namespace STS2PlatformLiveUiTests
         [Fact]
         public void RetirementCapacityClockAndExplicitCredentialBoundaryNeverEvictClosedContexts()
         {
-            using var fixture = new NativeFixture(); var bootstrap = fixture.Bootstrap();
+            using var fixture = new NativeFixture();
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            for (int index = 0; index < PlatformNativeWorkbenchConnection.MaximumRetiredContexts; index++)
-            {
-                var pair = fixture.Pair(now + 300, index.ToString("x32"));
-                PlatformNativeWorkbenchConnection.Register(pair, bootstrap, fixture.Runtime, now);
+            var authority = new PlatformNativeWorkbenchConnection.Authority(fixture.Runtime, fixture.Bootstrap, () => now);
+            object Register(PlatformNativeWorkbenchPair pair) {
+                using var body = JsonDocument.Parse(JsonSerializer.Serialize(pair.Signed(
+                    PlatformNativeWorkbenchPair.Schema, "native-register-v1", fixture.Secret)));
+                return authority.Register(body.RootElement);
+            }
+            object Close(PlatformNativeWorkbenchPair pair) {
+                using var body = JsonDocument.Parse(JsonSerializer.Serialize(pair));
                 var headers = new System.Collections.Specialized.NameValueCollection();
                 foreach (var header in fixture.Headers(pair)) headers.Add(header.Key, header.Value);
-                PlatformNativeWorkbenchConnection.Close(pair, headers, bootstrap, fixture.Runtime, now);
-                // Duplicate Close does not consume capacity.
-                PlatformNativeWorkbenchConnection.Close(pair, headers, bootstrap, fixture.Runtime, now);
+                return authority.Close(body.RootElement, headers);
+            }
+            for (int index = 0; index < PlatformNativeWorkbenchConnection.Authority.MaximumRetiredContexts; index++)
+            {
+                var pair = fixture.Pair(now + 300, index.ToString("x32"));
+                Register(pair);
+                if (index == 31) {
+                    var renewal = pair with { PairId = new string('e', 32), ExpiresAt = now + 400 };
+                    Register(renewal); // The reserved32nd slot survives renewal.
+                    Assert.Throws<InvalidOperationException>(() => Close(pair));
+                    pair = renewal;
+                }
+                Close(pair); Close(pair); // Duplicate Close consumes no entry.
             }
             var blocked = fixture.Pair(now + 300, new string('f', 32));
-            Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchConnection.Register(blocked, bootstrap, fixture.Runtime, now));
-            var firstContext = fixture.Pair(now + 901, 0.ToString("x32"));
-            Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchConnection.Register(firstContext, bootstrap, fixture.Runtime, now + 601));
-            Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchConnection.Register(blocked, bootstrap, fixture.Runtime, now));
-            var newCredential = bootstrap with { Secret = new string('9', 64) };
-            PlatformNativeWorkbenchConnection.Register(blocked, newCredential, fixture.Runtime, now);
+            Assert.Throws<InvalidOperationException>(() => Register(blocked));
+            Assert.Throws<InvalidOperationException>(() => Close(blocked));
+            now += 601;
+            var firstContext = fixture.Pair(now + 300, 0.ToString("x32"));
+            Assert.Throws<InvalidOperationException>(() => Register(firstContext));
+            now -= 601;
+            Assert.Throws<InvalidOperationException>(() => Register(blocked));
+            fixture.Rotate();
+            Register(blocked);
         }
 
         [Fact]
@@ -369,14 +398,52 @@ namespace STS2PlatformLiveUiTests
             using var fixture = new NativeFixture(); var pair = fixture.Pair();
             await using (var call = fixture.Register(pair)) Assert.Equal(HttpStatusCode.OK, (await call.Response).StatusCode);
             await using (var call = new Call("/v1/workbench/native-register", JsonSerializer.Serialize(
-                pair.Signed(PlatformNativeWorkbenchPair.Schema, "native-access-v1", fixture.Secret)), bootstrap: fixture.Bootstrap))
+                pair.Signed(PlatformNativeWorkbenchPair.Schema, "native-access-v1", fixture.Secret)), authority: fixture.Authority))
                 Assert.Equal(HttpStatusCode.Conflict, (await call.Response).StatusCode);
             var headers = fixture.Headers(pair); headers["X-SpireAgent-Pair-ID"] = new string('f', 32);
-            await using (var call = new Call("/v1/workbench/native-unregister", JsonSerializer.Serialize(pair), headers: headers, bootstrap: fixture.Bootstrap))
+            await using (var call = new Call("/v1/workbench/native-unregister", JsonSerializer.Serialize(pair), headers: headers, authority: fixture.Authority))
                 Assert.Equal(HttpStatusCode.Conflict, (await call.Response).StatusCode);
-            await using (var call = new Call("/v1/workbench/native-register", new string(' ', 4097), bootstrap: fixture.Bootstrap))
+            await using (var call = new Call("/v1/workbench/native-register", new string(' ', 4097), authority: fixture.Authority))
                 Assert.False((await call.Response).IsSuccessStatusCode);
             await using (var call = fixture.Current(pair)) Assert.Equal(HttpStatusCode.OK, (await call.Response).StatusCode);
+        }
+        [Fact]
+        public async Task DelayedOldRequestAndCurrentReadCannotResetNewCredentialRetirement()
+        {
+            using var fixture = new NativeFixture();
+            var oldPair = fixture.Pair();
+            string oldRequest = JsonSerializer.Serialize(oldPair.Signed(
+                PlatformNativeWorkbenchPair.Schema, "native-register-v1", fixture.Secret));
+            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task oldRequestTask = Task.Run(async () => {
+                ready.SetResult(); await release.Task;
+                await using var call = new Call("/v1/workbench/native-register", oldRequest, authority: fixture.Authority);
+                Assert.Equal(HttpStatusCode.Conflict, (await call.Response).StatusCode);
+            });
+            Task oldReadTask = Task.Run(async () => { await release.Task; Assert.Null(fixture.Authority.Current); });
+            await ready.Task;
+            fixture.Rotate();
+            var selected = fixture.Pair(workbench: new string('2', 32));
+            await using (var call = fixture.Register(selected)) Assert.Equal(HttpStatusCode.OK, (await call.Response).StatusCode);
+            await using (var call = fixture.Close(selected)) Assert.Equal("closed", (await call.Body()).GetProperty("status").GetString());
+            release.SetResult(); await Task.WhenAll(oldRequestTask, oldReadTask);
+            await using (var call = fixture.Register(selected)) Assert.Equal(HttpStatusCode.Conflict, (await call.Response).StatusCode);
+            fixture.Rotate(enabled: false);
+            Assert.Null(fixture.Authority.Current);
+            await using (var call = fixture.Register(selected)) Assert.False((await call.Response).IsSuccessStatusCode);
+        }
+
+        [Fact]
+        public void BoundProcessRuntimeCannotBeReplacedByRequestOrCurrentRead()
+        {
+            using var fixture = new NativeFixture();
+            var wrong = fixture.Pair() with { RuntimeInstanceId = "different-process" };
+            using var body = JsonDocument.Parse(JsonSerializer.Serialize(wrong.Signed(
+                PlatformNativeWorkbenchPair.Schema, "native-register-v1", fixture.Secret)));
+            Assert.Throws<InvalidOperationException>(() => fixture.Authority.Register(body.RootElement));
+            Assert.Equal(fixture.Runtime, fixture.Authority.Runtime);
+            Assert.Null(fixture.Authority.Current);
         }
     }
 }

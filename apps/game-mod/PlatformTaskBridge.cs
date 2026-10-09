@@ -20,6 +20,8 @@ internal static class PlatformTaskBridge
     internal static void Start()
     {
         if (_listener != null) return;
+        PlatformNativeWorkbenchConnection.Initialize(
+            PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId);
         var listener = new HttpListener();
         listener.Prefixes.Add("http://" + Authority + "/");
         listener.Start();
@@ -50,7 +52,7 @@ internal static class PlatformTaskBridge
     };
 
     internal static async Task Handle(HttpListenerContext context,
-        Func<PlatformNativeWorkbenchBootstrap>? nativeBootstrapReader = null)
+        PlatformNativeWorkbenchConnection.Authority? nativeAuthority = null)
     {
         int nativeWorkStarted = 0;
         try
@@ -113,11 +115,11 @@ internal static class PlatformTaskBridge
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/unregister")
             { UnregisterWorkbench(context); return; }
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/native-register")
-            { await RegisterNativeWorkbench(context, nativeBootstrapReader ?? ReadSelectedBootstrap); return; }
+            { await RegisterNativeWorkbench(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
             if (request.HttpMethod == "GET" && request.RawUrl == "/v1/workbench/native-status")
-            { NativeWorkbenchStatus(context, nativeBootstrapReader ?? ReadSelectedBootstrap); return; }
+            { NativeWorkbenchStatus(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/native-unregister")
-            { await CloseNativeWorkbench(context, nativeBootstrapReader ?? ReadSelectedBootstrap); return; }
+            { await CloseNativeWorkbench(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
             if (request.HttpMethod != "POST" || request.RawUrl != "/v1/tasks/prepare-model"
                 || request.ContentType != "application/json" || request.ContentLength64 is <= 0 or > 4096
                 || request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
@@ -274,10 +276,6 @@ internal static class PlatformTaskBridge
         });
     }
 
-    private static PlatformNativeWorkbenchBootstrap ReadSelectedBootstrap() =>
-        PlatformNativeWorkbenchBootstrap.Read(
-            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
-
     private static bool NativeTransport(HttpListenerContext context)
     {
         if (context.Request.Headers["Cookie"] is null
@@ -287,18 +285,13 @@ internal static class PlatformTaskBridge
     }
 
     private static async Task RegisterNativeWorkbench(HttpListenerContext context,
-        Func<PlatformNativeWorkbenchBootstrap> bootstrapReader)
+        PlatformNativeWorkbenchConnection.Authority authority)
     {
         if (!NativeTransport(context)) return;
         using JsonDocument document = await ReadBoundedBody(context.Request, 4096);
         try
         {
-            PlatformNativeWorkbenchBootstrap bootstrap = bootstrapReader();
-            PlatformNativeWorkbenchPair pair = PlatformNativeWorkbenchPair.ReadSigned(
-                document.RootElement, PlatformNativeWorkbenchPair.Schema, "native-register-v1", bootstrap.Secret);
-            object ack = PlatformNativeWorkbenchConnection.Register(pair, bootstrap,
-                PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            object ack = authority.Register(document.RootElement);
             Reply(context, 200, ack);
         }
         catch (InvalidOperationException error)
@@ -306,14 +299,12 @@ internal static class PlatformTaskBridge
     }
 
     private static void NativeWorkbenchStatus(HttpListenerContext context,
-        Func<PlatformNativeWorkbenchBootstrap> bootstrapReader)
+        PlatformNativeWorkbenchConnection.Authority authority)
     {
         if (!NativeTransport(context)) return;
         try
         {
-            object proof = PlatformNativeWorkbenchConnection.CurrentProof(context.Request.Headers,
-                bootstrapReader(), PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            object proof = authority.CurrentProof(context.Request.Headers);
             Reply(context, 200, proof);
         }
         catch (InvalidOperationException error)
@@ -321,16 +312,13 @@ internal static class PlatformTaskBridge
     }
 
     private static async Task CloseNativeWorkbench(HttpListenerContext context,
-        Func<PlatformNativeWorkbenchBootstrap> bootstrapReader)
+        PlatformNativeWorkbenchConnection.Authority authority)
     {
         if (!NativeTransport(context)) return;
         using JsonDocument document = await ReadBoundedBody(context.Request, 4096);
         try
         {
-            object result = PlatformNativeWorkbenchConnection.Close(
-                PlatformNativeWorkbenchPair.Read(document.RootElement), context.Request.Headers,
-                bootstrapReader(), PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            object result = authority.Close(document.RootElement, context.Request.Headers);
             Reply(context, 200, result);
         }
         catch (InvalidOperationException error)
