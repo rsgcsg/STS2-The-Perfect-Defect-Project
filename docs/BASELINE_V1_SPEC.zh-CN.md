@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.3 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.4 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -39,19 +39,45 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 
 ## 2. 上层抽象与唯一责任
 
+整条链可以理解为：游戏决定实际发生什么，Host 能力合同连接具体游戏，Connector
+把允许的公开信息与操作实现为交互合同，完整 Agent 据此取得信息并行动，Model
+承担其中的计算。记录保存实际发生的事实；研究把记录变成有声明的输入与目标；
+应用组织任务、资源和产物。一个用户可以只录制、分析或运行，不必每次走完整条链。
+
 | 层／对象 | 负责的事实 | 连接与边界 |
 | --- | --- | --- |
 | 世界 | 规则、效果、随机性、原生执行与 Commit | STS2 是当前参照；其他 Host 按具体协议/范围验证，不能推断全世界等价 |
-| Host 合同 H | 公平可捕获事实、精确操作、时钟、实例与恢复能力 | Native Foundation/NativeUi 提供 typed seam；Host Runtime 管实例，不能自创合法性 |
-| 协议核心 P | 信息范围、完整操作关系、版本、事件、读取与失败含义 | Connector 保存公开投影、exact bindings、immutable bytes；不含模型或研究策略 |
-| Agent 接口 A | 读取、接收公开事件、结构查询/选择、提交、等待与控制 | SDK 服务全量评分和不评分的消费者；不强制所有 Agent 返回 scores |
+| Host 能力合同 | 公平可捕获事实、精确操作、时钟、实例与支持的管理能力 | Native Foundation 提供语义/生命周期 seam，Connector NativeUi 绑定实际公开 UI；Host Runtime 管进程、隔离与恢复 |
+| 公开交互合同／协议核心 | 信息范围、完整操作关系、版本、事件、读取与失败含义 | Connector 保存公开投影、exact bindings、immutable bytes；不含模型或研究策略 |
+| 面向 Agent 的环境接口 | 读取、接收公开事件、结构查询/选择、提交、等待与控制 | Connector SDK 等提供交互能力，服务全量评分和不评分的消费者 |
 | 完整 Agent | 取得、表示、状态、时机、选择和依赖组合 | 对外交付一个版本化个体；runner 不在外面偷偷补信息或替选 |
-| Model | 明确输入、计算图、参数、状态转换和训练目标 | 不直接持有 native operand、私有存档或控制权限 |
+| Model | 明确输入/输出、计算结构、固定或学习参数及可选状态转换 | 可以表示、预测、评分或生成；不直接持有 native operand、私有存档或控制权限 |
 | 记录与验证 | 实际捕获、来源、顺序、输入见证、结果和缺口 | Annotator/Evidence 不产生行动权威、Human 来源或研究准入 |
 | 数据与研究 | 投影、假设、用途、划分、目标、训练和评价 | STPD 消费公共合同及原件；未来标签与输入分开 |
 | 应用与资源 | 用例、作业、权限、流通、恢复、安装与展示 | 复用现有 store/use/operations/membership；CLI/API/GUI 调用同一 owner |
 
-H/P/A 是逻辑合同，不要求三个进程。共享库保证分页/校验/去重/传输正确，AgentSpec 决定使用能力的策略。任务 Runner 可以获得显式管理权限，普通模型没有重开、回档或读取隐藏状态的权限。名称调整须消除真实耦合，不为风格重写组件。
+这些是逻辑角色，不要求分别部署服务。环境实例是具体世界、Host、交互 profile
+与起点的一次组合；相同 JSON 不证明两个 Host 行为等价。这里不用 H 简称 Host，
+历史 Human 输入观察 H 保留原义。旧设计的 P/A 是协议核心/环境接口的示意，
+不是新增组件，也不等于历史方案 A 或动作集合 A(S)。
+
+面向 Agent 的环境接口与内部 Agent 端口分开：前者由 Connector 提供游戏交互能力；
+后者是 Policy Runtime 与 Agent 程序之间的消息合同。当前通用
+[Agent 端口](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md)支持消费、查询、
+Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要求完整 scores/index。
+改变端口传输形式本身不表示改变游戏信息或操作语义。
+
+完整 Agent 可以由固定规则、一个或多个 Model 与共享库构成，也可以整体作为模型
+描述；不要求所有 Agent 经训练或所有组件联合优化。策略是取得、调度或选择的规则，
+可以固定或学习。共享库实现分页、校验、去重与传输；AgentSpec 声明使用能力的策略。
+环境适配器、模型输入适配器和端口适配器各说明自己的职责，不能用“adapter”隐藏
+自动浏览、摘要或替选。训练目标由研究 TargetSpec 固定，不是每个 Model 的定义条件。
+
+任务 Runner 可以在明确 TaskSpec/权限内准备或管理 episode，组合进实验 Agent；
+普通局内策略没有任意重开、回档或读取隐藏状态的权限。Policy Runtime 管授权、
+消费水位、投递、预算与 Stop；Host Runtime 管游戏进程。这些责任不因名字变化合并。
+较早三条责任线及职责分配的理由见[设计沿革](design/BASELINE_DESIGN_HISTORY.zh-CN.md)，
+具体目录与依赖见[组件](COMPONENTS.md)。名称调整须消除真实耦合，不为风格重写组件。
 
 共享抽象须由默认结构 M2 和另一实际查询/结构请求消费者共同检验。历史合成例子只能提供反例。新增机制扩 owning adapter，不另建模型仓库、原生动作队列、许可账本或因果 tracker。
 
@@ -89,6 +115,12 @@ H/P/A 是逻辑合同，不要求三个进程。共享库保证分页/校验/去
 
 source notice、capture、publication、Agent received、Model consume/advance 分开。重传不更新 W；同正文的真实重访和 owner/focus occurrence 不能被内容 hash 抹掉。新事件 InputSpec 须同时更新记录、训练与在线端口，不能把 S0 未 offer 的 capture 填回旧前缀。
 
+正文区分公开观察、捕获、渲染帧与模型消费步。Frame/StructuredFrame 是既有协议或
+研究数据类型，默认不是屏幕截图或视频帧；capture 冻结其声明范围的公开内容。
+ReadCurrent 在请求时捕获，ReadSealed 读取原冻结值。目录查询不等于原生打开详情，
+一次提供不等于已经消费，消费 ACK 也不独立证明数值记忆。一次选择、输入投递、
+原生执行、Commit 和后果分别计数；Receipt/Result 不因附即时观察就成为因果后继。
+
 短暂且承诺保留的 focus/preview/selection/owner 变化须在确切 seam 冻结 required 公开值。无可靠捕获依据的路径不称完整。可延后大资料只给 source notice，按需读取形成实际当时版本；已冻结内容可共享、分页和延迟编码。全量输入的 global/page/entities/C 必须一致，或有明确的依赖未变证明。
 
 事件、payload、catalog、cache、pin、等待各有数量/字节/期限上限。丢失、过期、溢出和断代明确 gap；正常声明负载的 required gap 是验收失败。静态缓存和 dirty 跳扫须有依赖依据，相同 hash 不能证明没有扫描。控制/停止不能排在昂贵构建后无限等待。
@@ -101,13 +133,28 @@ source notice、capture、publication、Agent received、Model consume/advance �
 
 结构模型复用 typed 对象/字段/关系、共享 byte encoder、当前实体与持久 W、候选只读评分。opaque ID、时间、seed、lease、当前标签不是可学习输入；公开顺序与任意 ordinal 分开。新 profile/InputSpec 产生新投影和包身份，旧权重不自动兼容。文本 LightAction 保留为配对参考，不阻止结构模型早期实现。
 
+M2 是持续状态的研究角色，不是一个统一模型产物。Text/LightAction M2 的页面 token
+与动作编码器、当前 Structured M2 的 typed tree/局部字段编码/稀疏关系与结构候选评分
+是不同计算图；还须固定 K/d、InputSpec、取得历史、reset 和权重。名字相近不能把一条
+路线的结果覆盖到另一条，也不能把 publication-memory 与当前取样改称同一种消费历史。
+
 默认 learned Agent 要有全部 mandatory 主要机制族的自主进入/接续/退出及连续自然任务证据；环境可执行、训练见过、实际到达和策略质量分开。teacher/脚本可诊断或采集，不能在 learned 运行外壳暗中替选。奖励循环须修真实输入/监督/策略原因，预算保护不能冒充任务完成。
 
 Agent 状态恢复绑定模型/InputSpec/profile/generation、已消费前缀和状态版本。重连核原请求及实际历史；gap、不同权重/环境或不明位置不能无缝恢复。新租约不使旧动作有效。模型进程恢复、游戏存档恢复、训练 checkpoint 和应用任务恢复各自声明能力。
 
 ## 6. 记录、来源、转换与目标
 
-原生 UI seam 证明发生何种输入，不机器证明操作者是人。会话/actor segment 固定 Human owner 声明、AI 原生 UI、Agent 协议或 unknown 来源；切换有真实边界，未知不倒推。AI 功能录制不能填 `human_origin_attested=True`；旧 Human bundle 保持既有验证规则。
+记录原生键鼠/UI 或程序协议交互时，保存操作者声明与输入入口：人操作（本人声明）、
+机器操作原生 UI、机器通过 Agent 协议或未知。现有 `declared_human`、`agent_native_ui`、
+`agent_protocol`、`unknown` wire 值保持；actor_id 是记录内的关联代号，不要求真实姓名或
+新增身份考证。切换有实际 segment 边界，未知不倒推；输入 seam 不机器证明人类身份。
+AI 功能录制不能填 `human_origin_attested=True`，旧 Human bundle 保持既有验证规则。
+
+原始记录、Evidence 验证和研究数据视图是不同产物。Source3 保存声明范围的公开捕获
+与输入事实，默认不是视频录制；其 publication-memory、recorded-capture 预训练及取样
+视图保留各自身份。数据准备中的 cohort 是目标标签来源筛选，默认 declared_human
+不判定原件由人操作；机器来源须显式选匹配 cohort。验证完整性不自动授权训练，
+应用成功预留 train 分组也不表示已经拟合或登记实际 TrainingUse。
 
 在线客户端与 Annotator 复用 Connector 公开冻结事实。observation、native input witness、delivery、Commit/causal、持久化位置和来源各有身份；新事件流不建立第二个 causal tracker。focus 输入前观察不能包含之后 preview。公开可得、实际显示和心理知识分开；无动作观察不伪造 Wait 标签。
 
@@ -121,7 +168,7 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 
 真实缺失输入、不可验证 basis、actor 切换、暂停/接管、环境断代或不明 Model 状态切开采样段；后续可靠片段可明确从 W0 开始，保留整局/use/split 关联。只缺 advisory publication 而输入顺序/basis 仍独立成立时，不能机械当作采样史缺口；原件完整性/身份失败仍拒绝。TBPTT 截梯度不清空 W。unknown 请求或控制释放必须先由既有 owner 处置，不能用冷启动逃避未知重试规则。
 
-第一实用采样实例可以不支持跨进程 W 恢复，段内仍有记忆；明确新段从当前画面开始，不能显示为恢复原记忆。产品同 W 保存/恢复保留独立验收，既有库能力不等于 GUI 已可用。采样视图、新 recipe/包/运行时与数据路径未共同验证前，不能按旧 recipe 接纳或自动替换旧模型。
+第一实用采样实例可以不支持跨进程 W 恢复，段内仍有记忆；明确新段从当前公开观察开始，不能显示为恢复原记忆。产品同 W 保存/恢复保留独立验收，既有库能力不等于 GUI 已可用。采样视图、新 recipe/包/运行时与数据路径未共同验证前，不能按旧 recipe 接纳或自动替换旧模型。
 
 划分保存来源组、共同起点/模板、重复关联、角色/场景/长度/候选分布；不同 seed/process/run ID 本身不证明科学独立性。训练拟合、开发选择、测试用途分别登记。N/Z/O/RL TargetSpec 与模型输入分离；直接事实型 Z 只用有合格后果依据的实际分支；推断、假设、teacher、合成或弱监督目标允许另设 TargetSpec，固定生成方法、所据事实、置信/适用限制及评价办法，不改原件或冒充实测反事实。O 固定 metric/unit/horizon、known/censor、continuation policy 和来源。E4/V1 除接口、资格和反例，还完成原定有界训练尝试/比较并报告数据真实不足、负面结果与成本；缺 required 数据或未执行比较保持未完成。无需全笛卡尔积或每变体一万条，科学优势及进一步规模研究仍属 R2。不能伪造标签补数量。
 

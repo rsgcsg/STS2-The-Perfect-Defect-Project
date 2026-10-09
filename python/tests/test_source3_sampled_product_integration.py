@@ -17,12 +17,19 @@ from stpd.ordered_source_spec import (
 def test_product_default_and_display_project_the_owner_views():
     support = source3_capabilities()
     assert support["default_view"] == SAMPLED_VIEW
+    assert support["default_cohort"] == "declared_human"
+    assert set(support["cohorts"]) == {"declared_human", "agent_native_ui", "agent_protocol"}
+    assert "本人声明" in support["source_labels"]["declared_human"]
+    assert "键鼠/UI" in support["source_labels"]["agent_native_ui"]
+    assert "程序协议" in support["source_labels"]["agent_protocol"]
+    assert "unknown" not in support["cohorts"]
     views = {row["view"]: row for row in support["views"]}
     assert {DEFAULT_VIEW, PRETRAIN_VIEW, SAMPLED_VIEW} <= views.keys()
     for name, row in views.items():
         assert recipe_view(row["recommended_recipe_id"]) == name
         assert row["label"] and row["label"] != name
     assert views[DEFAULT_VIEW]["recommended_recipe_id"] == DEFAULT_RECIPE
+    assert views[PRETRAIN_VIEW]["label"] == "录制公开观察预训练"
     assert views[SAMPLED_VIEW]["recommended_recipe_id"] == SAMPLED_RECIPE
     assert views[SAMPLED_VIEW]["history_scope"] == (
         "declared_original_input_basis_sampled_segments"

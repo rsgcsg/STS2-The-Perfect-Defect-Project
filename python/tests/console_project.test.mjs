@@ -6624,6 +6624,9 @@ test("Source recording forms require explicit actor and source, preserve exact c
       return recordingPageHandler(url, options);
     }});
   const page=await env.render(); const start=action(page,"native-recording-start_new_session");
+  assert.match(text(page), /键鼠\/UI/);
+  assert.match(text(page), /本人声明/);
+  assert.match(text(page), /记录内操作者代号/);
   assert.equal(field(page,"native-recording-kind").value, "");
   assert.equal(field(page,"native-recording-actor").value, "");
   assert.equal(start.disabled,true);
@@ -6892,6 +6895,7 @@ test("structured v1 export keeps its actual structured type and owner profile", 
 const source3BrowserSupport = {
   source_profile:"native-logical-source-v3", cohorts:["agent_protocol", "declared_human"],
   default_cohort:"declared_human", default_view:"decision_sample_carry",
+  source_labels:{agent_protocol:"Owner machine protocol",declared_human:"Owner human declaration"},
   views:[{view:"publication_memory",label:"Owner published history",
     history_scope:"original_admitted_attachment_epoch_prefix",qualification:"owner-published",recommended_recipe_id:"owner-published-recipe"},
   {view:"decision_sample_carry",label:"Owner sampled memory",
@@ -6971,6 +6975,9 @@ test("Source3 raw detail uses owner sampled default and explicit exact preview, 
   let page = await env.render();
   assert.equal(field(page,"local-source3-view").value,"decision_sample_carry");
   assert.equal(field(page,"local-source3-cohort").value,"declared_human","content origins do not override the owner's cohort default");
+  assert.match(text(page), /Owner human declaration/);
+  assert.match(text(page), /Owner machine protocol/);
+  assert.match(text(page), /默认选项不会改判原始记录的来源/);
   assert.match(text(page),/agent_protocol · unknown/);
   assert.match(text(page),/declared_original_input_basis_sampled_segments/);
   assert.match(text(page),/Owner sampled memory/);
