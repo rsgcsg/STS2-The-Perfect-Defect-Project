@@ -3,8 +3,10 @@
 
 # Components
 
-For the proposed cross-system responsibility map, read [baseline foundations](design/BASELINE_FOUNDATION.zh-CN.md).
-The proposal does not move these components or transfer their current authority.
+For the selected cross-system direction, read the [current baseline specification](BASELINE_V1_SPEC.zh-CN.md).
+The table below owns component placement and authority; the execution packet and
+STATUS separately track implementation and qualification. Historical proposals
+do not move these boundaries or establish current capability.
 
 > Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection

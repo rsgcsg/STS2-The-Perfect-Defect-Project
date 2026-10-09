@@ -1,4 +1,4 @@
-# Platform Project System
+# Project documentation and maintenance system
 
 This document owns the lightweight repository-maintenance system. Its purpose
 is to help a new engineer or Codex session find the right truth quickly and to
@@ -34,26 +34,60 @@ is still current.
 
 ## Documentation classes and triggers
 
-| Owner | Contains | Update when |
+| Owner | Contains | Update when / keep out |
 |---|---|---|
-| `README.md` | Durable zero-context boundary and routes | Product/component map or primary route changes |
-| `NEW_ENGINEER_GUIDE.md` | First-day tutorial | Supported setup or first-change path changes |
-| `ARCHITECTURE.md`, `COMPONENTS.md`, ADRs | Durable authority and dependency direction | Accepted architecture changes |
-| `TESTING.md`, `VERSIONING.md`, workflow | Stable evidence, identity, Git, PR, release process | Their governed process changes |
-| `STATUS.md` | Current exact claims and evidence index | A claim or exact evidence boundary changes |
-| `memory/CURRENT.md` | Short active work, blocker, next gate | Active work changes; remove completed detail |
-| dated evidence and PRs | Exact historical proof and review record | Never rewritten to imply transfer |
-
-Durable docs do not list current topic branches or reproduce evidence
-timelines. CURRENT points to the PR/report instead of copying it. Historical
-evidence remains searchable but is outside default newcomer/Codex context.
+| `README.md`, `DOCUMENT_MAP.md` | Product boundary and short routes by task | Entry points change; no current hashes, work log or copied installation procedure |
+| root/local `AGENTS.md` | Hard invariants, owner routing and change loop | A durable instruction changes; no campaign budget, worker queue or acceptance timeline |
+| `NEW_ENGINEER_GUIDE.md`, `NEW_MEMBER_HANDOFF.zh-CN.md` | Role-specific onboarding and links to supported procedures | Setup or user path changes; do not turn every role's checklist into every newcomer's prerequisite |
+| `ARCHITECTURE.md`, `COMPONENTS.md`, accepted ADRs | Durable authority, dependency direction and significant decisions | A boundary changes; cite exact protocol owners rather than restating their schemas |
+| owning specification and component contracts | Required outcomes, selected behavior, assumptions, failure/compatibility semantics and decision rationale | Before dependent implementation of a changed design; mark selected but unimplemented behavior explicitly |
+| active plan/task/PR; baseline task index | Stable task IDs, dependencies, one writer, acceptance, allowed operations, resources and progress | Dispatch, design selection, review or integration changes; link evidence, do not become a second contract |
+| `TESTING.md`, `VERSIONING.md`, workflow, `AI_COLLABORATION.md` | Check selection, identity, Git/release and collaborator lifecycle respectively | Their governed process changes; other guides link instead of creating a second timing or check policy |
+| `STATUS.md` | Small cross-project claim/evidence index, with date and exact scope | A capability/build/install/deployment claim changes; old operating combinations are labelled historical, never implied current |
+| `memory/CURRENT.md` | Bounded active checkout/task route, blocker and next gate | Active work changes; remove completed detail into its evidence report, aiming below 4 KiB / 80 lines |
+| `docs/design/` | Alternatives, exploratory reasoning and superseded designs | A useful hypothesis or tradeoff needs retention; proposals do not become requirements by proximity |
+| dated evidence and review receipts | Exact source, method, result, failures and limits for one completed observation | Preserve original results; add a separately scoped correction/follow-up, never rewrite a failed run as a pass |
 
 The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) owns its stable IDs and
-dependencies; CURRENT owns only the active packet and next gate. Design proposals,
-accepted norms, implementation status and historical evidence have separate labels.
-Update affected routes/consumer documentation with the change and link to the fact
-owner instead of copying status strings. Existing project checks catch mechanical
-drift; semantic freshness and truthful status remain review responsibilities.
+dependencies. Its execution matrix owns active packets and required acceptance;
+CURRENT routes to it. Machine-readable manifests/BOM/store/use ledgers remain the
+owners of identity and data permissions. No parallel registry or status database
+is created for documentation convenience.
+
+### Keeping a change aligned
+
+For each coherent change, update the affected truth and its entry route together:
+
+1. Before implementation, record the real need and chosen behavior in its owning
+   spec/task. Retain useful rejected alternatives and the condition for revisiting
+   a choice. A short paragraph is enough for a small decision; use an ADR only for
+   a durable cross-cutting decision under the existing ADR policy.
+2. Change code/contracts/tests at that owner. Update consumer instructions when
+   their behavior changes, not merely because a workspace SHA advanced.
+3. At independent review/integration, update the existing task row and evidence
+   link with exact accepted scope. If a current claim changes, update STATUS;
+   if the active next step changes, replace CURRENT's summary. A completed build
+   removes a “build pending” statement even when installation is still pending.
+4. Run the existing checks and closeout, then review semantics: do the task,
+   specification, user-facing instructions and evidence agree? Name remaining
+   mismatches with an owner and next gate in the existing task. Do not quietly
+   leave conflicting current instructions in separate guides.
+
+The lead integrating the change owns this reconciliation; the independent reviewer
+checks it. Private chat/checkpoints help execution but cannot be the only place
+containing a design needed by the next engineer. Public docs retain the conclusion,
+reason and reproducible route; private/raw evidence stays in authorized storage.
+
+A new idea belongs either in the owning specification as a selected decision or
+in its existing plan/design section as a hypothesis with rationale and a deciding
+example. Record useful engineering judgments, not the transcript. One supported
+mode may be sufficient; do not multiply configurations or mandatory experiments
+merely to preserve every discussion option. Review needs and actual failures before
+retiring an old prescription, and preserve its artifact/compatibility history.
+
+Mechanical checks cover links, commands, routing, budgets and identity consistency.
+They cannot prove that a requirement is sensible or a status sentence is true.
+Semantic freshness is a review responsibility, not a claim produced by `project:check`.
 
 ## Code, naming, and formatting authority
 

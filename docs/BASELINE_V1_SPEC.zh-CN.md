@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.2 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.3 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -15,6 +15,27 @@
 G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们需要的 G2/V1 前置能力、接口、迁移与验收设计必须补齐。约 10k 合格交互的真实训练尝试、独立 K/Reset、backbone、N/Z/O 有界比较是保留的 Stage1a 义务，映射到本轮 E4/V1 的实际证据；不统一推迟到 R2，也不以小训练宣布完成。最强模型是研究目标，工程门不预先承诺胜率。
 
 必要游戏生命周期、隔离准备、安装、GitHub 和部署授权继续有效；累计 model/train/API/GPU 付费上限仍为 20 USD，前包支出 0，不是每个 worker 各有一份预算。共享存档、旧任务、凭据、数据/use/Gold 保持各自 owner。AI 可代执行功能步骤并标明实际来源，不能冒充 Human。
+
+### 设计调整的依据与当前选择
+
+真实需要与整个 Agent 的有效能力决定设计。信息取得、记忆、推理和复杂度可以在协议、
+共享服务、Agent 和模型之间重新分配，比较任务能力、泛化、成本和日常操作负担；
+不只优化一次模型调用的准确率。保留公平性、真实来源、用途和证据边界，具体协议与实现
+可以修订。一个清楚、合法且经过验证的运行模式足以作为首个默认，不要求先支持所有组合。
+
+本轮选择及理由直接记在本规范；具体实现/验收位置只在执行矩阵维护。后续发现反例时
+修改此处和 owning 合同，说明受影响消费者与迁移，不能靠继续叠加旧规定解决冲突。
+
+| 决定 | 需要与理由 | 实现边界／复议条件 |
+| --- | --- | --- |
+| 默认研究候选改为当前决策采样、段内 learned carry | 先取得当前完整公开状态/C，同时让模型学习浏览、重访和进度；逐决策清空 W 会抹掉该任务信息 | **选定待实现**，旧 publication-memory 包保持旧义；真实样本/原生序列证明后才能成为可用默认 |
+| 记忆从实际消费历史学习 | Map→Inspect→Map 可以同页不同历史；固定 visited list 不能冒充模型能力 | I/F-off 为初始选择；只有真实反例和明确 InputSpec 才增加其他输入，不在执行器暗补策略 |
+| 训练视图可以重表达、截断或增强历史 | 原始记录、训练曝光和部署曝光不必逐项相同；不同有用假设可以实验 | 必须声明输入/目标/分段/重置和差异、保留分母，不能宣传为完整 Human 注意力或部署逐步重放 |
+| 先交付一条方便复用的实际路径 | 保存数据、选择已训模型、看一次建议和控制游戏是有明确目的的用例 | 同一应用 owner 和能力投影；已有安装/登记/数据不因再次使用重做，训练和操作仍有明确意图 |
+
+这些选择不等于已实现、已资格化或用户最终批准，也不删除完整范围内待验的机制。
+100–300 个合格选择的小批学习和一次自然整局尝试先给反馈；不把全部最终门禁变成
+第一次实用训练的前置。约 10k 和已约定有界比较继续按实际数据与成本完成。
 
 ## 2. 上层抽象与唯一责任
 
@@ -74,7 +95,7 @@ source notice、capture、publication、Agent received、Model consume/advance �
 
 ## 5. Agent、Model 和状态
 
-默认完整 Agent 组合共享取得库、观察消费/历史状态、结构 M2、选择和受限 Runtime。I/F 关闭：自身 request/receipt/reason/control/动作日志不改名进入 P/E/W；当前真实 HP、selected、focus、公开总结仍可输入。独立 receipt 不触发 W。
+选定的下一个默认完整 Agent 组合当前决策采样、共享取得库、段内 learned carry、结构 M2、选择和受限 Runtime；以下为目标合同，现有 full-reference 包尚未因此改变。I/F 关闭：自身 request/receipt/reason/control/动作日志不改名进入 P/E/W；当前真实 HP、selected、focus、公开总结仍可输入。独立 receipt 不触发 W。
 
 完整端口支持无动作观察消费和 Act/Await/Abstain/Close；scores 是可选诊断。旧评分端口按旧 Manifest 保留。不评分/生成式消费者仍从同一关系 Resolve，不能生成 native operand。程序侧固定时机策略属于 AgentSpec，不冒充模型学会时机。
 
@@ -92,9 +113,15 @@ Agent 状态恢复绑定模型/InputSpec/profile/generation、已消费前缀和
 
 ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/消费、reset、假设、mask 和排除分母。允许明确有损/重表达监督，不冒充保真 Human 时机模仿。旧数据可只适用局部 N；缺浏览/preview/前缀时不补完整 sequence。用途/Gold/lineage 继续由既有 owner 判定。
 
-默认 Source3 publication-memory 视图只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 的 NativeUnit/一致性及完整 C 精确匹配时才提供 N，评分不重复推进 W。不匹配 basis 保留在原件及排除分母内，不偷偷加入默认历史。另一个显式 recorded-capture 预训练视图可消费可靠 input basis，须独立 ProjectionSpec/TargetSpec/recipe 身份，并报告与部署曝光的差异。两者复用同一训练引擎。
+已实现 Source3 publication-memory 视图仍只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 精确匹配才提供 N。显式 recorded-capture 预训练视图保留独立 recipe 和曝光假设。两者的旧身份/准入规则不因新方向改变。
 
-缺口或暂停使连续历史证明中断。严格 recipe 排除未证明后缀；需要保留后续可靠片段时，可另设 context-truncated/W0 研究视图，明确截断和初始状态假设，并保持原 whole-run/use/split 关联。这不是原生新局或无缝恢复；该视图未实现、验证前不能按现有 recipe 接纳。混合来源原件完整保存，来源目标 mask 不删除上下文、暴露史或用途关联。
+下一默认采样视图按可核验顺序消费原始 pre-input basis，保持完整 C，段内携带 W；有可靠 basis 但无合格 N 的观察仍可作为上下文，不能只拼接有标签行。它将输入前状态重表达为 Agent 决策样本，不声称 Human 曾逐步消费这些输入。在线实际 offered/ACKed 样本及无输入样本须由既有 evidence/storage 路径保留足够原始内容以核对；不能凭哈希或输入行推造缺失 ModelInput。
+
+采样的完整公开字段/C、NativeUnit 重复/重访规则、carry 递推和明确 reset 规则须在线/离线一致验证。连续重复取得不重复推进 W；消费中间页后返回同页不能按全局内容 hash 删除。当前采样允许不对应 publication index，但必须用新的获取/历史合同，不能伪造旧 publication。第一版不消费不完整或空 C 的等待检查；合格 ready-summary 可作为无 N 的最终观察。其余曝光差异在 ProjectionSpec/AgentSpec 中明确。
+
+真实缺失输入、不可验证 basis、actor 切换、暂停/接管、环境断代或不明 Model 状态切开采样段；后续可靠片段可明确从 W0 开始，保留整局/use/split 关联。只缺 advisory publication 而输入顺序/basis 仍独立成立时，不能机械当作采样史缺口；原件完整性/身份失败仍拒绝。TBPTT 截梯度不清空 W。unknown 请求或控制释放必须先由既有 owner 处置，不能用冷启动逃避未知重试规则。
+
+第一实用采样实例可以不支持跨进程 W 恢复，段内仍有记忆；明确新段从当前画面开始，不能显示为恢复原记忆。产品同 W 保存/恢复保留独立验收，既有库能力不等于 GUI 已可用。采样视图、新 recipe/包/运行时与数据路径未共同验证前，不能按旧 recipe 接纳或自动替换旧模型。
 
 划分保存来源组、共同起点/模板、重复关联、角色/场景/长度/候选分布；不同 seed/process/run ID 本身不证明科学独立性。训练拟合、开发选择、测试用途分别登记。N/Z/O/RL TargetSpec 与模型输入分离；直接事实型 Z 只用有合格后果依据的实际分支；推断、假设、teacher、合成或弱监督目标允许另设 TargetSpec，固定生成方法、所据事实、置信/适用限制及评价办法，不改原件或冒充实测反事实。O 固定 metric/unit/horizon、known/censor、continuation policy 和来源。E4/V1 除接口、资格和反例，还完成原定有界训练尝试/比较并报告数据真实不足、负面结果与成本；缺 required 数据或未执行比较保持未完成。无需全笛卡尔积或每变体一万条，科学优势及进一步规模研究仍属 R2。不能伪造标签补数量。
 

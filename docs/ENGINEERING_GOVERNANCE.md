@@ -87,10 +87,14 @@ allowed with explicit migration, consumer and evidence impacts. Do not create a
 general framework for hypothetical use or choose a whole protocol from one example.
 
 Material choices about requirements, information exposure, protocol meaning,
-experiment conditions or authority require a bounded decision packet: evidence,
-options, consequences and a recommendation. Pause dependent work for the user or
-design owner; continue independent authorized work. Routine implementation within
-an accepted contract does not require repeated human confirmation.
+experiment conditions or authority need a bounded decision in the existing owning
+specification or task: evidence, options, chosen behavior, consumer/migration
+impact and how it will be tested. When the user has delegated design judgment,
+the lead makes and records that decision within the granted scope; it does not
+require another approval for every refinement. Pause dependent work only for an
+unresolved authority, product-goal or material choice outside that scope, while
+continuing independent work. Historical implementation prescriptions may change;
+failed evidence and user-required outcomes cannot be silently removed to pass a gate.
 
 Review readiness means the outcome, owner, dependencies, failure semantics and
 falsifiable examples are clear enough for the packet, not that every future detail

@@ -3,10 +3,12 @@
 
 # Architecture
 
-The [P0/P2 baseline foundation proposal](design/BASELINE_FOUNDATION.zh-CN.md)
-reviews the broader system and lists decisions for P3–P5. It does not replace
-the accepted contracts below or select a default information profile. Current
-facts and proposal conflicts are separated in the [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md).
+The [current baseline specification](BASELINE_V1_SPEC.zh-CN.md) owns the selected
+Agent/protocol direction and its design revisions. This document owns durable
+component authority and existing architectural boundaries. Protocol-specific
+implementation and compatibility remain in their owning contracts; candidate
+qualification is tracked by [STATUS](STATUS.md). Historical design proposals are
+linked from [DOCUMENT_MAP](DOCUMENT_MAP.md), not additional current requirements.
 
 ## Product Boundary
 

@@ -99,3 +99,24 @@ mechanism coverage, 200/500 or10k capacity, 30-attempt stability, remote/product
 completion, same-W recovery, noninterference or full G2/V1. Paid spend remains
 USD0 of the authorized USD20 aggregate ceiling. The integrated E6 source requires
 its own new build/install/runtime gates before inheriting any further claim.
+
+## Later E6 candidate build, separate from the two runs
+
+After the above immutable attempts, E6 source was integrated by normal merge
+`bc2bbc3a`; version metadata `296e932e` and BOM `44ca35e6` identify Live UI rc9
+and Game Mod rc30. Fresh local exact-game checks completed successfully on clean
+`44ca35e66dbfdb6fdadaafdb493bc83ecf140a9d`: 106 native-logical and 394 Annotator
+core tests, followed by the owning exact builds with no warnings/errors.
+This is build/source-test evidence, not a third Model or Human attempt.
+
+The resulting Game Mod SHA256 is
+`6557b5ae470c340e16029178df070401fd8874b1e8c4820b58f790b48a51b488`,
+MVID `00b506a5-b692-44aa-b679-3986d5fe8b0c`. The read-only predeploy doctor matched
+current compiled-source identities to the build and observed the game stopped;
+installed bytes were still `d215799b` / rc29. Its receipt SHA256 is
+`7c968e2b5de6aa4c3867099ceb4a4dbb843a00d2228edee2d81ece7bb06b0e0a`.
+The exact build timestamp is `2026-10-09T01:12:21.043Z`. Raw local logs/provenance
+remain private. Subsequent documentation/tooling edits do not relabel this build;
+verify compiled-source equality before reusing its artifact. rc30 installation,
+cold load, affected application journeys and native/Human qualification remain
+separate pending work at this entry.

@@ -1,154 +1,86 @@
-# Document Map
+# Document map
 
-Current baseline authority: [v1 specification](BASELINE_V1_SPEC.zh-CN.md) and
-[execution packet](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md). Earlier BASELINE design
-entries below are history/alternatives, not coequal implementation specifications.
-
-
-Use the smallest route that answers the task.
+Start with README → [CURRENT](memory/CURRENT.md) → the active task and owning
+specification. Read only the route needed for the next decision. This is a map,
+not another requirements, identity or status registry.
 
 ## Current baseline
 
-- [v1 specification](BASELINE_V1_SPEC.zh-CN.md): the sole implementation contract, full G2/V1 target and historical S0 boundary.
-- [Execution packet](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): complete retained requirements, active work, budget and user approval.
-- [Full G2/V1 initial audit](evidence/BASELINE_G2_V1_AUDIT_2026-10-08.md): independent findings and owning repairs; not final gate acceptance.
-- [Historical limited G1 acceptance](evidence/G1_V1_ACCEPTANCE_2026-10-08.md): independent design reviews and bounded acceptance.
-- [G2-S0 learning loop](evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md): exact source, installed artifact, real Agent data, training, export and native execution evidence with limitations.
-
-## Baseline design history
-
-- [P0–P5 full delivery](design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md): D-M2 closure, candidate cost comparison, REQ verification matrix and next acceptance.
-- [Capture/cache defaults](design/BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md), [review](evidence/BASELINE_CAPTURE_CACHE_REVIEW_2026-10-08.md), and [manifest](evidence/BASELINE_CAPTURE_CACHE_MANIFEST_2026-10-08.json): actual current capture paths, demand-time versus sealed reads, and no-I/no-F defaults.
-- [Large views and query protocol](design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md), [budget](evidence/BASELINE_LARGE_VIEW_BUDGET_2026-10-08.json), [review](evidence/BASELINE_LARGE_VIEW_REVIEW_2026-10-08.md), and [manifest](evidence/BASELINE_LARGE_VIEW_MANIFEST_2026-10-08.json): scoped completeness, requested delivery, I/F and early structural-model work.
-- [BND-2 and two M2 models](design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md), [review](evidence/BASELINE_BND2_MODEL_REVIEW_2026-10-08.md), and [manifest](evidence/BASELINE_BND2_MODEL_MANIFEST_2026-10-08.json): tentative shared-client choice, complete Agent wiring and separate text/object Model designs.
-- [G1-RC2 boundary and budget](design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md), [revision audit](evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md), [budget receipt](evidence/BASELINE_G1_INPUT_BUDGET_2026-10-08.json), and [current manifest](evidence/BASELINE_G1_MANIFEST_2026-10-08.json): unaccepted interface alternatives and measured synthetic sizing; prior dated review remains historical.
-- [G1 review packet](design/BASELINE_G1_REVIEW_PACKET.zh-CN.md), [contracts](design/BASELINE_G1_CONTRACTS.zh-CN.md), [execution roadmap](design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md), [audit](evidence/BASELINE_G1_AUDIT_2026-10-07.md), and [manifest](evidence/BASELINE_G1_MANIFEST_2026-10-07.json): earlier candidate and review status; later runtime and scientific gates remain separate.
-- [A system journeys](design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): proposed direction, not approved, 14 complete consumer/data journeys, joint Host/recording/learning/operations evaluation and G1 decisions.
-- [Agent/protocol blueprint](design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): historical design, Agent-owned timing, optional boundary facade, four reference compositions and end-to-end learning/runtime cases.
-- [Protocol v1 synthesis](design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): historical consolidated protocol proposal, capture limits, scoped mappings, LN-B1/LN-E1 and learned timing.
-- [L-N queued timing](design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): Human input versus execution time, native queues, conversion assumptions, latency and qualification.
-- [L-N Human learning integration](design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual Annotator and M2 seams, six classic cases, IL/generative/structured/RL data requirements.
-- [L-N v1 specification](design/BASELINE_LN_V1_SPEC.zh-CN.md): detailed operation scope, native previews, complete catalog authority with non-scoring Agents, failure ownership and acceptance.
-- [Concrete protocol options](design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md): three Agent contracts and four Host mappings, public details, failure/recovery, D-M2 and matched evaluation.
-- [Scene specification](design/BASELINE_SCENARIO_SPEC.zh-CN.md): 21 mechanism cards and 60 examples with native/protocol/Agent/management distinctions.
-- [P5 evidence and bounded probe](evidence/BASELINE_P5_EVIDENCE_2026-10-06.md): exact source/DLL findings, categorized reference checks, JSON costs and unmeasured scope.
-- [Discussion history and corrections](design/BASELINE_DESIGN_HISTORY.zh-CN.md): requirements versus hypotheses/options; not raw private chat.
-
-- [P0 needs and P2 foundations](design/BASELINE_FOUNDATION.zh-CN.md): continuous reading, definitions, responsibility boundaries, examples and unresolved choices.
-- [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md): exact source/candidate/history scope and reuse limits.
-- [P3 interaction candidates](design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md): full-game candidates, message/time/recording semantics and G1 choices.
-- [P4 data, Agent, learning and execution contracts](design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md): model axes, M2, N/Z/O, experiment/evaluation and local/cloud/product connections.
-- [Learning and interaction design evidence](evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md): exact historical model/target definitions and bounded implementation status.
-- [Baseline task index](plans/BASELINE_TASKS.zh-CN.md): the only new P/E/G/V/R task IDs, dependencies and gates; not dispatch or execution permission.
-- [Task and delivery format](AI_COLLABORATION.md#task-packet-and-delivery-format): bounded investigation, implementation, independent review and usable handoff.
+- [V1 specification](BASELINE_V1_SPEC.zh-CN.md): required outcomes, selected
+  design, rationale, assumptions and unimplemented choices.
+- [Execution and acceptance matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
+  active packets, dependencies, authorization, budget and exact remaining gates.
+- [Task index](plans/BASELINE_TASKS.zh-CN.md): stable P/E/G/V/R IDs.
+- [Status](STATUS.md): dated claim/evidence index, including the latest bounded
+  Source3 learning/Model delivery and historical operating combinations.
+- [Data/Host/model planning](plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md):
+  scoped asset inventory and optional directions, not current dispatch authority.
 
 ## New here
 
-- [README](../README.md): zero-context product boundary and next steps.
-- [Complete member and Agent handoff (中文)](NEW_MEMBER_HANDOFF.zh-CN.md): accounts,
-  first installation, daily collection, development, operations and incident reporting.
-- [New Engineer Guide](NEW_ENGINEER_GUIDE.md): first-day setup and first PR.
-- [Collection and maintenance](ANNOTATOR_COLLECTION.md): default workbench handoff, native capture and incident ownership.
+- [README](../README.md): product, layout and setup.
+- [New Engineer Guide](NEW_ENGINEER_GUIDE.md): source contributor's first PR.
+- [Member handoff (中文)](NEW_MEMBER_HANDOFF.zh-CN.md): choose the relevant account,
+  collection, research or operations role; not every role is an onboarding gate.
+- [Collection workflow](ANNOTATOR_COLLECTION.md): collecting and investigating
+  native evidence. The installed combination must have its own qualification.
 
 ## Working on the repository
 
-- [Root agent guide](../AGENTS.md): hard shell and change loop.
-- [Engineering Governance](ENGINEERING_GOVERNANCE.md): fact ownership,
-  architecture and abstraction review, change classes, test selection,
-  Human/Agent collaboration, external dependencies, and cloud evolution.
-- [Development Workflow](DEVELOPMENT_WORKFLOW.md): branches, PRs, releases, and evidence reporting.
-- [Testing and Evidence](TESTING.md): executable test/evidence ladder and CI placement.
-- [Project System](PROJECT_SYSTEM.md): documentation, style, Skills, and anti-drift governance.
-- [ADR policy and index](adr/README.md): durable decision admission, status, and supersession.
-- [Repository Skill index](../.agents/skills/README.md): high-risk repeatable workflows; ordinary implementation usually needs no Skill.
-- Owning component: its local `AGENTS.md` when present, then its README/docs and exact tests.
-
-## Finding technical truth
-
-- [Native logical observation, actions and memory (ADR-0015, Accepted: upper-level scope)](adr/0015-native-logical-interaction.md):
-  WEB-01 definitions, single-selector versus multi-reward examples, logical-list
-  scope, old-mode compatibility and local refinement boundaries; not runtime proof.
-
-- Current claims and evidence pointers: [Status](STATUS.md).
-- [Dataset library and run boundaries](evidence/DATASET_LIBRARY_2026-09-16.md):
-  generated lists, personal preview cleanup, Windows integration and application/cloud evidence.
-- Semantic evidence storage and measured predecessor baseline:
-  [Semantic Evidence Storage Baseline](evidence/SEMANTIC_EVIDENCE_STORAGE_BASELINE_2026-08-29.md).
-- Latest normalized Human runtime and storage closeout:
-  [Schema-3 Human and data-lifecycle closeout](evidence/SCHEMA3_HUMAN_DATA_LIFECYCLE_CLOSEOUT_2026-08-29.md).
-- Latest exact recorder-lag attribution and repair boundary:
-  [Recorder causal performance baseline](evidence/RECORDER_CAUSAL_PERFORMANCE_BASELINE_2026-08-29.md).
-- Current pre-Full-Run performance baseline and trigger-bound debt:
-  [Pre-Full-Run Deferred Debt](PREFULLRUN_DEFERRED_DEBT.md).
-- Canonical H/S/A(S)/A/S' calibration and bounded architecture decision:
-  [Recorder canonical causality decision](evidence/RECORDER_CANONICAL_CAUSALITY_DECISION_2026-08-29.md)
-  and [ADR 0003](adr/0003-serialize-human-input-for-canonical-one-step-evidence.md).
-- Current native-semantic discriminator source and bounded Human result:
-  [source closeout](evidence/NATIVE_SEMANTIC_RUNTIME_DISCRIMINATOR_SOURCE_CLOSEOUT_2026-08-30.md)
-  and [Human closeout](evidence/NATIVE_SEMANTIC_RUNTIME_DISCRIMINATOR_HUMAN_CLOSEOUT_2026-08-30.md).
-- Historical serialized-input candidate and native restore/twin decision:
-  [source closeout](evidence/SERIALIZED_HUMAN_INPUT_SOURCE_CLOSEOUT_2026-08-30.md)
-  [runtime candidate](evidence/SERIALIZED_HUMAN_INPUT_RUNTIME_CANDIDATE_2026-08-30.md),
-  and [native restore audit](evidence/NATIVE_RESTORE_AND_TWIN_RUNTIME_AUDIT_2026-08-30.md).
-- Bounded active context and next gate: [Current Context](memory/CURRENT.md).
-- Product boundary and dependency direction: [Architecture](ARCHITECTURE.md).
-- Shared game-side semantics, seam matrix, and migration:
-  [Native Foundation](NATIVE_FOUNDATION.md),
-  [Native Seam Matrix](NATIVE_SEAM_MATRIX.md),
-  [Architecture Example Suite](NATIVE_FOUNDATION_EXAMPLE_SUITE.md), and
-  [ADR 0004](adr/0004-native-foundation-and-ritsu-route.md).
-- Current Map/Reward/CardReward adapter source and build evidence:
-  [Native Foundation Full-Run source closeout](evidence/NATIVE_FOUNDATION_FULL_RUN_SOURCE_CLOSEOUT_2026-08-31.md).
-- Current Treasure adapter source evidence:
-  [Native Foundation Treasure source closeout](evidence/NATIVE_FOUNDATION_TREASURE_SOURCE_CLOSEOUT_2026-08-31.md).
-- Current Human Root/Native Commit/Successor Boundary authority and source gate:
-  [ADR 0005](adr/0005-human-root-commit-successor-evidence.md) and
-  [causal evidence source closeout](evidence/NATIVE_FOUNDATION_COMPLETION_LINEAGE_SOURCE_CLOSEOUT_2026-09-01.md).
-- PR #6's exact Combat successor-owner repair:
-  [owner-ready source closeout](evidence/PR6_SUCCESSOR_OWNER_READY_SOURCE_CLOSEOUT_2026-09-01.md).
-- Current bounded pre-Full-Run hardening source/build/load gate:
-  [hardening source closeout](evidence/PLATFORM_PREFULLRUN_HARDENING_SOURCE_CLOSEOUT_2026-09-01.md).
-- Current Recorder hot-path performance source gate and Human OFF/ON canary:
-  [recording hot-path performance closeout](evidence/PLATFORM_RECORDING_HOTPATH_PERFORMANCE_SOURCE_CLOSEOUT_2026-09-01.md).
-- Ownership matrix: [Components](COMPONENTS.md).
-- Portable/runtime evidence meanings: [Testing and Evidence](TESTING.md).
-- Component and composition identity: [Versioning](VERSIONING.md) and `platform-bom.json`.
-- Active Full-Run matrix: [Full-Run Semantic Coverage](FULL_RUN_SEMANTIC_COVERAGE.md).
-- Current product and evidence direction: [Roadmap](ROADMAP.md).
-
-- Closed-session tools, persistent outbox and upload receipt protocol:
-  [Evidence delivery](../components/evidence/DELIVERY.md).
+| Question | Owner |
+| --- | --- |
+| What instructions apply? | [AGENTS](../AGENTS.md), ancestor/local guides and `npm run project:context` |
+| Where should a fact or new idea be written? | [Project System](PROJECT_SYSTEM.md) |
+| Who owns the fact and is the abstraction justified? | [Architecture](ARCHITECTURE.md), [Components](COMPONENTS.md), [Governance](ENGINEERING_GOVERNANCE.md) |
+| Which tests and evidence does this change need? | [Testing](TESTING.md), existing `check:plan` and owning tests |
+| How are branches, integration, release and deployment handled? | [Workflow](DEVELOPMENT_WORKFLOW.md), [Versioning](VERSIONING.md) |
+| How are tasks delegated, reviewed and resumed? | [AI collaboration](AI_COLLABORATION.md) |
+| Is a durable architecture decision needed? | [ADR policy and index](adr/README.md) |
+| Is there a reusable qualification workflow? | [Skills](../.agents/skills/README.md); ordinary implementation needs no Skill |
 
 ## Component entry points
 
-- [Connector map](../components/connector/docs/DOCUMENT_MAP.md)
-- [Native Foundation](../components/native-foundation/README.md)
-- [Host Runtime map](../components/host-runtime/docs/DOCUMENT_MAP.md)
-- [Annotator map](../components/annotator/docs/DOCUMENT_MAP.md)
-- [Evidence package](../components/evidence/README.md)
-- [Workbench](../apps/workbench/README.md)
-- [Platform Game Mod operations](../apps/game-mod/README.md)
-- [In-game Live UI boundary](../apps/ingame-ui/README.md)
-- [Shared UI and interaction specification](UI_INTERACTION_SPEC.md)
+- [Native Foundation](../components/native-foundation/README.md): typed native
+  facts; [seam matrix](NATIVE_SEAM_MATRIX.md) and
+  [example suite](NATIVE_FOUNDATION_EXAMPLE_SUITE.md) for specific mechanisms.
+- [Connector](../components/connector/docs/DOCUMENT_MAP.md): public observation,
+  full finite actions, delivery and profile contracts.
+- [Host Runtime](../components/host-runtime/docs/DOCUMENT_MAP.md): process,
+  environment and exact qualification.
+- [Annotator](../components/annotator/docs/DOCUMENT_MAP.md): recording and causal evidence.
+- [Evidence](../components/evidence/README.md) and
+  [delivery](../components/evidence/DELIVERY.md): typed verification and transfer.
+- [Policy Runtime](../components/policy-runtime/README.md): control and Agent lifecycle.
+- [Python applications and research map](../python/docs/DOCUMENT_MAP.md): shared
+  Workbench/Hub services, data, learning and model consumers; apply `python/AGENTS.md`.
+- [Game Mod](../apps/game-mod/README.md), [in-game UI](../apps/ingame-ui/README.md)
+  and [UI specification](UI_INTERACTION_SPEC.md): packaging and user entry.
+- [Diagnostic API](../apps/workbench/README.md): retained typed diagnostic surface.
+
+## Finding technical truth
+
+Current code/contracts establish implemented behavior; the owning spec establishes
+intended behavior. A disagreement needs a repair or an explicit design revision.
+[STATUS](STATUS.md) routes qualification claims; `platform-bom.json` and existing
+manifests own component/artifact identity. Refresh actual runtime state before use.
+[Full-Run semantic coverage](FULL_RUN_SEMANTIC_COVERAGE.md) and
+[canonical data chain](FULL_RUN_DATA_CHAIN.md) retain their causal/legacy scope;
+they do not replace the current baseline matrix.
 
 ## Historical proof
 
-Dated reports under [`docs/evidence`](evidence/) prove only the exact source,
-artifact, runtime, and scope they name. Load the report linked by Status, the
-Full-Run matrix, or a PR when exact historical proof is relevant; it is not
-default newcomer or Codex context.
+[`docs/evidence`](evidence/) preserves dated exact source/artifact/runtime results.
+Read the report cited by a current claim or relevant PR, not the entire archive.
+A later candidate needs its own evidence; a historical PASS is not a current status.
+The [monorepo migration](MONOREPO_MIGRATION.md) explains source history and cutover,
+not daily application development or an instruction to repeat migration.
 
-- First dedicated Human Close-to-R2 gate and delivery diagnostic repair:
-  [bounded audit](evidence/B_PIPELINE_FIRST_HUMAN_UPLOAD_2026-09-13.md).
+## Baseline design history
 
-- [B workflow release evidence](evidence/B_UNIFIED_WORKFLOW_RELEASE_2026-09-13.md): exact cross-repository source/service scope and release receipt routing.
-
-- [Packaging identity correction](evidence/B_WORKFLOW_PACKAGING_IDENTITY_CORRECTION_2026-09-13.md): actual BOM file SHA and separate tool revisions.
-
-- [Windows CollectionTool inventory repair](evidence/WINDOWS_COLLECTION_TOOL_INVENTORY_REPAIR_2026-09-16.md):
-  exact Evidence source/test scope, local Windows verification, and current non-claims.
-
-## Project migration
-
-- [Migration and unified application ownership](MONOREPO_MIGRATION.md).
-- [Python and research routing](../python/docs/DOCUMENT_MAP.md).
+[Discussion/design history](design/BASELINE_DESIGN_HISTORY.zh-CN.md) routes earlier
+alternatives and corrections. [Foundation](design/BASELINE_FOUNDATION.zh-CN.md),
+[scenario cards](design/BASELINE_SCENARIO_SPEC.zh-CN.md), and
+[L-N operation inventory](design/BASELINE_LN_V1_SPEC.zh-CN.md) remain useful references.
+Only portions explicitly retained by the current specification are normative.
+Accepted [ADR-0015](adr/0015-native-logical-interaction.md) preserves its upper-level
+native logical-page/action direction; profile/wire definitions have their own owners.

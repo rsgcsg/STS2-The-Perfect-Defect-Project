@@ -150,7 +150,7 @@ unauthorized boundary only after architect review and explicit task authorizatio
 
 ## Mandatory independent review before acceptance
 
-Owner clarification, 2026-09-21: EVERY Luna return starts as submitted but unverified.
+Every worker return starts as submitted but unverified.
 This includes explanations, diagnosis, suggested plans, code, tests, claimed commands,
 installations, deployments and measured results. Confidence, a polished summary, a
 screenshot saying PASS, or the worker's own review is not acceptance. The same standard
@@ -203,7 +203,7 @@ spend, change production data, or start the next training batch.
 New commits or changed inputs, configuration, dependencies or installed artifacts require
 an impact review of the previous verdict. Reuse only what remains valid under TESTING.md;
 never copy an ancestor's green result or extend an approval to unreviewed changes. The
-architect must understand and explain what the implementation does, not merely relay Luna's
+architect must understand and explain what the implementation does, not merely relay a worker's
 conclusion. If it cannot explain a critical path, that path is not accepted yet.
 
 ### Design availability and branch discipline
@@ -253,6 +253,21 @@ Return exact head/artifact identity, behavior changed, actual checks and side
 effects, evidence scope, limitations, next consumer and remaining gate. Distinguish
 submitted, independently accepted, integrated and runtime-qualified. A claimed
 completion without usable artifacts and a consumer handoff is not delivery.
+
+### Resuming without selecting an obsolete task
+
+Keep one bounded active handoff in the existing task/PR or its private execution
+checkpoint: task ID, latest authorized goal, exact worktree/base/head, writable
+paths, current attempt/monitor, completed artifacts and one next action. Replace
+its active summary when the task changes; archive older details instead of
+prepending an ever-growing history. Never use an old worker name, session title
+or earlier completed canary as the current assignment.
+
+On restart/context loss, first resolve that active packet and reconcile live refs,
+original operation status and other writers. If the active assignment is missing,
+ask the lead for it while doing only independent read-only recovery; do not replay
+a prior experiment. Selected design and acceptance reasoning needed by another
+engineer must also be in the canonical spec/task, not only the private checkpoint.
 
 ## Five-minute passive-wait checkpoint
 
