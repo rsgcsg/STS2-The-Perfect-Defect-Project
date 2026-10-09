@@ -120,3 +120,47 @@ remain private. Subsequent documentation/tooling edits do not relabel this build
 verify compiled-source equality before reusing its artifact. rc30 installation,
 cold load, affected application journeys and native/Human qualification remain
 separate pending work at this entry.
+
+
+## Later rc30 isolated cold-load observation
+
+The owning deployment at `2026-10-09T03:49:53.343Z` installed the above `6557b5ae`
+artifact and retained a verified `d215799b` rollback. A separate revision-3 native
+UI driver at `0aedf349` launched a fresh Steam-disabled isolated profile. Runtime
+`659be9568f404c21a4d51423782179a5`, PID17256 reached the interactive main menu.
+Typed Source status remained Ready with no recording session/declaration and no
+held controller. Explicit owning Close returned exit0, signalnull, forcedfalse;
+the driver also exited0 and no game process remained. Independent read-only review
+verified original file hashes and the loaded stdout prefix against the final log.
+This accepts cold load/main menu/unforced cleanup only; no recording or gameplay
+command was performed.
+
+Native visual observation showed the main menu and Platform launcher. Two later
+navigation attempts returned `noWindowsAvailable`, so authenticated Source/Model
+panel behavior is unverified. A registered Workbench belonged to a preexisting
+old-kit process; it was neither started nor stopped by this driver and does not
+qualify the current application or its native pairing.
+
+Logs were not clean: texture-format warnings at startup and node-path/RID/resource
+leak diagnostics around exit remain preserved. No owning project frame was found
+in stderr, but there is no unmodded comparison or common stream timestamp to prove
+cause or noninterference. Runtime health remains pending. Later Live UI changes
+alter compiled source, so this artifact cannot qualify that newer source.
+
+## Integrated sampled source, separate from real learning
+
+Reviewed sampled Runtime/Agent/Evidence and Source3 segmented-data paths, product
+import/preparation, native Model reuse and Python hygiene are integrated through
+`659490a9`. Original full-reference recipes/packages retain their identities.
+The new sampled contract keeps complete current C and learned W within explicit
+segments; it preserves unlabeled context and exact offered/ACKed samples, with
+publication gaps treated according to this new contract. It does not imply full
+Human attention, full publication history or cross-process W restoration.
+
+A separate synthetic one-update public train/export/real-constructor/stdio/Runtime
+conformance packet `15857b97` has been submitted for independent review. Its
+reported passes are not yet accepted here and are not real-data learning. A
+collect-only CLI candidate `cfe0356d` is also under independent review. Final
+versions/BOM/locked Evidence, required root gates, current native build and actual
+100–300-choice collection/training remain outstanding. Earlier real learning and
+failed/unknown Model attempts above retain their original scope.

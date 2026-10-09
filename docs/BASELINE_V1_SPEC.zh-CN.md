@@ -28,7 +28,7 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 
 | 决定 | 需要与理由 | 实现边界／复议条件 |
 | --- | --- | --- |
-| 默认研究候选改为当前决策采样、段内 learned carry | 先取得当前完整公开状态/C，同时让模型学习浏览、重访和进度；逐决策清空 W 会抹掉该任务信息 | **选定待实现**，旧 publication-memory 包保持旧义；真实样本/原生序列证明后才能成为可用默认 |
+| 默认研究候选改为当前决策采样、段内 learned carry | 先取得当前完整公开状态/C，同时让模型学习浏览、重访和进度；逐决策清空 W 会抹掉该任务信息 | **选定模式**，源码与验收进度由执行矩阵维护；旧 publication-memory 包保持旧义，真实样本/原生序列证明后才能成为可用默认 |
 | 记忆从实际消费历史学习 | Map→Inspect→Map 可以同页不同历史；固定 visited list 不能冒充模型能力 | I/F-off 为初始选择；只有真实反例和明确 InputSpec 才增加其他输入，不在执行器暗补策略 |
 | 训练视图可以重表达、截断或增强历史 | 原始记录、训练曝光和部署曝光不必逐项相同；不同有用假设可以实验 | 必须声明输入/目标/分段/重置和差异、保留分母，不能宣传为完整 Human 注意力或部署逐步重放 |
 | 先交付一条方便复用的实际路径 | 保存数据、选择已训模型、看一次建议和控制游戏是有明确目的的用例 | 同一应用 owner 和能力投影；已有安装/登记/数据不因再次使用重做，训练和操作仍有明确意图 |
@@ -95,7 +95,7 @@ source notice、capture、publication、Agent received、Model consume/advance �
 
 ## 5. Agent、Model 和状态
 
-选定的下一个默认完整 Agent 组合当前决策采样、共享取得库、段内 learned carry、结构 M2、选择和受限 Runtime；以下为目标合同，现有 full-reference 包尚未因此改变。I/F 关闭：自身 request/receipt/reason/control/动作日志不改名进入 P/E/W；当前真实 HP、selected、focus、公开总结仍可输入。独立 receipt 不触发 W。
+选定的默认完整 Agent 组合当前决策采样、共享取得库、段内 learned carry、结构 M2、选择和受限 Runtime；以下为目标合同，现有 full-reference 包尚未因此改变。I/F 关闭：自身 request/receipt/reason/control/动作日志不改名进入 P/E/W；当前真实 HP、selected、focus、公开总结仍可输入。独立 receipt 不触发 W。
 
 完整端口支持无动作观察消费和 Act/Await/Abstain/Close；scores 是可选诊断。旧评分端口按旧 Manifest 保留。不评分/生成式消费者仍从同一关系 Resolve，不能生成 native operand。程序侧固定时机策略属于 AgentSpec，不冒充模型学会时机。
 
@@ -115,7 +115,7 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 
 已实现 Source3 publication-memory 视图仍只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 精确匹配才提供 N。显式 recorded-capture 预训练视图保留独立 recipe 和曝光假设。两者的旧身份/准入规则不因新方向改变。
 
-下一默认采样视图按可核验顺序消费原始 pre-input basis，保持完整 C，段内携带 W；有可靠 basis 但无合格 N 的观察仍可作为上下文，不能只拼接有标签行。它将输入前状态重表达为 Agent 决策样本，不声称 Human 曾逐步消费这些输入。在线实际 offered/ACKed 样本及无输入样本须由既有 evidence/storage 路径保留足够原始内容以核对；不能凭哈希或输入行推造缺失 ModelInput。
+默认采样视图按可核验顺序消费原始 pre-input basis，保持完整 C，段内携带 W；有可靠 basis 但无合格 N 的观察仍可作为上下文，不能只拼接有标签行。它将输入前状态重表达为 Agent 决策样本，不声称 Human 曾逐步消费这些输入。在线实际 offered/ACKed 样本及无输入样本须由既有 evidence/storage 路径保留足够原始内容以核对；不能凭哈希或输入行推造缺失 ModelInput。
 
 采样的完整公开字段/C、NativeUnit 重复/重访规则、carry 递推和明确 reset 规则须在线/离线一致验证。连续重复取得不重复推进 W；消费中间页后返回同页不能按全局内容 hash 删除。当前采样允许不对应 publication index，但必须用新的获取/历史合同，不能伪造旧 publication。第一版不消费不完整或空 C 的等待检查；合格 ready-summary 可作为无 N 的最终观察。其余曝光差异在 ProjectionSpec/AgentSpec 中明确。
 

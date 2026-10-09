@@ -13,10 +13,13 @@ CURRENT owns the active task and next step, and the execution matrix owns progre
   eight Agent labels, three actual optimizer updates and verified export; two
   separate Model attempts. The second proves one original delivery and Stop,
   with execution/effect/cancel unknown. Neither is Human or whole-game evidence.
-- E6 rc30 / Live UI rc9 source is integrated and exact-built at `44ca35e6`.
-  The same report's later build entry identifies candidate `6557b5ae` and its
-  predeploy comparison to installed rc29 `d215799b`. Installation/load/product
-  qualification of rc30 remains pending at that observation.
+- E6 rc30 / Live UI rc9 artifact `6557b5ae`, exact-built at `44ca35e6`, was
+  installed and cold-loaded in an isolated session. Independent review accepts
+  main menu and unforced exit only; authenticated panels and exit/resource health
+  remain unresolved. Later compiled-source changes require a new build.
+- Source3 product import/preparation, native Model reuse and sampled-current carry
+  are integrated source/test candidates through `659490a9`. Dependency/package
+  convergence and real sampled collection/training remain separate gates.
 - [Data/Host/model inventory](plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md):
   scoped historical/local/cloud data and an observed Hub deployment. It does not
   establish that current development source is deployed or that cloud training ran.

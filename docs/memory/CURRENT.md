@@ -24,25 +24,27 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   records eight Agent labels, real three-update training/export and two distinct
   Model attempts. Attempt1 remains failed; attempt2 proves one delivery and Stop,
   with execution/effect/cancel unknown. No natural full-game or Human claim.
-- E6 Game Mod rc30 / Live UI rc9 is exact-built on `44ca35e6`, artifact `6557b5ae`.
-  The predeploy observation still has installed rc29 `d215799b`; no rc30 load or
-  runtime claim. Lead owns its next install/rollback/actual-user-path verification.
-- Source3 import→verified ordered training data and native Model reuse are separate
-  application candidates, not integrated capabilities. See the matrix for writers
-  and review dependencies. Existing data/model/use identities remain unchanged.
-- The next selected Agent uses current-decision sampling with learned carry within
-  explicit segments. It is not implemented yet. Shared Runtime/Agent/data examples
-  precede parallel implementation; old full-reference recipes/packages stay fixed.
-  No manual visited list or per-decision W reset substitutes for learned memory.
+- E6 rc30 artifact `6557b5ae`, built on `44ca35e6`, was installed and cold-loaded
+  in an isolated native session; main menu and unforced exit passed independent
+  review. Authenticated panels remain unverified; exit/resource diagnostics remain
+  open. Later Live UI source changes require a new exact build before qualification.
+- Source3 product import/data preparation and native Model reuse are integrated
+  source/test capabilities. Sampled-current Runtime/Agent/Evidence and segmented
+  data/recipe paths are integrated through `659490a9`; old full-reference identities
+  remain unchanged. Version/BOM/locked Evidence convergence is still pending.
+- The selected Agent carries learned W within explicit sampled segments. Synthetic
+  public train/export plus real constructor/stdio/Runtime conformance has a submitted
+  test packet under independent review. No new real-data sampled training or native
+  model run follows from it. A reusable collect-only CLI is also under review.
 - L34 event/content, special selectors, L64 management, product memory recovery,
   remote use and full coverage/stability still need their scoped gates. Disabled
   candidate reviews do not qualify the active profile. Current c060 is unchanged.
 
 ## Execution priority
 
-Qualify E6 and a minimum genuine Human record/Close → useful 100–300-choice real
-collection/training with declared history assumptions → early natural whole-game
-attempt and error analysis. Independent source/data/model/docs work continues in
+Converge collector/package identities → useful 100–300-choice real collection
+and explicit sampled training → early natural whole-game attempt and error analysis.
+E6 authenticated panels and a minimum genuine Human record/Close remain separate gates. Independent source/data/model/docs work continues in
 parallel; unrelated final gates do not block this path and remain in the matrix.
 One game/install owner and one heavy local build/train slot remain coordinated.
 
