@@ -205,3 +205,46 @@ def test_import_owner_drift_retains_pending_without_other_store_write(
     for selected in (owner, other):
         with selected.transaction() as db:
             assert db.execute("SELECT count(*) FROM local_source_pending").fetchone() == (0,)
+
+
+def test_Gold_cannot_be_reserved_as_training_through_new_publish_owner(tmp_path, original):
+    from stpd.fullrun.native_agent_sampled_source import NativeAgentSampledRef, _partition
+
+    _, datasets, store, owner, raw_id = imported(tmp_path, original)
+    datasets.start_native_agent_preview([raw_id])
+    preview = settled(datasets)
+    refs = tuple(NativeAgentSampledRef(**ref) for ref in datasets.operation["_admission_refs"])
+    encoded, _ = _partition(store, refs, "train")
+    runs = {run["run_id"] for run in json.loads(encoded)["runs"]}
+    owner.ledger.claim("gold-original-machine-fixture", "gold", runs)
+    datasets.start_publish(preview["preview_id"])
+    result = settled(datasets)
+    assert result["status"] == "failed" and result["error_code"] == "gold_reserved_data"
+    assert "training_source_id" not in result
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_claims "
+                          "WHERE purpose='training'").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone() == (0,)
+
+
+def test_closed_import_rejects_genuine_unfinished_protocol_prefix(tmp_path, original):
+    from stpd.fullrun.native_agent_sampled_source import _verified
+
+    original.f.events = [event for event in original.f.events if event["kind"] != "stopped"]
+    original.f.write()
+    _verified(original.directory)  # The original remains a valid typed protocol prefix.
+    importer, _, store, owner = setup(tmp_path)
+    with pytest.raises(BoundaryError, match="native_agent_closed_run_required"):
+        importer.start_native_agent_run(
+            str(original.directory), FIXTURE_COHORT, RELATION_SPEC["id"])
+    assert importer.thread is None and not store.manifest_ids()
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM local_source_pending").fetchone() == (0,)
+
+
+def test_import_capability_values_cannot_mutate_shared_fixed_relation():
+    choices = local_recording_import.native_agent_import_choices()
+    original = choices["relations"][0]["relation"]["sha256"]
+    choices["relations"][0]["relation"]["sha256"] = "f" * 64
+    assert local_recording_import.native_agent_import_choices()["relations"][0]["relation"][
+        "sha256"] == original
