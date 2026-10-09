@@ -4,8 +4,12 @@ import copy
 import hashlib
 import io
 import json
+import os
+import subprocess
+import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +25,130 @@ from spireagent.workbench.local_models import (
 )
 from stpd.canonical import canonical_json
 from stpd.policy import installation
+
+
+@pytest.fixture(scope="module")
+def public_native_preflight(tmp_path_factory):
+    """Use real packaged Runtime/SDK bytes through the normal offline owner.
+
+    An explicit reviewed archive avoids repackaging for a bounded local replay.
+    Normal source gates build the current public package, never a fake validator.
+    These are synthetic protocol manifests, not a trained-model/native gate.
+    """
+    from spireagent.package_identity import directory_sha256
+    from spireagent.workbench.runtime_install import install_runtime
+
+    root = Path(local_models.__file__).resolve().parents[2]
+    repository = root.parent
+    temporary = tmp_path_factory.mktemp("public-native-preflight")
+    supplied = os.environ.get("STPD_TEST_NATIVE_RUNTIME_ARCHIVE")
+    shipped = json.loads((root / "configs/developer/local-policies-v1.json").read_bytes())
+    if supplied:
+        archive = Path(supplied).resolve()
+        pin = shipped["runtime_package"]
+    else:
+        output = temporary / "package"
+        subprocess.run(
+            ["node", "--input-type=module", "-e",
+             "const {packageRuntime}=await import(process.argv[1]);"
+             "packageRuntime(process.argv[2]);",
+             (repository / "components/policy-runtime/tools/package.mjs").as_uri(),
+             str(output)],
+            cwd=repository, capture_output=True, check=True, timeout=60,
+        )
+        report = json.loads((output / "policy-runtime-package.json").read_bytes())
+        archive = output / report["filename"]
+        # This generated source-test package has this checkout's workspace
+        # provenance. Its fixture pin is distinct from the reviewed shipped pin.
+        extracted = temporary / "content"
+        with tarfile.open(archive) as packed:
+            packed.extractall(extracted, filter="data")
+        identity = report["identity"]
+        pin = {
+            "package": report["name"], "version": report["version"],
+            "source_revision": identity["source_revision"],
+            "component_tree_revision": identity["component_tree_revision"],
+            "release_asset_sha256": report["sha256"],
+            "package_content_sha256": directory_sha256(extracted / "package"),
+            "dependency_layout": "bundled_source_candidate",
+            "bundled_connector_pin": identity["connector_sdk"],
+        }
+    fixture_root = temporary / "application"
+    catalog = fixture_root / "configs/developer/local-policies-v1.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({**shipped, "runtime_package": pin}))
+    config = ProjectConfig(temporary / "state", "", "", None, combination())
+    service = LocalModelService(config)
+    service.root = fixture_root
+    installed = install_runtime(
+        service.directory, service.registry()["runtime_package"], service._connector_pin(),
+        archive=archive,
+    )
+    assert installed["status"] == "runtime_installed"
+    profile = json.loads((repository / "components/connector/contracts/"
+                          "native-logical-publication-profile-v1.json").read_bytes())
+    fixtures = repository / "components/policy-runtime/contracts/fixtures"
+    manifests = {}
+    for history, filename in (
+        ("full_reference", "agent-session-v1.json"),
+        ("sampled_current", "sampled-current-carry-v1.json"),
+    ):
+        manifest = json.loads((fixtures / filename).read_bytes())["manifest"]
+        manifest["input"]["attachment"]["required_seams"] = profile["required_seams"]
+        manifests[history] = manifest
+    yield service, manifests, temporary
+    service.close()
+
+
+@pytest.mark.parametrize("history", ["full_reference", "sampled_current"])
+def test_public_native_preflight_accepts_declared_history(public_native_preflight, history):
+    service, manifests, temporary = public_native_preflight
+    manifest_path = temporary / (history + ".json")
+    manifest_path.write_text(json.dumps(manifests[history]))
+    # Do not replace package verification, Node execution, public manifest
+    # validation or the actual bundled SDK/profile with mocks.
+    service._public_manifest_contract(manifest_path)
+
+
+@pytest.mark.parametrize("history,mutation", [
+    ("sampled_current", "full_eager"), ("sampled_current", "full_delivery"),
+    ("full_reference", "empty_eager"), ("full_reference", "scoped_delivery"),
+    ("sampled_current", "scoped_query"), ("sampled_current", "unknown_history"),
+    ("sampled_current", "missing_seam"), ("full_reference", "missing_seam"),
+    ("sampled_current", "wrong_seam_version"), ("sampled_current", "wrong_profile"),
+    ("sampled_current", "unknown_field"), ("sampled_current", "missing_current"),
+])
+def test_public_native_preflight_rejects_crossed_or_untrusted_contract(
+    public_native_preflight, history, mutation,
+):
+    service, manifests, temporary = public_native_preflight
+    manifest = copy.deepcopy(manifests[history])
+    input_ = manifest["input"]
+    attachment = input_["attachment"]
+    if mutation == "full_eager":
+        attachment["eager_scope"] = ["persistent", "interaction", "referents", "catalog"]
+    elif mutation == "full_delivery":
+        attachment["delivery_mode"] = "full_reference"
+    elif mutation == "empty_eager":
+        attachment["eager_scope"] = []
+    elif mutation == "scoped_delivery":
+        attachment["delivery_mode"] = "scoped"
+    elif mutation in {"scoped_query", "unknown_history"}:
+        input_["history_mode"] = "scoped_query" if mutation == "scoped_query" else "other"
+    elif mutation == "missing_seam":
+        attachment["required_seams"].pop()
+    elif mutation == "wrong_seam_version":
+        attachment["required_seams"][0]["version"] = "other"
+    elif mutation == "wrong_profile":
+        input_["profile"] = "other"
+    elif mutation == "unknown_field":
+        input_["untrusted"] = True
+    elif mutation == "missing_current":
+        manifest["requirements"]["required_methods"].remove("current")
+    manifest_path = temporary / (history + "-" + mutation + ".json")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(BoundaryError, match="native_runtime_contract_unavailable"):
+        service._public_manifest_contract(manifest_path)
 
 
 @pytest.fixture
