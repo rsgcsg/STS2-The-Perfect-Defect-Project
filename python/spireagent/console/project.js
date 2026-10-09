@@ -4406,7 +4406,7 @@ window.SpireProject = (() => {
 
   function nativeAgentImportCard(ctx, status) {
     const section = panel("导入已结束的程序示范", "选择已结束 Agent 运行的原始目录；保存原件后再独立检查样本、保存训练用途和开始训练。");
-    const support = status.native_agent_support;
+    const support = status?.native_agent_support;
     if (!nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
       section.append(el("p", "此程序示范入口尚未开放；现有原件保留。", "small muted"));
       return section;
@@ -4470,8 +4470,8 @@ window.SpireProject = (() => {
     const selectors = new Map();
     try { status = await request(ctx, "/api/local-datasets/status"); }
     catch (error) { section.append(el("p", failure(error), "small muted")); return {section,selectors}; }
-    const support = status.native_agent_support;
-    if (status.schema !== "stpd/local-dataset-operation-v1"
+    const support = status?.native_agent_support;
+    if (status?.schema !== "stpd/local-dataset-operation-v1"
         || !nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
       section.append(el("p", "程序示范数据入口尚未开放，不能提交预览或保存。", "small muted"));
       return {section,selectors};
