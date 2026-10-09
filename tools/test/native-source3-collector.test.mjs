@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -84,6 +84,14 @@ async function fixture(t, behavior = {}) {
         async dispose() { seen.disposals++; reservation.release(); } };
     }
     async submit(input) {
+      const intent = JSON.parse(await readFile(path.join(options.output,
+        `submission-intent-${String(seen.submissions.length + 1).padStart(4, "0")}.json`), "utf8"));
+      assert.equal(intent.request_id, input.requestId);
+      assert.equal(intent.action.action_id, input.actionId);
+      assert.equal(intent.basis.snapshot_id, input.expectedSnapshotId);
+      assert.equal(intent.sdk_admission, "not_yet_observed");
+      assert.equal(intent.delivery, "not_observed");
+      if (behavior.preAdmissionError) throw new Error("pre_admission_failed");
       input.onSubmitStart(); seen.submissions.push(input);
       original = { request_id: input.requestId, snapshot_id: input.expectedSnapshotId,
         action: catalog.at(-1), delivery: behavior.unknownDelivery ? "unknown" : "delivered",
@@ -97,6 +105,7 @@ async function fixture(t, behavior = {}) {
     }
     async result(requestId) {
       seen.queries.push(requestId);
+      if (behavior.resultUnknown) throw new Error("original_result_transport_unknown");
       return seen.queries.length < 2 ? { status: "pending" }
         : { status: "terminal", result: { data: original } };
     }
@@ -235,4 +244,64 @@ test("failed SourceReady ACK quiesces App admission before Host close, with zero
   assert.equal(final.control_release.native_controller_constructed, false);
   assert.equal(seen.releases, 0);
   assert.equal(seen.messages.find(message => message.type === "quiesced").pending_request_id, null);
+});
+
+
+test("post-admission throw retains durable original intent/outcome and final identity without retry", async t => {
+  const { options, seen, final } = await run(t, { unknownSubmit: true });
+  const requestId = seen.submissions[0].requestId;
+  const intent = JSON.parse(await readFile(path.join(options.output, "submission-intent-0001.json"), "utf8"));
+  const outcome = JSON.parse(await readFile(path.join(options.output, "submission-outcome-0001.json"), "utf8"));
+  const quiesced = seen.messages.find(message => message.type === "quiesced");
+  assert.equal(intent.request_id, requestId);
+  assert.equal(intent.ordinal, 1);
+  assert.equal(intent.action.action_id, "original-39");
+  assert.equal(intent.basis.snapshot_id, seen.submissions[0].expectedSnapshotId);
+  assert.deepEqual(quiesced.last_submission, outcome);
+  assert.deepEqual(final.last_submission, outcome);
+  assert.equal(final.pending_request_id, requestId);
+  assert.equal(outcome.sdk_admitted, true);
+  assert.equal(outcome.lookup_status, "unresolved");
+  assert.equal(outcome.delivery, "unknown");
+  assert.equal(outcome.automatic_retry, false);
+  assert.equal(final.counts.submissions, 1);
+  assert.equal(seen.submissions.length, 1);
+  assert.equal(seen.queries.length, 0);
+  assert.equal(seen.order.filter(item => item === "application_close").length, 1);
+  assert.equal(seen.releases, 1);
+  assert.equal(seen.hostCloses, 1);
+  assert.deepEqual(final.host_exit, receipt);
+});
+
+
+test("original Result transport exception retains admitted identity and unresolved lookup", async t => {
+  const { options, final, seen } = await run(t, { pending: true, resultUnknown: true });
+  const requestId = seen.submissions[0].requestId;
+  const outcome = JSON.parse(await readFile(path.join(options.output, "submission-outcome-0001.json"), "utf8"));
+  assert.equal(seen.submissions.length, 1);
+  assert.deepEqual(seen.queries, [requestId]);
+  assert.equal(outcome.request_id, requestId);
+  assert.equal(outcome.lookup_status, "unresolved");
+  assert.equal(outcome.result_queries, 1);
+  assert.equal(outcome.sdk_admitted, true);
+  assert.equal(outcome.delivery, "unknown");
+  assert.equal(outcome.automatic_retry, false);
+  assert.equal(final.pending_request_id, requestId);
+  assert.equal(seen.releases, 1);
+  assert.equal(seen.hostCloses, 1);
+});
+
+
+test("prepared intent does not claim SDK admission or delivery when admission never occurs", async t => {
+  const { options, final, seen } = await run(t, { preAdmissionError: true });
+  const intent = JSON.parse(await readFile(path.join(options.output, "submission-intent-0001.json"), "utf8"));
+  assert.equal(final.last_submission.request_id, intent.request_id);
+  assert.equal(final.last_submission.sdk_admitted, false);
+  assert.equal(final.last_submission.lookup_status, "not_started");
+  assert.equal(final.last_submission.delivery, null);
+  assert.equal(final.pending_request_id, null);
+  assert.equal(final.counts.submissions, 0);
+  assert.equal(seen.submissions.length, 0);
+  assert.equal(seen.releases, 1);
+  assert.equal(seen.hostCloses, 1);
 });

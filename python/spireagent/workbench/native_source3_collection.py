@@ -444,7 +444,60 @@ FINAL_FIELDS = {
     "live_byte_reservations",
     "partial_source_prefix",
     "learned_evaluation",
+    "pending_request_id",
+    "last_submission",
 }
+
+
+def validate_submission(
+    value: Any, pending_id: Any, counts: dict[str, Any], request: CollectionRequest
+) -> None:
+    if value is None:
+        if counts["submissions"] != 0 or pending_id is not None:
+            raise fail("original_submission_identity_missing")
+        return
+    item = object_fields(
+        value,
+        {
+            "request_id",
+            "ordinal",
+            "basis",
+            "action_id",
+            "sdk_admitted",
+            "lookup_status",
+            "delivery",
+            "result_queries",
+            "automatic_retry",
+        },
+        "source3_pipe.submission",
+    )
+    object_fields(item["basis"], BASIS_FIELDS, "source3_pipe.submission_basis")
+    if (
+        not isinstance(item["request_id"], str)
+        or not 1 <= len(item["request_id"]) <= 128
+        or not isinstance(item["action_id"], str)
+        or not item["action_id"]
+        or type(item["ordinal"]) is not int
+        or not 1 <= item["ordinal"] <= request.max_submissions
+        or type(item["sdk_admitted"]) is not bool
+        or item["automatic_retry"] is not False
+        or type(item["result_queries"]) is not int
+        or not 0 <= item["result_queries"] <= 40
+        or item["result_queries"] > counts["result_queries"]
+    ):
+        raise fail("original_submission_identity_invalid")
+    admitted = item["sdk_admitted"]
+    if (
+        item["ordinal"] != counts["submissions"] + (0 if admitted else 1)
+        or item["lookup_status"]
+        not in ({"unresolved", "pending", "terminal"} if admitted else {"not_started"})
+        or item["delivery"] not in ({"delivered", "rejected", "unknown"} if admitted else {None})
+        or item["lookup_status"] in {"unresolved", "pending"}
+        and item["delivery"] != "unknown"
+        or pending_id
+        != (item["request_id"] if admitted and item["lookup_status"] != "terminal" else None)
+    ):
+        raise fail("original_submission_disposition_changed")
 
 
 def validate_final(
@@ -489,6 +542,7 @@ def validate_final(
         or counts["result_queries"] > counts["submissions"] * 40
     ):
         raise fail("child_counts_disagree")
+    validate_submission(message["last_submission"], message["pending_request_id"], counts, request)
 
 
 def collect_source3(
@@ -528,6 +582,7 @@ def collect_source3(
                 "learned_evaluation": False,
                 "automatic_restart": False,
                 "automatic_resume": False,
+                "automatic_retry": False,
                 "source_start": None,
                 "source_close": None,
                 "child": None,
@@ -555,11 +610,16 @@ def collect_source3(
                         report.get("source_final_status"),
                         "not_owned_or_already_requested",
                     )
-                close_sent = True
                 try:
                     status = _status(app, original, for_close=True)
                     body = _body(status, "close")
-                    atomic_json(request.output / "source-close-request.json", body)
+                    try:
+                        atomic_json(request.output / "source-close-request.json", body)
+                    except Exception:
+                        # A diagnostic write is not an offered owner command.
+                        # Preserve its failure while still closing the known session.
+                        report["source_close_request_write_error"] = "diagnostic_write_failed"
+                    close_sent = True  # Set only immediately before the original owner call.
                     closed = app.control_native_recording(body)
                     report["source_close"] = closed
                     status = closed["status"]
@@ -581,9 +641,13 @@ def collect_source3(
                         and status.get("closeout_status") == "closed"
                     )
                     report["source_final_status"] = status
-                    atomic_json(
-                        request.output / "source-close.json", {"result": closed, "status": status}
-                    )
+                    try:
+                        atomic_json(
+                            request.output / "source-close.json",
+                            {"result": closed, "status": status},
+                        )
+                    except Exception:
+                        report["source_close_receipt_write_error"] = "diagnostic_write_failed"
                     return (
                         source_closed,
                         status,
@@ -591,8 +655,64 @@ def collect_source3(
                     )
                 except Exception as error:
                     code = error.code if isinstance(error, BoundaryError) else "close_unknown"
-                    report["source_close_error"] = code
+                    report["source_close_error" if close_sent else "source_close_prepare_error"] = (
+                        code
+                    )
                     return False, status, code
+
+            def retain_quiesced(message: dict[str, Any]) -> None:
+                report["quiesced"] = message
+                try:
+                    atomic_json(request.output / "quiesced.json", message)
+                except Exception:
+                    report["quiesced_write_error"] = "diagnostic_write_failed"
+                object_fields(
+                    message,
+                    {
+                        "schema",
+                        "type",
+                        "operation_id",
+                        "message_id",
+                        "reason",
+                        "counts",
+                        "pending_request_id",
+                        "last_submission",
+                    },
+                    "source3_pipe.quiesced",
+                )
+                if message["schema"] != PIPE_SCHEMA or message["operation_id"] != operation:
+                    raise fail("quiesced_operation_changed")
+                counts = object_fields(
+                    message["counts"],
+                    {"submissions", "known_delivered_choices", "result_queries"},
+                    "source3_pipe.counts",
+                )
+                if (
+                    any(type(counts[key]) is not int for key in counts)
+                    or not report["actual_choices"]
+                    <= counts["submissions"]
+                    <= min(request.max_submissions, report["actual_choices"] + 1)
+                    or not 0 <= counts["known_delivered_choices"] <= counts["submissions"]
+                    or not 0 <= counts["result_queries"] <= counts["submissions"] * 40
+                ):
+                    raise fail("quiesced_counts_invalid")
+                validate_submission(
+                    message["last_submission"], message["pending_request_id"], counts, request
+                )
+                submission = message["last_submission"]
+                if (
+                    submission is not None
+                    and pending_choice is not None
+                    and pending_choice["action"] is not None
+                    and submission["ordinal"] == pending_choice["ordinal"]
+                    and (
+                        submission["basis"] != pending_choice["basis"]
+                        or submission["action_id"] != pending_choice["action"]["action_id"]
+                    )
+                ):
+                    raise fail("quiesced_original_choice_changed")
+                report["pending_request_id"] = message["pending_request_id"]
+                report["last_submission"] = submission
 
             try:
                 atomic_json(
@@ -868,19 +988,7 @@ def collect_source3(
                             {**common, "type": "continue", "continue": allowed, "reason": reason}
                         )
                     elif kind == "quiesced":
-                        object_fields(
-                            message,
-                            {
-                                "schema",
-                                "type",
-                                "operation_id",
-                                "message_id",
-                                "reason",
-                                "counts",
-                                "pending_request_id",
-                            },
-                            "source3_pipe.quiesced",
-                        )
+                        retain_quiesced(message)
                         source_closed, status, close_outcome = close_original_once()
                         child.send(
                             {
@@ -932,6 +1040,10 @@ def collect_source3(
                             message.get("type") == "quiesced"
                             and message.get("operation_id") == operation
                         ):
+                            try:
+                                retain_quiesced(message)
+                            except BoundaryError as quiesced_error:
+                                report["quiesced_error"] = quiesced_error.code
                             source_closed, status, close_outcome = close_original_once()
                             child.send(
                                 {
@@ -990,6 +1102,10 @@ def collect_source3(
                 cancellation_requests=cancel.signals,
                 known_delivered_choices=delivered_choices,
                 submissions=final.get("counts", {}).get("submissions"),
+                pending_request_id=final.get(
+                    "pending_request_id", report.get("pending_request_id")
+                ),
+                last_submission=final.get("last_submission", report.get("last_submission")),
                 status="completed"
                 if known_cleanup
                 and error_code is None

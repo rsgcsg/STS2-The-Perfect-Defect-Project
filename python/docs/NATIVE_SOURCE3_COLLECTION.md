@@ -55,6 +55,17 @@ choices, then progresses through typed current map/card/focus/confirm/reward
 members. Missing required public semantics stops the attempt. It cannot replace
 or act as a hidden fallback for a learned natural-evaluation journey.
 
+Before SDK admission, a private `submission-intent-NNNN.json` records and syncs
+its original request ID, ordinal, complete basis and original action. This is an
+intent, with admission/delivery unobserved. An admitted transport failure retains
+that same ID and its explicit unresolved/unknown/no-retry disposition in
+`submission-outcome-NNNN.json`, the final child receipt and parent report.
+`quiesced.json` preserves the original quiescence identity/counts before Close;
+none of these records authorizes retry or infers an outcome from later Current.
+A failed Close-request diagnostic write is recorded and still permits the
+original App Close call. The at-most-once flag is set only when that owner call
+is actually offered; an unknown offered Close is never repeated.
+
 Private `request.json`, exact original result files and `report.json` preserve
 attempt disposition, teacher state, counts, cancellation, controller release and
 actual Host/child exit receipts. `actual_choices` counts received original Result

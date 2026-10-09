@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Collect-only Host/native SDK transport. Strategy lives in the Python STPD parent. */
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, open } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -176,7 +176,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
   let deps, profile;
   let episode, controller, native, capabilities, admissionRequested = false, sourceClosed = false;
   let hostStarted = false, hostExit = null, controlRelease = null, messageId = 0, pendingRequest = null;
-  let bootstrapHandoff = null;
+  let bootstrapHandoff = null, lastSubmission = null;
   let sourceReason = "collection_owner_failed", timer, cursor, subscriptionRenewed = 0, outputBytes = 0;
   let releasePromise;
   const errors = [], counts = { submissions: 0, known_delivered_choices: 0, result_queries: 0 };
@@ -200,10 +200,14 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
       throw new Error("pipe_reply_binding_changed");
     return received;
   };
-  const record = async (name, value) => {
+  const record = async (name, value, { durable = false } = {}) => {
     const bytes = Buffer.from(JSON.stringify(value) + "\n");
     if (outputBytes + bytes.length > options.max_diagnostic_bytes) throw new Error("diagnostic_capacity_exceeded");
-    await writeFile(path.join(options.output, name), bytes, { flag: "wx", mode: 0o600 });
+    if (durable) {
+      const file = await open(path.join(options.output, name), "wx", 0o600);
+      try { await file.writeFile(bytes); await file.sync(); }
+      finally { await file.close(); }
+    } else await writeFile(path.join(options.output, name), bytes, { flag: "wx", mode: 0o600 });
     outputBytes += bytes.length;
   };
   const release = () => {
@@ -346,28 +350,48 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
           action_id: choice.action_id, teacher_state: choice.teacher_state, acquisition: "complete_current",
           advisory_event_history_required: false });
         check();
-        const requestId = "source3-" + randomUUID(); pendingRequest = requestId;
+        const requestId = "source3-" + randomUUID();
+        lastSubmission = { request_id: requestId, ordinal, basis, action_id: choice.action_id,
+          sdk_admitted: false, lookup_status: "not_started", delivery: null,
+          result_queries: 0, automatic_retry: false };
+        await record(`submission-intent-${String(ordinal).padStart(4, "0")}.json`, {
+          schema: "spireagent/native-source3-submission-intent-v1", operation_id: operationId,
+          request_id: requestId, ordinal, basis,
+          action: actions.find(action => action.action_id === choice.action_id),
+          sdk_admission: "not_yet_observed", delivery: "not_observed", automatic_retry: false
+        }, { durable: true });
+        check();
         let dispatched = false;
         let result = await native.submit({ requestId, expectedSnapshotId: basis.snapshot_id,
           actionId: choice.action_id, preSubmitSignal: lifetime.signal,
-          onSubmitStart() { check(); dispatched = true; counts.submissions++; } });
+          onSubmitStart() {
+            check(); dispatched = true; counts.submissions++; pendingRequest = requestId;
+            lastSubmission.sdk_admitted = true; lastSubmission.lookup_status = "unresolved";
+            lastSubmission.delivery = "unknown";
+          } });
         if (!dispatched) throw new Error("native_submit_without_admission");
         lastSubmittedSnapshot = basis.snapshot_id;
         let queries = 0;
+        lastSubmission.lookup_status = result.status;
         const resultDeadline = performance.now() + 2000;
         while (result.status === "pending" && queries < 40 && performance.now() < resultDeadline) {
           check();
           await new Promise(resolve => setTimeout(resolve, 50));
           check();
-          queries++; counts.result_queries++;
+          queries++; counts.result_queries++; lastSubmission.result_queries = queries;
+          lastSubmission.lookup_status = "unresolved";
           result = await native.result(requestId, AbortSignal.any([lifetime.signal,
             AbortSignal.timeout(Math.max(1, Math.ceil(resultDeadline - performance.now())))]));
+          lastSubmission.lookup_status = result.status;
         }
+        lastSubmission.lookup_status = result.status;
+        const disposition = result.status === "terminal" ? result.result.data : null;
+        lastSubmission.delivery = disposition?.delivery ?? "unknown";
+        if (result.status === "terminal") pendingRequest = null;
+        if (disposition?.delivery === "delivered") counts.known_delivered_choices++;
         await record(`result-${String(ordinal).padStart(4, "0")}.json`, { request_id: requestId,
           lookup_status: result.status, result: result.status === "terminal" ? result.result.data : null,
           result_queries: queries, automatic_retry: false });
-        const disposition = result.status === "terminal" ? result.result.data : null;
-        if (disposition?.delivery === "delivered") counts.known_delivered_choices++;
         const response = await reply("result", { ordinal, request_id: requestId,
           lookup_status: result.status, result: disposition, result_queries: queries }, "continue");
         exact(response, ["schema", "type", "operation_id", "message_id", "continue", "reason"]);
@@ -392,11 +416,17 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     if (pendingRequest && counts.submissions) sourceReason = lifetime.reason || "original_result_unresolved";
   } finally {
     clearTimeout(timer);
+    if (lastSubmission) {
+      try {
+        await record(`submission-outcome-${String(lastSubmission.ordinal).padStart(4, "0")}.json`,
+          lastSubmission, { durable: true });
+      } catch { errors.push("submission_outcome_write_failed"); }
+    }
     // App Close belongs to the parent, including canceled/partial attempts. Never bypass it on EOF.
     try {
       if (admissionRequested) {
         const response = await reply("quiesced", { reason: sourceReason, counts,
-          pending_request_id: pendingRequest }, "source_closed", true);
+          pending_request_id: pendingRequest, last_submission: lastSubmission }, "source_closed", true);
         exact(response, ["schema", "type", "operation_id", "message_id", "known_closed",
           "source_status", "close_outcome"]);
         sourceClosed = response.known_closed === true;
@@ -436,6 +466,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
   const final = { ...common("closed"), reason: sourceReason, counts, source_closed: sourceClosed,
     control_release: controlRelease, host_exit: hostExit, host_started: hostStarted,
     cleanup_errors: errors, advisory, live_byte_reservations: budget.used,
+    pending_request_id: pendingRequest, last_submission: lastSubmission,
     partial_source_prefix: true, learned_evaluation: false };
   await peer.send(final).catch(() => {});
   return final;

@@ -125,7 +125,7 @@ def collection(tmp_path, monkeypatch):
                 "reason": reason,
                 "counts": {
                     "submissions": self.choices,
-                    "known_delivered_choices": self.choices,
+                    "known_delivered_choices": self.delivered,
                     "result_queries": 0,
                 },
                 "source_closed": self.source_closed,
@@ -137,6 +137,8 @@ def collection(tmp_path, monkeypatch):
                 "live_byte_reservations": 0,
                 "partial_source_prefix": True,
                 "learned_evaluation": False,
+                "pending_request_id": self.pending_id,
+                "last_submission": self.last_submission,
             }
             if seen["behavior"].get("bad_final"):
                 value["counts"]["submissions"] = 999
@@ -147,6 +149,7 @@ def collection(tmp_path, monkeypatch):
             kind = value["type"]
             if kind == "init":
                 self.operation, self.choices = value["operation_id"], 0
+                self.delivered, self.pending_id, self.last_submission = 0, None, None
                 self.message(
                     "ready",
                     runtime_instance_id="runtime",
@@ -195,6 +198,33 @@ def collection(tmp_path, monkeypatch):
             elif kind == "choice":
                 assert value["action_id"] == "browse"
                 self.choices += 1
+                unknown = seen["behavior"].get("unknown_submission")
+                self.pending_id = "original-request" if unknown else None
+                self.last_submission = {
+                    "request_id": "original-request",
+                    "ordinal": 1,
+                    "basis": self.basis,
+                    "action_id": "browse",
+                    "sdk_admitted": True,
+                    "lookup_status": "unresolved" if unknown else "terminal",
+                    "delivery": "unknown" if unknown else "delivered",
+                    "result_queries": 0,
+                    "automatic_retry": False,
+                }
+                if unknown:
+                    self.message(
+                        "quiesced",
+                        reason="original_result_unresolved",
+                        counts={
+                            "submissions": self.choices,
+                            "known_delivered_choices": self.delivered,
+                            "result_queries": 0,
+                        },
+                        pending_request_id=self.pending_id,
+                        last_submission=self.last_submission,
+                    )
+                    return
+                self.delivered += 1
                 self.message(
                     "result",
                     ordinal=1,
@@ -214,12 +244,23 @@ def collection(tmp_path, monkeypatch):
                 self.message(
                     "quiesced",
                     reason="target_choices_reached",
-                    counts={"submissions": self.choices},
-                    pending_request_id=None,
+                    counts={
+                        "submissions": self.choices,
+                        "known_delivered_choices": self.delivered,
+                        "result_queries": 0,
+                    },
+                    pending_request_id=self.pending_id,
+                    last_submission=self.last_submission,
                 )
             elif kind == "source_closed":
                 self.source_closed = value["known_closed"]
-                self.final("external_signal" if seen["stops"] else "target_choices_reached")
+                self.final(
+                    "original_result_unresolved"
+                    if seen["behavior"].get("unknown_submission")
+                    else "external_signal"
+                    if seen["stops"]
+                    else "target_choices_reached"
+                )
 
         def receive(self):
             return self.queue.popleft() if self.queue else None
@@ -233,8 +274,13 @@ def collection(tmp_path, monkeypatch):
                     self.message(
                         "quiesced",
                         reason=reason,
-                        counts={"submissions": self.choices},
-                        pending_request_id=None,
+                        counts={
+                            "submissions": self.choices,
+                            "known_delivered_choices": self.delivered,
+                            "result_queries": 0,
+                        },
+                        pending_request_id=self.pending_id,
+                        last_submission=self.last_submission,
                     )
 
         def finish(self):
@@ -482,3 +528,56 @@ def test_initial_request_write_failure_marks_failed_before_any_child(collection,
     assert report["status"] == "failed"
     assert seen["commands"] == seen["children"] == seen["apps"] == []
     assert json.loads((request.output / "report.json").read_text())["status"] == "failed"
+
+
+def test_admitted_unknown_original_identity_is_retained_in_quiesced_and_report(collection):
+    _, request, seen, _, run = collection
+    seen["behavior"]["unknown_submission"] = True
+    report = run()
+    assert report["actual_choices"] == 0 and report["submissions"] == 1
+    assert report["pending_request_id"] == "original-request"
+    submission = report["last_submission"]
+    assert submission["sdk_admitted"] is True and submission["delivery"] == "unknown"
+    assert submission["lookup_status"] == "unresolved" and submission["automatic_retry"] is False
+    assert submission["basis"]["snapshot_id"] == "snapshot" and submission["action_id"] == "browse"
+    quiesced = json.loads((request.output / "quiesced.json").read_text())
+    durable_report = json.loads((request.output / "report.json").read_text())
+    assert quiesced["last_submission"] == durable_report["last_submission"] == submission
+    assert (
+        quiesced["pending_request_id"] == durable_report["pending_request_id"] == "original-request"
+    )
+    assert seen["commands"] == ["start_new_session", "close"]
+    assert sum(message["type"] == "choice" for message in seen["messages"]) == 1
+    assert report["source_closed"] and report["child"]["exit_code"] == 0
+    assert report["child_final"]["control_release"]["confirmed"] is True
+    assert report["eligible_unique_N"] is None and report["automatic_retry"] is False
+
+
+@pytest.mark.parametrize("unknown_close", [False, True])
+def test_close_request_diagnostic_failure_does_not_skip_or_repeat_owner_close(
+    collection, monkeypatch, unknown_close
+):
+    from spireagent.workbench import native_source3_collection as module
+
+    _, _, seen, _, run = collection
+    seen["behavior"]["unknown_close"] = unknown_close
+    original_write = module.atomic_json
+
+    def write(path, value):
+        if path.name == "source-close-request.json":
+            raise OSError("synthetic diagnostic write failure")
+        return original_write(path, value)
+
+    monkeypatch.setattr(module, "atomic_json", write)
+    report = run()
+    assert seen["commands"] == ["start_new_session", "close"]
+    assert report["close_sent"] is True
+    assert report["source_close_request_write_error"] == "diagnostic_write_failed"
+    assert report["source_closed"] is not unknown_close
+    if unknown_close:
+        assert (
+            report["status"] == "unknown"
+            and report["source_close_error"] == "native_recording_command_unknown"
+        )
+    else:
+        assert report["source_close"]["accepted"] is True and report["status"] == "completed"
