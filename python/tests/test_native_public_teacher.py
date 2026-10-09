@@ -239,3 +239,46 @@ def test_unsupported_owner_has_no_generic_label_or_end_turn_fallback():
     assert (
         NativePublicTeacher(browse=False).decide(view, actions).reason == "unsupported_public_owner"
     )
+
+
+def test_explicit_map_travel_waits_with_complete_information_catalog_and_no_route():
+    # Native information leaves remain independently actionable during travel.
+    actions = [
+        action("deck", "open_run_deck"),
+        action("relic", "inspect_relic", "public-relic"),
+        action("relic-tips", "show_relic_tips", "public-relic"),
+        *[action(f"info-{i}", "show_topbar_tips", f"public-topbar-{i}") for i in range(9)],
+    ]
+    for member in actions:
+        member["kind"] = "native_input"
+    original = copy.deepcopy(actions)
+    view = observation(
+        actions,
+        surface={
+            "kind": "map_navigation",
+            "traveling": True,
+            "travel_enabled": False,
+            "next_options": [],
+            "drawing_mode": "none",
+        },
+    )
+    teacher = NativePublicTeacher(browse=False)
+    before = teacher.state()
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "await" and decision.reason == "await_public_map_travel"
+    assert decision.action_id is None and teacher.state() == before
+    assert actions == original and len(actions) == 12
+    view["interaction"]["content"]["surface"]["traveling"] = False
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "close" and decision.reason == "required_native_action_unavailable"
+    view["interaction"]["content"]["surface"].update(traveling=True, next_options=None)
+    decision = teacher.decide(view, actions)
+    assert decision.directive == "close" and decision.reason == "map_public_options_unavailable"
+
+
+def test_disabled_map_routes_without_explicit_travel_fact_are_not_blind_pending():
+    actions = [action("info", "open_run_deck")]
+    view = observation(
+        actions, surface={"kind": "map_navigation", "travel_enabled": False, "next_options": []}
+    )
+    assert NativePublicTeacher(browse=False).decide(view, actions).directive == "close"

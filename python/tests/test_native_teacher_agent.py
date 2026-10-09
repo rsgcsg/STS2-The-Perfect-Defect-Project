@@ -207,6 +207,40 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertEqual(unsupported["directive"]["type"], "close")
         self.assertEqual(unsupported["directive"]["reason"], "scripted_owner_arrival_not_observed")
 
+    def test_map_travel_sample_commits_ACK_then_Awaits_without_information_action_label(self):
+        topbar_roles = [
+            "topbar_deck", "topbar_floor", "topbar_boss", "topbar_gold", "topbar_hp",
+            "topbar_settings", "topbar_potion_slot", "topbar_potion_slot", "topbar_potion_slot",
+        ]
+        actions = [
+            action("deck", "open_run_deck"),
+            action("relic", "inspect_relic", "public-relic"),
+            action("relic-tips", "show_relic_tips", "public-relic"),
+            *[action(f"info-{i}", "show_topbar_tips", f"public-topbar-{i}") for i in range(9)],
+        ]
+        value = current(
+            1,
+            actions=actions,
+            surface={
+                "kind": "map_navigation",
+                "traveling": True,
+                "travel_enabled": False,
+                "next_options": [],
+            },
+            refs=[("public-relic", "relic")]
+            + [(f"public-topbar-{i}", role) for i, role in enumerate(topbar_roles)],
+        )
+        for referent in value["value"]["observation"]["referents"][1:]:
+            referent["kind"] = "control"
+        before = next_input(self.agent)
+        kind, report = self.agent.propose_current(value, before)
+        self.assertEqual(kind, "consumed")
+        self.assertEqual(self.agent.state_version, 0)
+        self.agent.acknowledge(ack(report))
+        self.assertEqual(self.agent.directive(before)["directive"]["type"], "await")
+        self.assertEqual(self.agent.teacher.decisions, 0)
+        self.assertEqual(self.agent.state_version, 1)
+
     def test_executed_qualification_helper_mutation_invalidates_real_artifact(self):
         closure = self.root / "closure"
         for relative in module.CODE_FILES:

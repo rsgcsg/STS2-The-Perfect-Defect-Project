@@ -41,11 +41,13 @@ The Agent has a real code-closure artifact, its own AgentSpec/InputSpec and
 `model_bindings=[]`, `scores=null`, `state_recovery=none`. It is unlearned, has no
 weights or inference backend, and cannot be a hidden fallback in learned evaluation.
 The code identity includes executed qualifiers/package initializers; lock and
-interpreter provenance are explicit. Teacher policy version 1.0.2 preserves the
+interpreter provenance are explicit. Teacher policy version 1.0.3 preserves the
 native joins and adds explicit bounded Await for a pending public owner/focus.
 A Return delivery does not prove owner arrival. If Inspect still exposes only
 Return while closing, the Agent Awaits; it never repeats that action to pad N.
-Unsupported public owners close with an honest reason.
+A native map with explicit public `traveling=true` also Awaits even when its
+complete catalog retains information actions. Missing route actions without that
+progress fact remain fail-closed. Unsupported public owners close with an honest reason.
 
 Each Next obtains complete fresh Current and complete ordered C through Runtime
 and the public SDK. Attachment is scoped with empty eager event fields and the
