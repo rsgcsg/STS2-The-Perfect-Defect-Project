@@ -55,13 +55,15 @@ function frames() {
   });
 }
 
-async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = false, stopAfterAwait = false, nativeRejectedAt = null, target = 6, hugeStartup = false, largeStatus = false, privateWriteFailure = false } = {}) {
+async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = false, stopAfterAwait = false, nativeRejectedAt = null, target = 6, hugeStartup = false, largeStatus = false, privateWriteFailure = false, currentFailureAt = null, currentDiagnosticWriteFailure = false } = {}) {
   const output = await mkdtemp(path.join(os.tmpdir(), "source3-runtime-teacher-"));
   t.after(() => rm(output, { recursive: true, force: true }));
   const prepared = spawnSync(python, ["-c", "import json,sys; from pathlib import Path; from stpd.policy.native_teacher_agent import descriptor,write_artifact; p=Path(sys.argv[1]); print(json.dumps({'teacher_descriptor':descriptor(),'teacher_artifact':write_artifact(p),'python_executable':sys.executable}))", path.join(output, "teacher-code-artifact.json")],
     { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
   assert.equal(prepared.status, 0, prepared.stderr);
   if (privateWriteFailure) await import("node:fs/promises").then(m => m.writeFile(path.join(output, "collector-final-full.json"), "preserved_existing_private_file"));
+  if (currentDiagnosticWriteFailure) await import("node:fs/promises").then(m =>
+    m.writeFile(path.join(output, "native-current-failure-reply.json"), "preserved_existing_private_file"));
   const actor = JSON.parse(prepared.stdout), seen = { pipe: [], requests: [], submits: [], waits: 0,
     sourceCloses: 0, hostCloses: 0, order: [], retentionsReleased: [], captures: [] };
   const values = frames(), captures = new Map(), retentions = new Map(), catalogs = new Map();
@@ -133,6 +135,14 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
     if (method === "current") {
       if (largeStatus) return response({ ...clone(wire.current), schema: "非ASCII原因".repeat(1000) });
       assert.deepEqual(body.eager_scope, sdk.NATIVE_LOGICAL_SCOPE);
+      if (current + 1 === currentFailureAt) {
+        seen.failedCurrent = { schema: "sts2.player-environment/native-logical-current-1",
+          input_profile: "native-logical-v1", status: "source_capture_incomplete", reason: "public_combat_power_facts",
+          context: null, capture: null, retention: null };
+        const text = JSON.stringify(seen.failedCurrent, null, 2) + "\n";
+        seen.failedCurrentWireBytes = Buffer.byteLength(text);
+        return new Response(text, { status: 409, headers: { "Content-Type": "application/json" } });
+      }
       const value = values[Math.min(current, values.length - 1)];
       current++;
       const raw = Buffer.from(JSON.stringify(value.observation));
@@ -270,6 +280,46 @@ test("real stdio program teacher commits exact ACK and Awaits closing Return wit
   assert.ok(kinds.includes("native_await_result"));
   assert.ok(!seen.pipe.some(value => ["current", "choice", "result"].includes(value.type)));
 });
+
+for (const currentDiagnosticWriteFailure of [false, true]) {
+  test(`original SDK failed Current reason survives unchanged Runtime handoff and cleanup; diagnostic write failure=${currentDiagnosticWriteFailure}`, async t => {
+    const { final, seen, events, output } = await collect(t, {
+      target: 100, currentFailureAt: 9, currentDiagnosticWriteFailure,
+    });
+    assert.equal(final.reason, "runtime_handoff");
+    assert.deepEqual(final.runtime_status.errors, ["query_current_source_capture_incomplete"]);
+    assert.equal(final.runtime_status.session.agent_state, "uncertain");
+    assert.equal(final.runtime_status.tainted, false);
+    assert.equal(final.runtime_status.pending_request, null);
+    assert.equal(final.counts.known_delivered_choices, 6);
+    assert.equal(seen.submits.length, 6);
+    assert.equal(seen.requests.filter(entry => entry.route.endsWith("/current")).length, 9);
+    assert.deepEqual(final.cleanup_errors, []);
+    assert.equal(events.filter(event => event.kind === "native_result").length, 6);
+    assert.equal(events.at(-1).kind, "stopped");
+    const details = JSON.parse(await readFile(path.join(output, final.failure_details.path), "utf8"));
+    assert.deepEqual(details.runtime_errors, ["query_current_source_capture_incomplete"]);
+    const diagnosticFile = path.join(output, "native-current-failure-reply.json");
+    if (currentDiagnosticWriteFailure) {
+      assert.equal(details.native_current_failure_reply, null);
+      assert.equal(await readFile(diagnosticFile, "utf8"), "preserved_existing_private_file");
+      assert.ok(details.failures.some(error => /EEXIST/u.test(error.message)));
+    } else {
+      const reference = details.native_current_failure_reply;
+      const bytes = await readFile(diagnosticFile);
+      assert.equal(bytes.length, reference.bytes);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), reference.sha256);
+      const saved = JSON.parse(bytes);
+      assert.deepEqual(saved.original_sdk_reply.raw, seen.failedCurrent);
+      assert.equal(saved.original_sdk_reply.statusCode, 409);
+      assert.equal(saved.original_sdk_reply.encodedByteCount, seen.failedCurrentWireBytes);
+      assert.deepEqual(saved.request, { eager_scope: sdk.NATIVE_LOGICAL_SCOPE, expected_snapshot_id: null });
+      assert.equal(saved.representation, "original_public_SDK_JSON_values_reserialized_as_private_JSON");
+      assert.ok(saved.non_claims.includes("not_original_HTTP_bytes"));
+      assert.ok(bytes.length <= 64 * 1024);
+    }
+  });
+}
 
 test("generic Runtime retains unknown original intent in immutable evidence, no next action or invented pending ID", async t => {
   const { final, seen, events } = await collect(t, { unknownAt: 2 });

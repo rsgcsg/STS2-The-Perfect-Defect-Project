@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { createCollectionLifetime, createPipePeer, PIPE_SCHEMA, runNativeSource3, validateOptions }
+import { createCollectionLifetime, createPipePeer, observeNativeCurrentFailure, PIPE_SCHEMA, runNativeSource3, validateOptions }
   from "../native-source3-collector.mjs";
 
 const operation = "a".repeat(32);
@@ -18,6 +18,37 @@ test("one fixed program collector request has finite pilot limits and explicit o
     { ...options, record_source3: "false" }, { ...options, python_executable: "from-request" },
     { ...options, endpoint: "https://external.invalid" }, { ...options, arbitrary_module: "hidden" }])
     assert.throws(() => validateOptions(invalid));
+});
+
+test("failed Current observer retains the one original reply and never retries after a diagnostic failure", async () => {
+  const original = { raw: { status: "source_capture_incomplete", reason: "public_combat_power_facts" },
+    statusCode: 409, encodedByteCount: 177 };
+  const request = { eager_scope: ["persistent", "interaction", "referents", "catalog"],
+    expected_snapshot_id: null };
+  const calls = [], errors = [];
+  let records = 0;
+  const environment = { async nativeLogicalRequest(...args) { calls.push(args); return original; } };
+  observeNativeCurrentFailure(environment, { decodeCurrent: raw => ({ data: raw }),
+    async record(reply, scope) { assert.equal(reply, original); assert.deepEqual(scope, request);
+      records++; throw new Error("private_write_failed"); }, onRecordError: error => errors.push(error.message) });
+  assert.equal(await environment.nativeLogicalRequest("current", request), original);
+  assert.equal(await environment.nativeLogicalRequest("current", request), original);
+  assert.equal(await environment.nativeLogicalRequest("events", { after_cursor: "known" }), original);
+  assert.deepEqual(calls.map(args => args[0]), ["current", "current", "events"]);
+  assert.equal(records, 1);
+  assert.deepEqual(errors, ["private_write_failed"]);
+});
+
+test("optional diagnostic I/O cannot delay the original Current reply", { timeout: 1000 }, async () => {
+  const original = { raw: { status: "source_capture_incomplete", reason: "public_combat_power_facts" } };
+  let finish;
+  const gate = new Promise(resolve => { finish = resolve; });
+  const environment = { async nativeLogicalRequest() { return original; } };
+  observeNativeCurrentFailure(environment, { decodeCurrent: raw => ({ data: raw }),
+    record: () => gate, onRecordError: () => assert.fail("unexpected write failure") });
+  try {
+    assert.equal(await environment.nativeLogicalRequest("current", { eager_scope: [], expected_snapshot_id: null }), original);
+  } finally { finish(); }
 });
 
 test("early repeated cancellation is owned before Host or program launch", async () => {

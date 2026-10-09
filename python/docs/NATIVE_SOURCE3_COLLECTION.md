@@ -41,7 +41,7 @@ The Agent has a real code-closure artifact, its own AgentSpec/InputSpec and
 `model_bindings=[]`, `scores=null`, `state_recovery=none`. It is unlearned, has no
 weights or inference backend, and cannot be a hidden fallback in learned evaluation.
 The code identity includes executed qualifiers/package initializers; lock and
-interpreter provenance are explicit. Teacher policy version 1.0.3 preserves the
+interpreter provenance are explicit. Teacher policy version 1.0.4 preserves the
 native joins and adds explicit bounded Await for a pending public owner/focus.
 A Return delivery does not prove owner arrival. If Inspect still exposes only
 Return while closing, the Agent Awaits; it never repeats that action to pad N.
@@ -67,6 +67,15 @@ Runtime without an automatic Result lookup or resubmit. Some transport-unknown
 request IDs are retained in canonical evidence but not exposed by public status;
 the collection report declares that projection absence. It never reconstructs
 control by parsing JSONL or fabricates a pending request.
+
+A failed Current keeps the Runtime's original fail-closed behavior. The application
+observes its first failed public SDK reply once and retains the full JSON values,
+HTTP status and SDK-observed encoded byte count in an exclusive private file of
+at most 64 KiB, within the aggregate diagnostic budget. Its SHA reference appears
+inside the existing failure-detail file. The saved JSON is reserialized and is
+neither original HTTP bytes nor a native capture or training input. Optional
+diagnostic I/O does not delay the reply or owner cleanup; write failure does not
+request another Current, retry delivery or suppress control/Source/Host closure.
 
 Private application pipe/report v2 keeps Init, permissions and compact final
 within 16 KiB. Explicitly named `runtime_gate`, `runtime_tick` and `quiesced`

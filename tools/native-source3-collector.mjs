@@ -186,6 +186,31 @@ function safeHostIdentity(identity) {
     requested_ascension: identity.requested_ascension };
 }
 
+/** Observe one original failed public Current reply; never issue another request
+ * or replace the Runtime's result. This is application diagnostics only. */
+export function observeNativeCurrentFailure(environment, { decodeCurrent, record, onRecordError }) {
+  const originalRequest = environment.nativeLogicalRequest.bind(environment);
+  let recorded = false;
+  const recordError = error => {
+    try { onRecordError(error); } catch { /* Diagnostics cannot change the public reply. */ }
+  };
+  environment.nativeLogicalRequest = async (...args) => {
+    const original = await originalRequest(...args);
+    if (args[0] !== "current" || recorded || ["captured", "partial"].includes(original.raw?.status))
+      return original;
+    let current;
+    try { current = decodeCurrent(original.raw).data; }
+    catch { return original; } // Preserve the SDK's original validation path.
+    if (["captured", "partial"].includes(current.status)) return original;
+    recorded = true;
+    try {
+      Promise.resolve(record(original, { eager_scope: [...args[1].eager_scope],
+        expected_snapshot_id: args[1].expected_snapshot_id })).catch(recordError);
+    } catch (error) { recordError(error); }
+    return original;
+  };
+}
+
 /** Exact compiled identity uses the existing Runtime CLI's directory grammar. */
 async function compiledIdentity(directory) {
   const names = (await readdir(directory)).filter(name => name.endsWith(".js")).sort();
@@ -273,6 +298,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
   let hostStarted = false, hostExit = null, controlRelease = null, teacherExit = null;
   let admissionRequested = false, sourceClosed = false, messageId = 0;
   let reason = "collection_owner_failed", failures = [], diagnostics = [], directEvidence = null;
+  let currentFailureDiagnostic = null, currentFailureWriteFlight = null;
   let runtimeStop, privateBytes = 0;
   const privateWrite = async (name, bytes) => {
     if (privateBytes + bytes.length > options.max_diagnostic_bytes) throw new Error("aggregate_private_diagnostic_capacity");
@@ -344,6 +370,26 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     const environment = new deps.PlayerEnvironmentRestClient(options.endpoint, 30_000);
     const c = deps.decodeNativeLogicalCapabilities((await environment.nativeLogicalRequest("capabilities")).raw).data;
     if (c.session.runtime_instance_id !== runtimeId) throw new Error("runtime_binding_changed");
+    observeNativeCurrentFailure(environment, {
+      decodeCurrent: deps.decodeNativeLogicalCurrent,
+      record: (original, request) => {
+        currentFailureWriteFlight = (async () => {
+          const bytes = Buffer.from(JSON.stringify({ schema: "spireagent/private-native-current-failure-reply-v1",
+            operation_id: operationId, request, original_sdk_reply: original,
+            expected_session: c.session, expected_stream_generation: c.stream_generation,
+            representation: "original_public_SDK_JSON_values_reserialized_as_private_JSON",
+            non_claims: ["not_original_HTTP_bytes", "not_source_capture_evidence", "not_training_input",
+              "no_retry_or_new_native_query", "expected_session_is_not_failed_capture_context"] }) + "\n");
+          if (bytes.length > Math.min(options.max_diagnostic_bytes, 64 * 1024))
+            throw new Error("private_current_reply_diagnostic_capacity");
+          const name = "native-current-failure-reply.json";
+          await privateWrite(name, bytes);
+          currentFailureDiagnostic = { path: name, bytes: bytes.length, sha256: hash(bytes) };
+        })();
+        return currentFailureWriteFlight;
+      },
+      onRecordError: error => diagnostics.push(failureDetail(error)),
+    });
     const bytes = await readFile(options.teacher_artifact.path);
     if (hash(bytes) !== options.teacher_artifact.sha256 || deps.canonicalJson(JSON.parse(bytes)) !== deps.canonicalJson(options.teacher_descriptor))
       throw new Error("real_teacher_artifact_binding");
@@ -427,13 +473,16 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     }
     removeStop();
   }
+  // The SDK reply and owner cleanup never wait for optional diagnostic I/O.
+  // Finish its one bounded private file only after release/Source Close/Host exit.
+  if (currentFailureWriteFlight) await currentFailureWriteFlight.catch(() => {});
   let diagnosticRef = null;
-  if (diagnostics.length || teacher?.diagnostics().length || finalStatus?.errors.length) {
+  if (currentFailureDiagnostic || diagnostics.length || teacher?.diagnostics().length || finalStatus?.errors.length) {
     try {
       const bytes = Buffer.from(JSON.stringify({ failures: diagnostics.slice(0, 4),
         teacher_stderr: teacher?.diagnostics().toString("utf8") ?? null,
         teacher_protocol_tail: teacher?.protocolDiagnostics().toString("utf8") ?? null,
-        runtime_errors: finalStatus?.errors ?? [] }) + "\n");
+        runtime_errors: finalStatus?.errors ?? [], native_current_failure_reply: currentFailureDiagnostic }) + "\n");
       const name = "collector-failure-detail.json";
       if (bytes.length > Math.min(options.max_diagnostic_bytes, 256 * 1024)) throw new Error("diagnostic_capacity_exceeded");
       await privateWrite(name, bytes);
