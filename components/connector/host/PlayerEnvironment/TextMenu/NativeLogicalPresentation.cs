@@ -49,6 +49,35 @@ internal static class NativeLogicalPresentation
         ["logical_stars"] = logical?.DeepClone()
     };
 
+    internal static PlayerEnvironmentReferent RenderedCardSubject(string id, string title,
+        string cost, string description, Action<JsonObject>? appendDisplay = null)
+    {
+        var facts = new JsonObject
+        {
+            ["card_referent_id"] = id,
+            ["displayed_title"] = title,
+            ["displayed_cost"] = cost,
+            ["displayed_description"] = description
+        };
+        appendDisplay?.Invoke(facts);
+        return new PlayerEnvironmentReferent(id, "card", "entity", title,
+            new(true, true, false, false, "native_visible_fact"),
+            "sts2.player-environment/referent/native_displayed_card-1", facts.DeepClone());
+    }
+
+    internal static PlayerEnvironmentReferent? CaptureRenderedCardSubject(NCard card,
+        NativeEntityRegistry entities)
+    {
+        if (!ConnectorMod.IsNodeVisible(card) || card.Visibility != ModelVisibility.Visible
+            || card.Model == null) return null;
+        var title = card.GetNodeOrNull<MegaLabel>("%TitleLabel");
+        var cost = card.GetNodeOrNull<MegaLabel>("%EnergyLabel");
+        var description = card.GetNodeOrNull<MegaRichTextLabel>("%DescriptionLabel");
+        if (title == null || cost == null || description == null) return null;
+        return RenderedCardSubject(entities.GetId(card.Model, "card"), title.Text,
+            cost.Text, description.Text, facts => AddCardDisplay(facts, card));
+    }
+
     internal static TextMenuFrame Attach(TextMenuFrame frame, NativeEntityRegistry entities)
     {
         if (frame.Page.Interaction.Content.Surface is not JsonObject source) return frame;
@@ -59,26 +88,11 @@ internal static class NativeLogicalPresentation
         if (root != null)
             foreach (NCard card in ConnectorMod.FindAll<NCard>(root))
             {
-                if (!ConnectorMod.IsNodeVisible(card) || card.Visibility != ModelVisibility.Visible
-                    || card.Model == null) continue;
-                var title = card.GetNodeOrNull<MegaLabel>("%TitleLabel");
-                var cost = card.GetNodeOrNull<MegaLabel>("%EnergyLabel");
-                var description = card.GetNodeOrNull<MegaRichTextLabel>("%DescriptionLabel");
-                if (title == null || cost == null || description == null) continue;
-                var facts = new JsonObject
-                {
-                    ["card_referent_id"] = entities.GetId(card.Model, "card"),
-                    ["displayed_title"] = title.Text,
-                    ["displayed_cost"] = cost.Text,
-                    ["displayed_description"] = description.Text
-                };
-                AddCardDisplay(facts, card);
-                displayed.Add(facts);
-                string id = entities.GetId(card.Model, "card");
-                if (!referents.Any(value => value.ReferentId == id))
-                    referents.Add(new PlayerEnvironmentReferent(id, "card", "entity", title.Text,
-                        new(true, true, false, false, "native_visible_fact"),
-                        "sts2.player-environment/referent/native_displayed_card-1", facts.DeepClone()));
+                PlayerEnvironmentReferent? subject = CaptureRenderedCardSubject(card, entities);
+                if (subject == null) continue;
+                displayed.Add(subject.Properties!.DeepClone());
+                if (!referents.Any(value => value.ReferentId == subject.ReferentId))
+                    referents.Add(subject);
             }
         surface["actual_displayed_cards"] = displayed;
         if (NOverlayStack.Instance?.Peek() is NGameOverScreen gameOver)

@@ -8,6 +8,34 @@ using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.NativeLogic
 public sealed class RequiredPublicCombatCompatibilityTests
 {
     [Theory]
+    [InlineData("settling", "public_combat_power_facts")]
+    [InlineData("visible_unsupported", "public_combat_health_display")]
+    [InlineData("observed", "persistent_visible_state")]
+    public void RenderedCardSubjectPreparationCannotRepairUnrelatedRequiredGaps(string status, string missing)
+    {
+        var source = Source(missing) with { Status = status };
+        var before = source.Interaction.Content.Context.ToJsonString();
+        var bindings = new PublicInformationBindings(source);
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-current", true,
+            () => NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block"));
+        Assert.NotNull(subject);
+        Assert.Equal(status, bindings.Page.Status);
+        Assert.Equal("partial", bindings.Page.Completeness.Status);
+        Assert.Equal(new[] { missing }, bindings.Page.Completeness.Missing);
+        Assert.Same(source.Interaction.Content.Context, bindings.Page.Interaction.Content.Context);
+        Assert.Equal(before, source.Interaction.Content.Context.ToJsonString());
+        var leaf = PublicInformationBindings.Leaf("current-tip", "card_tips", "show_card_tips", subject!,
+            () => throw new InvalidOperationException("Inherited missing facts prohibit dispatch"));
+        var frame = new TextMenuFrame(bindings.Page, "current", new[]
+        {
+            new TextMenuLeaf(leaf.Key, leaf.Group, leaf.Verb, leaf.Label, leaf.SubjectReferentId,
+                leaf.Arguments, leaf.Dispatch)
+        });
+        Assert.Empty(NativeLogicalCapture.Validate(frame).Leaves);
+        Assert.Empty(source.Referents);
+    }
+
+    [Theory]
     [InlineData("held", "public_combat_power_facts", false)]
     [InlineData("held", "public_combat_health_display", false)]
     [InlineData("potion", "public_combat_power_facts", false)]

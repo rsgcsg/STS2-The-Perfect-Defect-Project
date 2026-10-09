@@ -120,7 +120,7 @@ internal static class NativeTextMenuInformation
         if (!nativeLogical || !NHoverTipSet.shouldBlockHoverTips)
         {
             AddRelicTipsOpen(entities, leaves, bindings);
-            AddOtherTipLeaves(entities, leaves, bindings);
+            AddOtherTipLeaves(entities, leaves, bindings, nativeLogical: nativeLogical);
             if (nativeLogical) AddNativeLogicalTips(legacy.Snapshot, entities, leaves, bindings);
         }
         if (nativeLogical) AddMerchantInformation(legacy, entities, leaves, bindings);
@@ -802,7 +802,7 @@ internal static class NativeTextMenuInformation
         if (NHoverTipSet.shouldBlockHoverTips || state.Stage == "completed") return frame;
         var bindings = new PublicInformationBindings(frame.Page);
         var information = new List<NativeTextMenuInformationLeaf>();
-        AddOtherTipLeaves(entities, information, bindings, state.Owner);
+        AddOtherTipLeaves(entities, information, bindings, state.Owner, nativeLogical: true);
         if (state.Stage == "peek")
             AddNativeLogicalTips(frame.Page, entities, information, bindings, state.Owner);
         var leaves = frame.Leaves.Concat(information.Select(item => new TextMenuLeaf(item.Key,
@@ -872,7 +872,8 @@ internal static class NativeTextMenuInformation
 
     private static void AddOtherTipLeaves(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
-        PublicInformationBindings bindings, NCardGridSelectionScreen? selectorOwner = null)
+        PublicInformationBindings bindings, NCardGridSelectionScreen? selectorOwner = null,
+        bool nativeLogical = false)
     {
         if (ActiveHoverTipsField == null || NMapScreen.Instance?.IsOpen == true) return;
         bool noOverlay = NOverlayStack.Instance?.Peek() == null;
@@ -885,9 +886,19 @@ internal static class NativeTextMenuInformation
         if ((noOverlay || selectorCurrent) && cardRoot != null)
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
-                if (holder.CardNode?.Visibility != ModelVisibility.Visible || holder.CardModel == null) continue;
+                NCard? cardNode = holder.CardNode;
+                CardModel? model = holder.CardModel;
+                if (cardNode?.Visibility != ModelVisibility.Visible || model == null) continue;
+                Func<bool> currentSource = () => CardTipSourceCurrent(
+                    cardRoot, holder, cardNode, model, selectorOwner);
+                if (nativeLogical && !currentSource()) continue;
                 AddSignalTipLeaf(entities, leaves, holder, "card_tips", Control.SignalName.FocusEntered,
-                    bindings.Card(entities.GetId(holder.CardModel, "card")), selectorOwner: selectorOwner);
+                    BindCardTipSubject(bindings, entities.GetId(model, "card"), nativeLogical, () =>
+                    {
+                        if (!currentSource())
+                            throw new InvalidOperationException("The exact rendered card source changed.");
+                        return NativeLogicalPresentation.CaptureRenderedCardSubject(cardNode, entities);
+                    }), selectorOwner: selectorOwner, exactSource: nativeLogical ? currentSource : null);
             }
         if (battlefieldAvailable && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
@@ -1217,6 +1228,37 @@ internal static class NativeTextMenuInformation
             () => EnterAvailableTip(entryAvailable,
                 () => OpenSignalTip(source, group, signal, allowRewardOverlay, selectorOwner, exactSource)),
             owner, ownerLabel));
+    }
+
+    internal static PlayerEnvironmentReferent? BindCardTipSubject(
+        PublicInformationBindings bindings, string id, bool nativeLogical,
+        Func<PlayerEnvironmentReferent?> captureRenderedSubject)
+    {
+        if (nativeLogical) bindings.PrepareRenderedCardSubject(id, captureRenderedSubject);
+        return bindings.Card(id);
+    }
+
+    private static bool CardTipSourceCurrent(Node root, NCardHolder holder, NCard card,
+        CardModel model, NCardGridSelectionScreen? selectorOwner)
+    {
+        if (!ConnectorMod.IsNodeVisible(holder) || !ConnectorMod.IsNodeVisible(card)
+            || card.Visibility != ModelVisibility.Visible
+            || !ReferenceEquals(holder.CardNode, card) || !ReferenceEquals(card.Model, model)
+            || !ReferenceEquals(holder.CardModel, model)) return false;
+        bool selectorCurrent = selectorOwner != null && NativeLogicalGridState.ExactOwner(selectorOwner);
+        if (selectorOwner != null ? !selectorCurrent : NOverlayStack.Instance?.Peek() != null) return false;
+        Node? currentRoot = selectorCurrent ? selectorOwner
+            : NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node ?? NCombatRoom.Instance;
+        if (!ReferenceEquals(currentRoot, root)) return false;
+        Node? current = holder;
+        for (int depth = 0; current != null && depth < 2048; depth++, current = current.GetParent())
+        {
+            if (!ConnectorMod.IsLiveNode(current)) return false;
+            if (ReferenceEquals(current, root)) return true;
+        }
+        if (current != null)
+            throw new InvalidOperationException("Native card tip source ancestry exceeded the bounded complete scan.");
+        return false;
     }
 
     internal static NativeInputResult EnterAvailableTip(

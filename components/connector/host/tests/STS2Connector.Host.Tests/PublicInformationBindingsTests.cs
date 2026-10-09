@@ -9,6 +9,168 @@ namespace STS2Connector;
 
 public sealed class PublicInformationBindingsTests
 {
+    [Theory]
+    [InlineData("held")]
+    [InlineData("no-current-card-play")]
+    public void NativeRenderedCardSubjectIsBoundBeforeRequiredInformation(string phase)
+    {
+        var page = Page() with
+        {
+            Referents = Page().Referents.Where(value =>
+                !value.Role.Contains("card", StringComparison.Ordinal)).ToArray(),
+            Interaction = Page().Interaction with { Kind = phase == "held"
+                ? "combat_card_operation" : "combat_turn", Stage = phase }
+        };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        int renderedReads = 0;
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-held", true, () =>
+        {
+            renderedReads++;
+            return NativeLogicalPresentation.RenderedCardSubject("rendered-held", "Defend",
+                "1", "Gain 5 Block.", facts => facts["displayed_star_cost"] = "0");
+        });
+        Assert.NotNull(subject);
+        Assert.Equal(1, renderedReads);
+        Assert.Equal("card", subject!.Role);
+        Assert.Equal("Defend", subject.Label);
+        Assert.Equal("1", subject.Properties!["displayed_cost"]!.GetValue<string>());
+        Assert.Equal("0", subject.Properties["displayed_star_cost"]!.GetValue<string>());
+        Assert.Equal(phase, bindings.Page.Interaction.Stage);
+        Assert.True(bindings.Complete);
+        Assert.Null(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner"));
+        var leaf = PublicInformationBindings.Leaf("exact-rendered-holder", "card_tips", "show_card_tips",
+            subject, () => NativeInputResult.Delivered("exact source fixture"));
+        var observed = Browse(new TextMenuV2Session(), Frame(bindings.Page, leaf), "card_tips");
+        Assert.Equal("rendered-held", observed.MenuActions.Actions.Single(value =>
+            value.Verb == "show_card_tips").SubjectReferentId);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+    }
+
+    [Fact]
+    public void LegacyCardTipBindingNeverReadsOrAddsRenderedSubjects()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        Assert.Null(NativeTextMenuInformation.BindCardTipSubject(bindings, "not-current", false,
+            () => throw new InvalidOperationException("Legacy must not read rendered subjects")));
+        Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "not-current");
+        var legacy = new PublicInformationBindings(Page());
+        Assert.NotNull(NativeTextMenuInformation.BindCardTipSubject(legacy, "card-a", false,
+            () => throw new InvalidOperationException("Legacy existing subject must not read")));
+        Assert.True(legacy.Complete);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("unreadable")]
+    [InlineData("foreign-id")]
+    [InlineData("foreign-facts-id")]
+    [InlineData("wrong-role")]
+    [InlineData("wrong-kind")]
+    [InlineData("invisible")]
+    [InlineData("wrong-schema")]
+    [InlineData("empty-label")]
+    [InlineData("wrong-title")]
+    [InlineData("missing-cost")]
+    [InlineData("missing-description")]
+    public void ActiveRenderedCardWithMissingOrForeignFactsRemainsPartial(string failure)
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var supplied = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        if (failure == "foreign-id") supplied = supplied with { ReferentId = "foreign" };
+        else if (failure == "wrong-role") supplied = supplied with { Role = "enemy" };
+        else if (failure == "wrong-kind") supplied = supplied with { Kind = "control" };
+        else if (failure == "invisible") supplied = supplied with { State = supplied.State with { Visible = false } };
+        else if (failure == "wrong-schema") supplied = supplied with { PropertiesSchema = "foreign" };
+        else if (failure == "empty-label") supplied = supplied with { Label = "" };
+        else if (failure == "foreign-facts-id") supplied.Properties!["card_referent_id"] = "foreign";
+        else if (failure == "wrong-title") supplied.Properties!["displayed_title"] = "Other card";
+        else if (failure == "missing-cost") supplied.Properties!.AsObject().Remove("displayed_cost");
+        else if (failure == "missing-description") supplied.Properties!.AsObject().Remove("displayed_description");
+        Assert.Null(NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-current", true, () =>
+            failure == "unreadable" ? throw new InvalidOperationException("Rendered source unreadable")
+                : failure == "null" ? null : supplied));
+        Assert.False(bindings.Complete);
+        Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
+        if (failure == "unreadable")
+            Assert.Contains("public_information_binding_card_tip_source_unreadable", bindings.Page.Completeness.Missing);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "rendered-current");
+        Assert.Empty(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner")!.Leaves);
+    }
+
+    [Theory]
+    [InlineData("wrong-role")]
+    [InlineData("invisible")]
+    [InlineData("missing-label")]
+    [InlineData("full-page")]
+    public void ExistingCardSubjectOwnsItsRoleVisibilityAndCurrentPageFacts(string condition)
+    {
+        var existing = Ref("current-page-card", "card", "Selector Defend") with
+        {
+            PropertiesSchema = "sts2.player-environment/referent/card-1",
+            Properties = JsonNode.Parse("""{"definition_id":"DEFEND","cost":"2","description":"Shown selector text"}""")
+        };
+        if (condition == "wrong-role") existing = existing with { Role = "enemy" };
+        else if (condition == "invisible") existing = existing with { State = existing.State with { Visible = false } };
+        else if (condition == "missing-label") existing = existing with { Label = null };
+        var page = Page() with { Referents = new[] { existing } };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, existing.ReferentId, true,
+            () => throw new InvalidOperationException("Existing subject may not be replaced"));
+        if (condition == "full-page")
+        {
+            Assert.Same(existing, subject);
+            Assert.Equal("2", subject!.Properties!["cost"]!.GetValue<string>());
+            Assert.Equal("Shown selector text", subject.Properties["description"]!.GetValue<string>());
+            Assert.True(bindings.Complete);
+        }
+        else
+        {
+            Assert.Null(subject);
+            Assert.False(bindings.Complete);
+        }
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Equal(JsonSerializer.Serialize(existing), JsonSerializer.Serialize(bindings.Page.Referents.Single()));
+    }
+
+    [Fact]
+    public void RenderedSubjectFreezesOneCopyAndDoesNotBecomeAnotherCatalogOrHandReader()
+    {
+        var page = Page();
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        var supplied = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        int reads = 0;
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, supplied.ReferentId, true,
+            () => { reads++; return supplied; });
+        supplied.Properties!["displayed_title"] = "Changed later";
+        supplied.Properties["displayed_cost"] = "99";
+        Assert.NotNull(subject);
+        Assert.Equal("Defend", subject!.Properties!["displayed_title"]!.GetValue<string>());
+        Assert.Equal("1", subject.Properties["displayed_cost"]!.GetValue<string>());
+        Assert.Same(subject, NativeTextMenuInformation.BindCardTipSubject(bindings, supplied.ReferentId, true,
+            () => throw new InvalidOperationException("No second rendered read")));
+        Assert.Equal(1, reads);
+        Assert.Single(bindings.Page.Referents, value => value.ReferentId == supplied.ReferentId);
+        Assert.Same(page.Interaction.Content.Context, bindings.Page.Interaction.Content.Context);
+        Assert.Same(page.BoundActions, bindings.Page.BoundActions);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Null(bindings.Card("another-active-card-without-facts"));
+        Assert.False(bindings.Complete);
+    }
+
+    [Fact]
+    public void ExactNativeCardHolderTypeDoesNotBorrowClickableAvailability()
+    {
+        Assert.Equal(typeof(Godot.Control), typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder).BaseType);
+        Assert.Equal(typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder),
+            typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder).BaseType);
+        Assert.False(typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl)
+            .IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder)));
+    }
+
     [Fact]
     public void NativeUnavailableCreatureTooltipDoesNotRequireAFrozenSubject()
     {
