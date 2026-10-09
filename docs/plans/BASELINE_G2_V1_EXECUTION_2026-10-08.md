@@ -54,8 +54,8 @@
 | Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
 | native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
 | 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
-| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | Runtime teacher 已集成于 `e4665b69` 并通过 Full8；前三次分别达 1/4/6 次已知投递。第三轮八个 ACKed context，地图 travelling 时提前 Close，窄修复已审查；Source 六输入/19观察/零缺口和清理通过。首轮真实产品发布一 N/train 预留未训练；实际 N 与多候选覆盖由准入计算，不拿投递次数替代 |
-| 直接 Agent 数据 E2.2 | typed Evidence→固定 producer/student 投影→既有 curation | PhaseA `e61381a4` 已独立审查；真实第三轮私有原件准入八 context/六 N，无预留/训练。旧 teacher1.0.2 tuple 保留；尚未集成及接通 PhaseB recipe/export/UI，不冒充 Source3 或原生来源验证 |
+| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | `ffb9649f` 已集成共享地图等待并通过 Full9；四次分别达 1/4/6/6 次已知投递。第四轮八个 ACKed context、三个地图 Await 后 Current incomplete，input operation 保持 unknown，非未知 native delivery；Source6/19/零缺口与清理通过。独立新诊断捕获 creature_subject 缺失，不回填第四轮原因。100–300 准入 N 尚未达成；投递不替代 N/覆盖 |
+| 直接 Agent 数据 E2.2 | typed Evidence→固定 producer/student 投影→既有 curation | PhaseA `e61381a4` 已独立审查集成；真实第三轮准入八 context/六 N，无预留/训练。旧 tuple 保留，共同 direct/Source3 training/package core `38bf01f2` 已审查；`37d024c3` 一次合成真实 child/use/export/Registry 绑定/fresh stdio 通过。实际 public preflight、产品入口及新真实训练未通过，不冒充 Source3 或原生来源验证 |
 | 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
 
 采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。

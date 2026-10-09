@@ -301,3 +301,72 @@ to Await using the explicit travel fact. That replay proves no ninth arrival,
 100-choice collection or corrected native run. Shared Teacher/Student timing is
 being developed as a new declared Agent candidate before the next learning slice.
 Earlier failures and their exact identities remain unchanged.
+
+## Fourth collection and bounded failed-Current diagnosis
+
+Full9 passed at clean `ffb9649f`: Python 3,262 ordinary passes, five conditional
+skips and 23 subtests; Runtime 336 passes/three opt-in skips. XML SHA256 is
+`d34b81f1c7da1fe2757714fb46fd9685dcef3e02fa2412c4b533375ac0d9ccac`.
+It covers integrated direct PhaseA and shared map timing, not subsequent candidates.
+
+Fourth collection used Teacher1.0.4/Agent1.1 artifact `e590c1ec`, runtime
+`9f4ad035cb5746ffbbfc6e881f251ad7` and unchanged loaded rc31. Six deliveries
+are known; execution/effect/cancel stay unknown. Eight known ACKed contexts remain.
+Three map Awaits include two discarded unchanged readiness checks. Next130's
+Current failed before another acquisition/offer/sample/ACK/native submission;
+the retained reason is only `query_current_source_capture_incomplete`. Original
+aggregate unknown denotes the unfinished input operation, with tainted=false,
+pending=null and exact Source6/19/zero-gap/control/Node/Host cleanup. It is not a
+native delivery taint or permission to resume the old Agent state. Typed Evidence
+passed135 events/content `10f37f388db0cf4b32349f7a3fec25dd892787d369fb594b2e23dc454d316093`.
+The113-file/1,478,869-byte preservation archive manifest is
+`8ea57e348ab2dce46780e4399d41d50b78641843bab06179ab02e0752fea24f9`.
+
+Application diagnostic `cb998ed8`, normally integrated before `a3f281ae`, retains
+the first negative original SDK Current reply in a bounded immutable private
+record while preserving the Runtime's fail-closed behavior. It changes no native
+capture, SDK, Runtime or unknown-retry semantics. Independent source review and
+18 integrated collector tests passed. The separately reviewed real Modal SDK
+pending-timeout repair is also integrated;34 integrated focused tests passed.
+These checks do not replace the next selected aggregate gate.
+
+Three fresh owned private diagnostics kept Source3 off and never accessed a
+Workbench project or old unknown marker. Diagnostic1 failed preparing its Agent
+evidence parent directory before Teacher/action/Current; Host cleanup succeeded.
+Diagnostic2 and3 each used six original known Runtime-teacher deliveries, stopped
+the Runtime and then issued exactly one passive Current with no seventh action
+or W advance. Diagnostic2's read after2,000ms was captured. Diagnostic3's read
+after1,200ms returned HTTP409/`source_capture_incomplete`, exact reason
+`public_information_binding_creature_subject`; its892-byte reserialized SDK reply
+SHA256 is `fc38e5cdb2c710cf51747ed680720094128d6fe10533437661f7b03b6f841602`.
+Both direct runs passed installed typed Evidence with106 events/seven ACKs/state7;
+control release, actual Teacher SIGKILL, Host0unforced and no remaining game process
+passed independent review. Scheduling delays are observation times, not readiness
+or settlement proof. Different seeds/sessions are not a causal comparison: the
+late positive read proves neither original fourth-round cause nor transient recovery.
+Original fourth-round reason remains absent; its report/marker and raw bytes retain
+unknown. The new concrete native creature-tip/frozen-visible-subject join requires
+owning investigation. No incomplete frame was accepted as a training input.
+
+## Common recorded-source training candidate
+
+Independently accepted core `38bf01f2` adds one source-neutral native trained
+package/model-v2 for fixed direct-Agent and Source3 sampled validation branches.
+Student1.1/Input999/K1D96, graph engine and tensor codec are shared. Teacher1.0.4
+relation is appended without changing the old1.0.2 tuple. Its101 guarded pure tests
+and five numerical tests passed; four synthetic one-update fits prove composition.
+
+At clean `37d024c3`, one additional synthetic direct fit ran the ordinary fenced
+LocalTrainingService child, actual use and LocalModelExport. Torch2.13.0/intra2/
+default interop10 was recorded under OMP/MKL2; the parent did not import or mutate
+Torch before workload creation. ModelArtifact `63ccf541`, package Model `d2bcf598`
+and checkpoint `22557dca` remain distinct. Registry binding and an ordinary fresh
+production stdio process passed Act/Await/Close and four W advances. Synthetic
+runtime/capabilities and a no-op public compatibility preflight were explicit:
+this is not usable installed product readiness, load or native-game proof.
+
+Visible-product preparation found the primary rc24 Runtime pin and full-reference
+only preflight incompatible with this sampled/scoped path. Their narrow application
+repairs, direct product entry and exact native binding repair remain separate gates.
+No new100–300-N corpus, real training/export/load, learned natural game or visible
+game-model acceptance is claimed by these candidates.

@@ -34,10 +34,12 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   loaded identity, isolated main menu and owned unforced Close passed independent
   review; rc30 rollback remains. Authenticated panels and runtime/resource health
   remain unverified. Workspace provenance and compiled component identity differ.
-- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full8 local checks
-  passed at `e4665b69` (Python 3,187 passes, five conditional skips, 23 subtests;
+- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full9 local checks
+  passed at `ffb9649f` (Python 3,262 passes, five conditional skips, 23 subtests;
   Runtime 336 passes, three opt-in skips). This covers the integrated public-Runtime
-  program teacher and normal SDK→Runtime consumer-build prerequisite.
+  program teacher, direct PhaseA, shared Teacher/Student map timing and normal
+  SDK→Runtime consumer-build prerequisite. Later diagnostic/Modal/application
+  candidates require their own integrated gate; Full9 is not reused for them.
   Full6 remains failed; its live temporary-scratch race was repaired in the owning
   inventory reader and the real child pause/resume regression passed. Earlier fresh synthetic
   sampled train/export/real constructor/stdio/Runtime composition passed independent
@@ -55,15 +57,34 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   ACKed samples. Map travel retained legal information actions but no route;
   teacher 1.0.2 closed prematurely. Source sealed six inputs/19 observations/zero
   gaps; exact control/Host/Node cleanup passed. All result effects remain unknown.
-  The narrow map Await repair is reviewed; shared Teacher/Student timing is in
-  a separate candidate. Originals and the old teacher identity remain intact.
+  Shared Teacher/Student map timing is integrated at `ffb9649f`. Originals and
+  the old teacher identity remain intact. Fourth collection used Teacher1.0.4
+  and reached six known deliveries/eight ACKed contexts; three map Awaits did
+  not produce another native action. Its next Current failed before offer/ACK,
+  with `query_current_source_capture_incomplete`. Aggregate status remains
+  unknown for the unfinished input operation, not unknown native delivery.
+  Source6/19/zero gaps and all owner cleanup passed; no automatic resume/retry.
 - First Source3 product publication retains one N and train reservation without
   fit. Common terminology is integrated; the corrected reservation display was
   verified through actual HTTP. Direct native PhaseA `e61381a4` is independently
-  accepted but not yet integrated: actual third-round originals lower to eight
+  accepted and integrated: actual third-round originals lower to eight
   known contexts/six eligible N in a private store, without reservation/use/train.
   Source3 remains the current product training bridge; direct recipe/export/UI
-  dispatch needs its separate PhaseB.
+  dispatch needs its separate PhaseB. Common direct/Source3 package core `38bf01f2`
+  is independently accepted; `37d024c3` has one actual synthetic child/use/export/
+  Registry-binding/fresh-stdio pass. Its real public compatibility preflight was
+  bypassed by an explicit fixture, so it does not prove installed product load.
+- Fresh diagnostic3 at `a3f281ae`, unchanged loaded rc31, retained exactly one
+  failed passive Current after six known prefix deliveries: HTTP409 and
+  `public_information_binding_creature_subject`. Its typed direct run and cleanup
+  passed independent review. Earlier diagnostic2's later positive read does not
+  establish original fourth-round cause or transient recovery. Native context/tip
+  binding investigation is active; the original fourth-round reason remains absent.
+- Visible sampled-model preparation found two application blockers: primary
+  registry Runtime rc24 instead of reviewed rc25, and public preflight requiring
+  full-reference attachment for a correct sampled/scoped manifest. Narrow owner
+  repairs are separate candidates. Other live Workbench ownership/pair handoff
+  remains to establish before the new owned visible-game experiment.
 - L34 event/content, special selectors, L64 management, product memory recovery,
   remote use and full coverage/stability still need their scoped gates. Disabled
   candidate reviews do not qualify the active profile. Current c060 is unchanged.
