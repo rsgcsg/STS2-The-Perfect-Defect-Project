@@ -1235,6 +1235,21 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = {**app.local_memory_evaluation.status(), "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-model-exports/support":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                     keep_blank_values=True)
+                    if set(query) != {"model_id"} or len(query["model_id"]) != 1:
+                        raise ValueError
+                    value = app.local_model_export.support(query["model_id"][0])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_model_export_request"}')
             elif parsed.path == "/api/local-model-exports/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')

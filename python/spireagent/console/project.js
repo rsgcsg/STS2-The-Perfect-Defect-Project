@@ -2581,7 +2581,10 @@ window.SpireProject = (() => {
         note(ctx, "本机服务已接收准备请求；请以操作状态和安装回执为准。尚未登记或加载模型。");
         await reload(ctx);
       }, {disabled: !canPrepareRuntime}));
-    box.append(runtimeSetup);
+    const setupDetails = el("details");
+    setupDetails.dataset.preserve = "model-runtime-setup";
+    setupDetails.append(el("summary", "详情 · 运行环境设置"), runtimeSetup);
+    box.append(setupDetails);
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
@@ -3057,36 +3060,33 @@ window.SpireProject = (() => {
     return overview;
   }
 
-  function supportsLocalModelExport(value) {
-    const parameters = value?.parameters && typeof value.parameters === "object"
-      && !Array.isArray(value.parameters) ? value.parameters : {};
-    const config = parameters.config && typeof parameters.config === "object"
-      && !Array.isArray(parameters.config) ? parameters.config : {};
-    const serializer = parameters.serializer && typeof parameters.serializer === "object"
-      && !Array.isArray(parameters.serializer) ? parameters.serializer : {};
-    const backbone = parameters.backbone && typeof parameters.backbone === "object"
-      && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
-    if (parameters.schema === "stpd/experimental-m2-model-v1")
-      return memoryModelVariant(value) !== null;
-    const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
-    return value?.kind === "model" && hex(value.artifact_id)
-      && parameters.schema === "stpd/stage1a-model-v1"
-      && parameters.qualification === "engineering_only"
-      && ["stage1a.b.s.v2", "stage1a.dsimple.s.v1"].includes(config.recipe)
-      && config.device === "cpu"
-      && backbone.kind === "scratch"
-      && Object.keys(serializer).length === serializerKeys.length
-      && serializerKeys.every(key => Object.hasOwn(serializer, key))
-      && serializer.version === "stpd-text-menu-current-page-v1"
-      && serializer.profile === "text_menu_current_page"
-      && serializer.source_schema === "sts2.player-environment/text-menu-snapshot-1"
-      && serializer.input_profile === "text-menu-v1"
-      && serializer.status === "provisional";
+  function supportsLocalModelExport(model, support) {
+    const profiles = {token:["text-menu-v1"], memory:["text-menu-m2-v1", "text-menu-m2-v2"],
+      structured:["text-menu-m2-v2"], native:["native-logical-v1"]};
+    return model?.kind === "model" && hex(model.artifact_id)
+      && support?.schema === "stpd/local-model-export-support-v1"
+      && support.model_id === model.artifact_id && support.status === "supported"
+      && support.verification_state === "not_checked"
+      && typeof support.model_type === "string"
+      && Object.hasOwn(profiles, support.model_type)
+      && profiles[support.model_type].includes(support.runtime_profile);
+  }
+
+  async function localModelSupport(ctx, model) {
+    let support;
+    try {
+      support = await request(ctx, `/api/local-model-exports/support?model_id=${encodeURIComponent(model.artifact_id)}`);
+    } catch { return null; }
+    return live(ctx) && supportsLocalModelExport(model, support) ? support : null;
   }
 
   function localModelRegistrationReason(code) {
     const known = {
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。尚未登记。",
+      native_models_extra_required: "本机原生模型计算依赖尚未准备；请先完成开发者工具包的模型环境初始化。",
+      native_runtime_profile_required: "原生模型运行环境尚未准备；请到模型页查看运行环境详情。",
+      native_runtime_local_install_required: "原生模型运行组件尚未通过核验；请在运行环境详情中检查安装状态。",
+      native_managed_environment_not_supported: "此原生模型当前仅用于原游戏环境。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
@@ -3107,17 +3107,14 @@ window.SpireProject = (() => {
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
 
-  async function localModelRegistrationCard(ctx, model, environmentKind = "native") {
+  async function localModelRegistrationCard(ctx, model, support, environmentKind = "native") {
     const managed = environmentKind === "managed";
     const actionName = managed ? "register-managed-model" : "register-local-model";
     const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
-    const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
-    const expectedProfile = memory
-      ? (model.workbench_memory_recipe?.endsWith(".v2")
-        ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
+    const expectedProfile = support.runtime_profile;
     const card = panel(
       managed ? "用于独立游戏环境" : "用于原游戏",
-      "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
+      "已准备的模型可直接使用。缺少登记时，请在详情中核对环境并登记；登记本身不会加载模型。",
     );
     if (managed) card.append(el("p", "先在“环境与场景”启动独立游戏。此登记复用同一份模型权重；加载时绑定所选环境，暂停模型后仍可继续同一局。", "small muted"));
     const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}${managed ? "&environment_kind=managed" : ""}`;
@@ -3145,7 +3142,7 @@ window.SpireProject = (() => {
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
     const registerAction = (label) => command(ctx, actionName, label, async () => {
-      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      if (!live(ctx) || !supportsLocalModelExport(model, support)) return;
       try {
         const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
@@ -3176,9 +3173,40 @@ window.SpireProject = (() => {
     if (!csrf && status.status !== "unavailable")
       card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
     if (status.status === "registered") {
-      card.append(el("p", "此模型已登记到本机模型列表；这条登记不保证当前游戏环境兼容，Runtime 会在决策前重新检查。登记本身不会加载模型，当前运行状态请到模型页查看。", "small muted"));
+      card.append(el("p", "此模型已登记。使用时复用已核验的导出、登记和运行环境，加载完成后由你操作游戏。实际加载仍会重新检查兼容性，Runtime 会在决策前重新检查。", "small muted"));
+      let state;
+      try { state = await request(ctx, "/api/local-models/status"); } catch { state = null; }
+      if (!live(ctx)) return card;
+      const knownState = state?.schema === "stpd/local-models-v1"
+        && typeof state.loaded === "boolean"
+        && ["idle", "stopped", "failed", "loaded", "command_unknown", "recovery_required",
+            "runtime_exited"].includes(state.status);
+      const knownOperation = state?.operation === null
+        || (state?.operation && typeof state.operation === "object"
+          && !Array.isArray(state.operation)
+          && ["completed", "failed"].includes(state.operation.status));
+      const canUse = knownState && state.loaded === false
+        && ["idle", "stopped", "failed"].includes(state.status)
+        && knownOperation && !!csrf;
+      let useSent = false;
+      card.append(command(ctx, managed ? "use-managed-model" : "use-local-model", "使用这个模型", async () => {
+        if (!live(ctx) || !canUse || useSent || !supportsLocalModelExport(model, support)) return;
+        useSent = true;
+        try {
+          await request(ctx, "/api/local-models/prepare", {selection_id:status.selection_id}, csrf);
+        } catch (error) {
+          if (error.message !== "request_unknown") throw error;
+          // Observe the original outcome on the model page; never resubmit it.
+        }
+        if (live(ctx)) window.SpireProject.navigate("local-models", status.selection_id);
+      }, {primary:true, disabled:() => !canUse || useSent}));
+      if (!canUse) card.append(el("p", state?.loaded
+        ? "当前已有模型会话；请在模型页查看或结束后再使用。"
+        : "当前运行状态尚未确认可加载；请到模型页核对状态后再使用。", "small muted"));
       card.append(link("打开此模型选择", route("local-models", status.selection_id)));
-      card.append(registerAction("重新核对登记"));
+      const details = el("details");
+      details.append(el("summary", "详情 · 模型登记"), registerAction("重新核对登记"));
+      card.append(details);
     } else if (status.status === "unavailable") {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
       if (["text_runtime_profile_required", "text_runtime_local_install_required"].includes(status.reason_code))
@@ -3188,13 +3216,15 @@ window.SpireProject = (() => {
       card.append(el("p", status.reason_code === "source_binding_changed"
         ? localModelRegistrationReason(status.reason_code)
         : "登记只建立本机模型选择项，不会自动检查加载条件或执行游戏。", "small muted"));
-      card.append(registerAction("登记到模型列表"));
+      const details = el("details");
+      details.append(el("summary", "详情 · 模型登记"), registerAction("登记到模型列表"));
+      card.append(details);
       card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     }
     return card;
   }
 
-  async function localModelExportCard(ctx, model) {
+  async function localModelExportCard(ctx, model, support) {
     const variant = memoryModelVariant(model);
     const memory = variant !== null;
     const memoryName = variant?.name;
@@ -3225,9 +3255,12 @@ window.SpireProject = (() => {
       ? operation.model_id === undefined || hex(operation.model_id)
       : hex(operation.model_id));
     const validType = status.schema === "stpd/local-model-export-operation-v1"
-      ? operation?.model_type === undefined
+      ? operation?.model_type === undefined || ["native", "structured"].includes(operation?.model_type)
       : operation?.model_type === "memory";
-    if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType
+    const matchingType = operation?.status === "idle" || operation?.model_id !== model.artifact_id
+      || (support.model_type === "token" ? operation?.model_type === undefined
+        : operation?.model_type === support.model_type);
+    if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType || !matchingType
         || (memory && operation.status !== "idle" && operation.model_id === model.artifact_id
             && status.schema !== "stpd/local-model-export-operation-v2")) {
       card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
@@ -3238,7 +3271,7 @@ window.SpireProject = (() => {
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
     const startCommand = (label, disabled) => command(ctx, "start-local-model-export", label, async () => {
-      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      if (!live(ctx) || !supportsLocalModelExport(model, support)) return;
       try {
         await request(ctx, "/api/local-model-exports/start", {model_id:model.artifact_id}, csrf);
       } catch (error) {
@@ -3290,10 +3323,10 @@ window.SpireProject = (() => {
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
-      const registration = await localModelRegistrationCard(ctx, model);
+      const registration = await localModelRegistrationCard(ctx, model, support);
       if (live(ctx)) card.append(registration);
       if (live(ctx) && variant?.profile === "text-menu-v2-confirmed-interaction") {
-        const managedRegistration = await localModelRegistrationCard(ctx, model, "managed");
+        const managedRegistration = await localModelRegistrationCard(ctx, model, support, "managed");
         if (live(ctx)) card.append(managedRegistration);
       }
     } else if (operation.status === "failed" && sameModel) {
@@ -3310,8 +3343,10 @@ window.SpireProject = (() => {
       card.append(el("p", "最近的导出记录属于另一模型。", "small muted"));
     }
     if (!csrf) card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
-    card.append(startCommand(label, disabled));
-    card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+    const details = el("details");
+    details.append(el("summary", "详情 · 导出校验"), startCommand(label, disabled),
+      command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+    card.append(details);
     return card;
   }
 
@@ -4932,8 +4967,11 @@ window.SpireProject = (() => {
           && (memoryRecipePageProfile(memoryModelVariant(value)) === "text-menu-v1"
               || memoryModelVariant(value).profile === "text-menu-v2-confirmed-interaction"))
         box.append(await localMemoryEvaluationCard(ctx, value));
-      if (supportsLocalModelExport(value)) {
-        const exportCard = await localModelExportCard(ctx, value);
+      if (value.kind === "model") {
+        const support = await localModelSupport(ctx, value);
+        if (!live(ctx)) return box;
+        const exportCard = support ? await localModelExportCard(ctx, value, support)
+          : panel("模型使用暂不可用", "本机服务尚未确认此模型支持的导出方式。请核对模型来源和资料空间后刷新；未加载模型。" );
         if (live(ctx)) box.append(exportCard);
       }
       if (value.kind === "offline_evaluation")

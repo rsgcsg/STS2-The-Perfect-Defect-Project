@@ -76,6 +76,30 @@ const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => 
       max_chunk_input_tokens:24576, max_actions_per_step:256}},
   parents:[], payloads:[],
 });
+// Server fixtures project metadata support separately from export/registration readiness.
+const modelSupport = model => {
+  const result = {schema:"stpd/local-model-export-support-v1", model_id:model?.artifact_id,
+    status:"unsupported", verification_state:"not_checked", reason_code:"unsupported_model_for_offline_export"};
+  const info = model?.parameters || {}, config = info.config || {};
+  let type, profile;
+  if (model?.kind !== "model") return result;
+  if (["stpd/native-structured-m2-model-v1", "stpd/native-structured-m2-model-v2",
+       "stpd/source3-ordered-native-m2-model-v1"].includes(info.schema))
+    [type, profile] = ["native", "native-logical-v1"];
+  else if (["stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2", "stpd/structured-m2-model-v3"].includes(info.schema))
+    [type, profile] = ["structured", "text-menu-m2-v2"];
+  else if (info.schema === "stpd/experimental-m2-model-v1"
+      && /^stage1a\.dsimple\.(m2|reset)\.k(1|8)\.(experimental|confirmed-interaction)\.v(1|2)$/.test(model.workbench_memory_recipe || ""))
+    [type, profile] = ["memory", model.workbench_memory_recipe.endsWith(".v2") ? "text-menu-m2-v2" : "text-menu-m2-v1"];
+  else if (info.schema === "stpd/stage1a-model-v1" && info.qualification === "engineering_only"
+      && ["stage1a.b.s.v2", "stage1a.dsimple.s.v1"].includes(config.recipe)
+      && config.device === "cpu" && info.backbone?.kind === "scratch"
+      && JSON.stringify(info.serializer) === JSON.stringify(textMenuScratchModel().parameters.serializer))
+    [type, profile] = ["token", "text-menu-v1"];
+  if (!type) return result;
+  delete result.reason_code;
+  return {...result, status:"supported", model_type:type, runtime_profile:profile};
+};
 const modelExportStatus = (operation, extra = {}) => ({
   schema:"stpd/local-model-export-operation-v1",
   availability:"ready",
@@ -158,6 +182,7 @@ function setup({
   nativeRecordingData = null,
   recordingStorage = new Map(),
   recordingStorageApi = null,
+  supportData = null,
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -166,6 +191,7 @@ function setup({
     generation = 0,
     reloads = 0,
     livePage = null;
+  const modelFixtures = new Map();
   const timers = new Map();
   let nextTimer = 1;
   const context = vm.createContext({
@@ -211,7 +237,9 @@ function setup({
     },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      const body = url === "/api/native-recording/status"
+      const body = url.startsWith("/api/local-model-exports/support?")
+        ? (supportData ? await supportData(url) : modelSupport(modelFixtures.get(new URL(url, "http://fixture").searchParams.get("model_id"))))
+        : url === "/api/native-recording/status"
         ? (typeof nativeRecordingData === "function" ? nativeRecordingData() : nativeRecordingData) || {httpStatus:409,error:"native_recording_unavailable"}
         : url === "/api/local-training/capabilities"
         ? trainingCapabilitiesData
@@ -223,6 +251,8 @@ function setup({
             ? sceneData
             : view === "local-environment" && url === "/api/local-environment/comparisons"
               ? comparisonData : await handler(url, options);
+      if (url.startsWith("/api/local-workspace/artifacts/") && body?.artifact_id)
+        modelFixtures.set(body.artifact_id, body);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
@@ -2419,8 +2449,8 @@ test("completed local model export registers only on one explicit click and link
     },
   });
   const page = await env.render();
-  assert.match(text(page), /登记会依据本机文本菜单运行环境/);
-  assert.match(text(page), /不会安装运行组件、加载模型或进入游戏/);
+  assert.match(text(page), /已准备的模型可直接使用/);
+  assert.match(text(page), /登记本身不会加载模型/);
   assert.doesNotMatch(text(page), /尚未加载/);
   assert.equal(action(page, "register-local-model").disabled, false);
   assert.equal(post(env.calls).length, 0, "detail render only reads registration state");
@@ -6724,4 +6754,137 @@ test("browser advanced Tick preserves current mode through the same command endp
   await action(page,"model-command-tick").onclick();
   assert.deepEqual(calls,[{action:"tick"}]);
   assert.ok(!env.calls.some(call=>call.url.includes("/mode")));
+});
+
+const nativeWorkflowModel = (artifact = id("a"), schema = "stpd/source3-ordered-native-m2-model-v1") => ({
+  artifact_id:artifact, kind:"model", parameters:{schema, display_name:"八次操作模型"},
+  parents:[], payloads:[],
+});
+function nativeModelWorkflowEnv({model = nativeWorkflowModel(), exported = {status:"completed"},
+  registration = {}, state = {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:null},
+  supportData = null, use = () => ({status:"pending"}), renderOnReload = false} = {}) {
+  const selection = "local-native-reviewed-model";
+  const env = setup({identity:{status:"signed_out"},view:"local-workspace",
+    query:`&id=${model.artifact_id}`,supportData,renderOnReload,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model.artifact_id}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        model_id:model.artifact_id,model_type:"native",...exported});
+      if (url === `/api/local-model-registrations/status?model_id=${model.artifact_id}`)
+        return modelRegistrationStatus(model.artifact_id,"registered",{
+          runtime_profile:"native-logical-v1",selection_id:selection,...registration});
+      if (url === "/api/local-models/status") return state;
+      if (url === "/api/local-models/prepare") return use(options);
+      throw new Error(`unexpected workflow route ${url}`);
+    }});
+  const destinations = [];
+  env.ui.navigate = (view, selected) => destinations.push([view, selected]);
+  return {env,selection,destinations};
+}
+
+test("named native model reuse sends one existing Human prepare intent and repeats no setup stage", async () => {
+  const {env,selection,destinations} = nativeModelWorkflowEnv();
+  const page = await env.render();
+  assert.match(text(page), /八次操作模型/);
+  assert.doesNotMatch(text(page), /状态格式未知/);
+  assert.equal(action(page,"use-local-model").textContent,"使用这个模型");
+  assert.equal(post(env.calls).length,0);
+  await Promise.all([action(page,"use-local-model").onclick(),action(page,"use-local-model").onclick()]);
+  await action(page,"use-local-model").onclick();
+  assert.deepEqual(post(env.calls).map(call => [call.url,body(call)]),[
+    ["/api/local-models/prepare",{selection_id:selection}],
+  ], "existing prepare defaults to Human; UI does not send takeover or chain owners");
+  assert.deepEqual(destinations,[["local-models",selection]]);
+  assert.equal(action(page,"use-local-model").disabled,true);
+  assert.equal(env.calls.some(call => /install|prepare-text-runtime|exports\/start|registrations\/register/.test(call.url)),false);
+  assert.ok(walk(page).some(item => item.tagName === "DETAILS" && /模型登记/.test(text(item))));
+});
+
+for (const status of ["idle","pending","failed","interrupted"])
+  test(`native export ${status} is understood without false registration readiness`, async () => {
+    const {env} = nativeModelWorkflowEnv({exported:status === "idle" ? {status,model_id:undefined,model_type:undefined} : {status}});
+    const page = await env.render();
+    assert.doesNotMatch(text(page),/状态格式未知/);
+    assert.equal(walk(page).some(item => item.dataset?.action === "use-local-model"),false);
+    assert.equal(action(page,"start-local-model-export").disabled,status === "pending");
+    assert.equal(env.calls.some(call => call.url.includes("registrations/status")),false);
+    assert.equal(post(env.calls).length,0);
+  });
+
+for (const override of [
+  {status:"not_registered",reason_code:"source_binding_changed"},
+  {status:"unavailable",reason_code:"native_models_extra_required"},
+  {status:"future"},
+  {runtime_profile:"text-menu-v1"},
+  {model_id:id("b")},
+]) test(`native registration blocks reuse for ${JSON.stringify(override)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({registration:override});
+  const page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "use-local-model"),false);
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/status"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const state of [
+  {schema:"stpd/local-models-v1",status:"command_unknown",loaded:false},
+  {schema:"stpd/local-models-v1",status:"recovery_required",loaded:false},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"pending"}},
+  {schema:"stpd/local-models-v1",status:"loaded",loaded:true},
+  {schema:"future",status:"idle",loaded:false},
+  {schema:"stpd/local-models-v1",status:"future",loaded:false},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"future"}},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"unknown"}},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:[]},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false},
+]) test(`native reuse waits for original runtime disposition: ${JSON.stringify(state)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({state});
+  const page = await env.render();
+  assert.equal(action(page,"use-local-model").disabled,true);
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const support of [
+  {schema:"future"},
+  {model_id:id("b")},
+  {status:"unsupported"},
+  {verification_state:"verified"},
+  {model_type:"future"},
+  {model_type:["native"]},
+  {runtime_profile:"text-menu-v1"},
+]) test(`unknown support cannot authorize native controls: ${JSON.stringify(support)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({supportData:() => ({...modelSupport(nativeWorkflowModel()),...support})});
+  const page = await env.render();
+  assert.match(text(page),/模型使用暂不可用/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-model-exports/status"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("native unknown prepare is observed on the exact selection page without redispatch", async () => {
+  const {env,selection,destinations} = nativeModelWorkflowEnv({use:() => { throw new Error("disconnected"); }});
+  const page = await env.render();
+  await action(page,"use-local-model").onclick();
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.deepEqual(destinations,[["local-models",selection]]);
+  assert.equal(action(page,"use-local-model").disabled,true);
+});
+
+test("native stale model page cannot request use after scope changes", async () => {
+  const {env} = nativeModelWorkflowEnv();
+  const page = await env.render();
+  env.scope("project");
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+test("structured v1 export keeps its actual structured type and owner profile", async () => {
+  const model = nativeWorkflowModel(id("a"),"stpd/structured-m2-model-v3");
+  const {env} = nativeModelWorkflowEnv({model,exported:{status:"completed",model_type:"structured"},
+    registration:{runtime_profile:"text-menu-m2-v2"}});
+  const page = await env.render();
+  assert.doesNotMatch(text(page),/状态格式未知/);
+  assert.equal(action(page,"use-local-model").disabled,false);
+  assert.equal(post(env.calls).length,0);
 });

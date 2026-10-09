@@ -26,7 +26,6 @@ from spireagent.json_boundary import BoundaryError, digest
 from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
-from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_model_dependencies import (
     require_local_models,
     require_native_models,
@@ -36,6 +35,7 @@ from spireagent.workbench.memory_recipe import (
     V2_MEMORY_RECIPES,
     input_profile_for_recipe,
     recipe_for_memory_config,
+    recorded_memory_recipe,
 )
 from spireagent.workbench.research_process import private_child
 from stpd.native_code_scope import is_native_model_schema
@@ -50,6 +50,7 @@ RECEIPT_SCHEMA = "stpd/local-memory-export-verification-v1"
 OPERATION_FILE = "local-model-export-operation.json"
 LOCK_FILE = ".local-model-export.lock"
 EXPORT_ROOT = "model-exports"
+SUPPORT_SCHEMA = "stpd/local-model-export-support-v1"
 
 
 def _ordinary(path: Path, *, directory: bool) -> bool:
@@ -91,23 +92,28 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
     return target
 
 
-def _eligible(model: Manifest) -> None:
-    # Cheap, exact metadata gate before reading any weights or invoking a backend.
+def _token_metadata_supported(model: Manifest) -> bool:
+    """The token family's metadata gate, shared by discovery and actual export."""
     from stpd.fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
-    from stpd.policy.token_decision import check_model
-    from stpd.workers.token_worker import MODEL_SCHEMA
 
     info = model.parameters.value()
     config = info.get("config")
     backbone = info.get("backbone")
-    if (model.kind != "model" or info.get("schema") != MODEL_SCHEMA
+    return not (model.kind != "model" or info.get("schema") != "stpd/stage1a-model-v1"
             or info.get("qualification") != "engineering_only"
             or info.get("serializer") != TEXT_MENU_IDENTITY
             or not isinstance(config, dict)
             or config.get("recipe") not in {"stage1a.b.s.v2", "stage1a.dsimple.s.v1"}
             or config.get("device") != "cpu"
-            or not isinstance(backbone, dict) or backbone.get("kind") != "scratch"):
+            or not isinstance(backbone, dict) or backbone.get("kind") != "scratch")
+
+
+def _eligible(model: Manifest) -> None:
+    # Discovery shares the metadata gate; only real export imports the scorer.
+    if not _token_metadata_supported(model):
         raise BoundaryError("local_model_export", "unsupported_model_for_offline_export")
+    from stpd.policy.token_decision import check_model
+
     try:
         check_model(model)
     except (BoundaryError, ValueError, KeyError, TypeError) as error:
@@ -360,12 +366,54 @@ class LocalModelExport:
         return self._workspace().store
 
     def _memory_owner(self, store: Any) -> Any:
+        from spireagent.workbench.local_dataset import LocalDatasetService
+
         owner, selected_store, _ = LocalDatasetService(self.config)._selected()
         actual = getattr(getattr(store, "blobs", None), "root", None)
         expected = getattr(getattr(selected_store, "blobs", None), "root", None)
         if not isinstance(actual, Path) or actual != expected:
             raise BoundaryError("local_model_export", "workspace_changed")
         return owner
+
+    def support(self, model_id: object) -> dict[str, Any]:
+        """Project closed metadata support without weights, backend or readiness checks.
+
+        Export, registration and loading retain their own byte/lineage/source gates.
+        A recognized family here is never a verified or executable model.
+        """
+        identity = digest(model_id, "local_model_export.model_id")
+        result: dict[str, Any] = {
+            "schema": SUPPORT_SCHEMA, "model_id": identity,
+            "status": "unsupported", "verification_state": "not_checked",
+            "reason_code": "unsupported_model_for_offline_export",
+        }
+        source = self._source(identity)
+        model = source.get_manifest(identity)
+        info = model.parameters.value()
+        if model.kind != "model":
+            return result
+        schema = info.get("schema")
+        memory_recipe = None
+        if is_native_model_schema(schema):
+            model_type, profile = "native", "native-logical-v1"
+        elif is_structured_model_schema(schema):
+            model_type, profile = "structured", "text-menu-m2-v2"
+        elif schema == "stpd/experimental-m2-model-v1":
+            memory_recipe = recorded_memory_recipe(source, model)
+            if memory_recipe is None:
+                return result
+            model_type = "memory"
+            profile = ("text-menu-m2-v2" if memory_recipe in V2_MEMORY_RECIPES
+                       else "text-menu-m2-v1")
+        else:
+            if not _token_metadata_supported(model):
+                return result
+            model_type, profile = "token", "text-menu-v1"
+        result.pop("reason_code")
+        result.update(status="supported", model_type=model_type, runtime_profile=profile)
+        if memory_recipe is not None:
+            result["memory_recipe"] = memory_recipe
+        return result
 
     def _path(self) -> Path:
         return self.config.state_dir / OPERATION_FILE
