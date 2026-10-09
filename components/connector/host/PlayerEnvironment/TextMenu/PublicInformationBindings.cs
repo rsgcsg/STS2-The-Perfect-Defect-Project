@@ -161,6 +161,36 @@ internal sealed class PublicInformationBindings
         if (string.IsNullOrWhiteSpace(card.Label)) { Missing("card_label"); return null; }
         return card;
     }
+
+    internal void PrepareRenderedCardSubject(string id, Func<PlayerEnvironmentReferent?> capture)
+    {
+        // A current-page subject owns its role, visibility and facts even when
+        // it cannot bind. A later rendered source must not overwrite it.
+        if (visible.ContainsKey(id)) return;
+        try
+        {
+            PlayerEnvironmentReferent? subject = capture();
+            if (subject == null || subject.ReferentId != id || subject.Role != "card"
+                || subject.Kind != "entity" || !subject.State.Visible
+                || subject.PropertiesSchema != "sts2.player-environment/referent/native_displayed_card-1"
+                || string.IsNullOrWhiteSpace(subject.Label)
+                || subject.Properties is not JsonObject facts
+                || Text(facts["card_referent_id"]) != id
+                || Text(facts["displayed_title"]) != subject.Label
+                || Text(facts["displayed_cost"]) == null
+                || Text(facts["displayed_description"]) == null)
+            {
+                Missing("card_subject");
+                return;
+            }
+            visible.Add(id, subject with { Properties = facts.DeepClone() });
+        }
+        catch (Exception)
+        {
+            // Unreadable rendered input is not proof of native unavailability.
+            Missing("card_tip_source_unreadable");
+        }
+    }
     internal PlayerEnvironmentReferent? Relic(string id)
     {
         JsonObject? facts = Find(Hud?["player"]?["relics"], "entity_id", id);
