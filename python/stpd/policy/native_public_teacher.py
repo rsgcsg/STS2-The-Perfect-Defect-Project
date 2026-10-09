@@ -15,7 +15,7 @@ from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_task import observe_ready_summary
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.0"
+TEACHER_VERSION = "1.0.1"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -146,11 +146,13 @@ class NativePublicTeacher:
                 None,
             )
 
-        def visible(identity: object, role: str | None = None) -> bool:
+        def visible(
+            identity: object, role: str | None = None, *, kind: str = "entity"
+        ) -> bool:
             ref = referents.get(identity) if isinstance(identity, str) else None
             return bool(
                 ref
-                and ref.get("kind") == "entity"
+                and ref.get("kind") == kind
                 and (role is None or ref.get("role") == role)
                 and ref.get("state", {}).get("visible") is True
                 and ref["state"].get("enabled") is not False
@@ -164,7 +166,8 @@ class NativePublicTeacher:
                     (
                         a
                         for a in catalog
-                        if a["verb"] == "inspect_card" and visible(a["subject_referent_id"], "card")
+                        if a["verb"] == "inspect_deck_card"
+                        and visible(a["subject_referent_id"], "card")
                     ),
                     None,
                 )
@@ -221,7 +224,11 @@ class NativePublicTeacher:
                 (
                     a
                     for a in catalog
-                    if a["verb"] == "begin_card_play" and visible(a["subject_referent_id"], "card")
+                    if a["verb"] == "begin_card_play"
+                    and any(
+                        visible(a["subject_referent_id"], role)
+                        for role in ("card", "playable_card", "hand")
+                    )
                 ),
                 None,
             )
@@ -289,7 +296,8 @@ class NativePublicTeacher:
                 actions = [
                     a
                     for a in catalog
-                    if a["verb"] == verb and visible(a["subject_referent_id"], "screen")
+                    if a["verb"] == verb
+                    and visible(a["subject_referent_id"], "screen", kind="control")
                 ]
                 return self._choose(actions[0] if len(actions) == 1 else None)
             enabled = surface.get("rewards")

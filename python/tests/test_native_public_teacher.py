@@ -114,7 +114,7 @@ def test_bounded_inspection_then_progress_without_hidden_strategy_state():
     teacher = NativePublicTeacher()
     for kind, verb, role in [
         ("native_map", "open_run_deck", None),
-        ("run_deck", "inspect_card", "card"),
+        ("run_deck", "inspect_deck_card", "card"),
         ("inspect_card", "toggle_card_upgrade_preview", None),
         ("inspect_card", "return_card_inspect", None),
         ("run_deck", "return_native_information", None),
@@ -138,6 +138,34 @@ def test_bounded_inspection_then_progress_without_hidden_strategy_state():
     assert teacher.decide(observation(actions, "inspect_card"), actions).action_id is None
 
 
+def test_run_deck_uses_its_native_inspect_verb_without_grid_alias_fallback():
+    teacher = NativePublicTeacher(phase="deck")
+    actions = [action("grid", "inspect_card", "card")]
+    view = observation(actions, "run_deck", refs=[("card", "card")])
+    assert teacher.decide(view, actions).reason == "required_native_action_unavailable"
+    actions.append(action("deck", "inspect_deck_card", "card"))
+    view = observation(actions, "run_deck", refs=[("card", "card")])
+    assert teacher.decide(view, actions).action_id == "deck"
+    assert teacher.state()["browse_choices"] == 1
+
+
+@pytest.mark.parametrize("role", ["card", "playable_card", "hand"])
+def test_combat_entry_accepts_the_native_card_referent_roles(role):
+    # Native combat projection preserves playable_card/hand; presentation may add card.
+    actions = [action("begin", "begin_card_play", "card"), action("end", "end_turn")]
+    view = observation(actions, "combat_turn", refs=[("card", role)])
+    assert NativePublicTeacher(browse=False).decide(view, actions).action_id == "begin"
+
+
+@pytest.mark.parametrize(("kind", "role"), [("control", "card"), ("entity", "relic")])
+def test_combat_entry_does_not_promote_other_referents_or_pad_with_end_turn(kind, role):
+    actions = [action("begin", "begin_card_play", "card"), action("end", "end_turn")]
+    view = observation(actions, "combat_turn", refs=[("card", role)])
+    view["referents"][0]["kind"] = kind
+    choice = NativePublicTeacher(browse=False).decide(view, actions)
+    assert choice.action_id is None and choice.reason == "native_card_entry_unavailable_or_unproven"
+
+
 def test_linked_reward_typed_children_and_native_proceed():
     teacher = NativePublicTeacher(browse=False)
     actions = [
@@ -159,8 +187,17 @@ def test_linked_reward_typed_children_and_native_proceed():
         refs=[("choice", "reward"), ("screen", "screen")],
         schema="sts2.player-environment/surface/linked_rewards_text_menu-1",
     )
+    view["referents"][1]["kind"] = "control"
     assert teacher.decide(view, actions).action_id == "linked"
     surface["entries"][0]["choices"][0]["enabled"] = False
+    actions = [actions[1]]
+    view = observation(
+        actions, "reward_claim", surface=surface, refs=[("screen", "screen")],
+        schema="sts2.player-environment/surface/linked_rewards_text_menu-1",
+    )
+    # The actual reward-page producer emits this as a control, not an entity.
+    assert teacher.decide(view, actions).action_id is None
+    view["referents"][0]["kind"] = "control"
     assert teacher.decide(view, actions).action_id == "proceed"
     del surface["proceed_is_skip"]
     assert teacher.decide(view, actions).action_id is None
