@@ -23,13 +23,19 @@ from ..native_sampled_carry_spec import (
     HISTORY_MODE,
     RECHECK_TIMEOUT_MS,
     sample_eligible,
-    sampled_agent_spec,
+    sampled_agent_execution_policy,
 )
 from ..native_sampled_carry_spec import (
     INPUT_SPEC as SAMPLED_INPUT_SPEC,
 )
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+from .native_operational_outcome import (
+    checked_execution_policy,
+    checked_next_input,
+    emitted_intention,
+    manifest_execution_policy,
+)
 from .native_structured_export import (
     MANIFEST_NAME,
     encode_native_weights,
@@ -48,6 +54,7 @@ MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ADAPTER_ID = "stpd-native-structured-m2-agent"
 ADAPTER_VERSION = "1.0.0"
+OWNED_STALE_ADAPTER_VERSION = "1.1.0"
 # Reserved mechanical support under the exact native profile/InputSpec and bounds.
 # These do not declare a game version, implemented mechanism, or capture coverage.
 SUPPORTED_INTERACTION_KINDS = ("*",)
@@ -93,10 +100,14 @@ BASIS_FIELDS = {
 }
 
 
-def adapter_identity(*, graph: bool = False) -> dict[str, str]:
+def adapter_identity(
+    *, graph: bool = False, execution_policy: dict[str, Any] | None = None
+) -> dict[str, str]:
+    if execution_policy is not None:
+        checked_execution_policy(execution_policy)
     return {
         "id": ADAPTER_ID,
-        "version": ADAPTER_VERSION,
+        "version": ADAPTER_VERSION if execution_policy is None else OWNED_STALE_ADAPTER_VERSION,
         "protocol": PROTOCOL,
         "code_sha256": native_code_sha256(ROOT, graph=graph),
     }
@@ -112,9 +123,14 @@ def _bounded_object(path: Path) -> dict[str, Any]:
 
 
 class NativeStructuredAgent:
+    execution_policy: dict[str, Any] | None = None
+    last_intention: dict[str, Any] | None = None
+    last_outcome: dict[str, Any] | None = None
+
     def __init__(self, package: Path, manifest_path: Path) -> None:
+        raw_manifest = _bounded_object(manifest_path)
         manifest = object_fields(
-            _bounded_object(manifest_path),
+            raw_manifest,
             {
                 "schema",
                 "manifest_id",
@@ -126,9 +142,10 @@ class NativeStructuredAgent:
                 "support",
                 "limits",
                 "claims",
-            },
+            } | ({"execution_policy"} if "execution_policy" in raw_manifest else set()),
             "native_agent.manifest",
         )
+        self.execution_policy = manifest_execution_policy(manifest)
         artifact = object_fields(
             manifest["artifact"], {"id", "path", "sha256"}, "native_agent.artifact"
         )
@@ -207,7 +224,9 @@ class NativeStructuredAgent:
                 raise BoundaryError("native_agent", "invalid_support_wildcard")
         if (
             manifest["schema"] != MANIFEST_SCHEMA
-            or manifest["adapter"] != adapter_identity(graph=model.model_control is not None)
+            or manifest["adapter"] != adapter_identity(
+                graph=model.model_control is not None, execution_policy=self.execution_policy
+            )
             or artifact["id"] != metadata["model_id"]
             or not isinstance(input_spec, dict)
             or input_spec.get("profile") != PROFILE
@@ -295,8 +314,11 @@ class NativeStructuredAgent:
         task_spec = metadata["agent_spec"].get("task_spec")
         if self.sampled:
             control = model.model_control
-            if control is None or metadata["agent_spec"] != sampled_agent_spec(control):
+            if (control is None or sampled_agent_execution_policy(metadata["agent_spec"], control)
+                    != self.execution_policy):
                 raise BoundaryError("native_agent", "sampled_agent_spec_binding")
+        elif self.execution_policy is not None:
+            raise BoundaryError("native_agent", "sampled_execution_policy_required")
         elif task_spec is not None and (
             task_spec != ready_summary_task_spec()
             or metadata["agent_spec"]["version"] != "1.2.0"
@@ -311,6 +333,7 @@ class NativeStructuredAgent:
         )
         self.closed = False
         self.issued_acquisition: str | None = None
+        self.last_intention = self.last_outcome = None
 
     def verify_weights(self) -> None:
         if (
@@ -387,6 +410,15 @@ class NativeStructuredAgent:
                 "selection": {"kind": "handle", "action_id": scorer.frame.action_ids[selected]},
                 "scores": {"catalog_digest": scorer.frame.candidate_digest, "values": list(values)},
             }
+            if self.execution_policy is not None:
+                if (scorer.input is None or scorer.consumption_id is None
+                        or scorer.acquisition_id is None):
+                    raise BoundaryError("native_agent", "emitted_intention_input_required")
+                self.last_intention = emitted_intention(
+                    acquisition_id=scorer.acquisition_id, consumption_id=scorer.consumption_id,
+                    state_version=scorer.state_version, observation=scorer.input["observation"],
+                    action=scorer.input["catalog"][selected],
+                )
         elif isinstance(value["received_cursor"], str) and value["received_cursor"]:
             directive = {
                 "type": "await",
@@ -403,12 +435,10 @@ class NativeStructuredAgent:
             "directive": directive,
         }
 
-    def begin_sampled_next(self, value: dict[str, Any]) -> None:
-        value = object_fields(
-            value,
-            {"continuity_token", "consumption_id", "state_version",
-             "basis_acquisition_id", "received_cursor"},
-            "native_agent.sampled_next",
+    def begin_sampled_next(self, value: dict[str, Any]) -> dict[str, Any]:
+        value, outcome = checked_next_input(
+            value, execution_policy=self.execution_policy,
+            intention=self.last_intention, previous_outcome=self.last_outcome,
         )
         scorer = self.scorer
         if (
@@ -423,6 +453,10 @@ class NativeStructuredAgent:
             or scorer.continuity is not None and value["continuity_token"] != scorer.continuity
         ):
             raise BoundaryError("native_agent", "sampled_next_prefix_binding")
+        if outcome is not None:
+            self.last_outcome = outcome
+        # Only these five unchanged fields reach the later Consume/scoring path.
+        return value
 
     def sampled_wait(self, value: dict[str, Any]) -> dict[str, Any]:
         cursor = value["received_cursor"]
@@ -602,9 +636,16 @@ def bind_native_agent(
     requirements: dict[str, Any],
     support: dict[str, Any],
     required_seams: list[dict[str, str]],
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata, model = load_native_package(package)
     sampled = metadata["input_spec"] == SAMPLED_INPUT_SPEC
+    policy = checked_execution_policy(execution_policy) if execution_policy is not None else None
+    if (policy is not None and not sampled or sampled and (
+        model.model_control is None
+        or sampled_agent_execution_policy(metadata["agent_spec"], model.model_control) != policy
+    )):
+        raise BoundaryError("native_agent", "explicit_package_execution_policy_binding")
     if manifest_path.exists() or manifest_path.is_symlink():
         raise BoundaryError("native_agent", "manifest_destination_exists")
     manifest = {
@@ -616,7 +657,7 @@ def bind_native_agent(
             "provider": "stpd",
             "architecture": native_architecture(model.model_control),
         },
-        "adapter": adapter_identity(graph=model.model_control is not None),
+        "adapter": adapter_identity(graph=model.model_control is not None, execution_policy=policy),
         "artifact": {
             "id": metadata["model_id"],
             "path": str((package / MANIFEST_NAME).resolve()),
@@ -658,6 +699,8 @@ def bind_native_agent(
             "causal_successor": False,
         },
     }
+    if policy is not None:
+        manifest["execution_policy"] = policy
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         manifest_path.write_bytes(json_bytes(manifest))
@@ -766,8 +809,8 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             pending_request = request
         elif kind == "next":
             if agent.sampled:
-                agent.begin_sampled_next(message["input"])
-                pending_next = (common, copy.deepcopy(message["input"]))
+                next_input = agent.begin_sampled_next(message["input"])
+                pending_next = (common, next_input)
                 pending_query = "child-query-" + uuid.uuid4().hex
                 emit({"schema": SESSION_SCHEMA, "message_type": "query", **common,
                       "request_id": pending_query, "input": {"method": "current", "arguments": {

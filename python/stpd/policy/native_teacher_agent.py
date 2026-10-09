@@ -17,7 +17,14 @@ from typing import Any, TextIO
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from stpd.fullrun.native_structured_inputs import PROFILE, SCOPE
 from stpd.fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
+from stpd.policy.native_operational_outcome import (
+    checked_execution_policy,
+    checked_next_input,
+    emitted_intention,
+    manifest_execution_policy,
+)
 from stpd.policy.native_public_teacher import (
+    OWNED_STALE_TEACHER_VERSION,
     TEACHER_ID,
     TEACHER_VERSION,
     NativePublicTeacher,
@@ -35,6 +42,7 @@ PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ARTIFACT_SCHEMA = "stpd/native-program-teacher-artifact-v1"
 AGENT_ID = "stpd-native-public-program-teacher"
 AGENT_VERSION = "1.1.0"
+OWNED_STALE_AGENT_VERSION = "1.2.0"
 RECHECK_TIMEOUT_MS = 250
 MAX_MESSAGE_BYTES = 96 * 1024 * 1024
 CODE_FILES = (
@@ -58,6 +66,7 @@ CODE_FILES = (
     "stpd/fullrun/text_menu_inputs.py",
     "stpd/policy/native_public_teacher.py",
     "stpd/policy/native_teacher_agent.py",
+    "stpd/policy/native_operational_outcome.py",
     "stpd/policy/native_task.py",
 )
 INPUT_BODY = {
@@ -118,16 +127,30 @@ def code_identity() -> tuple[str, list[dict[str, Any]]]:
     return checksum.hexdigest(), files
 
 
-def descriptor() -> dict[str, Any]:
+def teacher_agent_spec(*, execution_policy: dict[str, Any] | None = None) -> dict[str, Any]:
+    spec = copy.deepcopy(AGENT_SPEC)
+    if execution_policy is not None:
+        spec.update(
+            version=OWNED_STALE_AGENT_VERSION,
+            teacher={"id": TEACHER_ID, "version": OWNED_STALE_TEACHER_VERSION},
+            execution_policy=checked_execution_policy(execution_policy),
+            operational_outcome="validate_last_emitted_intention_then_stage_narrow_correction",
+            intention_correction="changed_native_unit_and_exact_new_ConsumeACK_only",
+        )
+    return spec
+
+
+def descriptor(*, execution_policy: dict[str, Any] | None = None) -> dict[str, Any]:
     sha, files = code_identity()
+    spec = teacher_agent_spec(execution_policy=execution_policy)
     return {
         "schema": ARTIFACT_SCHEMA,
-        "agent_spec": copy.deepcopy(AGENT_SPEC),
+        "agent_spec": spec,
         "input_spec_body": copy.deepcopy(INPUT_BODY),
         "input_spec": dict(INPUT_SPEC),
         "adapter": {
             "id": AGENT_ID,
-            "version": AGENT_VERSION,
+            "version": spec["version"],
             "protocol": PROTOCOL,
             "code_sha256": sha,
         },
@@ -142,8 +165,10 @@ def descriptor() -> dict[str, Any]:
     }
 
 
-def write_artifact(path: Path) -> dict[str, Any]:
-    raw = json_bytes(descriptor())
+def write_artifact(
+    path: Path, *, execution_policy: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    raw = json_bytes(descriptor(execution_policy=execution_policy))
     with path.open("xb") as handle:
         handle.write(raw)
     return {
@@ -169,7 +194,8 @@ class NativeTeacherAgent:
         if artifact_path.is_symlink() or not artifact_path.is_file():
             raise BoundaryError("native_teacher_agent", "artifact_path_required")
         raw = artifact_path.read_bytes()
-        expected = descriptor()
+        self.execution_policy = manifest_execution_policy(manifest)
+        expected = descriptor(execution_policy=self.execution_policy)
         if (
             hashlib.sha256(raw).hexdigest() != manifest["artifact"]["sha256"]
             or decode_json(raw) != expected
@@ -181,7 +207,9 @@ class NativeTeacherAgent:
         ):
             raise BoundaryError("native_teacher_agent", "real_code_artifact_manifest_binding")
         self.manifest = manifest
-        self.teacher = NativePublicTeacher()
+        self.teacher = NativePublicTeacher(version=(
+            OWNED_STALE_TEACHER_VERSION if self.execution_policy is not None else TEACHER_VERSION
+        ))
         self.unit: NativeUnit | None = None
         self.continuity: str | None = None
         self.consumption_id: str | None = None
@@ -189,18 +217,15 @@ class NativeTeacherAgent:
         self.acquisition_id: str | None = None
         self.choice: TeacherChoice | None = None
         self.pending: dict[str, Any] | None = None
+        self.last_intention: dict[str, Any] | None = None
+        self.last_outcome: dict[str, Any] | None = None
+        self.pending_outcome: dict[str, Any] | None = None
+        self.acknowledged_intention: dict[str, Any] | None = None
 
     def begin_next(self, value: dict[str, Any]) -> None:
-        object_fields(
-            value,
-            {
-                "continuity_token",
-                "consumption_id",
-                "state_version",
-                "basis_acquisition_id",
-                "received_cursor",
-            },
-            "native_teacher_agent.next",
+        value, outcome = checked_next_input(
+            value, execution_policy=self.execution_policy,
+            intention=self.last_intention, previous_outcome=self.last_outcome,
         )
         if (
             self.pending is not None
@@ -214,6 +239,42 @@ class NativeTeacherAgent:
             and value["continuity_token"] != self.continuity
         ):
             raise BoundaryError("native_teacher_agent", "next_watermark_binding")
+        if self.pending_outcome is not None and outcome != self.pending_outcome:
+            raise BoundaryError("native_teacher_agent", "pending_outcome_binding")
+        if outcome is not None:
+            self.last_outcome = copy.deepcopy(outcome)
+            self.pending_outcome = copy.deepcopy(outcome)
+
+    @staticmethod
+    def _intent_delta(
+        before: NativePublicTeacher, after: NativePublicTeacher, action: dict[str, Any]
+    ) -> dict[str, tuple[Any, Any]]:
+        verb = action["verb"]
+        fields = {
+            "focus_target": ("focus_target_id",),
+            "open_run_deck": ("phase",),
+            "inspect_deck_card": ("phase",),
+            "toggle_card_upgrade_preview": ("phase",),
+            "return_card_inspect": ("phase",),
+            "return_native_information": ("phase",),
+            "open_combat_draw_pile": ("combat_pile_viewed",),
+            "begin_card_play": ("saw_card_entry",),
+        }.get(verb, ())
+        return {
+            name: (getattr(before, name), getattr(after, name))
+            for name in fields if getattr(before, name) != getattr(after, name)
+        }
+
+    def _correct_intention(self, staged: NativePublicTeacher) -> None:
+        if self.pending_outcome is None:
+            return
+        if self.last_intention is None:
+            raise BoundaryError("native_teacher_agent", "correction_intention_required")
+        for name, (before, predicted) in self.last_intention["delta"].items():
+            if (getattr(staged, name) != predicted
+                    or type(getattr(staged, name)) is not type(predicted)):
+                raise BoundaryError("native_teacher_agent", "intention_marker_mismatch")
+            setattr(staged, name, before)
 
     def wait(self, next_input: dict[str, Any]) -> dict[str, Any]:
         cursor = next_input["received_cursor"]
@@ -269,7 +330,10 @@ class NativeTeacherAgent:
         ):
             return "directive", self.wait(next_input)
         staged = copy.deepcopy(self.teacher)
+        self._correct_intention(staged)
+        before_choice = copy.deepcopy(staged)
         choice = staged.decide(observation, catalog)
+        action = next((item for item in catalog if item["action_id"] == choice.action_id), None)
         report = {
             "acquisition_id": result["acquisition_id"],
             "input_spec": dict(INPUT_SPEC),
@@ -279,7 +343,15 @@ class NativeTeacherAgent:
             "state_version": self.state_version + 1,
             "advanced": True,
         }
-        self.pending = {"report": report, "teacher": staged, "unit": unit, "choice": choice}
+        self.pending = {
+            "report": report, "teacher": staged, "unit": unit, "choice": choice,
+            "intention": (emitted_intention(
+                acquisition_id=report["acquisition_id"], consumption_id=report["consumption_id"],
+                state_version=report["state_version"], observation=observation, action=action,
+            ) | {"delta": self._intent_delta(before_choice, staged, action)}
+                if action is not None else None),
+            "outcome": copy.deepcopy(self.pending_outcome),
+        }
         return "consumed", report
 
     def acknowledge(self, ack: dict[str, Any]) -> None:
@@ -335,6 +407,9 @@ class NativeTeacherAgent:
         )
         self.continuity, self.consumption_id = report["continuity_token"], report["consumption_id"]
         self.state_version, self.acquisition_id = report["state_version"], report["acquisition_id"]
+        self.acknowledged_intention = self.pending["intention"]
+        if self.pending["outcome"] is not None:
+            self.pending_outcome = None
         self.pending = None
 
     def directive(self, next_input: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +423,11 @@ class NativeTeacherAgent:
             )
         if self.choice.action_id is None or self.acquisition_id is None:
             raise BoundaryError("native_teacher_agent", "original_member_required")
+        if self.execution_policy is not None:
+            acknowledged = self.acknowledged_intention
+            if self.consumption_id is None or acknowledged is None:
+                raise BoundaryError("native_teacher_agent", "emitted_intention_required")
+            self.last_intention = copy.deepcopy(acknowledged)
         return self.output(
             {
                 "type": "act",
