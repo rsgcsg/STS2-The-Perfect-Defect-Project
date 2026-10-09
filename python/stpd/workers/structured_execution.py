@@ -76,10 +76,25 @@ from .structured_control import (
     StructuredExecutionResult,
     StructuredWorkloadRequest,
 )
-from .structured_run import prepare_structured_run
+from .structured_run import checked_training_execution_policy, prepare_structured_run
 
 RUN_SCHEMA = "stpd/structured-m2-run-v2"
 MODEL_SCHEMA = "stpd/structured-m2-model-v2"
+
+
+def _package_execution_policy(
+    metadata: dict[str, Any], model_control: NativeGraphControl | None,
+) -> dict[str, Any] | None:
+    agent_spec = metadata["agent_spec"]
+    if not isinstance(agent_spec, dict):
+        raise BoundaryError("structured_workload", "package_execution_policy_mismatch")
+    if "execution_policy" not in agent_spec:
+        return None
+    from ..native_sampled_carry_spec import sampled_agent_execution_policy
+
+    if model_control is None:
+        raise BoundaryError("structured_workload", "package_execution_policy_mismatch")
+    return sampled_agent_execution_policy(agent_spec, model_control)
 
 
 def prepare_structured_workload(
@@ -92,13 +107,14 @@ def prepare_structured_workload(
     source_id: str | None = None,
     code_scope: str = LEGACY_SCOPE,
     model_control: NativeGraphControl | None = None,
+    execution_policy: dict[str, Any] | None = None,
 ) -> Manifest:
     """Freeze caller-authorized source/config/execution identity; numerical work is separate."""
     if parse_dataset(dataset.source_bytes, code_scope) != dataset:
         raise BoundaryError("structured_workload", "source_projection_mismatch")
     return prepare_structured_run(
         store, dataset, producer, config, source_id=source_id, operation_id=operation_id,
-        code_scope=code_scope, model_control=model_control
+        code_scope=code_scope, model_control=model_control, execution_policy=execution_policy
     )
 
 
@@ -121,7 +137,7 @@ def _load(
             "partition",
             "operation_id",
             "execution_identity",
-        },
+        } | ({"execution_policy"} if "execution_policy" in run.parameters.value() else set()),
         "structured_workload_run",
     )
     if (
@@ -137,7 +153,10 @@ def _load(
         )
     config = StructuredTrainingConfig(**info["config"])
     config.validate()
-    torch.set_num_threads(config.cpu_threads)
+    if "execution_policy" in info:
+        from ..policy.native_operational_outcome import checked_execution_policy
+
+        checked_execution_policy(info["execution_policy"])
     training = store.get_manifest(request.training_input_id)
     _roles(training, {"source"}, {"source"})
     source = store.get_manifest(training.parent("source"))
@@ -160,6 +179,11 @@ def _load(
             raise BoundaryError("structured_workload", "source3_partition_dataset_binding")
     elif common_sampled_source(dataset, scope):
         verify_training_partition(store, source.artifact_id, dataset, scope)
+    if "execution_policy" in info:
+        checked_training_execution_policy(
+            info["execution_policy"], dataset, scope,
+            control_from_identity(info["execution_identity"]))
+    torch.set_num_threads(config.cpu_threads)
     native = scope in NATIVE_SCOPES
     if (
         dataset.source_sha256 != info["source_sha256"]
@@ -395,6 +419,11 @@ def _completed(
     scope = run_code_scope(run.parameters.value().get("schema"))
     scoped = scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     native = scope in NATIVE_SCOPES
+    run_info = run.parameters.value()
+    policy = (checked_training_execution_policy(
+        run_info["execution_policy"], dataset, scope,
+        control_from_identity(run_info["execution_identity"]))
+        if "execution_policy" in run_info else None)
     _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
     # A publication-phase resume may export already-complete numerical state
     # from an earlier writer's immutable checkpoint. Bind the actual exporter
@@ -513,6 +542,8 @@ def _completed(
 
             metadata, restored = load_native_package(package)
             require_native_model_package(model, metadata)
+            if _package_execution_policy(metadata, engine.model_control) != policy:
+                raise BoundaryError("structured_workload", "package_execution_policy_mismatch")
         else:
             metadata, restored = load_structured_package(package)
         if scoped and metadata.get("provenance") != {
@@ -566,7 +597,8 @@ def _completed(
             "model_artifact_id",
             "operation_id",
         }
-        | ({"training_producer"} if scoped else set()),
+        | ({"training_producer"} if scoped else set())
+        | ({"execution_policy"} if policy is not None else set()),
         "structured_completed_report",
     )
     seconds = report["attempt_seconds"]
@@ -593,6 +625,7 @@ def _completed(
         "checkpoint_id": result.parent("checkpoint"),
         "model_artifact_id": model.artifact_id,
         "operation_id": run.parameters.value()["operation_id"],
+        **({"execution_policy": policy} if policy is not None else {}),
     }
     if raw != json_bytes(expected_report):
         raise BoundaryError("structured_workload", "completed_report_binding_mismatch")
@@ -611,7 +644,10 @@ def execute_structured_workload(
 ) -> StructuredExecutionResult:
     """One explicit attempt; all publication follows the injected application fence."""
     started = time.perf_counter()
+    request.validate()
+    authority.assert_current(request.run_id, request.operation_id, request.attempt_id)
     run, training, dataset, config = _load(store, request, producer)
+    policy = run.parameters.value().get("execution_policy")
     scope = run_code_scope(run.parameters.value().get("schema"))
     scoped = scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     native = scope in NATIVE_SCOPES
@@ -922,7 +958,10 @@ def execute_structured_workload(
                         "checkpoint_id": checkpoint_id,
                         "export_runtime": exporter_runtime(),
                     },
+                    **({"execution_policy": policy} if policy is not None else {}),
                 )
+                if _package_execution_policy(metadata, engine.model_control) != policy:
+                    raise BoundaryError("structured_workload", "package_execution_policy_mismatch")
             else:
                 metadata = export_structured_package(
                     engine.model.eval(),
@@ -1000,6 +1039,7 @@ def execute_structured_workload(
             "execution_identity": engine.identity,
             "attempt": request.attempt_id,
             "attempt_seconds": time.perf_counter() - started,
+            **({"execution_policy": policy} if policy is not None else {}),
         }
         guard()
         report_payload = store.put_payload(

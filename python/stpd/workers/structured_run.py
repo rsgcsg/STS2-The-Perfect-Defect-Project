@@ -19,7 +19,7 @@ from typing import Any
 import torch
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
@@ -58,6 +58,24 @@ RUN_SCHEMA = "stpd/structured-m2-run-v1"
 CHECKPOINT_SCHEMA = "stpd/structured-m2-training-checkpoint-v1"
 
 
+def checked_training_execution_policy(
+    value: object, dataset: StructuredDataset, code_scope: str,
+    model_control: NativeGraphControl | None,
+) -> dict[str, Any]:
+    """Deployment policy is supported only by the existing sampled package view."""
+    from ..ordered_source_spec import SAMPLED_VIEW, checked_view
+    from ..policy.native_operational_outcome import checked_execution_policy
+
+    policy = checked_execution_policy(value)
+    sampled = common_sampled_source(dataset, code_scope)
+    if code_scope == ORDERED_SCOPE:
+        source = decode_json(dataset.source_bytes)
+        sampled = checked_view(source["projection_spec"], source["target_spec"]) == SAMPLED_VIEW
+    if not sampled or model_control != NativeGraphControl():
+        raise BoundaryError("structured_run", "execution_policy_sampled_view_required")
+    return policy
+
+
 def prepare_structured_run(
     store: ArtifactStore,
     dataset: StructuredDataset,
@@ -68,6 +86,7 @@ def prepare_structured_run(
     operation_id: str | None = None,
     code_scope: str = LEGACY_SCOPE,
     model_control: NativeGraphControl | None = None,
+    execution_policy: dict[str, Any] | None = None,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
@@ -75,6 +94,9 @@ def prepare_structured_run(
     if (model_control is not None) != (code_scope in CONTROL_SCOPES):
         raise BoundaryError("structured_run", "control_scope_mismatch")
     native = validate_profile(dataset, code_scope)
+    policy = (checked_training_execution_policy(
+        execution_policy, dataset, code_scope, model_control)
+        if execution_policy is not None else None)
     common = common_sampled_source(dataset, code_scope)
     if common and model_control != NativeGraphControl():
         raise BoundaryError("structured_run", "sampled_k1d96_carry_required")
@@ -226,6 +248,7 @@ def prepare_structured_run(
                 "torch_version": torch.__version__,
                 "partition": "train",
                 **execution_parameters,
+                **({"execution_policy": policy} if policy is not None else {}),
             }
         ),
     )

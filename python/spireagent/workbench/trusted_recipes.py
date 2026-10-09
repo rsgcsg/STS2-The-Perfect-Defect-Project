@@ -22,6 +22,20 @@ DEFAULT_CHECKPOINT_CADENCE = 100
 TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *STRUCTURED_RECIPES, *MEMORY_RECIPES})
 
 
+def checked_recipe_execution_policy(recipe_id: str, value: object) -> dict[str, Any]:
+    from stpd.native_sampled_carry_spec import RECIPE as SAMPLED_RECIPE
+    from stpd.policy.native_operational_outcome import checked_execution_policy
+
+    if not isinstance(recipe_id, str) or recipe_id not in {NATIVE_SAMPLED_RECIPE, SAMPLED_RECIPE}:
+        raise BoundaryError("local_training", "invalid_training_request")
+    try:
+        return checked_execution_policy(value)
+    except BoundaryError as error:
+        # Preserve the existing HTTP/native admission error. A rejected request
+        # is not an unconfirmed worker operation; its detailed parser cause stays.
+        raise BoundaryError("local_training", "invalid_training_request") from error
+
+
 def structured_recipe_scope(recipe_id: str) -> str:
     from stpd.structured_code_scope import LEGACY_SCOPE, TRAINING_SCOPE
 
@@ -174,6 +188,19 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
             )
     else:
         descriptor["limits"] = {}
+    from stpd.native_sampled_carry_spec import RECIPE as SAMPLED_RECIPE
+
+    if recipe_id in {NATIVE_SAMPLED_RECIPE, SAMPLED_RECIPE}:
+        from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+        descriptor["execution_policy"] = {
+            "optional": True,
+            "default": None,
+            "example": owned_current_known_stale_policy(),
+            "max_known_stale_rejections": [1, 16],
+            "max_consecutive_known_stale_rejections": "1..min(total,4)",
+            "binding": "immutable_run_then_first_model_package",
+        }
     return descriptor
 
 

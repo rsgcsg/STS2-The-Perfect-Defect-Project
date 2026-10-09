@@ -194,3 +194,66 @@ qualification. Fixed evaluation still requires original source verification,
 current use/Gold/partition and model ancestry/source-group overlap gates before
 its existing private child executes. External exposure remains unknown and no
 clean held-out claim is inferred. No old checkpoint/package is rewritten.
+
+## Explicit sampled package execution policy
+
+The existing common native sampled recipe and ordered decision-sample recipe
+also accept an optional top-level `TrainingRequest.execution_policy`. This is a
+package deployment choice, separate from numerical `config`, InputSpec, graph,
+features, W, weights, optimizer and execution-identity values. Missing means
+legacy behavior and preserves the old request, Run, report and operation-snapshot
+field sets. An explicitly present null is rejected. Full-reference, pretraining,
+text-menu and other recipes reject the extension before state selection or child
+entry. Browser and native training routes use the same request validator; their
+existing forms continue to omit the field. Status exposes a copied policy only
+for an explicitly opted-in request.
+
+The shared pure parser owns the closed six-field declaration:
+
+```json
+{
+  "schema": "sts2.policy-runtime/agent-execution-policy-1",
+  "current_mode": "reader_owned_v1",
+  "known_stale": "fresh_changed_current_v1",
+  "operational_outcome": "known_not_started_v1",
+  "max_known_stale_rejections": 8,
+  "max_consecutive_known_stale_rejections": 3
+}
+```
+
+Total accepts integer 1–16 and consecutive accepts integer
+1–min(total,4); booleans, extra fields and other modes fail. The example is an
+explicit choice, never an injected default. Same-intent request comparison
+includes policy presence and value. Request parsing and journal serialization
+copy the declaration, so changing a caller object or a returned snapshot cannot
+change an admitted choice.
+
+The private child freezes its initial validated request policy independently of
+later mutable journal reads, before preparation or numerical imports. A fresh
+start permits only existing preparation while Run/input references remain absent.
+It verifies and binds one actual immutable Run/input pair before its prepared
+event and parent ACK. During that bounded ACK wait, only the original missing
+pair or the exact joined pair is accepted; publication and numerical entry wait
+for the exact ACK. Afterward every operation read requires that same pair, and
+missing references cannot reopen the pre-ACK interval. Resume and reconcile bind
+the existing Run before numerical imports. None callers, artifact/slot reservation
+polls and the check immediately before each delegated write enforce the same frozen
+choice and Run binding. The parent separately checks policy at ACK, orphan adoption
+and recovery; resume/reconcile provide no policy override.
+
+Preparation copies the policy into the Run's top-level parameters. The worker
+checks authority before loading the Run, and validates policy plus the actual
+sampled Source/view/control before changing Torch threads or entering the engine.
+Finalization forwards the Run's choice only to the supported sampled exporter and
+checks the returned AgentSpec before the first model payload or ModelArtifact.
+The earliest new model therefore already contains the selected AgentSpec1.2 policy.
+Completion verifies that the package and optional report field agree with the
+same immutable Run, including when tensor weights match. The immutable model
+materializer does not upgrade or rewrite old models. Numerical checkpoint state
+needs no policy field because its parent Run already binds the choice.
+
+Actual source edits still change the existing training code digest; keeping the
+policy value outside execution identity does not qualify old checkpoints across
+changed code. Engineering fixtures exercise policy binding, pause/resume and
+completed reconciliation. They do not authorize a real-data fit or prove useful
+learning, an installed consumer, game execution or model quality.

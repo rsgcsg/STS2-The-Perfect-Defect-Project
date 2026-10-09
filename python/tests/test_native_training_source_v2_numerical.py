@@ -15,7 +15,8 @@ from test_native_training_source_v2 import source3
 from test_protocol_source import setup_store
 from test_structured_resume import Authority
 
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.artifact_contracts import Manifest
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from stpd.canonical import semantic_hash
 from stpd.models.structured_engine import execution_identity
@@ -29,12 +30,14 @@ from stpd.native_training_source_spec import (
     SOURCE3_PROFILE,
 )
 from stpd.policy.native_agent import NativeStructuredAgent, bind_native_agent
+from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
 from stpd.policy.native_structured_export import (
     _native_manifest,
     export_native_model,
     load_native_package,
     require_native_model_package,
 )
+from stpd.workers import structured_execution as execution
 from stpd.workers.structured_control import StructuredWorkloadRequest
 from stpd.workers.structured_execution import (
     execute_structured_workload,
@@ -141,3 +144,56 @@ def test_synthetic_graph_execution_schema_default_remains_accurate():
         synthetic_data(), config, code_scope=TRAINING_SCOPE, model_control=NativeGraphControl()
     )
     assert identity["source_schema"] == NATIVE_SOURCE_SCHEMA
+
+
+def test_denied_authority_precedes_run_load(monkeypatch):
+    authority = Authority()
+    authority.active = False
+    monkeypatch.setattr(execution, "_load", lambda *args: pytest.fail("load entered"))
+    request = StructuredWorkloadRequest("1" * 64, "2" * 64, "3" * 32, "4" * 32)
+    with pytest.raises(BoundaryError, match="stale_attempt"):
+        execute_structured_workload(None, None, request, origin(), authority=authority)
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_policy_and_view_refuse_before_preparation_setter_or_publication(
+    tmp_path, monkeypatch, invalid,
+):
+    store, _owner = setup_store(tmp_path)
+    before = set(store.manifest_ids())
+    policy = owned_current_known_stale_policy()
+    if invalid:
+        policy["max_known_stale_rejections"] = False
+    setters = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda value: setters.append(value))
+    with pytest.raises(BoundaryError):
+        prepare_structured_workload(
+            store, synthetic_data(), origin(), StructuredTrainingConfig(),
+            operation_id="1" * 32, code_scope=TRAINING_SCOPE,
+            model_control=NativeGraphControl(), execution_policy=policy,
+        )
+    assert setters == []
+    assert set(store.manifest_ids()) == before
+
+
+@pytest.mark.parametrize("policy", [None, owned_current_known_stale_policy()])
+def test_loaded_null_or_full_reference_policy_refuses_before_thread_setter(
+    tmp_path, monkeypatch, policy,
+):
+    store, _owner = setup_store(tmp_path)
+    producer = origin()
+    run = prepare_structured_workload(
+        store, synthetic_data(), producer, StructuredTrainingConfig(),
+        operation_id="1" * 32, code_scope=TRAINING_SCOPE, model_control=NativeGraphControl(),
+    )
+    forged = Manifest("run", producer, run.parents,
+                       parameters=FrozenObject.of({**run.parameters.value(),
+                                                   "execution_policy": policy}))
+    store.publish(forged)
+    request = StructuredWorkloadRequest(forged.artifact_id, run.parent("training_input"),
+                                        "1" * 32, "2" * 32)
+    setters = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda value: setters.append(value))
+    with pytest.raises(BoundaryError):
+        execution._load(store, request, producer)
+    assert setters == []
