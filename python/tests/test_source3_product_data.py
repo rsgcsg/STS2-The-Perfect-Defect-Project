@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from metadata_import_guard import install_torch_import_guard
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from source3_product_fixture import DERIVED, ORIGINAL, ROOT, settled, setup
 
 from spireagent.json_boundary import BoundaryError
@@ -88,7 +94,6 @@ def test_source3_import_and_training_ready_preserve_originals_and_never_start_tr
     assert importer.start(candidate)["artifact_id"] == raw.artifact_id
     with owner.transaction() as db:
         assert db.execute("SELECT COUNT(*) FROM local_source_pending").fetchone() == (0,)
-    assert "torch" not in sys.modules
 
 
 def test_zero_labels_do_not_switch_view_and_explicit_pretraining_stays_distinct(
@@ -113,7 +118,6 @@ def test_zero_labels_do_not_switch_view_and_explicit_pretraining_stays_distinct(
     assert ready["source_view"] == PRETRAIN_VIEW
     assert store.get_manifest(ready["training_source_id"]).parameters.value()["qualification"] == (
         pretrain["qualification"])
-    assert "torch" not in sys.modules
 
 
 @pytest.mark.parametrize("change", ["close", "tool", "support", "accounting"])
@@ -311,3 +315,197 @@ def test_original_commit_lock_is_associated_exactly_without_current_lock_substit
         local_recording_import._original_recorder_producer("e" * 40)
     with pytest.raises(BoundaryError, match="provenance_required"):
         local_recording_import._original_recorder_producer("HEAD")
+
+
+def test_metadata_guard_blocks_import_requests_and_allows_backend_discovery(monkeypatch):
+    before = sys.modules.get("torch")
+    with monkeypatch.context() as scoped:
+        guard = install_torch_import_guard(scoped)
+        # Discovery is metadata; it does not import a tensor backend.
+        importlib.util.find_spec("torch")
+        for name in ("torch", "torch.nn"):
+            with pytest.raises(AssertionError, match="attempted a Torch import"):
+                builtins.__import__(name)
+            with pytest.raises(AssertionError, match="attempted a Torch import"):
+                importlib.import_module(name)
+        with pytest.raises(AssertionError, match="attempted a Torch import"):
+            importlib.import_module(".nn", package="torch")
+        with pytest.raises(AssertionError, match="attempted a Torch import"):
+            builtins.__import__("nn", {"__package__": "torch"}, level=1)
+        assert guard.attempts == ["torch", "torch", "torch.nn", "torch.nn", "torch.nn", "torch.nn"]
+    assert sys.modules.get("torch") is before
+
+
+def test_metadata_guard_accepts_preloaded_module_without_unloading_or_importing_it():
+    script = """
+import builtins
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+from types import ModuleType
+import pytest
+from metadata_import_guard import install_torch_import_guard
+assert 'torch' not in sys.modules
+existing = ModuleType('torch')
+existing.__spec__ = importlib.machinery.ModuleSpec('torch', loader=None)
+sys.modules['torch'] = existing
+with pytest.MonkeyPatch.context() as patch:
+    guard = install_torch_import_guard(patch)
+    assert sys.modules['torch'] is existing
+    assert importlib.util.find_spec('torch') is existing.__spec__
+    for operation in (lambda: builtins.__import__('torch'),
+                      lambda: importlib.import_module('torch.nn')):
+        try:
+            operation()
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('preloaded Torch import request bypassed guard')
+    assert guard.attempts == ['torch', 'torch.nn']
+    assert sys.modules['torch'] is existing
+assert sys.modules['torch'] is existing
+assert not any(name.startswith('torch.') for name in sys.modules)
+print('preloaded metadata guard selftest passed; no backend import or unload')
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parent, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "preloaded metadata guard selftest passed" in result.stdout
+
+
+def test_metadata_guard_blocks_builtin_package_fallbacks_and_preserves_other_packages():
+    script = """
+import builtins
+import importlib.machinery
+import sys
+from types import ModuleType
+import pytest
+from metadata_import_guard import install_torch_import_guard
+assert 'torch' not in sys.modules
+roots = {}
+for name in ('torch', 'fixture_meta'):
+    root = ModuleType(name)
+    root.__path__ = []
+    root.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+    child = ModuleType(name + '.nn')
+    child.__spec__ = importlib.machinery.ModuleSpec(name + '.nn', loader=None)
+    root.nn = child
+    sys.modules[name] = root
+    sys.modules[name + '.nn'] = child
+    roots[name] = (root, child)
+original = builtins.__import__
+with pytest.MonkeyPatch.context() as patch:
+    guard = install_torch_import_guard(patch)
+    cases = [
+        {'__package__':None, '__spec__':roots['torch'][0].__spec__, '__name__':'torch'},
+        {'__spec__':None, '__name__':'torch', '__path__':[]},
+        {'__name__':'torch.child'},
+    ]
+    for globals_value in cases:
+        try:
+            builtins.__import__('nn', globals_value, fromlist=('x',), level=1)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('relative Torch package fallback bypassed guard')
+    assert guard.attempts == ['torch.nn'] * len(cases)
+    result = builtins.__import__('nn', {'__name__':'fixture_meta', '__path__':[]},
+                                 fromlist=('x',), level=1)
+    assert result is roots['fixture_meta'][1]
+    assert guard.attempts == ['torch.nn'] * len(cases)
+assert builtins.__import__ is original
+for name, (root, child) in roots.items():
+    assert sys.modules[name] is root and sys.modules[name + '.nn'] is child
+print('builtin package fallbacks blocked; unrelated cached package unchanged')
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parent, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "builtin package fallbacks blocked" in result.stdout
+
+
+def test_metadata_guard_invalid_package_and_level_errors_remain_builtin_owned():
+    script = """
+import builtins
+import importlib.machinery
+import sys
+import pytest
+from metadata_import_guard import install_torch_import_guard
+assert 'torch' not in sys.modules
+original = builtins.__import__
+spec = importlib.machinery.ModuleSpec('torch', loader=None, is_package=True)
+cases = [
+    ({'__package__':42, '__spec__':spec}, 1),
+    ({'__package__':'', '__name__':'torch'}, 1),
+    ({'__spec__':None}, 1),
+    ({'__package__':'torch'}, -1),
+    ({'__package__':'torch'}, 'one'),
+    ({'__package__':'torch'}, None),
+    ({'__package__':'torch'}, 1.5),
+    ({'__package__':'torch'}, 2**100),
+    ({'__package__':'torch'}, 2),
+]
+def failure(operation):
+    try:
+        operation()
+    except Exception as error:
+        return type(error), str(error)
+    raise AssertionError('invalid package/level unexpectedly succeeded')
+expected = [failure(lambda g=g, n=n: original('nn', g, fromlist=('x',), level=n))
+            for g, n in cases]
+with pytest.MonkeyPatch.context() as patch:
+    guard = install_torch_import_guard(patch)
+    actual = [failure(lambda g=g, n=n: builtins.__import__('nn', g, fromlist=('x',), level=n))
+              for g, n in cases]
+    assert actual == expected, (actual, expected)
+    assert guard.attempts == []
+assert builtins.__import__ is original and 'torch' not in sys.modules
+print('invalid package and level failures delegated unchanged')
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            cwd=Path(__file__).resolve().parent, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "failures delegated unchanged" in result.stdout
+
+
+def test_metadata_guard_swallowed_import_attempt_still_fails_autouse_teardown(tmp_path):
+    isolated = tmp_path / "test_swallowed_backend_import.py"
+    isolated.write_text("""
+import importlib
+from metadata_import_guard import no_torch_imports as no_torch_imports
+def test_swallowed():
+    try:
+        importlib.import_module('torch')
+    except Exception:
+        pass
+""")
+    script = """
+import sys
+import pytest
+assert 'torch' not in sys.modules
+status = pytest.main(['-q', '-p', 'no:cacheprovider', sys.argv[1]])
+assert status == 1, status
+assert 'torch' not in sys.modules
+print('swallowed Torch import rejected by autouse fixture; backend remained absent')
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(isolated)],
+                            capture_output=True, text=True, cwd=Path(__file__).resolve().parent,
+                            timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "unexpected Torch import attempts" in result.stdout
+    assert "swallowed Torch import rejected by autouse fixture" in result.stdout
+
+
+def test_metadata_guard_nested_scope_restores_original_import_functions(monkeypatch):
+    original_builtin, original_module = builtins.__import__, importlib.import_module
+    existing = sys.modules.get("torch")
+    with monkeypatch.context() as scoped:
+        guard = install_torch_import_guard(scoped)
+        assert builtins.__import__ == guard.builtin_import
+        assert importlib.import_module == guard.module_import
+        importlib.util.find_spec("torch")
+        assert not guard.attempts
+    assert builtins.__import__ is original_builtin
+    assert importlib.import_module is original_module
+    assert sys.modules.get("torch") is existing
