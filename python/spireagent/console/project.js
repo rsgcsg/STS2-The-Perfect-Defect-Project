@@ -4474,8 +4474,9 @@ window.SpireProject = (() => {
         split_status:operation.split_status}, "查看来源计数与排除原因"));
     }
     const canPublish = () => status.availability === "ready" && !!status.csrf_token
-      && verifiedResult() && operation.can_publish === true && hex(operation.preview_id, 32)
-      && (operation.status === "preview_ready" || (needsRecovery() && operation.recovery_available === true));
+      && verifiedResult() && hex(operation.preview_id, 32)
+      && (operation.status === "preview_ready" ? operation.can_publish === true
+        : needsRecovery() && operation.recovery_available === true);
     if (canPublish()) {
       const options = {primary:true};
       publishButton = command(ctx, "publish-source3-dataset", needsRecovery()

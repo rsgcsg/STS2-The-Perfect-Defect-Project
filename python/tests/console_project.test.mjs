@@ -7022,7 +7022,7 @@ test("Source3 selection changes invalidate preview even if restored, and retain 
 for (const override of [
   {availability:"recovery_required"}, {csrf:null}, {support:null},
   {operation:{status:"pending"}},
-  {operation:source3Preview(id("a"),{status:"failed",recovery_available:true})},
+  {operation:source3Preview(id("a"),{status:"failed",can_publish:false,recovery_available:true})},
 ]) test(`Source3 blocked preparation remains GET-only: ${JSON.stringify(override)}`, async () => {
   const env = source3BrowserEnv(override), page = await env.render();
   const preview = walk(page).find(item => item.dataset?.action === "preview-source3-dataset");
@@ -7040,14 +7040,35 @@ for (const override of [
   assert.equal(post(env.calls).length,0);
 });
 
-test("Source3 publication recovery requires the exact original selection and one deliberate shared publish", async () => {
-  const env = source3BrowserEnv({operation:source3Preview(id("a"),{status:"interrupted",recovery_available:true})});
+for (const status of ["failed", "interrupted"])
+  test(`Source3 publication recovery reconciles exact ${status} preview despite can_publish false`, async () => {
+    const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+      status,can_publish:false,recovery_available:true,error_code:"publish_failed",
+    })});
+    const page = await env.render();
+    assert.equal(action(page,"preview-source3-dataset").disabled,true);
+    assert.match(text(page),/核对上次 Source 3 保存结果/);
+    assert.equal(post(env.calls).length,0,"reading a recoverable failure never retries publication");
+    await action(page,"publish-source3-dataset").onclick();
+    assert.equal(post(env.calls).length,1);
+    assert.deepEqual(body(post(env.calls)[0]),{preview_id:"1".repeat(32)});
+    assert.equal(post(env.calls)[0].url,"/api/local-datasets/publish");
+    assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"source3-csrf");
+  });
+
+for (const override of [
+  {recovery_available:false,error_code:"publication_recovery_required"},
+  {recovery_available:undefined,error_code:"publication_recovery_required"}, {preview_id:null},
+  {artifact_ids:[id("b")]}, {cohort:"agent_protocol"}, {view:"publication_memory"},
+  {sample_type:"human_input"}, {source_kind:"agent_protocol"}, {source_view:"publication_memory"},
+]) test(`Source3 publication recovery rejects unavailable permission or mismatched preview: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+    status:"failed",can_publish:false,recovery_available:true,error_code:"publish_failed",...override,
+  })});
   const page = await env.render();
-  assert.equal(action(page,"preview-source3-dataset").disabled,true);
-  assert.match(text(page),/核对上次 Source 3 保存结果/);
-  await action(page,"publish-source3-dataset").onclick();
-  assert.deepEqual(body(post(env.calls)[0]),{preview_id:"1".repeat(32)});
-  assert.equal(post(env.calls)[0].url,"/api/local-datasets/publish");
+  assert.equal(walk(page).some(item => item.dataset?.action === "publish-source3-dataset"),false);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.equal(post(env.calls).length,0);
 });
 
 test("Source3 saved partition exposes existing typed training with matching owner recipe and no automatic training", async () => {
