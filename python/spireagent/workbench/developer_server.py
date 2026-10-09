@@ -792,6 +792,35 @@ class Application:
             raise BoundaryError("local_dataset", "running_configuration_mismatch")
         return self.local_datasets.start_source3_preview(artifact_ids, cohort, view)
 
+    def start_local_native_agent_import(self, directory: object, cohort: object,
+                                        relation_id: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_import", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_import", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_import", "running_configuration_mismatch")
+        return self.local_recording_import.start_native_agent_run(directory, cohort, relation_id)
+
+    def start_local_native_agent_dataset_preview(self, artifact_ids: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_dataset", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_dataset", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_dataset", "running_configuration_mismatch")
+        return self.local_datasets.start_native_agent_preview(artifact_ids)
+
     def start_local_dataset_publish(self, preview_id: object) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_dataset", "running_instance_unavailable")
@@ -1657,18 +1686,25 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
-                if self.path != "/api/local-recordings/import":
+                if self.path not in {"/api/local-recordings/import",
+                                     "/api/local-recordings/import/native-agent"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=256)
-                    if set(body) not in (
-                        {"candidate_id"}, {"candidate_id", "human_origin_attested"},
-                    ):
-                        raise ValueError
-                    value = app.start_local_recording_import(
-                        body["candidate_id"], body.get("human_origin_attested"),
-                    )
+                    if self.path == "/api/local-recordings/import/native-agent":
+                        body = self.json_body(maximum=8192)
+                        if set(body) != {"directory", "cohort", "relation_id"}:
+                            raise ValueError
+                        value = app.start_local_native_agent_import(**body)
+                    else:
+                        body = self.json_body(maximum=256)
+                        if set(body) not in (
+                            {"candidate_id"}, {"candidate_id", "human_origin_attested"},
+                        ):
+                            raise ValueError
+                        value = app.start_local_recording_import(
+                            body["candidate_id"], body.get("human_origin_attested"),
+                        )
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
@@ -1682,6 +1718,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 try:
                     maximum = (32768 if self.path in {
                         "/api/local-datasets/human-preview", "/api/local-datasets/source3-preview",
+                        "/api/local-datasets/native-agent-preview",
                     } else 256)
                     body = self.json_body(maximum=maximum)
                     if self.path == "/api/local-datasets/preview":
@@ -1698,6 +1735,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         if set(body) != {"artifact_ids", "cohort", "view"}:
                             raise ValueError
                         value = app.start_local_source3_dataset_preview(**body)
+                    elif self.path == "/api/local-datasets/native-agent-preview":
+                        if set(body) != {"artifact_ids"}:
+                            raise ValueError
+                        value = app.start_local_native_agent_dataset_preview(body["artifact_ids"])
                     elif self.path == "/api/local-datasets/publish":
                         if set(body) != {"preview_id"}:
                             raise ValueError

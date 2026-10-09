@@ -6,6 +6,7 @@ research source, Dataset, training admission, or proof of a unique Human actor.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import hashlib
 import json
@@ -49,6 +50,42 @@ SOURCE3_RECEIPT_SCHEMA = "stpd/local-source3-import-receipt-v1"
 OPERATION_FILE = "local-recording-import-operation.json"
 IDENTITY_FILE = "local-recording-import-labels.json"
 LABEL_PATTERN = re.compile(r"local-(?:worker|campaign)-[a-f0-9]{32}\Z")
+
+
+def native_agent_import_choices() -> dict[str, Any]:
+    """Closed research producer relations; the product entry is still gated."""
+    from stpd.native_agent_sampled_source_spec import (
+        FIXTURE_COHORT,
+        MAP_TEACHER_RELATION_SPEC,
+        PROFILE,
+        RELATION_SPEC,
+        TEACHER_COHORT,
+        TEACHER_RELATION_SPEC,
+    )
+
+    return copy.deepcopy({
+        "source_profile": PROFILE, "product_entry_enabled": False,
+        "cohorts": [TEACHER_COHORT, FIXTURE_COHORT], "default_cohort": TEACHER_COHORT,
+        "default_relation_id": MAP_TEACHER_RELATION_SPEC["id"],
+        "relations": [
+            {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4"},
+            {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2"},
+            {"relation": RELATION_SPEC, "label": "合成协议测试"},
+        ],
+        "automatic_training": False, "human_origin_verified": False,
+    })
+
+
+def _native_agent_relation(relation_id: object, cohort: object) -> dict[str, Any]:
+    from stpd.native_agent_sampled_source_spec import checked_relation
+
+    choices = native_agent_import_choices()
+    if not isinstance(cohort, str) or cohort not in choices["cohorts"]:
+        raise BoundaryError("local_import", "native_agent_cohort_not_supported")
+    for choice in choices["relations"]:
+        if isinstance(relation_id, str) and choice["relation"]["id"] == relation_id:
+            return checked_relation(choice["relation"], cohort)
+    raise BoundaryError("local_import", "native_agent_relation_not_supported")
 
 if TYPE_CHECKING:
     from sts2_platform_evidence import SourceSessionBundleV3
@@ -230,7 +267,158 @@ class LocalRecordingImporter:
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {**{key: value for key, value in self.operation.items()
-                       if not key.startswith("_")}, "requires_cloud_account": False}
+                       if not key.startswith("_")}, "requires_cloud_account": False,
+                    "native_agent_support": native_agent_import_choices()}
+
+    @staticmethod
+    def _native_agent_original(directory: Path, cohort: str, relation: object) -> Any:
+        from stpd.fullrun.native_agent_sampled_source import _producer, _verified
+
+        bundle = _verified(directory)
+        _producer(bundle, cohort, relation)
+        if not bundle.events or bundle.events[-1]["kind"] != "stopped":
+            raise BoundaryError("local_import", "native_agent_closed_run_required")
+        return bundle
+
+    def _native_agent_existing(self, store: ManifestArtifactStore,
+                               content_id: str, cohort: str, relation: object) -> Manifest | None:
+        from spireagent.storage.blobs import MAX_BLOB_BYTES
+        from stpd.fullrun.native_agent_sampled_source import (
+            _bytes,
+            _inventory,
+            _producer,
+            _verified,
+        )
+        from stpd.native_agent_sampled_source_spec import (
+            MAX_ORIGINAL_BYTES,
+            MAX_ORIGINAL_FILES,
+            RAW_SCHEMA,
+        )
+
+        matches = []
+        for identity in store.manifest_ids():
+            raw = store.get_manifest(identity)
+            info = raw.parameters.value()
+            if (raw.kind == "evidence" and info.get("schema") == RAW_SCHEMA
+                    and info.get("bundle_content_id") == content_id
+                    and info.get("cohort") == cohort
+                    and info.get("producer_student_relation") == relation):
+                if (set(info) != {"schema", "source_profile", "source_kind", "cohort",
+                        "producer_student_relation", "original", "bundle_content_id", "inventory"}
+                        or info["source_profile"] != "native_agent_sampled_v1"
+                        or info["source_kind"] != "agent_protocol" or raw.parents
+                        or len(raw.payloads) != 1
+                        or raw.payload("archive").media_type != "application/gzip"):
+                    raise BoundaryError("local_import", "native_agent_raw_identity")
+                archive = _bytes(store, raw, "archive", MAX_BLOB_BYTES)
+                with tempfile.TemporaryDirectory(prefix="native-agent-import-reconcile-") as name:
+                    extracted = Path(name)
+                    _extract(archive, extracted, max_bytes=MAX_ORIGINAL_BYTES,
+                             max_files=MAX_ORIGINAL_FILES)
+                    verified = _verified(extracted)
+                    if (verified.content_id != content_id
+                            or _inventory(extracted) != info["inventory"]
+                            or _producer(verified, cohort, relation) != info["original"]):
+                        raise BoundaryError("local_import", "native_agent_raw_identity")
+                matches.append(raw)
+        if len(matches) > 1:
+            raise BoundaryError("local_import", "native_agent_original_ambiguous")
+        return matches[0] if matches else None
+
+    def start_native_agent_run(self, directory: object, cohort: object,
+                               relation_id: object) -> dict[str, Any]:
+        relation = _native_agent_relation(relation_id, cohort)
+        if (not isinstance(directory, str) or not 0 < len(directory) <= 4096
+                or not Path(directory).is_absolute() or Path(directory).is_symlink()
+                or not Path(directory).is_dir()):
+            raise BoundaryError("local_import", "native_agent_directory_required")
+        source_directory = Path(directory).resolve()
+        cohort = cast(str, cohort)
+        bundle = self._native_agent_original(source_directory, cohort, relation)
+        from stpd.canonical import semantic_hash
+
+        identity = semantic_hash({"bundle_content_id": bundle.content_id, "cohort": cohort,
+                                  "producer_student_relation": relation})
+        with self.lock:
+            if self.operation["status"] == "unavailable":
+                raise BoundaryError("local_import", "operation_file_invalid")
+            if self.thread is not None and self.thread.is_alive():
+                if self.operation.get("candidate_id") == identity:
+                    return self.status()
+                raise BoundaryError("local_import", "operation_in_progress")
+            store, _ = _selected_store(self.config)
+            owner = self._source3_owner(store)
+            previous = self.operation
+            producer = (Producer.decode(previous["_producer"])
+                        if previous.get("candidate_id") == identity and previous.get("_producer")
+                        else source_identity(ROOT))
+            owner.begin_source(identity)
+            self.operation = {"schema": SCHEMA, "status": "pending", "candidate_id": identity,
+                "recording_type": "native_agent_sampled", "started_at": _now(),
+                "cohort": cohort, "producer_student_relation": relation,
+                "bundle_content_id": bundle.content_id, "_directory": str(source_directory),
+                "_producer": producer.to_dict(), "_owner": owner.identity}
+            self._save()
+            self.thread = threading.Thread(target=self._run_native_agent, args=(identity,),
+                                           daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def _run_native_agent(self, identity: str) -> None:
+        from stpd.fullrun.native_agent_sampled_source import publish_native_agent_sampled_raw
+
+        published: Manifest | None = None
+        try:
+            with self.lock:
+                request = dict(self.operation)
+            store, registry = _selected_store(self.config)
+            self._source3_owner(store)
+            bundle = self._native_agent_original(Path(request["_directory"]), request["cohort"],
+                                                  request["producer_student_relation"])
+            if bundle.content_id != request["bundle_content_id"]:
+                raise BoundaryError("local_import", "native_agent_original_changed")
+            published = self._native_agent_existing(store, bundle.content_id, request["cohort"],
+                                                     request["producer_student_relation"])
+            if published is None:
+                published = publish_native_agent_sampled_raw(
+                    store, Path(request["_directory"]), Producer.decode(request["_producer"]),
+                    cohort=request["cohort"], relation=request["producer_student_relation"])
+            if published.parameters.value()["bundle_content_id"] != request["bundle_content_id"]:
+                raise BoundaryError("local_import", "native_agent_original_changed")
+            owner = self._source3_owner(store)
+            owner.published_source(identity, published.artifact_id)
+            with owner.transaction() as db:
+                indexed = (db.execute("SELECT 1 FROM curation_sources s "
+                    "JOIN curation_exact_source_index i ON i.source=s.id "
+                    "WHERE s.id=? AND s.complete=1", (published.artifact_id,)).fetchone()
+                    is not None)
+            if indexed:
+                owner.complete_index(identity, published.artifact_id)
+            _sync(store, registry)
+            update = {"status": "completed", "artifact_id": published.artifact_id,
+                "finished_at": _now(), "source_profile": "native_agent_sampled_v1",
+                "next_action": "datasets.native-agent-preview", "human_origin_verified": False}
+        except Exception as error:
+            unknown = False
+            if published is None:
+                try:
+                    store, _ = _selected_store(self.config)
+                    self._source3_owner(store)
+                    published = self._native_agent_existing(store, request["bundle_content_id"],
+                        request["cohort"], request["producer_student_relation"])
+                except Exception:
+                    unknown = True
+            update = {"status": "publication_unknown" if unknown else
+                      "published_index_unavailable" if published else "failed",
+                "error_code": "publication_state_unavailable" if unknown else
+                error.code if isinstance(error, BoundaryError) else "local_import_failed",
+                "finished_at": _now(),
+                **({"artifact_id": published.artifact_id} if published else {})}
+        with self.lock:
+            if self.operation.get("candidate_id") != identity:
+                return
+            self.operation.update(update)
+            self._save()
 
     def _source3_owner(self, store: ManifestArtifactStore) -> LocalCurationOwner:
         owner = _selected_curation_owner(self.config)

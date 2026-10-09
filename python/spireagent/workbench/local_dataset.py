@@ -142,8 +142,39 @@ class LocalDatasetService:
         digest(value["id"], "local_dataset.id", length=32)
         digest(value["artifact_id"], "local_dataset.artifact_id")
         kind = value.get("kind", "canonical")
-        if kind not in {"canonical", "human_input", "ordered_source3"}:
+        if kind not in {"canonical", "human_input", "ordered_source3", "native_agent_sampled"}:
             raise ValueError
+        if kind == "native_agent_sampled":
+            from stpd.native_agent_sampled_source_spec import MAX_RAW_REFERENCES
+
+            ids = value.get("artifact_ids")
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_RAW_REFERENCES
+                    or ids != sorted(set(ids)) or ids[0] != value["artifact_id"]
+                    or value["purpose"] != "training" or value["paired_training"] is not None
+                    or not isinstance(value.get("_owner"), list) or len(value["_owner"]) != 4
+                    or value["_phase"] not in {"preview", "publish"}):
+                raise ValueError
+            for source in ids:
+                digest(source, "local_dataset.native_agent_raw")
+            if "_producer" in value:
+                Producer.decode(value["_producer"])
+            if value["_phase"] == "publish" or status in {"preview_ready", "completed"}:
+                digest(value["preview_id"], "local_dataset.preview_id", length=32)
+                digest(value["_logical_id"], "local_dataset.logical_id")
+                refs = value.get("_admission_refs")
+                if (not isinstance(refs, list) or any(not isinstance(ref, dict) for ref in refs)
+                        or [ref.get("raw_id") for ref in refs] != ids):
+                    raise ValueError
+                for ref in refs:
+                    if set(ref) != {"raw_id", "admission_id"}:
+                        raise ValueError
+                    digest(ref["admission_id"], "local_dataset.native_agent_admission")
+                Producer.decode(value["_producer"])
+            if "_partition_id" in value:
+                digest(value["_partition_id"], "local_dataset.native_agent_partition")
+            if status == "completed":
+                digest(value["result_artifact_id"], "local_dataset.result")
+            return
         if kind == "ordered_source3":
             from stpd.ordered_source_spec import COHORTS, view_specs
 
@@ -276,7 +307,7 @@ class LocalDatasetService:
                 and self.operation.get("error_code") != "publication_recovery_required"
             )
         reservation = operation.get("use_reservation")
-        if (operation.get("kind") == "ordered_source3"
+        if (operation.get("kind") in {"ordered_source3", "native_agent_sampled"}
                 and operation.get("status") == "completed"
                 and isinstance(reservation, dict)
                 and reservation.get("split") == "train"
@@ -287,7 +318,8 @@ class LocalDatasetService:
             # older; projecting it here also fixes reopened historical operations.
             operation["split_status"] = "reserved"
         recovery = False
-        if possible_recovery and operation.get("kind") == "ordered_source3":
+        if (possible_recovery
+                and operation.get("kind") in {"ordered_source3", "native_agent_sampled"}):
             # Exact immutable refs/producer permit explicit publication reconciliation.
             recovery = True
             possible_recovery = False
@@ -301,8 +333,11 @@ class LocalDatasetService:
             except sqlite3.DatabaseError as error:
                 raise BoundaryError("local_dataset", "curation_owner_recovery_required") from error
         operation["recovery_available"] = recovery
+        from .local_recording_import import native_agent_import_choices
+
         result = {"schema": SCHEMA, "availability": availability,
                   "source3_support": source3_capabilities(),
+                  "native_agent_support": native_agent_import_choices(),
                   "paired_training": paired, "operation": operation}
         if reason is not None:
             result["reason"] = reason
@@ -379,7 +414,7 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
-                if self.operation.get("kind") == "ordered_source3":
+                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -425,7 +460,7 @@ class LocalDatasetService:
                 raise BoundaryError("local_dataset", "operation_in_progress")
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}):
-                if self.operation.get("kind") == "ordered_source3":
+                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     if db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -438,6 +473,35 @@ class LocalDatasetService:
                 "purpose": "training", "paired_training": None, "_owner": owner.identity,
                 "cohort": cohort, "view": view,
             }
+            self._save()
+            self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def start_native_agent_preview(self, artifact_ids: object) -> dict[str, Any]:
+        from stpd.native_agent_sampled_source_spec import MAX_RAW_REFERENCES
+
+        if (not isinstance(artifact_ids, list) or not 1 <= len(artifact_ids) <= MAX_RAW_REFERENCES
+                or any(not isinstance(value, str) for value in artifact_ids)
+                or len(set(artifact_ids)) != len(artifact_ids)):
+            raise BoundaryError("local_dataset", "native_agent_source_selection_invalid")
+        ids = sorted(digest(value, "local_dataset.native_agent_raw") for value in artifact_ids)
+        if self.operation_invalid:
+            raise BoundaryError("local_dataset", "operation_file_invalid")
+        owner, _, _ = self._selected()
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                if (self.operation.get("kind") == "native_agent_sampled"
+                        and self.operation.get("artifact_ids") == ids):
+                    return self.status()
+                raise BoundaryError("local_dataset", "operation_in_progress")
+            if (self.operation.get("_phase") == "publish"
+                    and self.operation.get("status") in {"failed", "interrupted"}):
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+            identity = uuid.uuid4().hex
+            self.operation = {"status": "pending", "id": identity, "_phase": "preview",
+                "kind": "native_agent_sampled", "artifact_id": ids[0], "artifact_ids": ids,
+                "purpose": "training", "paired_training": None, "_owner": owner.identity}
             self._save()
             self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
             self.thread.start()
@@ -463,7 +527,7 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
-                if self.operation.get("kind") == "ordered_source3":
+                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -620,6 +684,63 @@ class LocalDatasetService:
                    {"error_code": "empty_selection"} if not count else {})}
 
     @staticmethod
+    def _native_agent_preview(
+        store: ManifestArtifactStore, request: dict[str, Any], producer: Producer,
+    ) -> tuple[list[dict[str, str]], dict[str, Any], str]:
+        from stpd.fullrun.native_agent_sampled_source import (
+            NativeAgentSampledRef,
+            _partition,
+            publish_native_agent_sampled_admission,
+        )
+        from stpd.native_training_source_spec import RECIPE
+
+        refs, reports = [], []
+        for raw_id in request["artifact_ids"]:
+            ref = publish_native_agent_sampled_admission(store, raw_id, producer)
+            refs.append({"raw_id": ref.raw_id, "admission_id": ref.admission_id})
+            admission = store.get_manifest(ref.admission_id)
+            reports.append(decode_json(store.bytes(admission.payload("report"))))
+        encoded, _ = _partition(store, tuple(NativeAgentSampledRef(**ref) for ref in refs), "train")
+        source = decode_json(encoded)
+        counts: Counter[str] = Counter()
+        excluded: Counter[str] = Counter()
+        for report in reports:
+            counts.update({key: value for key, value in report["counts"].items()
+                           if key != "real_native_samples"})
+            excluded.update(row["reason"] for row in report["exclusions"])
+        real_count = (None if any(r["counts"]["real_native_samples"] is None for r in reports)
+                      else sum(r["counts"]["real_native_samples"] for r in reports))
+        steps = [step for run in source["runs"] for step in run["steps"]]
+        labels = [step for step in steps if step["chosen_action_id"] is not None]
+        page_kinds = Counter((step["observation"]["interaction"] or {}).get("kind", "absent")
+                             for step in steps)
+        verbs = Counter(action["verb"] for step in labels for action in step["catalog"]
+                        if action["action_id"] == step["chosen_action_id"])
+        summary = {"selected": counts["eligible_unique_N"],
+            "accepted_labels": counts["eligible_unique_N"], "sample_type": "native_agent_sampled",
+            "source_profile": source["source_profile"], "source_kind": source["source_kind"],
+            "cohort": source["cohort"],
+            "producer_student_relation": source["producer_student_relation"],
+            "counts": {**counts, "real_native_samples": real_count},
+            "exclusions": dict(sorted(excluded.items())),
+            "censored_tails": [report["censored_tail"] for report in reports
+                               if report["censored_tail"] is not None],
+            "coverage": {"multi_candidate_N": sum(len(step["catalog"]) > 1 for step in labels),
+                         "chosen_action_verbs": dict(sorted(verbs.items())),
+                         "native_interaction_kinds": dict(sorted(page_kinds.items()))},
+            "native_origin_status": reports[0]["native_origin_status"],
+            "qualification": reports[0]["qualification"], "human_origin_verified": False,
+            "projection_spec": source["projection_spec"], "target_spec": source["target_spec"],
+            "history_scope": "original_known_protocol_sample_prefix_student_reexpression",
+            "split_status": "not_reserved", "recommended_recipe_id": RECIPE,
+            "can_publish": counts["eligible_unique_N"] > 0,
+            **({"error_code": "no_eligible_native_agent_N"}
+               if not counts["eligible_unique_N"] else {})}
+        logical_id = semantic_hash({"refs": refs, "projected_source_sha256": semantic_hash(source),
+                                    "summary": summary})
+        return refs, summary, logical_id
+
+    @staticmethod
     def _ordered_preview(store: ManifestArtifactStore, request: dict[str, Any],
                          producer: Producer) -> tuple[list[dict[str, str]], dict[str, Any], str]:
         from stpd.fullrun.ordered_source import publish_ordered_source_admission
@@ -676,7 +797,13 @@ class LocalDatasetService:
             owner, store, _ = self._selected()
             if tuple(request["_owner"]) != owner.identity:
                 raise BoundaryError("local_dataset", "workspace_owner_changed")
-            if request.get("kind") == "ordered_source3":
+            if request.get("kind") == "native_agent_sampled":
+                producer = source_identity(ROOT)
+                self._record_producer(identity, producer)
+                refs, result, logical_id = self._native_agent_preview(store, request, producer)
+                update = {**result, "status": "preview_ready", "preview_id": uuid.uuid4().hex,
+                          "_logical_id": logical_id, "_admission_refs": refs}
+            elif request.get("kind") == "ordered_source3":
                 producer = source_identity(ROOT)
                 self._record_producer(identity, producer)
                 refs, result, logical_id = self._ordered_preview(store, request, producer)
@@ -730,7 +857,7 @@ class LocalDatasetService:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 if self.operation.get("_phase") != "publish":
                     raise BoundaryError("local_dataset", "publication_recovery_required")
-                if self.operation.get("kind") == "ordered_source3":
+                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
                     if (not self.operation.get("_admission_refs")
                             or not self.operation.get("_producer")):
                         raise BoundaryError("local_dataset", "publication_recovery_required")
@@ -913,6 +1040,57 @@ class LocalDatasetService:
             "next_action": "training.start", "human_origin_verified": False,
         }
 
+    def _publish_native_agent(
+        self, owner: LocalCurationOwner, store: ManifestArtifactStore,
+        request: dict[str, Any], identity: str,
+    ) -> tuple[str, dict[str, Any]]:
+        from stpd.fullrun.native_agent_sampled_source import (
+            NativeAgentSampledRef,
+            publish_native_agent_sampled_partition,
+            verify_native_agent_sampled_partition,
+        )
+        from stpd.native_agent_sampled_source_spec import PARTITION_SCHEMA
+        from stpd.native_training_source_spec import RECIPE
+
+        producer = Producer.decode(request["_producer"])
+        refs, result, logical_id = self._native_agent_preview(store, request, producer)
+        if refs != request["_admission_refs"] or logical_id != request["_logical_id"]:
+            raise BoundaryError("local_dataset", "preview_changed")
+        if not result["can_publish"]:
+            raise BoundaryError("local_dataset", "no_eligible_native_agent_N")
+        saved = request.get("_partition_id")
+        matches = []
+        for candidate in ((saved,) if saved else store.manifest_ids()):
+            manifest = store.get_manifest(candidate)
+            info = manifest.parameters.value()
+            if (manifest.kind == "dataset" and manifest.producer == producer
+                    and info.get("partition_schema") == PARTITION_SCHEMA
+                    and info.get("split") == "train" and info.get("raw_refs") == refs):
+                matches.append(candidate)
+            elif saved:
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+        if len(matches) > 1:
+            raise BoundaryError("local_dataset", "publication_recovery_required")
+        partition = (verify_native_agent_sampled_partition(store, matches[0]) if matches else
+                     publish_native_agent_sampled_partition(
+                         store, tuple(NativeAgentSampledRef(**ref) for ref in refs), "train",
+                         producer))
+        result_id = partition.manifest.artifact_id
+        self._record_ordered_partition(identity, result_id)
+        reservation = owner.reserve_verified_native_agent_sampled_source(store, result_id)
+        for raw_id in partition.source_ids:
+            with owner.transaction() as db:
+                pending = [row[0] for row in db.execute(
+                    "SELECT candidate FROM local_source_pending "
+                    "WHERE artifact=? AND status='published'",
+                    (raw_id,))]
+            for candidate in pending:
+                owner.complete_index(candidate, raw_id)
+        return result_id, {"training_source_id": result_id, "source_kind": "agent_protocol",
+            "source_profile": "native_agent_sampled_v1", "recommended_recipe_id": RECIPE,
+            "use_reservation": reservation, "actual_training_use": False,
+            "next_action": "training.start", "human_origin_verified": False}
+
     def _run_publish(self, identity: str) -> None:
         base = selected = None
         try:
@@ -926,7 +1104,10 @@ class LocalDatasetService:
                 row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
                                  (identity,)).fetchone()
             result_support: dict[str, Any] = {}
-            if request.get("kind") == "ordered_source3":
+            if request.get("kind") == "native_agent_sampled":
+                result_id, result_support = self._publish_native_agent(
+                    owner, store, request, identity)
+            elif request.get("kind") == "ordered_source3":
                 result_id, result_support = self._publish_ordered(owner, store, request, identity)
             elif request.get("kind") == "human_input":
                 result_id = self._publish_human(owner, store, request, identity, row)
