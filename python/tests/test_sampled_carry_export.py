@@ -103,8 +103,14 @@ def test_existing_fixture_engine_and_export_select_exact_shared_contract(complet
     assert model.model_control == recipe_control(RECIPE)
 
 
-@pytest.mark.parametrize("field", ["input_spec", "agent_spec", "state_format_version"])
-def test_rehashed_old_package_contract_cannot_impersonate_sampled(completed, field):
+@pytest.mark.parametrize("field,expected_stage,expected_code", [
+    ("input_spec", "native_package", "package_identity_mismatch"),
+    ("agent_spec", "sampled_carry", "declared_agent_spec_binding"),
+    ("state_format_version", "native_package", "package_identity_mismatch"),
+])
+def test_rehashed_old_package_contract_cannot_impersonate_sampled(
+    completed, field, expected_stage, expected_code
+):
     _, _, _, _, package, _ = completed
     from stpd.canonical import semantic_hash
     from stpd.fullrun.native_structured_inputs import INPUT_SPEC as OLD_INPUT
@@ -116,9 +122,13 @@ def test_rehashed_old_package_contract_cannot_impersonate_sampled(completed, fie
         "agent_spec": ordered_native_agent_spec(recipe_control(RECIPE)),
         "state_format_version": GRAPH_STATE_FORMAT,
     }[field]
+    assert {key for key in package if forged[key] != package[key]} == {field}
     forged["model_id"] = semantic_hash({k: v for k, v in forged.items() if k != "model_id"})
-    with pytest.raises(BoundaryError, match="package_identity_mismatch"):
+    assert forged["model_id"] != package["model_id"]
+    with pytest.raises(BoundaryError, match=f"code={expected_code};") as rejected:
         _native_manifest(json_bytes(forged))
+    assert rejected.value.stage == expected_stage
+    assert rejected.value.code == expected_code
 
 
 @pytest.mark.parametrize(
