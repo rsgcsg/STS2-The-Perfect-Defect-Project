@@ -15,8 +15,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from stpd.fullrun.native_agent_sampled_source import VerifiedNativeAgentSampledSource
     from stpd.fullrun.ordered_source import VerifiedOrderedSource
     from stpd.fullrun.protocol_source import VerifiedProtocolSource
+
+    VerifiedPartitionSource = (
+        VerifiedProtocolSource | VerifiedOrderedSource | VerifiedNativeAgentSampledSource
+    )
 
 from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
@@ -249,14 +254,51 @@ class LocalCurationOwner:
 
     @staticmethod
     def _partition_row_ref(
-        source: VerifiedProtocolSource | VerifiedOrderedSource, row: dict[str, Any]
+        source: VerifiedPartitionSource, row: dict[str, Any]
     ) -> str:
         schema = source.manifest.parameters.value()["partition_schema"]
         if schema == "stpd/source3-ordered-partition-v1":
             return "source3-record:" + str(row["record_ref"])
         if schema == "stpd/protocol-source-partition-v1":
             return "protocol-offer:" + str(row["capture_id"])
+        if schema == "stpd/native-agent-sampled-partition-v1":
+            return "native-agent-offer:" + str(row["record_ref"])
         raise BoundaryError("local_curation", "typed_partition_required")
+
+    def _verified_native_agent_sampled_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> VerifiedNativeAgentSampledSource:
+        from stpd.fullrun.native_agent_sampled_source import verify_native_agent_sampled_partition
+
+        if (not isinstance(store.blobs, LocalBlobStore)
+                or store.blobs.root != self.store_dir.resolve()):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        _ = self.ledger
+        return verify_native_agent_sampled_partition(store, source_id)
+
+    def reserve_verified_native_agent_sampled_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> dict:
+        """Reserve all original offers under the same conservative runtime family."""
+        source = self._verified_native_agent_sampled_source(store, source_id)
+        fingerprints: dict[str, set[str]] = {}
+        for row in source.index:
+            fingerprints.setdefault(row["run_id"], set()).update(row["related_keys"])
+        return self._reserve_partition_source(store, source_id, source, fingerprints)
+
+    def record_verified_native_agent_sampled_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._record_partition_training_use(
+            store, self._verified_native_agent_sampled_source(store, source_id), operation_id
+        )
+
+    def require_verified_native_agent_sampled_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._require_partition_training_use(
+            store, self._verified_native_agent_sampled_source(store, source_id), operation_id
+        )
 
     def reserve_verified_ordered_source(self, store: ManifestArtifactStore, source_id: str) -> dict:
         """Reserve original run/timeline exposure, including masked and omitted rows.
@@ -297,7 +339,7 @@ class LocalCurationOwner:
         self,
         db: sqlite3.Connection,
         store: ManifestArtifactStore,
-        source: VerifiedProtocolSource | VerifiedOrderedSource,
+        source: VerifiedPartitionSource,
         *,
         require_claim: bool = False,
     ) -> set[str]:
@@ -395,7 +437,7 @@ class LocalCurationOwner:
         self,
         store: ManifestArtifactStore,
         source_id: str,
-        source: VerifiedProtocolSource | VerifiedOrderedSource,
+        source: VerifiedPartitionSource,
         fingerprints: dict[str, set[str]],
     ) -> dict:
         purpose = "training" if source.split == "train" else "test"
@@ -449,7 +491,7 @@ class LocalCurationOwner:
 
     @staticmethod
     def _protocol_use_summary(
-        source: VerifiedProtocolSource | VerifiedOrderedSource, operation_id: str | None
+        source: VerifiedPartitionSource, operation_id: str | None
     ) -> dict:
         return {
             "artifact_id": source.manifest.artifact_id,
@@ -481,7 +523,7 @@ class LocalCurationOwner:
     def _record_partition_training_use(
         self,
         store: ManifestArtifactStore,
-        source: VerifiedProtocolSource | VerifiedOrderedSource,
+        source: VerifiedPartitionSource,
         operation_id: str,
     ) -> dict:
         digest(operation_id, "local_curation.protocol_training_operation", length=32)
@@ -502,7 +544,7 @@ class LocalCurationOwner:
     def _require_partition_training_use(
         self,
         store: ManifestArtifactStore,
-        source: VerifiedProtocolSource | VerifiedOrderedSource,
+        source: VerifiedPartitionSource,
         operation_id: str,
     ) -> dict:
         digest(operation_id, "local_curation.protocol_training_operation", length=32)
@@ -538,10 +580,10 @@ class LocalCurationOwner:
         )
 
     @staticmethod
-    def _partition_related_keys(source: VerifiedProtocolSource | VerifiedOrderedSource) -> set[str]:
-        if source.manifest.parameters.value()["partition_schema"] == (
-            "stpd/source3-ordered-partition-v1"
-        ):
+    def _partition_related_keys(source: VerifiedPartitionSource) -> set[str]:
+        if source.manifest.parameters.value()["partition_schema"] in {
+            "stpd/source3-ordered-partition-v1", "stpd/native-agent-sampled-partition-v1",
+        }:
             return {key for row in source.index for key in row["related_keys"]}
         return {
             "protocol-runtime:" + run.identity.value()["episode"]["host"]["runtime_instance_id"]
@@ -550,7 +592,7 @@ class LocalCurationOwner:
 
     def _record_partition_evaluation_use(
         self, store: ManifestArtifactStore,
-        source: VerifiedProtocolSource | VerifiedOrderedSource,
+        source: VerifiedPartitionSource,
         model_id: str, operation_id: str,
     ) -> dict:
         digest(operation_id, "local_curation.protocol_evaluation_operation", length=32)
