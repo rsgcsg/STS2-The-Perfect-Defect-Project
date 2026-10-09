@@ -244,7 +244,7 @@ function setup({
         : url === "/api/local-training/capabilities"
         ? trainingCapabilitiesData
         : url === "/api/local-recordings/import/status"
-        ? importStatus
+        ? (typeof importStatus === "function" ? importStatus() : importStatus)
         : url === "/api/local-workspace/curation"
           ? curationStatus
           : view === "local-environment" && url === "/api/local-environment/scenes"
@@ -7146,8 +7146,8 @@ function nativeAgentBrowserEnv({artifact=id("a"),detail=true,operation={status:"
   support=nativeAgentBrowserSupport,raw=nativeAgentRaw(artifact),items=[raw],
   importStatus={status:"idle"},handler=()=>emptyList()}={}) {
   return setup({identity:{status:"local_only"},view:"local-workspace",query:detail?`&id=${artifact}`:"",
-    importStatus:{schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
-      native_agent_support:support,...importStatus},
+    importStatus:()=>({schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
+      native_agent_support:support,...(typeof importStatus==="function"?importStatus():importStatus)}),
     handler:async(url,options)=>{
       if(url==="/api/local-workspace/managed")return{status:"ready",curation_status:"ready"};
       if(url===`/api/local-workspace/artifacts/${artifact}`)return raw;
@@ -7225,7 +7225,9 @@ test("Native AgentRun interrupted publication keeps exact preview and only expli
 test("Native AgentRun directory import uses owner choices and excludes Human declaration",async()=>{
   const env=nativeAgentBrowserEnv({detail:false,items:[],handler:async(url,options)=>{
     assert.equal(url,"/api/local-recordings/import/native-agent");assert.deepEqual(body({options}),{
-      directory:"/explicit/stopped/run",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"});return{status:"pending"};
+      directory:"/explicit/stopped/run",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher",
+      intent_id:body({options}).intent_id});
+    assert.match(body({options}).intent_id,/^[a-f0-9]{32}$/);return{status:"pending",intent_id:body({options}).intent_id};
   }}),page=await env.render();
   assert.equal(walk(page).some(node=>node.name==="human_origin_attested"),false);
   const directory=field(page,"native-agent-import-directory");directory.value="/explicit/stopped/run";directory.oninput();
@@ -7243,8 +7245,35 @@ test("Native AgentRun unknown import cannot be reissued by redraw or a second cl
   directory.value="/explicit/stopped/run";directory.oninput();
   await action(page,"import-native-agent-run").onclick();
   await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,1);
-  const redraw=await env.render();assert.equal(action(redraw,"import-native-agent-run").disabled,true);
-  await action(redraw,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,1);
+  const redraw=await env.render();assert.match(action(redraw,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(post(env.calls).length,1,"redraw cannot automatically retry");
+  await action(redraw,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  assert.deepEqual(body(post(env.calls)[1]),body(post(env.calls)[0]),"explicit reconciliation retains exact intent/body");
+});
+
+test("Native AgentRun completed A cannot acknowledge lost reply B with same cohort relation",async()=>{
+  let status={status:"idle"},seen=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:()=>status,handler:async(url,options)=>{
+    const request=body({options});seen.push(request);
+    if(seen.length===1){status={status:"completed",recording_type:"native_agent_sampled",cohort:request.cohort,
+      producer_student_relation:{id:request.relation_id},intent_id:request.intent_id||"a".repeat(32),artifact_id:id("a")};return status;}
+    throw Error("B reply lost before any new status observed");
+  }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();assert.equal(post(env.calls).length,2,"status read cannot retry B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/,
+    "A's old completed status cannot acknowledge B or present a new intent");
+  assert.match(text(page),/属于另一请求/);
+  assert.equal(walk(page).some(node=>node.tagName==="A"&&node.textContent==="打开已保存的程序示范原件"),false);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(seen[2],seen[1],"only explicit SAME B intent/body reconciliation is permitted");
+  assert.notEqual(seen[1].intent_id,seen[0].intent_id);
 });
 
 for(const [schema,sample_type] of [["stpd/native-agent-sampled-training-source-v1","native_agent_sampled"],

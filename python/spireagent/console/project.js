@@ -4423,23 +4423,32 @@ window.SpireProject = (() => {
     const note = el("p", null, "small muted"); section.append(note);
     let dispatched = false;
     const requestBody = () => ({directory:directory.value.trim(), cohort:cohort.value, relation_id:relation.value});
+    const submitted = () => drafts.get("native-agent-import-request") || {};
     const matching = () => status.recording_type === "native_agent_sampled"
-      && status.cohort === cohort.value && status.producer_student_relation?.id === relation.value;
-    const uncertain = ["publication_unknown", "published_index_unavailable", "interrupted_unknown"].includes(status.status);
-    const unobservedReply = drafts.get("native-agent-import-uncertain") === true && !matching();
-    const sameOriginalRequest = () => JSON.stringify(requestBody()) === JSON.stringify(saved);
-    const valid = () => !dispatched && !unobservedReply && status.status !== "pending" && !!status.csrf_token
+      && hex(submitted().intent_id,32) && status.intent_id === submitted().intent_id;
+    if (matching() && ["completed","failed"].includes(status.status))
+      drafts.delete("native-agent-import-uncertain");
+    const sameOriginalRequest = () => {
+      const original = submitted();
+      return hex(original.intent_id,32) && JSON.stringify(requestBody()) === JSON.stringify({
+        directory:original.directory,cohort:original.cohort,relation_id:original.relation_id});
+    };
+    const uncertain = () => drafts.get("native-agent-import-uncertain") === true
+      || (matching() && ["publication_unknown", "published_index_unavailable", "interrupted_unknown"].includes(status.status));
+    const valid = () => !dispatched && status.status !== "pending" && !!status.csrf_token
       && directory.value.trim().length > 0 && support.relations.some(item =>
         item.relation.id === relation.value && item.cohorts.includes(cohort.value))
-      && (!uncertain || (matching() && sameOriginalRequest()));
+      && (!uncertain() || sameOriginalRequest());
     const options = {primary:true, disabled:!valid()};
-    const button = command(ctx, "import-native-agent-run", uncertain ? "明确核对上次目录导入" : "明确保存程序示范原件", async () => {
+    const button = command(ctx, "import-native-agent-run", uncertain() ? "明确核对同一导入请求" : "明确保存程序示范原件", async () => {
       if (!valid() || options.disabled) return;
-      const body = requestBody();
+      const original = submitted();
+      const body = {...requestBody(),intent_id:sameOriginalRequest() ? original.intent_id : trainingIntent()};
       drafts.set("native-agent-import-request", body);
       dispatched = true; options.disabled = true; button.disabled = true;
       try {
-        await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
+        const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
+        if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
         drafts.delete("native-agent-import-uncertain");
         await reload(ctx);
       } catch (error) {
@@ -4455,8 +4464,8 @@ window.SpireProject = (() => {
     directory.oninput = changed; cohort.onchange = changed; relation.onchange = changed;
     section.append(button);
     if (status.status === "pending") note.textContent = "正在保存原件；刷新只读取状态。";
-    if (uncertain) note.textContent = "上次导入待核对；只可明确核对原请求。原请求未保留时，请先核对原件与原操作。";
-    if (unobservedReply) note.textContent = "本页发起的导入结果尚未与服务状态匹配；请先刷新原操作状态。";
+    if (uncertain()) note.textContent = "此导入请求结果待核对；只可明确使用同一请求身份与原正文核对，不会自动重发。";
+    if (uncertain() && !matching()) note.textContent += " 当前服务状态属于另一请求，不能据此确认本次结果。";
     if (matching() && hex(status.artifact_id))
       section.append(link("打开已保存的程序示范原件", route("local-workspace", status.artifact_id)));
     if (status.error_code) section.append(technical({error_code:status.error_code}, "查看导入状态"));

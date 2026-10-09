@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError
@@ -16,8 +17,10 @@ from test_native_workbench_access import paired_app
 
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
+from spireagent.workbench import local_recording_import
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.developer_server import create_server
+from spireagent.workbench.local_recording_import import LocalRecordingImporter
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, create_managed_workspace
 from stpd.native_agent_sampled_source_spec import FIXTURE_COHORT, RELATION_SPEC
 
@@ -101,3 +104,111 @@ def test_running_instance_drift_rejects_before_import_or_preview_thread(native_d
     assert post("/api/local-datasets/native-agent-preview", {"artifact_ids": ["a" * 64]})[0] == 409
     assert not store.manifest_ids()
     assert app.local_recording_import.thread is None and app.local_datasets.thread is None
+
+
+def test_native_import_intent_binds_exact_body_and_known_completion_before_original_IO(
+    native_data_http, original, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    request = {**body(original), "intent_id": "1" * 32}
+    assert post(route, {**request, "intent_id": None})[0] == 409
+    assert post(route, request)[0] == 200
+    completed = settled(app.local_recording_import)
+    assert completed["intent_id"] == request["intent_id"]
+    assert "_native_agent_request" not in completed and "_native_agent_intents" not in completed
+    assert str(original.directory) not in json.dumps(completed)
+    identities = store.manifest_ids()
+    monkeypatch.setattr(app.local_recording_import, "_native_agent_original", lambda *_args:
+                        pytest.fail("same intent changed/known request cannot read originals"))
+    assert post(route, {**request, "directory": "/not/an/original"}) == (
+        409, {"error": "intent_payload_mismatch"})
+    status, same = post(route, request)
+    assert status == 200 and same["status"] == "completed"
+    assert same["artifact_id"] == completed["artifact_id"]
+    assert store.manifest_ids() == identities
+
+
+def test_native_import_lost_publication_reply_reopens_same_intent_and_blocks_new_or_legacy(
+    native_data_http, original, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    request = {**body(original), "intent_id": "2" * 32}
+    publish = ManifestArtifactStore.publish
+    lost = False
+
+    def reply_lost(self, manifest):
+        nonlocal lost
+        result = publish(self, manifest)
+        if (manifest.parameters.value().get("schema") ==
+                "stpd/native-agent-sampled-original-bundle-v1"
+                and not lost):
+            lost = True
+            raise OSError("synthetic publication reply lost after owning immutable write")
+        return result
+
+    monkeypatch.setattr(ManifestArtifactStore, "publish", reply_lost)
+    assert post(route, request)[0] == 200
+    failed = settled(app.local_recording_import)
+    assert failed["status"] == "published_index_unavailable"
+    assert failed["intent_id"] == request["intent_id"]
+    raw_id, identities = failed["artifact_id"], store.manifest_ids()
+    producer = store.get_manifest(raw_id).producer
+    app.local_recording_import = LocalRecordingImporter(
+        app.config, app.local_recording_import.catalog)
+    assert post(route, {**request, "intent_id": "3" * 32}) == (
+        409, {"error": "original_intent_reconciliation_required"})
+    assert post(route, body(original)) == (
+        409, {"error": "original_intent_reconciliation_required"})
+    assert post(route, {**request, "directory": "/changed"}) == (
+        409, {"error": "intent_payload_mismatch"})
+    monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
+    assert post(route, request)[0] == 200
+    completed = settled(app.local_recording_import)
+    assert completed["intent_id"] == request["intent_id"] and completed["artifact_id"] == raw_id
+    assert store.manifest_ids() == identities and store.get_manifest(raw_id).producer == producer
+
+
+def test_native_import_old_intent_after_later_request_cannot_be_rebound_on_reopen(
+    native_data_http, original, tmp_path, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    first = {**body(original), "intent_id": "4" * 32}
+    assert post(route, first)[0] == 200
+    completed = settled(app.local_recording_import)
+    copied = tmp_path / "same-original-copy"
+    shutil.copytree(original.directory, copied)
+    second = {**first, "directory": str(copied), "intent_id": "5" * 32}
+    assert post(route, second)[0] == 200
+    assert settled(app.local_recording_import)["artifact_id"] == completed["artifact_id"]
+    identities = store.manifest_ids()
+    app.local_recording_import = LocalRecordingImporter(
+        app.config, app.local_recording_import.catalog)
+    monkeypatch.setattr(app.local_recording_import, "_native_agent_original", lambda *_args:
+                        pytest.fail("old intent exact binding precedes original IO"))
+    assert post(route, {**first, "directory": str(copied)}) == (
+        409, {"error": "intent_payload_mismatch"})
+    assert post(route, first)[1]["intent_id"] == first["intent_id"]
+    assert store.manifest_ids() == identities
+
+
+def test_native_import_intent_capacity_rejects_without_evicting_known_ids(
+    native_data_http, original, monkeypatch
+):
+    app, store, root, client, post = native_data_http
+    client.open(root + "/").close()
+    route = "/api/local-recordings/import/native-agent"
+    monkeypatch.setattr(local_recording_import, "MAX_NATIVE_IMPORT_INTENTS", 1)
+    request = {**body(original), "intent_id": "6" * 32}
+    assert post(route, request)[0] == 200
+    completed = settled(app.local_recording_import)
+    identities = store.manifest_ids()
+    assert post(route, {**request, "intent_id": "7" * 32}) == (
+        409, {"error": "native_import_intent_capacity"})
+    assert post(route, request)[1]["artifact_id"] == completed["artifact_id"]
+    assert store.manifest_ids() == identities
