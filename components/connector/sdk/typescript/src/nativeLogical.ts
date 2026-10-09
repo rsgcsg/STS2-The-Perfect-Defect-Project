@@ -194,6 +194,8 @@ const awaitSchema = z.object({ schema: tag("await"),
       ctx.addIssue({ code: "custom", message: "Await disposition disagrees with event/gap" });
   });
 const delivery = z.enum(["not_started", "rejected_before_input", "delivered", "partially_delivered", "unknown"]);
+const dispatchBindingSchema = z.object({ runtime_instance_id: id, client_session_id: id,
+  controller_lease_id: id, controller_generation: positive }).strict();
 const stageText = scalar.refine(value => Buffer.byteLength(value, "utf8") <= 128);
 const resultSchema = z.object({ protocol_version: z.literal(SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL), schema: tag("result"), input_profile: profile,
   request_id: id, snapshot_id: id, action: nativeLogicalActionSchema.nullable(), delivery,
@@ -292,6 +294,7 @@ export type NativeLogicalEvents = z.infer<typeof eventBatchSchema>;
 export type NativeLogicalAwait = z.infer<typeof awaitSchema>;
 export type NativeLogicalResult = z.infer<typeof resultSchema>;
 export type NativeLogicalCapabilities = z.infer<typeof capabilitiesSchema>;
+export type NativeLogicalDispatchBinding = z.infer<typeof dispatchBindingSchema>;
 export type NativeLogicalRetention = z.infer<typeof retentionSchema>;
 export type NativeLogicalCurrent = z.infer<typeof currentSchema>;
 export type NativeLogicalRetain = z.infer<typeof retainSchema>;
@@ -300,7 +303,7 @@ export type NativeLogicalRenew = z.infer<typeof renewSchema>;
 export type NativeLogicalCancelWait = z.infer<typeof cancelWaitSchema>;
 export type NativeLogicalDetach = z.infer<typeof detachSchema>;
 export type NativeLogicalScopeField = typeof NATIVE_LOGICAL_SCOPE[number];
-export type NativeLogicalTransportOperation = "capabilities" | "attach" | "current" | "read" | "catalog" | "resolve" |
+export type NativeLogicalTransportOperation = "capabilities" | "attach" | "current" | "current_owned" | "read" | "catalog" | "resolve" |
   "events" | "await" | "cancel_wait" | "detach" | "renew" | "retain" | "release" | "submit" | "result";
 export interface NativeLogicalTransportOptions {
   signal?: AbortSignal;
@@ -320,6 +323,7 @@ const subscriptionRequestFields = { client_session_id: id, subscription_id: id, 
 const requestSchemas = {
   attach: attachRequestSchema,
   current: currentRequestSchema,
+  current_owned: currentRequestSchema,
   read: z.object({ capture_id: id, cursor, max_bytes: positive.max(NATIVE_LOGICAL_MAX_READ_BYTES) }).strict(),
   catalog: z.object({ catalog_ref: id, stream_generation: id, prefix: nativeLogicalPrefixSchema.nullable(),
     cursor: cursor.nullable(), limit: positive.max(65536), max_page_bytes: positive.max(NATIVE_LOGICAL_MAX_PAGE_BYTES) }).strict(),
@@ -356,8 +360,15 @@ export const decodeNativeLogicalEvent = (value: unknown) => decode(value, eventS
 export const decodeNativeLogicalEvents = (value: unknown) => decode(value, eventBatchSchema, "events");
 export const decodeNativeLogicalAwait = (value: unknown) => decode(value, awaitSchema, "await");
 export const decodeNativeLogicalResult = (value: unknown) => decode(value, resultSchema, "result");
+export const decodeNativeLogicalDispatchBinding = (value: unknown) => decode(value, dispatchBindingSchema, "dispatch binding");
 export const decodeNativeLogicalCapabilities = (value: unknown) => decode(value, capabilitiesSchema, "capabilities");
 export const decodeNativeLogicalCurrent = (value: unknown) => decode(value, currentSchema, "current");
+export function decodeNativeLogicalOwnedCurrent(value: unknown) {
+  const reply = decodeNativeLogicalCurrent(value);
+  if ((reply.data.status === "captured" || reply.data.status === "partial") && reply.data.retention === null)
+    throw new Error("native logical owned Current success has no original reader retention");
+  return reply;
+}
 export const decodeNativeLogicalRetain = (value: unknown) => decode(value, retainSchema, "retain");
 export const decodeNativeLogicalRelease = (value: unknown) => decode(value, releaseSchema, "release");
 export const decodeNativeLogicalRenew = (value: unknown) => decode(value, renewSchema, "renew");

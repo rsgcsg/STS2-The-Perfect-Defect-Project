@@ -35,6 +35,8 @@ export interface NativeLogicalAssemblyInput {
   context?: NativeLogicalContext | null;
   /** Ownership of this client-owned handle transfers to the returned FullCapture or error cleanup. */
   retention?: NativeLogicalRetention | null;
+  /** SDK sidecar ownership moves into admission/assembly before validation. */
+  readerLease?: NativeLogicalRetentionLease;
   signal?: AbortSignal;
   budget?: NativeLogicalByteBudget;
   chunkBytes?: number;
@@ -55,6 +57,17 @@ export function sameNativeLogicalCapture(left: NativeLogicalCapture, right: Nati
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** One immutable original reader pin. Its callback is bound by the requesting
+ * SDK to the original client/transport, never to a later registration. */
+export class NativeLogicalRetentionLease {
+  #disposed?: Promise<void>;
+  constructor(readonly capture: NativeLogicalCapture, readonly retention: NativeLogicalRetention,
+    private readonly releaseOriginal: () => Promise<void>) {}
+  dispose(): Promise<void> {
+    return this.#disposed ??= Promise.resolve().then(this.releaseOriginal);
+  }
+}
+
 /** Owns only this assembly's bytes, reservations and one reader pin. Borrowed
  * decoded values must not be retained by the consumer beyond its consumption lifetime. */
 export class NativeLogicalCapturedObservation {
@@ -62,12 +75,14 @@ export class NativeLogicalCapturedObservation {
   #observation?: NativeLogicalObservation;
   #cleanup?: () => Promise<void>;
   #disposed?: Promise<void>;
+  #transfer?: () => NativeLogicalRetentionLease;
   constructor(readonly capture: NativeLogicalCapture, readonly context: NativeLogicalContext | null,
     bytes: Uint8Array, observation: NativeLogicalObservation,
-    cleanup: () => Promise<void>) {
+    cleanup: () => Promise<void>, transfer?: () => NativeLogicalRetentionLease) {
     this.#bytes = bytes;
     this.#observation = observation;
     this.#cleanup = cleanup;
+    this.#transfer = transfer;
   }
   get observation(): NativeLogicalObservation {
     if (!this.#observation) throw new Error("native logical full capture was disposed");
@@ -77,11 +92,18 @@ export class NativeLogicalCapturedObservation {
     if (!this.#bytes) throw new Error("native logical full capture was disposed");
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(this.#bytes);
   }
+  transferRetention(): NativeLogicalRetentionLease {
+    if (this.#disposed || !this.#transfer) throw new Error("native logical reader ownership is unavailable or already transferred");
+    const transfer = this.#transfer;
+    this.#transfer = undefined;
+    return transfer();
+  }
   dispose(): Promise<void> {
     if (this.#disposed) return this.#disposed;
     this.#bytes?.fill(0);
     this.#bytes = undefined;
     this.#observation = undefined;
+    this.#transfer = undefined;
     const cleanup = this.#cleanup;
     this.#cleanup = undefined;
     this.#disposed = cleanup ? Promise.resolve().then(cleanup) : Promise.resolve();
@@ -92,8 +114,9 @@ export class NativeLogicalCapturedObservation {
 export class NativeLogicalFullCapture extends NativeLogicalCapturedObservation {
   #actions?: readonly NativeLogicalAction[];
   constructor(capture: NativeLogicalCapture, context: NativeLogicalContext | null, bytes: Uint8Array,
-    observation: NativeLogicalObservation, actions: readonly NativeLogicalAction[], cleanup: () => Promise<void>) {
-    super(capture, context, bytes, observation, cleanup);
+    observation: NativeLogicalObservation, actions: readonly NativeLogicalAction[], cleanup: () => Promise<void>,
+    transfer?: () => NativeLogicalRetentionLease) {
+    super(capture, context, bytes, observation, cleanup, transfer);
     this.#actions = actions;
   }
   get actions(): readonly NativeLogicalAction[] {
@@ -120,7 +143,8 @@ async function assemble(input: NativeLogicalScopedAssemblyInput, reader: NativeL
   const responsePageBytes = input.maxCatalogResponseBytes ?? NATIVE_LOGICAL_MAX_PAGE_BYTES;
   const pageLimit = input.pageLimit ?? 100;
   const maxActions = input.maxActions ?? 65536;
-  let retention = input.retention ?? null;
+  let readerLease = input.readerLease;
+  let retention = input.retention ?? readerLease?.retention ?? null;
   const reservations: NativeLogicalByteReservation[] = [];
   let bytes: Uint8Array | undefined;
   let actions: NativeLogicalAction[] | undefined;
@@ -133,7 +157,10 @@ async function assemble(input: NativeLogicalScopedAssemblyInput, reader: NativeL
   };
   const cleanup = async () => {
     const errors: unknown[] = [];
-    if (retention) {
+    if (readerLease) {
+      const owned = readerLease; readerLease = undefined; retention = null;
+      try { await owned.dispose(); } catch (error) { errors.push(error); }
+    } else if (retention) {
       const handle = retention.retention_handle_id;
       retention = null;
       try { await reader.release(handle); } catch (error) { errors.push(error); }
@@ -143,11 +170,19 @@ async function assemble(input: NativeLogicalScopedAssemblyInput, reader: NativeL
     }
     if (errors.length) throw new AggregateError(errors, "native logical assembly cleanup failed");
   };
+  const transfer = input.readerLease ? () => {
+    if (!readerLease) throw new Error("native logical original reader lease already transferred");
+    const owned = readerLease; readerLease = undefined; retention = null;
+    return owned;
+  } : undefined;
   try {
     // A supplied reader pin transfers to this assembly even if its descriptor
     // is malformed. Keep all validation inside the owned cleanup boundary.
     const capture = decodeNativeLogicalCapture(input.capture).data;
     const context = input.context == null ? null : decodeNativeLogicalContext(input.context).data;
+    if (readerLease && (!sameNativeLogicalCapture(readerLease.capture, capture) ||
+        retention?.retention_handle_id !== readerLease.retention.retention_handle_id))
+      throw new Error("native logical assembly sidecar does not own this original capture/reader");
     validateNativeLogicalScope(input.eagerScope);
     if (!Number.isInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes > NATIVE_LOGICAL_MAX_READ_BYTES ||
         !Number.isInteger(maxPageBytes) || maxPageBytes <= 0 || maxPageBytes > NATIVE_LOGICAL_MAX_PAGE_BYTES ||
@@ -210,7 +245,7 @@ async function assemble(input: NativeLogicalScopedAssemblyInput, reader: NativeL
       throw new Error("native logical captured fields/completeness do not match the requested scope");
     if (!fullCatalog) {
       input.signal?.throwIfAborted();
-      const scoped = new NativeLogicalCapturedObservation(capture, context, bytes, observation, cleanup);
+      const scoped = new NativeLogicalCapturedObservation(capture, context, bytes, observation, cleanup, transfer);
       bytes = undefined;
       return scoped;
     }
@@ -259,7 +294,7 @@ async function assemble(input: NativeLogicalScopedAssemblyInput, reader: NativeL
     if (observation.owner_occurrence.focus_referent_id !== null && !publicIds.has(observation.owner_occurrence.focus_referent_id))
       throw new Error("native logical focus has no current public referent");
     input.signal?.throwIfAborted();
-    const full = new NativeLogicalFullCapture(capture, context, bytes, observation, freezeNativeLogical(actions), cleanup);
+    const full = new NativeLogicalFullCapture(capture, context, bytes, observation, freezeNativeLogical(actions), cleanup, transfer);
     bytes = undefined;
     actions = undefined;
     return full;

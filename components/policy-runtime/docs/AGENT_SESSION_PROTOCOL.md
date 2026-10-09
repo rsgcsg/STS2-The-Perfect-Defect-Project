@@ -678,6 +678,16 @@ count. The threshold result counts but has no deferral/new decision. Return
 ordinary Next cycle only. An already winning Human/Stop/deadline/control reason
 is retained, not replaced with stale handoff.
 
+An opted-in stopped `not_delivered` tick has exactly type, reason and status;
+reason is the sticky actual Runtime owner termination cause. Legacy ticks keep
+their old shape without reason. The native Result reason remains the independent
+refusal cause. For example a third consecutive stale result returns reason
+known_stale_streak_limit; the same refusal arriving after Stop keeps stopped or
+human_recovery, and after the deadline keeps autonomy_budget_exhausted. Counts
+still include that original refusal. Consumers must not infer termination from
+stale counters/result or fabricate a runtime_handoff fallback when an opted-in
+owner reason is missing.
+
 For ceilings8/3: below-limit stale takes total2/streak0→3/1 and may defer;
 unchanged Awaits leave3/1; changed-unit independent delivered resets3/0. A third
 consecutive stale takes2/2→3/3, counts and stops without deferral. Total7/0→8/1

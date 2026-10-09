@@ -3,10 +3,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   AGENT_LIMIT_MAXIMA, AGENT_SESSION_SCHEMA, AgentSessionError, sessionInteger, sessionObject, sessionText,
   validateAgentAdapter, validateAgentConsumption, validateAgentDirective,
-  validateAgentNextInput, validateAgentQuery, validateAgentSessionContext,
+  validateAgentNextInput, validateAgentQuery, validateAgentSessionContext, validateAgentExecutionPolicy,
   type AgentAdapterIdentity, type AgentConsumeAck, type AgentConsumeInput,
   type AgentConsumption, type AgentDirectiveOutput, type AgentLimits,
-  type AgentManifest, type AgentNextInput, type AgentQuery, type AgentQueryResult, type AgentSessionContext
+  type AgentManifest, type AgentNextInput, type AgentQuery, type AgentQueryResult, type AgentSessionContext, type AgentExecutionPolicy
 } from "./agent-session-contracts.js";
 import { AgentJsonLineFramer, agentJsonByteLength, encodeBoundedAgentJson } from "./agent-session-json.js";
 import { AgentByteBudget, type AgentByteReservation } from "./agent-session-budget.js";
@@ -72,10 +72,13 @@ export class NdjsonAgentSessionPort {
   private readonly framer: AgentJsonLineFramer;
   private readonly stderrChunks: Buffer[] = [];
   private stderrBytes = 0;
+  private readonly executionPolicyValue?: Readonly<AgentExecutionPolicy>;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams,
     private readonly expected: AgentAdapterIdentity, private readonly limits: AgentLimits,
-    readonly byteBudget = new AgentByteBudget(limits.max_retained_acquisition_bytes)) {
+    readonly byteBudget = new AgentByteBudget(limits.max_retained_acquisition_bytes),
+    executionPolicy?: Readonly<AgentExecutionPolicy>) {
+    this.executionPolicyValue = executionPolicy === undefined ? undefined : validateAgentExecutionPolicy(executionPolicy);
     validateAgentAdapter(expected);
     sessionObject(limits, Object.keys(AGENT_LIMIT_MAXIMA));
     for (const [key, maximum] of Object.entries(AGENT_LIMIT_MAXIMA))
@@ -102,15 +105,17 @@ export class NdjsonAgentSessionPort {
     child.on("error", error => this.fail(error));
     child.on("close", () => this.fail(new AgentSessionError("agent_child_closed")));
   }
+  get executionPolicy(): Readonly<AgentExecutionPolicy> | undefined { return this.executionPolicyValue; }
 
   static spawn(command: string, args: string[], expected: AgentAdapterIdentity, limits: AgentLimits,
-    options: { cwd?: string; env?: NodeJS.ProcessEnv; byteBudget?: AgentByteBudget } = {}): NdjsonAgentSessionPort {
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; byteBudget?: AgentByteBudget; executionPolicy?: Readonly<AgentExecutionPolicy> } = {}): NdjsonAgentSessionPort {
+    const executionPolicy = options.executionPolicy === undefined ? undefined : validateAgentExecutionPolicy(options.executionPolicy);
     // The trusted application explicitly chooses code/environment. No manifest selects a command.
     const inherited: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "TMPDIR", "TEMP", "TMP", "PYTHONPATH", "VIRTUAL_ENV", "OMP_NUM_THREADS"])
       if (process.env[key] !== undefined) inherited[key] = process.env[key];
     return new NdjsonAgentSessionPort(spawn(command, args, { cwd: options.cwd,
-      env: options.env ?? inherited, stdio: ["pipe", "pipe", "pipe"] }), expected, limits, options.byteBudget);
+      env: options.env ?? inherited, stdio: ["pipe", "pipe", "pipe"] }), expected, limits, options.byteBudget, executionPolicy);
   }
 
   async ready(timeoutMs = this.limits.agent_timeout_ms, signal?: AbortSignal): Promise<AgentAdapterIdentity> {
@@ -146,7 +151,7 @@ export class NdjsonAgentSessionPort {
 
   next(context: AgentSessionContext, input: AgentNextInput, handlers: AgentPortHandlers,
     signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentDirectiveOutput> {
-    validateAgentNextInput(input);
+    validateAgentNextInput(input, this.executionPolicyValue);
     return this.request("next", context, input, handlers, signal, onOffer) as Promise<AgentDirectiveOutput>;
   }
 

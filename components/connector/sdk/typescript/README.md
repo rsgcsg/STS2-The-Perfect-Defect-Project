@@ -73,6 +73,42 @@ catalog response ceiling before its request, then shrinks the page reservation
 to actual encoded bytes. Disposal and failed assembly release only their owned
 pin and reservations. Capture/reference metadata stays outside Model input.
 
+`currentOwned()` requires both `current_owned` and
+`native_current_reader_owned_v1`; it never falls back to legacy `current`.
+A coherent successful reply immediately owns its original client reader, even
+before identity/cancellation/assembly checks. Transfer that one lease into an
+assembly, then keep only the small lease for the lifetime of an acknowledged
+basis while disposing the payload buffers:
+
+```ts
+const reply = await session.currentOwned();
+let capture;
+let basisLease;
+try {
+  if (!reply.data.capture || !reply.data.context) throw new Error(reply.data.status);
+  capture = await session.getFull({ capture: reply.data.capture,
+    context: reply.data.context, retention: reply.data.retention,
+    readerLease: reply.takeRetention() });
+  basisLease = capture.transferRetention();
+  // Consume the complete observation and ordered C; retain basisLease until
+  // replacement/Stop and through any serialized action borrowing that basis.
+} finally {
+  await capture?.dispose();
+  await reply.dispose();
+}
+// At the end of that exact basis lifetime: await basisLease.dispose().
+```
+
+Failed/unchanged reads release immediately. Each owner transfer is one-shot;
+release uses the original transport/client, and repeated disposal shares the
+same completion/failure. A malformed or lost reply without a joinable reader
+handle remains an explicitly bounded backend orphan until the existing TTL.
+`onDispatchBinding` optionally receives the four immutable original prepared
+request attribution fields after validation and before synchronous
+`onSubmitStart` and the single POST. An awaited hook cannot alter the body; hook
+failure/cancellation prevents POST. Supplying it also requires terminal response
+attribution to match those exact four fields, including lease/generation.
+
 `controller.releaseControl()` hands off mutation control while preserving client
 registration and passive subscription history. It fences pending credentials
 immediately and releases a known lease independently of a slow renewal. An
@@ -120,3 +156,9 @@ These methods implement and test the [native logical source contract](../../docs
 Shared producer fixtures, a synthetic HTTP listener, 200/500-action transfers and
 10,000-action protocol pressure do not qualify native hook coverage, live gameplay
 or Model inference performance. Existing legacy profiles retain their routing.
+
+The required game-free Store/Projector regression tests use the existing .NET 9
+source-test prerequisite. Their test-only helper builds the zero-package portable
+bridge once, or accepts an explicitly prebuilt `STS2_OWNED_CURRENT_BRIDGE_DLL`.
+They measure production retained bytes through SDK HTTP/assembly; they do not
+load a game, native Service/Executor, or inference backend.

@@ -75,7 +75,7 @@ describe("actual sampled Python package / SDK / Runtime / Evidence composition",
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
         processChild.once("error", reject); processChild.once("exit", (code, signal) => resolve({ code, signal }));
       });
-      port = new NdjsonAgentSessionPort(processChild, manifest.adapter, manifest.limits);
+      port = new NdjsonAgentSessionPort(processChild, manifest.adapter, manifest.limits, undefined, manifest.execution_policy);
       runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
         runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, mode: "auto",
         autoBudget: { maxSubmissions: 8, maxPolicyCalls: 16, deadlineMs: 60000 } });

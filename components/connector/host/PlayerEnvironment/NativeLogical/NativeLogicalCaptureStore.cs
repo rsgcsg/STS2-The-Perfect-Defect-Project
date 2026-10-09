@@ -104,6 +104,34 @@ public sealed class NativeLogicalCaptureStore
             return new(capture, retainedCatalog);
         }
     }
+    // One store transaction transfers only this capture's initial pin to an
+    // exact original reader. Other readers and publication pins are independent.
+    public (NativeLogicalCapturedProjection Projection, NativeLogicalRetentionReference Retention) SealOwnedProjection(
+        NativeLogicalFrozenProjection projection, PlayerEnvironmentSessionReference session,
+        string generation, string scopeId, DateTimeOffset capturedAt, string originalClient)
+    {
+        lock (gate)
+        {
+            NativeLogicalCapturedProjection? sealedProjection = null;
+            NativeLogicalRetentionReference? retention = null;
+            try
+            {
+                RequireActiveClientLocked(originalClient);
+                sealedProjection = SealProjection(projection, session, generation, scopeId, capturedAt, originalClient);
+                RequireActiveClientLocked(originalClient);
+                retention = RetainReference(originalClient, sealedProjection.Capture.CaptureId);
+                RequireActiveClientLocked(originalClient);
+                ReleaseCapture(sealedProjection.Capture.CaptureId);
+                return (sealedProjection, retention);
+            }
+            catch
+            {
+                if (retention is not null) Release(originalClient, retention.RetentionHandleId);
+                if (sealedProjection is not null) ReleaseCapture(sealedProjection.Capture.CaptureId);
+                throw;
+            }
+        }
+    }
     public NativeLogicalCapture Seal(EncodingLease lease, string snapshotId,
         PlayerEnvironmentSessionReference session, string generation, string scopeId,
         DateTimeOffset capturedAt, NativeLogicalCatalog? catalog = null, string? originalClient = null)

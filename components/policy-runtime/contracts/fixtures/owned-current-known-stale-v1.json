@@ -1070,5 +1070,17 @@
   "child_non_claims": [
     "first_actual_dispatch_request_id_join",
     "original_client_controller_authority_join"
-  ]
+  ],
+  "opted_not_delivered_fields": [
+    "type",
+    "reason",
+    "status"
+  ],
+  "opted_termination_reasons": {
+    "consecutive_threshold": "known_stale_streak_limit",
+    "total_threshold": "known_stale_rejection_limit",
+    "after_stop": "stopped",
+    "after_human": "human_recovery",
+    "after_deadline": "autonomy_budget_exhausted"
+  }
 }

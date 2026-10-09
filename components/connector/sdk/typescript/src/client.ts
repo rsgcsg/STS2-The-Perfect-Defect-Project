@@ -353,7 +353,7 @@ export class PlayerEnvironmentRestClient {
   /** The native facade shares this client's fetch/error boundary and never owns a lease. */
   async nativeLogicalRequest(operation: NativeLogicalTransportOperation, body?: JsonObject,
     options: NativeLogicalTransportOptions = {}): Promise<NativeLogicalTransportReply> {
-    const operations: readonly string[] = ["capabilities", "attach", "current", "read", "catalog", "resolve", "events",
+    const operations: readonly string[] = ["capabilities", "attach", "current", "current_owned", "read", "catalog", "resolve", "events",
       "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result"];
     if (!operations.includes(operation)) throw new Error("Unknown native logical operation");
     validateNativeLogicalRequest(operation, body);
@@ -428,7 +428,7 @@ export class PlayerEnvironmentRestClient {
         || value.schema === TEXT_MENU_RESULT_SCHEMA
         || value.schema === TEXT_MENU_V2_RESULT_SCHEMA
         || native !== undefined && value.schema === "sts2.player-environment/native-logical-result-1");
-    const typedCurrentFailure = native?.operation === "current" && isNativeCurrentFailure(response.status, value);
+    const typedCurrentFailure = (native?.operation === "current" || native?.operation === "current_owned") && isNativeCurrentFailure(response.status, value);
     if (!response.ok && !(acceptReceiptOnError && isReceipt) && !typedCurrentFailure) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,

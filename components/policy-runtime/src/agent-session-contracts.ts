@@ -1,8 +1,27 @@
 import type { ConnectorPolicyRequirements } from "./contracts.js";
+import { decodeNativeLogicalResult, type NativeLogicalResult } from "@rsgcsg/sts2-connector-client";
 
 export const AGENT_MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1" as const;
 export const AGENT_SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1" as const;
 export const AGENT_SESSION_PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1" as const;
+export const AGENT_EXECUTION_POLICY_SCHEMA = "sts2.policy-runtime/agent-execution-policy-1" as const;
+export const AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA = "sts2.policy-runtime/known-not-started-outcome-1" as const;
+export interface AgentExecutionPolicy {
+  schema: typeof AGENT_EXECUTION_POLICY_SCHEMA;
+  current_mode: "reader_owned_v1";
+  known_stale: "fresh_changed_current_v1";
+  operational_outcome: "known_not_started_v1";
+  max_known_stale_rejections: number;
+  max_consecutive_known_stale_rejections: number;
+}
+export interface AgentOperationalOutcome {
+  schema: typeof AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA;
+  basis_acquisition_id: string;
+  action_id: string;
+  consumption_id: string;
+  state_version: number;
+  result: NativeLogicalResult;
+}
 export const NATIVE_SCOPE = ["persistent", "interaction", "referents", "catalog"] as const;
 export type AgentScope = typeof NATIVE_SCOPE[number];
 export type AgentQueryMethod = "current" | "read" | "catalog" | "resolve";
@@ -21,6 +40,7 @@ export const AGENT_LIMIT_MAXIMA = Object.freeze({
 export type AgentLimits = { -readonly [K in keyof typeof AGENT_LIMIT_MAXIMA]: number };
 export interface AgentManifest {
   schema: typeof AGENT_MANIFEST_SCHEMA;
+  execution_policy?: Readonly<AgentExecutionPolicy>;
   manifest_id: string;
   agent: { id: string; version: string; provider: string; architecture: string };
   adapter: AgentAdapterIdentity;
@@ -81,6 +101,7 @@ export interface AgentConsumeInput {
 export interface AgentNextInput {
   continuity_token: string; consumption_id: string | null; state_version: number;
   basis_acquisition_id: string | null; received_cursor: string | null;
+  operational_outcome?: AgentOperationalOutcome | null;
 }
 export type AgentSelection = { kind: "handle"; action_id: string }
   | { kind: "expression"; expression: Record<string, unknown> };
@@ -120,6 +141,35 @@ export function sessionDigest(value: unknown): string {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) throw new AgentSessionError("invalid_digest");
   return value;
 }
+export function validateAgentExecutionPolicy(value: unknown): Readonly<AgentExecutionPolicy> {
+  const policy = sessionObject(value, ["schema", "current_mode", "known_stale", "operational_outcome",
+    "max_known_stale_rejections", "max_consecutive_known_stale_rejections"]);
+  if (policy.schema !== AGENT_EXECUTION_POLICY_SCHEMA || policy.current_mode !== "reader_owned_v1" ||
+      policy.known_stale !== "fresh_changed_current_v1" || policy.operational_outcome !== "known_not_started_v1")
+    throw new AgentSessionError("agent_execution_policy_unsupported");
+  const total = sessionInteger(policy.max_known_stale_rejections, true, 16);
+  sessionInteger(policy.max_consecutive_known_stale_rejections, true, Math.min(total, 4));
+  return Object.freeze({ ...policy }) as unknown as Readonly<AgentExecutionPolicy>;
+}
+export function sameAgentExecutionPolicy(left: Readonly<AgentExecutionPolicy> | undefined,
+  right: Readonly<AgentExecutionPolicy> | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  const a = validateAgentExecutionPolicy(left), b = validateAgentExecutionPolicy(right);
+  return Object.keys(a).every(key => a[key as keyof AgentExecutionPolicy] === b[key as keyof AgentExecutionPolicy]);
+}
+export function isKnownStaleResult(result: NativeLogicalResult): boolean {
+  return result.delivery === "not_started" && result.reason === "stale_snapshot_or_binding"
+    && result.action === null && result.stages.length === 0 && result.retry === "never_automatic";
+}
+export function validateAgentOperationalOutcome(value: unknown): AgentOperationalOutcome {
+  const outcome = sessionObject(value, ["schema", "basis_acquisition_id", "action_id", "consumption_id", "state_version", "result"]);
+  if (outcome.schema !== AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA) throw new AgentSessionError("agent_operational_outcome_schema");
+  for (const key of ["basis_acquisition_id", "action_id", "consumption_id"]) sessionText(outcome[key], key === "action_id" ? 65536 : 256);
+  sessionInteger(outcome.state_version, true);
+  const result = decodeNativeLogicalResult(outcome.result).data;
+  if (!isKnownStaleResult(result) || result.attribution === null) throw new AgentSessionError("agent_operational_outcome_not_known_stale");
+  return { ...outcome, result } as unknown as AgentOperationalOutcome;
+}
 function strings(value: unknown, nonempty = false): string[] {
   if (!Array.isArray(value) || (nonempty && value.length === 0)) throw new AgentSessionError("string_array_required");
   const result = value.map(item => sessionText(item));
@@ -155,7 +205,10 @@ export function validateAgentAdapter(value: unknown): AgentAdapterIdentity {
   return adapter as unknown as AgentAdapterIdentity;
 }
 export function validateAgentManifest(value: unknown): AgentManifest {
-  const manifest = sessionObject(value, ["schema", "manifest_id", "agent", "adapter", "artifact", "input", "requirements", "support", "limits", "claims"]);
+  const fields = ["schema", "manifest_id", "agent", "adapter", "artifact", "input", "requirements", "support", "limits", "claims"];
+  const hasPolicy = Object.hasOwn(sessionObject(value), "execution_policy");
+  const manifest = sessionObject(value, hasPolicy ? [...fields, "execution_policy"] : fields);
+  const policy = hasPolicy ? validateAgentExecutionPolicy(manifest.execution_policy) : undefined;
   choice(manifest.schema, [AGENT_MANIFEST_SCHEMA]); sessionText(manifest.manifest_id);
   const agent = sessionObject(manifest.agent, ["id", "version", "provider", "architecture"]);
   for (const item of Object.values(agent)) sessionText(item);
@@ -198,6 +251,7 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   if (history === "sampled_current" && (mode !== "once_per_occurrence" || scope.length !== 0
     || delivery !== "scoped" || recoveryMode !== "none" || input.gap_policy !== "handoff"))
     throw new AgentSessionError("sampled_current_contract_mismatch");
+  if (policy && history !== "sampled_current") throw new AgentSessionError("agent_execution_policy_requires_sampled_current");
   const requirements = sessionObject(manifest.requirements, ["connector_protocol_version", "environment", "required_methods"]);
   sessionText(requirements.connector_protocol_version);
   const environment = sessionObject(requirements.environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]);
@@ -206,9 +260,10 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   sessionDigest(environment.connector_artifact_sha256); sessionDigest(environment.modset_fingerprint);
   strings(environment.loaded_mod_ids);
   const methods = strings(requirements.required_methods, true);
-  const allowed = ["capabilities", "attach", "current", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
+  const allowed = ["capabilities", "attach", "current", "current_owned", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
   const minimum = ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
   if (history === "sampled_current") minimum.push("current", "read", "catalog", "retain", "release");
+  if (policy) minimum.push("current_owned");
   else if (history === "full_reference") minimum.push("read", "catalog", "retain", "release");
   else if (methods.includes("current")) minimum.push("read", "retain", "release");
   if (methods.some(method => !allowed.includes(method)) || minimum.some(method => !methods.includes(method)))
@@ -234,11 +289,19 @@ export function validateAgentConsumption(value: unknown): AgentConsumption {
   if (typeof completion.advanced !== "boolean") throw new AgentSessionError("invalid_advance");
   return completion as unknown as AgentConsumption;
 }
-export function validateAgentNextInput(value: unknown): AgentNextInput {
-  const input = sessionObject(value, ["continuity_token", "consumption_id", "state_version", "basis_acquisition_id", "received_cursor"]);
+export function validateAgentNextInput(value: unknown, executionPolicy?: Readonly<AgentExecutionPolicy>): AgentNextInput {
+  const fields = ["continuity_token", "consumption_id", "state_version", "basis_acquisition_id", "received_cursor"];
+  if (executionPolicy) validateAgentExecutionPolicy(executionPolicy);
+  const input = sessionObject(value, executionPolicy ? [...fields, "operational_outcome"] : fields);
   sessionText(input.continuity_token); sessionInteger(input.state_version);
   for (const key of ["consumption_id", "basis_acquisition_id", "received_cursor"]) if (input[key] !== null) sessionText(input[key], key === "received_cursor" ? 1024 : 256);
   if ((input.state_version === 0) !== (input.consumption_id === null)) throw new AgentSessionError("state_watermark_mismatch");
+  if (executionPolicy && input.operational_outcome !== null) {
+    const outcome = validateAgentOperationalOutcome(input.operational_outcome);
+    if (outcome.consumption_id !== input.consumption_id || outcome.state_version !== input.state_version ||
+        outcome.basis_acquisition_id !== input.basis_acquisition_id)
+      throw new AgentSessionError("agent_operational_outcome_watermark");
+  }
   return input as unknown as AgentNextInput;
 }
 export function validateAgentDirective(value: unknown): AgentDirectiveOutput {

@@ -1,5 +1,52 @@
 # E3 Agent session implementation checkpoint
 
+## Owned Current and bounded stale decisions (2026-10-10 source candidate)
+
+The additive policy in [AGENT_SESSION_PROTOCOL.md](AGENT_SESSION_PROTOCOL.md)
+selects the Connector's advertised `current_owned` mechanism. A successful
+Current transfers its initial capture pin to the original reader atomically.
+The SDK owns a coherent decoded reader before later admission checks, transfers
+one small lease through assembly, and disposes observation/catalog buffers.
+Runtime retains that lease for the acknowledged basis through a serialized Act;
+discarded queries, replacement, failures and Stop release the original reader.
+A cleanup failure immediately fences Auto and releases control, and Stop attempts
+every remaining lease even after evidence or detach failures. Legacy Current's
+120-second initial pin remains unchanged.
+
+The native port receives the exact validated policy as its fifth constructor
+argument or explicit spawn option. Runtime checks policy equality before Ready,
+registration or native requests. Legacy Next has five fields; an explicitly
+selected policy requires the sixth nullable `operational_outcome` field.
+
+An exact original `not_started / stale_snapshot_or_binding` result may request a
+new decision under the same W/prefix/child, within both total/streak ceilings and
+only while the owning Runtime still admits Auto/control/budget. An unchanged
+NativeUnit only waits. Same-occurrence revision/coherence drift fails closed;
+a changed unit must strictly advance the qualified revision. The fence clears
+only after an advanced new ConsumeACK and completed Next. No old action, request,
+basis, native operand, epoch, prefix or count is replayed or reset.
+
+The awaited SDK dispatch hook supplies four immutable original attribution
+fields after body validation, before the existing synchronous start notification
+and one POST. One extended existing submission-intent fact records them; native
+terminal results and reconciliation retain the original binding. Unique joined
+terminal results count before operational eligibility, including threshold and
+late Stop/deadline/source-loss results. Delivered resets the streak only.
+Source-loss/Stop/budget causes retain the first owning stop reason. Typed evidence
+can verify recorded binding/count/watermark/deferral consistency; unrecorded live
+lease expiry and budget eligibility remain source-tested Runtime guards plus
+final native admission, not an invented independent witness.
+
+Required source regressions compose the real game-free C# Store/Projector,
+REST SDK, Runtime and a programmed OS child; control/capability/Await replies
+remain synthetic. A separate OS Python Teacher composition uses its real code
+closure, InputSpec and a private source descriptor with no Torch. These tests do
+not qualify a production package, installed/loaded artifact, game, Human origin,
+collected research N, model training or learned gameplay. Root integration owns
+versions/BOM/pins, installed verifier and final producer tuple, exact-game checks
+and any later runtime/data/model promotion. Historical checkpoints below retain
+their own evidence limits.
+
 ## Current native integration candidate (2026-10-08)
 
 Dependency base `f89a5267f43ea206fe39d081f5fd5d3643953ca8` includes independently
