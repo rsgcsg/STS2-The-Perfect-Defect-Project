@@ -29,6 +29,15 @@ evaluate separately. V3 neither attests Human origin nor qualifies continuous
 history. Consumers need the frozen package/pin containing this API; changing
 the source tree alone does not update an installed verifier.
 
+The `0.1.0-rc.26` candidate adds typed sampled-current Agent-session evidence
+and authenticated Source3 collection-tool capability discovery/packing. Sampled
+runs retain original observation/catalog bytes and exact consumption/ACK bindings;
+a null publication index does not fabricate full publication history. Legacy
+full-reference verification remains unchanged. Collection-tool support is checked
+against its immutable inventory; a source declaration is not Human attestation.
+Consumers need this candidate's actual locked package before using these APIs;
+source tests alone do not qualify a loaded runtime or research data.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and

@@ -72,7 +72,10 @@
         "src/runtime.ts",
         "package.json",
         "tools/package.mjs",
-        "src/server.ts"
+        "src/server.ts",
+        "src/agent-session-contracts.ts",
+        "docs/AGENT_SESSION_PROTOCOL.md",
+        "contracts/fixtures/sampled-current-carry-v1.json"
       ]
     },
     "workbench": {
@@ -94,7 +97,8 @@
         "PlatformPolicyBinding.cs",
         "PlatformNativeWorkbenchPair.cs",
         "PlatformRecordingCommands.cs",
-        "PlatformWorkbenchOpen.cs"
+        "PlatformWorkbenchOpen.cs",
+        "PlatformNativeWorkbenchClient.cs"
       ]
     },
     "game-mod": {

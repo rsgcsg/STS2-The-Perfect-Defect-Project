@@ -15,7 +15,8 @@ tracks what has actually been implemented/reviewed. Apply `python/AGENTS.md`.
 | Work | Owning guide and boundary |
 | --- | --- |
 | Native structured input/Model/Agent | [Native structured model](NATIVE_STRUCTURED_MODEL.md): shared projection, scorer and existing full-reference/synthetic package contracts |
-| Real Source3 record→training representation | [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md): typed originals, exact-delivered N, declared origins, publication-memory/pretraining views and use/split chain |
+| Bounded Agent-protocol demonstration collection | [Native Source3 collection](NATIVE_SOURCE3_COLLECTION.md): genuine Application Start/Close, isolated Host/SDK and explicit unlearned teacher; separate import and training |
+| Real Source3 record→training representation | [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md): typed originals, exact-delivered N, declared origins, sampled segments, historical publication-memory/pretraining views and use/split chain |
 | Data/Model application entry | [Project console](PROJECT_CONSOLE.md) and [model task flow](LOCAL_MODEL_TASK_FLOW.md): existing services, actual supported UI/API and operational admission |
 | Shared training, export and recovery | [Structured delivery](STRUCTURED_MODEL_DELIVERY.md) and [workload](STRUCTURED_WORKLOAD.md): shared engine/attempt/checkpoint owners; selected source recipe retains its own meaning |
 | Actual scoped results | Root [STATUS](../../docs/STATUS.md), then the linked exact evidence report |
