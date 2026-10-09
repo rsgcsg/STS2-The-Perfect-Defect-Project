@@ -1,4 +1,4 @@
-# Ordered Source3 native training representation
+# Recorded native training representations
 
 The code-owned contracts are `stpd/ordered_source_spec.py`. This representation
 is separate from historical text/S0, Source2 and synthetic native sources.
@@ -194,9 +194,10 @@ descriptive; it cannot manufacture an unseen-test or policy-quality receipt.
 define the separate `native_agent_sampled_v1` research source profile. Its raw,
 admission, train-only partition and projected-source schemas are new identities;
 they do not reinterpret Source3 or select a different computational Model. PhaseA
-only lowers to the existing StructuredDataset/Run/Step. No production training
-recipe, export/package branch or UI route is added here; those need a separately
-reviewed PhaseB. The existing Source3 pilot remains available under its exact pins.
+only lowered to the existing StructuredDataset/Run/Step. The common training
+composition below adds an explicit recipe and package branch; a product route
+requires its own backend and application checks. The existing Source3 recipes
+remain available under their exact pins.
 
 The installed public Evidence `AgentSessionRunEvidence` verifier owns original
 inventory, hashes and protocol grammar. STPD retains the exact original archive,
@@ -218,7 +219,7 @@ whole-input qualifier and NativeUnit law, and their failures remain fail-closed.
 Its additional authority is the fixed producer/student relation, input feature
 contract, known-prefix eligibility and exact N target qualification.
 
-Two fixed relations are supported. The synthetic identity relation pins the
+Three fixed relations are supported. The synthetic identity relation pins the
 existing sampled Student InputSpec as both fixture producer and student. The
 program-teacher relation pins its distinct reviewed TeacherInputSpec/body,
 AgentSpec/script-state format, artifact/adapter/code closure and interpreter/lock
@@ -233,7 +234,13 @@ identifies the importer. An absent recorded Git revision remains absent, and
 teacher private script state is never student W or an I/F input. The frozen
 teacher descriptor uses canonical JSON with terminal LF for its input/artifact
 byte digests; the existing Student InputSpec uses semantic hashing without LF.
-Neither existing digest recipe is rewritten to make the names uniform.
+Neither existing digest recipe is rewritten to make the names uniform. The
+additional Map-timed relation pins Teacher policy1.0.4/Agent1.1, artifact
+`e590c1ec158d636909e9a3bcddd539b46e8e2e3a72c4303d721019635cb4ecac` and
+code closure `ab4380a02a6969acb38a55697d6cf695f727b3e6f1cf0aacd24647185d19413b`.
+Its complete fixed descriptor is appended in `native_agent_sampled_source_spec.py`;
+the previous Teacher1.0.2 relation/artifact remains unchanged. Equal Teacher
+InputSpecs do not make different producer closures interchangeable.
 
 All original offers, including discarded or censored ones, enter the existing
 curation index. The conservative related key is
@@ -252,3 +259,50 @@ the existing 16 MiB individual artifact-blob transport bound. Capacity failure
 rejects the operation; no payload, history or target is truncated to fit. Rolling
 back PhaseA removes its new profile and typed curation methods without rewriting
 old originals, Source3 views, model packages, codecs or numerical identities.
+
+## Common sampled training and package version2
+
+`native_training_source_spec.py` owns the closed source union and the explicit
+`native-m2-k1d96-carry-N-sampled-v2` trusted recipe. Its two discriminants are
+`native_agent_sampled_v1` and `source3_sampled_basis_v1`. The first replays the
+original Agent protocol archive through its typed admission/partition owner; the
+second requires the exact Source3 `decision_sample_carry` view. `agent_protocol`
+is an actor/cohort declaration, not a recording-route selector. The two routes
+retain their different validation bodies, producer relations and exposure limits.
+
+Both lower to the same StructuredDataset/Run/Step, shared sampled InputSpec,
+Student AgentSpec1.1 and K1/D96 carry Model. They use the existing graph training
+scope and version2 training-input/run/checkpoint/report contracts, engine,
+AdamW optimizer and TBPTT4. Dataset-aware execution metadata names the actual
+source schema. Numerical arithmetic and state/weight tensor codecs are unchanged;
+the actual changed training/inference closures still receive new code identities.
+There is no source-specific computational Model or second trainer.
+
+Common exports use `stpd/native-trained-m2-package-v2` and immutable ModelArtifact
+schema `stpd/native-trained-m2-model-v2`. The existing
+`stpd/native-structured-m2-package-v2` keeps its historical synthetic meaning.
+The common package's closed source object binds `source_profile`, actor `kind`,
+`cohort`, data SHA, source and training-input ArtifactIDs, and the complete exact
+source-specific verification identity. The loader recomputes that identity and
+rejects a swapped/rehashed discriminant or producer relation. Model parents remain
+exactly run/checkpoint/training_input; package/weights are authorized own payloads.
+Package `model_id`, ModelArtifactID and registered selection remain distinct.
+
+Preparation, worker loading and completed-result reconciliation replay the owning
+typed partition and require train-only binding. The existing application parent
+and private child select this fixed recipe and verify reservation before work.
+Direct sources record/require actual use through the existing direct curation
+methods; Source3 sources use their existing ordered methods. Reservation is not
+an actual-use or optimizer receipt. The original runtime exposure family and Gold
+guards apply across both representations, so a batch cannot independently reserve
+its direct and Source3 copies as unrelated data.
+
+No old source, checkpoint, package, registered Model or W is relabelled or rehashed
+into this common version. Current exact closure checks can reject old packages;
+their original artifacts and pinned runner retain their original meaning.
+Rollback chooses that exact prior runner/package or reverts this composition,
+without rewriting source/use journals. The common sampled Agent still starts W0
+and declares no cross-process memory restoration. Source/test composition, actual
+private child/use/export/registration, native load/game, and visible product
+delivery are separate gates. Synthetic checks never establish real-data training,
+Human origin, natural task completion or policy quality.
