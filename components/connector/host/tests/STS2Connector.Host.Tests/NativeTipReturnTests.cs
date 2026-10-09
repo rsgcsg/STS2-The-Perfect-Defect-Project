@@ -36,6 +36,8 @@ public sealed class NativeTipReturnTests
     [InlineData("card_tips")]
     [InlineData("relic_tips")]
     [InlineData("potion_tips")]
+    [InlineData("creature_tips")]
+    [InlineData("resource_tips")]
     public void MerchantTipCaptureRetainsItsExactSourceUntilNativeExit(string kind)
     {
         var source = new LatchedTipSource();
@@ -69,6 +71,45 @@ public sealed class NativeTipReturnTests
         source.Enter();
         Assert.NotNull(source.Tip);
         Assert.Equal(2, source.Created);
+    }
+
+    [Fact]
+    public void WithdrawnEntryCapabilityDoesNotPreventClosingTheExactRetainedSource()
+    {
+        var source = new LatchedTipSource();
+        source.Enter();
+        object retainedSet = source.Tip!;
+        bool entryAvailable = false, sourceCurrent = true;
+        int probes = 0, entries = 0, exits = 0;
+        var blocked = NativeTextMenuInformation.EnterAvailableTip(
+            () => { probes++; return entryAvailable; },
+            () => { entries++; source.Enter(); return NativeInputResult.Delivered("native entry"); });
+        Assert.Equal("native_tip_entry_unavailable", blocked.ErrorCode);
+        Assert.Equal(LegacyNativeInputDisposition.NotDelivered, blocked.LegacyDisposition);
+        Assert.Equal(1, probes);
+        Assert.Equal(0, entries);
+        // The return owner is the same native set/source, independent of whether
+        // a new entry is allowed by phase/target/hand/tip-block capability.
+        var closed = NativeTipReturn.Close(true,
+            () => ReferenceEquals(source.Tip, retainedSet), () => sourceCurrent,
+            () => { exits++; source.Exit(); }, source.Remove, () => sourceCurrent = false);
+        Assert.True(closed.Accepted);
+        Assert.Equal(1, exits);
+        Assert.Null(source.Tip);
+        Assert.False(source.Focused);
+        Assert.Equal(0, source.HandHoverNotifications);
+    }
+
+    [Fact]
+    public void UnreadableEntryCapabilityRejectsBeforeExitOrEntryWithoutFallback()
+    {
+        int inputs = 0;
+        var result = NativeTextMenuInformation.EnterAvailableTip(
+            () => throw new InvalidOperationException("native source unreadable"),
+            () => { inputs++; return NativeInputResult.Delivered("unexpected input"); });
+        Assert.Equal("native_tip_entry_unreadable", result.ErrorCode);
+        Assert.Equal(LegacyNativeInputDisposition.NotDelivered, result.LegacyDisposition);
+        Assert.Equal(0, inputs);
     }
 
     [Theory]
