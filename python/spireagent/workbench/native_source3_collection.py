@@ -77,14 +77,20 @@ class CollectionRequest:
             self.predecessor_source3_content_id,
         )
         if any(value is not None for value in fresh):
-            if any(value is None for value in fresh):
+            if any(value is None for value in fresh[:3]):
                 raise fail("complete_fresh_predecessor_required")
+            if (fresh[3] is None) != (fresh[4] is None):
+                raise fail("fresh_source3_bundle_pair_required")
             for path in (self.predecessor_report_path, self.predecessor_source3_bundle):
+                if path is None:
+                    continue
                 if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
                     raise fail("fresh_predecessor_path_required")
                 if any(p.is_symlink() for p in (path, *path.parents)):
                     raise fail("fresh_predecessor_path_unsafe")
             for checksum in fresh[1:3] + fresh[4:]:
+                if checksum is None:
+                    continue
                 if not isinstance(checksum, str) or re.fullmatch(r"[0-9a-f]{64}", checksum) is None:
                     raise fail("fresh_predecessor_digest_required")
         for value in (self.installation, self.host_local_root, self.output):
@@ -381,9 +387,89 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
         or any(r["delivery"] != "delivered" for r in results)
     ):
         raise fail("fresh_predecessor_direct_identity_required")
+    boundary = {
+        "schema": FRESH_SCHEMA,
+        "prior_status": "unknown",
+        "prior_input_consumption": "unresolved",
+        "prior_operation_id": report["operation_id"],
+        "prior_report_path": str(path),
+        "prior_report_sha256": report_sha,
+        "prior_marker_sha256": request.predecessor_marker_sha256,
+        "prior_runtime_instance_id": old_runtime,
+        "direct_content_id": direct.content_id,
+        "prior_agent_run_id": direct.run_id,
+        "prior_agent_continuity_token": public["session"]["continuity_token"],
+        "prior_stream_generation": public["session"]["stream_generation"],
+        "can_resume_prior": False,
+        "can_retry_prior": False,
+        "restores_prior_state": False,
+    }
+    if report.get("record_source3") is False:
+        if request.predecessor_source3_bundle is not None:
+            raise fail("fresh_source3_bundle_forbidden_for_optout")
+        original_request_bytes = _ordinary(path.parent / "request.json")
+        quiesced_bytes = _ordinary(path.parent / "quiesced.json")
+        original_request = _object(original_request_bytes)
+        quiesced = _object(quiesced_bytes)
+        if (
+            report.get("actor_id") != "source3-teacher-" + report["operation_id"]
+            or any(
+                k not in report
+                for k in ("source_start", "source_close", "source_closed", "close_sent")
+            )
+            or original_request.get("schema") != REPORT_SCHEMA
+            or original_request.get("status") != "pending"
+            or original_request.get("operation_id") != report["operation_id"]
+            or original_request.get("actor_id") != report.get("actor_id")
+            or original_request.get("source") != report.get("source")
+            or original_request.get("record_source3") is not False
+            or original_request.get("child_path") != report.get("child_path")
+            or original_request.get("child_sha256") != report.get("child_sha256")
+            or original_request.get("options") != report.get("options")
+            or original_request.get("options", {}).get("record_source3") is not False
+            or any(
+                original_request.get(k) is not None
+                for k in ("source_start", "source_close", "source_closed")
+            )
+            or report.get("source_start") is not None
+            or report.get("source_close") is not None
+            or report.get("source_closed") is not None
+            or report.get("close_sent") is not False
+            or report.get("source_final_status") is not None
+            or final.get("record_source3") is not False
+            or full.get("record_source3") is not False
+            or final.get("source_closed") is not True
+            or quiesced != report.get("quiesced")
+            or quiesced.get("schema") != PIPE_SCHEMA
+            or quiesced.get("type") != "quiesced"
+            or quiesced.get("operation_id") != report["operation_id"]
+            or quiesced.get("record_source3") is not False
+            or quiesced.get("counts") != final["counts"]
+            or quiesced.get("direct_evidence") != direct_ref
+            or any(
+                (path.parent / name).exists() or (path.parent / name).is_symlink()
+                for name in (
+                    "source-start-request.json",
+                    "source-start.json",
+                    "source-close-request.json",
+                    "source-close.json",
+                )
+            )
+        ):
+            raise fail("fresh_predecessor_source_optout_mismatch")
+        # source_closed=true in the child records known not_requested handling,
+        # not a recording close. There is deliberately no Source identity or seal.
+        return {
+            **boundary,
+            "prior_record_source3": False,
+            "prior_source3_outcome": "not_requested",
+            "original_request_sha256": hashlib.sha256(original_request_bytes).hexdigest(),
+            "original_quiesced_sha256": hashlib.sha256(quiesced_bytes).hexdigest(),
+        }
     if report.get("record_source3") is not True or report.get("source_closed") is not True:
         raise fail("fresh_predecessor_source_closure_required")
-    assert request.predecessor_source3_bundle is not None
+    if request.predecessor_source3_bundle is None:
+        raise fail("fresh_source3_bundle_required_for_recorded_predecessor")
     from spireagent.workbench.local_recording_import import _verified_source3
 
     source = _verified_source3(request.predecessor_source3_bundle)
@@ -420,28 +506,15 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
         raise fail("fresh_predecessor_source_identity_mismatch")
     inventory = source.manifest["content_identity"]["raw_file_sha256"]
     return {
-        "schema": FRESH_SCHEMA,
-        "prior_status": "unknown",
-        "prior_input_consumption": "unresolved",
-        "prior_operation_id": report["operation_id"],
-        "prior_report_path": str(path),
-        "prior_report_sha256": report_sha,
-        "prior_marker_sha256": request.predecessor_marker_sha256,
-        "prior_runtime_instance_id": old_runtime,
+        **boundary,
+        "prior_record_source3": True,
         "prior_source_session_id": source.recording["session_id"],
         "prior_source_segment_id": old_source["segment_id"],
         "prior_source_epoch_id": old_source["epoch_id"],
-        "direct_content_id": direct.content_id,
         "source3_content_id": source.content_id,
-        "prior_agent_run_id": direct.run_id,
-        "prior_agent_continuity_token": public["session"]["continuity_token"],
-        "prior_stream_generation": public["session"]["stream_generation"],
         "source3_bundle_path": str(request.predecessor_source3_bundle),
         "original_manifest_sha256": inventory["recording-manifest.json"],
         "original_close_sha256": inventory["source-close-receipt.json"],
-        "can_resume_prior": False,
-        "can_retry_prior": False,
-        "restores_prior_state": False,
     }
 
 
@@ -1259,6 +1332,7 @@ def collect_source3(
                                 original = owned
                             if (
                                 boundary is not None
+                                and boundary["prior_record_source3"] is True
                                 and original is not None
                                 and (
                                     original["recording_session_id"]

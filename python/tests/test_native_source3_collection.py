@@ -1096,3 +1096,146 @@ class FreshEpisodeTests(unittest.TestCase):
         self.assertEqual(self.marker.read_bytes(), original)
         self.assertEqual(self.apps, [])
         self.assertEqual(self.children, [])
+
+    def prepare_source_off_prior(self):
+        self.prepare_prior()
+        self.prior.update(
+            record_source3=False,
+            source_start=None,
+            source_close=None,
+            source_closed=None,
+            close_sent=False,
+            source_final_status=None,
+            options={"record_source3": False},
+            source={"source_revision": "b" * 40},
+            child_path="/fixed/collector.mjs",
+            child_sha256="c" * 64,
+        )
+        self.prior["child_final"]["record_source3"] = False
+        self.prior["child_final_full"]["record_source3"] = False
+        atomic_json(self.prior_output / "collector-final-full.json", self.prior["child_final_full"])
+        raw = (self.prior_output / "collector-final-full.json").read_bytes()
+        self.prior["child_final"]["full_record_ref"].update(
+            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()
+        )
+        quiesced = {
+            "schema": module.PIPE_SCHEMA,
+            "type": "quiesced",
+            "operation_id": "a" * 32,
+            "record_source3": False,
+            "counts": self.prior["child_final"]["counts"],
+            "direct_evidence": self.prior["direct_evidence"],
+            "runtime_status": self.prior["runtime_status"],
+        }
+        self.prior["quiesced"] = quiesced
+        atomic_json(self.prior_output / "quiesced.json", quiesced)
+        original_request = {
+            "schema": module.REPORT_SCHEMA,
+            "status": "pending",
+            "operation_id": "a" * 32,
+            "actor_id": self.prior["actor_id"],
+            "record_source3": False,
+            "options": self.prior["options"],
+            "source": self.prior["source"],
+            "child_path": self.prior["child_path"],
+            "child_sha256": self.prior["child_sha256"],
+            "source_start": None,
+            "source_close": None,
+            "source_closed": None,
+        }
+        atomic_json(self.prior_output / "request.json", original_request)
+        self.request = replace(
+            self.request, predecessor_source3_bundle=None, predecessor_source3_content_id=None
+        )
+        self.reseal_report()
+
+    def test_source_off_prior_uses_real_typed_direct_proof_without_dummy_Source_identity(self):
+        self.prepare_source_off_prior()
+        from spireagent.workbench import local_recording_import
+
+        self.mock(
+            local_recording_import,
+            "_verified_source3",
+            lambda _: self.fail("Source-off must not verify a bundle"),
+        )
+        boundary = module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertFalse(boundary["prior_record_source3"])
+        self.assertEqual(boundary["prior_source3_outcome"], "not_requested")
+        for key in (
+            "prior_source_session_id",
+            "prior_source_segment_id",
+            "prior_source_epoch_id",
+            "source3_content_id",
+            "source3_bundle_path",
+            "original_manifest_sha256",
+            "original_close_sha256",
+        ):
+            self.assertNotIn(key, boundary)
+        old_marker = self.marker.read_bytes()
+        result = self.run_collection()  # New Source-on, with no invented old Source to compare.
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual((self.request.output / "predecessor-marker.json").read_bytes(), old_marker)
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+
+    def test_bundle_pair_is_conditional_on_old_attempt_and_never_a_general_force(self):
+        self.prepare_prior()
+        without_bundle = replace(
+            self.request, predecessor_source3_bundle=None, predecessor_source3_content_id=None
+        )
+        without_bundle.validate()
+        with self.assertRaisesRegex(
+            BoundaryError, "fresh_source3_bundle_required_for_recorded_predecessor"
+        ):
+            module.verified_fresh_predecessor(self.marker, without_bundle)
+        with self.assertRaisesRegex(BoundaryError, "fresh_source3_bundle_pair_required"):
+            replace(self.request, predecessor_source3_content_id=None).validate()
+        bundle = self.request.predecessor_source3_bundle
+        content_id = self.request.predecessor_source3_content_id
+        self.prepare_source_off_prior()
+        with self.assertRaisesRegex(BoundaryError, "fresh_source3_bundle_forbidden_for_optout"):
+            module.verified_fresh_predecessor(
+                self.marker,
+                replace(
+                    self.request,
+                    predecessor_source3_bundle=bundle,
+                    predecessor_source3_content_id=content_id,
+                ),
+            )
+        with self.assertRaisesRegex(BoundaryError, "original_collection_outcome_unresolved"):
+            module.require_resolved_predecessor(self.marker)
+        self.assertEqual(self.apps, [])
+
+    def test_source_off_original_request_or_quiesced_disagreement_blocks_without_launch(self):
+        self.prepare_source_off_prior()
+        for filename, change in [
+            ("request.json", lambda v: v["options"].update(record_source3=True)),
+            ("request.json", lambda v: v.update(source_start={"accepted": True})),
+            ("request.json", lambda v: v.update(operation_id="f" * 32)),
+            ("quiesced.json", lambda v: v.update(record_source3=True)),
+        ]:
+            with self.subTest(filename=filename, change=change):
+                target = self.prior_output / filename
+                original = target.read_bytes()
+                value = json.loads(original)
+                change(value)
+                atomic_json(target, value)
+                with self.assertRaisesRegex(
+                    BoundaryError, "fresh_predecessor_source_optout_mismatch"
+                ):
+                    module.verified_fresh_predecessor(self.marker, self.request)
+                target.write_bytes(original)
+        self.assertEqual(self.apps, [])
+        self.assertEqual(self.children, [])
+
+    def test_source_off_latent_recording_file_or_unknown_preference_cannot_erase_obligation(self):
+        self.prepare_source_off_prior()
+        latent = self.prior_output / "source-start-request.json"
+        latent.write_text("{}")
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_source_optout_mismatch"):
+            module.verified_fresh_predecessor(self.marker, self.request)
+        latent.unlink()
+        self.prior["record_source3"] = None
+        self.reseal_report()
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_source_closure_required"):
+            module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertEqual(self.apps, [])

@@ -28,16 +28,24 @@ All module/executable choices are fixed by the trusted application; manifests an
 teacher replies never select an arbitrary module, shell or native operand.
 
 An `unknown` or pending predecessor blocks the default command. A distinct fresh
-episode after unresolved **input consumption** requires all five explicit options:
+episode after unresolved **input consumption** always requires three explicit options:
 `--predecessor-report-path`, `--predecessor-report-sha256`,
-`--predecessor-marker-sha256`, `--predecessor-source3-bundle` and
-`--predecessor-source3-content-id`. The supplied bundle must already be packed by
+`--predecessor-marker-sha256`. If the old attempt recorded Source3, also supply the
+pair `--predecessor-source3-bundle` and `--predecessor-source3-content-id`; the pair
+is forbidden when that old attempt explicitly opted out. The supplied bundle must already be packed by
 the registered CollectionTool; preflight only reads and verifies it. Both owning
 typed Agent/Source3 verifiers, exact report/full-final hashes, original Source
 seals, known native deliveries and known Source/controller/child/Host cleanup
-must agree. A new `--no-source3` request does not omit the previous Source-on
+must agree for a Source-on predecessor. A new `--no-source3` request does not omit the previous Source-on
 closure obligation. This route never resolves unknown native delivery or input,
 resumes an old operation, restores its state, or admits old data for training.
+
+A Source3-off predecessor consumes the same typed Agent/native-closure and owner
+cleanup proof plus exact original request/options/Node/quiesced opt-out agreement.
+Its report Start/Close remain null and child `source_closed=true` represents the
+known `not_requested` lane, not a recording seal. A boundary for this lane carries
+no Source session/content/seal fields, and no dummy bundle is accepted. New Source
+ID comparisons apply only when both old recording and new recording exist.
 
 The same Application instance lock rechecks the exact predecessor before
 admission. The new private output retains the old marker's exact unknown bytes
