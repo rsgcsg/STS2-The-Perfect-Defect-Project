@@ -164,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--deadline-ms", type=int, default=900_000)
     parser.add_argument("--experimental-build-acknowledged", action="store_true")
     parser.add_argument("--experimental-connector-acknowledged", action="store_true")
+    parser.add_argument("--no-source3", action="store_true",
+                        help="explicitly omit Source3 overlay; direct Agent evidence still records")
     parser.add_argument(
         "--plan-only",
         action="store_true",
@@ -223,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
                     deadline_ms=args.deadline_ms,
                     experimental_build_acknowledged=args.experimental_build_acknowledged,
                     experimental_connector_acknowledged=args.experimental_connector_acknowledged,
+                    record_source3=not args.no_source3,
                 )
                 result = (
                     metadata_preflight(config, request)

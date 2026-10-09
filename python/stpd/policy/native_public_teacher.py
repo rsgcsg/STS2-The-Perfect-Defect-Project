@@ -8,14 +8,14 @@ It must never be inserted as a fallback in a learned evaluation journey.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from spireagent.json_boundary import BoundaryError
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_task import observe_ready_summary
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.1"
+TEACHER_VERSION = "1.0.2"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -44,6 +44,7 @@ class TeacherChoice:
     action_id: str | None
     reason: str
     state: dict[str, Any]
+    directive: Literal["act", "await", "close"] = "act"
 
 
 @dataclass
@@ -73,7 +74,12 @@ class NativePublicTeacher:
         }
 
     def _stop(self, reason: str) -> TeacherChoice:
-        return TeacherChoice(None, reason, self.state())
+        return TeacherChoice(None, reason, self.state(), "close")
+
+    def _await(self, reason: str) -> TeacherChoice:
+        # A pending public owner/focus is a program timing decision, never an
+        # invented action or proof that the earlier delivery finished closing.
+        return TeacherChoice(None, reason, self.state(), "await")
 
     def _choose(
         self, action: dict[str, Any] | None, *, browse: bool = False, phase: str | None = None
@@ -117,6 +123,8 @@ class NativePublicTeacher:
         summary = observe_ready_summary(observation)
         if summary.agent_task_complete:
             return self._stop("natural_ready_summary_" + str(summary.outcome))
+        if observation.get("status") == "settling":
+            return self._await("await_public_ready_owner")
         if observation.get("status") not in {"interactive", "observed"} or not catalog:
             return self._stop("current_not_actionable")
         page = observation.get("interaction")
@@ -146,9 +154,7 @@ class NativePublicTeacher:
                 None,
             )
 
-        def visible(
-            identity: object, role: str | None = None, *, kind: str = "entity"
-        ) -> bool:
+        def visible(identity: object, role: str | None = None, *, kind: str = "entity") -> bool:
             ref = referents.get(identity) if isinstance(identity, str) else None
             return bool(
                 ref
@@ -159,6 +165,14 @@ class NativePublicTeacher:
             )
 
         if self.browse and self.phase != "progress":
+            pending = {
+                "deck": ({"native_map", "map_navigation"}, "run_deck"),
+                "inspect": ({"run_deck"}, "inspect_card"),
+                "deck_return": ({"inspect_card"}, "run_deck"),
+                "map_return": ({"run_deck"}, "map_navigation"),
+            }.get(self.phase)
+            if pending is not None and kind in pending[0]:
+                return self._await("await_public_owner_" + pending[1])
             if self.phase == "map" and kind in {"native_map", "map_navigation"}:
                 return self._choose(find("open_run_deck"), browse=True, phase="deck")
             if self.phase == "deck" and kind == "run_deck":
@@ -245,7 +259,7 @@ class NativePublicTeacher:
                 if isinstance(focused, str) and self.focus_target_id == focused:
                     return self._choose(find("confirm_target", focused))
                 if self.focus_target_id is not None:
-                    return self._stop("native_target_focus_not_observed")
+                    return self._await("await_public_target_focus")
                 target = next(
                     (
                         a

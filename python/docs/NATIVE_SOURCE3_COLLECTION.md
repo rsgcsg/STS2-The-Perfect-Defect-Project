@@ -1,111 +1,107 @@
-# Native Source3 collect-only CLI
+# Runtime-backed program demonstration collection
 
 `python -m spireagent.workbench project collect-source3` is one bounded application
-attempt using an explicit public demonstration teacher. It creates no model,
-training data admission, reservation, upload or training job. Run it only after
-review and the separate exact Host/game/package gates for the selected checkout.
-The existing project configuration, Node dependencies, built native Connector SDK,
-private Host profile template `defect-a0-s0`, and exact authorized game installation
-must already be available. This command does not install or bootstrap those tools.
+attempt. It composes the existing public Agent Runtime with the explicit pure
+`stpd-native-public-program-teacher` Agent. Runtime owns Current/read/catalog,
+consumption/ACK, Act/Await, controller, original Results, budgets and Stop. The
+application owns isolated Host bootstrap and the genuine Workbench admission
+fence; it does not implement another native action loop.
+
+The existing project configuration, Node dependencies, built Connector SDK and
+Policy Runtime facades, private `defect-a0-s0` template and exact authorized game
+installation must already be available. This command installs none of them.
 
 ```sh
 python -m spireagent.workbench project collect-source3 \
-  --config /ABS/project.json \
-  --game-directory /ABS/authorized-game \
-  --host-local-root /ABS/private-host-state \
-  --output /ABS/new-private-attempt \
-  --seed EXPLICITSEED \
-  --target-choices 100 --max-submissions 120 --deadline-ms 900000 \
-  --plan-only
+  --config /ABS/project.json --game-directory /ABS/authorized-game \
+  --host-local-root /ABS/private-host-state --output /ABS/new-private-attempt \
+  --seed EXPLICITSEED --target-choices 100 --max-submissions 100 \
+  --deadline-ms 900000 --plan-only
 ```
 
-`--plan-only` validates read-only metadata without creating an Application, child,
-SDK session or game process. Remove it for the explicitly authorized attempt.
-Unsupported experimental game/Connector candidates require the corresponding
-`--experimental-build-acknowledged` / `--experimental-connector-acknowledged`
-flags in addition to their separate qualification. Paths must be absolute and
-contain no symlink; output must be a new private directory. Targets and submissions
-are bounded to 1–300 and the deadline to 45 minutes. The endpoint comes from the
-existing project configuration and must be loopback. The executable, native SDK,
-Host implementation, template, character (Defect) and ascension (A0) are fixed.
+`--plan-only` validates read-only metadata without Application, child, SDK or game
+launch. Remove it only for the explicitly authorized attempt. Experimental Host
+candidates retain their separate qualification and acknowledgement flags.
+Paths must be absolute, contain no symlink, and output must be new/private.
+The pilot admits at most 100 submissions and 1200 policy calls within 15 minutes.
+All module/executable choices are fixed by the trusted application; manifests and
+teacher replies never select an arbitrary module, shell or native operand.
 
-The CLI holds the existing Workbench instance lock and one genuine Application.
-Its original `control_native_recording` Start/Close methods retain shared Source
-and Model admission. A running Workbench or nonquiescent Model blocks collection.
-No GUI/server/pair setup, direct recording-task mutation or alternate admission
-service is introduced. Unknown Start admits zero teacher choices. An accepted
-owned Start is closed at most once, including exceptions before SourceReady.
-Unknown Close remains unknown and is never repeated automatically.
+Source3 is an optional default-on overlay. `--no-source3` explicitly omits it while
+the genuine Application/instance lock and direct Agent evidence remain. A running
+Workbench or nonquiescent Model blocks collection. With Source3 enabled, original
+`control_native_recording` Start/Close retain shared Source/Model admission.
+Unknown Start admits no Runtime steps; unknown offered Close is never repeated.
+Diagnostic request-write failure cannot suppress the genuine Close call. Normal
+and exceptional paths stop Runtime, observe its exact Node quiescence, then Close
+Source, then close the Host. A bounded fallback Close without confirmed quiescence
+is explicitly reported; Close is never proof an in-flight native effect settled.
 
-The fixed Node child owns isolated Host startup, bootstrap handoff and native SDK
-execution. It attaches with an empty eager scope in scoped mode and the fixed
-publication profile's required seams. Before each teacher decision it acquires
-complete fresh Current and the complete ordered original C, including low-ranked
-members. Event cursors/gaps and bounded async waits are advisory wake/accounting;
-they create no full-publication-history claim and no backfill. Source accounting,
-original input integrity, control, runtime, generation and action-binding failures
-still stop. One original action ID and basis are returned by the Python parent;
-Node rechecks membership and binds/executes it through the original SDK. Only
-known pending Result is read, using the same original request ID (at most 40 reads
-and two seconds). Unknown delivery never authorizes another submission.
+The Agent has a real code-closure artifact, its own AgentSpec/InputSpec and
+`model_bindings=[]`, `scores=null`, `state_recovery=none`. It is unlearned, has no
+weights or inference backend, and cannot be a hidden fallback in learned evaluation.
+The code identity includes executed qualifiers/package initializers; lock and
+interpreter provenance are explicit. Teacher policy version 1.0.2 preserves the
+native joins and adds explicit bounded Await for a pending public owner/focus.
+A Return delivery does not prove owner arrival. If Inspect still exposes only
+Return while closing, the Agent Awaits; it never repeats that action to pad N.
+Unsupported public owners close with an honest reason.
 
-The pure STPD teacher `native-public-demonstration-v1` is explicit, deterministic
-and unlearned. Its disclosed scripted inspection state admits at most 12 browsing
-choices, then progresses through typed current map/card/focus/confirm/reward
-members. Missing required public semantics stops the attempt. It cannot replace
-or act as a hidden fallback for a learned natural-evaluation journey.
+Each Next obtains complete fresh Current and complete ordered C through Runtime
+and the public SDK. Attachment is scoped with empty eager event fields and the
+fixed publication profile's required seams. Advisory events/gaps create neither
+full-history claims nor backfill. The pure native qualifier and occurrence law
+reject incomplete/incoherent input. Unchanged and empty nonterminal readiness
+queries do not consume or advance state. A changed eligible input stages a copy
+of disclosed script state; only the exact ConsumeACK commits it. Its next
+Act/Await/Close retains that acknowledged watermark. A qualified ready summary
+may be consumed without a new action label; clocks and later frames prove no
+prior Commit, effect or closure.
 
-Before SDK admission, a private `submission-intent-NNNN.json` records and syncs
-its original request ID, ordinal, complete basis and original action. This is an
-intent, with admission/delivery unobserved. An admitted transport failure retains
-that same ID and its explicit unresolved/unknown/no-retry disposition in
-`submission-outcome-NNNN.json`, the final child receipt and parent report.
-`quiesced.json` preserves the original quiescence identity/counts before Close;
-none of these records authorizes retry or infers an outcome from later Current.
-A failed Close-request diagnostic write is recorded and still permits the
-original App Close call. The at-most-once flag is set only when that owner call
-is actually offered; an unknown offered Close is never repeated.
+`AgentRunEvidence` retains immutable original sample bytes/C, query/proposal/ACK
+and later directive watermarks, original submission intent/result, and scoped
+failure/Stop records. Unknown or pending original delivery is handed off by the
+Runtime without an automatic Result lookup or resubmit. Some transport-unknown
+request IDs are retained in canonical evidence but not exposed by public status;
+the collection report declares that projection absence. It never reconstructs
+control by parsing JSONL or fabricates a pending request.
 
-Attachment starts at the SDK subscription's original `starting_cursor`; subsequent
-Events and Renew replies supply their own `next_cursor`. A collector exception
-also writes private `collector-failure.json` with the active phase and bounded
-error/cause details. Field lengths and cause depth are bounded, and the existing
-UTF-8 diagnostic byte budget still applies. Diagnostic write failure cannot
-replace the original request disposition or prevent owner cleanup. These files
-are operational diagnostics, never recording originals or training input.
+Private application pipe/report v2 keeps Init, permissions and compact final
+within 16 KiB. Explicitly named `runtime_gate`, `runtime_tick` and `quiesced`
+envelopes preserve complete public Runtime status under the bounded 96 MiB
+transport ceiling and one-message queue. Exact canceled application permission
+reply IDs may be retired; Native Results remain exclusively Runtime-owned.
+Large diagnostics stay in bounded private files. A compact final carries counts,
+known disposition, actual teacher PID/code/signal, Source/control/Host cleanup and
+SHA reference to the complete immutable private final. Hydration failure is a
+reporting error and cannot erase received compact facts or turn an unverified
+file into evidence. Runtime's public port normally SIGKILLs its owned adapter on
+Stop; the actual signal is recorded, never relabeled exit 0.
 
-Private `request.json`, exact original result files and `report.json` preserve
-attempt disposition, teacher state, counts, cancellation, controller release and
-actual Host/child exit receipts. `actual_choices` counts received original Result
-messages; `submissions` separately counts SDK submission admissions, including an
-unresolved final admission. Known delivered choices do not prove native execution,
-effect, successor, Human origin or eligible unique N. `eligible_unique_N` and
-`N_exclusions` remain unknown and `admission=not_run`; target 100 never proves N=100.
-A ready native terminal summary or unsupported/unknown/budget stop preserves a
-partial attempt. Recording starts after Host bootstrap, so the prefix is declared
-partial and never strict native-start/full history.
+`actual_choices` counts distinct received public original Result projections;
+`submissions` comes from Runtime's actual submission-admission budget. Known
+full delivery, native execution/rejection, effect and cancellation remain
+separate. A delivered native rejection is a censored stop, even at the target.
+`eligible_unique_N`/`N_exclusions` stay unknown and `admission=not_run`.
+Source begins after Host bootstrap, so the prefix is partial. Collection neither
+uploads nor trains and no count proves Human origin or scientific qualification.
 
-SIGINT/SIGTERM/EOF/deadline cleanup is owned before launch; repeated signals request
-cleanup without escaping it. The child releases its original controller, detaches
-its subscription and closes its exact Host. Parent retains actual child exit
-separately. A missing receipt, active child, unknown Close or cleanup failure stays
-unknown. The durable collection-operation marker blocks unresolved predecessors;
-there is no automatic restart, resume, process-name kill or unknown retry.
+Only Recorder-owned Source3 originals use the existing import/verification/
+partition/reservation/training bridge. Its sampled training view remains an
+explicit reexpression, not the teacher's actual consumption. Direct native
+AgentRun-to-student admission/projection is a separate versioned owner; this
+collector creates the trace but no converter or additional action ledger.
 
-The Node/Python pipe journal is operational evidence. Only Recorder-owned raw
-Source3 originals go through the existing separate import, verification, ordered
-projection, partition/reservation and training APIs. No collection report upgrades
-source/test checks into installed, live, Human, research or G2/V1 qualification.
-
-Focused portable checks:
+Focused source tests exercise real public SDK + Runtime + actual Python stdio,
+genuine Application admission, exact ACK staging/readiness, native closing,
+unknown/pending originals, optional overlay, cancellation and bounded reporting:
 
 ```sh
-node --test tools/test/native-source3-collector.test.mjs
-node --test components/host-runtime/test/source3-episode-lifecycle.test.mjs
-python -m pytest -q python/tests/test_native_source3_collection.py \
-  python/tests/test_native_public_teacher.py
+node --test tools/test/native-source3-collector.test.mjs \
+  tools/test/native-source3-collector-sdk.test.mjs
+python -m pytest -q python/tests/test_native_public_teacher.py \
+  python/tests/test_native_teacher_agent.py python/tests/test_native_source3_collection.py
 ```
 
-Tests use the production compositions with injected exact process/SDK/Recorder
-owners, the genuine Application admission path, and synthetic public inputs.
-They do not collect or train on actual Source3 or qualify an actual game.
+These tests use synthetic public fixtures and owned temporary files/processes.
+They do not qualify an installed game, actual data, learning or complete G2/V1.

@@ -1,349 +1,72 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { createCollectionLifetime, createPipePeer, PIPE_SCHEMA,
-  runNativeSource3 } from "../native-source3-collector.mjs";
+import { createCollectionLifetime, createPipePeer, PIPE_SCHEMA, runNativeSource3, validateOptions }
+  from "../native-source3-collector.mjs";
 
 const operation = "a".repeat(32);
-const receipt = { code: 0, signal: null, forced: false };
-const action = index => ({ action_id: `original-${index}`, kind: "input", verb: "activate",
-  label: `Public ${index}`, subject_referent_id: `ref-${index}`, arguments: [], effect_domain: "native" });
+const options = { installation: "/synthetic/game", host_local_root: "/synthetic/host", output: "/synthetic/output",
+  endpoint: "http://127.0.0.1:15526", seed: "SYNTHETIC", template_id: "defect-a0-s0",
+  target_choices: 100, max_submissions: 100, deadline_ms: 900000, max_input_bytes: 8 * 1024 * 1024,
+  max_diagnostic_bytes: 1024 * 1024, experimental_build_acknowledged: false,
+  experimental_connector_acknowledged: false, record_source3: true,
+  python_executable: "/synthetic/python", teacher_artifact: {}, teacher_descriptor: {} };
 
-async function fixture(t, behavior = {}) {
-  const output = await mkdtemp(path.join(os.tmpdir(), "source3-pure-"));
-  t.after(() => rm(output, { recursive: true, force: true }));
-  const options = { installation: "/synthetic/game", host_local_root: "/synthetic/host",
-    output, endpoint: "http://127.0.0.1:15526", seed: "SYNTHETIC", template_id: "defect-a0-s0",
-    target_choices: 2, max_submissions: 2, deadline_ms: 10_000, max_input_bytes: 1024 * 1024,
-    max_diagnostic_bytes: 1024 * 1024, experimental_build_acknowledged: false,
-    experimental_connector_acknowledged: false, ...behavior.options };
+test("one fixed program collector request has finite pilot limits and explicit optional Source3", () => {
+  assert.equal(validateOptions(options), options);
+  for (const invalid of [{ ...options, deadline_ms: 900001 }, { ...options, target_choices: 101 },
+    { ...options, record_source3: "false" }, { ...options, python_executable: "from-request" },
+    { ...options, endpoint: "https://external.invalid" }, { ...options, arbitrary_module: "hidden" }])
+    assert.throws(() => validateOptions(invalid));
+});
+
+test("early repeated cancellation is owned before Host or program launch", async () => {
   const lifetime = createCollectionLifetime();
-  const seen = { messages: [], submissions: [], queries: [], captures: [], disposals: 0,
-    releases: 0, closes: 0, hostCloses: 0, attaches: [], events: 0, order: [] };
-  const catalog = Array.from({ length: 40 }, (_, index) => action(index));
-  let nextReply, original;
-  const peer = {
-    async send(value) {
-      seen.messages.push(value);
-      const common = { schema: PIPE_SCHEMA, operation_id: operation, message_id: value.message_id };
-      if (value.type === "ready") {
-        nextReply = { ...common, type: "source_ready", source_context: {
-          runtime_instance_id: "runtime", recording_session_id: "session", source_segment_id: "segment",
-          source_epoch_id: "epoch", declaration: { source_kind: "agent_protocol", actor_id: "teacher",
-            declaration_id: "declaration", machine_verifiable: false } } };
-      } else if (value.type === "current") {
-        assert.deepEqual(value.catalog, catalog); // Low-ranked members survive unchanged.
-        nextReply = { ...common, type: "choice", ordinal: value.ordinal, basis: { ...value.basis },
-          action_id: catalog.at(-1).action_id, stop_reason: null, teacher_state: { learned: false } };
-        if (behavior.wrongBasis) nextReply.basis.snapshot_id = "different";
-        if (behavior.wrongAction) nextReply.action_id = "not-original";
-      } else if (value.type === "result") {
-        nextReply = { ...common, type: "continue", continue: true, reason: "known_original_source" };
-      } else if (value.type === "quiesced") {
-        seen.order.push("application_close");
-        nextReply = { ...common, type: "source_closed", known_closed: true,
-          source_status: { recording_lifecycle: "closed" }, close_outcome: "known_closed" };
-      }
-    },
-    async receive() {
-      if (behavior.unknownStart && nextReply?.type === "source_ready") throw new Error("source_start_unknown");
-      if (behavior.resultEOF && nextReply?.type === "continue") throw new Error("parent_eof");
-      return nextReply;
-    }
-  };
-  class Client { async controlSnapshot() { return { data: { runtime_instance_id: "runtime", controller: null } }; } }
-  class Controller {
-    constructor() { if (behavior.stopDuringConstruction) lifetime.stop("construction_stop"); }
-    async register() {}
-    async releaseControl() { seen.releases++; }
-    async close() { seen.closes++; }
-  }
-  class Native {
-    async capabilities() { return { data: { session: { runtime_instance_id: "runtime" },
-      host: {}, control_policy: {}, limits: { retention_ms: 10_000 } } }; }
-    async attach(input) {
-      seen.attaches.push(input);
-      return { data: { subscription: this.subscription = { delivery_mode: "scoped", eager_scope: [],
-        stream_generation: "generation", starting_cursor: "first" } } };
-    }
-    async getFullCurrent({ budget }) {
-      const number = seen.captures.length + 1;
-      const observation = { status: "interactive", catalog: { stream_generation: behavior.badGeneration
-        ? "wrong" : "generation", digest: "synthetic-digest", total_count: catalog.length } };
-      const raw = JSON.stringify(observation);
-      const reservation = budget.reserve({ bytes: Buffer.byteLength(raw) });
-      const capture = { capture_id: `capture-${number}`, snapshot_id: `snapshot-${number}`,
-        session: { runtime_instance_id: "runtime" }, byte_count: Buffer.byteLength(raw),
-        sha256: createHash("sha256").update(raw).digest("hex") };
-      seen.captures.push(capture);
-      return { observation, actions: catalog, capture, serializedObservation: raw,
-        async dispose() { seen.disposals++; reservation.release(); } };
-    }
-    async submit(input) {
-      const intent = JSON.parse(await readFile(path.join(options.output,
-        `submission-intent-${String(seen.submissions.length + 1).padStart(4, "0")}.json`), "utf8"));
-      assert.equal(intent.request_id, input.requestId);
-      assert.equal(intent.action.action_id, input.actionId);
-      assert.equal(intent.basis.snapshot_id, input.expectedSnapshotId);
-      assert.equal(intent.sdk_admission, "not_yet_observed");
-      assert.equal(intent.delivery, "not_observed");
-      if (behavior.preAdmissionError) throw new Error("pre_admission_failed");
-      input.onSubmitStart(); seen.submissions.push(input);
-      original = { request_id: input.requestId, snapshot_id: input.expectedSnapshotId,
-        action: catalog.at(-1), delivery: behavior.unknownDelivery ? "unknown" : "delivered",
-        execution: behavior.nativeRejected ? "native_rejected" : "unknown", effect: "unknown", cancel: "unknown" };
-      if (behavior.doubleSignal) {
-        lifetime.stop("external_signal"); lifetime.stop("external_signal");
-        throw new Error("original_transport_unresolved");
-      }
-      if (behavior.unknownSubmit) throw new Error("original_transport_unresolved");
-      return behavior.pending ? { status: "pending" } : { status: "terminal", result: { data: original } };
-    }
-    async result(requestId) {
-      seen.queries.push(requestId);
-      if (behavior.resultUnknown) throw new Error("original_result_transport_unknown");
-      return seen.queries.length < 2 ? { status: "pending" }
-        : { status: "terminal", result: { data: original } };
-    }
-    async events(input) {
-      assert.equal(input.afterCursor, seen.events === 0 ? "first" : "next");
-      seen.events++;
-      if (behavior.eventError) throw behavior.eventError;
-      return { data: { events: [{ kind: "advisory" }],
-      gap: { reason: "retention" }, next_cursor: "next" } }; }
-    async detach() { this.subscription = null; if (behavior.detachFailure) throw new Error("detach_failed"); }
-  }
-  const deps = { PlayerEnvironmentRestClient: Client, EnvironmentControllerSession: Controller,
-    NativeLogicalSession: Native, resolveInstallation: value => value,
-    NATIVE_LOGICAL_PUBLICATION_PROFILE: { profile_id: "native-logical-publication-profile-v1",
-      input_profile: "native-logical-v1", required_seams: ["fixed-native-seam"] },
-    async startEpisode(input) {
-      if (behavior.startupCancel) {
-        await new Promise(resolve => {
-          input.signal.addEventListener("abort", resolve, { once: true });
-          lifetime.stop("external_signal"); lifetime.stop("external_signal");
-        });
-        throw Object.assign(new Error("startup_cancelled"), { host_started: true, host_exit: receipt });
-      }
-      return { identity: { endpoint: options.endpoint, host: { runtime_instance_id: "runtime" } },
-        async releaseController() { return { controller: null }; },
-        async close() { seen.hostCloses++; seen.order.push("host_close"); return receipt; } };
-    }
-  };
-  return { options, lifetime, peer, deps, seen };
-}
-
-async function run(t, behavior) {
-  const f = await fixture(t, behavior);
-  return { ...f, final: await runNativeSource3(f.options, operation, f.peer, f.deps, f.lifetime) };
-}
-
-test("bounded private failure detail preserves owner cause without changing delivery or cleanup", async t => {
-  const inner = new Error("underlying request validation");
-  inner.cause = inner; // A cause cycle must remain bounded.
-  const error = new Error("native logical request validation failed: " + "x".repeat(12000),
-    { cause: inner });
-  const { options, final, seen } = await run(t, { eventError: error });
-  const failure = JSON.parse(await readFile(path.join(options.output, "collector-failure.json"), "utf8"));
-  assert.equal(failure.phase, "events");
-  assert.equal(failure.error.name, "Error");
-  assert.equal(failure.error.message, error.message.slice(0, 2048));
-  assert.ok(failure.error.stack.length <= 8192);
-  assert.equal(failure.error.cause.message, inner.message);
-  assert.equal(failure.error.cause.cause.message, inner.message);
-  assert.equal(failure.error.cause.cause.cause, undefined);
-  assert.equal(failure.reason, final.reason);
-  assert.equal(final.reason, "collector_owner_failed");
-  assert.equal(failure.pending_request_id, null);
-  assert.equal(failure.automatic_retry, false);
-  assert.equal(final.last_submission.delivery, "delivered");
-  assert.equal(final.counts.submissions, 1);
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
+  lifetime.stop("external_signal"); lifetime.stop("external_signal");
+  let starts = 0, final;
+  const deps = { async startEpisode() { starts++; throw new Error("must_not_launch"); } };
+  const peer = { async send(value) { final = value; }, async receive() { throw new Error("must_not_query"); } };
+  const original = { ...options, output: "/synthetic/not-created" };
+  const result = await runNativeSource3(original, operation, peer, deps, lifetime);
+  assert.equal(starts, 0);
+  assert.equal(result.reason, "external_signal");
+  assert.equal(final.teacher_exit, null);
+  assert.equal(final.host_started, false);
 });
 
-test("failed private diagnostic write preserves original error and still closes every owner", async t => {
-  const f = await fixture(t, { eventError: new Error("native logical request rejected") });
-  const target = path.join(f.options.output, "collector-failure.json");
-  await writeFile(target, "original diagnostic", { flag: "wx" });
-  const final = await runNativeSource3(f.options, operation, f.peer, f.deps, f.lifetime);
-  assert.equal(await readFile(target, "utf8"), "original diagnostic");
-  assert.equal(final.reason, "collector_owner_failed");
-  assert.ok(final.cleanup_errors.includes("failure_diagnostic_write_failed"));
-  assert.equal(final.source_closed, true);
-  assert.equal(final.counts.submissions, 1);
-  assert.equal(f.seen.releases, 1);
-  assert.equal(f.seen.hostCloses, 1);
+test("retired application reply is discarded only for the exact canceled operation/message/type", async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  const peer = createPipePeer(input, output, JSON.parse, createCollectionLifetime());
+  peer.retireReply(operation, 4, "runtime_continue");
+  input.write(JSON.stringify({ schema: PIPE_SCHEMA, type: "runtime_continue", operation_id: operation,
+    message_id: 4, continue: true, reason: "late permission" }) + "\n");
+  const sourceClosed = { schema: PIPE_SCHEMA, type: "source_closed", operation_id: operation, message_id: 5,
+    known_closed: true, source_status: null, close_outcome: "known_closed" };
+  input.write(JSON.stringify(sourceClosed) + "\n");
+  assert.deepEqual(await peer.receive(), sourceClosed);
+  peer.retireReply(operation, 6, "runtime_continue");
+  const other = { schema: PIPE_SCHEMA, type: "source_closed", operation_id: operation, message_id: 6 };
+  input.write(JSON.stringify(other) + "\n");
+  assert.deepEqual(await peer.receive(), other); // A mismatch is never silently discarded.
+  input.destroy(); output.destroy();
 });
 
-test("complete fresh Current/C, scoped empty attachment and advisory gap preserve original choices", async t => {
-  const { final, seen } = await run(t);
-  assert.equal(final.reason, "target_choices_reached");
-  assert.equal(final.counts.submissions, 2);
-  assert.equal(seen.captures.length, 2);
-  assert.equal(seen.disposals, 2);
-  assert.equal(final.live_byte_reservations, 0);
-  assert.ok(seen.submissions.every(s => s.actionId === "original-39"));
-  assert.deepEqual(seen.attaches[0].eagerScope, []);
-  assert.deepEqual(seen.attaches[0].requiredSeams, ["fixed-native-seam"]);
-  assert.equal(final.advisory.gaps, 2);
-  assert.equal(final.advisory.history_claimed, false);
-  assert.equal(final.advisory.event_payloads_archived, false);
-  assert.deepEqual(final.host_exit, receipt);
-  assert.equal(final.control_release.confirmed, true);
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
-});
-
-test("pending reads only the original Result, never resubmits or invents effect proof", async t => {
-  const { final, seen } = await run(t, { pending: true, options: { target_choices: 1, max_submissions: 1 } });
-  assert.equal(seen.submissions.length, 1);
-  assert.equal(seen.queries.length, 2);
-  assert.ok(seen.queries.every(id => id === seen.submissions[0].requestId));
-  assert.equal(final.counts.result_queries, 2);
-  const result = seen.messages.find(m => m.type === "result");
-  assert.equal(result.result.effect, "unknown");
-});
-
-for (const field of ["wrongBasis", "wrongAction", "unknownStart", "badGeneration"]) {
-  test(`${field} admits zero native submissions and closes the owned Host`, async t => {
-    const { final, seen } = await run(t, { [field]: true });
-    assert.equal(seen.submissions.length, 0);
-    assert.equal(seen.hostCloses, 1);
-    assert.equal(final.counts.submissions, 0);
-    assert.equal(final.live_byte_reservations, 0);
-  });
-}
-
-for (const field of ["unknownSubmit", "unknownDelivery", "doubleSignal"]) {
-  test(`${field} stops after the original attempt without automatic retry`, async t => {
-    const { final, seen, lifetime } = await run(t, { [field]: true });
-    assert.equal(seen.submissions.length, 1);
-    assert.equal(seen.queries.length, 0);
-    assert.equal(seen.hostCloses, 1);
-    assert.equal(seen.releases, 1);
-    assert.equal(final.live_byte_reservations, 0);
-    assert.notEqual(final.reason, "target_choices_reached");
-    if (field === "doubleSignal") assert.equal(lifetime.stops, 2);
-  });
-}
-
-test("early double cancellation keeps the actual startup Host exit receipt", async t => {
-  const { final, seen } = await run(t, { startupCancel: true });
-  assert.equal(final.host_started, true);
-  assert.deepEqual(final.host_exit, receipt);
-  assert.equal(seen.submissions.length, 0);
-});
-
-test("cancellation during controller construction cannot cache a phantom empty release", async t => {
-  const { seen, final } = await run(t, { stopDuringConstruction: true });
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
-  assert.equal(final.control_release.confirmed, true);
-});
-
-test("known delivery survives parent reply EOF; cleanup errors remain explicit", async t => {
-  const { seen, final } = await run(t, { resultEOF: true, detachFailure: true });
-  assert.equal(seen.submissions.length, 1);
-  assert.equal(final.counts.known_delivered_choices, 1);
-  assert.ok(final.cleanup_errors.includes("native_detach_unconfirmed"));
-  assert.equal(seen.hostCloses, 1);
-});
-
-test("pipe EOF and duplicate queued replies stop before init or Host launch", async () => {
+test("bounded one-message queue and EOF fail closed without another executor", async () => {
   const lifetime = createCollectionLifetime(), input = new PassThrough(), output = new PassThrough();
   const peer = createPipePeer(input, output, JSON.parse, lifetime);
-  input.end();
+  input.write('{"type":"first"}\n{"type":"unexpected"}\n');
   await assert.rejects(peer.receive(), /parent_eof/);
-  assert.equal(lifetime.reason, "parent_eof");
-  const life2 = createCollectionLifetime(), in2 = new PassThrough();
-  const peer2 = createPipePeer(in2, new PassThrough(), JSON.parse, life2);
-  in2.write('{"type":"init"}\n{"type":"init"}\n');
-  await assert.rejects(peer2.receive(), /parent_eof/);
-  assert.equal(life2.reason, "pipe_protocol_failed");
+  assert.equal(lifetime.reason, "pipe_protocol_failed");
+  input.destroy(); output.destroy();
 });
 
-
-test("native rejection at the target remains a failed/censored reason, never target success", async t => {
-  const { final, seen } = await run(t, { nativeRejected: true,
-    options: { target_choices: 1, max_submissions: 1 } });
-  assert.equal(seen.submissions.length, 1);
-  assert.equal(final.counts.known_delivered_choices, 1);
-  assert.equal(final.reason, "native_choice_not_delivered_or_rejected");
-});
-
-
-test("failed SourceReady ACK quiesces App admission before Host close, with zero native choices", async t => {
-  const { final, seen } = await run(t, { unknownStart: true });
-  assert.deepEqual(seen.order, ["application_close", "host_close"]);
-  assert.equal(seen.submissions.length, 0);
-  assert.equal(final.source_closed, true);
-  assert.equal(final.control_release.confirmed, true);
-  assert.equal(final.control_release.native_controller_constructed, false);
-  assert.equal(seen.releases, 0);
-  assert.equal(seen.messages.find(message => message.type === "quiesced").pending_request_id, null);
-});
-
-
-test("post-admission throw retains durable original intent/outcome and final identity without retry", async t => {
-  const { options, seen, final } = await run(t, { unknownSubmit: true });
-  const requestId = seen.submissions[0].requestId;
-  const intent = JSON.parse(await readFile(path.join(options.output, "submission-intent-0001.json"), "utf8"));
-  const outcome = JSON.parse(await readFile(path.join(options.output, "submission-outcome-0001.json"), "utf8"));
-  const quiesced = seen.messages.find(message => message.type === "quiesced");
-  assert.equal(intent.request_id, requestId);
-  assert.equal(intent.ordinal, 1);
-  assert.equal(intent.action.action_id, "original-39");
-  assert.equal(intent.basis.snapshot_id, seen.submissions[0].expectedSnapshotId);
-  assert.deepEqual(quiesced.last_submission, outcome);
-  assert.deepEqual(final.last_submission, outcome);
-  assert.equal(final.pending_request_id, requestId);
-  assert.equal(outcome.sdk_admitted, true);
-  assert.equal(outcome.lookup_status, "unresolved");
-  assert.equal(outcome.delivery, "unknown");
-  assert.equal(outcome.automatic_retry, false);
-  assert.equal(final.counts.submissions, 1);
-  assert.equal(seen.submissions.length, 1);
-  assert.equal(seen.queries.length, 0);
-  assert.equal(seen.order.filter(item => item === "application_close").length, 1);
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
-  assert.deepEqual(final.host_exit, receipt);
-});
-
-
-test("original Result transport exception retains admitted identity and unresolved lookup", async t => {
-  const { options, final, seen } = await run(t, { pending: true, resultUnknown: true });
-  const requestId = seen.submissions[0].requestId;
-  const outcome = JSON.parse(await readFile(path.join(options.output, "submission-outcome-0001.json"), "utf8"));
-  assert.equal(seen.submissions.length, 1);
-  assert.deepEqual(seen.queries, [requestId]);
-  assert.equal(outcome.request_id, requestId);
-  assert.equal(outcome.lookup_status, "unresolved");
-  assert.equal(outcome.result_queries, 1);
-  assert.equal(outcome.sdk_admitted, true);
-  assert.equal(outcome.delivery, "unknown");
-  assert.equal(outcome.automatic_retry, false);
-  assert.equal(final.pending_request_id, requestId);
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
-});
-
-
-test("prepared intent does not claim SDK admission or delivery when admission never occurs", async t => {
-  const { options, final, seen } = await run(t, { preAdmissionError: true });
-  const intent = JSON.parse(await readFile(path.join(options.output, "submission-intent-0001.json"), "utf8"));
-  assert.equal(final.last_submission.request_id, intent.request_id);
-  assert.equal(final.last_submission.sdk_admitted, false);
-  assert.equal(final.last_submission.lookup_status, "not_started");
-  assert.equal(final.last_submission.delivery, null);
-  assert.equal(final.pending_request_id, null);
-  assert.equal(final.counts.submissions, 0);
-  assert.equal(seen.submissions.length, 0);
-  assert.equal(seen.releases, 1);
-  assert.equal(seen.hostCloses, 1);
+test("named Runtime status envelopes allow bounded originals while compact final stays16KiB", async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  const peer = createPipePeer(input, output, JSON.parse, createCollectionLifetime());
+  const text = "汉字".repeat(8192);
+  await assert.rejects(peer.send({ type: "closed", text }), /pipe_write_unavailable/);
+  let bytes = 0; output.on("data", value => { bytes += value.length; });
+  await peer.send({ type: "runtime_tick", text });
+  assert.ok(bytes > 16 * 1024);
+  input.destroy(); output.destroy();
 });

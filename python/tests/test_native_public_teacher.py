@@ -97,7 +97,8 @@ def test_card_entry_focus_confirm_and_no_unobserved_focus_repeat():
         actions, "combat_card_operation", "card_targeting", refs=[("enemy", "creature")]
     )
     assert teacher.decide(view, actions).action_id == "focus"
-    assert teacher.decide(view, actions).reason == "native_target_focus_not_observed"
+    assert teacher.decide(view, actions).directive == "await"
+    assert teacher.decide(view, actions).reason == "await_public_target_focus"
     view["owner_occurrence"]["focus_referent_id"] = "enemy"
     assert teacher.decide(view, actions).action_id == "confirm"
     actions = [action("end", "end_turn")]
@@ -192,7 +193,10 @@ def test_linked_reward_typed_children_and_native_proceed():
     surface["entries"][0]["choices"][0]["enabled"] = False
     actions = [actions[1]]
     view = observation(
-        actions, "reward_claim", surface=surface, refs=[("screen", "screen")],
+        actions,
+        "reward_claim",
+        surface=surface,
+        refs=[("screen", "screen")],
         schema="sts2.player-environment/surface/linked_rewards_text_menu-1",
     )
     # The actual reward-page producer emits this as a control, not an entity.
