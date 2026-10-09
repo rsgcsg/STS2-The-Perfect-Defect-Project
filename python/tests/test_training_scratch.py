@@ -3,14 +3,94 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from test_training_service_contracts import child_script, ready, settle
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.local_training import OPERATION_FILE
+
+
+@pytest.mark.parametrize(("target", "active", "allowed"), [
+    ("current_file", True, True),
+    ("current_file", False, False),
+    ("prior_file", True, False),
+    ("current_root", True, False),
+])
+def test_inventory_distinguishes_live_temporary_removal_from_retained_loss(
+    tmp_path, monkeypatch, target, active, allowed
+):
+    from spireagent.workbench.training_scratch import retained_scratch_bytes
+
+    operation = {"attempt_id": "2"*32, "attempts": [{"attempt_id": "1"*32}],
+                 "scratch_name": "local-training-"+"2"*32+".scratch"}
+    prior = tmp_path/("local-training-"+"1"*32+".scratch")
+    current = tmp_path/operation["scratch_name"]
+    prior.mkdir()
+    current.mkdir()
+    (prior/"kept").write_bytes(b"old")
+    (current/"kept").write_bytes(b"newer")
+    victim = (prior if target == "prior_file" else current)/"temporary"
+    victim.write_bytes(b"temporary")
+    if target == "current_root":
+        victim = current
+    original = Path.lstat
+
+    def disappear(item, *args, **kwargs):
+        if item == victim:
+            if target == "current_root":
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        return original(item, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", disappear)
+    if allowed:
+        assert retained_scratch_bytes(
+            tmp_path/OPERATION_FILE, operation, active_attempt=active
+        ) == 8
+    else:
+        with pytest.raises(BoundaryError, match="scratch_inventory_invalid"):
+            retained_scratch_bytes(tmp_path/OPERATION_FILE, operation, active_attempt=active)
+    assert (prior/"kept").read_bytes() == b"old"
+
+
+@pytest.mark.parametrize("failure", ["removed_directory", "permission"])
+def test_live_directory_scan_only_tolerates_actual_descendant_disappearance(
+    tmp_path, monkeypatch, failure
+):
+    from spireagent.workbench import training_scratch as scratch
+
+    operation = {"attempt_id": "2"*32, "attempts": [],
+                 "scratch_name": "local-training-"+"2"*32+".scratch"}
+    current = tmp_path/operation["scratch_name"]
+    current.mkdir()
+    temporary = current/"source3-verified-replay"
+    temporary.mkdir()
+    (current/"kept").write_bytes(b"data")
+    original = scratch.os.scandir
+
+    def scan(item):
+        if Path(item) == temporary:
+            if failure == "permission":
+                raise PermissionError("private scratch permission failure")
+            temporary.rmdir()
+        return original(item)
+
+    monkeypatch.setattr(scratch.os, "scandir", scan)
+    if failure == "removed_directory":
+        assert scratch.retained_scratch_bytes(
+            tmp_path/OPERATION_FILE, operation, active_attempt=True
+        ) == 4
+    else:
+        with pytest.raises(BoundaryError, match="scratch_inventory_invalid"):
+            scratch.retained_scratch_bytes(
+                tmp_path/OPERATION_FILE, operation, active_attempt=True
+            )
 
 
 def test_retained_scratch_is_cumulative_across_forced_child_attempts(tmp_path, monkeypatch):

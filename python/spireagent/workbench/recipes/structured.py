@@ -347,7 +347,7 @@ class StructuredRecipeAdapter:
         def stop_requested() -> bool:
             with service._lock:
                 value = current()
-                if (retained_scratch_bytes(path, value) >
+                if (retained_scratch_bytes(path, value, active_attempt=True) >
                         value["request"]["limits"]["scratch_bytes"]):
                     raise BoundaryError("local_training", "scratch_budget_exhausted")
                 if value["requested_action"] != "cancel":
