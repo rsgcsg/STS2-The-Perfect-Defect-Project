@@ -83,5 +83,7 @@ test("S0 and native collection regressions participate in full and Python owner 
   assert.ok(scripts["check:s0"].includes("tools/test/baseline-s0-runner.test.mjs"));
   assert.ok(scripts["check:s0"].includes("tools/test/native-source3-collector.test.mjs"),
     "native collection lifecycle regressions must run in the selected portable gates");
+  assert.ok(scripts["check:s0"].includes("tools/test/native-source3-collector-sdk.test.mjs"),
+    "native collection must exercise the actual SDK request and reply grammar");
   assert.ok(scripts["check:s0"].includes("tools/test/test_baseline_s0_dataset.py"));
 });

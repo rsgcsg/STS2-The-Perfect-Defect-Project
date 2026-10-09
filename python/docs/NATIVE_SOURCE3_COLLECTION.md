@@ -66,6 +66,14 @@ A failed Close-request diagnostic write is recorded and still permits the
 original App Close call. The at-most-once flag is set only when that owner call
 is actually offered; an unknown offered Close is never repeated.
 
+Attachment starts at the SDK subscription's original `starting_cursor`; subsequent
+Events and Renew replies supply their own `next_cursor`. A collector exception
+also writes private `collector-failure.json` with the active phase and bounded
+error/cause details. Field lengths and cause depth are bounded, and the existing
+UTF-8 diagnostic byte budget still applies. Diagnostic write failure cannot
+replace the original request disposition or prevent owner cleanup. These files
+are operational diagnostics, never recording originals or training input.
+
 Private `request.json`, exact original result files and `report.json` preserve
 attempt disposition, teacher state, counts, cancellation, controller release and
 actual Host/child exit receipts. `actual_choices` counts received original Result
