@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,83 @@ def test_missing_input_resumes_independent_span_with_explicit_W0(tmp_path, missi
     assert identity["sample_segments"][0]["cuts"][0]["original"] == first
     assert dataset.runs[0].run_id == report["index"][0]["run_id"]
     assert len(report["index"]) == 4 and not identity["whole_game_recorded_capture_eligible"]
+
+
+def test_verified_partial_basis_cuts_before_qualification_and_retains_next_span(tmp_path):
+    directory = tmp_path / "partial-original"
+    shutil.copytree(
+        ROOT / "components/evidence/tests/fixtures/source_session_v3_ordered/bundle", directory
+    )
+    helper_type = runpy.run_path(
+        str(ROOT / "components/evidence/tests/test_source_session_bundle_v2.py")
+    )["SourceSessionBundleV2Tests"]
+    helper = helper_type()
+    helper.bundle = directory
+    values = helper.rows("native-input-witnesses.jsonl")
+    first = min(values, key=lambda row: int(row["input_prefix_ordinal"]))
+    old_path = first["pre_capture"]["payload_ref"]
+    observation = json.loads((directory / "raw" / old_path).read_bytes())
+    observation["persistent"] = None
+    observation["completeness"].update(
+        status="partial",
+        included=["interaction", "referents", "catalog"],
+        missing=["persistent"],
+        full_reference_complete=False,
+    )
+    raw = json_bytes(observation)
+    sha = hashlib.sha256(raw).hexdigest()
+    relative = f"public-captures/sha256/{sha[:2]}/{sha}.bin"
+    target = directory / "raw" / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(raw)
+    first["pre_capture"].update(payload_ref=relative, sha256=sha, byte_count=len(raw))
+    first["outcome"].update(mapping_status="unmapped", match_count=0, selected_action=None)
+    helper.write_rows("native-input-witnesses.jsonl", values)
+    if not any(old_path in path.read_text() for path in (directory / "raw").glob("*.jsonl")):
+        (directory / "raw" / old_path).unlink()
+    helper.reseal()
+    original = sources._verified(directory)
+    source, report, dataset = projected(original)
+    assert len(dataset.runs) == 1 and len(dataset.runs[0].steps) == 1
+    step = dataset.runs[0].steps[0]
+    segment_cuts = source["runs"][0]["identity"]["sample_segments"][0]["cuts"]
+    assert step.reset_before and step.advance
+    # This genuine fixture also pauses and hands actors off between ordinals.
+    # The partial basis cause survives alongside those later original barriers.
+    assert segment_cuts[0]["reason"] == "input_basis_missing"
+    assert step.reset_reason == segment_cuts[-1]["reason"] == "actor_handoff"
+    assert source["runs"][0]["steps"][0]["evidence"]["input_prefix_ordinal"] == "2"
+    assert segment_cuts[0]["original"] == first
+    partial = next(row for row in report["index"] if row["evidence"]["input_prefix_ordinal"] == "1")
+    following = next(
+        row for row in report["index"] if row["evidence"]["input_prefix_ordinal"] == "2"
+    )
+    assert not partial["admitted"] and not partial["model_exposed"] and not partial["N_eligible"]
+    assert partial["target_eligibility"] == "input_basis_missing"
+    assert partial["evidence"]["capture"] == first["pre_capture"]
+    assert partial["run_id"] == following["run_id"] == dataset.runs[0].run_id
+    assert partial["source_group"] == following["source_group"] == dataset.runs[0].source_group
+    assert partial["related_keys"] == following["related_keys"]
+
+
+def test_partial_basis_check_preserves_blob_integrity_failure(tmp_path):
+    bundle = contract_bundle(tmp_path)
+    first = rows(bundle)[0]
+    path = tmp_path / "raw" / first["pre_capture"]["payload_ref"]
+    observation = json.loads(path.read_bytes())
+    observation["completeness"]["full_reference_complete"] = False
+    # A different original byte stream without its binding is corruption, not a cut.
+    path.write_bytes(json_bytes(observation))
+    with pytest.raises(BoundaryError, match="original_blob_changed"):
+        projected(bundle)
+
+
+def test_complete_basis_qualifier_capacity_failure_is_not_a_segment_cut(tmp_path, monkeypatch):
+    from stpd.fullrun import native_structured_inputs
+
+    monkeypatch.setattr(native_structured_inputs, "MAX_SNAPSHOT_BYTES", 8)
+    with pytest.raises(BoundaryError, match="input_byte_limit"):
+        projected(contract_bundle(tmp_path))
 
 
 def test_recording_pause_and_actor_cut_keep_original_group(tmp_path):

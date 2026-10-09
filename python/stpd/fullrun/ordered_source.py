@@ -30,7 +30,7 @@ from spireagent.storage.archives import MAX_BYTES, _extract, archive_bundle
 from spireagent.storage.store import ArtifactStore
 
 from ..canonical import semantic_hash
-from ..native_sampled_carry_spec import checked_reset_reason, sample_eligible
+from ..native_sampled_carry_spec import SCOPE, checked_reset_reason, sample_eligible
 from ..ordered_source_spec import (
     ADMISSION_SCHEMA,
     COHORTS,
@@ -585,12 +585,23 @@ def _project_sampled_epoch(
                 reason = "input_order_unproven"
             elif capture is None or catalog is None:
                 reason = "input_basis_missing"
+            else:
+                observation = decode_json(_blob(bundle, capture, "sha256"))
+                actions = decode_json(_blob(bundle, catalog, "payload_sha256"))
+                completeness = object_fields(
+                    observation["completeness"],
+                    {"status", "included", "missing", "full_reference_complete"},
+                    "source3.sampled_basis_completeness",
+                )
+                if (completeness != {
+                    "status": "complete", "included": list(SCOPE), "missing": [],
+                    "full_reference_complete": True,
+                } or completeness["full_reference_complete"] is not True):
+                    reason = "input_basis_missing"
             if reason is not None:
                 cut(reason, row, stream)
                 target = reason
             else:
-                observation = decode_json(_blob(bundle, capture, "sha256"))
-                actions = decode_json(_blob(bundle, catalog, "payload_sha256"))
                 frame, unit = qualify_native(observation, actions)
                 environment = (observation["session"], unit.occurrence[0])
                 if prior_environment is not None and environment != prior_environment:
