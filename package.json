@@ -79,7 +79,7 @@
     "check:docs": "npm run check:repository && git diff --check",
     "check:repository": "npm run project:check && npm run check:governance && npm run check:ci && npm run check:identity && npm run check:entrypoints && npm run check:bom && npm run check:boundaries && npm run check:history",
     "check:python-scope": "npm run check:repository && npm run check:s0 && npm run check:python",
-    "precheck:s0": "npm --prefix components/connector/sdk/typescript run build",
+    "precheck:s0": "npm --prefix components/connector/sdk/typescript run build && npm --prefix components/policy-runtime run build",
     "check:s0": "node --test tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
   }
 }

@@ -80,6 +80,11 @@ test("S0 and native collection regressions participate in full and Python owner 
       `${name} must fail fast on S0 consumers before the long Python suite`);
   }
   assert.ok(scripts["precheck:s0"].includes("components/connector/sdk/typescript run build"));
+  assert.ok(scripts["precheck:s0"].includes("components/policy-runtime run build"),
+    "native collection requires the public Runtime build in a fresh Python owner gate");
+  assert.ok(scripts["precheck:s0"].indexOf("components/connector/sdk/typescript run build")
+    < scripts["precheck:s0"].indexOf("components/policy-runtime run build"),
+  "the Runtime build consumes the preceding SDK declarations");
   assert.ok(scripts["check:s0"].includes("tools/test/baseline-s0-runner.test.mjs"));
   assert.ok(scripts["check:s0"].includes("tools/test/native-source3-collector.test.mjs"),
     "native collection lifecycle regressions must run in the selected portable gates");
