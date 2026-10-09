@@ -891,14 +891,14 @@ internal static class NativeTextMenuInformation
                 if (cardNode?.Visibility != ModelVisibility.Visible || model == null) continue;
                 Func<bool> currentSource = () => CardTipSourceCurrent(
                     cardRoot, holder, cardNode, model, selectorOwner);
-                if (nativeLogical && !currentSource()) continue;
                 AddSignalTipLeaf(entities, leaves, holder, "card_tips", Control.SignalName.FocusEntered,
                     BindCardTipSubject(bindings, entities.GetId(model, "card"), nativeLogical, () =>
                     {
                         if (!currentSource())
                             throw new InvalidOperationException("The exact rendered card source changed.");
                         return NativeLogicalPresentation.CaptureRenderedCardSubject(cardNode, entities);
-                    }), selectorOwner: selectorOwner, exactSource: nativeLogical ? currentSource : null);
+                    }, captureSourceCurrent: nativeLogical ? currentSource : null),
+                    selectorOwner: selectorOwner, exactSource: nativeLogical ? currentSource : null);
             }
         if (battlefieldAvailable && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
@@ -1232,16 +1232,35 @@ internal static class NativeTextMenuInformation
 
     internal static PlayerEnvironmentReferent? BindCardTipSubject(
         PublicInformationBindings bindings, string id, bool nativeLogical,
-        Func<PlayerEnvironmentReferent?> captureRenderedSubject)
+        Func<PlayerEnvironmentReferent?> captureRenderedSubject, Func<bool>? captureSourceCurrent = null)
     {
-        if (nativeLogical) bindings.PrepareRenderedCardSubject(id, captureRenderedSubject);
+        if (nativeLogical)
+        {
+            try
+            {
+                // Enumeration already established an available holder. A later
+                // identity/root mismatch is required capture incoherence, not
+                // proof that its information leaf may silently disappear.
+                if (captureSourceCurrent != null && !captureSourceCurrent())
+                {
+                    bindings.Missing("card_tip_source_changed");
+                    return null;
+                }
+            }
+            catch (Exception)
+            {
+                bindings.Missing("card_tip_source_unreadable");
+                return null;
+            }
+            bindings.PrepareRenderedCardSubject(id, captureRenderedSubject);
+        }
         return bindings.Card(id);
     }
 
     private static bool CardTipSourceCurrent(Node root, NCardHolder holder, NCard card,
         CardModel model, NCardGridSelectionScreen? selectorOwner)
     {
-        if (!ConnectorMod.IsNodeVisible(holder) || !ConnectorMod.IsNodeVisible(card)
+        if (!ConnectorMod.IsNodeVisible(holder) || !ConnectorMod.IsLiveNode(card)
             || card.Visibility != ModelVisibility.Visible
             || !ReferenceEquals(holder.CardNode, card) || !ReferenceEquals(card.Model, model)
             || !ReferenceEquals(holder.CardModel, model)) return false;

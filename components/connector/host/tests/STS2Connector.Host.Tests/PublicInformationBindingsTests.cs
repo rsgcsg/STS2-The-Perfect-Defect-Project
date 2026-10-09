@@ -52,13 +52,58 @@ public sealed class PublicInformationBindingsTests
     {
         var bindings = new PublicInformationBindings(Page());
         Assert.Null(NativeTextMenuInformation.BindCardTipSubject(bindings, "not-current", false,
-            () => throw new InvalidOperationException("Legacy must not read rendered subjects")));
+            () => throw new InvalidOperationException("Legacy must not read rendered subjects"),
+            () => throw new InvalidOperationException("Legacy must not read native source coherence")));
         Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
         Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "not-current");
         var legacy = new PublicInformationBindings(Page());
         Assert.NotNull(NativeTextMenuInformation.BindCardTipSubject(legacy, "card-a", false,
             () => throw new InvalidOperationException("Legacy existing subject must not read")));
         Assert.True(legacy.Complete);
+    }
+
+    [Theory]
+    [InlineData(false, "current")]
+    [InlineData(true, "current")]
+    [InlineData(false, "changed")]
+    [InlineData(true, "changed")]
+    [InlineData(false, "unreadable")]
+    [InlineData(true, "unreadable")]
+    public void EnumeratedNativeCardSourceMustRemainCoherentEvenWithAFrozenSubject(bool existing, string coherence)
+    {
+        var originalSubject = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        var page = Page() with { Referents = existing ? new[] { originalSubject } : Array.Empty<PlayerEnvironmentReferent>() };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        int sourceReads = 0;
+        int displayReads = 0;
+        var result = NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-current", true,
+            () => { displayReads++; return null; }, () =>
+            {
+                sourceReads++;
+                return coherence == "unreadable"
+                    ? throw new InvalidOperationException("Native source unreadable") : coherence == "current";
+            });
+        Assert.Equal(1, sourceReads);
+        Assert.Equal(coherence == "current" && !existing ? 1 : 0, displayReads);
+        if (coherence == "current" && existing)
+        {
+            // Missing fresh display is not a no-tooltip rule when this exact
+            // live holder still binds the already frozen public subject.
+            Assert.Same(originalSubject, result);
+            Assert.True(bindings.Complete);
+        }
+        else
+        {
+            Assert.Null(result);
+            Assert.False(bindings.Complete);
+            string missing = coherence == "changed" ? "card_tip_source_changed"
+                : coherence == "unreadable" ? "card_tip_source_unreadable" : "card_subject";
+            Assert.Contains("public_information_binding_" + missing, bindings.Page.Completeness.Missing);
+            Assert.Empty(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner")!.Leaves);
+        }
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Equal(page.Referents.Count, bindings.Page.Referents.Count);
     }
 
     [Theory]
@@ -118,7 +163,8 @@ public sealed class PublicInformationBindingsTests
         var before = JsonSerializer.Serialize(page);
         var bindings = new PublicInformationBindings(page);
         var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, existing.ReferentId, true,
-            () => throw new InvalidOperationException("Existing subject may not be replaced"));
+            () => throw new InvalidOperationException("Existing subject may not be replaced"),
+            () => true);
         if (condition == "full-page")
         {
             Assert.Same(existing, subject);
