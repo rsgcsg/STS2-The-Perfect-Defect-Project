@@ -7,7 +7,8 @@ from dataclasses import replace
 import pytest
 from source3_product_fixture import DERIVED, GOLDEN, ORIGINAL, settled, setup
 
-from spireagent.artifact_contracts import Parent, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.json_boundary import FrozenObject
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench import local_recording_import
 from spireagent.workbench.local_recording_import import (
@@ -188,3 +189,122 @@ def test_partial_reuse_receipt_cannot_substitute_the_captured_producer(tmp_path,
     assert failed["status"] == "published_index_unavailable", failed
     assert failed["error_code"] == "source3_receipt_producer_mismatch"
     assert store.manifest_ids() == before and not tool.calls
+
+
+@pytest.mark.parametrize("stage", ["before_receipt", "after_receipt", "after_raw"])
+@pytest.mark.parametrize("conflict", ["producer", "release", "candidate"])
+def test_saved_successful_pack_checks_existing_original_receipt_before_partial_reuse(
+    tmp_path, monkeypatch, stage, conflict,
+):
+    importer, _, catalog, candidate, store, _, _, tool = setup(tmp_path, monkeypatch)
+    publish = ManifestArtifactStore.publish
+    other = Producer("fixture://conflicting-packed-receipt-producer", "1" * 40, "2" * 64)
+    def contradicted(receipt):
+        if conflict == "producer":
+            return replace(receipt, producer=other)
+        params = receipt.parameters.value()
+        if conflict == "release":
+            params["registered_tool_release_id"] = params["packing_tool_release_id"] = "9" * 64
+        else:
+            params["candidate_id"] = "8" * 64
+        return replace(receipt, parameters=FrozenObject.of(params))
+    def interrupted(self, manifest):
+        schema = manifest.parameters.value().get("schema")
+        if schema == SOURCE3_RECEIPT_SCHEMA and stage == "before_receipt":
+            raise OSError("synthetic receipt not published")
+        if schema == SOURCE3_RECEIPT_SCHEMA and stage == "after_receipt":
+            publish(self, contradicted(manifest))
+            raise OSError("synthetic contradictory original receipt persisted before lost reply")
+        identity = publish(self, manifest)
+        if schema == RAW_SCHEMA and stage == "after_raw":
+            raise OSError("synthetic raw publication completed before lost reply")
+        return identity
+    monkeypatch.setattr(ManifestArtifactStore, "publish", interrupted)
+    importer.start(candidate)
+    failed = settled(importer)
+    assert failed["status"] == "published_index_unavailable", failed
+    assert importer.operation["_receipt_producer"] == DERIVED.to_dict()
+    raw_id = failed["artifact_id"]
+    saved = importer.operation["_packing_fact"]
+    if stage != "after_receipt":
+        # Model an existing contradictory immutable original receipt at recovery,
+        # without rewriting the operation's previously captured successful fact.
+        expected = {**saved["closed_metadata"], "raw_artifact_id": raw_id}
+        original = Manifest("analysis", DERIVED, parents=(Parent("raw", raw_id),),
+                            parameters=FrozenObject.of(expected))
+        publish(store, contradicted(original))
+    monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
+    monkeypatch.setattr(local_recording_import, "source_identity", lambda *_args:
+                        pytest.fail("recovery must retain saved successful-pack Producer"))
+    # The current registered prerequisite can legitimately change. The saved
+    # successful pack still binds the original release and original candidate.
+    tool.release_id = "7" * 64
+    new_candidate = catalog.read()["candidates"][0]["candidate_id"]
+    assert new_candidate != candidate
+    before = store.manifest_ids()
+    recovered = LocalRecordingImporter(importer.config, catalog).start(new_candidate)
+    assert recovered["status"] == "published_index_unavailable", recovered
+    assert recovered["error_code"] == (
+        "source3_receipt_producer_mismatch" if conflict == "producer"
+        else "source3_packing_fact_mismatch")
+    assert store.manifest_ids() == before and len(tool.calls) == 1
+    assert "import_receipt_id" not in recovered
+
+
+def test_unrelated_historical_original_receipt_does_not_require_todays_producer(
+    tmp_path, monkeypatch,
+):
+    importer, _, catalog, candidate, store, _, _, tool = setup(tmp_path, monkeypatch)
+    importer.start(candidate)
+    historical = settled(importer)
+    assert historical["status"] == "completed", historical
+    old_receipt = store.get_manifest(historical["import_receipt_id"])
+    before = old_receipt.to_bytes()
+    # The single operation journal may have moved on to a different import.
+    # Historical immutable receipts remain reusable without that saved pack fact.
+    importer.operation = {"schema": local_recording_import.SCHEMA, "status": "idle"}
+    importer._save()
+    today = Producer("fixture://later-reuse-application", "3" * 40, "4" * 64)
+    monkeypatch.setattr(local_recording_import, "source_identity", lambda *_args: today)
+    original_release = tool.release_id
+    tool.release_id = "6" * 64
+    current_candidate = catalog.read()["candidates"][0]["candidate_id"]
+    reused = LocalRecordingImporter(importer.config, catalog).start(current_candidate)
+    assert reused["status"] == "completed", reused
+    assert reused["artifact_id"] == historical["artifact_id"] and len(tool.calls) == 1
+    assert reused["tool_invocation"] == "reused_no_tool_invocation"
+    assert reused["packing_tool_release_id"] == original_release
+    assert reused["registered_tool_release_id"] == tool.release_id
+    current = store.get_manifest(reused["import_receipt_id"])
+    assert current.producer == today and old_receipt.producer == DERIVED
+    assert current.parameters.value()["original_packing_receipt_id"] == old_receipt.artifact_id
+    assert store.get_manifest(old_receipt.artifact_id).to_bytes() == before
+
+
+@pytest.mark.parametrize("field", ["bundle_content_id", "registered_tool_release_id"])
+def test_related_saved_packing_metadata_mismatch_cannot_fall_back_to_unknown_packer(
+    tmp_path, monkeypatch, field,
+):
+    importer, _, catalog, candidate, store, _, _, tool = setup(tmp_path, monkeypatch)
+    publish = ManifestArtifactStore.publish
+    def after_raw(self, manifest):
+        identity = publish(self, manifest)
+        if manifest.parameters.value().get("schema") == RAW_SCHEMA:
+            raise OSError("synthetic raw published before receipt")
+        return identity
+    monkeypatch.setattr(ManifestArtifactStore, "publish", after_raw)
+    importer.start(candidate)
+    failed = settled(importer)
+    assert failed["status"] == "published_index_unavailable", failed
+    assert not receipts(store)
+    importer.operation["_packing_fact"]["closed_metadata"][field] = "5" * 64
+    importer._save()
+    monkeypatch.setattr(ManifestArtifactStore, "publish", publish)
+    monkeypatch.setattr(local_recording_import, "source_identity", lambda *_args:
+                        pytest.fail("related packing fact must retain captured Producer"))
+    before = store.manifest_ids()
+    refused = LocalRecordingImporter(importer.config, catalog).start(candidate)
+    assert refused["status"] == "published_index_unavailable", refused
+    assert refused["error_code"] == "source3_packing_fact_mismatch"
+    assert "packing_tool_release_id" not in refused and "import_receipt_id" not in refused
+    assert store.manifest_ids() == before and len(tool.calls) == 1

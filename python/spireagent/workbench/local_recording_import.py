@@ -402,7 +402,7 @@ class LocalRecordingImporter:
         if len(originals) > 1:
             raise BoundaryError("local_import", "source3_original_packing_receipt_ambiguous")
         fact = self.operation.get("_packing_fact")
-        if not originals and isinstance(fact, dict):
+        if isinstance(fact, dict):
             # Successful pack facts and the derived producer were committed to
             # the existing private operation before raw publication. Reconcile
             # that exact fact, never infer a release from packer source revision.
@@ -411,8 +411,18 @@ class LocalRecordingImporter:
             fact_candidate = {**candidate, "tool_release_id": packed_release}
             expected = self._receipt_metadata(
                 packed_candidate, fact_candidate, raw, "packed", packed_release, None)
-            if fact.get("closed_metadata") == {
+            if fact.get("closed_metadata") != {
                     key: value for key, value in expected.items() if key != "raw_artifact_id"}:
+                raise BoundaryError("local_import", "source3_packing_fact_mismatch")
+            if originals:
+                # A prior receipt can survive a lost publication reply. Its
+                # presence does not supersede the exact successful-pack fact
+                # already saved before raw publication, including its Producer.
+                if originals[0].parameters.value() != expected:
+                    raise BoundaryError("local_import", "source3_packing_fact_mismatch")
+                if originals[0].producer != Producer.decode(self.operation["_receipt_producer"]):
+                    raise BoundaryError("local_import", "source3_receipt_producer_mismatch")
+            else:
                 originals = [self._ensure_receipt(store, raw, expected, receipts)]
                 receipts += originals
         for previous in receipts:
