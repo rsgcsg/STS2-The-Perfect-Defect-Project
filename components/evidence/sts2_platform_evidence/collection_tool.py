@@ -15,6 +15,15 @@ from typing import Any
 
 from .transfer import _inventory
 
+SOURCE_V3_SUPPORT = {
+    "schema": "sts2.evidence/source3-collection-support-1",
+    "command": "pack-source-v3",
+    "recording_schema": "sts2.annotator/source-session-manifest-3",
+    "source_profile": "native-logical-source-v3",
+    "bundle_schema": "sts2.annotator/source-session-bundle-3",
+    "type_id": "source-session-bundle-v3",
+}
+
 
 def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
@@ -72,7 +81,30 @@ class CollectionTool:
             raise ValueError("collection tool release bytes differ")
         if not any(row["path"] == "platform-bom.json" for row in actual):
             raise ValueError("collection tool BOM is missing")
+        if ("source_v3_support" in identity
+                and identity["source_v3_support"] != SOURCE_V3_SUPPORT):
+            raise ValueError("unsupported Source3 collection tool capability")
         return manifest
+
+    def supports_source_v3(self) -> bool:
+        """Only a caller-pinned complete release may advertise Source3 support."""
+        return self.verify()["identity"].get("source_v3_support") == SOURCE_V3_SUPPORT
+
+    def pack_source_v3(self, session: Path, output: Path, worker: str, campaign: str) -> None:
+        manifest = self.verify()
+        if manifest["identity"].get("source_v3_support") != SOURCE_V3_SUPPORT:
+            raise CollectionFailure("Source3 packing is unavailable in this fixed tool")
+        try:
+            result = subprocess.run(
+                [self.dotnet, str(self.directory / manifest["identity"]["entrypoint"]),
+                 "pack-source-v3", str(session), worker, campaign, str(output),
+                 manifest["identity"]["source_revision"]],
+                capture_output=True, text=True, timeout=600, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise CollectionFailure("Source3 collection tool exceeded bounded runtime") from None
+        if result.returncode != 0:
+            raise CollectionFailure("Source3 collection tool audit/pack failed", result.stderr[-16384:])
 
     def pack(self, session: Path, output: Path, worker: str, campaign: str) -> None:
         manifest = self.verify()

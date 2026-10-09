@@ -5,12 +5,14 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from sts2_platform_evidence.collection_tool import CollectionTool, CollectionFailure, canonical, digest
+from sts2_platform_evidence.collection_tool import (
+    SOURCE_V3_SUPPORT, CollectionTool, CollectionFailure, canonical, digest,
+)
 from sts2_platform_evidence.transfer import _inventory
 
 
 class CollectionSetupTests(unittest.TestCase):
-    def fixture(self, root):
+    def fixture(self, root, *, source3=False):
         entry = "setup/apps/game-mod/collection-setup.mjs"
         for name, content in {entry: "fixture", "sts2-human-annotator.dll": "fixture", "platform-bom.json": "{}",
                               "game-mod/build-provenance.json": "{}"}.items():
@@ -21,10 +23,55 @@ class CollectionSetupTests(unittest.TestCase):
                     "entrypoint": "sts2-human-annotator.dll", "collection_setup_entrypoint": entry,
                     "supported_recording_schema": "sts2.human-annotator/recording-manifest-2",
                     "files": [{"path": p, "bytes": n, "sha256": h} for p, n, h in _inventory(root)]}
+        if source3:
+            identity["source_v3_support"] = dict(SOURCE_V3_SUPPORT)
         release_id = digest(identity)
         (root / "collection-tool.json").write_bytes(canonical({"schema": "sts2.evidence/collection-tool-1",
                                                                "release_id": release_id, "identity": identity}))
         return CollectionTool(root, release_id)
+
+    def test_old_fixed_tool_is_legacy_valid_but_cannot_attempt_source3(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tool = self.fixture(root)
+            self.assertFalse(tool.supports_source_v3())
+            with patch("sts2_platform_evidence.collection_tool.subprocess.run") as run:
+                with self.assertRaisesRegex(CollectionFailure, "unavailable"):
+                    tool.pack_source_v3(root / "session", root / "bundle", "worker", "campaign")
+                run.assert_not_called()
+
+    def test_authenticated_source3_executes_only_its_fixed_command_without_attestation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tool = self.fixture(root, source3=True)
+            self.assertTrue(tool.supports_source_v3())
+            with patch("sts2_platform_evidence.collection_tool.subprocess.run",
+                       return_value=SimpleNamespace(returncode=0)) as run:
+                tool.pack_source_v3(root / "session", root / "bundle", "worker", "campaign")
+                self.assertEqual(run.call_args.args[0], [
+                    "dotnet", str(root / "sts2-human-annotator.dll"), "pack-source-v3",
+                    str(root / "session"), "worker", "campaign", str(root / "bundle"), "c" * 40,
+                ])
+                self.assertNotIn("human_origin_attested", run.call_args.args[0])
+                (root / "sts2-human-annotator.dll").write_text("changed")
+                with self.assertRaisesRegex(ValueError, "bytes differ"):
+                    tool.pack_source_v3(root / "session", root / "bundle", "worker", "campaign")
+                self.assertEqual(run.call_count, 1)
+
+    def test_source3_descriptor_tamper_rejects_both_old_pin_and_rehashed_wrong_capability(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tool = self.fixture(root, source3=True)
+            manifest = json.loads((root / "collection-tool.json").read_bytes())
+            manifest["identity"]["source_v3_support"]["command"] = "pack-session"
+            (root / "collection-tool.json").write_bytes(canonical(manifest))
+            with self.assertRaisesRegex(ValueError, "release ID mismatch"):
+                tool.supports_source_v3()
+            release = digest(manifest["identity"])
+            manifest["release_id"] = release
+            (root / "collection-tool.json").write_bytes(canonical(manifest))
+            with self.assertRaisesRegex(ValueError, "unsupported Source3"):
+                CollectionTool(root, release)
 
     def test_fixed_owner_commands_pin_provenance_and_keep_status_distinct_from_binding(self):
         with tempfile.TemporaryDirectory() as temporary:

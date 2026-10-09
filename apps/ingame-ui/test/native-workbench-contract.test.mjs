@@ -14,6 +14,8 @@ test("native and application fixed command catalogs agree without an arbitrary p
   assert.equal(expected.fixture_only,true);
   const actionIds = ["workspace.create","curation.prepare","recordings.refresh","recordings.import", "datasets.preview","datasets.human-preview","datasets.publish","training.start","training.pause","training.cancel","training.reconcile","training.resume","evaluation.start","models.export","models.register","models.download","models.load","models.takeover","models.human","models.stop","identity.login","identity.poll","identity.logout","collection.consent","collection.prepare","collection.upload","downloads.start"];
   for (const id of actionIds) {assert.ok(client.includes(`"${id}"`));assert.ok(api.includes(`"${id}"`));}
+  assert.ok(client.includes('"datasets.source3-preview"'));
+  assert.ok(api.includes('"datasets.source3-preview"'));
   assert.match(client,/AllowAutoRedirect = false, UseProxy = false, UseCookies = false/);
   assert.doesNotMatch(api,/eval\(|exec\(|shell=True|import_module\(/);
 });

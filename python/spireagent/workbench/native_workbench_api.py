@@ -35,6 +35,7 @@ ACTIONS = frozenset(
         "recording.close",
         "datasets.preview",
         "datasets.human-preview",
+        "datasets.source3-preview",
         "datasets.publish",
         "training.start",
         "training.pause",
@@ -105,6 +106,14 @@ _PRECONDITION_CODES = frozenset(
         "native_recording_recovery_required",
         "native_recording_not_dispatched",
         "native_recording_rejected",
+        "source3_attestation_not_supported",
+        "source3_tool_support_required",
+        "source3_evidence_api_required",
+        "source3_source_selection_invalid",
+        "source3_cohort_not_supported",
+        "source3_view_not_supported",
+        "unsupported_view_preset",
+        "source3_training_recipe_unavailable",
     }
 )
 _PRIVATE_KEYS = frozenset(
@@ -242,6 +251,11 @@ class NativeWorkbenchApi:
         if context_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", context_id):
             raise fail("invalid_native_context")
         cards: list[dict[str, Any]] = []
+        source_prepare: dict[str, Any] = {
+            "enabled": False, "reason": "source3_data_view_required",
+            "scope": "saved_source3_to_ordered_training_partition",
+            "required_action": "datasets.source3-preview", "automatic_training": False,
+        }
         items: list[dict[str, Any]] = []
         controls: list[dict[str, Any]] = []
         total = 0
@@ -459,6 +473,21 @@ class NativeWorkbenchApi:
                 )
                 dataset_operation = cards[-1]["data"].get("operation", {})
                 preview_id = dataset_operation.get("preview_id", "")
+                from spireagent.workbench.local_dataset import source3_capabilities
+
+                source_support = source3_capabilities()
+                from spireagent.workbench.local_recording_import import _source3_api
+
+                data_availability = cards[-1]["data"].get("availability", "unavailable")
+                try:
+                    _source3_api()
+                    source_prepare.update(
+                        enabled=data_availability == "ready",
+                        reason=(None if data_availability == "ready" else
+                                cards[-1]["data"].get("reason", "workspace_owner_unavailable")),
+                    )
+                except BoundaryError as error:
+                    source_prepare.update(enabled=False, reason=error.code)
                 if self._recordings is not None:
                     listing = {
                         **self._recordings,
@@ -479,12 +508,12 @@ class NativeWorkbenchApi:
                         action("recordings.refresh", "刷新已结束的录制"),
                         action(
                             "recordings.import",
-                            "核对声明并导入 Human 录制",
+                            "保存已结束的录制",
                             [
                                 field("candidate_id", "已结束录制编号"),
                                 field(
                                     "human_origin_attested",
-                                    "我声明此来源实际由 Human 操作",
+                                    "仅旧 Human 录制：我声明此来源实际由 Human 操作",
                                     "boolean",
                                     False,
                                 ),
@@ -522,6 +551,29 @@ class NativeWorkbenchApi:
                                     context_id or "",
                                 )
                             ],
+                        ),
+                        action(
+                            "datasets.source3-preview",
+                            "检查录制的训练例子",
+                            [
+                                field("artifact_ids", "已保存录制", "artifact-list",
+                                      context_id or ""),
+                                field("cohort", "操作来源声明", "enum",
+                                      source_support["default_cohort"],
+                                      [{"value": value, "label": {
+                                          "declared_human": "本人声明由 Human 操作",
+                                          "agent_protocol": "Agent 协议操作",
+                                          "agent_native_ui": "Agent 界面操作",
+                                      }.get(value, value)} for value in source_support["cohorts"]]),
+                                field("view", "训练数据视图", "enum",
+                                      source_support["default_view"],
+                                      [{"value": value["view"], "label": {
+                                          "publication_memory": "已发布内容的历史",
+                                          "recorded_capture_pretraining": "录制画面预训练",
+                                      }.get(value["view"], value["view"])}
+                                       for value in source_support["views"]]),
+                            ],
+                            enabled=source_prepare["enabled"], reason=source_prepare["reason"],
                         ),
                         action(
                             "datasets.publish",
@@ -699,10 +751,7 @@ class NativeWorkbenchApi:
             "capabilities": {
                 "actions": controls,
                 "training": public(training),
-                "source_aware_prepare": {
-                    "enabled": False,
-                    "reason": "source_owner_application_adapter_required",
-                },
+                "source_aware_prepare": source_prepare,
                 "remote_execution": {
                     "enabled": False,
                     "reason": "compatible_remote_owner_required",
@@ -799,7 +848,8 @@ class NativeWorkbenchApi:
                 raise fail("invalid_native_payload")
             return app.control_native_recording(body)
         if action_id == "recordings.import":
-            exact(body, {"candidate_id", "human_origin_attested"})
+            if set(body) not in ({"candidate_id"}, {"candidate_id", "human_origin_attested"}):
+                raise fail("invalid_native_payload")
             return app.start_local_recording_import(**body)
         if action_id == "datasets.preview":
             exact(body, {"artifact_id", "purpose", "paired_training"})
@@ -807,6 +857,9 @@ class NativeWorkbenchApi:
         if action_id == "datasets.human-preview":
             exact(body, {"artifact_ids"})
             return app.start_local_human_dataset_preview(body["artifact_ids"])
+        if action_id == "datasets.source3-preview":
+            exact(body, {"artifact_ids", "cohort", "view"})
+            return app.start_local_source3_dataset_preview(**body)
         if action_id == "datasets.publish":
             exact(body, {"preview_id"})
             return app.start_local_dataset_publish(body["preview_id"])

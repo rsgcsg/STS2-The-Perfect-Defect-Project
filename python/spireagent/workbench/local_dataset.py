@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.artifact_contracts import Producer
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.local_verified_bundle import EVIDENCE_SCHEMA
 from spireagent.source import source_identity
 from spireagent.storage.local import LocalBlobStore
@@ -41,6 +41,29 @@ from stpd.fullrun.text_menu_human_import import (
 SCHEMA = "stpd/local-dataset-operation-v1"
 OPERATION_FILE = "local-dataset-operation.json"
 PURPOSES = frozenset({"training", "test", "gold"})
+
+
+def _ordered_recipe(view: str) -> str:
+    from stpd.ordered_source_spec import RECIPES
+
+    for recipe, (slots, reset, selected_view) in RECIPES.items():
+        if (slots, reset, selected_view) == (1, "carry", view):
+            return recipe
+    raise BoundaryError("local_dataset", "source3_training_recipe_unavailable")
+
+
+def source3_capabilities() -> dict[str, Any]:
+    """Closed choices are projected from the research owner, without tensor imports."""
+    from stpd.ordered_source_spec import COHORTS, DEFAULT_VIEW, VIEW_SPECS, view_qualification
+
+    return {
+        "source_profile": "native-logical-source-v3",
+        "cohorts": sorted(COHORTS), "default_cohort": "declared_human",
+        "default_view": DEFAULT_VIEW,
+        "views": [{"view": view, "qualification": view_qualification(view),
+                   "recommended_recipe_id": _ordered_recipe(view)} for view in VIEW_SPECS],
+        "human_origin_verified": False, "automatic_training": False,
+    }
 
 
 def _close(*datasets: DecisionDataset | None) -> None:
@@ -96,8 +119,42 @@ class LocalDatasetService:
         digest(value["id"], "local_dataset.id", length=32)
         digest(value["artifact_id"], "local_dataset.artifact_id")
         kind = value.get("kind", "canonical")
-        if kind not in {"canonical", "human_input"}:
+        if kind not in {"canonical", "human_input", "ordered_source3"}:
             raise ValueError
+        if kind == "ordered_source3":
+            from stpd.ordered_source_spec import COHORTS, view_specs
+
+            ids = value.get("artifact_ids")
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 256
+                    or ids != sorted(set(ids)) or ids[0] != value["artifact_id"]
+                    or value.get("cohort") not in COHORTS
+                    or value["purpose"] != "training" or value["paired_training"] is not None
+                    or not isinstance(value.get("_owner"), list) or len(value["_owner"]) != 4
+                    or value["_phase"] not in {"preview", "publish"}):
+                raise ValueError
+            view_specs(value["view"])
+            for source in ids:
+                digest(source, "local_dataset.source3_raw")
+            if "_producer" in value:
+                Producer.decode(value["_producer"])
+            if value["_phase"] == "publish" or status in {"preview_ready", "completed"}:
+                digest(value["preview_id"], "local_dataset.preview_id", length=32)
+                digest(value["_logical_id"], "local_dataset.logical_id")
+                if not isinstance(value.get("_admission_refs"), list):
+                    raise ValueError
+                refs = value["_admission_refs"]
+                if [ref["raw_id"] for ref in refs] != ids:
+                    raise ValueError
+                for ref in refs:
+                    if set(ref) != {"raw_id", "admission_id"}:
+                        raise ValueError
+                    digest(ref["admission_id"], "local_dataset.source3_admission")
+                Producer.decode(value["_producer"])
+            if "_partition_id" in value:
+                digest(value["_partition_id"], "local_dataset.source3_partition")
+            if status == "completed":
+                digest(value["result_artifact_id"], "local_dataset.result")
+            return
         if kind == "human_input":
             ids = value.get("artifact_ids")
             if (not isinstance(ids, list) or not 1 <= len(ids) <= 256
@@ -196,6 +253,10 @@ class LocalDatasetService:
                 and self.operation.get("error_code") != "publication_recovery_required"
             )
         recovery = False
+        if possible_recovery and operation.get("kind") == "ordered_source3":
+            # Exact immutable refs/producer permit explicit publication reconciliation.
+            recovery = True
+            possible_recovery = False
         if possible_recovery and owner is not None:
             try:
                 with closing(sqlite3.connect(
@@ -207,6 +268,7 @@ class LocalDatasetService:
                 raise BoundaryError("local_dataset", "curation_owner_recovery_required") from error
         operation["recovery_available"] = recovery
         result = {"schema": SCHEMA, "availability": availability,
+                  "source3_support": source3_capabilities(),
                   "paired_training": paired, "operation": operation}
         if reason is not None:
             result["reason"] = reason
@@ -283,6 +345,8 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
+                if self.operation.get("kind") == "ordered_source3":
+                    raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
                                       (self.operation["id"],)).fetchone()
@@ -294,6 +358,52 @@ class LocalDatasetService:
                               "artifact_ids": ids, "purpose": "training",
                               "paired_training": None, "_owner": owner.identity,
                               "_rules": SelectionRules().to_dict()}
+            self._save()
+            self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def start_source3_preview(self, artifact_ids: object, cohort: object,
+                              view: object) -> dict[str, Any]:
+        from stpd.ordered_source_spec import COHORTS, view_specs
+
+        if (not isinstance(artifact_ids, list) or not 1 <= len(artifact_ids) <= 256
+                or any(not isinstance(value, str) for value in artifact_ids)
+                or len(set(artifact_ids)) != len(artifact_ids)):
+            raise BoundaryError("local_dataset", "source3_source_selection_invalid")
+        ids = sorted(digest(value, "local_dataset.source3_raw") for value in artifact_ids)
+        if not isinstance(cohort, str) or cohort not in COHORTS:
+            raise BoundaryError("local_dataset", "source3_cohort_not_supported")
+        if not isinstance(view, str):
+            raise BoundaryError("local_dataset", "source3_view_not_supported")
+        view_specs(view)
+        _ordered_recipe(view)
+        if self.operation_invalid:
+            raise BoundaryError("local_dataset", "operation_file_invalid")
+        owner, _, _ = self._selected()
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                if (self.operation.get("kind") == "ordered_source3"
+                        and self.operation.get("artifact_ids") == ids
+                        and self.operation.get("cohort") == cohort
+                        and self.operation.get("view") == view):
+                    return self.status()
+                raise BoundaryError("local_dataset", "operation_in_progress")
+            if (self.operation.get("_phase") == "publish"
+                    and self.operation.get("status") in {"failed", "interrupted"}):
+                if self.operation.get("kind") == "ordered_source3":
+                    raise BoundaryError("local_dataset", "publication_recovery_required")
+                with owner.transaction() as db:
+                    if db.execute("SELECT 1 FROM curation_claims WHERE id=?",
+                                  (self.operation["id"],)).fetchone():
+                        raise BoundaryError("local_dataset", "publication_recovery_required")
+            identity = uuid.uuid4().hex
+            self.operation = {
+                "status": "pending", "id": identity, "_phase": "preview",
+                "kind": "ordered_source3", "artifact_id": ids[0], "artifact_ids": ids,
+                "purpose": "training", "paired_training": None, "_owner": owner.identity,
+                "cohort": cohort, "view": view,
+            }
             self._save()
             self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
             self.thread.start()
@@ -319,6 +429,8 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
+                if self.operation.get("kind") == "ordered_source3":
+                    raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
                                       (self.operation["id"],)).fetchone()
@@ -473,6 +585,53 @@ class LocalDatasetService:
                 **({"error_code": conflict} if conflict else
                    {"error_code": "empty_selection"} if not count else {})}
 
+    @staticmethod
+    def _ordered_preview(store: ManifestArtifactStore, request: dict[str, Any],
+                         producer: Producer) -> tuple[list[dict[str, str]], dict[str, Any], str]:
+        from stpd.fullrun.ordered_source import publish_ordered_source_admission
+        from stpd.ordered_source_spec import view_qualification, view_specs
+
+        refs: list[dict[str, str]] = []
+        counts: Counter[str] = Counter()
+        exclusions: Counter[str] = Counter()
+        original_reports: list[str] = []
+        content_ids: set[str] = set()
+        for raw_id in request["artifact_ids"]:
+            ref = publish_ordered_source_admission(
+                store, raw_id, producer, cohort=request["cohort"], view=request["view"],
+            )
+            admission = store.get_manifest(ref.admission_id)
+            report = decode_json(store.bytes(admission.payload("report")))
+            if report["bundle_content_id"] in content_ids:
+                raise BoundaryError("local_dataset", "duplicate_original_source3_bundle")
+            content_ids.add(report["bundle_content_id"])
+            refs.append({"raw_id": ref.raw_id, "admission_id": ref.admission_id})
+            counts.update(report["counts"])
+            exclusions.update(row["reason"] for row in report["exclusions"])
+            original_reports.append(admission.payload("report").sha256)
+        eligible = counts["eligible_unique_N"]
+        denominator = counts["original_exact_delivered_cohort_choices"]
+        projection, target = view_specs(request["view"])
+        summary = {
+            "selected": eligible, "accepted_labels": eligible, "sample_type": "ordered_source3",
+            "source_kind": request["cohort"], "source_view": request["view"],
+            "counts": dict(counts), "exclusions": dict(sorted(exclusions.items())),
+            "N_coverage": {"cohort": request["cohort"], "eligible": eligible,
+                           "denominator": denominator,
+                           "fraction": eligible / denominator if denominator else None},
+            "excluded_labels": denominator - eligible,
+            "history_scope": "original_admitted_attachment_epoch_prefix",
+            "qualification": view_qualification(request["view"]),
+            "projection_spec": projection, "target_spec": target,
+            "human_origin_verified": False, "split_status": "not_reserved",
+            "recommended_recipe_id": _ordered_recipe(request["view"]),
+            "can_publish": eligible > 0,
+            **({"error_code": "no_eligible_source3_N"} if eligible == 0 else {}),
+        }
+        logical_id = semantic_hash({"refs": refs, "report_sha256": original_reports,
+                                    "summary": summary})
+        return refs, summary, logical_id
+
     def _run_preview(self, identity: str) -> None:
         base = selected = None
         try:
@@ -481,7 +640,13 @@ class LocalDatasetService:
             owner, store, _ = self._selected()
             if tuple(request["_owner"]) != owner.identity:
                 raise BoundaryError("local_dataset", "workspace_owner_changed")
-            if request.get("kind") == "human_input":
+            if request.get("kind") == "ordered_source3":
+                producer = source_identity(ROOT)
+                self._record_producer(identity, producer)
+                refs, result, logical_id = self._ordered_preview(store, request, producer)
+                update = {**result, "status": "preview_ready", "preview_id": uuid.uuid4().hex,
+                          "_logical_id": logical_id, "_admission_refs": refs}
+            elif request.get("kind") == "human_input":
                 runs, logical_id, accepted = self._human_source(
                     owner, store, request["artifact_ids"], index_source=True)
                 result = self._human_result(owner, runs, accepted)
@@ -529,12 +694,17 @@ class LocalDatasetService:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 if self.operation.get("_phase") != "publish":
                     raise BoundaryError("local_dataset", "publication_recovery_required")
-                owner, _, _ = self._selected()
-                with owner.transaction() as db:
-                    row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
-                                     (self.operation["id"],)).fetchone()
-                if row is None or (row[0] is None and "_producer" not in self.operation):
-                    raise BoundaryError("local_dataset", "publication_recovery_required")
+                if self.operation.get("kind") == "ordered_source3":
+                    if (not self.operation.get("_admission_refs")
+                            or not self.operation.get("_producer")):
+                        raise BoundaryError("local_dataset", "publication_recovery_required")
+                else:
+                    owner, _, _ = self._selected()
+                    with owner.transaction() as db:
+                        row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
+                                         (self.operation["id"],)).fetchone()
+                    if row is None or (row[0] is None and "_producer" not in self.operation):
+                        raise BoundaryError("local_dataset", "publication_recovery_required")
             elif not self.operation.get("can_publish"):
                 raise BoundaryError("local_dataset", "preview_cannot_publish")
             self.operation.update(status="pending", _phase="publish", can_publish=False)
@@ -638,6 +808,75 @@ class LocalDatasetService:
         owner.ledger.bind(identity, manifest.artifact_id)
         return manifest.artifact_id
 
+    def _record_ordered_partition(self, identity: str, artifact_id: str) -> None:
+        with self.lock:
+            durable = json.loads(self.path.read_bytes())
+            if (self.operation.get("id") != identity or durable.get("id") != identity
+                    or durable.get("status") != "pending"
+                    or self.operation.get("_partition_id") not in (None, artifact_id)):
+                raise BoundaryError("local_dataset", "operation_superseded")
+            following = {**self.operation, "_partition_id": artifact_id}
+            atomic_json(self.path, {"schema": SCHEMA, **following})
+            self.operation = following
+
+    def _publish_ordered(self, owner: LocalCurationOwner, store: ManifestArtifactStore,
+                         request: dict[str, Any], identity: str) -> tuple[str, dict[str, Any]]:
+        from stpd.fullrun.ordered_source import (
+            OrderedSourceRef,
+            publish_ordered_source_partition,
+            verify_ordered_source_partition,
+        )
+        from stpd.ordered_source_spec import PARTITION_SCHEMA
+
+        producer = Producer.decode(request["_producer"])
+        refs, result, logical_id = self._ordered_preview(store, request, producer)
+        if refs != request["_admission_refs"] or logical_id != request["_logical_id"]:
+            raise BoundaryError("local_dataset", "preview_changed")
+        if not result["can_publish"]:
+            raise BoundaryError("local_dataset", "no_eligible_source3_N")
+        saved_partition = request.get("_partition_id")
+        matches: list[str] = []
+        for candidate in ((saved_partition,) if saved_partition else store.manifest_ids()):
+            manifest = store.get_manifest(candidate)
+            info = manifest.parameters.value()
+            if (manifest.kind == "dataset" and manifest.producer == producer
+                    and info.get("partition_schema") == PARTITION_SCHEMA
+                    and info.get("split") == "train"
+                    and info.get("source_kind") == request["cohort"]
+                    and info.get("raw_refs") == refs
+                    and info.get("projection_spec") == result["projection_spec"]
+                    and info.get("target_spec") == result["target_spec"]):
+                matches.append(candidate)
+            elif saved_partition:
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+        if len(matches) > 1:
+            raise BoundaryError("local_dataset", "publication_recovery_required")
+        if matches:
+            partition = verify_ordered_source_partition(store, matches[0])
+        else:
+            partition = publish_ordered_source_partition(
+                store, tuple(OrderedSourceRef(**ref) for ref in refs), "train", producer,
+            )
+        result_id = partition.manifest.artifact_id
+        self._record_ordered_partition(identity, result_id)
+        reservation = owner.reserve_verified_ordered_source(store, result_id)
+        for raw_id in partition.source_ids:
+            with owner.transaction() as db:
+                pending = [row[0] for row in db.execute(
+                    "SELECT candidate FROM local_source_pending "
+                    "WHERE artifact=? AND status='published'",
+                    (raw_id,),
+                )]
+            for candidate in pending:
+                owner.complete_index(candidate, raw_id)
+        return result_id, {
+            "training_source_id": result_id, "source_view": request["view"],
+            "source_kind": request["cohort"],
+            "recommended_recipe_id": _ordered_recipe(request["view"]),
+            "use_reservation": reservation, "actual_training_use": False,
+            "next_action": "training.start", "human_origin_verified": False,
+        }
+
     def _run_publish(self, identity: str) -> None:
         base = selected = None
         try:
@@ -650,7 +889,10 @@ class LocalDatasetService:
             with owner.transaction() as db:
                 row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
                                  (identity,)).fetchone()
-            if request.get("kind") == "human_input":
+            result_support: dict[str, Any] = {}
+            if request.get("kind") == "ordered_source3":
+                result_id, result_support = self._publish_ordered(owner, store, request, identity)
+            elif request.get("kind") == "human_input":
                 result_id = self._publish_human(owner, store, request, identity, row)
             elif row is not None:
                 result_id = (row[0] if row[0] is not None else
@@ -700,7 +942,7 @@ class LocalDatasetService:
                                if registry.is_cached(item.artifact_id))
             sync_registry(store, registry, cached)
             update = {"status": "completed", "result_artifact_id": result_id,
-                      "can_publish": False, "error_code": None}
+                      "can_publish": False, "error_code": None, **result_support}
         except Exception as error:
             code = error.code if isinstance(error, BoundaryError) else "publish_failed"
             update = {"status": "failed", "error_code": code, "can_publish": False}

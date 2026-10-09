@@ -106,7 +106,11 @@ def test_actual_view_five_pages_and_public_health_never_expose_credentials(nativ
         for credential in [secret, app.account.cookie, app.account.csrf, app.control_token]:
             assert credential not in raw
         assert view["capabilities"]["remote_execution"]["enabled"] is False
-        assert view["capabilities"]["source_aware_prepare"]["enabled"] is False
+        source_support = view["capabilities"]["source_aware_prepare"]
+        assert source_support["scope"] == "saved_source3_to_ordered_training_partition"
+        assert source_support["enabled"] is False
+        assert source_support["reason"] == (
+            "workspace_required" if page == "data" else "source3_data_view_required")
     assert call("/health", headers={}) == {"instance_id": app.instance_id}
     assert app.local_training.status() == before
     assert not (app.config.state_dir / "local-training-operation.json").exists()

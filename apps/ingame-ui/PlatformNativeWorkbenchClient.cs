@@ -18,7 +18,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
     internal static readonly HashSet<string> Actions = new(StringComparer.Ordinal) {
         "workspace.create", "curation.prepare", "recordings.refresh", "recordings.import",
         "recording.start", "recording.pause", "recording.resume", "recording.change_source", "recording.close",
-        "datasets.preview", "datasets.human-preview", "datasets.publish", "training.start",
+        "datasets.preview", "datasets.human-preview", "datasets.source3-preview", "datasets.publish", "training.start",
         "training.pause", "training.cancel", "training.reconcile", "training.resume", "evaluation.start",
         "models.export", "models.register", "models.download", "models.load", "models.takeover",
         "models.auto", "models.shadow", "models.one_step", "models.tick",
