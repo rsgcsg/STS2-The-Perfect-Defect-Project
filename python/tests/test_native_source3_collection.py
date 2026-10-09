@@ -892,10 +892,17 @@ finally:
         }
         legacy = registration._native_requirements(reply)[0]
         self.assertNotIn("current_owned", legacy["required_methods"])
+        legacy_without_marker_field = copy.deepcopy(reply)
+        del legacy_without_marker_field["capabilities"]["implemented_mechanisms"]
+        self.assertEqual(registration._native_requirements(legacy_without_marker_field)[0], legacy)
         with self.assertRaises(BoundaryError):
             registration._native_requirements(reply, execution_policy=policy)
-        owned_reply = copy.deepcopy(reply)
-        owned_reply["capabilities"]["supported_methods"].append("current_owned")
+        method_only_reply = copy.deepcopy(reply)
+        method_only_reply["capabilities"]["supported_methods"].append("current_owned")
+        owned_reply = copy.deepcopy(method_only_reply)
+        owned_reply["capabilities"]["implemented_mechanisms"].append(
+            "native_current_reader_owned_v1"
+        )
         selected = registration._native_requirements(owned_reply, execution_policy=policy)[0]
         self.assertEqual(
             selected["required_methods"], [*legacy["required_methods"], "current_owned"]
@@ -928,16 +935,56 @@ finally:
                 ),
                 SimpleNamespace(private_root=root / "private", root=root),
             )
-            with (
-                patch.object(registration, "require_native_models", lambda stage: None),
-                patch.object(service, "_native_runtime", lambda **kwargs: (None, root / "sdk")),
-                patch.object(service, "_capabilities", lambda *args, **kwargs: reply),
-                self.assertRaises(BoundaryError),
+            invalid_replies = [
+                ("missing_method", reply),
+                ("method_only_missing_marker", method_only_reply),
+            ]
+            for label, value in (
+                ("missing_marker_field", "missing"),
+                ("null_markers", None),
+                ("markers_not_array", "native_current_reader_owned_v1"),
+                ("empty_markers", []),
+                ("wrong_marker", ["native_current_reader_owned_v2"]),
+                ("nonstring_marker", ["native_current_reader_owned_v1", 17]),
+                ("empty_string_marker", ["native_current_reader_owned_v1", ""]),
             ):
-                service._register_native("a" * 64, environment_kind="native", deadline=float("inf"))
-            self.assertEqual(calls, ["verified_export"])
-            self.assertFalse((root / "private").exists())
-            self.assertEqual(set(root.iterdir()), {export})
+                invalid = copy.deepcopy(method_only_reply)
+                if label == "missing_marker_field":
+                    del invalid["capabilities"]["implemented_mechanisms"]
+                else:
+                    invalid["capabilities"]["implemented_mechanisms"] = value
+                invalid_replies.append((label, invalid))
+            for label, invalid in invalid_replies:
+                calls.clear()
+                private = root / ("private-" + label)
+                service.models = SimpleNamespace(private_root=private, root=root)
+                before_files = set(root.iterdir())
+                with self.subTest(capability=label):
+                    with (
+                        patch.object(registration, "require_native_models", lambda stage: None),
+                        patch.object(
+                            service, "_native_runtime", lambda **kwargs: (None, root / "sdk")
+                        ),
+                        patch.object(
+                            service, "_capabilities", lambda *args, value=invalid, **kwargs: value
+                        ),
+                        patch.object(
+                            service,
+                            "_matching_native",
+                            side_effect=AssertionError(
+                                "compatibility must stop before registration"
+                            ),
+                        ),
+                        self.assertRaises(BoundaryError) as rejected,
+                    ):
+                        service._register_native(
+                            "a" * 64, environment_kind="native", deadline=float("inf")
+                        )
+                    self.assertEqual(rejected.exception.code, "native_capabilities_incompatible")
+                    self.assertEqual(calls, ["verified_export"])
+                    self.assertFalse(private.exists())
+                    self.assertFalse(config.state_dir.exists())
+                    self.assertEqual(set(root.iterdir()), before_files)
             from spireagent.workbench import native_agent_support
 
             wrong_policy = {**policy, "max_known_stale_rejections": 7}

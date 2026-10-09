@@ -305,6 +305,13 @@ def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None 
 
             checked_execution_policy(execution_policy)
             methods.append("current_owned")
+            mechanisms = capabilities.get("implemented_mechanisms")
+            if (
+                not isinstance(mechanisms, list)
+                or any(not isinstance(item, str) or not item for item in mechanisms)
+                or "native_current_reader_owned_v1" not in mechanisms
+            ):
+                raise ValueError
         advertised_methods = capabilities.get("supported_methods")
         if not isinstance(advertised_methods, list) or not set(methods) <= set(advertised_methods):
             raise ValueError
