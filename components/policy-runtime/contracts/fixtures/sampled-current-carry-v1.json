@@ -788,8 +788,8 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query",
-          "request_id": "Q1",
-          "query": {
+          "request_id": "child-Q1",
+          "input": {
             "method": "current",
             "arguments": {
               "eager_scope": [
@@ -807,7 +807,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query_result",
-          "request_id": "Q1",
+          "request_id": "child-Q1",
           "result": {
             "method": "current",
             "acquisition_id": "acq-map_a",
@@ -924,7 +924,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consumed",
-          "request_id": "C1",
+          "request_id": "child-C1",
           "completion": {
             "acquisition_id": "acq-map_a",
             "input_spec": {
@@ -944,7 +944,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consume_ack",
-          "request_id": "C1",
+          "request_id": "child-C1",
           "completion": {
             "consumption_id": "consume-1",
             "acquisition_id": "acq-map_a",
@@ -1009,8 +1009,8 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query",
-          "request_id": "Q2",
-          "query": {
+          "request_id": "child-Q2",
+          "input": {
             "method": "current",
             "arguments": {
               "eager_scope": [
@@ -1028,7 +1028,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query_result",
-          "request_id": "Q2",
+          "request_id": "child-Q2",
           "result": {
             "method": "current",
             "acquisition_id": "acq-inspect_b",
@@ -1145,7 +1145,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consumed",
-          "request_id": "C2",
+          "request_id": "child-C2",
           "completion": {
             "acquisition_id": "acq-inspect_b",
             "input_spec": {
@@ -1165,7 +1165,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consume_ack",
-          "request_id": "C2",
+          "request_id": "child-C2",
           "completion": {
             "consumption_id": "consume-2",
             "acquisition_id": "acq-inspect_b",
@@ -1230,8 +1230,8 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query",
-          "request_id": "Q3",
-          "query": {
+          "request_id": "child-Q3",
+          "input": {
             "method": "current",
             "arguments": {
               "eager_scope": [
@@ -1249,7 +1249,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "query_result",
-          "request_id": "Q3",
+          "request_id": "child-Q3",
           "result": {
             "method": "current",
             "acquisition_id": "acq-map_c",
@@ -1366,7 +1366,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consumed",
-          "request_id": "C3",
+          "request_id": "child-C3",
           "completion": {
             "acquisition_id": "acq-map_c",
             "input_spec": {
@@ -1386,7 +1386,7 @@
           "session_id": "fixture-session",
           "recovery_epoch": 0,
           "message_type": "consume_ack",
-          "request_id": "C3",
+          "request_id": "child-C3",
           "completion": {
             "consumption_id": "consume-3",
             "acquisition_id": "acq-map_c",
