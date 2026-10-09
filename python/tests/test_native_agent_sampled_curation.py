@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 
 import pytest
+from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_native_agent_sampled_source import (
     IMPORTER,
     PROJECTOR,
