@@ -16,8 +16,12 @@ export function evaluateGameModVersions({ packageVersion, manifestVersion, nativ
   const project = String(projectSource).replace(/<!--[\s\S]*?-->/gu, "");
   const nativeValues = [...native.matchAll(/^\s*public const string Version = "([^"\r\n]+)";/gmu)];
   const projectValues = [...project.matchAll(/<Version>\s*([^<>]+?)\s*<\/Version>/gu)];
+  const versionTags = [...project.matchAll(/<(?:[\w.-]+:)?Version(?=[\s/>])/giu)];
+  const conditionalVersion = [...project.matchAll(/<PropertyGroup\b([^>]*)>([\s\S]*?)<\/PropertyGroup>/giu)]
+    .some(match => /\bCondition\s*=/iu.test(match[1]) && /<Version(?=[\s/>])/iu.test(match[2]));
   const nativeVersion = nativeValues.length === 1 ? nativeValues[0][1] : null;
-  const projectVersion = projectValues.length === 1 ? projectValues[0][1] : null;
+  const projectVersion = projectValues.length === 1 && versionTags.length === 1 && !conditionalVersion
+    ? projectValues[0][1] : null;
   const errors = [];
   if (typeof packageVersion !== "string" || packageVersion.length === 0)
     errors.push("Game Mod package version is missing");

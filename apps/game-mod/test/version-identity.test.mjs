@@ -30,5 +30,12 @@ test("duplicate declarations and dynamic project versions cannot select a conven
   assert.equal(evaluateGameModVersions({ ...value, nativeSource: value.nativeSource + "\n" + value.nativeSource }).ok, false);
   assert.equal(evaluateGameModVersions({ ...value, projectSource: value.projectSource + "<Version>other</Version>" }).ok, false);
   assert.equal(evaluateGameModVersions({ ...value, projectSource: "<Version>$(Version)</Version>" }).ok, false);
+  for (const tag of [
+    '<Version Condition="\'$(Configuration)\' == \'Release\'">0.2.0-rc.31</Version>',
+    '<version>0.2.0-rc.31</version>', '<Version/>'
+  ]) assert.equal(evaluateGameModVersions({ ...value, projectSource: value.projectSource + tag }).ok, false);
+  assert.equal(evaluateGameModVersions({ ...value,
+    projectSource: '<PropertyGroup Condition="\'$(Configuration)\' == \'Debug\'"><Version>0.2.0-rc.33</Version></PropertyGroup>'
+  }).ok, false);
   assert.equal(evaluateGameModVersions({ ...value, projectSource: "<!-- <Version>old</Version> -->" + value.projectSource }).ok, true);
 });
