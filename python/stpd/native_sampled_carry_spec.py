@@ -23,6 +23,7 @@ from .fullrun.native_structured_inputs import (
     PROJECTION as FEATURE_PROJECTION,
 )
 from .native_graph_spec import NativeGraphControl, checked_control
+from .policy.native_operational_outcome import checked_execution_policy
 from .policy.native_task import (
     map_timed_ready_summary_task_spec,
     observe_ready_summary,
@@ -81,12 +82,14 @@ INPUT_SPEC = {
 }
 
 
-def sampled_agent_spec(model_control: NativeGraphControl) -> dict[str, Any]:
+def sampled_agent_spec(
+    model_control: NativeGraphControl, *, execution_policy: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Current sampled Agent: K1/D96 carry and explicit fixed Map timing."""
     control = checked_control(model_control.to_dict())
     if control != NativeGraphControl():
         raise BoundaryError("sampled_carry", "k1d96_carry_required")
-    return {
+    spec = {
         "id": "stpd-native-sampled-carry-m2-agent",
         "version": "1.1.0",
         "acquisition": "eligible_current_decision_samples",
@@ -102,6 +105,30 @@ def sampled_agent_spec(model_control: NativeGraphControl) -> dict[str, Any]:
         "segment": "one_live_runtime_session_until_post_sample_human_or_failure",
         "task_spec": map_timed_ready_summary_task_spec(),
     }
+    if execution_policy is not None:
+        spec.update(
+            version="1.2.0",
+            execution_policy=checked_execution_policy(execution_policy),
+            operational_outcome="validate_original_intention_ignore_for_model_input_W_and_scores",
+            I=False,
+            F=False,
+        )
+    return spec
+
+
+def sampled_agent_execution_policy(
+    agent_spec: object, model_control: NativeGraphControl
+) -> dict[str, Any] | None:
+    """Select parser mode only from the exact declared package AgentSpec."""
+    if not isinstance(agent_spec, dict):
+        raise BoundaryError("sampled_carry", "agent_spec_required")
+    policy = (checked_execution_policy(agent_spec["execution_policy"])
+              if "execution_policy" in agent_spec else None)
+    if semantic_hash(agent_spec) != semantic_hash(
+        sampled_agent_spec(model_control, execution_policy=policy)
+    ):
+        raise BoundaryError("sampled_carry", "declared_agent_spec_binding")
+    return policy
 
 
 def sample_eligible(observation: dict[str, Any], catalog: list[dict[str, Any]]) -> bool:
