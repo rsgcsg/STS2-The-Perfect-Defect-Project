@@ -15,7 +15,7 @@ const ignoredDirectories = new Set([
 
 const componentRoutes = [
   { id: "project-apps", prefix: "python/spireagent/", guide: "python/docs/DOCUMENT_MAP.md", check: "npm run check:python" },
-  { id: "research", prefix: "python/stpd/", guide: "python/docs/FULLRUN_RESEARCH.md", check: "npm run check:python" },
+  { id: "research", prefix: "python/stpd/", guide: "python/docs/DOCUMENT_MAP.md", check: "npm run check:python" },
   {
     id: "native-foundation",
     prefix: "components/native-foundation/",
@@ -491,6 +491,27 @@ function parseContextArgs(args) {
   return { component };
 }
 
+function finalCheckPlanLines(plan) {
+  return [
+    "## Final candidate checks",
+    "",
+    `Selected check plan: ${plan.scope} (${plan.reason}); docs/TESTING.md owns selection and evidence limits.`,
+    `Planner will run: ${scopeCommands(plan.scope).map(command => `npm run ${command}`).join(", ")}; do not repeat these commands separately.`,
+    "",
+    "- npm run check:plan -- --base origin/develop --run"
+  ];
+}
+
+function focusedCheckLines(checks) {
+  return [
+    "## Optional focused development checks",
+    "",
+    "Choose only as useful while editing; these are not additional final candidate steps.",
+    "",
+    ...[...checks].map(command => `- ${command}`)
+  ];
+}
+
 export function formatContext(workspaceRoot = root, options = {}) {
   const explicit = options.component ?? null;
   const cwdRelative = relativePath(workspaceRoot, process.cwd());
@@ -546,14 +567,12 @@ export function formatContext(workspaceRoot = root, options = {}) {
       ? skills.map((skill) => `- ${skill.name}: ${skill.description}`)
       : ["- None; ordinary work normally needs no Skill."]),
     "",
-    "## Recommended checks",
+    ...finalCheckPlanLines(plan),
     "",
-    `Selected check plan: ${plan.scope} (${plan.reason}); docs/TESTING.md owns selection and evidence limits.`,
+    ...focusedCheckLines(new Set(["npm run project:check", ...(route ? [route.check] : [])])),
     "",
-    ...(route ? [`- ${route.check}`] : []),
-    "- npm run project:check",
-    "- npm run check:plan -- --base origin/develop --run",
-    ...scopeCommands(plan.scope).map((command) => `- npm run ${command}`),
+    "## Closeout hygiene",
+    "",
     "- npm run project:closeout",
     "- git diff --check",
     "",
@@ -595,8 +614,7 @@ export function formatCloseout(workspaceRoot = root) {
   const files = changedFiles(workspaceRoot);
   const owners = ownersForFiles(files);
   const plan = makePlan({ base: "origin/develop", cwd: workspaceRoot });
-  const checks = new Set(["npm run project:check", "npm run check:plan -- --base origin/develop --run",
-    ...scopeCommands(plan.scope).map((command) => `npm run ${command}`), "git diff --check"]);
+  const checks = new Set(["npm run project:check"]);
   for (const owner of owners) {
     const route = routeForId(owner);
     if (route) checks.add(route.check);
@@ -617,7 +635,7 @@ export function formatCloseout(workspaceRoot = root) {
   const identityImpact = pythonSourceImpact || componentSourceImpact || anyMatch(files, [
     /^contracts\//u, /package\.json$/u, /pyproject\.toml$/u, /\.csproj$/u, /^platform-bom\.json$/u
   ]);
-  const evidenceImpact = pythonSourceImpact || anyMatch(files, [
+  const evidenceImpact = pythonSourceImpact || componentSourceImpact || anyMatch(files, [
     /^components\/(?:native-foundation|connector|host-runtime|annotator|evidence|policy-runtime)\//u,
     /^apps\/game-mod\//u,
     /^docs\/(?:STATUS|TESTING)\.md$/u,
@@ -637,11 +655,13 @@ export function formatCloseout(workspaceRoot = root) {
     `- Changed files: ${files.length}`,
     `- Owning components/layers: ${owners.length ? owners.join(", ") : "none detected"}`,
     "",
-    "## Likely checks",
+    ...finalCheckPlanLines(plan),
     "",
-    `Selected check plan: ${plan.scope} (${plan.reason}); docs/TESTING.md owns selection and evidence limits.`,
+    ...focusedCheckLines(checks),
     "",
-    ...[...checks].map((command) => `- ${command}`),
+    "## Closeout hygiene",
+    "",
+    "- git diff --check",
     "",
     "## Review signals",
     "",
