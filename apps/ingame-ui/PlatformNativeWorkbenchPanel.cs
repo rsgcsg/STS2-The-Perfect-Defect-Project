@@ -26,6 +26,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private readonly Button _previous = new() { Text = "上一页" };
     private readonly Button _next = new() { Text = "下一页" };
     private Task<(long Generation, JsonElement? View, string? Error)>? _read;
+    private Task<(PlatformNativeWorkbenchConnection Connection, string? Url, long Generation)>? _externalOpen;
     private JsonElement? _view;
     private string _page = "play";
     private string? _context;
@@ -136,6 +137,14 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 }
                 else _connection.Text = result.Error;
             }
+        }
+        if (_externalOpen is { IsCompleted: true })
+        {
+            var external = _externalOpen.GetAwaiter().GetResult(); _externalOpen = null;
+            if (external.Url is not null && external.Generation == _generation
+                && PlatformNativeWorkbenchConnection.IsCurrent(external.Connection))
+                OS.ShellOpen(external.Url);
+            else _notice.Text = "所选工作台或对象已变化；未打开外部窗口。";
         }
         for (int index = _writes.Count - 1; index >= 0; index--)
         {
@@ -333,9 +342,24 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             foreach (string capability in new[] { "source_aware_prepare", "remote_execution" })
                 if (capabilities.TryGetProperty(capability, out JsonElement support) && !Boolean(support, "enabled"))
                     _forms.AddChild(Label((capability == "remote_execution" ? "远端计算" : "新来源准备") + "暂不可用：" + String(support, "reason")));
-            _forms.AddChild(Button("在外部继续此对象/任务", () => OS.ShellOpen(PlatformNativeWorkbenchClient.ExternalUrl(connection, view.GetProperty("context")))));
+            _forms.AddChild(Button("在外部继续此对象/任务", OpenExternalContext));
             if (focused is not null && _fields.TryGetValue(focused, out Control? next)) next.GrabFocus();
         }
+    }
+
+    private void OpenExternalContext()
+    {
+        if (_disposed || _externalOpen is { IsCompleted: false }) return;
+        PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
+        if (connection is null) { _notice.Text = "本机连接已失效；未打开外部窗口。"; return; }
+        long generation = _generation;
+        string page = _page; int offset = _offset; string? context = _context;
+        _externalOpen = Task.Run(async () => {
+            try { return (connection, (string?)await _client.ExternalAsync(connection, page, offset, context, _lifetime.Token), generation); }
+            catch (Exception error) when (error is HttpRequestException or OperationCanceledException
+                or JsonException or InvalidOperationException or IOException)
+            { return (connection, (string?)null, generation); }
+        });
     }
 
     private void SetDraft(string key, string value)
@@ -560,7 +584,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true; _lifetime.Cancel(); _client.Dispose();
-        Task[] pending = _writes.Select(item => (Task)item.Task).Concat(_read is null ? [] : new Task[] { _read }).ToArray();
+        Task[] pending = _writes.Select(item => (Task)item.Task)
+            .Concat(_read is null ? [] : new Task[] { _read })
+            .Concat(_externalOpen is null ? [] : new Task[] { _externalOpen }).ToArray();
         _ = Task.WhenAll(pending).ContinueWith(task => { _ = task.Exception; _lifetime.Dispose(); }, TaskScheduler.Default);
     }
 }

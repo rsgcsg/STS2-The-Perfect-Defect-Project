@@ -27,7 +27,7 @@ test("Live UI has a visible entry without keyboard or gameplay authority", () =>
 });
 
 test("Workbench browser opens after a user click and exact-instance health check", () => {
-  assert.match(mod, /BuildHeaderButton\("外部窗口", BeginOpenWorkbench/u);
+  assert.match(mod, /BuildHeaderButton\("兼容浏览器", BeginOpenWorkbench/u);
   assert.match(mod, /if \(_disposed \|\| _workbenchOpenCheck is \{ IsCompleted: false \}\)\s+return/u);
   assert.match(mod, /CompleteWorkbenchOpenCheck\(\);/u);
   assert.match(mod, /if \(!result\.CanOpen \|\| result\.Url is null\)[\s\S]*?return;[\s\S]*?OS\.ShellOpen\(result\.Url\)/u);

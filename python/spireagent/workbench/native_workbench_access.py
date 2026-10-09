@@ -10,11 +10,13 @@ import hmac
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 import threading
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ BOOTSTRAP_SCHEMA = "spireagent/native-workbench-bootstrap-v1"
 PAIR_SCHEMA = "sts2.platform/native-workbench-pair-1"
 ACK_SCHEMA = "sts2.platform/native-workbench-pair-ack-1"
 CURRENT_SCHEMA = "sts2.platform/native-workbench-current-1"
+CLOSE_SCHEMA = "sts2.platform/native-workbench-close-1"
 BINDING_FIELDS = (
     "runtime_instance_id",
     "workbench_instance_id",
@@ -107,6 +110,11 @@ class NativeBootstrap:
     launcher_sha256: str
     game_mod_sha256: str
     secret: str = field(repr=False)
+
+    @property
+    def credential_generation(self) -> str:
+        # Private authentication identity; never an operation field or public status.
+        return hashlib.sha256(bytes.fromhex(self.secret)).hexdigest()
 
     @classmethod
     def read(cls, directory: Path, config_path: Path | None = None) -> NativeBootstrap:
@@ -212,6 +220,10 @@ class NativeWorkbenchAccess:
         self._pair: NativePair | None = None
         self._lock = threading.RLock()
         self._peer: Any = None
+        self._bootstrap: NativeBootstrap | None = None
+        self._pending: tuple[NativePair, NativeBootstrap, Any, int] | None = None
+        self._lifecycle_generation = 0
+        self._closed = False
 
     def bootstrap(self) -> NativeBootstrap:
         try:
@@ -234,27 +246,98 @@ class NativeWorkbenchAccess:
         except (OSError, ValueError, TypeError, KeyError) as error:
             raise fail("native_access_recovery_required") from error
 
-    def install(self, pair: NativePair, peer: Any) -> None:
+    def registration_candidate(self, url: str, instance_id: str, runtime_id: str,
+                               peer: Any) -> tuple[NativePair, NativeBootstrap, int]:
+        from spireagent.workbench.developer_server import configuration_id
+
+        with self._lock:
+            generation = self._lifecycle_generation
+            if self._closed:
+                raise fail("native_lifecycle_closed")
+        bootstrap = self.bootstrap()
+        now = int(time.time())
+        proposed = NativePair(runtime_id, instance_id, configuration_id(self.app.config),
+                              url, secrets.token_hex(16), now + MAX_PAIR_SECONDS)
+        if instance_id != self.app.instance_id:
+            raise fail("native_workbench_changed")
+        runtime = self._configuration_current(proposed)
+        # serve writes its own server port before starting this registration loop.
+        if (type(runtime.get("port")) is not int or not 1 <= runtime["port"] <= 65535
+                or url != f"http://127.0.0.1:{runtime['port']}/"):
+            raise fail("native_workbench_changed")
+        with self._lock:
+            if self._closed or generation != self._lifecycle_generation:
+                raise fail("native_lifecycle_closed")
+            pending = self._pending
+            if (pending is not None and pending[3] == generation
+                    and pending[1] == bootstrap and pending[0].expires_at > now
+                    and all(getattr(pending[0], key) == getattr(proposed, key) for key in
+                            ("runtime_instance_id", "workbench_instance_id",
+                             "configuration_id", "workbench_url"))):
+                return pending[0], bootstrap, generation
+            current = self._pair
+            pair = (current if current is not None and self._bootstrap == bootstrap
+                    and current.expires_at > now + 60 and all(
+                        getattr(current, key) == getattr(proposed, key) for key in
+                        ("runtime_instance_id", "workbench_instance_id",
+                         "configuration_id", "workbench_url"))
+                    else proposed)
+            self._pending = (pair, bootstrap, peer, generation)
+            return pair, bootstrap, generation
+
+    def registration_open(self, pair: NativePair, generation: int) -> None:
+        with self._lock:
+            if (self._closed or generation != self._lifecycle_generation
+                    or self._pending is None or self._pending[0] != pair):
+                raise fail("native_lifecycle_closed")
+
+    def install(self, pair: NativePair, peer: Any, *, generation: int | None = None,
+                bootstrap: NativeBootstrap | None = None) -> None:
         pair.validate()
         if pair.workbench_instance_id != self.app.instance_id:
             raise fail("native_workbench_changed")
+        current_bootstrap = self.bootstrap()
+        if bootstrap is not None and current_bootstrap != bootstrap:
+            raise fail("native_selected_workbench_changed")
         with self._lock:
-            self._pair, self._peer = pair, peer
+            if (self._closed or generation is not None and generation != self._lifecycle_generation
+                    or generation is not None and (self._pending is None
+                                                   or self._pending[0] != pair)):
+                raise fail("native_lifecycle_closed")
+            self._pair, self._peer, self._bootstrap = pair, peer, current_bootstrap
+            self._pending = None
 
     def current(self) -> NativePair | None:
         with self._lock:
-            return self._pair
+            return self._pair if not self._closed else None
+
+    def close_lifecycle(self) -> tuple[tuple[NativePair, NativeBootstrap, Any], ...]:
+        with self._lock:
+            # Snapshot both exact possibly accepted candidates before revoking.
+            candidates: list[tuple[NativePair, NativeBootstrap, Any]] = []
+            if self._pending is not None:
+                candidates.append(self._pending[:3])
+            if self._pair is not None and self._bootstrap is not None and self._peer is not None:
+                current = (self._pair, self._bootstrap, self._peer)
+                if not any(candidate[0] == current[0] for candidate in candidates):
+                    candidates.append(current)
+            self._closed = True
+            self._lifecycle_generation += 1
+            self._pair, self._peer, self._bootstrap, self._pending = None, None, None, None
+            return tuple(candidates)
 
     def revoke(self) -> None:
-        with self._lock:
-            self._pair, self._peer = None, None
+        self.close_lifecycle()
 
-    def _configuration_current(self, pair: NativePair) -> None:
+    def _configuration_current(self, pair: NativePair) -> dict[str, Any]:
         from spireagent.workbench.developer import ProjectConfig
         from spireagent.workbench.developer_server import configuration_id
 
         current = ProjectConfig.load(self.app.config_path)
-        runtime = json.loads(private_bytes(self.app.config.state_dir / "runtime.json"))
+        value = json.loads(private_bytes(self.app.config.state_dir / "runtime.json"))
+        if not isinstance(value, dict):
+            raise fail("native_configuration_changed")
+        runtime: dict[str, Any] = value
         if (
             current != self.app.config
             or pair.configuration_id != configuration_id(current)
@@ -262,6 +345,7 @@ class NativeWorkbenchAccess:
             or runtime.get("configuration_id") != pair.configuration_id
         ):
             raise fail("native_configuration_changed")
+        return runtime
 
     @staticmethod
     def _headers_current(headers: Any, pair: NativePair, secret: str) -> None:
@@ -287,7 +371,16 @@ class NativeWorkbenchAccess:
         self._configuration_current(pair)
         return pair
 
-    def authorize_intent(self, context: dict[str, Any]) -> None:
+    def intent_authorizer(self, context: dict[str, Any], pair: NativePair) -> Callable[[], None]:
+        bootstrap = self.bootstrap()
+        with self._lock:
+            if self._closed or self._pair != pair or self._bootstrap != bootstrap:
+                raise fail("native_model_context_changed")
+            generation = bootstrap.credential_generation
+        # Capture the admitted grant once; never recapture it after re-enable.
+        return lambda: self.authorize_intent(context, credential_generation=generation)
+
+    def authorize_intent(self, context: dict[str, Any], *, credential_generation: str) -> None:
         stored = self.app.models.native_intent_context(context["request_id"])
         if stored["binding"] != context["binding"]:
             raise fail("native_model_intent_superseded")
@@ -304,6 +397,8 @@ class NativeWorkbenchAccess:
         ):
             raise fail("native_model_context_changed")
         bootstrap = self.bootstrap()
+        if not hmac.compare_digest(bootstrap.credential_generation, credential_generation):
+            raise fail("native_model_context_changed")
         self.authenticate(current.headers(bootstrap.secret))
 
     def authenticate(self, headers: Any) -> NativePair:
@@ -311,9 +406,11 @@ class NativeWorkbenchAccess:
             raise fail("native_loopback_required")
         bootstrap = self.bootstrap()
         with self._lock:
-            pair, peer = self._pair, self._peer
+            pair, peer, admitted_bootstrap = self._pair, self._peer, self._bootstrap
         if pair is None or peer is None or pair.expires_at <= time.time():
             raise fail("native_pair_expired_or_missing")
+        if admitted_bootstrap != bootstrap:
+            raise fail("native_selected_workbench_changed")
         self._headers_current(headers, pair, bootstrap.secret)
         self._configuration_current(pair)
         # Read-only peer confirmation precedes dispatch. It cannot settle any job.

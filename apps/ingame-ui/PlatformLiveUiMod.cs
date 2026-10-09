@@ -369,7 +369,7 @@ internal sealed class PlatformLivePanel : IDisposable
         titleRow.AddChild(_workspaceTitle);
         _workbenchButton = BuildHeaderButton("工作台", () => SelectSurface(2), "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
-        _externalWorkbenchButton = BuildHeaderButton("外部窗口", BeginOpenWorkbench, "Open the connected Workbench browser entry.");
+        _externalWorkbenchButton = BuildHeaderButton("兼容浏览器", BeginOpenWorkbench, "Open the registered legacy compatibility browser service.");
         titleRow.AddChild(_externalWorkbenchButton);
         titleRow.AddChild(BuildHeaderButton("Minimize", MinimizePanel, "Keep a small live view during play."));
         titleRow.AddChild(BuildHeaderButton("Reset", ResetLayout, "Restore position, size and active surface."));

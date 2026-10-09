@@ -1424,11 +1424,15 @@ def configure_native_access(directory: Path, config_path: Path, prepared: dict[s
         if (not isinstance(raw, dict) or set(raw) != {"schema", "enabled", "config_path",
                 "launcher_sha256", "game_mod_sha256", "secret"}
                 or raw.get("schema") != BOOTSTRAP_SCHEMA
+                or type(raw.get("enabled")) is not bool
                 or raw.get("config_path") != str(config_path.resolve())):
             reject("native_access_recovery_required")
         digest(raw["secret"], "kit_install.native_secret")
         if (raw["launcher_sha256"] == sha(launcher_raw)
-                and raw["game_mod_sha256"] == prepared["mod_sha256"]):
+                and raw["game_mod_sha256"] == prepared["mod_sha256"]
+                and (not enabled or raw["enabled"] is True)):
+            # Re-enable is a new explicit grant even if neither peer observed
+            # the disabled interval. Unchanged enabled install stays idempotent.
             secret = raw["secret"]
     atomic_json(path, {"schema": BOOTSTRAP_SCHEMA, "enabled": enabled,
                       "config_path": str(config_path.resolve()),

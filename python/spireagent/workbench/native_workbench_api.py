@@ -884,8 +884,7 @@ class NativeWorkbenchApi:
             exact(body, {"selection_id", "run_profile"})
             context = {"request_id": request_id, "binding": pair.to_dict()}
 
-            def authorize() -> None:
-                app.native_access.authorize_intent(context)
+            authorize = app.native_access.intent_authorizer(context, pair)
 
             if action_id == "models.load":
                 return app.models.prepare_and_load(
@@ -910,7 +909,7 @@ class NativeWorkbenchApi:
                 action_id.split(".", 1)[1],
                 expected_context=body,
                 native_context=context,
-                native_authorizer=lambda: app.native_access.authorize_intent(context),
+                native_authorizer=app.native_access.intent_authorizer(context, pair),
             )
         if action_id in {"models.human", "models.stop"}:
             mode = "human" if action_id == "models.human" else "stop"

@@ -20,6 +20,8 @@ internal static class PlatformTaskBridge
     internal static void Start()
     {
         if (_listener != null) return;
+        PlatformNativeWorkbenchConnection.Initialize(
+            PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId);
         var listener = new HttpListener();
         listener.Prefixes.Add("http://" + Authority + "/");
         listener.Start();
@@ -49,7 +51,8 @@ internal static class PlatformTaskBridge
         ready_for_model = PlatformCollectionHandoff.Ready(recording)
     };
 
-    internal static async Task Handle(HttpListenerContext context)
+    internal static async Task Handle(HttpListenerContext context,
+        PlatformNativeWorkbenchConnection.Authority? nativeAuthority = null)
     {
         int nativeWorkStarted = 0;
         try
@@ -112,9 +115,11 @@ internal static class PlatformTaskBridge
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/unregister")
             { UnregisterWorkbench(context); return; }
             if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/native-register")
-            { RegisterNativeWorkbench(context); return; }
+            { await RegisterNativeWorkbench(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
             if (request.HttpMethod == "GET" && request.RawUrl == "/v1/workbench/native-status")
-            { NativeWorkbenchStatus(context); return; }
+            { NativeWorkbenchStatus(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
+            if (request.HttpMethod == "POST" && request.RawUrl == "/v1/workbench/native-unregister")
+            { await CloseNativeWorkbench(context, nativeAuthority ?? PlatformNativeWorkbenchConnection.Production); return; }
             if (request.HttpMethod != "POST" || request.RawUrl != "/v1/tasks/prepare-model"
                 || request.ContentType != "application/json" || request.ContentLength64 is <= 0 or > 4096
                 || request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
@@ -261,7 +266,6 @@ internal static class PlatformTaskBridge
                 || _workbenchRegistration.WorkbenchInstanceId != instanceId)
             { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
             _workbenchRegistration = null;
-            PlatformNativeWorkbenchConnection.Clear(instanceId!);
         }
         Reply(context, 200, new
         {
@@ -272,56 +276,53 @@ internal static class PlatformTaskBridge
         });
     }
 
-    private static void RegisterNativeWorkbench(HttpListenerContext context)
+    private static bool NativeTransport(HttpListenerContext context)
     {
-        HttpListenerRequest request = context.Request;
-        if (request.ContentType != "application/json" || request.ContentLength64 is <= 0 or > 4096
-            || request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
-        { Reply(context, 400, new { error = "invalid_native_pair_request" }); return; }
-        using var reader = new StreamReader(request.InputStream);
-        using JsonDocument document = JsonDocument.Parse(reader.ReadToEnd());
-        PlatformNativeWorkbenchBootstrap bootstrap = PlatformNativeWorkbenchBootstrap.Read(
-            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
-        PlatformNativeWorkbenchPair pair = PlatformNativeWorkbenchPair.ReadSigned(
-            document.RootElement, PlatformNativeWorkbenchPair.Schema, "native-register-v1", bootstrap.Secret);
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        lock (Gate)
-        {
-            string runtime = PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
-            if (pair.ExpiresAt <= now || pair.ExpiresAt > now + 600 || pair.RuntimeInstanceId != runtime
-                || _workbenchRegistration?.RuntimeInstanceId != runtime
-                || _workbenchRegistration.WorkbenchInstanceId != pair.WorkbenchInstanceId
-                || _workbenchRegistration.Url != pair.WorkbenchUrl)
-            { Reply(context, 409, new { error = "native_pair_identity_mismatch" }); return; }
-            PlatformNativeWorkbenchConnection.Install(pair, bootstrap.Secret);
-        }
-        Reply(context, 200, pair.Signed(PlatformNativeWorkbenchPair.AckSchema,
-            "native-register-ack-v1", bootstrap.Secret));
+        if (context.Request.Headers["Cookie"] is null
+            && context.Request.Headers["Transfer-Encoding"] is null) return true;
+        Reply(context, 400, new { error = "invalid_native_pair_request" });
+        return false;
     }
 
-    private static void NativeWorkbenchStatus(HttpListenerContext context)
+    private static async Task RegisterNativeWorkbench(HttpListenerContext context,
+        PlatformNativeWorkbenchConnection.Authority authority)
     {
-        PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
-        if (connection is null || context.Request.Headers["Cookie"] != null)
-        { Reply(context, 403, new { error = "native_pair_required" }); return; }
-        PlatformNativeWorkbenchPair pair = connection.Binding;
-        PlatformNativeWorkbenchBootstrap bootstrap = PlatformNativeWorkbenchBootstrap.Read(
-            PlatformLiveUiMod.CurrentArtifactIdentity().ArtifactSha256 ?? "unavailable");
-        string runtime = PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
-        bool current;
-        lock (Gate) current = _workbenchRegistration?.RuntimeInstanceId == runtime
-            && _workbenchRegistration.WorkbenchInstanceId == pair.WorkbenchInstanceId
-            && _workbenchRegistration.Url == pair.WorkbenchUrl;
-        if (!current || pair.RuntimeInstanceId != runtime || pair.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-            || !PlatformNativeWorkbenchPair.EqualSecret(context.Request.Headers["Authorization"],
-                "Bearer " + pair.Sign(bootstrap.Secret, "native-access-v1"))
-            || context.Request.Headers["X-STS2-Game-Instance-ID"] != pair.RuntimeInstanceId
-            || context.Request.Headers["X-SpireAgent-Workbench-Instance-ID"] != pair.WorkbenchInstanceId
-            || context.Request.Headers["X-SpireAgent-Configuration-ID"] != pair.ConfigurationId
-            || context.Request.Headers["X-SpireAgent-Pair-ID"] != pair.PairId)
-        { Reply(context, 409, new { error = "native_pair_changed" }); return; }
-        Reply(context, 200, pair.Signed(PlatformNativeWorkbenchPair.CurrentSchema,
-            "native-current-v1", bootstrap.Secret));
+        if (!NativeTransport(context)) return;
+        using JsonDocument document = await ReadBoundedBody(context.Request, 4096);
+        try
+        {
+            object ack = authority.Register(document.RootElement);
+            Reply(context, 200, ack);
+        }
+        catch (InvalidOperationException error)
+        { Reply(context, 409, new { error = PlatformRecordingCommands.PublicCode(error.Message, "native_pair_identity_mismatch") }); }
+    }
+
+    private static void NativeWorkbenchStatus(HttpListenerContext context,
+        PlatformNativeWorkbenchConnection.Authority authority)
+    {
+        if (!NativeTransport(context)) return;
+        try
+        {
+            object proof = authority.CurrentProof(context.Request.Headers);
+            Reply(context, 200, proof);
+        }
+        catch (InvalidOperationException error)
+        { Reply(context, 409, new { error = PlatformRecordingCommands.PublicCode(error.Message, "native_pair_changed") }); }
+    }
+
+    private static async Task CloseNativeWorkbench(HttpListenerContext context,
+        PlatformNativeWorkbenchConnection.Authority authority)
+    {
+        if (!NativeTransport(context)) return;
+        using JsonDocument document = await ReadBoundedBody(context.Request, 4096);
+        try
+        {
+            object result = authority.Close(document.RootElement, context.Request.Headers);
+            Reply(context, 200, result);
+        }
+        catch (InvalidOperationException error)
+        { Reply(context, 409, new { error = PlatformRecordingCommands.PublicCode(error.Message, "native_pair_changed") }); }
     }
 
     private static void Reply(HttpListenerContext context, int code, object value)

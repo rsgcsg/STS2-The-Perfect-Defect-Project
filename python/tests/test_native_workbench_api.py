@@ -524,3 +524,66 @@ def test_registration_sqlite_failure_is_safe_unconfirmed_without_replay(
     assert "sqlite_errorname=SQLITE_READONLY" in caplog.text
     assert call("/health", headers={}) == {"instance_id": app.instance_id}
     assert len(attempts) == 1
+
+
+def test_unobserved_disable_reenable_cannot_authorize_pending_takeover_auto(
+    native_http, runtime_http, monkeypatch,
+):
+    from tools import install_developer_kit as installer
+
+    app, call, pair, root, secret, peer = native_http
+    entered, release, _state, requests = native_load(app, monkeypatch, runtime_http)
+    response = call(*command("models.takeover", {
+        "selection_id": "s1-human-combat-v4", "run_profile": "short",
+    }))
+    assert response["status"] == "accepted" and entered.wait(3)
+    try:
+        selected = json.loads((root / "launcher.json").read_bytes())
+        monkeypatch.setattr(installer, "_launcher_directory", lambda: root)
+        monkeypatch.setattr(installer, "_launcher_binding", lambda *_: selected)
+        prepared = {"mod_sha256": "8" * 64}
+        installer.configure_native_access(root, app.config_path, prepared, enabled=False)
+        # Neither peer observes the disabled interval.
+        installer.configure_native_access(root, app.config_path, prepared, enabled=True)
+        new_secret = json.loads((root / "native-access.json").read_bytes())["secret"]
+        assert new_secret != secret
+        new_pair = NativePair(pair.runtime_instance_id, pair.workbench_instance_id,
+            pair.configuration_id, pair.workbench_url, "e" * 32, pair.expires_at + 10)
+
+        def renewed_peer(method, route, *, headers):
+            assert headers == new_pair.headers(new_secret)
+            return {"schema": "sts2.platform/native-workbench-current-1", **new_pair.to_dict(),
+                    "signature": new_pair.sign(new_secret, "native-current-v1")}
+
+        monkeypatch.setattr(peer, "_request", renewed_peer)
+        app.native_access.install(new_pair, peer)
+        assert app.native_access.authenticate(new_pair.headers(new_secret)) == new_pair
+        with pytest.raises(BoundaryError, match="native_model_context_changed"):
+            app.models._native_authorizer()
+    finally:
+        release.set()
+    finish_model(app)
+    assert app.models.state["error_code"] == "native_model_context_changed"
+    assert not any(path == "/v2/mode" and body == {"mode": "auto"} for path, body in requests)
+
+
+def test_original_stop_recovery_does_not_require_ordinary_pair_after_local_revocation(
+    native_http, runtime_http, monkeypatch,
+):
+    app, call, pair, _root, secret, _peer = native_http
+    entered, release, _state, requests = native_load(app, monkeypatch, runtime_http)
+    call(*command("models.takeover", {
+        "selection_id": "s1-human-combat-v4", "run_profile": "short",
+    }))
+    assert entered.wait(3)
+    try:
+        app.native_access.revoke()
+        assert app.native_access.current() is None
+        with pytest.raises(BoundaryError, match="native_pair_expired_or_missing"):
+            app.native_access.authenticate(pair.headers(secret))
+        recovered = call(*command("models.stop", {"native_request_id": "c" * 32}))
+        assert recovered["status"] == "accepted"
+    finally:
+        release.set()
+    finish_model(app)
+    assert not any(path == "/v2/mode" and body == {"mode": "auto"} for path, body in requests)

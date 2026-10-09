@@ -221,6 +221,24 @@ through the separate explicit `native-access` owner after selecting a compatible
 launcher/config/Mod. A disabled bootstrap remains disabled unless explicitly
 enabled; a different-config bootstrap still requires its own recovery.
 
+Explicit `native-access` disable followed by enable creates a fresh credential
+generation, including when launcher, configuration path and Mod are unchanged.
+Repeated enabled-to-enabled installation of that unchanged selection is idempotent.
+Accepted launcher/Mod rebind creates a new grant; same-path configuration selection
+updates require the explicit disable/enable sequence. Registration and launcher
+publication do not silently rotate credentials. Old native pairs, ACKs, bearers
+and pending Load/Auto authorization cannot be adopted by the fresh grant. No
+credential is printed or copied into launcher snapshots.
+
+Signed native pairing is independent of the legacy compatibility browser
+registration. Its exact signed Close retires its context for that credential/game
+generation; reopening the same closed context requires a fresh grant. Old Python
+clients only release their legacy registration, so their signed native slot may
+remain until expiry (at most 600 seconds). Do not force unsigned unregister or
+stop another service to replace it. The global external-window button deliberately
+opens the legacy registered browser service; native object links use their own
+freshly authenticated paired service.
+
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in
