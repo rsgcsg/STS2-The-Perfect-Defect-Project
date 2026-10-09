@@ -445,5 +445,89 @@ namespace STS2PlatformLiveUiTests
             Assert.Equal(fixture.Runtime, fixture.Authority.Runtime);
             Assert.Null(fixture.Authority.Current);
         }
+        [Fact]
+        public async Task AuthoritativeReaderIsSerializedUnlikeRetainedPreGateReadOrdering()
+        {
+            async Task Exercise(bool productionOwner)
+            {
+                using var fixture = new NativeFixture();
+                using var firstCaptured = new ManualResetEventSlim();
+                using var firstRelease = new ManualResetEventSlim();
+                using var secondDispatched = new ManualResetEventSlim();
+                using var secondReaderEntered = new ManualResetEventSlim();
+                int reads = 0;
+                PlatformNativeWorkbenchBootstrap Reader()
+                {
+                    // Capture the actual private fixture before waiting, exactly at
+                    // the historical vulnerable pre-return authority-read boundary.
+                    var snapshot = fixture.Bootstrap();
+                    if (Interlocked.Increment(ref reads) == 1)
+                    {
+                        firstCaptured.Set();
+                        Assert.True(firstRelease.Wait(TimeSpan.FromSeconds(3)));
+                    }
+                    else secondReaderEntered.Set();
+                    return snapshot;
+                }
+                var authority = new PlatformNativeWorkbenchConnection.Authority(fixture.Runtime, Reader);
+                object oldGate = new();
+                PlatformNativeWorkbenchBootstrap RetainedPreGateRead()
+                {
+                    // Concrete ordering retained from6b: Bridge/Current read the
+                    // bootstrap before Connection's Gate, then used that snapshot.
+                    var snapshot = Reader();
+                    lock (oldGate) return snapshot;
+                }
+                var pair = fixture.Pair();
+                string signed = JsonSerializer.Serialize(pair.Signed(
+                    PlatformNativeWorkbenchPair.Schema, "native-register-v1", fixture.Secret));
+                Task first = Task.Run(() => {
+                    if (productionOwner) {
+                        using var body = JsonDocument.Parse(signed);
+                        authority.Register(body.RootElement);
+                    }
+                    else _ = RetainedPreGateRead();
+                });
+                Task? second = null;
+                try
+                {
+                    Assert.True(firstCaptured.Wait(TimeSpan.FromSeconds(2)));
+                    second = Task.Run(() => {
+                        secondDispatched.Set();
+                        if (productionOwner) Assert.NotNull(authority.Current);
+                        else _ = RetainedPreGateRead();
+                    });
+                    Assert.True(secondDispatched.Wait(TimeSpan.FromSeconds(2)));
+                    if (productionOwner)
+                    {
+                        // Finite scheduler/lock falsifier, not a native timer,
+                        // delivery/effect inference or source-text assertion.
+                        Assert.False(secondReaderEntered.Wait(TimeSpan.FromMilliseconds(150)));
+                    }
+                    else Assert.True(secondReaderEntered.Wait(TimeSpan.FromSeconds(2)));
+                }
+                finally { firstRelease.Set(); }
+                await first.WaitAsync(TimeSpan.FromSeconds(3));
+                if (second is not null) await second.WaitAsync(TimeSpan.FromSeconds(3));
+                Assert.True(secondReaderEntered.IsSet);
+                if (!productionOwner) return;
+
+                fixture.Rotate();
+                var selected = fixture.Pair(workbench: new string('7', 32));
+                using var newerBody = JsonDocument.Parse(JsonSerializer.Serialize(selected.Signed(
+                    PlatformNativeWorkbenchPair.Schema, "native-register-v1", fixture.Secret)));
+                authority.Register(newerBody.RootElement);
+                using var closeBody = JsonDocument.Parse(JsonSerializer.Serialize(selected));
+                var headers = new System.Collections.Specialized.NameValueCollection();
+                foreach (var header in fixture.Headers(selected)) headers.Add(header.Key, header.Value);
+                authority.Close(closeBody.RootElement, headers);
+                using var oldBody = JsonDocument.Parse(signed);
+                Assert.Throws<InvalidOperationException>(() => authority.Register(oldBody.RootElement));
+                Assert.Null(authority.Current);
+                Assert.Throws<InvalidOperationException>(() => authority.Register(newerBody.RootElement));
+            }
+            await Exercise(productionOwner: true);
+            await Exercise(productionOwner: false);
+        }
     }
 }
