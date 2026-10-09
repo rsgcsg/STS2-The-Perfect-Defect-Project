@@ -7,13 +7,16 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.local_model_dependencies import recipe_dependencies_available
 from spireagent.workbench.memory_recipe import MEMORY_RECIPES
+from stpd.native_training_source_spec import RECIPE as NATIVE_SAMPLED_RECIPE
 from stpd.ordered_source_spec import RECIPES as ORDERED_RECIPE_CONFIGS
 
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 STRUCTURED_RECIPE = "structured-m2-cpu-v2"
 STRUCTURED_SCOPED_RECIPE = "structured-m2-cpu-v3"
 ORDERED_RECIPES = frozenset(ORDERED_RECIPE_CONFIGS)
-STRUCTURED_RECIPES = frozenset({STRUCTURED_RECIPE, STRUCTURED_SCOPED_RECIPE, *ORDERED_RECIPES})
+STRUCTURED_RECIPES = frozenset({
+    STRUCTURED_RECIPE, STRUCTURED_SCOPED_RECIPE, NATIVE_SAMPLED_RECIPE, *ORDERED_RECIPES,
+})
 MAX_TOTAL_ATTEMPTS = 32
 DEFAULT_CHECKPOINT_CADENCE = 100
 TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *STRUCTURED_RECIPES, *MEMORY_RECIPES})
@@ -30,6 +33,10 @@ def structured_recipe_scope(recipe_id: str) -> str:
         from stpd.ordered_source_spec import SCOPE
 
         return SCOPE
+    if recipe_id == NATIVE_SAMPLED_RECIPE:
+        from stpd.native_graph_spec import TRAINING_SCOPE
+
+        return TRAINING_SCOPE
     raise BoundaryError("local_training", "unsupported_structured_recipe")
 
 
@@ -37,6 +44,10 @@ def structured_recipe_run_schema(recipe_id: str) -> str:
     from stpd.structured_code_scope import SCOPED_RUN_SCHEMA
 
     structured_recipe_scope(recipe_id)
+    if recipe_id == NATIVE_SAMPLED_RECIPE:
+        from stpd.native_graph_spec import RUN_SCHEMA
+
+        return RUN_SCHEMA
     if recipe_id in ORDERED_RECIPES:
         from stpd.ordered_source_spec import RUN_SCHEMA
 
@@ -48,7 +59,8 @@ def structured_recipe_run_schema(recipe_id: str) -> str:
 
 def structured_recipe_is_scoped(recipe_id: str) -> bool:
     structured_recipe_scope(recipe_id)
-    return recipe_id == STRUCTURED_SCOPED_RECIPE or recipe_id in ORDERED_RECIPES
+    return (recipe_id in {STRUCTURED_SCOPED_RECIPE, NATIVE_SAMPLED_RECIPE}
+            or recipe_id in ORDERED_RECIPES)
 
 
 def describe_recipe(recipe_id: str) -> dict[str, Any]:
@@ -116,7 +128,23 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
             if recipe_id == STRUCTURED_SCOPED_RECIPE
             else "stpd/structured-m2-model-v2"
         )
-        if recipe_id in ORDERED_RECIPES:
+        if recipe_id == NATIVE_SAMPLED_RECIPE:
+            from stpd.native_graph_spec import NativeGraphControl
+            from stpd.native_sampled_carry_spec import INPUT_SPEC
+            from stpd.native_training_source_spec import (
+                MODEL_SCHEMA,
+                PACKAGE_SCHEMA,
+                SOURCE_PROFILES,
+            )
+
+            descriptor.update(model_schema=MODEL_SCHEMA, package_schema=PACKAGE_SCHEMA,
+                              source_profiles=list(SOURCE_PROFILES), input_spec=INPUT_SPEC,
+                              source_profile="native_sampled_recorded_source_union_v2",
+                              source_admission={
+                                  "typed_sampled_partition": "exact_originals_reverified",
+                                  "origin": "declaration_separate_from_integrity"},
+                              model_control=NativeGraphControl().to_dict())
+        elif recipe_id in ORDERED_RECIPES:
             from stpd.ordered_source_spec import (
                 MODEL_SCHEMA,
                 PACKAGE_SCHEMA,

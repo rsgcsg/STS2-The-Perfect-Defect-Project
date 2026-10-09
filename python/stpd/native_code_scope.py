@@ -8,6 +8,7 @@ from pathlib import Path
 from .canonical import semantic_hash
 from .native_graph_spec import MODEL_SCHEMA as GRAPH_MODEL_SCHEMA
 from .native_graph_spec import TRAINING_SCOPE as GRAPH_TRAINING_SCOPE
+from .native_training_source_spec import MODEL_SCHEMA as COMMON_MODEL_SCHEMA
 from .ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from .ordered_source_spec import SCOPE as ORDERED_SCOPE
 from .structured_code_scope import INFERENCE_PATHS, ROOT, TRAINING_PATHS, _regular_bytes
@@ -39,6 +40,8 @@ PATHS = tuple(
             "stpd/native_code_scope.py",
             "stpd/ordered_source_spec.py",
             "stpd/native_sampled_carry_spec.py",
+            "stpd/native_agent_sampled_source_spec.py",
+            "stpd/native_training_source_spec.py",
             "stpd/fullrun/native_structured_inputs.py",
             "stpd/fullrun/native_structured_sequences.py",
             "stpd/models/native_structured_scorer.py",
@@ -52,7 +55,7 @@ PATHS = tuple(
 
 def is_native_model_schema(schema: object) -> bool:
     """Lightweight exact artifact gate; importing it requires no numerical backend."""
-    return schema in (MODEL_SCHEMA, GRAPH_MODEL_SCHEMA, ORDERED_MODEL_SCHEMA)
+    return schema in (MODEL_SCHEMA, GRAPH_MODEL_SCHEMA, ORDERED_MODEL_SCHEMA, COMMON_MODEL_SCHEMA)
 
 
 def native_code_identity(root: Path = ROOT, *, graph: bool = False) -> dict[str, str]:
@@ -80,6 +83,7 @@ TRAINING_PATHS_NATIVE = tuple(
         | set(PATHS)
         | {
             "stpd/fullrun/native_training_sequences.py",
+            "stpd/fullrun/native_agent_sampled_source.py",
         }
     )
 )

@@ -31,6 +31,8 @@ from .ordered_source_spec import SOURCE_SCHEMA as ORDERED_SOURCE_SCHEMA
 from .structured_code_scope import LEGACY_SCOPE, TRAINING_SCOPE, code_identity
 
 if TYPE_CHECKING:
+    from spireagent.storage.store import ArtifactStore
+
     from .fullrun.structured_sequences import StructuredDataset
 
 NATIVE_SCOPE = "native-structured-numerical-training-code-closure-v1"
@@ -44,6 +46,81 @@ NATIVE_MODEL_SCHEMA = "stpd/native-structured-m2-model-v1"
 NATIVE_REPORT_SCHEMA = "stpd/native-structured-m2-training-report-v1"
 
 
+def source_profile(dataset: StructuredDataset) -> str | None:
+    from .native_training_source_spec import source_profile as checked_profile
+
+    return checked_profile(decode_json(dataset.source_bytes))
+
+
+def common_sampled_source(dataset: StructuredDataset, scope: str) -> bool:
+    return scope == NATIVE_GRAPH_SCOPE and source_profile(dataset) is not None
+
+
+def trained_source(dataset: StructuredDataset, scope: str, source_id: str,
+                   training_input_id: str) -> dict[str, Any]:
+    source: dict[str, Any] = {"kind": dataset.source_kind, "data_sha256": dataset.source_sha256,
+              "source_artifact_id": source_id, "training_input_id": training_input_id,
+              "verification_identity": source_verification(dataset)}
+    if common_sampled_source(dataset, scope):
+        value = decode_json(dataset.source_bytes)
+        source.update(source_profile=source_profile(dataset),
+                      cohort=value.get("cohort", dataset.source_kind))
+    return source
+
+
+def verify_training_partition(store: ArtifactStore, source_id: str | None,
+                              dataset: StructuredDataset, scope: str) -> None:
+    """Static dispatch to existing immutable source owners, never a new permission owner."""
+    from .native_training_source_spec import DIRECT_PROFILE
+
+    if scope != ORDERED_SCOPE and not common_sampled_source(dataset, scope):
+        return
+    if source_id is None:
+        raise BoundaryError("structured_profile", "typed_recorded_partition_required")
+    verified: Any
+    if source_profile(dataset) == DIRECT_PROFILE:
+        from .fullrun.native_agent_sampled_source import verify_native_agent_sampled_partition
+
+        verified = verify_native_agent_sampled_partition(store, source_id)
+    else:
+        from .fullrun.ordered_source import verify_ordered_source_partition
+
+        verified = verify_ordered_source_partition(store, source_id)
+    if verified.dataset != dataset or verified.split != "train":
+        raise BoundaryError("structured_profile", "recorded_partition_dataset_binding")
+
+
+def verify_sampled_partition(store: Any, source_id: str) -> Any:
+    """Closed dispatch to the already owning direct/Source3 typed replay APIs."""
+    from .native_agent_sampled_source_spec import PARTITION_SCHEMA as DIRECT_PARTITION_SCHEMA
+    from .ordered_source_spec import PARTITION_SCHEMA as ORDERED_PARTITION_SCHEMA
+
+    schema = store.get_manifest(source_id).parameters.value().get("partition_schema")
+    verified: Any
+    if schema == DIRECT_PARTITION_SCHEMA:
+        from .fullrun.native_agent_sampled_source import verify_native_agent_sampled_partition
+
+        verified = verify_native_agent_sampled_partition(store, source_id)
+    elif schema == ORDERED_PARTITION_SCHEMA:
+        from .fullrun.ordered_source import verify_ordered_source_partition
+
+        verified = verify_ordered_source_partition(store, source_id)
+    else:
+        raise BoundaryError("native_training_source", "typed_sampled_partition_required")
+    from spireagent.json_boundary import decode_json
+
+    from .native_sampled_carry_spec import INPUT_SPEC
+    from .native_training_source_spec import SOURCE_PROFILES
+    from .native_training_source_spec import source_profile as checked_profile
+
+    body = decode_json(verified.dataset.source_bytes)
+    if (verified.split != "train" or checked_profile(body) not in SOURCE_PROFILES
+            or verified.dataset.input_spec is None
+            or verified.dataset.input_spec.value() != INPUT_SPEC):
+        raise BoundaryError("native_training_source", "sampled_train_partition_required")
+    return verified
+
+
 def validate_profile(dataset: StructuredDataset, scope: str) -> bool:
     if dataset.input_spec is None:
         if scope not in {LEGACY_SCOPE, TRAINING_SCOPE}:
@@ -53,18 +130,22 @@ def validate_profile(dataset: StructuredDataset, scope: str) -> bool:
 
     if not isinstance(dataset.input_spec, FrozenObject):
         raise BoundaryError("structured_profile", "frozen_input_spec_required")
-    expected_input = INPUT_SPEC
+    expected_input: dict[str, Any] = INPUT_SPEC
     if scope == ORDERED_SCOPE:
         source = decode_json(dataset.source_bytes)
         expected_input = view_input_spec(
             checked_view(source["projection_spec"], source["target_spec"])
         )
+    elif common_sampled_source(dataset, scope):
+        from .native_sampled_carry_spec import INPUT_SPEC as SAMPLED_INPUT_SPEC
+
+        expected_input = SAMPLED_INPUT_SPEC
     if (
         scope not in NATIVE_SCOPES
         or dataset.input_spec.value() != expected_input
         or (
             dataset.source_kind not in COHORTS
-            if scope == ORDERED_SCOPE
+            if scope == ORDERED_SCOPE or common_sampled_source(dataset, scope)
             else dataset.source_kind != "synthetic"
         )
     ):
@@ -77,6 +158,19 @@ def parse_dataset(raw: bytes, scope: str) -> StructuredDataset:
         from .fullrun.ordered_source import parse_ordered_training_dataset
 
         return parse_ordered_training_dataset(raw)
+    if scope == NATIVE_GRAPH_SCOPE:
+        from .native_training_source_spec import DIRECT_PROFILE
+        from .native_training_source_spec import source_profile as checked_profile
+
+        profile = checked_profile(decode_json(raw))
+        if profile == DIRECT_PROFILE:
+            from .fullrun.native_agent_sampled_source import parse_native_agent_sampled_dataset
+
+            return parse_native_agent_sampled_dataset(raw)
+        if profile is not None:
+            from .fullrun.ordered_source import parse_ordered_training_dataset
+
+            return parse_ordered_training_dataset(raw)
     if scope in NATIVE_SCOPES:
         from .fullrun.native_training_sequences import parse_native_training_dataset
 
@@ -107,7 +201,15 @@ def numerical_code_identity(scope: str) -> dict[str, str]:
 
 
 def source_verification(dataset: StructuredDataset) -> dict[str, Any]:
-    if dataset.source_kind in COHORTS and dataset.input_spec is not None:
+    from .native_agent_sampled_source_spec import SOURCE_SCHEMA as DIRECT_SOURCE_SCHEMA
+
+    source = decode_json(dataset.source_bytes)
+    if source.get("schema") == DIRECT_SOURCE_SCHEMA:
+        from .native_training_source_spec import source_validation
+
+        validate_profile(dataset, NATIVE_GRAPH_SCOPE)
+        return source_validation(source, dataset.source_sha256)
+    if source.get("schema") == ORDERED_SOURCE_SCHEMA and dataset.input_spec is not None:
         validate_profile(dataset, ORDERED_SCOPE)
         source = decode_json(dataset.source_bytes)
         return validation_identity(
@@ -128,15 +230,24 @@ def source_verification(dataset: StructuredDataset) -> dict[str, Any]:
 
 
 def qualification(dataset: StructuredDataset) -> str:
-    if dataset.input_spec is not None and dataset.source_kind in COHORTS:
+    from .native_agent_sampled_source_spec import SOURCE_SCHEMA as DIRECT_SOURCE_SCHEMA
+    from .native_agent_sampled_source_spec import qualification as direct_qualification
+
+    source = decode_json(dataset.source_bytes)
+    if source.get("schema") == DIRECT_SOURCE_SCHEMA:
+        return direct_qualification(source["producer_student_relation"], source["cohort"])
+    if dataset.input_spec is not None and source.get("schema") == ORDERED_SOURCE_SCHEMA:
         source = decode_json(dataset.source_bytes)
         return view_qualification(checked_view(source["projection_spec"], source["target_spec"]))
     return "synthetic_engineering_only" if dataset.input_spec is not None else "engineering_only"
 
 
-def native_source_schema(scope: str) -> str:
+def native_source_schema(scope: str, dataset: StructuredDataset | None = None) -> str:
     if scope not in NATIVE_SCOPES:
         raise BoundaryError("structured_profile", "unsupported_scope")
+    if dataset is not None and common_sampled_source(dataset, scope):
+        validate_profile(dataset, scope)
+        return str(decode_json(dataset.source_bytes)["schema"])
     return ORDERED_SOURCE_SCHEMA if scope == ORDERED_SCOPE else NATIVE_SOURCE_SCHEMA
 
 
@@ -157,8 +268,12 @@ def native_run_schema(scope: str) -> str:
     )
 
 
-def native_model_schema(scope: str) -> str:
+def native_model_schema(scope: str, dataset: StructuredDataset | None = None) -> str:
     native_source_schema(scope)
+    if dataset is not None and common_sampled_source(dataset, scope):
+        from .native_training_source_spec import MODEL_SCHEMA
+
+        return MODEL_SCHEMA
     return (
         ORDERED_MODEL_SCHEMA
         if scope == ORDERED_SCOPE
