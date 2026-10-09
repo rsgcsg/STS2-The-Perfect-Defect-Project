@@ -37,6 +37,16 @@ REPORT_SCHEMA = "spireagent/native-source3-collection-v1"
 MARKER_FILE = "native-source3-collection-operation.json"
 MAX_PIPE_BYTES = 96 * 1024 * 1024
 MAX_CONTROL_BYTES = 16 * 1024
+# Exact Connector result.delivery domain; checked against its authoritative SDK grammar.
+NATIVE_TERMINAL_DELIVERIES = frozenset(
+    {
+        "not_started",
+        "rejected_before_input",
+        "delivered",
+        "partially_delivered",
+        "unknown",
+    }
+)
 BASIS_FIELDS = {
     "capture_id",
     "snapshot_id",
@@ -491,7 +501,7 @@ def validate_submission(
         item["ordinal"] != counts["submissions"] + (0 if admitted else 1)
         or item["lookup_status"]
         not in ({"unresolved", "pending", "terminal"} if admitted else {"not_started"})
-        or item["delivery"] not in ({"delivered", "rejected", "unknown"} if admitted else {None})
+        or item["delivery"] not in (NATIVE_TERMINAL_DELIVERIES if admitted else {None})
         or item["lookup_status"] in {"unresolved", "pending"}
         and item["delivery"] != "unknown"
         or pending_id

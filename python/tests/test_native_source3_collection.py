@@ -6,8 +6,10 @@ import base64
 import copy
 import hashlib
 import json
+import re
 import sys
 from collections import deque
+from pathlib import Path
 
 import pytest
 from test_native_public_teacher import action, observation
@@ -17,6 +19,7 @@ from spireagent.workbench.developer import ProjectConfig, combination
 from spireagent.workbench.developer_server import Application
 from spireagent.workbench.instance_lock import instance_lock
 from spireagent.workbench.native_source3_collection import (
+    NATIVE_TERMINAL_DELIVERIES,
     PIPE_SCHEMA,
     Cancellation,
     CollectionRequest,
@@ -200,6 +203,7 @@ def collection(tmp_path, monkeypatch):
                 self.choices += 1
                 unknown = seen["behavior"].get("unknown_submission")
                 self.pending_id = "original-request" if unknown else None
+                delivery = seen["behavior"].get("terminal_delivery", "delivered")
                 self.last_submission = {
                     "request_id": "original-request",
                     "ordinal": 1,
@@ -207,7 +211,7 @@ def collection(tmp_path, monkeypatch):
                     "action_id": "browse",
                     "sdk_admitted": True,
                     "lookup_status": "unresolved" if unknown else "terminal",
-                    "delivery": "unknown" if unknown else "delivered",
+                    "delivery": "unknown" if unknown else delivery,
                     "result_queries": 0,
                     "automatic_retry": False,
                 }
@@ -224,7 +228,8 @@ def collection(tmp_path, monkeypatch):
                         last_submission=self.last_submission,
                     )
                     return
-                self.delivered += 1
+                if delivery == "delivered":
+                    self.delivered += 1
                 self.message(
                     "result",
                     ordinal=1,
@@ -234,7 +239,7 @@ def collection(tmp_path, monkeypatch):
                         "request_id": "original-request",
                         "snapshot_id": "snapshot",
                         "action": self.actions[0],
-                        "delivery": "delivered",
+                        "delivery": delivery,
                         "execution": "unknown",
                         "effect": "unknown",
                     },
@@ -257,6 +262,9 @@ def collection(tmp_path, monkeypatch):
                 self.final(
                     "original_result_unresolved"
                     if seen["behavior"].get("unknown_submission")
+                    else "native_choice_not_delivered_or_rejected"
+                    if self.last_submission is not None
+                    and self.last_submission["delivery"] != "delivered"
                     else "external_signal"
                     if seen["stops"]
                     else "target_choices_reached"
@@ -581,3 +589,51 @@ def test_close_request_diagnostic_failure_does_not_skip_or_repeat_owner_close(
         )
     else:
         assert report["source_close"]["accepted"] is True and report["status"] == "completed"
+
+
+def sdk_terminal_deliveries():
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "components/connector/sdk/typescript/src/nativeLogical.ts"
+    ).read_text()
+    match = re.search(r"const delivery = z\.enum\((\[.*?\])\);", source)
+    assert match is not None, "authoritative NativeLogical result delivery grammar missing"
+    return tuple(json.loads(match.group(1)))
+
+
+def test_terminal_delivery_domain_matches_actual_connector_grammar():
+    assert NATIVE_TERMINAL_DELIVERIES == frozenset(sdk_terminal_deliveries())
+    assert "rejected" not in NATIVE_TERMINAL_DELIVERIES
+
+
+@pytest.mark.parametrize("delivery", sdk_terminal_deliveries())
+def test_every_authoritative_terminal_delivery_retains_original_outcome_and_cleanup(
+    collection, delivery
+):
+    _, request, seen, _, run = collection
+    seen["behavior"]["terminal_delivery"] = delivery
+    report = run()
+    assert report["status"] == ("completed" if delivery == "delivered" else "partial")
+    assert report["error_code"] is None
+    assert report["submissions"] == report["actual_choices"] == 1
+    assert report["known_delivered_choices"] == (1 if delivery == "delivered" else 0)
+    assert report["last_submission"]["delivery"] == delivery
+    assert report["last_submission"]["lookup_status"] == "terminal"
+    assert report["pending_request_id"] is None
+    original = json.loads((request.output / "original-result-0001.json").read_text())
+    assert original["result"]["delivery"] == delivery
+    assert original["result"]["execution"] == original["result"]["effect"] == "unknown"
+    assert report["source_closed"] and report["child"]["exit_code"] == 0
+    assert seen["commands"] == ["start_new_session", "close"]
+    assert sum(message["type"] == "choice" for message in seen["messages"]) == 1
+    assert report["eligible_unique_N"] is None and report["automatic_retry"] is False
+
+
+def test_invented_rejected_delivery_is_not_accepted_as_a_terminal_receipt(collection):
+    _, _, seen, _, run = collection
+    seen["behavior"]["terminal_delivery"] = "rejected"
+    report = run()
+    assert report["status"] == "unknown"
+    assert report["error_code"] == "original_submission_disposition_changed"
+    assert seen["commands"] == ["start_new_session", "close"]
+    assert report["source_closed"] and report["automatic_retry"] is False
