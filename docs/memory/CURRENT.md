@@ -29,22 +29,33 @@ integration. Each other writer has a separate branch/worktree. Preserve private
   review; rc30 rollback remains. Authenticated panels and runtime/resource health
   remain unverified. Workspace provenance and compiled component identity differ.
 - Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full local portable checks
-  passed at `e7dfd694` (Python 3,181 passes, five conditional skips); fresh synthetic
+  passed at `e7759f28` (Python 3,193 passes, five conditional skips, 21 subtests).
+  Full6 remains failed; its live temporary-scratch race was repaired in the owning
+  inventory reader and the real child pause/resume regression passed. Earlier fresh synthetic
   sampled train/export/real constructor/stdio/Runtime composition passed independent
   review. One zero-loss synthetic update proves execution, not useful learning.
-- First new collect-only attempt at that source stopped after one of 100 requested
+- First new collect-only attempt at `e7dfd694` stopped after one of 100 requested
   choices: OpenDeck delivery was known, execution/effect unknown. Source closed
   with one input, six observations and no gaps; control and Host cleanup succeeded.
   A wrong SDK starting-cursor field caused the consumer stop. Repair `4f55fea5`
-  and real-SDK regression are integrated; final follow-up checks and a new distinct
-  collection attempt remain pending. Originals are retained, never relabeled Human.
+  and real-SDK regression are integrated. A distinct second attempt at `e7759f28`
+  reached four of 100 choices, then stopped after inspection Return:
+  the scripted teacher lacked Await for expected owner arrival. All four deliveries
+  were known; effects remain unknown. Source closed with four inputs, 15 observations,
+  zero gaps and known control/Host cleanup. Originals are retained, never relabeled Human.
+- The first recording was imported and explicitly published through the genuine
+  Workbench into a sampled Agent-protocol training source: one eligible N, train
+  reservation, no actual training use. A completed-reservation display correction
+  and canonical terminology alignment are under review. The teacher is being moved
+  onto the existing generic Agent Runtime; direct native AgentRun data admission
+  remains a separate implementation gap, with Source3 retained as an explicit bridge.
 - L34 event/content, special selectors, L64 management, product memory recovery,
   remote use and full coverage/stability still need their scoped gates. Disabled
   candidate reviews do not qualify the active profile. Current c060 is unchanged.
 
 ## Execution priority
 
-Verify the collector repair → useful 100–300-choice real collection
+Verify the Runtime-backed teacher → useful 100–300-choice real collection
 and explicit sampled training → early natural whole-game attempt and error analysis.
 E6 authenticated panels and a minimum genuine Human record/Close remain separate gates. Independent source/data/model/docs work continues in
 parallel; unrelated final gates do not block this path and remain in the matrix.

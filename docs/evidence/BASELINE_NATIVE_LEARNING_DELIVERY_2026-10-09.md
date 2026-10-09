@@ -217,3 +217,48 @@ No raw records, game files or weights enter Git. A six-observation, one-input sa
 and its single roughly 4ms Close flush do not qualify capture throughput, frame
 impact, memory use or 10k capacity. The next useful sample, training and natural
 model attempt remain the primary execution path; required full-G2 gates persist.
+
+## Second collection attempt and current portable repair
+
+The distinct attempt at clean `e7759f28f00ef026e309f2426462d9123d0fe7fb`, with
+teacher 1.0.1 and unchanged installed rc31, reached four of 100 requested choices.
+Runtime `17c2f27cf7394701911d1831f9be65e6` and Source session
+`session-b21ee94a414345ada1f098bb799c01dc` retain OpenDeck, inspect-deck-card,
+toggle-upgrade-preview and Return deliveries. Each original Result reports
+execution/effect/cancel unknown. Five Current reads and 14 advisory events preceded
+`scripted_owner_arrival_not_observed`: the last Current still represented card
+inspection, while the teacher expected the deck. Native source retains a Return
+backstop during closure; the consumer must allow expected owner arrival without
+repeating that action. The correction is an explicit teacher wait transition,
+not another SDK cursor repair or a claim that Return's effect is proved.
+The next implementation uses the existing Agent Runtime
+and explicit Await rather than extending the collector's separate execution loop.
+
+The attempt remains partial. Source Close retained four inputs, 15 observations,
+zero gaps/pending inputs and complete accounting; control release, Node exit0 and
+unforced Host exit0 were observed. No pending request, restart or automatic retry
+was recorded. Its 69-file, 917,320-byte preservation archive has manifest SHA256
+`d20803ecc5d2be013ef0a9c4a2f45f15cd81a2f6d3c71173eca004266c5a8566`.
+No new learned evaluation, Human or natural whole-game claim follows.
+
+The first attempt's original Source3 was separately imported and published using
+the genuine local Workbench application with explicit `agent_protocol` cohort and
+`decision_sample_carry` view. Raw artifact `bc74666a3ce237416620893a1c6bbeacc7e9db8d24f1f9c209ed40a381607152`
+produced training source `db4796802bf8945ee62fb9f84f8e9464fa0173cbe683cffbeac49f6d524ff76c`:
+one eligible unique N out of one original delivered cohort choice, one admitted
+frame and six publications outside the projected model input. This view remains
+`source3_decision_sample_carry_N_reexpression_only`; it does not establish actual
+Agent consumption. The successful owner reservation binds that source to train;
+actual training use is false. Its stale `split_status=not_reserved` display is a
+presentation defect under repair, not an absent reservation or permission to fit.
+
+Full6 at `1ae2b33a` failed one of 3,187 Python cases. A live private training child
+removed its own temporary verification subtree while the parent's Scratch inventory
+was reading it; the resulting FileNotFound terminated the child. Repair `e7759f28`
+tolerates only vanished strict descendants during the fenced active attempt. Roots,
+prior attempts, recovery, permissions, symlinks and capacity bounds remain strict.
+The clean actual Scratch/Source3 pause-checkpoint-resume selection passed 16 tests.
+Full7 then passed at clean `e7759f28`: 3,193 ordinary Python tests, five conditional
+skips, 21 subtests, Runtime 336 tests with three opt-in skips, the remaining Platform
+gates, CPU E2E, synthetic worker smoke and source/wheel build. Full6 stays failed;
+this is a new local source/test result, not hosted CI or useful real-data learning.

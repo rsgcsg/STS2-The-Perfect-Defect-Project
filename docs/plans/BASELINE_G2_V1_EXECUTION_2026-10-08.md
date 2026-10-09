@@ -41,12 +41,12 @@
 
 | 交付／现有任务 | writer／消费入口 | 状态与下一门 |
 | --- | --- | --- |
-| 文档/管理对齐 E0.1 | lead；规范、CURRENT、入门路由及既有 project-system 工具 | 独立审查并核查按角色开工；不为文档改动部署游戏/Hub |
+| 文档/管理对齐 E0.1 | lead；规范、CURRENT、入门路由及既有 project-system 工具 | 上层逻辑角色/历史术语与实际组件映射正在统一，连同来源和观察标签；不改旧 wire/数据身份，不为文档改动部署游戏/Hub |
 | 已构建 E6 候选 | lead 独占安装/游戏；Game Mod rc31 / Live UI rc10 | `e7dfd694` 构建 `c82306c6` 已安装并通过精确隔离冷载/主菜单/非强退；rc30 回退保留。认证界面和日志健康仍待；不因无关工具改动重建相同 compiled source |
 | Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
 | native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
 | 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
-| 有用的真实采集 E2.1/E4 | genuine Application + Host/SDK；显式 STPD teacher | 首轮真实尝试仅 1/100，原件与正常 Close 保留；SDK 游标字段错误已修正 `4f55fea5` 并补真实 SDK 回归，待完整后续检查与新独立尝试。实际 N 仍由原件准入计算 |
+| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher，迁入既有 Agent Runtime | 首轮 1/100 的 SDK 游标问题已修；第二轮 `e7759f28` 达 4/100，因脚本 teacher 缺少 Return 后的 owner-arrival Await 停止，原件与正常 Close 保留。当前完整本地检查已过，Runtime teacher 正在实现。首轮原件经真实产品入口发布 1 个合格 N、预留 train，未训练；实际 N 由准入计算 |
 | 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
 
 采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。
