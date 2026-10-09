@@ -94,6 +94,16 @@ class SampledAgentSessionEvidenceTests(unittest.TestCase):
     def verify(self) -> str:
         return verify_agent_session_run_evidence(self.f.directory).status
 
+    def test_malformed_sample_metadata_containers_fail_through_the_public_verifier(self) -> None:
+        payload = self.f.event("agent_sample_input_stored")["payload"]
+        for malformed in ([], None, "not-an-object", 17, True):
+            with self.subTest(metadata=malformed):
+                payload["metadata"] = malformed
+                self.f.write()  # Recompute every outer inventory/checksum to reach typed validation.
+                result = verify_agent_session_run_evidence(self.f.directory)
+                self.assertEqual(result.status, "fail")
+                self.assertEqual(result.findings[0].code, "native_session_object_required")
+
     def test_shared_event_field_sets_match_the_independent_closed_validator(self) -> None:
         for kind, fields in self.shared["evidence"]["event_fields"].items():
             self.assertEqual(sorted(_EVENT_FIELDS[kind] | _CONTEXT), fields)

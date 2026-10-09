@@ -1310,7 +1310,7 @@ class AgentSessionRunEvidenceVerifier:
                          "native_session_sample_discard")
                 discarded_samples.add(acquisition)
             elif kind == "agent_sample_input_stored":
-                acquisition = payload["metadata"].get("acquisition_id")
+                acquisition = _object(payload["metadata"]).get("acquisition_id")
                 _require(acquisition in offered_samples and acquisition not in discarded_samples,
                          "native_session_sample_not_offered")
                 disposition = payload["disposition"]
