@@ -3717,7 +3717,7 @@ window.SpireProject = (() => {
     card.append(button);
   }
 
-  function typedTrainingCard(ctx, dataset, data, capabilities) {
+  async function typedTrainingCard(ctx, dataset, data, capabilities) {
     const card = panel("本机训练与恢复", "使用本机服务声明的配方、配置与资源。训练用途和来源由既有服务核对；关闭游戏或面板不等于停止训练。不会自动重试未知结果。");
     const operation = data.operation;
     if (data.availability !== "ready") {
@@ -3779,8 +3779,23 @@ window.SpireProject = (() => {
       || (operation.status === "failed" && !operation.run_id);
     if (mayStart && csrfToken && hex(dataset.artifact_id)) {
       const choices = capabilities.recipes.map(item => [item.recipe_id, item.recipe_id]);
-      const selected = choices.some(([id]) => id === operation.recipe_id) ? operation.recipe_id
-        : choices.find(([id]) => id === "structured-m2-cpu-v2")?.[0] || choices[0]?.[0];
+      let recommended;
+      if (dataset.parameters?.schema === "stpd/source3-ordered-native-training-source-v1") {
+        try {
+          const status = await request(ctx, "/api/local-datasets/status");
+          recommended = status.source3_support?.views?.find(item =>
+            item.qualification === dataset.parameters.qualification)?.recommended_recipe_id;
+        } catch {}
+        if (!live(ctx)) return card;
+        if (!choices.some(([id]) => id === recommended)) {
+          card.append(el("p", "此 Source 3 分区对应的训练配方尚未被服务共同确认；请刷新能力声明后再开始训练。", "small muted"));
+          card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", () => reload(ctx), {type:"secondary"}));
+          return card;
+        }
+      }
+      const selected = choices.some(([id]) => id === recommended) ? recommended
+        : choices.some(([id]) => id === operation.recipe_id) ? operation.recipe_id
+          : choices.find(([id]) => id === "structured-m2-cpu-v2")?.[0] || choices[0]?.[0];
       if (choices.length) trainingRequestForm(ctx, card, dataset, capabilities, choices, selected,
         same && operation.status === "completed" ? "local-training-new-recipe" : "local-training-recipe",
         same && operation.status === "completed" ? "start-local-training-new" : "start-local-training",
@@ -3838,7 +3853,7 @@ window.SpireProject = (() => {
       return card;
     }
     if (data.schema === "spireagent/training-operation-snapshot-v1"
-        || dataset.parameters?.schema === "stpd/structured-sequence-source-v1")
+        || ["stpd/structured-sequence-source-v1", "stpd/source3-ordered-native-training-source-v1"].includes(dataset.parameters?.schema))
       return typedTrainingCard(ctx, dataset, data, capabilities);
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
@@ -4139,8 +4154,8 @@ window.SpireProject = (() => {
     const rows = (data.candidates || []).map(item => [
       String(item.session_id || "未知").slice(0, 24),
       String(item.timeline_id || "未知").slice(0, 24),
-      item.closed_at || "未知",
-      "录制已结束，内容待验证",
+      item.closed_at || item.created_at || "未知",
+      item.recording_type === "source3" ? "Source 3 已结束，声明来源保留，内容待验证" : "录制已结束，内容待验证",
     ]);
     section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
     const candidates = (data.candidates || []).filter(item =>
@@ -4148,21 +4163,32 @@ window.SpireProject = (() => {
     if (candidates.length) {
       const selection = select(section, "要导入的录制", "local-recording-selection",
         [["", "请选择一条录制"], ...candidates.map(item => [item.candidate_id,
-          `${item.closed_at || "结束时间未知"} · ${item.session_id}`])], "");
+          `${item.closed_at || item.created_at || "结束时间未知"} · ${item.session_id}${item.recording_type === "source3" ? " · Source 3" : ""}`])], "");
       const checkbox = input(section, "我确认所选录制来自真人操作", "local-recording-attestation", false, "checkbox");
-      const canImport = () => checkbox.checked && candidates.some(item => item.candidate_id === selection.value)
+      const sourceNote = el("p", "请选择录制；旧 Human 录制需要独立声明。", "small muted");
+      section.append(sourceNote);
+      const selected = () => candidates.find(item => item.candidate_id === selection.value);
+      const canImport = () => !!selected()
+        && (selected().recording_type === "source3" ? selected().import_supported === true : checkbox.checked)
         && importStatus.status !== "pending" && !!localCsrfToken;
       const button = command(ctx, "import-local-recording", "验证并导入本机", async () => {
         if (!canImport()) return;
         await request(ctx, "/api/local-recordings/import", {
           candidate_id: selection.value,
-          human_origin_attested: true,
+          human_origin_attested: selected().recording_type !== "source3",
         }, localCsrfToken);
         await reload(ctx);
       }, {disabled:true});
       selection.onchange = () => {
         checkbox.checked = false;
-        button.disabled = true;
+        const source3 = selected()?.recording_type === "source3";
+        checkbox.disabled = source3 || !selected();
+        sourceNote.textContent = source3
+          ? selected().import_supported === true
+            ? "Source 3 保留原始来源声明；导入不声明或验证 Human 起源，也不创建训练数据集。"
+            : `Source 3 导入不可用：${selected().import_reason || "来源组件尚未声明支持"}`
+          : "旧 Human 录制需要明确声明真人操作；更换录制会清除声明。";
+        button.disabled = !canImport();
       };
       checkbox.onchange = () => { button.disabled = !canImport(); };
       section.append(button);
@@ -4339,6 +4365,147 @@ window.SpireProject = (() => {
       await reload(ctx);
     }, {type:"secondary"}));
     return section;
+  }
+
+  async function localSource3DatasetCard(ctx, candidates, detailId = null) {
+    const section = panel("从 Source 3 录制准备训练例子",
+      "选择已验证的原始录制、操作来源声明与数据视图。原件及混合来源保留；声明不证明 Human 起源。预览、保存训练用途和开始训练分别需要明确操作，最多选择 256 份。");
+    const key = "local-source3-source-ids";
+    const saved = drafts.get(key);
+    const selected = new Set((Array.isArray(saved) ? saved : detailId ? [detailId] : [])
+      .filter((id, index, ids) => hex(id) && ids.indexOf(id) === index).slice(0, 256));
+    const ids = () => [...selected].sort();
+    const selectors = new Map();
+    const note = el("p", null, "small muted");
+    let previewButton, publishButton, cohort, view, status;
+    let previewOptions = null;
+    let changedSelection = false;
+    const changed = () => {
+      changedSelection = true;
+      drafts.set(key, ids());
+      if (cohort) drafts.set("local-source3-cohort", cohort.value);
+      if (view) drafts.set("local-source3-view", view.value);
+      note.textContent = `已选 ${selected.size} 份原始录制；选择已改变，旧预览不能保存。请明确重新检查。`;
+      if (publishButton) publishButton.disabled = true;
+      if (previewButton) previewButton.disabled = !canPreview();
+      if (previewOptions) previewOptions.disabled = !canPreview();
+      for (const [id, checkbox] of selectors)
+        checkbox.disabled = !selected.has(id) && selected.size >= 256;
+    };
+    for (const item of candidates) {
+      const checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.name = `local-source3-source-${item.artifact_id}`;
+      checkbox.checked = selected.has(item.artifact_id);
+      checkbox.disabled = !checkbox.checked && selected.size >= 256;
+      checkbox.onchange = () => {
+        if (checkbox.checked && selected.size < 256) selected.add(item.artifact_id);
+        else { selected.delete(item.artifact_id); checkbox.checked = false; }
+        changed();
+      };
+      selectors.set(item.artifact_id, checkbox);
+      if (detailId) {
+        const label = el("label", `选择原始录制 · ${item.artifact_id.slice(0, 16)}`, "project-check");
+        label.append(checkbox); section.append(label);
+      }
+    }
+    const canPreview = () => status?.availability === "ready" && !!status.csrf_token
+      && ids().length > 0 && ids().length <= 256 && choicesValid()
+      && status.operation?.status !== "pending" && !needsRecovery();
+    const choicesValid = () => status?.source3_support?.cohorts?.includes(cohort?.value)
+      && status.source3_support.views?.some(item => item.view === view?.value);
+    const needsRecovery = () => ["failed", "interrupted"].includes(status?.operation?.status)
+      && (status.operation.recovery_available === true
+        || status.operation.error_code === "publication_recovery_required");
+    try { status = await request(ctx, "/api/local-datasets/status"); }
+    catch (error) { section.append(el("p", failure(error), "small muted")); return {section, selectors}; }
+    const support = status.source3_support;
+    if (status.schema !== "stpd/local-dataset-operation-v1" || !Array.isArray(support?.cohorts)
+        || !Array.isArray(support?.views) || !support.cohorts.includes(support.default_cohort)
+        || !support.views.some(item => item.view === support.default_view)) {
+      section.append(el("p", "Source 3 数据能力声明暂不可用，不能预览或保存。", "small muted"));
+      return {section, selectors};
+    }
+    const savedCohort = drafts.get("local-source3-cohort"), savedView = drafts.get("local-source3-view");
+    cohort = select(section, "操作来源声明", "local-source3-cohort",
+      support.cohorts.map(value => [value, value]),
+      support.cohorts.includes(savedCohort) ? savedCohort : support.default_cohort);
+    view = select(section, "训练数据视图", "local-source3-view",
+      support.views.map(item => [item.view, item.label || item.view]),
+      support.views.some(item => item.view === savedView) ? savedView : support.default_view);
+    const history = el("p", null, "small muted");
+    const showHistory = () => {
+      const chosen = support.views.find(item => item.view === view.value);
+      history.textContent = `历史范围：${chosen?.history_scope || "未声明"}；资格：${chosen?.qualification || "未声明"}。`;
+    };
+    cohort.onchange = changed;
+    view.onchange = () => { showHistory(); changed(); };
+    showHistory(); section.append(history, note);
+    note.textContent = `已选 ${selected.size} 份原始录制（跨页保留）。`;
+    section.append(command(ctx, "clear-source3-selection", "清除 Source 3 来源选择", () => {
+      selected.clear();
+      for (const checkbox of selectors.values()) checkbox.checked = false;
+      changed();
+    }, {type:"secondary"}));
+    const operation = status.operation || {status:"idle"};
+    const same = () => !changedSelection && choicesValid() && operation.kind === "ordered_source3"
+      && operation.cohort === cohort.value && operation.view === view.value
+      && Array.isArray(operation.artifact_ids) && operation.artifact_ids.length === selected.size
+      && selected.size > 0 && ids().every((id, index) => operation.artifact_ids[index] === id);
+    const verifiedResult = () => same() && operation.sample_type === "ordered_source3"
+      && operation.source_view === view.value && operation.source_kind === cohort.value;
+    if (status.availability !== "ready")
+      section.append(el("p", `Source 3 预览不可用：${status.reason || status.availability}`, "small muted"));
+    if (operation.status === "pending")
+      section.append(el("p", "本机数据集操作正在进行；刷新只读状态，不会重复提交。", "small muted"));
+    if (needsRecovery())
+      section.append(el("p", "上次保存失败或中断，结果尚未确认；先核对原预览，不会自动重试。", "small muted"));
+    if (["failed", "interrupted"].includes(operation.status) && operation.error_code)
+      section.append(el("p", `数据准备状态：${operation.error_code}`, "small muted"));
+    if (operation.status === "preview_ready" && !verifiedResult())
+      section.append(el("p", "共享预览与当前原始录制、来源声明或视图不匹配，不能保存。", "small muted"));
+    if (verifiedResult() && ["preview_ready", "completed"].includes(operation.status)) {
+      section.append(fields([["符合条件的原始操作标签 N", count(operation.accepted_labels)],
+        ["历史范围", operation.history_scope || "未声明"],
+        ["资格", operation.qualification || "未声明"],
+        ["推荐训练配方", operation.recommended_recipe_id || "未声明"]]));
+      section.append(technical({counts:operation.counts, N_coverage:operation.N_coverage,
+        exclusions:operation.exclusions, human_origin_verified:operation.human_origin_verified,
+        split_status:operation.split_status}, "查看来源计数与排除原因"));
+    }
+    const canPublish = () => status.availability === "ready" && !!status.csrf_token
+      && verifiedResult() && operation.can_publish === true && hex(operation.preview_id, 32)
+      && (operation.status === "preview_ready" || (needsRecovery() && operation.recovery_available === true));
+    if (canPublish()) {
+      const options = {primary:true};
+      publishButton = command(ctx, "publish-source3-dataset", needsRecovery()
+        ? "核对上次 Source 3 保存结果" : "确认保存训练用途数据集", async () => {
+        if (!canPublish() || options.disabled) return;
+        options.disabled = true;
+        await request(ctx, "/api/local-datasets/publish", {preview_id:operation.preview_id}, status.csrf_token);
+        await reload(ctx);
+      }, options);
+      section.append(publishButton);
+    }
+    if (operation.status === "preview_ready" && same() && !operation.can_publish)
+      section.append(el("p", `当前预览不能保存：${operation.error_code || "后端未确认训练用途资格"}`, "small muted"));
+    if (operation.status === "completed" && verifiedResult() && hex(operation.result_artifact_id)) {
+      section.append(el("p", "已保存训练用途数据集；尚未开始训练。打开数据集后可独立选择训练任务。", "small muted"));
+      section.append(link("打开 Source 3 训练数据集", route("local-workspace", operation.result_artifact_id)));
+    }
+    previewOptions = {primary:true, disabled:!canPreview()};
+    previewButton = command(ctx, "preview-source3-dataset", "检查所选 Source 3 训练例子", async () => {
+      if (!canPreview() || previewOptions.disabled) return;
+      drafts.set(key, ids()); drafts.set("local-source3-cohort", cohort.value); drafts.set("local-source3-view", view.value);
+      previewOptions.disabled = true;
+      await request(ctx, "/api/local-datasets/source3-preview", {
+        artifact_ids:ids(), cohort:cohort.value, view:view.value,
+      }, status.csrf_token);
+      await reload(ctx);
+    }, previewOptions);
+    section.append(previewButton);
+    section.append(command(ctx, "refresh-source3-dataset-status", "刷新 Source 3 数据准备状态", () => reload(ctx), {type:"secondary"}));
+    return {section, selectors};
   }
 
   async function localHumanDatasetCard(ctx, candidates) {
@@ -4979,8 +5146,13 @@ window.SpireProject = (() => {
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
           && value.parameters?.purpose === "training")
         box.append(await localTrainingCard(ctx, value));
-      if (value.kind === "dataset" && value.parameters?.schema === "stpd/structured-sequence-source-v1")
+      if (value.kind === "dataset" && ["stpd/structured-sequence-source-v1",
+          "stpd/source3-ordered-native-training-source-v1"].includes(value.parameters?.schema))
         box.append(await localTrainingCard(ctx, value));
+      if (value.kind === "evidence" && value.parameters?.schema === "stpd/source3-original-bundle-v1") {
+        box.append(el("p", `录制原始来源声明：${(value.parameters.source_kinds || []).join(" · ")}。声明不验证 Human 起源；导入本身没有训练用途。`, "small muted"));
+        box.append((await localSource3DatasetCard(ctx, [value], value.artifact_id)).section);
+      }
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/human-text-input-source-v1") {
         const bindingCard = panel("操作标签训练入口", "只在本机用途账本明确登记此来源用于训练后显示训练入口；操作标签不补成完整决策。");
         let binding = null;
@@ -5132,6 +5304,10 @@ window.SpireProject = (() => {
     const hasSavedHumanSelection = Array.isArray(savedHumanSelection) && savedHumanSelection.some(id => hex(id));
     const humanDataset = humanSources.length || hasSavedHumanSelection
       ? await localHumanDatasetCard(ctx, humanSources) : null;
+    const source3Sources = (data.items || []).filter(item => item?.kind === "evidence"
+      && item.parameters?.schema === "stpd/source3-original-bundle-v1" && hex(item.artifact_id));
+    const source3Dataset = source3Sources.length || (drafts.get("local-source3-source-ids") || []).length
+      ? await localSource3DatasetCard(ctx, source3Sources) : null;
     const rows = [];
     for (const item of data.items || []) {
       const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
@@ -5146,11 +5322,14 @@ window.SpireProject = (() => {
         item.registry_indexed ? (item.registry_cached ? "索引已标记缓存" : "本机索引") : "尚未进入索引",
         technical(item, "查看 metadata 与 payload 摘要"),
         ...(humanDataset ? [selectionCell] : []),
+        ...(source3Dataset ? [source3Dataset.selectors.get(item.artifact_id) || "—"] : []),
       ]);
     }
     box.append(table(["本机资料", "内容文件", "本机索引", "来源信息",
-      ...(humanDataset ? ["加入操作标签集"] : [])], rows));
+      ...(humanDataset ? ["加入操作标签集"] : []),
+      ...(source3Dataset ? ["加入 Source 3 预览"] : [])], rows));
     if (humanDataset) box.append(humanDataset.section);
+    if (source3Dataset) box.append(source3Dataset.section);
     if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
     const pagerBox = el("div", null, "project-actions");
     if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {
