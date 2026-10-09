@@ -37,7 +37,9 @@ def _probe(path: Path) -> str:
     return result.stdout.strip()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Real POSIX flock contention; Windows adapter is covered separately")
+@pytest.mark.skipif(
+    os.name == "nt", reason="Real POSIX flock contention; Windows adapter is covered separately"
+)
 def test_real_posix_owner_blocks_other_process_and_releases_without_deleting_file(tmp_path):
     path = tmp_path / "owner.lock"
     path.write_bytes(b"existing owner path")
@@ -49,7 +51,10 @@ def test_real_posix_owner_blocks_other_process_and_releases_without_deleting_fil
     assert path.read_bytes() == b"existing owner path"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Real POSIX process-lifetime owner; Windows byte adapter is covered separately")
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Real POSIX process-lifetime owner; Windows byte adapter is covered separately",
+)
 def test_retained_lifetime_owner_remains_locked_after_report_until_process_exit(tmp_path):
     path = tmp_path / "child.lock"
     path.touch()
@@ -152,7 +157,9 @@ def test_windows_adapter_keeps_byte_zero_modes_callable_and_platform_bound(tmp_p
 
 
 @pytest.mark.parametrize("windows", [False, True])
-def test_acquisition_os_error_keeps_already_running_and_never_unlocks(tmp_path, monkeypatch, windows):
+def test_acquisition_os_error_keeps_already_running_and_never_unlocks(
+    tmp_path, monkeypatch, windows
+):
     calls = []
 
     def fail(fd, mode, *count):
@@ -163,15 +170,16 @@ def test_acquisition_os_error_keeps_already_running_and_never_unlocks(tmp_path, 
                               flock=fail, LOCK_EX=4, LOCK_NB=8, LOCK_UN=16)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt" if windows else "posix"))
     monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(import_module=lambda _: adapter))
-    with pytest.raises(BoundaryError) as failure:
-        with instance_lock(tmp_path / "busy.lock"):
-            pytest.fail("Failed acquisition entered the owner body")
+    with pytest.raises(BoundaryError) as failure, instance_lock(tmp_path / "busy.lock"):
+        pytest.fail("Failed acquisition entered the owner body")
     assert failure.value.code == "already_running"
     assert calls == [(41, (1,))] if windows else calls == [(12, ())]
 
 
 @pytest.mark.parametrize("windows", [False, True])
-def test_unlock_failure_propagates_without_swallowing_or_reclassifying(tmp_path, monkeypatch, windows):
+def test_unlock_failure_propagates_without_swallowing_or_reclassifying(
+    tmp_path, monkeypatch, windows
+):
     calls = []
 
     def locking(fd, mode, *count):
@@ -183,23 +191,23 @@ def test_unlock_failure_propagates_without_swallowing_or_reclassifying(tmp_path,
                               flock=locking, LOCK_EX=4, LOCK_NB=8, LOCK_UN=16)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt" if windows else "posix"))
     monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(import_module=lambda _: adapter))
-    with pytest.raises(OSError, match="unlock failed"):
-        with instance_lock(tmp_path / "unlock.lock"):
-            pass
+    with pytest.raises(OSError, match="unlock failed"), instance_lock(tmp_path / "unlock.lock"):
+        pass
     assert len(calls) == 2
     assert calls[-1] == (43, (1,)) if windows else calls[-1] == (16, ())
 
 
 def test_observation_lock_does_not_create_missing_owner_and_keeps_existing_bytes(tmp_path):
     path = tmp_path / "absent" / "owner.lock"
-    with pytest.raises(FileNotFoundError):
-        with instance_lock(path, create=False):
-            pytest.fail("Missing observation owner must not be initialized")
+    with pytest.raises(FileNotFoundError), instance_lock(path, create=False):
+        pytest.fail("Missing observation owner must not be initialized")
     assert not path.parent.exists()
     path.parent.mkdir()
     path.write_bytes(b"existing")
-    with instance_lock(path, create=False):
-        with pytest.raises(BoundaryError, match="already_running"):
-            with instance_lock(path, create=False):
-                pytest.fail("A second owner must not acquire the same lock")
+    with (
+        instance_lock(path, create=False),
+        pytest.raises(BoundaryError, match="already_running"),
+        instance_lock(path, create=False),
+    ):
+        pytest.fail("A second owner must not acquire the same lock")
     assert path.read_bytes() == b"existing"

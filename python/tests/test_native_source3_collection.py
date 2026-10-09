@@ -602,7 +602,7 @@ def sdk_terminal_deliveries():
 
 
 def test_terminal_delivery_domain_matches_actual_connector_grammar():
-    assert NATIVE_TERMINAL_DELIVERIES == frozenset(sdk_terminal_deliveries())
+    assert frozenset(sdk_terminal_deliveries()) == NATIVE_TERMINAL_DELIVERIES
     assert "rejected" not in NATIVE_TERMINAL_DELIVERIES
 
 

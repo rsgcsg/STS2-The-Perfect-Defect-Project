@@ -27,9 +27,17 @@ real-game installation. The lock may include GPU-capable framework wheels, but C
 requires GPU hardware or downloads model weights.
 
 The Python component gate validates repository/CI contracts, runs tools/doctor.py, Ruff on the whole tree,
-Mypy on stpd/tools, the existing Connector SDK test, the complete Pytest suite, clean-source cross-process CPU E2E, compileall,
+Mypy on stpd/spireagent/tools, the existing Connector SDK test, the complete Pytest suite, clean-source cross-process CPU E2E, compileall,
 `uv build`, working-tree and HEAD patch hygiene, and optional exact-base diff hygiene.
 Focused tests accelerate development but never replace this gate.
+
+Run focused Ruff/Mypy/Pytest checks from `python/` with the same locked interpreter
+and configuration as `tools/project.py`. Record that working directory and any
+source overrides with the result. A root-directory Ruff invocation can classify
+imports differently or discover different configuration; its pass does not prove
+the component gate passed. Scope the file list for quick feedback, not the rules
+or environment. Source overrides used for an isolated fixture are not proof of
+the installed locked dependency.
 
 Root `linux-portability` and `windows-portability` run the same complete monorepo check,
 including this Python suite. Required `portable` succeeds only when both lanes succeed.
