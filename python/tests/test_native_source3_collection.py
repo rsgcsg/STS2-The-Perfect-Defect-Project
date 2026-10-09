@@ -1,82 +1,92 @@
-"""Production collector: genuine Application admission with injected process/Recorder owners."""
+"""Genuine Application admission/Close with explicit public Runtime report projections."""
 
 from __future__ import annotations
 
-import base64
 import copy
 import hashlib
 import json
-import re
+import tempfile
+import unittest
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
-
-import pytest
-from metadata_import_guard import no_torch_imports as no_torch_imports
-from test_native_public_teacher import action, observation
+from unittest.mock import patch
 
 from spireagent.json_boundary import BoundaryError
-from spireagent.workbench.developer import ProjectConfig, combination
+from spireagent.workbench import native_source3_collection as module
+from spireagent.workbench.developer import ProjectConfig, atomic_json, combination
 from spireagent.workbench.developer_server import Application
 from spireagent.workbench.instance_lock import instance_lock
-from spireagent.workbench.native_source3_collection import (
-    NATIVE_TERMINAL_DELIVERIES,
-    PIPE_SCHEMA,
-    Cancellation,
-    CollectionRequest,
-    OwnedPipeChild,
-    collect_source3,
-    decode_current,
-)
 
 
-@pytest.fixture
-def collection(tmp_path, monkeypatch):
-    config = ProjectConfig(tmp_path / "state", "", "http://127.0.0.1:15526", None, combination())
-    request = CollectionRequest(
-        tmp_path / "game",
-        tmp_path / "host",
-        tmp_path / "output",
-        "SYNTHETIC",
-        target_choices=1,
-        max_submissions=1,
-    )
-    seen = {"commands": [], "apps": [], "children": [], "messages": [], "stops": [], "behavior": {}}
-    current = {
-        "runtime_instance_id": "runtime",
-        "recording_session_id": None,
-        "recording_lifecycle": "ready",
-        "source": None,
-        "capture_profile_id": "none",
-        "closeout_status": "ready",
-        "health": {"append_health": "healthy", "disk_health": "healthy", "error": None},
-    }
-    cancel = Cancellation()
+class CollectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.config = ProjectConfig(
+            self.root / "state", "", "http://127.0.0.1:15526", None, combination()
+        )
+        self.request = module.CollectionRequest(
+            self.root / "game",
+            self.root / "host",
+            self.root / "output",
+            "SYNTHETIC",
+            target_choices=1,
+            max_submissions=1,
+        )
+        self.commands, self.messages, self.apps, self.children, self.order = [], [], [], [], []
+        self.behavior = {}
+        self.cancel = module.Cancellation()
+        self.status = {
+            "runtime_instance_id": "runtime",
+            "recording_session_id": None,
+            "recording_lifecycle": "ready",
+            "capture_profile_id": "none",
+            "closeout_status": "ready",
+            "source": None,
+            "health": {"append_health": "healthy", "disk_health": "healthy", "error": None},
+        }
+        self.patches = []
 
-    def app_factory(cfg, path):
+    def tearDown(self):
+        for value in reversed(self.patches):
+            value.stop()
+        self.temp.cleanup()
+
+    def mock(self, owner, name, value):
+        handle = patch.object(owner, name, value)
+        handle.start()
+        self.patches.append(handle)
+
+    def application(self, cfg, path):
         app = Application(cfg, config_path=path)
-        seen["apps"].append(app)
-        monkeypatch.setattr(
+        self.apps.append(app)
+        self.mock(
             app.models,
             "status",
             lambda: {
-                "loaded": seen["behavior"].get("model_loaded", False),
+                "loaded": self.behavior.get("model_loaded", False),
                 "status": "idle",
                 "operation": None,
             },
         )
-        monkeypatch.setattr(
-            app.models.native_tasks, "recording_status", lambda _: copy.deepcopy(current)
-        )
 
-        def command(endpoint, before, kind, *, source_declaration, command_id):
-            seen["commands"].append(kind)
-            if seen["behavior"].get("unknown_start") and kind == "start_new_session":
-                raise BoundaryError("recording", "native_recording_command_unknown")
-            if seen["behavior"].get("unknown_close") and kind == "close":
+        def owner_status(_):
+            if not self.request.record_source3:
+                raise AssertionError("Source3 opt-out must not query recording capability")
+            return copy.deepcopy(self.status)
+
+        def owner_command(endpoint, previous, kind, *, source_declaration, command_id):
+            self.commands.append(kind)
+            if kind == "close":
+                self.order.append("source_close")
+            if self.behavior.get(
+                "unknown_" + ("start" if kind == "start_new_session" else "close")
+            ):
                 raise BoundaryError("recording", "native_recording_command_unknown")
             if kind == "start_new_session":
-                current.update(
-                    recording_session_id="session",
+                self.status.update(
+                    recording_session_id="source-session",
                     recording_lifecycle="recording",
                     closeout_status="recording",
                     capture_profile_id="native-logical-source-v3",
@@ -91,548 +101,433 @@ def collection(tmp_path, monkeypatch):
                     },
                 )
             elif kind == "close":
-                current.update(recording_lifecycle="closed", closeout_status="closed")
+                self.status.update(recording_lifecycle="closed", closeout_status="closed")
             return {
                 "accepted": True,
                 "pending": False,
                 "command_id": command_id,
-                "status": copy.deepcopy(current),
+                "status": copy.deepcopy(self.status),
             }
 
-        monkeypatch.setattr(app.models.native_tasks, "recording_command", command)
+        self.mock(app.models.native_tasks, "recording_status", owner_status)
+        self.mock(app.models.native_tasks, "recording_command", owner_command)
         return app
 
-    class Child:
-        def __init__(self, path, cancellation):
-            self.cancel, self.queue, self.mid = cancellation, deque(), 0
-            self.source_closed = False
-            seen["children"].append(self)
+    def child(self, path, cancel):
+        test = self
 
-        def message(self, kind, **payload):
-            self.mid += 1
-            self.queue.append(
-                {
-                    "schema": PIPE_SCHEMA,
-                    "type": kind,
-                    "operation_id": self.operation,
-                    "message_id": self.mid,
-                    **payload,
-                }
-            )
-
-        def final(self, reason="target_choices_reached"):
-            value = {
-                "schema": PIPE_SCHEMA,
-                "type": "closed",
-                "operation_id": self.operation,
-                "reason": reason,
-                "counts": {
-                    "submissions": self.choices,
-                    "known_delivered_choices": self.delivered,
-                    "result_queries": 0,
-                },
-                "source_closed": self.source_closed,
-                "control_release": {"confirmed": True},
-                "host_exit": {"code": 0, "signal": None, "forced": False},
-                "host_started": True,
-                "cleanup_errors": [],
-                "advisory": {"history_claimed": False, "eager_scope": []},
-                "live_byte_reservations": 0,
-                "partial_source_prefix": True,
-                "learned_evaluation": False,
-                "pending_request_id": self.pending_id,
-                "last_submission": self.last_submission,
-            }
-            if seen["behavior"].get("bad_final"):
-                value["counts"]["submissions"] = 999
-            self.queue.append(value)
-
-        def send(self, value):
-            seen["messages"].append(copy.deepcopy(value))
-            kind = value["type"]
-            if kind == "init":
-                self.operation, self.choices = value["operation_id"], 0
-                self.delivered, self.pending_id, self.last_submission = 0, None, None
-                self.message(
-                    "ready",
-                    runtime_instance_id="runtime",
-                    endpoint=config.platform_url,
-                    host_identity={"host": {"runtime_instance_id": "runtime"}},
-                    bootstrap_control_release={
-                        "schema": "sts2.host-runtime/reference-controller-handoff-1",
-                        "runtime_instance_id": "runtime",
-                        "controller": None,
-                        "basis": "fresh_control_observation_after_close",
+        class Child:
+            def __init__(self):
+                self.queue = deque()
+                self.mid = 0
+                self.operation = None
+                self.result = None
+                self.submissions = 0
+                self.source_closed = False
+                self.stopped = False
+                self.runtime = {
+                    "schema": "sts2.policy-runtime/agent-session-status-1",
+                    "run_id": "run-fixture",
+                    "lifecycle": "running",
+                    "mode": "auto",
+                    "controller": "released",
+                    "tainted": False,
+                    "session": {
+                        "profile": "native-logical-v1",
+                        "agent_state": "known",
+                        "state_version": 0,
                     },
-                )
-            elif kind == "source_ready":
-                if seen["behavior"].get("source_ready_failure"):
-                    raise BoundaryError("pipe", "source_ready_transport_unknown")
-                if seen["behavior"].get("source_gap"):
-                    current["source"]["gaps"] = 1
-                if seen["behavior"].get("source_paused"):
-                    current["recording_lifecycle"] = "paused"
-                if seen["behavior"].get("storage_failed"):
-                    current["health"]["append_health"] = "failed"
-                if seen["behavior"].get("double_signal"):
-                    self.cancel.stop("external_signal")
-                    self.cancel.stop("external_signal")
-                    return
-                self.actions = [action("browse", "open_run_deck")]
-                self.view = observation(self.actions)
-                raw = json.dumps(self.view).encode()
-                self.basis = {
-                    "capture_id": "capture",
-                    "snapshot_id": "snapshot",
-                    "runtime_instance_id": "runtime",
-                    "stream_generation": "generation",
-                    "capture_sha256": hashlib.sha256(raw).hexdigest(),
-                    "byte_count": len(raw),
-                    "catalog_digest": self.view["catalog"]["digest"],
-                    "total_count": 1,
+                    "environment": {"runtime_instance_id": "runtime"},
+                    "pending_request": None,
+                    "last_result": None,
+                    "autonomy_budget": {"submissions_used": 0, "policy_calls_used": 0},
                 }
-                self.message(
-                    "current",
-                    ordinal=1,
-                    basis=self.basis,
-                    observation_base64=base64.b64encode(raw).decode(),
-                    catalog=self.actions,
-                )
-            elif kind == "choice":
-                assert value["action_id"] == "browse"
-                self.choices += 1
-                unknown = seen["behavior"].get("unknown_submission")
-                self.pending_id = "original-request" if unknown else None
-                delivery = seen["behavior"].get("terminal_delivery", "delivered")
-                self.last_submission = {
-                    "request_id": "original-request",
-                    "ordinal": 1,
-                    "basis": self.basis,
-                    "action_id": "browse",
-                    "sdk_admitted": True,
-                    "lookup_status": "unresolved" if unknown else "terminal",
-                    "delivery": "unknown" if unknown else delivery,
-                    "result_queries": 0,
-                    "automatic_retry": False,
+                self.evidence = {
+                    "schema": "sts2.policy-runtime/agent-session-run-1",
+                    "run_id": "run-fixture",
+                    "directory": str(test.root / "direct-evidence"),
+                    "training_admission": "not_run",
                 }
-                if unknown:
-                    self.message(
-                        "quiesced",
-                        reason="original_result_unresolved",
-                        counts={
-                            "submissions": self.choices,
-                            "known_delivered_choices": self.delivered,
-                            "result_queries": 0,
-                        },
-                        pending_request_id=self.pending_id,
-                        last_submission=self.last_submission,
-                    )
-                    return
-                if delivery == "delivered":
-                    self.delivered += 1
-                self.message(
-                    "result",
-                    ordinal=1,
-                    request_id="original-request",
-                    lookup_status="terminal",
-                    result={
-                        "request_id": "original-request",
-                        "snapshot_id": "snapshot",
-                        "action": self.actions[0],
-                        "delivery": delivery,
-                        "execution": "unknown",
-                        "effect": "unknown",
-                    },
-                    result_queries=0,
+
+            def message(self, kind, **values):
+                self.mid += 1
+                self.queue.append(
+                    {
+                        "schema": module.PIPE_SCHEMA,
+                        "type": kind,
+                        "operation_id": self.operation,
+                        "message_id": self.mid,
+                        **values,
+                    }
                 )
-            elif kind == "continue":
+
+            def quiesce(self, reason):
+                test.order.append("runtime_stopped")
+                self.runtime.update(lifecycle="stopped", mode="human", controller="released")
                 self.message(
                     "quiesced",
-                    reason="target_choices_reached",
-                    counts={
-                        "submissions": self.choices,
-                        "known_delivered_choices": self.delivered,
-                        "result_queries": 0,
+                    reason=reason,
+                    runtime_status=copy.deepcopy(self.runtime),
+                    direct_evidence=self.evidence,
+                    counts=self.counts(),
+                    record_source3=test.request.record_source3,
+                )
+
+            def counts(self):
+                return {
+                    "result_messages": 1 if self.result else 0,
+                    "known_delivered_choices": 1
+                    if self.result and self.result["delivery"] == "delivered"
+                    else 0,
+                }
+
+            def final(self, reason):
+                summary = {
+                    "schema": "spireagent/native-agent-runtime-summary-v1",
+                    "public_status_schema": self.runtime["schema"],
+                    "lifecycle": "stopped",
+                    "mode": "human",
+                    "controller": "released",
+                    "tainted": self.runtime["tainted"],
+                    "agent_state": "known",
+                    "submissions_used": self.submissions,
+                    "policy_calls_used": self.runtime["autonomy_budget"]["policy_calls_used"],
+                    "state_version": self.runtime["session"]["state_version"],
+                    "pending_request": self.runtime["pending_request"],
+                    "last_result": self.result,
+                }
+                wire = {
+                    "schema": module.PIPE_SCHEMA,
+                    "type": "closed",
+                    "operation_id": self.operation,
+                    "reason": reason,
+                    "counts": self.counts(),
+                    "runtime_summary": summary,
+                    "direct_evidence": self.evidence,
+                    "teacher_exit": {
+                        "pid": 12345,
+                        "code": None,
+                        "signal": "SIGKILL",
+                        "actual_exit": True,
                     },
-                    pending_request_id=self.pending_id,
-                    last_submission=self.last_submission,
-                )
-            elif kind == "source_closed":
-                self.source_closed = value["known_closed"]
-                self.final(
-                    "original_result_unresolved"
-                    if seen["behavior"].get("unknown_submission")
-                    else "native_choice_not_delivered_or_rejected"
-                    if self.last_submission is not None
-                    and self.last_submission["delivery"] != "delivered"
-                    else "external_signal"
-                    if seen["stops"]
-                    else "target_choices_reached"
-                )
+                    "source_closed": self.source_closed,
+                    "record_source3": test.request.record_source3,
+                    "control_release": {"confirmed": True, "runtime_instance_id": "runtime"},
+                    "host_exit": {"code": 0, "signal": None, "forced": False},
+                    "host_started": True,
+                    "cleanup_errors": [],
+                    "failure_details": None,
+                    "partial_source_prefix": True,
+                    "learned_evaluation": False,
+                    "unknown_request_id_projection": (
+                        "not_exposed_by_public_status_see_original_immutable_evidence"
+                    )
+                    if self.runtime["tainted"] and self.result is None
+                    else None,
+                }
+                complete = {
+                    **wire,
+                    "schema": "spireagent/native-source3-collector-final-full-v2",
+                    "runtime_status": self.runtime,
+                }
+                raw = json.dumps(complete).encode()
+                (test.request.output / "collector-final-full.json").write_bytes(raw)
+                wire["full_record_ref"] = {
+                    "path": "collector-final-full.json",
+                    "bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+                if test.behavior.get("bad_reference"):
+                    wire["full_record_ref"]["sha256"] = "0" * 64
+                self.queue.append(wire)
 
-        def receive(self):
-            return self.queue.popleft() if self.queue else None
-
-        def stop(self, reason):
-            seen["stops"].append(reason)
-            if len(seen["stops"]) == 1:
-                if current["recording_session_id"] is None:
-                    self.final("original_source_start_unconfirmed")
-                else:
+            def send(self, value):
+                test.messages.append(copy.deepcopy(value))
+                kind = value["type"]
+                if kind == "init":
+                    self.operation = value["operation_id"]
+                    assert value["options"]["teacher_descriptor"]["agent_spec"]["learned"] is False
                     self.message(
-                        "quiesced",
-                        reason=reason,
-                        counts={
-                            "submissions": self.choices,
-                            "known_delivered_choices": self.delivered,
-                            "result_queries": 0,
+                        "ready",
+                        runtime_instance_id="runtime",
+                        endpoint=test.config.platform_url,
+                        host_identity={},
+                        record_source3=test.request.record_source3,
+                        bootstrap_control_release={
+                            "schema": "sts2.host-runtime/reference-controller-handoff-1",
+                            "runtime_instance_id": "runtime",
+                            "controller": None,
+                            "basis": "fresh_control_observation_after_close",
                         },
-                        pending_request_id=self.pending_id,
-                        last_submission=self.last_submission,
+                    )
+                elif kind == "source_ready":
+                    if test.behavior.get("source_ready_failure"):
+                        raise BoundaryError("pipe", "source_ready_transport_unknown")
+                    if test.behavior.get("source_gap"):
+                        test.status["source"]["gaps"] = 1
+                    self.message("runtime_gate", status=self.runtime, direct_evidence=self.evidence)
+                elif kind == "runtime_continue":
+                    if not self.result and not self.submissions:
+                        self.submissions = 1
+                        self.runtime["autonomy_budget"] = {
+                            "submissions_used": 1,
+                            "policy_calls_used": 1,
+                        }
+                        self.runtime["session"]["state_version"] = 1
+                        if test.behavior.get("unknown_submission"):
+                            self.runtime["tainted"] = True
+                            self.quiesce("original_runtime_outcome_unresolved")
+                            return
+                        self.result = {
+                            "request_id": "original-request",
+                            "snapshot_id": "snapshot",
+                            "action_id": "original",
+                            "status": "terminal",
+                            "delivery": "delivered",
+                            "execution": "unknown",
+                            "effect": "unknown",
+                            "cancel": "not_requested",
+                            "reason": None,
+                        }
+                        self.runtime["last_result"] = self.result
+                        self.message(
+                            "runtime_tick",
+                            tick={"type": "delivered", "status": self.runtime},
+                            direct_evidence=self.evidence,
+                        )
+                    else:
+                        self.quiesce("target_choices_reached")
+                elif kind == "source_closed":
+                    self.source_closed = (
+                        value["known_closed"] or value["close_outcome"] == "not_requested"
+                    )
+                    self.final(
+                        "original_runtime_outcome_unresolved"
+                        if self.runtime["tainted"]
+                        else "runtime_handoff"
+                        if self.stopped
+                        else "target_choices_reached"
                     )
 
-        def finish(self):
-            if seen["behavior"].get("source_ready_failure"):
-                assert seen["commands"][-1] == "close"
-                assert self.source_closed
-            return {"pid": 12345, "exit_code": 0, "signal": None, "forced_by_parent": False}
+            def receive(self):
+                value = self.queue.popleft() if self.queue else None
+                if value is not None and value.get("type") == "quiesced":
+                    test.order.append("quiesced_received")
+                return value
 
-    def prepared(cfg, req):
-        req.validate()
+            def stop(self, reason):
+                if not self.stopped:
+                    self.stopped = True
+                    self.quiesce(reason)
+
+            def finish(self):
+                return {"pid": 54321, "exit_code": 0, "signal": None, "forced_by_parent": False}
+
+        child = Child()
+        self.children.append(child)
+        return child
+
+    def preflight(self, config, request):
+        request.validate()
         return {
-            "child_path": str(tmp_path / "fixed-child.mjs"),
-            "endpoint": cfg.platform_url,
-            "options": req.options(cfg.platform_url),
+            "child_path": str(self.root / "fixed-node.mjs"),
+            "endpoint": config.platform_url,
+            "options": request.options(config.platform_url),
         }
 
-    def run():
-        return collect_source3(
-            config,
-            tmp_path / "config.json",
-            request,
-            app_factory=app_factory,
-            child_factory=Child,
-            preflight=prepared,
-            cancel=cancel,
+    def run_collection(self):
+        return module.collect_source3(
+            self.config,
+            self.root / "config.json",
+            self.request,
+            app_factory=self.application,
+            child_factory=self.child,
+            preflight=self.preflight,
+            cancel=self.cancel,
         )
 
-    return config, request, seen, cancel, run
-
-
-def test_genuine_application_shared_start_close_and_independent_N(collection):
-    _, request, seen, _, run = collection
-    report = run()
-    assert report["status"] == "completed"
-    assert seen["commands"] == ["start_new_session", "close"]
-    assert report["actual_choices"] == report["submissions"] == 1
-    assert report["eligible_unique_N"] is None and report["admission"] == "not_run"
-    assert report["partial_source_prefix"] and not report["learned_evaluation"]
-    assert (
-        report["source_start"]["status"]["source"]["declaration"]["source_kind"] == "agent_protocol"
-    )
-    assert isinstance(seen["apps"][0], Application)
-    original = json.loads((request.output / "original-result-0001.json").read_text())
-    assert original["result"]["effect"] == "unknown"
-    assert report["source_final_status"]["source"]["inputs"] == 0
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [
-        "unknown_start",
-        "unknown_close",
-        "source_ready_failure",
-        "source_gap",
-        "double_signal",
-        "source_paused",
-        "storage_failed",
-    ],
-)
-def test_original_unknown_and_cancellation_never_repeat_start_close(collection, failure):
-    _, _, seen, cancel, run = collection
-    seen["behavior"][failure] = True
-    report = run()
-    assert seen["commands"].count("start_new_session") == 1
-    assert seen["commands"].count("close") <= 1
-    assert report["actual_choices"] == (1 if failure == "unknown_close" else 0)
-    if failure == "unknown_start":
-        assert seen["commands"] == ["start_new_session"]
-        assert report["status"] == "unknown"
-    elif failure == "source_gap":
-        assert report["error_code"] == "original_source_accounting_failed"
-        assert report["source_closed"]
-    elif failure == "source_ready_failure":
-        assert report["source_closed"] and seen["commands"][-1] == "close"
-    elif failure == "double_signal":
-        assert cancel.signals == 2 and report["source_closed"]
-    elif failure == "unknown_close":
-        assert not report["source_closed"] and report["status"] == "unknown"
-
-
-def test_instance_lock_blocks_before_application_or_child_construction(collection):
-    config, _, seen, _, run = collection
-    with (
-        instance_lock(config.state_dir / "instance.lock"),
-        pytest.raises(BoundaryError, match="already_running"),
-    ):
-        run()
-    assert seen["apps"] == seen["children"] == []
-
-
-def test_early_cancellation_no_child_or_start(collection):
-    _, _, seen, cancel, run = collection
-    cancel.stop("external_signal")
-    cancel.stop("external_signal")
-    with pytest.raises(BoundaryError, match="external_signal"):
-        run()
-    assert seen["apps"] == seen["children"] == seen["commands"] == []
-
-
-def test_final_counts_cannot_create_fake_choices(collection):
-    _, _, seen, _, run = collection
-    seen["behavior"]["bad_final"] = True
-    report = run()
-    assert report["status"] == "unknown"
-    assert report["error_code"] == "child_counts_disagree"
-    assert report["actual_choices"] == 1
-
-
-def test_pipe_reader_does_not_block_on_full_queue_at_eof(tmp_path):
-    script = tmp_path / "pure-child.mjs"
-    script.write_text(
-        'for (let i = 0; i < 8; i++) process.stdout.write(JSON.stringify({i}) + "\\n");'
-    )
-    child = OwnedPipeChild(script, Cancellation())
-    receipt = child.finish()
-    assert receipt["exit_code"] == 0
-    assert receipt["reader_terminal"] and receipt["diagnostics_terminal"]
-
-
-def test_original_current_bytes_digest_and_basis_validation():
-    actions = [action("original", "open_run_deck")]
-    view = observation(actions)
-    raw = json.dumps(view).encode()
-    basis = {
-        "capture_id": "capture",
-        "snapshot_id": "snapshot",
-        "runtime_instance_id": "runtime",
-        "stream_generation": "generation",
-        "capture_sha256": hashlib.sha256(raw).hexdigest(),
-        "byte_count": len(raw),
-        "catalog_digest": view["catalog"]["digest"],
-        "total_count": 1,
-    }
-    message = {
-        "basis": basis,
-        "observation_base64": base64.b64encode(raw).decode(),
-        "catalog": actions,
-    }
-    assert decode_current(message, "runtime", 1024 * 1024) == (view, actions)
-    basis["capture_sha256"] = "0" * 64
-    with pytest.raises(BoundaryError, match="complete_current_integrity_failed"):
-        decode_current(message, "runtime", 1024 * 1024)
-
-
-@pytest.mark.parametrize("plan_only", [False, True])
-def test_project_cli_routes_explicit_collect_request_without_gui_or_server(
-    collection, monkeypatch, capsys, plan_only
-):
-    from spireagent.workbench import developer_cli
-    from spireagent.workbench import native_source3_collection as module
-
-    config, request, _, _, _ = collection
-    monkeypatch.setattr(ProjectConfig, "load", lambda *args, **kwargs: config)
-    calls = []
-
-    def plan(cfg, req):
-        calls.append(("plan", cfg, req))
-        return {"status": "plan"}
-
-    def collect(cfg, path, req):
-        calls.append(("collect", cfg, req))
-        return {"status": "partial", "eligible_unique_N": None}
-
-    monkeypatch.setattr(module, "metadata_preflight", plan)
-    monkeypatch.setattr(module, "collect_source3", collect)
-    arguments = [
-        "collect-source3",
-        "--game-directory",
-        str(request.installation),
-        "--host-local-root",
-        str(request.host_local_root),
-        "--output",
-        str(request.output),
-        "--seed",
-        request.seed,
-        "--target-choices",
-        "1",
-        "--max-submissions",
-        "2",
-    ]
-    if plan_only:
-        arguments.append("--plan-only")
-    assert developer_cli.main(arguments) == 0
-    assert calls[0][0] == ("plan" if plan_only else "collect")
-    assert calls[0][1] is config
-    assert calls[0][2].target_choices == 1 and calls[0][2].max_submissions == 2
-    assert json.loads(capsys.readouterr().out)["status"] == ("plan" if plan_only else "partial")
-
-
-def test_predecessor_unknown_after_preflight_still_blocks_before_child(collection):
-    from spireagent.workbench.developer import atomic_json
-    from spireagent.workbench.native_source3_collection import MARKER_FILE, REPORT_SCHEMA
-
-    config, _, seen, _, run = collection
-    atomic_json(config.state_dir / MARKER_FILE, {"schema": REPORT_SCHEMA, "status": "unknown"})
-    # The injected read-only preflight intentionally has no marker check; the
-    # production lifetime's inside-lock check must independently reject it.
-    with pytest.raises(BoundaryError, match="original_collection_outcome_unresolved"):
-        run()
-    assert seen["children"] == seen["apps"] == []
-
-
-def test_read_only_preflight_freezes_teacher_and_child_without_application_or_launch(
-    collection, monkeypatch
-):
-    from spireagent.workbench import native_source3_collection as module
-
-    config, request, seen, _, _ = collection
-    monkeypatch.setattr(module, "tool_identity", lambda: {"working_tree_clean": False})
-    with pytest.raises(BoundaryError, match="clean_collection_source_required"):
-        module.metadata_preflight(config, request)
-    monkeypatch.setattr(module, "tool_identity", lambda: {"working_tree_clean": True})
-    report = module.metadata_preflight(config, request)
-    assert report["status"] == "plan"
-    assert len(report["teacher"]["sha256"]) == len(report["child_sha256"]) == 64
-    assert report["acquisition"]["eager_event_fields"] == []
-    assert report["partial_source_prefix"] and report["eligible_unique_N"] is None
-    assert not request.output.exists()
-    assert seen["children"] == seen["apps"] == []
-
-
-def test_nonquiescent_model_failure_finishes_marker_without_start_or_child(collection):
-    _, _, seen, _, run = collection
-    seen["behavior"]["model_loaded"] = True
-    report = run()
-    assert report["status"] == "failed"
-    assert report["error_code"] == "model_owner_not_quiescent"
-    assert seen["commands"] == seen["children"] == []
-
-
-def test_initial_request_write_failure_marks_failed_before_any_child(collection, monkeypatch):
-    from spireagent.workbench import native_source3_collection as module
-
-    _, request, seen, _, run = collection
-    original_write = module.atomic_json
-
-    def write(path, value):
-        if path.name == "request.json":
-            raise OSError("synthetic output failure")
-        original_write(path, value)
-
-    monkeypatch.setattr(module, "atomic_json", write)
-    report = run()
-    assert report["status"] == "failed"
-    assert seen["commands"] == seen["children"] == seen["apps"] == []
-    assert json.loads((request.output / "report.json").read_text())["status"] == "failed"
-
-
-def test_admitted_unknown_original_identity_is_retained_in_quiesced_and_report(collection):
-    _, request, seen, _, run = collection
-    seen["behavior"]["unknown_submission"] = True
-    report = run()
-    assert report["actual_choices"] == 0 and report["submissions"] == 1
-    assert report["pending_request_id"] == "original-request"
-    submission = report["last_submission"]
-    assert submission["sdk_admitted"] is True and submission["delivery"] == "unknown"
-    assert submission["lookup_status"] == "unresolved" and submission["automatic_retry"] is False
-    assert submission["basis"]["snapshot_id"] == "snapshot" and submission["action_id"] == "browse"
-    quiesced = json.loads((request.output / "quiesced.json").read_text())
-    durable_report = json.loads((request.output / "report.json").read_text())
-    assert quiesced["last_submission"] == durable_report["last_submission"] == submission
-    assert (
-        quiesced["pending_request_id"] == durable_report["pending_request_id"] == "original-request"
-    )
-    assert seen["commands"] == ["start_new_session", "close"]
-    assert sum(message["type"] == "choice" for message in seen["messages"]) == 1
-    assert report["source_closed"] and report["child"]["exit_code"] == 0
-    assert report["child_final"]["control_release"]["confirmed"] is True
-    assert report["eligible_unique_N"] is None and report["automatic_retry"] is False
-
-
-@pytest.mark.parametrize("unknown_close", [False, True])
-def test_close_request_diagnostic_failure_does_not_skip_or_repeat_owner_close(
-    collection, monkeypatch, unknown_close
-):
-    from spireagent.workbench import native_source3_collection as module
-
-    _, _, seen, _, run = collection
-    seen["behavior"]["unknown_close"] = unknown_close
-    original_write = module.atomic_json
-
-    def write(path, value):
-        if path.name == "source-close-request.json":
-            raise OSError("synthetic diagnostic write failure")
-        return original_write(path, value)
-
-    monkeypatch.setattr(module, "atomic_json", write)
-    report = run()
-    assert seen["commands"] == ["start_new_session", "close"]
-    assert report["close_sent"] is True
-    assert report["source_close_request_write_error"] == "diagnostic_write_failed"
-    assert report["source_closed"] is not unknown_close
-    if unknown_close:
-        assert (
-            report["status"] == "unknown"
-            and report["source_close_error"] == "native_recording_command_unknown"
+    def test_genuine_App_admission_full_status_and_direct_evidence_are_separate_from_N(self):
+        report = self.run_collection()
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+        self.assertEqual(
+            (report["submissions"], report["actual_choices"], report["known_delivered_choices"]),
+            (1, 1, 1),
         )
-    else:
-        assert report["source_close"]["accepted"] is True and report["status"] == "completed"
+        self.assertIsNone(report["eligible_unique_N"])
+        self.assertEqual(report["admission"], "not_run")
+        self.assertEqual(report["teacher_exit"]["signal"], "SIGKILL")
+        self.assertEqual(
+            report["child_final_full"]["runtime_status"]["last_result"]["effect"], "unknown"
+        )
+        self.assertFalse(
+            any(value["type"] in {"current", "choice", "result"} for value in self.messages)
+        )
+
+    def test_source_opt_out_does_not_access_Recorder_and_still_retains_actor_trace(self):
+        self.request = replace(self.request, record_source3=False)
+        report = self.run_collection()
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(self.commands, [])
+        self.assertIsNone(report["source_closed"])
+        self.assertEqual(report["direct_evidence"]["training_admission"], "not_run")
+
+    def test_unknown_Start_admits_zero_Runtime_ticks_and_never_repeats(self):
+        self.behavior["unknown_start"] = True
+        report = self.run_collection()
+        self.assertEqual(self.commands, ["start_new_session"])
+        self.assertEqual(report["submissions"], 0)
+        self.assertEqual(report["status"], "unknown")
+
+    def test_unknown_Close_offered_once_and_diagnostic_request_failure_cannot_skip_it(self):
+        original = module.atomic_json
+        for unknown in [False, True]:
+            with self.subTest(unknown=unknown):
+                if self.request.output.exists():
+                    import shutil
+
+                    shutil.rmtree(self.request.output)
+                    (self.config.state_dir / module.MARKER_FILE).unlink()
+                self.commands.clear()
+                self.behavior["unknown_close"] = unknown
+                self.status.update(
+                    recording_session_id=None,
+                    source=None,
+                    recording_lifecycle="ready",
+                    closeout_status="ready",
+                    capture_profile_id="none",
+                )
+
+                def write(path, value):
+                    if path.name == "source-close-request.json":
+                        raise OSError("synthetic diagnostic failure")
+                    return original(path, value)
+
+                with patch.object(module, "atomic_json", write):
+                    report = self.run_collection()
+                self.assertEqual(self.commands, ["start_new_session", "close"])
+                self.assertTrue(report["close_sent"])
+                self.assertEqual(
+                    report["source_close_request_write_error"], "diagnostic_write_failed"
+                )
+                self.assertEqual(report["source_closed"], not unknown)
+                self.assertEqual(report["status"], "unknown" if unknown else "completed")
+
+    def test_source_accounting_failure_closes_known_original_before_another_tick(self):
+        self.behavior["source_gap"] = True
+        report = self.run_collection()
+        self.assertEqual(report["error_code"], "original_source_accounting_failed")
+        self.assertEqual(report["submissions"], 0)
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+        self.assertLess(self.order.index("runtime_stopped"), self.order.index("quiesced_received"))
+        self.assertLess(self.order.index("quiesced_received"), self.order.index("source_close"))
+
+    def test_SourceReady_transport_failure_still_closes_accepted_original(self):
+        self.behavior["source_ready_failure"] = True
+        report = self.run_collection()
+        self.assertEqual(self.commands, ["start_new_session", "close"])
+        self.assertTrue(report["source_closed"])
+        self.assertEqual(report["submissions"], 0)
+
+    def test_transport_unknown_carries_public_projection_absence_not_fake_pending(self):
+        self.behavior["unknown_submission"] = True
+        report = self.run_collection()
+        self.assertEqual(report["status"], "unknown")
+        self.assertEqual((report["submissions"], report["actual_choices"]), (1, 0))
+        self.assertIsNone(report["runtime_status"]["pending_request"])
+        self.assertEqual(
+            report["unknown_request_id_projection"],
+            "not_exposed_by_public_status_see_original_immutable_evidence",
+        )
+
+    def test_full_private_final_must_match_SHA_and_cannot_select_another_path(self):
+        self.behavior["bad_reference"] = True
+        report = self.run_collection()
+        self.assertEqual(report["status"], "unknown")
+        self.assertEqual(report["full_final_reporting_error"], "full_final_integrity_failed")
+        self.assertIsNotNone(report["child_final"])
+        self.assertTrue(report["child_final"]["source_closed"])
+        self.assertEqual(report["teacher_exit"]["signal"], "SIGKILL")
+        self.assertEqual(report["child_final"]["host_exit"]["code"], 0)
+        self.assertEqual(self.commands.count("close"), 1)
+
+    def test_instance_lock_or_unresolved_predecessor_blocks_before_App_or_child(self):
+        with (
+            instance_lock(self.config.state_dir / "instance.lock"),
+            self.assertRaisesRegex(BoundaryError, "already_running"),
+        ):
+            self.run_collection()
+        atomic_json(
+            self.config.state_dir / module.MARKER_FILE,
+            {"schema": module.REPORT_SCHEMA, "status": "unknown"},
+        )
+        with self.assertRaisesRegex(BoundaryError, "original_collection_outcome_unresolved"):
+            self.run_collection()
+        self.assertEqual(self.apps, [])
+
+    def test_early_signals_or_nonquiescent_model_cannot_launch_teacher(self):
+        self.cancel.stop("external_signal")
+        self.cancel.stop("external_signal")
+        with self.assertRaisesRegex(BoundaryError, "external_signal"):
+            self.run_collection()
+        self.assertEqual(self.children, [])
+        self.cancel = module.Cancellation()
+        self.behavior["model_loaded"] = True
+        report = self.run_collection()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(self.children, [])
+
+    def test_pipe_reader_EOF_drains_bounded_queue_without_leaking_process(self):
+        script = self.root / "pure-child.mjs"
+        script.write_text(
+            'for (let i = 0; i < 8; i++) process.stdout.write(JSON.stringify({i}) + "\\n");'
+        )
+        child = module.OwnedPipeChild(script, module.Cancellation())
+        receipt = child.finish()
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertTrue(receipt["reader_terminal"] and receipt["diagnostics_terminal"])
 
 
-def sdk_terminal_deliveries():
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "components/connector/sdk/typescript/src/nativeLogical.ts"
-    ).read_text()
-    match = re.search(r"const delivery = z\.enum\((\[.*?\])\);", source)
-    assert match is not None, "authoritative NativeLogical result delivery grammar missing"
-    return tuple(json.loads(match.group(1)))
+if __name__ == "__main__":
+    unittest.main()
 
 
-def test_terminal_delivery_domain_matches_actual_connector_grammar():
-    assert frozenset(sdk_terminal_deliveries()) == NATIVE_TERMINAL_DELIVERIES
-    assert "rejected" not in NATIVE_TERMINAL_DELIVERIES
+class CollectorCliTests(unittest.TestCase):
+    def test_no_source3_is_explicit_and_default_remains_recording(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
 
+        from spireagent.workbench import developer_cli
 
-@pytest.mark.parametrize("delivery", sdk_terminal_deliveries())
-def test_every_authoritative_terminal_delivery_retains_original_outcome_and_cleanup(
-    collection, delivery
-):
-    _, request, seen, _, run = collection
-    seen["behavior"]["terminal_delivery"] = delivery
-    report = run()
-    assert report["status"] == ("completed" if delivery == "delivered" else "partial")
-    assert report["error_code"] is None
-    assert report["submissions"] == report["actual_choices"] == 1
-    assert report["known_delivered_choices"] == (1 if delivery == "delivered" else 0)
-    assert report["last_submission"]["delivery"] == delivery
-    assert report["last_submission"]["lookup_status"] == "terminal"
-    assert report["pending_request_id"] is None
-    original = json.loads((request.output / "original-result-0001.json").read_text())
-    assert original["result"]["delivery"] == delivery
-    assert original["result"]["execution"] == original["result"]["effect"] == "unknown"
-    assert report["source_closed"] and report["child"]["exit_code"] == 0
-    assert seen["commands"] == ["start_new_session", "close"]
-    assert sum(message["type"] == "choice" for message in seen["messages"]) == 1
-    assert report["eligible_unique_N"] is None and report["automatic_retry"] is False
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = ProjectConfig(
+                root / "state", "", "http://127.0.0.1:15526", None, combination()
+            )
+            for omit in [False, True]:
+                calls = []
 
+                def collect(cfg, path, request, *, destination=calls):
+                    destination.append(request)
+                    return {"status": "partial"}
 
-def test_invented_rejected_delivery_is_not_accepted_as_a_terminal_receipt(collection):
-    _, _, seen, _, run = collection
-    seen["behavior"]["terminal_delivery"] = "rejected"
-    report = run()
-    assert report["status"] == "unknown"
-    assert report["error_code"] == "original_submission_disposition_changed"
-    assert seen["commands"] == ["start_new_session", "close"]
-    assert report["source_closed"] and report["automatic_retry"] is False
+                arguments = [
+                    "collect-source3",
+                    "--game-directory",
+                    str(root / "game"),
+                    "--host-local-root",
+                    str(root / "host"),
+                    "--output",
+                    str(root / "output"),
+                    "--seed",
+                    "SYNTHETIC",
+                ]
+                if omit:
+                    arguments.append("--no-source3")
+                with (
+                    patch.object(ProjectConfig, "load", return_value=config),
+                    patch.object(module, "collect_source3", collect),
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(developer_cli.main(arguments), 0)
+                self.assertEqual(calls[0].record_source3, not omit)

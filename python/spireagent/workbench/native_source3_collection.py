@@ -7,13 +7,13 @@ The pipe journal is operational evidence, never an alternate training data sourc
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import queue
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -26,37 +26,17 @@ from typing import TYPE_CHECKING, Any
 from spireagent.json_boundary import BoundaryError, decode_json, object_fields
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, tool_identity
 from spireagent.workbench.instance_lock import instance_lock
-from stpd.fullrun.native_structured_inputs import native_catalog_digest
-from stpd.policy.native_public_teacher import TEACHER_ID, TEACHER_VERSION, NativePublicTeacher
+from stpd.policy.native_public_teacher import TEACHER_ID, TEACHER_VERSION
+from stpd.policy.native_teacher_agent import descriptor, write_artifact
 
 if TYPE_CHECKING:
     from spireagent.workbench.developer_server import Application
 
-PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v1"
-REPORT_SCHEMA = "spireagent/native-source3-collection-v1"
+PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v2"
+REPORT_SCHEMA = "spireagent/native-source3-collection-v2"
 MARKER_FILE = "native-source3-collection-operation.json"
 MAX_PIPE_BYTES = 96 * 1024 * 1024
 MAX_CONTROL_BYTES = 16 * 1024
-# Exact Connector result.delivery domain; checked against its authoritative SDK grammar.
-NATIVE_TERMINAL_DELIVERIES = frozenset(
-    {
-        "not_started",
-        "rejected_before_input",
-        "delivered",
-        "partially_delivered",
-        "unknown",
-    }
-)
-BASIS_FIELDS = {
-    "capture_id",
-    "snapshot_id",
-    "runtime_instance_id",
-    "stream_generation",
-    "capture_sha256",
-    "byte_count",
-    "catalog_digest",
-    "total_count",
-}
 
 
 def fail(code: str) -> BoundaryError:
@@ -78,6 +58,7 @@ class CollectionRequest:
     experimental_connector_acknowledged: bool = False
     max_input_bytes: int = 64 * 1024**2
     max_diagnostic_bytes: int = 256 * 1024**2
+    record_source3: bool = True
 
     def validate(self) -> None:
         for value in (self.installation, self.host_local_root, self.output):
@@ -98,9 +79,9 @@ class CollectionRequest:
         ):
             raise fail("fixed_collection_request_required")
         for limit_value, lower, upper in (
-            (self.target_choices, 1, 300),
-            (self.max_submissions, 1, 300),
-            (self.deadline_ms, 1, 2_700_000),
+            (self.target_choices, 1, 100),
+            (self.max_submissions, 1, 100),
+            (self.deadline_ms, 1, 900_000),
             (self.max_input_bytes, 1024, 64 * 1024**2),
             (self.max_diagnostic_bytes, 1024, 768 * 1024**2),
         ):
@@ -111,6 +92,7 @@ class CollectionRequest:
         if (
             type(self.experimental_build_acknowledged) is not bool
             or type(self.experimental_connector_acknowledged) is not bool
+            or type(self.record_source3) is not bool
         ):
             raise fail("explicit_host_acknowledgement_required")
 
@@ -129,6 +111,10 @@ class CollectionRequest:
             "max_diagnostic_bytes": self.max_diagnostic_bytes,
             "experimental_build_acknowledged": self.experimental_build_acknowledged,
             "experimental_connector_acknowledged": self.experimental_connector_acknowledged,
+            "record_source3": self.record_source3,
+            "python_executable": sys.executable,
+            "teacher_artifact": None,
+            "teacher_descriptor": descriptor(),
         }
 
 
@@ -137,7 +123,7 @@ def require_resolved_predecessor(marker: Path) -> None:
         prior = decode_json(marker.read_bytes())
         if (
             not isinstance(prior, dict)
-            or prior.get("schema") != REPORT_SCHEMA
+            or prior.get("schema") not in {REPORT_SCHEMA, "spireagent/native-source3-collection-v1"}
             or prior.get("status") not in {"completed", "partial", "failed"}
         ):
             raise fail("original_collection_outcome_unresolved")
@@ -180,6 +166,7 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
             "attachment": "scoped",
             "eager_event_fields": [],
             "advisory_event_history_required": False,
+            "owner": "public_generic_Agent_Runtime",
         },
         "partial_source_prefix": True,
         "actual_choices": 0,
@@ -278,7 +265,7 @@ class OwnedPipeChild:
                 message = decode_json(line)
                 if (
                     isinstance(message, dict)
-                    and message.get("type") not in {"current", "result"}
+                    and message.get("type") not in {"runtime_gate", "runtime_tick", "quiesced"}
                     and len(line) > MAX_CONTROL_BYTES
                 ):
                     raise fail("child_control_capacity")
@@ -336,6 +323,10 @@ class OwnedPipeChild:
         self.reader_done.set()
         self.reader.join(timeout=1)
         self.diagnostics.join(timeout=1)
+        if not self.reader.is_alive() and self.process.stdout is not None:
+            self.process.stdout.close()
+        if not self.diagnostics.is_alive() and self.process.stderr is not None:
+            self.process.stderr.close()
         return {
             "pid": self.process.pid,
             "exit_code": code,
@@ -407,152 +398,26 @@ def _body(status: dict[str, Any], kind: str, actor: str | None = None) -> dict[s
     }
 
 
-def decode_current(message: dict[str, Any], runtime: str, limit: int) -> tuple[dict, list]:
-    basis = object_fields(message["basis"], BASIS_FIELDS, "source3_pipe.basis")
-    try:
-        raw = base64.b64decode(message["observation_base64"], validate=True)
-    except (ValueError, TypeError):
-        raise fail("current_bytes_invalid") from None
-    catalog = message["catalog"]
+def runtime_status(value: Any, runtime: str | None, request: CollectionRequest) -> dict[str, Any]:
     if (
-        not isinstance(catalog, list)
-        or len(raw) > limit
-        or len(raw) + len(json.dumps(catalog, ensure_ascii=False).encode()) > limit
-        or type(basis["byte_count"]) is not int
-        or basis["byte_count"] != len(raw)
-        or hashlib.sha256(raw).hexdigest() != basis["capture_sha256"]
-        or basis["runtime_instance_id"] != runtime
-        or type(basis["total_count"]) is not int
-        or basis["total_count"] != len(catalog)
-        or native_catalog_digest(catalog) != basis["catalog_digest"]
+        not isinstance(value, dict)
+        or value.get("schema") != "sts2.policy-runtime/agent-session-status-1"
+        or not isinstance(value.get("autonomy_budget"), dict)
+        or not isinstance(value.get("session"), dict)
+        or value["session"].get("profile") != "native-logical-v1"
     ):
-        raise fail("complete_current_integrity_failed")
-    observation = decode_json(raw)
+        raise fail("public_runtime_status_required")
+    if runtime is not None and value.get("environment", {}).get("runtime_instance_id") != runtime:
+        raise fail("public_runtime_environment_changed")
+    budget = value["autonomy_budget"]
     if (
-        not isinstance(observation, dict)
-        or observation.get("snapshot_id") != basis["snapshot_id"]
-        or observation.get("session", {}).get("runtime_instance_id") != runtime
-        or observation.get("catalog", {}).get("stream_generation") != basis["stream_generation"]
-        or observation["catalog"].get("digest") != basis["catalog_digest"]
+        type(budget.get("submissions_used")) is not int
+        or not 0 <= budget["submissions_used"] <= request.max_submissions
+        or type(budget.get("policy_calls_used")) is not int
+        or not 0 <= budget["policy_calls_used"] <= 1200
     ):
-        raise fail("complete_current_binding_failed")
-    return observation, catalog
-
-
-FINAL_FIELDS = {
-    "schema",
-    "type",
-    "operation_id",
-    "reason",
-    "counts",
-    "source_closed",
-    "control_release",
-    "host_exit",
-    "host_started",
-    "cleanup_errors",
-    "advisory",
-    "live_byte_reservations",
-    "partial_source_prefix",
-    "learned_evaluation",
-    "pending_request_id",
-    "last_submission",
-}
-
-
-def validate_submission(
-    value: Any, pending_id: Any, counts: dict[str, Any], request: CollectionRequest
-) -> None:
-    if value is None:
-        if counts["submissions"] != 0 or pending_id is not None:
-            raise fail("original_submission_identity_missing")
-        return
-    item = object_fields(
-        value,
-        {
-            "request_id",
-            "ordinal",
-            "basis",
-            "action_id",
-            "sdk_admitted",
-            "lookup_status",
-            "delivery",
-            "result_queries",
-            "automatic_retry",
-        },
-        "source3_pipe.submission",
-    )
-    object_fields(item["basis"], BASIS_FIELDS, "source3_pipe.submission_basis")
-    if (
-        not isinstance(item["request_id"], str)
-        or not 1 <= len(item["request_id"]) <= 128
-        or not isinstance(item["action_id"], str)
-        or not item["action_id"]
-        or type(item["ordinal"]) is not int
-        or not 1 <= item["ordinal"] <= request.max_submissions
-        or type(item["sdk_admitted"]) is not bool
-        or item["automatic_retry"] is not False
-        or type(item["result_queries"]) is not int
-        or not 0 <= item["result_queries"] <= 40
-        or item["result_queries"] > counts["result_queries"]
-    ):
-        raise fail("original_submission_identity_invalid")
-    admitted = item["sdk_admitted"]
-    if (
-        item["ordinal"] != counts["submissions"] + (0 if admitted else 1)
-        or item["lookup_status"]
-        not in ({"unresolved", "pending", "terminal"} if admitted else {"not_started"})
-        or item["delivery"] not in (NATIVE_TERMINAL_DELIVERIES if admitted else {None})
-        or item["lookup_status"] in {"unresolved", "pending"}
-        and item["delivery"] != "unknown"
-        or pending_id
-        != (item["request_id"] if admitted and item["lookup_status"] != "terminal" else None)
-    ):
-        raise fail("original_submission_disposition_changed")
-
-
-def validate_final(
-    message: dict[str, Any],
-    operation: str,
-    request: CollectionRequest,
-    actual_choices: int,
-    delivered_choices: int,
-    result_queries: int,
-) -> None:
-    object_fields(message, FINAL_FIELDS, "source3_pipe.closed")
-    if (
-        message["schema"] != PIPE_SCHEMA
-        or message["type"] != "closed"
-        or message["operation_id"] != operation
-        or not isinstance(message["reason"], str)
-        or type(message["source_closed"]) is not bool
-        or type(message["host_started"]) is not bool
-        or message["partial_source_prefix"] is not True
-        or message["learned_evaluation"] is not False
-        or type(message["live_byte_reservations"]) is not int
-        or message["live_byte_reservations"] != 0
-        or not isinstance(message["cleanup_errors"], list)
-        or any(not isinstance(code, str) for code in message["cleanup_errors"])
-        or not isinstance(message["advisory"], dict)
-        or message["advisory"].get("history_claimed") is not False
-        or message["advisory"].get("eager_scope") != []
-    ):
-        raise fail("invalid_child_final_receipt")
-    counts = object_fields(
-        message["counts"],
-        {"submissions", "known_delivered_choices", "result_queries"},
-        "source3_pipe.counts",
-    )
-    if (
-        any(type(counts[key]) is not int for key in counts)
-        or not actual_choices
-        <= counts["submissions"]
-        <= min(request.max_submissions, actual_choices + 1)
-        or counts["known_delivered_choices"] != delivered_choices
-        or counts["result_queries"] < result_queries
-        or counts["result_queries"] > counts["submissions"] * 40
-    ):
-        raise fail("child_counts_disagree")
-    validate_submission(message["last_submission"], message["pending_request_id"], counts, request)
+        raise fail("public_runtime_budget_invalid")
+    return value
 
 
 def collect_source3(
@@ -565,26 +430,27 @@ def collect_source3(
     preflight: Callable = metadata_preflight,
     cancel: Cancellation | None = None,
 ) -> dict[str, Any]:
-    """One explicit bounded attempt; injected owners exercise this same production composition."""
+    """One genuine application lifetime; public Runtime owns the whole Agent execution."""
     cancel = cancel or Cancellation()
     with cancellation_signals(cancel):
         cancel.check()
         prepared = preflight(config, request)
-        cancel.check()
         with instance_lock(config.state_dir / "instance.lock"):
             cancel.check()
-            # Recheck after acquisition: a predecessor may have become unknown
-            # between read-only preflight and obtaining the process-lifetime lock.
-            require_resolved_predecessor(config.state_dir / MARKER_FILE)
+            marker = config.state_dir / MARKER_FILE
+            require_resolved_predecessor(marker)
             operation = uuid.uuid4().hex
             actor = "source3-teacher-" + operation
             request.output.mkdir(parents=True, mode=0o700)
             report: dict[str, Any] = {
                 **prepared,
+                "schema": REPORT_SCHEMA,
                 "status": "pending",
                 "operation_id": operation,
                 "actor_id": actor,
                 "actual_choices": 0,
+                "known_delivered_choices": 0,
+                "submissions": 0,
                 "eligible_unique_N": None,
                 "N_exclusions": None,
                 "admission": "not_run",
@@ -593,60 +459,60 @@ def collect_source3(
                 "automatic_restart": False,
                 "automatic_resume": False,
                 "automatic_retry": False,
+                "record_source3": request.record_source3,
                 "source_start": None,
                 "source_close": None,
                 "child": None,
                 "child_final": None,
+                "runtime_status": None,
+                "direct_evidence": None,
+                "teacher_exit": None,
             }
-            marker = config.state_dir / MARKER_FILE
             app = child = original = None
-            close_sent = False
+            runtime: str | None = None
+            close_sent = source_closed = False
             terminal = False
-            error_code = None
-            source_closed = False
-            runtime = None
+            error_code: str | None = None
             last_message = 0
-            teacher = NativePublicTeacher()
-            pending_choice = None
-            delivered_choices = result_queries = 0
+            seen_results: set[str] = set()
             deadline = time.monotonic() + request.deadline_ms / 1000
 
             def close_original_once() -> tuple[bool, dict | None, str]:
                 nonlocal close_sent, source_closed
-                status = None
+                if not request.record_source3:
+                    return True, None, "not_requested"
                 if original is None or close_sent:
                     return (
                         source_closed,
                         report.get("source_final_status"),
                         "not_owned_or_already_requested",
                     )
+                status = None
                 try:
                     status = _status(app, original, for_close=True)
                     body = _body(status, "close")
                     try:
                         atomic_json(request.output / "source-close-request.json", body)
                     except Exception:
-                        # A diagnostic write is not an offered owner command.
-                        # Preserve its failure while still closing the known session.
                         report["source_close_request_write_error"] = "diagnostic_write_failed"
-                    close_sent = True  # Set only immediately before the original owner call.
+                    close_sent = True
                     closed = app.control_native_recording(body)
                     report["source_close"] = closed
                     status = closed["status"]
-                    _status(app, original, for_close=True)
                     end = time.monotonic() + 20
                     while status["recording_lifecycle"] == "closing" and time.monotonic() < end:
                         time.sleep(0.1)
                         status = _status(app, original, for_close=True)
+                    source = status.get("source")
                     source_closed = (
                         closed.get("accepted") is True
                         and closed.get("pending") is False
                         and closed.get("command_id") == body["command_id"]
-                        and status.get("source", {}).get("segment_id")
-                        == original["source"]["segment_id"]
-                        and status["source"].get("declaration") == original["source"]["declaration"]
                         and status["recording_session_id"] == original["recording_session_id"]
                         and status["runtime_instance_id"] == original["runtime_instance_id"]
+                        and isinstance(source, dict)
+                        and source.get("segment_id") == original["source"]["segment_id"]
+                        and source.get("declaration") == original["source"]["declaration"]
                         and status["recording_lifecycle"] == "closed"
                         and status.get("closeout_status") == "closed"
                     )
@@ -670,6 +536,28 @@ def collect_source3(
                     )
                     return False, status, code
 
+            def project_status(value: Any, *, tick: bool = False) -> None:
+                status = runtime_status(value, runtime, request)
+                report["runtime_status"] = status
+                report["submissions"] = status["autonomy_budget"]["submissions_used"]
+                result = status.get("last_result")
+                if isinstance(result, dict) and result.get("request_id") not in seen_results:
+                    if not isinstance(result.get("request_id"), str) or not result["request_id"]:
+                        raise fail("original_runtime_result_identity_required")
+                    seen_results.add(result["request_id"])
+                    report["actual_choices"] += 1
+                    if result.get("status") == "terminal" and result.get("delivery") == "delivered":
+                        report["known_delivered_choices"] += 1
+                    # This is explicitly the public operational projection. Exact native
+                    # Result/stages and original acquisition bytes stay in AgentRunEvidence.
+                    atomic_json(
+                        request.output / f"runtime-result-{report['actual_choices']:04d}.json",
+                        result,
+                    )
+                if tick:
+                    policy_calls = status["autonomy_budget"]["policy_calls_used"]
+                    atomic_json(request.output / f"runtime-status-{policy_calls:04d}.json", status)
+
             def retain_quiesced(message: dict[str, Any]) -> None:
                 report["quiesced"] = message
                 try:
@@ -684,45 +572,173 @@ def collect_source3(
                         "operation_id",
                         "message_id",
                         "reason",
+                        "runtime_status",
+                        "direct_evidence",
                         "counts",
-                        "pending_request_id",
-                        "last_submission",
+                        "record_source3",
                     },
-                    "source3_pipe.quiesced",
+                    "source3_pipe.quiesced_v2",
                 )
-                if message["schema"] != PIPE_SCHEMA or message["operation_id"] != operation:
-                    raise fail("quiesced_operation_changed")
-                counts = object_fields(
-                    message["counts"],
-                    {"submissions", "known_delivered_choices", "result_queries"},
-                    "source3_pipe.counts",
+                if message["runtime_status"] is not None:
+                    project_status(message["runtime_status"])
+                report["direct_evidence"] = message["direct_evidence"]
+
+            def final_message(message: dict[str, Any]) -> None:
+                object_fields(
+                    message,
+                    {
+                        "schema",
+                        "type",
+                        "operation_id",
+                        "reason",
+                        "counts",
+                        "runtime_summary",
+                        "direct_evidence",
+                        "teacher_exit",
+                        "source_closed",
+                        "record_source3",
+                        "control_release",
+                        "host_exit",
+                        "host_started",
+                        "cleanup_errors",
+                        "failure_details",
+                        "full_record_ref",
+                        "partial_source_prefix",
+                        "learned_evaluation",
+                        "unknown_request_id_projection",
+                    },
+                    "source3_pipe.closed_v2",
                 )
                 if (
-                    any(type(counts[key]) is not int for key in counts)
-                    or not report["actual_choices"]
-                    <= counts["submissions"]
-                    <= min(request.max_submissions, report["actual_choices"] + 1)
-                    or not 0 <= counts["known_delivered_choices"] <= counts["submissions"]
-                    or not 0 <= counts["result_queries"] <= counts["submissions"] * 40
+                    message["schema"] != PIPE_SCHEMA
+                    or message["operation_id"] != operation
+                    or message["record_source3"] is not request.record_source3
+                    or message["partial_source_prefix"] is not True
+                    or message["learned_evaluation"] is not False
                 ):
-                    raise fail("quiesced_counts_invalid")
-                validate_submission(
-                    message["last_submission"], message["pending_request_id"], counts, request
-                )
-                submission = message["last_submission"]
-                if (
-                    submission is not None
-                    and pending_choice is not None
-                    and pending_choice["action"] is not None
-                    and submission["ordinal"] == pending_choice["ordinal"]
-                    and (
-                        submission["basis"] != pending_choice["basis"]
-                        or submission["action_id"] != pending_choice["action"]["action_id"]
+                    raise fail("invalid_child_final_receipt")
+                summary = message["runtime_summary"]
+                if summary is not None:
+                    object_fields(
+                        summary,
+                        {
+                            "schema",
+                            "public_status_schema",
+                            "lifecycle",
+                            "mode",
+                            "controller",
+                            "tainted",
+                            "agent_state",
+                            "submissions_used",
+                            "policy_calls_used",
+                            "state_version",
+                            "pending_request",
+                            "last_result",
+                        },
+                        "source3_pipe.runtime_summary",
                     )
-                ):
-                    raise fail("quiesced_original_choice_changed")
-                report["pending_request_id"] = message["pending_request_id"]
-                report["last_submission"] = submission
+                    if (
+                        summary["schema"] != "spireagent/native-agent-runtime-summary-v1"
+                        or summary["public_status_schema"]
+                        != "sts2.policy-runtime/agent-session-status-1"
+                        or type(summary["submissions_used"]) is not int
+                        or not 0 <= summary["submissions_used"] <= request.max_submissions
+                        or type(summary["policy_calls_used"]) is not int
+                        or not 0 <= summary["policy_calls_used"] <= 1200
+                    ):
+                        raise fail("runtime_summary_invalid")
+                    report["submissions"] = summary["submissions_used"]
+                    result = summary["last_result"]
+                    if result is not None and result["request_id"] not in seen_results:
+                        seen_results.add(result["request_id"])
+                        report["actual_choices"] += 1
+                        if result["status"] == "terminal" and result["delivery"] == "delivered":
+                            report["known_delivered_choices"] += 1
+                if message["counts"] != {
+                    "result_messages": report["actual_choices"],
+                    "known_delivered_choices": report["known_delivered_choices"],
+                }:
+                    raise fail("runtime_result_counts_disagree")
+                report["runtime_summary"] = summary
+                report["child_final"] = message
+                report["direct_evidence"], report["teacher_exit"] = (
+                    message["direct_evidence"],
+                    message["teacher_exit"],
+                )
+                report["unknown_request_id_projection"] = message["unknown_request_id_projection"]
+                try:
+                    reference = message["full_record_ref"]
+                    if reference is not None:
+                        object_fields(
+                            reference, {"path", "bytes", "sha256"}, "source3_pipe.final_ref"
+                        )
+                        path = request.output / "collector-final-full.json"
+                        if (
+                            reference["path"] != path.name
+                            or path.is_symlink()
+                            or type(reference["bytes"]) is not int
+                            or not 1 <= reference["bytes"] <= request.max_diagnostic_bytes
+                        ):
+                            raise fail("owned_full_final_reference_required")
+                        if path.stat().st_size != reference["bytes"]:
+                            raise fail("full_final_size_failed")
+                        with path.open("rb") as handle:
+                            raw = handle.read(reference["bytes"] + 1)
+                        if (
+                            len(raw) != reference["bytes"]
+                            or hashlib.sha256(raw).hexdigest() != reference["sha256"]
+                        ):
+                            raise fail("full_final_integrity_failed")
+                        full = decode_json(raw)
+                        if (
+                            not isinstance(full, dict)
+                            or full.get("schema")
+                            != "spireagent/native-source3-collector-final-full-v2"
+                            or full.get("operation_id") != operation
+                            or any(
+                                full.get(key) != message[key]
+                                for key in (
+                                    "reason",
+                                    "counts",
+                                    "teacher_exit",
+                                    "source_closed",
+                                    "record_source3",
+                                    "partial_source_prefix",
+                                    "learned_evaluation",
+                                    "unknown_request_id_projection",
+                                )
+                            )
+                        ):
+                            raise fail("full_final_wire_facts_disagree")
+                        if full["runtime_status"] is not None:
+                            status = runtime_status(full["runtime_status"], runtime, request)
+                            if summary is None or any(
+                                summary[key] != status[status_key]
+                                for key, status_key in (
+                                    ("lifecycle", "lifecycle"),
+                                    ("mode", "mode"),
+                                    ("controller", "controller"),
+                                    ("tainted", "tainted"),
+                                )
+                            ):
+                                raise fail("full_final_summary_disagrees")
+                            if (
+                                summary["submissions_used"]
+                                != status["autonomy_budget"]["submissions_used"]
+                                or summary["policy_calls_used"]
+                                != status["autonomy_budget"]["policy_calls_used"]
+                                or summary["state_version"] != status["session"]["state_version"]
+                                or summary["agent_state"] != status["session"]["agent_state"]
+                            ):
+                                raise fail("full_final_summary_disagrees")
+                            project_status(status)
+                        report["child_final_full"] = full
+                except Exception as hydrate_error:
+                    report["full_final_reporting_error"] = (
+                        hydrate_error.code
+                        if isinstance(hydrate_error, BoundaryError)
+                        else "full_final_unreadable"
+                    )
 
             try:
                 atomic_json(
@@ -734,6 +750,14 @@ def collect_source3(
                         "output": str(request.output),
                     },
                 )
+                artifact = write_artifact(request.output / "teacher-code-artifact.json")
+                options = {
+                    **prepared["options"],
+                    "teacher_artifact": artifact,
+                    "teacher_descriptor": descriptor(),
+                    "record_source3": request.record_source3,
+                    "python_executable": sys.executable,
+                }
                 atomic_json(request.output / "request.json", report)
                 cancel.check()
                 app = app_factory(config, config_path)
@@ -741,11 +765,10 @@ def collect_source3(
                 if (
                     model.get("loaded") is not False
                     or model.get("status") not in {"idle", "stopped", "failed"}
-                    or model.get("operation") is not None
+                    or isinstance(model.get("operation"), dict)
                     and model["operation"].get("status") not in {"completed", "failed"}
                 ):
                     raise fail("model_owner_not_quiescent")
-                cancel.check()
                 child = child_factory(Path(prepared["child_path"]), cancel)
                 cancel.child = child
                 cancel.check()
@@ -754,7 +777,7 @@ def collect_source3(
                         "schema": PIPE_SCHEMA,
                         "type": "init",
                         "operation_id": operation,
-                        "options": prepared["options"],
+                        "options": options,
                     }
                 )
                 while True:
@@ -766,21 +789,11 @@ def collect_source3(
                     if (
                         message.get("schema") != PIPE_SCHEMA
                         or message.get("operation_id") != operation
-                        or message.get("type")
-                        not in {"ready", "current", "result", "quiesced", "closed"}
                     ):
                         raise fail("invalid_child_operation_message")
-                    kind = message["type"]
+                    kind = message.get("type")
                     if kind == "closed":
-                        validate_final(
-                            message,
-                            operation,
-                            request,
-                            report["actual_choices"],
-                            delivered_choices,
-                            result_queries,
-                        )
-                        report["child_final"] = message
+                        final_message(message)
                         terminal = True
                         break
                     current_id = message.get("message_id")
@@ -805,270 +818,185 @@ def collect_source3(
                                 "endpoint",
                                 "host_identity",
                                 "bootstrap_control_release",
+                                "record_source3",
                             },
-                            "source3_pipe.ready",
+                            "source3_pipe.ready_v2",
                         )
                         handoff = message["bootstrap_control_release"]
+                        runtime = message["runtime_instance_id"]
                         if (
-                            not isinstance(handoff, dict)
+                            message["endpoint"] != prepared["endpoint"]
+                            or message["record_source3"] is not request.record_source3
+                            or not isinstance(handoff, dict)
                             or handoff.get("schema")
                             != "sts2.host-runtime/reference-controller-handoff-1"
-                            or handoff.get("runtime_instance_id") != message["runtime_instance_id"]
+                            or handoff.get("runtime_instance_id") != runtime
                             or handoff.get("controller") is not None
                             or handoff.get("basis") != "fresh_control_observation_after_close"
                         ):
                             raise fail("bootstrap_control_release_unconfirmed")
-                        if original is not None or message["endpoint"] != prepared["endpoint"]:
-                            raise fail("child_host_binding_changed")
-                        runtime = message["runtime_instance_id"]
-                        observed = _status(app)
-                        if observed["runtime_instance_id"] != runtime or observed[
-                            "recording_lifecycle"
-                        ] not in {"ready", "closed"}:
-                            raise fail("source_start_context_unavailable")
-                        body = _body(observed, "start_new_session", actor)
-                        report["source_start_request"] = body
-                        atomic_json(request.output / "source-start-request.json", body)
-                        cancel.check()
-                        started = app.control_native_recording(body)
-                        report["source_start"] = started
-                        # An accepted exact new session is ours for cleanup even
-                        # if a later profile/declaration gate rejects acquisition.
-                        owned = started.get("status")
-                        if (
-                            started.get("accepted") is True
-                            and isinstance(owned, dict)
-                            and owned.get("runtime_instance_id") == runtime
-                            and owned.get("recording_session_id") is not None
-                            and owned.get("recording_session_id")
-                            != observed["recording_session_id"]
-                            and isinstance(owned.get("source"), dict)
-                        ):
-                            original = owned
-                        if (
-                            started.get("accepted") is not True
-                            or started.get("pending") is not False
-                            or started.get("command_id") != body["command_id"]
-                            or started["status"]["runtime_instance_id"] != runtime
-                            or started["status"]["recording_lifecycle"] != "recording"
-                            or started["status"]["recording_session_id"]
-                            == observed["recording_session_id"]
-                            or started["status"].get("capture_profile_id")
-                            != "native-logical-source-v3"
-                        ):
-                            raise fail("known_source_start_required")
-                        original = started["status"]
-                        source = original["source"]
-                        if (
-                            source["declaration"].get("source_kind") != "agent_protocol"
-                            or source["declaration"].get("actor_id") != actor
-                            or source["declaration"].get("machine_verifiable") is not False
-                        ):
-                            raise fail("original_agent_protocol_declaration_required")
-                        _status(app, original)
-                        atomic_json(request.output / "source-start.json", started)
+                        context = None
+                        if request.record_source3:
+                            observed = _status(app)
+                            if observed["runtime_instance_id"] != runtime or observed[
+                                "recording_lifecycle"
+                            ] not in {"ready", "closed"}:
+                                raise fail("source_start_context_unavailable")
+                            body = _body(observed, "start_new_session", actor)
+                            atomic_json(request.output / "source-start-request.json", body)
+                            started = app.control_native_recording(body)
+                            report["source_start"] = started
+                            owned = started.get("status")
+                            if (
+                                started.get("accepted") is True
+                                and isinstance(owned, dict)
+                                and owned.get("runtime_instance_id") == runtime
+                                and owned.get("recording_session_id")
+                                not in {None, observed["recording_session_id"]}
+                                and isinstance(owned.get("source"), dict)
+                            ):
+                                original = owned
+                            if (
+                                original is None
+                                or started.get("pending") is not False
+                                or started.get("command_id") != body["command_id"]
+                                or original["recording_lifecycle"] != "recording"
+                                or original.get("capture_profile_id") != "native-logical-source-v3"
+                                or original["source"]["declaration"].get("source_kind")
+                                != "agent_protocol"
+                                or original["source"]["declaration"].get("actor_id") != actor
+                                or original["source"]["declaration"].get("machine_verifiable")
+                                is not False
+                            ):
+                                raise fail("known_source_start_required")
+                            _status(app, original)
+                            context = {
+                                "runtime_instance_id": runtime,
+                                "recording_session_id": original["recording_session_id"],
+                                "source_segment_id": original["source"]["segment_id"],
+                                "source_epoch_id": original["source"]["epoch_id"],
+                                "declaration": original["source"]["declaration"],
+                            }
+                            atomic_json(request.output / "source-start.json", started)
                         cancel.check()
                         child.send(
                             {
                                 **common,
                                 "type": "source_ready",
-                                "source_context": {
-                                    "runtime_instance_id": runtime,
-                                    "recording_session_id": original["recording_session_id"],
-                                    "source_segment_id": source["segment_id"],
-                                    "source_epoch_id": source["epoch_id"],
-                                    "declaration": source["declaration"],
-                                },
+                                "source_context": context,
+                                "source_recording": "known_recording"
+                                if request.record_source3
+                                else "not_requested",
                             }
                         )
-                    elif kind == "current":
+                    elif kind in {"runtime_gate", "runtime_tick"}:
                         cancel.check()
-                        if original is None or runtime is None:
-                            raise fail("current_before_known_source_start")
-                        object_fields(
-                            message,
-                            {
-                                "schema",
-                                "type",
-                                "operation_id",
-                                "message_id",
-                                "ordinal",
-                                "basis",
-                                "observation_base64",
-                                "catalog",
-                            },
-                            "source3_pipe.current",
-                        )
-                        if (
-                            type(message["ordinal"]) is not int
-                            or message["ordinal"] != report["actual_choices"] + 1
-                            or message["ordinal"] > request.max_submissions
-                            or pending_choice is not None
-                        ):
-                            raise fail("original_choice_order_changed")
-                        _status(app, original)
-                        observation, catalog = decode_current(
-                            message, runtime, request.max_input_bytes
-                        )
-                        choice = teacher.decide(observation, catalog)
-                        pending_choice = {
-                            "ordinal": message["ordinal"],
-                            "basis": message["basis"],
-                            "action": next(
-                                (a for a in catalog if a["action_id"] == choice.action_id), None
-                            ),
-                        }
-                        cancel.check()
+                        if kind == "runtime_gate":
+                            object_fields(
+                                message,
+                                {
+                                    "schema",
+                                    "type",
+                                    "operation_id",
+                                    "message_id",
+                                    "status",
+                                    "direct_evidence",
+                                },
+                                "source3_pipe.runtime_gate",
+                            )
+                            project_status(message["status"])
+                        else:
+                            object_fields(
+                                message,
+                                {
+                                    "schema",
+                                    "type",
+                                    "operation_id",
+                                    "message_id",
+                                    "tick",
+                                    "direct_evidence",
+                                },
+                                "source3_pipe.runtime_tick",
+                            )
+                            project_status(message["tick"]["status"], tick=True)
+                        report["direct_evidence"] = message["direct_evidence"]
+                        allowed, why = not cancel.requested.is_set(), "known_application_source"
+                        if request.record_source3:
+                            _status(app, original)
                         child.send(
                             {
                                 **common,
-                                "type": "choice",
-                                "ordinal": message["ordinal"],
-                                "basis": message["basis"],
-                                "action_id": choice.action_id,
-                                "stop_reason": choice.reason if choice.action_id is None else None,
-                                "teacher_state": choice.state,
+                                "type": "runtime_continue",
+                                "continue": allowed,
+                                "reason": why,
                             }
                         )
-                    elif kind == "result":
-                        object_fields(
-                            message,
-                            {
-                                "schema",
-                                "type",
-                                "operation_id",
-                                "message_id",
-                                "ordinal",
-                                "request_id",
-                                "lookup_status",
-                                "result",
-                                "result_queries",
-                            },
-                            "source3_pipe.result",
-                        )
-                        if (
-                            pending_choice is None
-                            or pending_choice["action"] is None
-                            or type(message["ordinal"]) is not int
-                            or message["ordinal"] != pending_choice["ordinal"]
-                            or message["lookup_status"] not in {"terminal", "pending"}
-                            or type(message["result_queries"]) is not int
-                            or not 0 <= message["result_queries"] <= 40
-                            or not isinstance(message["request_id"], str)
-                        ):
-                            raise fail("original_result_order_changed")
-                        result = message["result"]
-                        if isinstance(result, dict) and (
-                            result.get("snapshot_id") != pending_choice["basis"]["snapshot_id"]
-                            or result.get("action") is not None
-                            and result.get("action") != pending_choice["action"]
-                        ):
-                            raise fail("original_result_basis_changed")
-                        if (
-                            message["lookup_status"] == "pending"
-                            and result is not None
-                            or message["lookup_status"] == "terminal"
-                            and not isinstance(result, dict)
-                        ):
-                            raise fail("original_result_status_changed")
-                        pending_choice_action = pending_choice["action"]
-                        pending_choice = None
-                        result_queries += message["result_queries"]
-                        report["actual_choices"] += 1
-                        atomic_json(
-                            request.output / f"original-result-{message['ordinal']:04d}.json",
-                            message,
-                        )
-                        allowed = False
-                        reason = "original_result_unresolved"
-                        if message["lookup_status"] == "terminal" and isinstance(result, dict):
-                            if result.get("request_id") != message["request_id"]:
-                                raise fail("original_result_identity_changed")
-                            if result.get("delivery") == "delivered":
-                                if result.get("action") != pending_choice_action:
-                                    raise fail("delivered_original_action_missing")
-                                delivered_choices += 1
-                                try:
-                                    _status(app, original)
-                                    allowed = not cancel.requested.is_set()
-                                    reason = "known_original_source"
-                                except BoundaryError as error:
-                                    reason = error.code
-                        child.send(
-                            {**common, "type": "continue", "continue": allowed, "reason": reason}
-                        )
                     elif kind == "quiesced":
+                        report["runtime_quiescence"] = "observed_exact_Node_quiesced"
                         retain_quiesced(message)
-                        source_closed, status, close_outcome = close_original_once()
+                        known, status, outcome = close_original_once()
                         child.send(
                             {
                                 **common,
                                 "type": "source_closed",
-                                "known_closed": source_closed,
+                                "known_closed": known,
                                 "source_status": status,
-                                "close_outcome": close_outcome,
+                                "close_outcome": outcome,
                             }
                         )
-            except BaseException as error:  # noqa: BLE001 - own cleanup also covers signals/startup failure
+                    else:
+                        raise fail("unsupported_child_message")
+            except BaseException as error:
                 error_code = (
                     error.code if isinstance(error, BoundaryError) else "collection_parent_failed"
                 )
                 if child is not None:
                     child.stop(error_code)
-                    # Accepted Start remains ours before SourceReady transmission;
-                    # Node quiesces after requesting admission, even without its ACK.
-                    close_original_once()
-                    # Keep the genuine App alive to service a final quiesced Close if possible.
+                    report["runtime_quiescence"] = "unconfirmed"
                     end = time.monotonic() + 120
                     while not terminal and time.monotonic() < end:
                         try:
                             message = child.receive()
+                            if message is None:
+                                continue
+                            if (
+                                message.get("schema") != PIPE_SCHEMA
+                                or message.get("operation_id") != operation
+                            ):
+                                continue
+                            if message.get("type") == "closed":
+                                final_message(message)
+                                terminal = True
+                                break
+                            if message.get("type") == "quiesced":
+                                report["runtime_quiescence"] = "observed_exact_Node_quiesced"
+                                try:
+                                    retain_quiesced(message)
+                                except Exception:
+                                    report["quiesced_invalid"] = True
+                                known, status, outcome = close_original_once()
+                                child.send(
+                                    {
+                                        "schema": PIPE_SCHEMA,
+                                        "type": "source_closed",
+                                        "operation_id": operation,
+                                        "message_id": message["message_id"],
+                                        "known_closed": known,
+                                        "source_status": status,
+                                        "close_outcome": outcome,
+                                    }
+                                )
                         except Exception:
                             break
-                        if message is None:
-                            continue
-                        if (
-                            message.get("type") == "closed"
-                            and message.get("operation_id") == operation
-                        ):
-                            try:
-                                validate_final(
-                                    message,
-                                    operation,
-                                    request,
-                                    report["actual_choices"],
-                                    delivered_choices,
-                                    result_queries,
-                                )
-                            except BoundaryError as final_error:
-                                report["child_final_error"] = final_error.code
-                                break
-                            report["child_final"] = message
-                            terminal = True
-                            break
-                        if (
-                            message.get("type") == "quiesced"
-                            and message.get("operation_id") == operation
-                        ):
-                            try:
-                                retain_quiesced(message)
-                            except BoundaryError as quiesced_error:
-                                report["quiesced_error"] = quiesced_error.code
-                            source_closed, status, close_outcome = close_original_once()
-                            child.send(
-                                {
-                                    "schema": PIPE_SCHEMA,
-                                    "type": "source_closed",
-                                    "operation_id": operation,
-                                    "message_id": message["message_id"],
-                                    "known_closed": source_closed,
-                                    "source_status": status,
-                                    "close_outcome": close_outcome,
-                                }
-                            )
             finally:
-                # A known accepted Start remains ours even if SourceReady was
-                # never delivered or the peer disappeared before quiescing.
+                if (
+                    original is not None
+                    and not close_sent
+                    and report.get("runtime_quiescence") != "observed_exact_Node_quiesced"
+                ):
+                    report["source_close_fallback"] = (
+                        "bounded_cleanup_without_confirmed_Runtime_quiescence"
+                    )
                 close_original_once()
                 if child is not None:
                     try:
@@ -1080,48 +1008,54 @@ def collect_source3(
                         app.close()
                     except Exception:
                         report["application_close_unconfirmed"] = True
-            final: dict[str, Any] = (
-                report["child_final"] if isinstance(report.get("child_final"), dict) else {}
-            )
-            host = final.get("host_exit") if isinstance(final, dict) else None
-            exited = report.get("child")
-            clean_exit = (
-                isinstance(host, dict)
+            final = report.get("child_final") or {}
+            host, exited = final.get("host_exit"), report.get("child")
+            released = final.get("control_release")
+            public = report.get("runtime_status") or {}
+            actual_teacher = report.get("teacher_exit")
+            known_cleanup = (
+                terminal
+                and isinstance(host, dict)
                 and host.get("code") == 0
                 and host.get("signal") is None
                 and host.get("forced") is False
                 and isinstance(exited, dict)
                 and exited.get("exit_code") == 0
-            )
-            release = final.get("control_release") if isinstance(final, dict) else None
-            known_cleanup = (
-                terminal
-                and clean_exit
-                and isinstance(release, dict)
-                and release.get("confirmed") is True
-                and source_closed
+                and isinstance(released, dict)
+                and released.get("confirmed") is True
+                and (source_closed if request.record_source3 else True)
                 and final.get("source_closed") is True
                 and not final.get("cleanup_errors")
                 and not report.get("application_close_unconfirmed")
+                and not report.get("full_final_reporting_error")
+                and (
+                    actual_teacher is None
+                    if report["direct_evidence"] is None
+                    else isinstance(actual_teacher, dict)
+                    and actual_teacher.get("actual_exit") is True
+                )
+            )
+            summary = report.get("runtime_summary") or {}
+            unknown = (
+                public.get("tainted") is True
+                or public.get("pending_request") is not None
+                or public.get("session", {}).get("agent_state") == "uncertain"
+                or summary.get("tainted") is True
+                or summary.get("pending_request") is not None
+                or summary.get("agent_state") == "uncertain"
             )
             report.update(
                 error_code=error_code,
-                teacher_state=teacher.state(),
-                source_closed=source_closed,
+                source_closed=source_closed if request.record_source3 else None,
                 close_sent=close_sent,
                 cancellation_requests=cancel.signals,
-                known_delivered_choices=delivered_choices,
-                submissions=final.get("counts", {}).get("submissions"),
-                pending_request_id=final.get(
-                    "pending_request_id", report.get("pending_request_id")
-                ),
-                last_submission=final.get("last_submission", report.get("last_submission")),
                 status="completed"
                 if known_cleanup
+                and not unknown
                 and error_code is None
                 and final.get("reason") == "target_choices_reached"
                 else "partial"
-                if known_cleanup
+                if known_cleanup and not unknown
                 else "failed"
                 if child is None and report["source_start"] is None
                 else "unknown",
