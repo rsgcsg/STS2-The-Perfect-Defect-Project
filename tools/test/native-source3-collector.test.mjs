@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -68,7 +68,7 @@ async function fixture(t, behavior = {}) {
     async attach(input) {
       seen.attaches.push(input);
       return { data: { subscription: this.subscription = { delivery_mode: "scoped", eager_scope: [],
-        stream_generation: "generation" }, next_cursor: "first" } };
+        stream_generation: "generation", starting_cursor: "first" } } };
     }
     async getFullCurrent({ budget }) {
       const number = seen.captures.length + 1;
@@ -109,7 +109,11 @@ async function fixture(t, behavior = {}) {
       return seen.queries.length < 2 ? { status: "pending" }
         : { status: "terminal", result: { data: original } };
     }
-    async events() { seen.events++; return { data: { events: [{ kind: "advisory" }],
+    async events(input) {
+      assert.equal(input.afterCursor, seen.events === 0 ? "first" : "next");
+      seen.events++;
+      if (behavior.eventError) throw behavior.eventError;
+      return { data: { events: [{ kind: "advisory" }],
       gap: { reason: "retention" }, next_cursor: "next" } }; }
     async detach() { this.subscription = null; if (behavior.detachFailure) throw new Error("detach_failed"); }
   }
@@ -137,6 +141,44 @@ async function run(t, behavior) {
   const f = await fixture(t, behavior);
   return { ...f, final: await runNativeSource3(f.options, operation, f.peer, f.deps, f.lifetime) };
 }
+
+test("bounded private failure detail preserves owner cause without changing delivery or cleanup", async t => {
+  const inner = new Error("underlying request validation");
+  inner.cause = inner; // A cause cycle must remain bounded.
+  const error = new Error("native logical request validation failed: " + "x".repeat(12000),
+    { cause: inner });
+  const { options, final, seen } = await run(t, { eventError: error });
+  const failure = JSON.parse(await readFile(path.join(options.output, "collector-failure.json"), "utf8"));
+  assert.equal(failure.phase, "events");
+  assert.equal(failure.error.name, "Error");
+  assert.equal(failure.error.message, error.message.slice(0, 2048));
+  assert.ok(failure.error.stack.length <= 8192);
+  assert.equal(failure.error.cause.message, inner.message);
+  assert.equal(failure.error.cause.cause.message, inner.message);
+  assert.equal(failure.error.cause.cause.cause, undefined);
+  assert.equal(failure.reason, final.reason);
+  assert.equal(final.reason, "collector_owner_failed");
+  assert.equal(failure.pending_request_id, null);
+  assert.equal(failure.automatic_retry, false);
+  assert.equal(final.last_submission.delivery, "delivered");
+  assert.equal(final.counts.submissions, 1);
+  assert.equal(seen.releases, 1);
+  assert.equal(seen.hostCloses, 1);
+});
+
+test("failed private diagnostic write preserves original error and still closes every owner", async t => {
+  const f = await fixture(t, { eventError: new Error("native logical request rejected") });
+  const target = path.join(f.options.output, "collector-failure.json");
+  await writeFile(target, "original diagnostic", { flag: "wx" });
+  const final = await runNativeSource3(f.options, operation, f.peer, f.deps, f.lifetime);
+  assert.equal(await readFile(target, "utf8"), "original diagnostic");
+  assert.equal(final.reason, "collector_owner_failed");
+  assert.ok(final.cleanup_errors.includes("failure_diagnostic_write_failed"));
+  assert.equal(final.source_closed, true);
+  assert.equal(final.counts.submissions, 1);
+  assert.equal(f.seen.releases, 1);
+  assert.equal(f.seen.hostCloses, 1);
+});
 
 test("complete fresh Current/C, scoped empty attachment and advisory gap preserve original choices", async t => {
   const { final, seen } = await run(t);

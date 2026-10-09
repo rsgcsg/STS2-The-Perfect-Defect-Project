@@ -20,6 +20,16 @@ const integer = (value, minimum, maximum) => Number.isSafeInteger(value)
 const id = value => typeof value === "string" && /^[0-9a-f]{32}$/u.test(value);
 const reasonCode = error => typeof error?.message === "string"
   && /^[a-z0-9_]{1,128}$/u.test(error.message) ? error.message : "collector_owner_failed";
+const failureDetail = (error, depth = 0) => {
+  if (!(error instanceof Error)) return { name: "NonError", message: "non_error_throw" };
+  const detail = { name: error.name.slice(0, 128), message: error.message.slice(0, 2048),
+    stack: typeof error.stack === "string" ? error.stack.slice(0, 8192) : null };
+  if (depth < 2 && Object.hasOwn(error, "cause"))
+    detail.cause = failureDetail(error.cause, depth + 1);
+  if (depth < 2 && error instanceof AggregateError)
+    detail.causes = error.errors.slice(0, 3).map(cause => failureDetail(cause, depth + 1));
+  return detail;
+};
 
 export function validateOptions(value) {
   exact(value, ["installation", "host_local_root", "output", "endpoint", "seed", "template_id",
@@ -178,6 +188,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
   let hostStarted = false, hostExit = null, controlRelease = null, messageId = 0, pendingRequest = null;
   let bootstrapHandoff = null, lastSubmission = null;
   let sourceReason = "collection_owner_failed", timer, cursor, subscriptionRenewed = 0, outputBytes = 0;
+  let phase = "setup";
   let releasePromise;
   const errors = [], counts = { submissions: 0, known_delivered_choices: 0, result_queries: 0 };
   const advisory = { history_claimed: false, eager_scope: [], events: 0, gaps: 0,
@@ -274,26 +285,30 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     if (capabilities.session.runtime_instance_id !== runtime) throw new Error("native_runtime_changed");
     await controller.register(capabilities.host, capabilities.control_policy);
     check();
+    phase = "attach";
     const attached = (await native.attach({ eagerScope: [], requiredSeams: profile.required_seams,
       deliveryMode: "scoped", signal: lifetime.signal })).data;
     if (!attached.subscription || attached.subscription.delivery_mode !== "scoped"
         || attached.subscription.eager_scope.length !== 0) throw new Error("sampled_attachment_required");
-    cursor = attached.next_cursor; subscriptionRenewed = performance.now();
+    cursor = attached.subscription.starting_cursor; subscriptionRenewed = performance.now();
     const generation = attached.subscription.stream_generation;
     let lastSubmittedSnapshot = null, lastOpportunity = performance.now();
     const wake = async () => {
       check();
+      phase = "events";
       const batch = (await native.events({ afterCursor: cursor, limit: 64, signal: lifetime.signal })).data;
       advisory.events += batch.events.length;
       if (batch.gap) advisory.gaps++;
       cursor = batch.next_cursor;
       if (performance.now() - subscriptionRenewed >= Math.max(1000, capabilities.limits.retention_ms / 2)) {
+        phase = "renew";
         const renewed = (await native.renew(cursor, lifetime.signal)).data;
         if (renewed.status !== "renewed" || renewed.subscription.stream_generation !== generation)
           throw new Error("native_subscription_changed");
         cursor = renewed.next_cursor; subscriptionRenewed = performance.now();
       }
       if (!batch.events.length) {
+        phase = "await";
         const waited = (await native.await({ waitId: randomUUID().replaceAll("-", ""),
           afterCursor: cursor, condition: "any_event", timeoutMs: 200, signal: lifetime.signal })).data;
         if (waited.status === "timeout") advisory.wake_timeouts++;
@@ -306,6 +321,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
       check();
       let full;
       try {
+        phase = "current";
         full = await native.getFullCurrent({ budget, maxActions: 65536, signal: lifetime.signal });
         advisory.current_reads++;
         if (full.capture.session.runtime_instance_id !== runtime
@@ -362,6 +378,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
         }, { durable: true });
         check();
         let dispatched = false;
+        phase = "submit";
         let result = await native.submit({ requestId, expectedSnapshotId: basis.snapshot_id,
           actionId: choice.action_id, preSubmitSignal: lifetime.signal,
           onSubmitStart() {
@@ -375,6 +392,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
         lastSubmission.lookup_status = result.status;
         const resultDeadline = performance.now() + 2000;
         while (result.status === "pending" && queries < 40 && performance.now() < resultDeadline) {
+          phase = "result";
           check();
           await new Promise(resolve => setTimeout(resolve, 50));
           check();
@@ -402,6 +420,7 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
         pendingRequest = null;
         if (response.continue !== true) { sourceReason = response.reason || "application_source_stop"; break; }
         lastOpportunity = performance.now();
+        phase = "release_current";
         await full.dispose(); full = null;
         await wake();
       } finally { if (full) await full.dispose(); }
@@ -414,6 +433,11 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     sourceReason = lifetime.reason || reasonCode(error);
     // The attempt's failure/censoring is its reason, independent of cleanup.
     if (pendingRequest && counts.submissions) sourceReason = lifetime.reason || "original_result_unresolved";
+    try {
+      await record("collector-failure.json", { schema: "spireagent/native-source3-failure-v1",
+        operation_id: operationId, phase, reason: sourceReason, error: failureDetail(error),
+        pending_request_id: pendingRequest, automatic_retry: false });
+    } catch { errors.push("failure_diagnostic_write_failed"); }
   } finally {
     clearTimeout(timer);
     if (lastSubmission) {
