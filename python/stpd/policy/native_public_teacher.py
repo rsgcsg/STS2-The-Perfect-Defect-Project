@@ -15,7 +15,7 @@ from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_task import observe_ready_summary, public_map_travel_pending
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.4"
+TEACHER_VERSION = "1.0.5"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -259,9 +259,18 @@ class NativePublicTeacher:
             return self._choose(find("end_turn"))
         if kind == "combat_card_operation":
             if stage == "card_targeting":
-                focused = observation.get("owner_occurrence", {}).get("focus_referent_id")
-                if isinstance(focused, str) and self.focus_target_id == focused:
-                    return self._choose(find("confirm_target", focused))
+                if (page.get("content_schema")
+                        != "sts2.player-environment/surface/combat_card_operation_text_menu-1"
+                        or surface.get("kind") != kind or surface.get("stage") != stage):
+                    return self._stop("native_card_targeting_facts_unavailable")
+                focused = surface.get("focused_target_referent_id")
+                confirm = find("confirm_target", focused) if isinstance(focused, str) else None
+                if isinstance(focused, str) and visible(focused) and confirm is not None:
+                    # Current public focus and its original Confirm member are
+                    # sufficient; a private prior-Focus flag can force a no-op
+                    # focus followed by unchanged-input readiness forever.
+                    self.focus_target_id = None
+                    return self._choose(confirm)
                 if self.focus_target_id is not None:
                     return self._await("await_public_target_focus")
                 target = next(
