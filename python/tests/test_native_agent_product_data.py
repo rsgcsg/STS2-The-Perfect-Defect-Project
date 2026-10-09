@@ -67,7 +67,9 @@ def test_exact_original_import_preview_publish_use_separation_and_reopen(tmp_pat
     assert preview["counts"]["readiness_exclusions"] == 3
     assert preview["counts"]["real_native_samples"] == 0
     assert preview["native_origin_status"] == "synthetic_conformance"
-    assert preview["coverage"]["multi_candidate_N"] == 3
+    # This protocol conformance fixture's three choices each have original C1.
+    # Its update cannot establish a useful choice-learning result.
+    assert preview["coverage"]["multi_candidate_N"] == 0
     assert preview["recommended_recipe_id"] == RECIPE
     with owner.transaction() as db:
         assert db.execute("SELECT count(*) FROM curation_claims").fetchone() == (0,)
@@ -177,7 +179,9 @@ def test_publication_recovery_keeps_original_preview_partition_and_producer(
 def test_typed_raw_corruption_and_forged_operation_refs_fail_closed(tmp_path, original):
     _, datasets, store, _, raw_id = imported(tmp_path, original)
     payload = store.get_manifest(raw_id).payload("archive")
-    store.blobs._path(payload.sha256).write_bytes(b"corrupt original archive")
+    index = json.loads(store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    chunk = index["chunks"][0]["sha256"]
+    store.blobs._path(f"objects/sha256/{chunk}").write_bytes(b"corrupt original archive")
     datasets.start_native_agent_preview([raw_id])
     failed = settled(datasets)
     assert failed["status"] == "failed" and "preview_id" not in failed
