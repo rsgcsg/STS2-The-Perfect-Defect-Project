@@ -257,6 +257,10 @@ def test_current_focus_needs_matching_original_confirm_and_complete_input():
     teacher = NativePublicTeacher(browse=False)
     view, actions = targeting_observation(focused="other-enemy", confirms="enemy")
     assert teacher.decide(view, actions).action_id != "confirm-current"
+    view, actions = targeting_observation()
+    actions.pop()
+    view["catalog"].update(total_count=1, digest=native_catalog_digest(actions))
+    assert NativePublicTeacher(browse=False).decide(view, actions).action_id == "focus-current"
     view["completeness"]["full_reference_complete"] = False
     with pytest.raises(BoundaryError, match="complete_current_catalog_required"):
         teacher.decide(view, actions)
