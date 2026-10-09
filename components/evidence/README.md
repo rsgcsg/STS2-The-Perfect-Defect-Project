@@ -38,6 +38,13 @@ against its immutable inventory; a source declaration is not Human attestation.
 Consumers need this candidate's actual locked package before using these APIs;
 source tests alone do not qualify a loaded runtime or research data.
 
+The `0.1.0-rc.27` source candidate adds the optional owned-Current execution
+policy, exact recorded dispatch/result joins, bounded known-stale accounting
+and the public typed terminal summary described below. Legacy manifests retain
+their original grammar. Production consumers require this candidate's exact
+external pin, lock and installed verifier; source acceptance does not complete
+that promotion or prove live continuation eligibility.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and
