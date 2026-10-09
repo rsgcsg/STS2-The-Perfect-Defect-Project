@@ -50,27 +50,46 @@ SOURCE3_RECEIPT_SCHEMA = "stpd/local-source3-import-receipt-v1"
 OPERATION_FILE = "local-recording-import-operation.json"
 IDENTITY_FILE = "local-recording-import-labels.json"
 LABEL_PATTERN = re.compile(r"local-(?:worker|campaign)-[a-f0-9]{32}\Z")
+MAX_NATIVE_IMPORT_INTENTS = 128
+NATIVE_IMPORT_UNCERTAIN = frozenset({
+    "publication_unknown", "published_index_unavailable", "interrupted_unknown",
+})
 
 
 def native_agent_import_choices() -> dict[str, Any]:
-    """Closed research producer relations; the product entry is still gated."""
+    """Closed producer metadata for the reviewed native data UI capability."""
     from stpd.native_agent_sampled_source_spec import (
         FIXTURE_COHORT,
+        FOCUS_TEACHER_RELATION_SPEC,
         MAP_TEACHER_RELATION_SPEC,
+        MAX_RAW_REFERENCES,
+        PARTITION_SCHEMA,
         PROFILE,
+        RAW_SCHEMA,
         RELATION_SPEC,
+        SOURCE_SCHEMA,
         TEACHER_COHORT,
         TEACHER_RELATION_SPEC,
     )
+    from stpd.native_training_source_spec import RECIPE
 
     return copy.deepcopy({
-        "source_profile": PROFILE, "product_entry_enabled": False,
+        "source_profile": PROFILE, "product_entry_enabled": True,
         "cohorts": [TEACHER_COHORT, FIXTURE_COHORT], "default_cohort": TEACHER_COHORT,
-        "default_relation_id": MAP_TEACHER_RELATION_SPEC["id"],
+        "cohort_labels": {TEACHER_COHORT: "程序示范（声明来源）",
+                          FIXTURE_COHORT: "合成协议测试"},
+        "raw_schema": RAW_SCHEMA, "max_raw_references": MAX_RAW_REFERENCES,
+        "training_source_schema": SOURCE_SCHEMA, "partition_schema": PARTITION_SCHEMA,
+        "recommended_recipe_id": RECIPE,
+        "default_relation_id": FOCUS_TEACHER_RELATION_SPEC["id"],
         "relations": [
-            {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4"},
-            {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2"},
-            {"relation": RELATION_SPEC, "label": "合成协议测试"},
+            {"relation": FOCUS_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.5",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": RELATION_SPEC, "label": "合成协议测试", "cohorts": [FIXTURE_COHORT]},
         ],
         "automatic_training": False, "human_origin_verified": False,
     })
@@ -247,6 +266,7 @@ class LocalRecordingImporter:
         self.thread: threading.Thread | None = None
         self.path = config.state_dir / OPERATION_FILE
         self.operation: dict[str, Any] = {"schema": SCHEMA, "status": "idle"}
+        self._native_intents: dict[str, dict[str, Any]] = {}
         if self.path.exists():
             if self.path.is_symlink():
                 self.operation = {"schema": SCHEMA, "status": "unavailable",
@@ -256,11 +276,67 @@ class LocalRecordingImporter:
                     value = json.loads(self.path.read_bytes())
                     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
                         raise ValueError
+                    intents = value.get("_native_agent_intents", {})
+                    if not isinstance(intents, dict) or len(intents) > MAX_NATIVE_IMPORT_INTENTS:
+                        raise ValueError
+                    for identity, snapshot in intents.items():
+                        digest(identity, "local_import.intent_id", length=32)
+                        if not isinstance(snapshot, dict):
+                            raise ValueError
+                        request = snapshot.get("_native_agent_request")
+                        if (snapshot.get("schema") != SCHEMA
+                                or snapshot.get("intent_id") != identity
+                                or snapshot.get("recording_type") != "native_agent_sampled"
+                                or snapshot.get("status") not in {
+                                    "pending", "completed", "failed", *NATIVE_IMPORT_UNCERTAIN}
+                                or "_native_agent_intents" in snapshot
+                                or not isinstance(request, dict)
+                                or set(request) != {"directory", "cohort", "relation_id"}
+                                or any(not isinstance(item, str) for item in request.values())
+                                or not 0 < len(request["directory"]) <= 4096
+                                or not Path(request["directory"]).is_absolute()
+                                or request["cohort"] != snapshot.get("cohort")
+                                or not isinstance(snapshot.get("producer_student_relation"), dict)
+                                or request["relation_id"] != snapshot[
+                                    "producer_student_relation"]["id"]
+                                or not isinstance(snapshot.get("_owner"), (list, tuple))
+                                or len(snapshot["_owner"]) != 4):
+                            raise ValueError
+                        digest(snapshot.get("candidate_id"), "local_import.candidate_id")
+                        digest(snapshot.get("bundle_content_id"), "local_import.bundle_content_id")
+                        Producer.decode(snapshot.get("_producer"))
+                    self._native_intents = copy.deepcopy(intents)
+                    for snapshot in self._native_intents.values():
+                        if snapshot["status"] == "pending":
+                            snapshot.update(status="interrupted_unknown",
+                                            error_code="previous_import_interrupted")
                     self.operation = value
                     if value.get("status") == "pending":
                         self.operation = {**value, "status": "interrupted_unknown",
                                           "error_code": "previous_import_interrupted"}
-                except (OSError, ValueError):
+                    if self.operation.get("intent_id") is not None:
+                        identity = digest(self.operation["intent_id"], "local_import.intent_id",
+                                          length=32)
+                        if identity not in self._native_intents:
+                            raise ValueError
+                        self._native_intents[identity] = {
+                            key: copy.deepcopy(item) for key, item in self.operation.items()
+                            if key != "_native_agent_intents"}
+                    elif self.operation.get("recording_type") == "native_agent_sampled":
+                        request = self._legacy_native_request()
+                        if (any(not isinstance(item, str) for item in request.values())
+                                or not 0 < len(request["directory"]) <= 4096
+                                or not Path(request["directory"]).is_absolute()
+                                or request["cohort"] != self.operation["cohort"]
+                                or request["relation_id"] != self.operation[
+                                    "producer_student_relation"]["id"]
+                                or len(self.operation["_owner"]) != 4):
+                            raise ValueError
+                        digest(self.operation["candidate_id"], "local_import.candidate_id")
+                        digest(self.operation["bundle_content_id"],
+                               "local_import.bundle_content_id")
+                        Producer.decode(self.operation["_producer"])
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, BoundaryError):
                     self.operation = {"schema": SCHEMA, "status": "unavailable",
                                       "error_code": "operation_file_invalid"}
 
@@ -268,7 +344,60 @@ class LocalRecordingImporter:
         with self.lock:
             return {**{key: value for key, value in self.operation.items()
                        if not key.startswith("_")}, "requires_cloud_account": False,
-                    "native_agent_support": native_agent_import_choices()}
+                    "native_agent_support": native_agent_import_choices(),
+                    "native_legacy_recovery": ({"required": True,
+                        "status": self.operation["status"],
+                        "body_binding": "exact_literal" if "_native_agent_request" in self.operation
+                            else "canonical_original_directory",
+                        "requires_original_three_fields": True}
+                        if self._legacy_native_unresolved() else None),
+                    "native_intent_recovery": [
+                        {"intent_id": key, "status": snapshot["status"],
+                         "cohort": snapshot["cohort"],
+                         "relation_id": snapshot["producer_student_relation"]["id"]}
+                        for key, snapshot in self._native_intents.items()
+                        if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}]}
+
+    def _legacy_native_unresolved(self) -> bool:
+        return (self.operation.get("recording_type") == "native_agent_sampled"
+                and self.operation.get("intent_id") is None
+                and self.operation["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN})
+
+    def _legacy_native_request(self) -> dict[str, Any]:
+        # Before opaque intents existed, only the canonical directory was
+        # retained. Do not guess aliases or invent the original literal body.
+        if "_native_agent_request" in self.operation:
+            request = self.operation["_native_agent_request"]
+            if not isinstance(request, dict) or set(request) != {
+                    "directory", "cohort", "relation_id"}:
+                raise ValueError
+            return request
+        return {"directory": self.operation["_directory"], "cohort": self.operation["cohort"],
+                "relation_id": self.operation["producer_student_relation"]["id"]}
+
+    def _native_recovery_guard(self, intent: str | None = None,
+                               requested: dict[str, Any] | None = None) -> None:
+        """All journaled unresolved intents survive changes of the current caller."""
+        blocked = {key for key, snapshot in self._native_intents.items()
+                   if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}}
+        record = self._native_intents.get(intent) if intent is not None else None
+        if (record is not None and record["status"] == "completed"
+                and record["_native_agent_request"] == requested):
+            return
+        if self._legacy_native_unresolved():
+            if intent is not None or requested is None:
+                raise BoundaryError("local_import", "original_intent_reconciliation_required")
+            if requested != self._legacy_native_request():
+                raise BoundaryError("local_import", "intent_payload_mismatch")
+            return
+        if not blocked:
+            return
+        # Exact reconciliation may resolve one without discarding other
+        # snapshots. A known completed outcome is read-only and idempotent.
+        if (record is not None and record["_native_agent_request"] == requested
+                and record["status"] in {"completed", "pending", *NATIVE_IMPORT_UNCERTAIN}):
+            return
+        raise BoundaryError("local_import", "original_intent_reconciliation_required")
 
     @staticmethod
     def _native_agent_original(directory: Path, cohort: str, relation: object) -> Any:
@@ -327,7 +456,37 @@ class LocalRecordingImporter:
         return matches[0] if matches else None
 
     def start_native_agent_run(self, directory: object, cohort: object,
-                               relation_id: object) -> dict[str, Any]:
+                               relation_id: object, intent_id: object = None) -> dict[str, Any]:
+        intent = (None if intent_id is None else
+                  digest(intent_id, "local_import.intent_id", length=32))
+        requested = {"directory": directory, "cohort": cohort, "relation_id": relation_id}
+        with self.lock:
+            if self.operation["status"] == "unavailable":
+                raise BoundaryError("local_import", "operation_file_invalid")
+            record = self._native_intents.get(intent) if intent is not None else None
+            if record is not None and record["_native_agent_request"] != requested:
+                raise BoundaryError("local_import", "intent_payload_mismatch")
+            self._native_recovery_guard(intent, requested)
+            if self.thread is not None and self.thread.is_alive():
+                if intent is not None and self.operation.get("intent_id") == intent:
+                    return self.status()
+                if intent is None and self._legacy_native_unresolved():
+                    return self.status()
+                if intent is not None:
+                    raise BoundaryError("local_import", "operation_in_progress")
+            if record is not None and record["status"] == "completed":
+                store, _ = _selected_store(self.config)
+                owner = _selected_curation_owner(self.config)
+                if not isinstance(store.blobs, LocalBlobStore) \
+                        or owner is None or tuple(record["_owner"]) != owner.identity \
+                        or owner.store_dir.resolve() != store.blobs.root:
+                    raise BoundaryError("local_import", "source3_workspace_owner_changed")
+                return {**{key: value for key, value in record.items() if not key.startswith("_")},
+                        "requires_cloud_account": False,
+                        "native_agent_support": native_agent_import_choices()}
+            if (intent is not None and record is None
+                    and len(self._native_intents) >= MAX_NATIVE_IMPORT_INTENTS):
+                raise BoundaryError("local_import", "native_import_intent_capacity")
         relation = _native_agent_relation(relation_id, cohort)
         if (not isinstance(directory, str) or not 0 < len(directory) <= 4096
                 or not Path(directory).is_absolute() or Path(directory).is_symlink()
@@ -343,13 +502,32 @@ class LocalRecordingImporter:
         with self.lock:
             if self.operation["status"] == "unavailable":
                 raise BoundaryError("local_import", "operation_file_invalid")
+            record = self._native_intents.get(intent) if intent is not None else None
+            if record is not None and record["_native_agent_request"] != requested:
+                raise BoundaryError("local_import", "intent_payload_mismatch")
+            self._native_recovery_guard(intent, requested)
             if self.thread is not None and self.thread.is_alive():
-                if self.operation.get("candidate_id") == identity:
+                if (self.operation.get("intent_id") == intent if intent is not None else
+                        self.operation.get("candidate_id") == identity):
                     return self.status()
                 raise BoundaryError("local_import", "operation_in_progress")
+            if (intent is not None and record is None
+                    and len(self._native_intents) >= MAX_NATIVE_IMPORT_INTENTS):
+                raise BoundaryError("local_import", "native_import_intent_capacity")
             store, _ = _selected_store(self.config)
             owner = self._source3_owner(store)
             previous = self.operation
+            if self._legacy_native_unresolved() and (
+                    previous["candidate_id"] != identity
+                    or previous["bundle_content_id"] != bundle.content_id):
+                raise BoundaryError("local_import", "native_agent_original_changed")
+            if record is not None:
+                if tuple(record["_owner"]) != owner.identity:
+                    raise BoundaryError("local_import", "source3_workspace_owner_changed")
+                if (record["candidate_id"] != identity
+                        or record["bundle_content_id"] != bundle.content_id):
+                    raise BoundaryError("local_import", "native_agent_original_changed")
+                previous = record
             producer = (Producer.decode(previous["_producer"])
                         if previous.get("candidate_id") == identity and previous.get("_producer")
                         else source_identity(ROOT))
@@ -358,7 +536,9 @@ class LocalRecordingImporter:
                 "recording_type": "native_agent_sampled", "started_at": _now(),
                 "cohort": cohort, "producer_student_relation": relation,
                 "bundle_content_id": bundle.content_id, "_directory": str(source_directory),
-                "_producer": producer.to_dict(), "_owner": owner.identity}
+                "_producer": producer.to_dict(), "_owner": owner.identity,
+                "_native_agent_request": copy.deepcopy(requested),
+                **({"intent_id": intent} if intent is not None else {})}
             self._save()
             self.thread = threading.Thread(target=self._run_native_agent, args=(identity,),
                                            daemon=True)
@@ -431,6 +611,13 @@ class LocalRecordingImporter:
         return owner
 
     def _save(self) -> None:
+        intent = self.operation.get("intent_id")
+        if intent is not None:
+            self._native_intents[intent] = {
+                key: copy.deepcopy(item) for key, item in self.operation.items()
+                if key != "_native_agent_intents"}
+        if self._native_intents:
+            self.operation["_native_agent_intents"] = copy.deepcopy(self._native_intents)
         atomic_json(self.path, self.operation)
 
     def _fresh_candidate(self, candidate_id: str) -> dict[str, Any]:
@@ -703,6 +890,7 @@ class LocalRecordingImporter:
     def start(self, candidate_id: object, human_origin_attested: object = None) -> dict[str, Any]:
         identity = digest(candidate_id, "local_import.candidate_id")
         with self.lock:
+            self._native_recovery_guard()
             if self.operation["status"] == "unavailable":
                 raise BoundaryError("local_import", "operation_file_invalid")
             candidate = self._fresh_candidate(identity)

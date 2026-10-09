@@ -84,7 +84,7 @@ const modelSupport = model => {
   let type, profile;
   if (model?.kind !== "model") return result;
   if (["stpd/native-structured-m2-model-v1", "stpd/native-structured-m2-model-v2",
-       "stpd/source3-ordered-native-m2-model-v1"].includes(info.schema))
+       "stpd/source3-ordered-native-m2-model-v1", "stpd/native-trained-m2-model-v2"].includes(info.schema))
     [type, profile] = ["native", "native-logical-v1"];
   else if (["stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2", "stpd/structured-m2-model-v3"].includes(info.schema))
     [type, profile] = ["structured", "text-menu-m2-v2"];
@@ -244,7 +244,7 @@ function setup({
         : url === "/api/local-training/capabilities"
         ? trainingCapabilitiesData
         : url === "/api/local-recordings/import/status"
-        ? importStatus
+        ? (typeof importStatus === "function" ? importStatus() : importStatus)
         : url === "/api/local-workspace/curation"
           ? curationStatus
           : view === "local-environment" && url === "/api/local-environment/scenes"
@@ -7093,6 +7093,10 @@ test("Source3 saved partition exposes existing typed training with matching owne
       if (url === "/api/local-training/status") return {schema:"stpd/local-training-operation-v1",
         availability:"ready",operation:{status:"idle"},csrf_token:"train-csrf"};
       if (url === "/api/local-datasets/status") return {source3_support:source3BrowserSupport};
+      if (url === `/api/local-datasets/binding/${artifact}`) return {
+        schema:"stpd/local-dataset-binding-v1",artifact_id:artifact,sample_type:"ordered_source3",
+        source_schema:"stpd/source3-ordered-native-training-source-v1",curation_purpose:"training",
+        recommended_recipe_id:"owner-sampled-recipe"};
       if (url === "/api/local-training/start") return {status:"pending"};
       throw new Error(`unexpected partition route ${url}`);
     }});
@@ -7115,4 +7119,363 @@ test("Source3 data preview uses new owner-advertised choices without browser tax
   await action(page,"preview-source3-dataset").onclick();
   assert.deepEqual(body(post(env.calls)[0]),{artifact_ids:[artifact],cohort:"owner-new-cohort",view:"owner-new-view"});
   assert.equal(post(env.calls).length,1);
+});
+
+const commonNativeRecipe = "native-m2-k1d96-carry-N-sampled-v2";
+const nativeAgentBrowserSupport = {
+  source_profile:"native_agent_sampled_v1",product_entry_enabled:true,
+  raw_schema:"stpd/native-agent-sampled-original-bundle-v1",max_raw_references:256,
+  cohorts:["declared_native_machine_teacher","synthetic_conformance"],
+  default_cohort:"declared_native_machine_teacher",default_relation_id:"owner-teacher",
+  cohort_labels:{declared_native_machine_teacher:"Owner program declaration",synthetic_conformance:"Owner synthetic"},
+  relations:[{relation:{id:"owner-teacher",sha256:id("1")},label:"Owner public program",cohorts:["declared_native_machine_teacher","synthetic_conformance"]},
+    {relation:{id:"owner-synthetic",sha256:id("2")},label:"Owner synthetic program",cohorts:["synthetic_conformance"]}],
+  recommended_recipe_id:commonNativeRecipe,
+};
+const nativeAgentRaw = artifact => ({kind:"evidence",artifact_id:artifact,parameters:{
+  schema:"stpd/native-agent-sampled-original-bundle-v1",source_profile:"native_agent_sampled_v1"}});
+const nativeAgentPreview = (artifact,extra={}) => ({kind:"native_agent_sampled",status:"preview_ready",
+  artifact_ids:[artifact],artifact_id:artifact,source_profile:"native_agent_sampled_v1",
+  sample_type:"native_agent_sampled",preview_id:"3".repeat(32),accepted_labels:3,can_publish:true,
+  counts:{original_offers:13,known_context_samples:10,readiness_exclusions:3,known_ready_summary_samples:0,real_native_samples:null},
+  coverage:{multi_candidate_N:2,chosen_action_verbs:{activate:2,open_information:1},native_interaction_kinds:{native_map:7,native_information:3}},
+  exclusions:{discarded_readiness_no_sample:3},censored_tails:[{reason:"original_delivery_uncertain_tail",sequence:41}],
+  native_origin_status:"not_established_by_this_verifier",qualification:"declared_student_reexpression",
+  recommended_recipe_id:commonNativeRecipe,split_status:"not_reserved",...extra});
+function nativeAgentBrowserEnv({artifact=id("a"),detail=true,operation={status:"idle"},
+  support=nativeAgentBrowserSupport,raw=nativeAgentRaw(artifact),items=[raw],
+  importStatus={status:"idle"},storage=new Map(),storageApi=null,identity={status:"local_only"},handler=()=>emptyList()}={}) {
+  return setup({identity,view:"local-workspace",query:detail?`&id=${artifact}`:"",
+    recordingStorage:storage,recordingStorageApi:storageApi,
+    importStatus:()=>({schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
+      configuration_id:id("9"),workbench_instance_id:"fixture-workbench-instance",
+      native_agent_support:support,...(typeof importStatus==="function"?importStatus():importStatus)}),
+    handler:async(url,options)=>{
+      if(url==="/api/local-workspace/managed")return{status:"ready",curation_status:"ready"};
+      if(url===`/api/local-workspace/artifacts/${artifact}`)return raw;
+      if(url.startsWith("/api/local-workspace?"))return{items,total:items.length};
+      if(url==="/api/local-recordings/import/status")return{
+        schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",native_agent_support:support,...importStatus};
+      if(url==="/api/local-datasets/status")return{schema:"stpd/local-dataset-operation-v1",
+        availability:"ready",csrf_token:"native-data-csrf",native_agent_support:support,
+        operation:typeof operation==="function"?operation():operation};
+      return handler(url,options);
+    }});
+}
+
+test("Native AgentRun owner counts preserve N/MultiC/readiness/censor and unknown origin without mutation",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  assert.match(text(page),/已确认上下文/);assert.match(text(page),/多候选选择 N/);
+  assert.match(text(page),/等待检查排除/);assert.match(text(page),/原生样本来源核验数/);
+  assert.match(text(page),/未知/);assert.match(text(page),/original_delivery_uncertain_tail/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(action(page,"publish-native-agent-dataset").disabled,false);
+});
+
+test("Native AgentRun preview and publication are two exact explicit owners and never start training",async()=>{
+  const artifact=id("a"),partition=id("f");let operation={status:"idle"};
+  const env=nativeAgentBrowserEnv({operation:()=>operation,handler:async(url,options)=>{
+    if(url==="/api/local-datasets/native-agent-preview"){
+      assert.deepEqual(body({options}),{artifact_ids:[artifact]});operation=nativeAgentPreview(artifact);return{status:"pending"};
+    }
+    if(url==="/api/local-datasets/publish"){
+      assert.deepEqual(body({options}),{preview_id:"3".repeat(32)});
+      operation=nativeAgentPreview(artifact,{status:"completed",result_artifact_id:partition,actual_training_use:false});return{status:"pending"};
+    }throw Error(`unexpected Native AgentRun mutation ${url}`);
+  }});
+  let page=await env.render();assert.equal(post(env.calls).length,0);
+  await action(page,"preview-native-agent-dataset").onclick();page=await env.render();
+  await action(page,"publish-native-agent-dataset").onclick();page=await env.render();
+  assert.match(text(page),/尚未开始训练/);
+  assert.deepEqual(post(env.calls).map(call=>call.url),["/api/local-datasets/native-agent-preview","/api/local-datasets/publish"]);
+  assert.ok(post(env.calls).every(call=>call.options.headers["X-CSRF-Token"]==="native-data-csrf"));
+});
+
+for(const support of [null,{...nativeAgentBrowserSupport,product_entry_enabled:false},
+  {...nativeAgentBrowserSupport,product_entry_enabled:"true"},{...nativeAgentBrowserSupport,relations:[]},
+  {...nativeAgentBrowserSupport,source_profile:"unknown-profile"}])
+  test(`Native AgentRun unsupported capability cannot expose mutations ${JSON.stringify(support)}`,async()=>{
+    const env=nativeAgentBrowserEnv({support}),page=await env.render();
+    assert.equal(walk(page).some(node=>/preview-native-agent-dataset|publish-native-agent-dataset/.test(node.dataset?.action||"")),false);
+    assert.equal(post(env.calls).length,0);
+  });
+
+test("Native AgentRun changed source selection invalidates the exact prior preview",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  const checkbox=field(page,`local-native-agent-source-${id("a")}`);checkbox.checked=false;checkbox.onchange();
+  assert.equal(action(page,"publish-native-agent-dataset").disabled,true);
+  await action(page,"publish-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
+});
+
+test("Native AgentRun raw profile mismatch cannot dispatch a preview",async()=>{
+  const raw=nativeAgentRaw(id("a"));raw.parameters.source_profile="different-route";
+  const env=nativeAgentBrowserEnv({raw}),page=await env.render();
+  assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
+});
+
+test("Native AgentRun interrupted publication keeps exact preview and only explicit reconciliation",async()=>{
+  const operation=nativeAgentPreview(id("a"),{status:"failed",can_publish:false,recovery_available:true});
+  const env=nativeAgentBrowserEnv({operation,handler:async(url,options)=>{
+    assert.equal(url,"/api/local-datasets/publish");assert.deepEqual(body({options}),{preview_id:operation.preview_id});return{status:"pending"};
+  }}),page=await env.render();
+  assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  assert.equal(post(env.calls).length,0);
+  await action(page,"publish-native-agent-dataset").onclick();assert.equal(post(env.calls).length,1);
+});
+
+test("Native AgentRun directory import uses owner choices and excludes Human declaration",async()=>{
+  const env=nativeAgentBrowserEnv({detail:false,items:[],handler:async(url,options)=>{
+    assert.equal(url,"/api/local-recordings/import/native-agent");assert.deepEqual(body({options}),{
+      directory:"/explicit/stopped/run",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher",
+      intent_id:body({options}).intent_id});
+    assert.match(body({options}).intent_id,/^[a-f0-9]{32}$/);return{status:"pending",intent_id:body({options}).intent_id};
+  }}),page=await env.render();
+  assert.equal(walk(page).some(node=>node.name==="human_origin_attested"),false);
+  const directory=field(page,"native-agent-import-directory");directory.value="/explicit/stopped/run";directory.oninput();
+  const relation=field(page,"native-agent-import-relation");relation.value="owner-synthetic";relation.onchange();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  relation.value="owner-teacher";relation.onchange();assert.equal(action(page,"import-native-agent-run").disabled,false);
+  assert.equal(post(env.calls).length,0);
+  await Promise.all([action(page,"import-native-agent-run").onclick(),action(page,"import-native-agent-run").onclick()]);
+  assert.equal(post(env.calls).length,1);assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"native-import-csrf");
+});
+
+test("Native AgentRun unknown import cannot be reissued by redraw or a second click",async()=>{
+  const env=nativeAgentBrowserEnv({detail:false,items:[],handler:async()=>{throw Error("lost response");}});
+  const page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/explicit/stopped/run";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();
+  await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,1);
+  const redraw=await env.render();assert.match(action(redraw,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(post(env.calls).length,1,"redraw cannot automatically retry");
+  await action(redraw,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  assert.deepEqual(body(post(env.calls)[1]),body(post(env.calls)[0]),"explicit reconciliation retains exact intent/body");
+});
+
+test("Native AgentRun completed A cannot acknowledge lost reply B with same cohort relation",async()=>{
+  let status={status:"idle"},seen=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:()=>status,handler:async(url,options)=>{
+    const request=body({options});seen.push(request);
+    if(seen.length===1){status={status:"completed",recording_type:"native_agent_sampled",cohort:request.cohort,
+      producer_student_relation:{id:request.relation_id},intent_id:request.intent_id||"a".repeat(32),artifact_id:id("a")};return status;}
+    throw Error("B reply lost before any new status observed");
+  }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();assert.equal(post(env.calls).length,2,"status read cannot retry B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/,
+    "A's old completed status cannot acknowledge B or present a new intent");
+  assert.match(text(page),/属于另一请求/);
+  assert.equal(walk(page).some(node=>node.tagName==="A"&&node.textContent==="打开已保存的程序示范原件"),false);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(seen[2],seen[1],"only explicit SAME B intent/body reconciliation is permitted");
+  assert.notEqual(seen[1].intent_id,seen[0].intent_id);
+});
+
+test("Native AgentRun hard reload restores scoped unknown fence and only same request reconciliation",async()=>{
+  const storage=new Map(),sent=[];
+  const handler=async(url,options)=>{sent.push(body({options}));throw Error("lost B reply");};
+  const oldStatus={status:"completed",recording_type:"native_agent_sampled",intent_id:"a".repeat(32),
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},artifact_id:id("a")};
+  const first=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  let page=await first.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  const reload=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  page=await reload.render();assert.equal(field(page,"native-agent-import-directory").value,"/original/B-private");
+  assert.equal(sent.length,1);assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  directory=field(page,"native-agent-import-directory");directory.value="/different/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    importStatus:{...oldStatus,configuration_id:id("8")},handler});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"","different config cannot expose private body");
+});
+
+test("Native AgentRun lost browser fence uses server original intent and user body only explicitly",async()=>{
+  const intent="b".repeat(32),sent=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:"publication_unknown",
+    recording_type:"native_agent_sampled",intent_id:intent,cohort:"declared_native_machine_teacher",
+    producer_student_relation:{id:"owner-teacher"}},handler:async(url,options)=>{
+      sent.push(body({options}));return{status:"pending",intent_id:intent};
+    }});
+  const page=await env.render();assert.match(text(page),/浏览器原正文未保留/);assert.equal(sent.length,0);
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  const directory=field(page,"native-agent-import-directory");directory.value="/operator/original-B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent.length,1);
+  assert.equal(sent[0].intent_id,intent,"recovery cannot generate new identity");
+});
+
+test("Native AgentRun account reset retains only same owner original pending fence",async()=>{
+  const storage=new Map(),sent=[],owner={status:"signed_in",principal:{subject:"original-owner",role:"researcher"}};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    handler:async(url,options)=>{const request=body({options});sent.push(request);return{status:"pending",intent_id:request.intent_id};}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/pending-B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,1,"known pending reply must retain original body until terminal outcome");
+  env.account({status:"signed_out"});await env.render();
+  env.account(owner);page=await env.render();
+  assert.equal(sent.length,1,"account renewal and render only read the original fence");
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/pending-B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    identity:{status:"signed_in",principal:{subject:"other-owner",role:"researcher"}}});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"");
+  const otherInstance=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    importStatus:{workbench_instance_id:"other-instance"}});
+  assert.equal(field(await otherInstance.render(),"native-agent-import-directory").value,"");
+});
+
+test("Native AgentRun completed drafts never mask remaining owner intents and wrong body corrects same ID",async()=>{
+  const storage=new Map(),sent=[],B="b".repeat(32),C="c".repeat(32);
+  const unresolved=intent_id=>({intent_id,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"});
+  let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{
+      const request=body({options});sent.push(request);
+      if(request.intent_id===B && request.directory!=="/original/B")
+        return{httpStatus:409,error:"intent_payload_mismatch"};
+      status={status:"completed",recording_type:"native_agent_sampled",intent_id:request.intent_id,
+        cohort:request.cohort,producer_student_relation:{id:request.relation_id},artifact_id:id("a"),
+        native_intent_recovery:request.intent_id===B?[unresolved(C)]:[]};
+      return status;
+    }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,0,"completed A clears its fence but its draft remains in the same VM");
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:B,
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},
+    native_intent_recovery:[unresolved(B),unresolved(C)]};
+  page=await env.render();assert.equal(sent.length,1,"redraw does not POST or manufacture a new intent");
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/wrong/B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[1].intent_id,B);
+  assert.equal(storage.size,0,"known pre-IO mismatch cannot fence an incorrect original body");
+  directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false,"known mismatch permits same-page explicit correction");
+  page=await env.render();assert.equal(sent.length,2);
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false);
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[2].intent_id,B);
+  assert.equal(storage.size,0);
+  page=await env.render();assert.equal(sent.length,3);
+  assert.equal(field(page,"native-agent-recovery-intent").value,C,"completed B draft cannot hide unresolved C");
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[3].intent_id,C);
+  assert.deepEqual(sent.slice(1).map(item=>item.intent_id),[B,B,C]);
+});
+
+test("Native AgentRun unacknowledged local fence cannot be adopted by another owner recovery",async()=>{
+  const storage=new Map(),sent=[],C="c".repeat(32);let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{sent.push(body({options}));throw Error("original B reply lost");}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:C,
+    native_intent_recovery:[{intent_id:C,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"}]};
+  page=await env.render();assert.equal(sent.length,1);
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/B");
+  assert.equal(walk(page).some(item=>item.name==="native-agent-recovery-intent"),false);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+});
+
+for(const state of ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"])
+  test(`Native AgentRun original legacy three-field ${state} closes modern save without invented ID`,async()=>{
+    const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:state,
+      recording_type:"native_agent_sampled",cohort:"declared_native_machine_teacher",
+      producer_student_relation:{id:"owner-teacher"},native_legacy_recovery:{required:true,
+        body_binding:"canonical_original_directory",requires_original_three_fields:true}},
+      handler:async()=>assert.fail("legacy owner recovery cannot create a modern request")});
+    const page=await env.render();assert.match(text(page),/旧版三字段导入请求仍待核对/);
+    assert.match(text(page),/原始规范目录/);
+    assert.equal(walk(page).some(item=>item.dataset?.action==="import-native-agent-run"),false);
+    await action(page,"refresh-native-agent-import").onclick();assert.equal(post(env.calls).length,0);
+  });
+
+for(const failure of ["read","write","invalid"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
+  const sent=[],env=nativeAgentBrowserEnv({detail:false,items:[],storageApi:{
+    getItem:()=>{if(failure==="read")throw Error("blocked storage");return failure==="invalid"?JSON.stringify({request:null}):null;},
+    setItem:()=>{throw Error("quota/blocked storage");},removeItem:()=>{}},
+    handler:async(url,options)=>{sent.push(body({options}));return{status:"pending"};}});
+  const page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(sent.length,0);assert.match(text(page),/存储/);
+});
+
+for(const [schema,sample_type] of [["stpd/native-agent-sampled-training-source-v1","native_agent_sampled"],
+    ["stpd/source3-ordered-native-training-source-v1","ordered_source3"]])
+  test(`Recorded sampled routes use the SAME owner common recipe and exact training binding ${sample_type}`,async()=>{
+    const artifact=id("e"),env=setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+      trainingCapabilitiesData:{schema:"spireagent/training-capabilities-v1",automatic_retry:false,
+        placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+        recipes:[commonNativeRecipe,"structured-m2-cpu-v2"].map(recipe_id=>({recipe_id,placement_ids:["local-cpu"],
+          dependencies_available:true,supported_actions:[],config_defaults:{epochs:1},config_fields:{},limits:{}}))},
+      handler:async(url,options)=>{
+        if(url==="/api/local-workspace/managed")return{status:"ready"};
+        if(url===`/api/local-workspace/artifacts/${artifact}`)return{kind:"dataset",artifact_id:artifact,parameters:{schema}};
+        if(url===`/api/local-datasets/binding/${artifact}`)return{schema:"stpd/local-dataset-binding-v1",
+          artifact_id:artifact,sample_type,source_schema:schema,curation_purpose:"training",recommended_recipe_id:commonNativeRecipe};
+        if(url==="/api/local-training/status")return{schema:"stpd/local-training-operation-v1",availability:"ready",operation:{status:"idle"},csrf_token:"train-csrf"};
+        if(url==="/api/local-training/start")return{status:"pending"};
+        throw Error(`unexpected recorded route ${url}`);
+      }});
+    const page=await env.render();assert.equal(field(page,"local-training-recipe").value,commonNativeRecipe);
+    assert.equal(post(env.calls).length,0);await action(page,"start-local-training").onclick();
+    assert.equal(body(post(env.calls)[0]).recipe_id,commonNativeRecipe);
+  });
+
+test("Recorded source missing reservation cannot fall back to unrelated training",async()=>{
+  const artifact=id("e"),env=setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+    handler:async url=>{
+      if(url==="/api/local-workspace/managed")return{status:"ready"};
+      if(url===`/api/local-workspace/artifacts/${artifact}`)return{kind:"dataset",artifact_id:artifact,parameters:{schema:"stpd/native-agent-sampled-training-source-v1"}};
+      if(url===`/api/local-datasets/binding/${artifact}`)return{schema:"stpd/local-dataset-binding-v1",artifact_id:artifact,
+        sample_type:"native_agent_sampled",source_schema:"stpd/native-agent-sampled-training-source-v1",curation_purpose:null};
+      throw Error(`unreserved source cannot query training ${url}`);
+    }}),page=await env.render();
+  assert.equal(walk(page).some(node=>node.dataset?.action==="start-local-training"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("Common native Model schema reuses generic verified export registration and Human prepare",async()=>{
+  const model=nativeWorkflowModel(id("b"),"stpd/native-trained-m2-model-v2");
+  const {env}=nativeModelWorkflowEnv({model}),page=await env.render();
+  assert.equal(action(page,"use-local-model").disabled,false);assert.equal(post(env.calls).length,0);
+  await action(page,"use-local-model").onclick();
+  assert.deepEqual(post(env.calls).map(call=>call.url),["/api/local-models/prepare"]);
+  assert.equal(body(post(env.calls)[0]).mode,undefined,"UI cannot infer Auto or native loaded readiness");
+});
+
+test("Native AgentRun cross-page selections are preserved and empty C1 labels stay explicit",async()=>{
+  const first=id("a"),second=id("b"),env=nativeAgentBrowserEnv({detail:false,
+    items:[nativeAgentRaw(first),nativeAgentRaw(second)],handler:async(url,options)=>{
+      assert.equal(url,"/api/local-datasets/native-agent-preview");assert.deepEqual(body({options}),{artifact_ids:[first,second]});return{status:"pending"};
+    }});
+  let page=await env.render();assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  for(const artifact of[first,second]){const checkbox=field(page,`local-native-agent-source-${artifact}`);checkbox.checked=true;checkbox.onchange();}
+  page=await env.render();assert.equal(field(page,`local-native-agent-source-${first}`).checked,true);
+  assert.equal(field(page,`local-native-agent-source-${second}`).checked,true);
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,1);
+  const zero=nativeAgentBrowserEnv({operation:nativeAgentPreview(first,{accepted_labels:0,can_publish:false,
+    coverage:{multi_candidate_N:0},counts:{known_context_samples:4,real_native_samples:0}})}),empty=await zero.render();
+  assert.match(text(empty),/没有可保存的选择标签/);
+  assert.equal(walk(empty).some(node=>node.dataset?.action==="publish-native-agent-dataset"),false);
+});
+
+test("Native AgentRun stale page context cannot publish or preview",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  env.scope("other-device");
+  await action(page,"publish-native-agent-dataset").onclick();
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
 });

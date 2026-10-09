@@ -55,7 +55,7 @@ def test_exact_original_import_preview_publish_use_separation_and_reopen(tmp_pat
     assert raw.parameters.value()["schema"] == RAW_SCHEMA
     assert raw.parameters.value()["cohort"] == FIXTURE_COHORT
     assert {path.name: path.read_bytes() for path in original.directory.iterdir()} == before
-    assert importer.status()["native_agent_support"]["product_entry_enabled"] is False
+    assert importer.status()["native_agent_support"]["product_entry_enabled"] is True
     with owner.transaction() as db:
         assert db.execute("SELECT count(*) FROM local_source_pending").fetchone() == (1,)
         assert db.execute("SELECT count(*) FROM curation_claims").fetchone() == (0,)
@@ -250,3 +250,68 @@ def test_import_capability_values_cannot_mutate_shared_fixed_relation():
     choices["relations"][0]["relation"]["sha256"] = "f" * 64
     assert local_recording_import.native_agent_import_choices()["relations"][0]["relation"][
         "sha256"] == original
+
+
+def test_direct_training_binding_requires_exact_reservation_and_keeps_use_separate(
+    tmp_path, original
+):
+    from stpd.fullrun.native_agent_sampled_source import (
+        NativeAgentSampledRef,
+        publish_native_agent_sampled_partition,
+    )
+
+    _, datasets, store, owner, raw_id = imported(tmp_path, original)
+    datasets.start_native_agent_preview([raw_id])
+    preview = settled(datasets)
+    refs = tuple(NativeAgentSampledRef(**ref) for ref in datasets.operation["_admission_refs"])
+    producer = source_identity(ROOT)
+    unreserved = publish_native_agent_sampled_partition(store, refs, "train", producer)
+    binding = datasets.binding(unreserved.manifest.artifact_id)
+    assert binding["sample_type"] == "native_agent_sampled" and binding["curation_purpose"] is None
+    assert binding["recommended_recipe_id"] == RECIPE
+    datasets.start_publish(preview["preview_id"])
+    published = settled(datasets)
+    bound = datasets.binding(published["result_artifact_id"])
+    assert bound["artifact_id"] == published["result_artifact_id"]
+    assert bound["curation_purpose"] == "training" and bound["recommended_recipe_id"] == RECIPE
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone() == (0,)
+
+
+def test_sampled_Source3_same_common_recipe_and_historical_views_remain_explicit(tmp_path):
+    from test_native_training_source_v2 import source3
+
+    from stpd.ordered_source_spec import (
+        DEFAULT_RECIPE,
+        DEFAULT_VIEW,
+        PRETRAIN_VIEW,
+        SAMPLED_VIEW,
+        recipe_view,
+    )
+
+    _, datasets, store, owner = setup(tmp_path)
+    sample = source3(store)
+    unreserved = datasets.binding(sample.manifest.artifact_id)
+    assert unreserved["sample_type"] == "ordered_source3"
+    assert unreserved["source_view"] == SAMPLED_VIEW
+    assert unreserved["recommended_recipe_id"] == RECIPE and unreserved["curation_purpose"] is None
+    owner.reserve_verified_ordered_source(store, sample.manifest.artifact_id)
+    assert datasets.binding(sample.manifest.artifact_id)["curation_purpose"] == "training"
+    assert local_dataset._ordered_recipe(DEFAULT_VIEW) == DEFAULT_RECIPE
+    assert recipe_view(local_dataset._ordered_recipe(PRETRAIN_VIEW)) == PRETRAIN_VIEW
+    assert local_dataset._ordered_recipe(SAMPLED_VIEW) == RECIPE
+    views = {item["view"]: item for item in local_dataset.source3_capabilities()["views"]}
+    assert views[SAMPLED_VIEW]["recommended_recipe_id"] == RECIPE
+    assert views[DEFAULT_VIEW]["recommended_recipe_id"] == DEFAULT_RECIPE
+
+
+def test_import_capability_closed_relation_cohorts_and_recipe_are_owner_values():
+    from stpd.native_agent_sampled_source_spec import TEACHER_COHORT
+
+    choices = local_recording_import.native_agent_import_choices()
+    relation = next(item for item in choices["relations"] if item["relation"] == RELATION_SPEC)
+    assert relation["cohorts"] == [FIXTURE_COHORT]
+    assert TEACHER_COHORT in choices["cohorts"]
+    assert choices["recommended_recipe_id"] == RECIPE
+    assert choices["training_source_schema"] == "stpd/native-agent-sampled-training-source-v1"
+    assert choices["cohort_labels"][TEACHER_COHORT]

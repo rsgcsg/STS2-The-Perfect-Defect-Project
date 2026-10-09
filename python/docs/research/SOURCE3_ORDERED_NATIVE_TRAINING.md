@@ -327,6 +327,29 @@ explicit retry/reconciliation. The importer Producer remains the actual importer
 recorded producer identity is retained separately. This machine route does not
 invoke the Human packer or require a Human-origin declaration.
 
+Browser imports bind an opaque intent to the exact original directory, cohort
+and producer relation in the existing private importer journal. The browser
+retains that body before submission in session storage scoped to configuration,
+running instance and account; refresh and account renewal never submit it.
+Without that browser body, the UI offers the server's original unresolved intent
+and requires the operator to reenter its original fields explicitly. Changed
+fields reject before original IO. Unavailable browser storage closes submission.
+Every registered pending or unknown intent blocks ordinary Source3, legacy and
+new native imports until explicit original reconciliation reaches a terminal
+outcome. A completed historical intent returns its original outcome without
+replacing another unresolved operation. No bounded journal entry is evicted.
+
+The supported original three-field native import route has no opaque intent.
+Its current pending/unknown operation therefore also closes new native and
+ordinary Source3/legacy imports. New three-field calls retain their literal
+directory/cohort/relation body privately; only that exact explicit body may
+reconcile. Historical records without the literal body conservatively accept
+the stored original canonical directory, cohort and relation, then revalidate
+the frozen owner, candidate, content and Producer. Directory aliases and new
+intent IDs are rejected before original IO. The browser reports this limited
+legacy recovery requirement and closes modern save; recovery uses the original
+three-field API. No migration ID or guessed original body is manufactured.
+
 `LocalDatasetService.start_native_agent_preview` replays selected immutable raws
 through their owning admissions and one-runtime train-only projection. Preview
 reports known context, original offers, eligible N, readiness exclusions, censored
@@ -340,7 +363,31 @@ Producer and partition for explicit reconciliation.
 The browser APIs are `/api/local-recordings/import/native-agent` and
 `/api/local-datasets/native-agent-preview`; the existing dataset publish route is
 reused. Browser session, Origin/CSRF, exact request bodies, current configuration
-and running-instance checks remain mandatory. The capability's
-`product_entry_enabled` stays false while the real public manifest compatibility
-and current Runtime product gates remain pending. These backend source/tests do
-not qualify a visible in-game flow or installed model load.
+and running-instance checks remain mandatory. `product_entry_enabled` declares
+support for this data interface after the public manifest and installed Runtime
+composition gates; it does not declare any individual Model ready or loaded.
+Every Model still uses the existing computed export/registration/readiness and
+native control owners. Source/tests do not qualify a visible in-game flow.
+
+The local console accepts an explicit stopped-run directory and owner-defined
+cohort/program relationship. Direct and Source3 `decision_sample_carry` partitions
+recommend the same `native-m2-k1d96-carry-N-sampled-v2` recipe. This is a product
+recommendation; historical Source3 spec/default-view/recipe IDs remain unchanged,
+and publication-memory/pretraining views retain their own recipes. Directory
+import, source preview, training reservation and training start are separate
+explicit actions. A mount, refresh, lost reply or changed source selection does
+not redispatch a write or reuse an old preview.
+
+Preview displays original queries, known context, eligible N, multi-candidate N,
+readiness exclusions and censored tails separately. Unknown origin count remains
+unknown, and C1 labels do not imply useful choice learning. The exact-ID binding
+lookup reads the existing purpose ledger before showing the corresponding
+training form; it is a purpose lookup, not an integrity/qualification stamp.
+The actual parent and worker still replay originals, check the complete index,
+record actual use and validate the frozen numerical identity.
+
+The common ModelArtifact uses the existing generic native Model support, export,
+registration and explicit Human prepare cards. Per-Model readiness remains the
+computed owner result. Auto, Human and Stop in the paired native model controls
+remain separate explicit operations; this data interface does not start a game
+or infer that registration means a loaded, useful or naturally completed Agent.

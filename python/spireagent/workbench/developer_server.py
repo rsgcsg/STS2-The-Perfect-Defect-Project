@@ -792,8 +792,9 @@ class Application:
             raise BoundaryError("local_dataset", "running_configuration_mismatch")
         return self.local_datasets.start_source3_preview(artifact_ids, cohort, view)
 
-    def start_local_native_agent_import(self, directory: object, cohort: object,
-                                        relation_id: object) -> dict[str, Any]:
+    def start_local_native_agent_import(
+        self, directory: object, cohort: object, relation_id: object, intent_id: object = None,
+    ) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_import", "running_instance_unavailable")
         try:
@@ -805,7 +806,8 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_import", "running_configuration_mismatch")
-        return self.local_recording_import.start_native_agent_run(directory, cohort, relation_id)
+        return self.local_recording_import.start_native_agent_run(
+            directory, cohort, relation_id, intent_id)
 
     def start_local_native_agent_dataset_preview(self, artifact_ids: object) -> dict[str, Any]:
         if self.config_path is None:
@@ -1191,7 +1193,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
-                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf}
+                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf,
+                         "workbench_instance_id": app.instance_id,
+                         "configuration_id": configuration_id(app.config)}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/preview/status":
                 if not self.authenticated_browser():
@@ -1693,8 +1697,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 try:
                     if self.path == "/api/local-recordings/import/native-agent":
                         body = self.json_body(maximum=8192)
-                        if set(body) != {"directory", "cohort", "relation_id"}:
+                        if set(body) not in (
+                            {"directory", "cohort", "relation_id"},
+                            {"directory", "cohort", "relation_id", "intent_id"},
+                        ):
                             raise ValueError
+                        if "intent_id" in body:
+                            digest(body["intent_id"], "local_import.intent_id", length=32)
                         value = app.start_local_native_agent_import(**body)
                     else:
                         body = self.json_body(maximum=256)

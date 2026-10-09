@@ -3717,7 +3717,7 @@ window.SpireProject = (() => {
     card.append(button);
   }
 
-  async function typedTrainingCard(ctx, dataset, data, capabilities) {
+  async function typedTrainingCard(ctx, dataset, data, capabilities, sourceBinding = null) {
     const card = panel("本机训练与恢复", "使用本机服务声明的配方、配置与资源。训练用途和来源由既有服务核对；关闭游戏或面板不等于停止训练。不会自动重试未知结果。");
     const operation = data.operation;
     if (data.availability !== "ready") {
@@ -3778,20 +3778,18 @@ window.SpireProject = (() => {
     const mayStart = operation.status === "idle" || operation.status === "completed"
       || (operation.status === "failed" && !operation.run_id);
     if (mayStart && csrfToken && hex(dataset.artifact_id)) {
-      const choices = capabilities.recipes.map(item => [item.recipe_id, item.recipe_id]);
+      let choices = capabilities.recipes.map(item => [item.recipe_id, item.recipe_id]);
       let recommended;
-      if (dataset.parameters?.schema === "stpd/source3-ordered-native-training-source-v1") {
-        try {
-          const status = await request(ctx, "/api/local-datasets/status");
-          recommended = status.source3_support?.views?.find(item =>
-            item.qualification === dataset.parameters.qualification)?.recommended_recipe_id;
-        } catch {}
+      if (["stpd/source3-ordered-native-training-source-v1",
+          "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema)) {
+        recommended = sourceBinding?.recommended_recipe_id;
         if (!live(ctx)) return card;
         if (!choices.some(([id]) => id === recommended)) {
-          card.append(el("p", "此 Source 3 分区对应的训练配方尚未被服务共同确认；请刷新能力声明后再开始训练。", "small muted"));
+          card.append(el("p", "此录制分区的训练用途与配方尚未共同确认；请刷新后再开始训练。", "small muted"));
           card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", () => reload(ctx), {type:"secondary"}));
           return card;
         }
+        choices = choices.filter(([id]) => id === recommended);
       }
       const selected = choices.some(([id]) => id === recommended) ? recommended
         : choices.some(([id]) => id === operation.recipe_id) ? operation.recipe_id
@@ -3810,13 +3808,33 @@ window.SpireProject = (() => {
   }
 
   async function localTrainingCard(ctx, dataset) {
+    const recordedNative = ["stpd/source3-ordered-native-training-source-v1",
+      "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema);
     const card = panel(
       "本机短训练",
-      dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
+      recordedNative ? "这里使用这份录制数据对应的本机训练配方；先核对训练用途，再明确选择配置与资源。"
+        : dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
         ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
         : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
-    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+    card.append(el("p", recordedNative
+      ? "使用原始公开观察、完整候选操作和符合条件的选择标签；等待检查与不确定尾段保留其原始范围。"
+      : "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+    let sourceBinding = null;
+    if (recordedNative) {
+      try {
+        sourceBinding = await request(ctx, `/api/local-datasets/binding/${dataset.artifact_id}`);
+      } catch {}
+      const expected = dataset.parameters.schema === "stpd/native-agent-sampled-training-source-v1"
+        ? "native_agent_sampled" : "ordered_source3";
+      if (sourceBinding?.schema !== "stpd/local-dataset-binding-v1"
+          || sourceBinding.artifact_id !== dataset.artifact_id || sourceBinding.sample_type !== expected
+          || sourceBinding.source_schema !== dataset.parameters.schema
+          || sourceBinding.curation_purpose !== "training") {
+        card.append(el("p", "本机尚未核对这份录制分区的训练用途；来源仍保留。请先完成用途保存或核对。", "small muted"));
+        return card;
+      }
+    }
     let data;
     try {
       data = await request(ctx, "/api/local-training/status");
@@ -3853,8 +3871,9 @@ window.SpireProject = (() => {
       return card;
     }
     if (data.schema === "spireagent/training-operation-snapshot-v1"
-        || ["stpd/structured-sequence-source-v1", "stpd/source3-ordered-native-training-source-v1"].includes(dataset.parameters?.schema))
-      return typedTrainingCard(ctx, dataset, data, capabilities);
+        || ["stpd/structured-sequence-source-v1", "stpd/source3-ordered-native-training-source-v1",
+            "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema))
+      return typedTrainingCard(ctx, dataset, data, capabilities, sourceBinding);
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
@@ -4366,6 +4385,268 @@ window.SpireProject = (() => {
       await reload(ctx);
     }, {type:"secondary"}));
     return section;
+  }
+
+  function nativeAgentSupportValid(support) {
+    return support?.source_profile === "native_agent_sampled_v1"
+      && support.raw_schema === "stpd/native-agent-sampled-original-bundle-v1"
+      && typeof support.product_entry_enabled === "boolean"
+      && Number.isSafeInteger(support.max_raw_references) && support.max_raw_references > 0
+      && support.max_raw_references <= 256 && Array.isArray(support.cohorts)
+      && support.cohorts.length > 0 && support.cohorts.every(value => typeof value === "string")
+      && support.cohorts.includes(support.default_cohort)
+      && Array.isArray(support.relations) && support.relations.length > 0
+      && support.relations.every(item => typeof item?.relation?.id === "string"
+        && hex(item.relation.sha256) && typeof item.label === "string"
+        && Array.isArray(item.cohorts) && item.cohorts.length > 0
+        && item.cohorts.every(value => support.cohorts.includes(value)))
+      && support.relations.some(item => item.relation.id === support.default_relation_id
+        && item.cohorts.includes(support.default_cohort));
+  }
+
+  function nativeAgentImportCard(ctx, status) {
+    const section = panel("导入已结束的程序示范", "选择已结束 Agent 运行的原始目录；保存原件后再独立检查样本、保存训练用途和开始训练。");
+    const support = status?.native_agent_support;
+    if (!nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
+      section.append(el("p", "此程序示范入口尚未开放；现有原件保留。", "small muted"));
+      return section;
+    }
+    if (status.native_legacy_recovery?.required === true
+        || (status.recording_type === "native_agent_sampled" && !hex(status.intent_id,32)
+          && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))) {
+      section.append(el("p", "旧版三字段导入请求仍待核对，当前不能保存新请求。请通过原三字段接口明确核对原目录、原来源与原程序；历史记录仅接受保存的原始规范目录，不推测目录别名。", "small muted"));
+      section.append(command(ctx,"refresh-native-agent-import","刷新目录导入状态",()=>reload(ctx),{type:"secondary"}));
+      return section;
+    }
+    const account = ctx.identity?.principal?.subject || ctx.identity?.status || "local";
+    const scope = JSON.stringify([status.configuration_id,status.workbench_instance_id,account]);
+    const fenceKey = "spireagent-native-import-unknown:" + scope;
+    let storageAvailable = typeof status.configuration_id === "string"
+      && typeof status.workbench_instance_id === "string", persisted = null;
+    try {
+      if (storageAvailable) {
+        persisted = JSON.parse(sessionStorage.getItem(fenceKey) || "null");
+        if (persisted !== null && (persisted.scope !== scope || !hex(persisted.request?.intent_id,32)
+            || !["directory","cohort","relation_id"].every(key => typeof persisted.request[key] === "string")))
+          storageAvailable = false;
+      }
+    } catch { storageAvailable = false; }
+    const writeFence = value => {
+      if (!storageAvailable) return false;
+      try {
+        value ? sessionStorage.setItem(fenceKey,JSON.stringify({scope,request:value}))
+          : sessionStorage.removeItem(fenceKey);
+        return true;
+      } catch { storageAvailable = false; return false; }
+    };
+    const recovery = (Array.isArray(status.native_intent_recovery) ? status.native_intent_recovery : [])
+      .filter(item => hex(item?.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(item.status));
+    if (!recovery.length && status.recording_type === "native_agent_sampled"
+        && hex(status.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))
+      recovery.push({intent_id:status.intent_id,status:status.status,cohort:status.cohort,relation_id:status.producer_student_relation?.id});
+    const cached = drafts.get("native-agent-import-scope") === scope
+      ? drafts.get("native-agent-import-request") : null;
+    if (persisted?.request?.intent_id === status.intent_id
+        && ["completed","failed"].includes(status.status)
+        && !recovery.some(item => item.intent_id === status.intent_id) && writeFence(null))
+      persisted = null;
+    // A syntactically valid completed draft is not a recovery correspondence.
+    // Retain an unacknowledged browser fence; otherwise choose only the owner's
+    // unresolved IDs, preserving a cached body only for that selected ID.
+    const selectedOwner = recovery.find(item => item.intent_id === cached?.intent_id) || recovery[0];
+    let recoveryTarget = persisted ? {mode:"fenced",request:persisted.request}
+      : selectedOwner ? {mode:"owner",request:{...selectedOwner,
+        ...(cached?.intent_id === selectedOwner.intent_id ? cached : {})}} : null;
+    const saved = recoveryTarget?.request || cached || {};
+    const serverOnlyRecovery = recoveryTarget?.mode === "owner";
+    const recoverIntent = serverOnlyRecovery ? select(section,"待核对的原始请求","native-agent-recovery-intent",
+      recovery.map(item => [item.intent_id,`${item.intent_id.slice(0,12)} · ${item.status}`]),selectedOwner.intent_id) : null;
+    drafts.set("native-agent-import-scope",scope); drafts.set("native-agent-import-request",saved);
+    const directory = input(section, "已结束 Agent 运行目录", "native-agent-import-directory", saved.directory || "");
+    const cohort = select(section, "数据来源声明", "native-agent-import-cohort",
+      support.cohorts.map(value => [value, support.cohort_labels?.[value] || value]),
+      support.cohorts.includes(saved.cohort) ? saved.cohort : support.default_cohort);
+    const relation = select(section, "产生这些示范的程序", "native-agent-import-relation",
+      support.relations.map(item => [item.relation.id, item.label]),
+      support.relations.some(item => item.relation.id === saved.relation_id)
+        ? saved.relation_id : support.default_relation_id);
+    const note = el("p", null, "small muted"); section.append(note);
+    let dispatched = false;
+    const requestBody = () => ({directory:directory.value.trim(), cohort:cohort.value, relation_id:relation.value});
+    const submitted = () => drafts.get("native-agent-import-request") || {};
+    const matching = () => status.recording_type === "native_agent_sampled"
+      && hex(submitted().intent_id,32) && status.intent_id === submitted().intent_id;
+    const sameOriginalRequest = () => {
+      const original = submitted();
+      return hex(original.intent_id,32) && JSON.stringify(requestBody()) === JSON.stringify({
+        directory:original.directory,cohort:original.cohort,relation_id:original.relation_id});
+    };
+    const uncertain = () => recoveryTarget !== null;
+    const valid = () => !dispatched && storageAvailable && status.status !== "pending" && !!status.csrf_token
+      && directory.value.trim().length > 0 && support.relations.some(item =>
+        item.relation.id === relation.value && item.cohorts.includes(cohort.value))
+      && (!uncertain() || recoveryTarget.mode === "owner" || sameOriginalRequest());
+    const options = {primary:true, disabled:!valid()};
+    const button = command(ctx, "import-native-agent-run", uncertain() ? "明确核对同一导入请求" : "明确保存程序示范原件", async () => {
+      if (!valid() || options.disabled) return;
+      const original = submitted();
+      const body = {...requestBody(),intent_id:recoveryTarget ? recoverIntent?.value || recoveryTarget.request.intent_id
+        : sameOriginalRequest() ? original.intent_id : trainingIntent()};
+      if (!writeFence(body)) {
+        options.disabled = true; button.disabled = true;
+        note.textContent = "浏览器无法保留原导入请求，当前没有提交；请恢复存储后明确核对。";
+        return;
+      }
+      drafts.set("native-agent-import-request", body);
+      dispatched = true; options.disabled = true; button.disabled = true;
+      try {
+        const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
+        if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
+        if (["completed","failed"].includes(observed.status)) writeFence(null);
+        await reload(ctx);
+      } catch (error) {
+        const unknown = ["request_unknown","request_unavailable","context_changed"].includes(error.message);
+        if (!unknown) writeFence(null);
+        if (error.message === "intent_payload_mismatch") {
+          // This known pre-IO rejection identifies the registered intent, but
+          // proves the entered body was not its original. Permit explicit body
+          // correction under that same ID instead of fencing the wrong body.
+          recoveryTarget = {mode:"owner",request:{intent_id:body.intent_id,
+            cohort:body.cohort,relation_id:body.relation_id}};
+          drafts.set("native-agent-import-request",recoveryTarget.request);
+        }
+        if (!unknown) { dispatched = false; options.disabled = !valid(); button.disabled = options.disabled; }
+        note.textContent = unknown ? "导入结果尚未确认；请先刷新原操作状态，不会自动重发。"
+          : "导入请求未被确认，请核对目录与来源选项后明确重试。";
+        throw error;
+      }
+    }, options);
+    const changed = () => { options.disabled = !valid(); button.disabled = options.disabled; };
+    directory.oninput = changed; cohort.onchange = changed; relation.onchange = changed;
+    if (recoverIntent) recoverIntent.onchange = () => {
+      const original = recovery.find(item => item.intent_id === recoverIntent.value);
+      if (original) {
+        recoveryTarget = {mode:"owner",request:original};
+        directory.value = cached?.intent_id === original.intent_id ? cached.directory || "" : "";
+        cohort.value = original.cohort; relation.value = original.relation_id;
+        drafts.set("native-agent-import-request",original);
+      }
+      changed();
+    };
+    section.append(button);
+    if (status.status === "pending") note.textContent = "正在保存原件；刷新只读取状态。";
+    if (uncertain()) note.textContent = "此导入请求结果待核对；只可明确使用同一请求身份与原正文核对，不会自动重发。";
+    if (uncertain() && !matching()) note.textContent += " 当前服务状态属于另一请求，不能据此确认本次结果。";
+    if (serverOnlyRecovery) note.textContent = "浏览器原正文未保留。请填写原目录与原选项，明确使用服务记录的原请求身份核对；服务会逐字段检查，不会生成新请求。";
+    if (!storageAvailable) note.textContent = "浏览器请求存储不可用或上下文未核对，当前不能提交或猜测恢复身份。";
+    if (matching() && hex(status.artifact_id))
+      section.append(link("打开已保存的程序示范原件", route("local-workspace", status.artifact_id)));
+    if (status.error_code) section.append(technical({error_code:status.error_code}, "查看导入状态"));
+    section.append(command(ctx, "refresh-native-agent-import", "刷新目录导入状态", () => reload(ctx), {type:"secondary"}));
+    return section;
+  }
+
+  async function localNativeAgentDatasetCard(ctx, candidates, detailId = null) {
+    const section = panel("从程序示范准备训练例子", "原始选择标签与已确认上下文分别保留；等待检查、不确定尾段和来源声明不补成选择标签。");
+    let status;
+    const selectors = new Map();
+    try { status = await request(ctx, "/api/local-datasets/status"); }
+    catch (error) { section.append(el("p", failure(error), "small muted")); return {section,selectors}; }
+    const support = status?.native_agent_support;
+    if (status?.schema !== "stpd/local-dataset-operation-v1"
+        || !nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
+      section.append(el("p", "程序示范数据入口尚未开放，不能提交预览或保存。", "small muted"));
+      return {section,selectors};
+    }
+    const key = "local-native-agent-source-ids", saved = drafts.get(key);
+    const selected = new Set((Array.isArray(saved) ? saved : detailId ? [detailId] : [])
+      .filter(value => hex(value)).slice(0, support.max_raw_references));
+    const ids = () => [...selected].sort();
+    const operation = status.operation || {status:"idle"};
+    let dirty = false, previewButton, publishButton, previewOptions;
+    const needsRecovery = () => ["failed", "interrupted"].includes(operation.status)
+      && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
+    const same = () => !dirty && operation.kind === "native_agent_sampled"
+      && operation.source_profile === support.source_profile && selected.size > 0
+      && Array.isArray(operation.artifact_ids) && ids().length === operation.artifact_ids.length
+      && ids().every((id,index) => operation.artifact_ids[index] === id);
+    const canPreview = () => !needsRecovery() && status.availability === "ready"
+      && status.operation?.status !== "pending" && !!status.csrf_token
+      && selected.size > 0 && selected.size <= support.max_raw_references
+      && (!detailId || selectors.has(detailId));
+    const changed = () => {
+      dirty = true; drafts.set(key, ids());
+      if (publishButton) publishButton.disabled = true;
+      if (previewButton) previewButton.disabled = !canPreview();
+      if (previewOptions) previewOptions.disabled = !canPreview();
+      for (const [id, checkbox] of selectors)
+        checkbox.disabled = !selected.has(id) && selected.size >= support.max_raw_references;
+    };
+    for (const item of candidates) {
+      if (item.parameters?.schema !== support.raw_schema || item.parameters?.source_profile !== support.source_profile) continue;
+      const checkbox = el("input"); checkbox.type = "checkbox";
+      checkbox.name = `local-native-agent-source-${item.artifact_id}`;
+      checkbox.checked = selected.has(item.artifact_id);
+      checkbox.disabled = !checkbox.checked && selected.size >= support.max_raw_references;
+      checkbox.onchange = () => {
+        if (checkbox.checked && selected.size < support.max_raw_references) selected.add(item.artifact_id);
+        else { selected.delete(item.artifact_id); checkbox.checked = false; }
+        changed();
+      };
+      selectors.set(item.artifact_id, checkbox);
+      if (detailId) { const label = el("label", "选择这份已保存原件", "project-check"); label.append(checkbox); section.append(label); }
+    }
+    if (same() && ["preview_ready","completed"].includes(operation.status)) {
+      const known = value => Number.isSafeInteger(value) && value >= 0 ? count(value) : "未知";
+      section.append(fields([["原始查询", known(operation.counts?.original_offers)],
+        ["已确认上下文", known(operation.counts?.known_context_samples)],
+        ["原始选择标签 N", known(operation.accepted_labels)],
+        ["多候选选择 N", known(operation.coverage?.multi_candidate_N)],
+        ["等待检查排除", known(operation.counts?.readiness_exclusions)],
+        ["确认终局观察", known(operation.counts?.known_ready_summary_samples)],
+        ["原生样本来源核验数", known(operation.counts?.real_native_samples)],
+        ["不确定尾段", Array.isArray(operation.censored_tails) ? count(operation.censored_tails.length) : "未知"]]));
+      for (const [title, values] of [["页面类型与上下文数量",operation.coverage?.native_interaction_kinds],
+          ["选择动作类别与数量",operation.coverage?.chosen_action_verbs], ["排除原因",operation.exclusions]])
+        if (values && typeof values === "object") section.append(table([title,"数量"],
+          Object.entries(values).map(([name,value]) => [name,known(value)])));
+      section.append(technical({qualification:operation.qualification,
+        native_origin_status:operation.native_origin_status, producer_student_relation:operation.producer_student_relation,
+        censored_tails:operation.censored_tails, split_status:operation.split_status}, "查看来源与尾段范围"));
+    }
+    const canPublish = () => status.availability === "ready" && !!status.csrf_token && same()
+      && hex(operation.preview_id,32) && (operation.status === "preview_ready" ? operation.can_publish === true
+        : needsRecovery() && operation.recovery_available === true);
+    if (canPublish()) {
+      const options = {primary:true};
+      publishButton = command(ctx,"publish-native-agent-dataset", needsRecovery() ? "明确核对上次保存结果" : "明确保存训练用途", async () => {
+        if (!canPublish() || options.disabled) return;
+        options.disabled = true; publishButton.disabled = true;
+        await request(ctx,"/api/local-datasets/publish",{preview_id:operation.preview_id},status.csrf_token);
+        await reload(ctx);
+      },options); section.append(publishButton);
+    }
+    if (operation.status === "pending") section.append(el("p","数据操作正在进行；刷新只读状态。","small muted"));
+    if (needsRecovery()) section.append(el("p","上次保存待核对；原选择与预览保留，不会自动重试。","small muted"));
+    if (operation.status === "preview_ready" && !same()) section.append(el("p","当前选择与原预览不匹配，不能保存。","small muted"));
+    if (same() && operation.status === "preview_ready" && !operation.can_publish)
+      section.append(el("p","当前预览没有可保存的选择标签，或用途条件尚未满足。","small muted"));
+    if (same() && operation.status === "completed" && hex(operation.result_artifact_id)) {
+      section.append(el("p","训练用途已保存；尚未开始训练。","small muted"));
+      section.append(link("打开程序示范训练数据集",route("local-workspace",operation.result_artifact_id)));
+    }
+    const options = {primary:true,disabled:!canPreview()}; previewOptions = options;
+    previewButton = command(ctx,"preview-native-agent-dataset","明确检查所选程序示范",async () => {
+      if (!canPreview() || options.disabled) return;
+      options.disabled = true; previewButton.disabled = true; drafts.set(key,ids());
+      await request(ctx,"/api/local-datasets/native-agent-preview",{artifact_ids:ids()},status.csrf_token);
+      await reload(ctx);
+    },options); section.append(previewButton);
+    section.append(command(ctx,"clear-native-agent-selection","清除程序示范选择",() => {
+      selected.clear(); for (const checkbox of selectors.values()) checkbox.checked=false; changed();
+    },{type:"secondary"}));
+    section.append(command(ctx,"refresh-native-agent-dataset","刷新程序示范准备状态",() => reload(ctx),{type:"secondary"}));
+    return {section,selectors};
   }
 
   async function localSource3DatasetCard(ctx, candidates, detailId = null) {
@@ -5151,12 +5432,16 @@ window.SpireProject = (() => {
           && value.parameters?.purpose === "training")
         box.append(await localTrainingCard(ctx, value));
       if (value.kind === "dataset" && ["stpd/structured-sequence-source-v1",
-          "stpd/source3-ordered-native-training-source-v1"].includes(value.parameters?.schema))
+          "stpd/source3-ordered-native-training-source-v1",
+          "stpd/native-agent-sampled-training-source-v1"].includes(value.parameters?.schema))
         box.append(await localTrainingCard(ctx, value));
       if (value.kind === "evidence" && value.parameters?.schema === "stpd/source3-original-bundle-v1") {
         box.append(el("p", `录制原始来源声明：${(value.parameters.source_kinds || []).join(" · ")}。声明不验证 Human 起源；导入本身没有训练用途。`, "small muted"));
         box.append((await localSource3DatasetCard(ctx, [value], value.artifact_id)).section);
       }
+      if (value.kind === "evidence"
+          && value.parameters?.schema === "stpd/native-agent-sampled-original-bundle-v1")
+        box.append((await localNativeAgentDatasetCard(ctx, [value], value.artifact_id)).section);
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/human-text-input-source-v1") {
         const bindingCard = panel("操作标签训练入口", "只在本机用途账本明确登记此来源用于训练后显示训练入口；操作标签不补成完整决策。");
         let binding = null;
@@ -5227,6 +5512,7 @@ window.SpireProject = (() => {
     const importStatus = await request(ctx, "/api/local-recordings/import/status");
     box.append(await nativeRecordingCard(ctx));
     box.append(localRecordingCard(ctx, importStatus));
+    box.append(nativeAgentImportCard(ctx, importStatus));
 
     const query = drafts.get("local-workspace-search") || "";
     const selectedKind = drafts.get("local-workspace-kind") || "";
@@ -5312,6 +5598,10 @@ window.SpireProject = (() => {
       && item.parameters?.schema === "stpd/source3-original-bundle-v1" && hex(item.artifact_id));
     const source3Dataset = source3Sources.length || (drafts.get("local-source3-source-ids") || []).length
       ? await localSource3DatasetCard(ctx, source3Sources) : null;
+    const nativeSources = (data.items || []).filter(item => item?.kind === "evidence"
+      && item.parameters?.schema === "stpd/native-agent-sampled-original-bundle-v1" && hex(item.artifact_id));
+    const nativeDataset = nativeSources.length || (drafts.get("local-native-agent-source-ids") || []).length
+      ? await localNativeAgentDatasetCard(ctx, nativeSources) : null;
     const rows = [];
     for (const item of data.items || []) {
       const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
@@ -5327,13 +5617,16 @@ window.SpireProject = (() => {
         technical(item, "查看 metadata 与 payload 摘要"),
         ...(humanDataset ? [selectionCell] : []),
         ...(source3Dataset ? [source3Dataset.selectors.get(item.artifact_id) || "—"] : []),
+        ...(nativeDataset ? [nativeDataset.selectors.get(item.artifact_id) || "—"] : []),
       ]);
     }
     box.append(table(["本机资料", "内容文件", "本机索引", "来源信息",
       ...(humanDataset ? ["加入操作标签集"] : []),
-      ...(source3Dataset ? ["加入 Source 3 预览"] : [])], rows));
+      ...(source3Dataset ? ["加入 Source 3 预览"] : []),
+      ...(nativeDataset ? ["加入程序示范预览"] : [])], rows));
     if (humanDataset) box.append(humanDataset.section);
     if (source3Dataset) box.append(source3Dataset.section);
+    if (nativeDataset) box.append(nativeDataset.section);
     if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
     const pagerBox = el("div", null, "project-actions");
     if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {
