@@ -44,6 +44,23 @@ _STATE_FILE = re.compile(r"^agent-state-([0-9a-f]{64})\.(bin|json)$")
 _BASE_FILES = {"adapter-attestation.json", "agent-manifest.json", "events.jsonl", "manifest.json"}
 _EXTRA_FILES = {"checksums.sha256", "evidence-manifest.json"}
 _CONTEXT = {"session_id", "recovery_epoch"}
+_EXECUTION_POLICY_FIELDS = {
+    "schema", "current_mode", "known_stale", "operational_outcome",
+    "max_known_stale_rejections", "max_consecutive_known_stale_rejections",
+}
+_DISPATCH_FIELDS = {
+    "runtime_instance_id", "client_session_id", "controller_lease_id", "controller_generation",
+}
+_NEXT_FIELDS = {
+    "continuity_token", "consumption_id", "state_version", "basis_acquisition_id", "received_cursor",
+}
+_OUTCOME_FIELDS = {
+    "schema", "basis_acquisition_id", "action_id", "consumption_id", "state_version", "result",
+}
+_DEFERRED_FIELDS = {
+    "request_id", "basis_acquisition_id", "consumption_id", "state_version",
+    "known_stale_rejections", "consecutive_known_stale_rejections",
+}
 _EVENT_FIELDS = {
     "native_session_attached": {"subscription", "environment"},
     "native_event_received": {"original", "received_cursor"},
@@ -77,6 +94,7 @@ _EVENT_FIELDS = {
     },
     "native_submission_not_started": {"request_id", "submission_epoch", "reason"},
     "native_result": {"result"},
+    "native_stale_decision_deferred": _DEFERRED_FIELDS,
     "native_request_pending": {"original"},
     "native_request_reconciled": {"original", "resolution", "result"},
     "native_request_unresolved": {"original", "reason"},
@@ -245,9 +263,51 @@ def _environment(value: object) -> dict[str, Any]:
     return result
 
 
+def _execution_policy(value: object) -> dict[str, Any]:
+    policy = _object(value, _EXECUTION_POLICY_FIELDS)
+    _require(
+        policy["schema"] == "sts2.policy-runtime/agent-execution-policy-1"
+        and policy["current_mode"] == "reader_owned_v1"
+        and policy["known_stale"] == "fresh_changed_current_v1"
+        and policy["operational_outcome"] == "known_not_started_v1",
+        "native_session_execution_policy",
+    )
+    total = _integer(policy["max_known_stale_rejections"], positive=True, maximum=16)
+    _integer(policy["max_consecutive_known_stale_rejections"],
+             positive=True, maximum=min(total, 4))
+    return policy
+
+
+def _dispatch_binding(value: object, runtime_instance_id: str) -> dict[str, Any]:
+    binding = _object(value, _DISPATCH_FIELDS)
+    for key in _DISPATCH_FIELDS - {"controller_generation"}:
+        _text(binding[key], maximum=256)
+    _integer(binding["controller_generation"], positive=True)
+    _require(binding["runtime_instance_id"] == runtime_instance_id,
+             "native_session_dispatch_runtime")
+    return binding
+
+
+def _known_stale(result: Mapping[str, Any]) -> bool:
+    """Classify an already validated, original-dispatch-joined full result.
+
+    Execution/effect/cancel remain their original values. This delivery fact
+    neither proves native settlement nor current live continuation eligibility.
+    """
+    return (
+        result["delivery"] == "not_started"
+        and result["reason"] == "stale_snapshot_or_binding"
+        and result["action"] is None
+        and result["stages"] == []
+        and result["retry"] == "never_automatic"
+    )
+
+
 def _agent_manifest(value: object) -> dict[str, Any]:
+    raw = _object(value)
+    opted_in = "execution_policy" in raw
     result = _object(
-        value,
+        raw,
         {
             "schema",
             "manifest_id",
@@ -259,8 +319,9 @@ def _agent_manifest(value: object) -> dict[str, Any]:
             "support",
             "limits",
             "claims",
-        },
+        } | ({"execution_policy"} if opted_in else set()),
     )
+    policy = _execution_policy(result["execution_policy"]) if opted_in else None
     _require(result["schema"] == MANIFEST_SCHEMA, "native_session_manifest_schema")
     _text(result["manifest_id"], maximum=256)
     agent = _object(result["agent"], {"id", "version", "provider", "architecture"})
@@ -339,6 +400,8 @@ def _agent_manifest(value: object) -> dict[str, Any]:
                  and input_["consumption_mode"] == "once_per_occurrence"
                  and input_["gap_policy"] == "handoff" and recovery["mode"] == "none",
                  "native_session_sampled_contract")
+    _require(policy is None or input_["history_mode"] == "sampled_current",
+             "native_session_execution_policy_input")
     seams = attachment["required_seams"]
     _require(isinstance(seams, list) and 0 < len(seams) <= 256, "native_session_required_seams")
     seam_ids = set()
@@ -380,6 +443,8 @@ def _agent_manifest(value: object) -> dict[str, Any]:
         "retain",
         "release",
     }
+    if policy is not None:
+        allowed.add("current_owned")
     minimum = {
         "capabilities",
         "attach",
@@ -393,6 +458,8 @@ def _agent_manifest(value: object) -> dict[str, Any]:
     }
     if input_["history_mode"] == "sampled_current":
         minimum.update({"current", "read", "catalog", "retain", "release"})
+        if policy is not None:
+            minimum.add("current_owned")
     elif input_["history_mode"] == "full_reference":
         minimum.update({"read", "catalog", "retain", "release"})
     elif "current" in methods:
@@ -762,9 +829,10 @@ def _budget(value: object) -> dict[str, Any]:
 
 
 def _pending(
-    value: object, run_id: str, session_id: str, submissions: Mapping[str, Any]
+    value: object, run_id: str, session_id: str, submissions: Mapping[str, Any],
+    *, opted_in: bool = False,
 ) -> dict[str, Any]:
-    original = _object(value, _PENDING_FIELDS)
+    original = _object(value, _PENDING_FIELDS | ({"dispatch_binding"} if opted_in else set()))
     for key in (
         "request_id",
         "run_id",
@@ -801,6 +869,9 @@ def _pending(
         and original["submission_epoch"] == attempt["recovery_epoch"],
         "native_session_pending_basis",
     )
+    if opted_in:
+        _require(_dispatch_binding(original["dispatch_binding"], original["runtime_instance_id"])
+                 == attempt["dispatch_binding"], "native_session_pending_dispatch")
     return original
 
 
@@ -911,6 +982,11 @@ def _result(value: object, attempt: Mapping[str, Any]) -> dict[str, Any]:
             attribution["runtime_instance_id"] == attempt["runtime_instance_id"],
             "native_session_result_attribution",
         )
+    if "dispatch_binding" in attempt:
+        binding = _dispatch_binding(attempt["dispatch_binding"], attempt["runtime_instance_id"])
+        _require(result["attribution"] is not None
+                 and all(result["attribution"][key] == binding[key] for key in _DISPATCH_FIELDS),
+                 "native_session_result_dispatch_binding")
     if result["observed_frame"] is not None:
         frame = _object(
             result["observed_frame"],
@@ -936,6 +1012,25 @@ def _result(value: object, attempt: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _operational_outcome(
+    value: object, attempt: Mapping[str, Any], result: Mapping[str, Any],
+    watermark: Mapping[str, Any],
+) -> dict[str, Any]:
+    outcome = _object(value, _OUTCOME_FIELDS)
+    _require(outcome["schema"] == "sts2.policy-runtime/known-not-started-outcome-1",
+             "native_session_operational_outcome_schema")
+    for key in ("basis_acquisition_id", "action_id", "consumption_id"):
+        _text(outcome[key], maximum=256)
+    _integer(outcome["state_version"], positive=True)
+    _require(_result(outcome["result"], attempt) == result and _known_stale(result)
+             and outcome["basis_acquisition_id"] == attempt["basis_acquisition_id"]
+             and outcome["action_id"] == attempt["action_id"]
+             and outcome["consumption_id"] == watermark["consumption_id"]
+             and outcome["state_version"] == watermark["state_version"],
+             "native_session_operational_outcome_binding")
+    return outcome
+
+
 @dataclass(frozen=True)
 class AgentSessionRunEvidence:
     directory: Path
@@ -944,10 +1039,32 @@ class AgentSessionRunEvidence:
     evidence_manifest: Mapping[str, Any]
     event_count: int
     content_id: str
+    _terminal_counts: tuple[int, int, int, int, int] | None = None
 
     @property
     def run_id(self) -> str:
         return str(self.manifest["run_id"])
+
+    @property
+    def terminal_summary(self) -> dict[str, Any] | None:
+        """Copy of opt-in recorded facts, never a live expiry/budget proof.
+
+        Original submissions are durable intents, not proof of SDK-started or
+        used-budget attempts. Results are complete original terminals from both
+        direct and reconciliation events, deduplicated before classification.
+        Legacy verified values retain their original semantics and return None.
+        """
+        if self._terminal_counts is None:
+            return None
+        keys = ("original_submission_count", "terminal_result_count", "known_delivered",
+                "known_stale_rejections", "consecutive_known_stale_rejections")
+        return {
+            "schema": "sts2.evidence/agent-session-terminal-summary-1",
+            "run_id": self.run_id, "content_id": self.content_id,
+            **dict(zip(keys, self._terminal_counts)),
+            "proof_scope": "recorded_dispatch_and_terminal_results",
+            "live_eligibility_proved": False,
+        }
 
 
 DESCRIPTOR = VerifierDescriptor(TYPE_ID, RUN_SCHEMA, 1, AgentSessionRunEvidence)
@@ -1166,7 +1283,7 @@ class AgentSessionRunEvidenceVerifier:
             ),
             "native_session_immutable_manifest",
         )
-        events = self._events(
+        events, terminal_counts = self._events(
             directory, run, agent, attestation["status"] == "attested", state_files, sample_files
         )
         identity = {
@@ -1180,6 +1297,7 @@ class AgentSessionRunEvidenceVerifier:
             immutable,
             len(events),
             _sha(_canonical_json(identity).encode("utf-8")),
+            terminal_counts,
         )
 
     def _events(
@@ -1190,7 +1308,7 @@ class AgentSessionRunEvidenceVerifier:
         attested: bool,
         state_files: set[str],
         sample_files: set[str],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], tuple[int, int, int, int, int] | None]:
         # The executable producer's exported AgentRuntimeEventPayloads map is closed.
         raw = (directory / "events.jsonl").read_bytes()
         _require(not raw or raw.endswith(b"\n"), "native_session_event_termination")
@@ -1199,6 +1317,17 @@ class AgentSessionRunEvidenceVerifier:
         epoch = 0
         witnesses: dict[str, dict[str, Any]] = {}
         submissions: dict[str, dict[str, Any]] = {}
+        submission_watermarks: dict[str, dict[str, Any]] = {}
+        terminal_results: dict[str, dict[str, Any]] = {}
+        reconciled_originals: dict[str, dict[str, Any]] = {}
+        direct_results: set[str] = set()
+        deferred_requests: set[str] = set()
+        policy = agent.get("execution_policy")
+        opted_in = policy is not None
+        known_delivered = known_stale_rejections = consecutive_known_stale_rejections = 0
+        refusal_fence: dict[str, Any] | None = None
+        stale_awaiting_disposition: str | None = None
+        terminal_blocked = False
         completed: set[str] = set()
         outstanding: set[str] = set()
         pending: dict[str, Any] | None = None
@@ -1225,11 +1354,34 @@ class AgentSessionRunEvidenceVerifier:
         tainted = False
         controller = "released"
         mode: str | None = None  # A finalized manifest records final mode, not initial mode.
+        recorded_budget: dict[str, Any] | None = None
         stream = _DeclaredConsumptionStream(agent)
         last_act: dict[str, Any] | None = None
         last_act_epoch: int | None = None
         agent_uncertain = False
+        path_failed = False
         attachment: tuple[dict[str, Any], dict[str, Any]] | None = None
+
+        def record_terminal(result: dict[str, Any]) -> bool:
+            # Both full terminal branches share the same immutable original.
+            # Count before testing recorded continuation eligibility, including
+            # threshold, Human/Stop/deadline and reconciliation arrivals.
+            nonlocal known_delivered, known_stale_rejections, consecutive_known_stale_rejections
+            request = result["request_id"]
+            previous = terminal_results.get(request)
+            _require(previous is None or previous == result,
+                     "native_session_terminal_result_changed")
+            if previous is not None:
+                return False
+            terminal_results[request] = result
+            if _known_stale(result):
+                known_stale_rejections += 1
+                consecutive_known_stale_rejections += 1
+            elif result["delivery"] == "delivered":
+                known_delivered += 1
+                consecutive_known_stale_rejections = 0
+            return True
+
         for sequence, event in enumerate(events, 1):
             event = _object(event, {"schema", "sequence", "recorded_at", "kind", "payload"})
             _require(
@@ -1244,7 +1396,10 @@ class AgentSessionRunEvidenceVerifier:
             )
             kind = _text(event["kind"], maximum=256)
             _require(kind in _EVENT_FIELDS, "native_session_event_kind")
-            payload = _object(event["payload"], _CONTEXT | _EVENT_FIELDS[kind])
+            extra = {"dispatch_binding"} if opted_in and kind == "native_submission_requested" else set()
+            payload = _object(event["payload"], _CONTEXT | _EVENT_FIELDS[kind] | extra)
+            _require(kind != "native_stale_decision_deferred" or opted_in,
+                     "native_session_deferred_without_policy")
             current_session = _text(payload["session_id"], maximum=256)
             current_epoch = _integer(payload["recovery_epoch"])
             _require(
@@ -1264,13 +1419,14 @@ class AgentSessionRunEvidenceVerifier:
                 "native_submission_requested",
                 "agent_state_stored",
                 "agent_state_restored",
+                "native_stale_decision_deferred",
             }:
                 _require(attested, "native_session_adapter_not_attested")
             if kind.startswith("agent_sample_"):
                 _require(agent["input"]["history_mode"] == "sampled_current", "native_session_sample_event_mode")
             if kind == "agent_sample_next_requested":
                 request = _text(payload["request_id"], maximum=256)
-                input_ = _object(payload["input"], {"continuity_token", "consumption_id", "state_version", "basis_acquisition_id", "received_cursor"})
+                input_ = _object(payload["input"], _NEXT_FIELDS | ({"operational_outcome"} if opted_in else set()))
                 _require(request.startswith("parent-") and request not in sample_next_ids
                          and sample_pending_next is None and sample_completed_next is None and not sample_ended
                          and input_["consumption_id"] == (None if last_report is None else last_report["consumption_id"])
@@ -1282,6 +1438,25 @@ class AgentSessionRunEvidenceVerifier:
                 _text(input_["continuity_token"], maximum=256)
                 _require(last_report is None or input_["continuity_token"] == last_report["continuity_token"],
                          "native_session_sample_next_continuity")
+                if opted_in:
+                    _require(mode in {"auto", "one_step", "shadow"}
+                             and not agent_uncertain and not tainted and not path_failed
+                             and not outstanding and pending is None
+                             and stale_awaiting_disposition is None and not terminal_blocked,
+                             "native_session_operational_next_owner")
+                    if refusal_fence is None:
+                        _require(input_["operational_outcome"] is None,
+                                 "native_session_unbound_operational_outcome")
+                    else:
+                        attempt = submissions[refusal_fence["request_id"]]
+                        _require(mode == "auto" and controller == "held" and sample_known
+                                 and current_epoch == attempt["recovery_epoch"]
+                                 and input_["consumption_id"] == refusal_fence["consumption_id"]
+                                 and input_["state_version"] == refusal_fence["state_version"]
+                                 and input_["basis_acquisition_id"] == attempt["basis_acquisition_id"],
+                                 "native_session_operational_next_fence")
+                        _operational_outcome(input_["operational_outcome"], attempt,
+                                             terminal_results[attempt["request_id"]], refusal_fence)
                 sample_next_ids.add(request); sample_pending_next = payload; sample_known = False
             elif kind == "agent_sample_next_completed":
                 _require(sample_pending_next is not None and sample_completed_next is None
@@ -1292,6 +1467,19 @@ class AgentSessionRunEvidenceVerifier:
                 _require(output["continuity_token"] == sample_pending_next["input"]["continuity_token"]
                          and (last_report is None or last_report["consumption_id"] in ack_offers),
                          "native_session_sample_next_ack")
+                if refusal_fence is not None:
+                    advanced = (last_report is not None
+                                and last_report["advanced"] is True
+                                and last_report["state_version"] > refusal_fence["state_version"]
+                                and last_report["consumption_id"] != refusal_fence["consumption_id"]
+                                and last_report["acquisition_id"] != refusal_fence["basis_acquisition_id"]
+                                and last_report["consumption_id"] in ack_offers)
+                    _require(advanced or output["directive"]["type"] in {"await", "close", "abstain"},
+                             "native_session_refused_basis_act")
+                    if advanced:
+                        # Exact ACK plus this matched completion retires the
+                        # original notification; write/ACK offer alone does not.
+                        refusal_fence = None
                 sample_completed_next = payload
             elif kind == "agent_sample_query_offered":
                 acquisition = _text(payload["acquisition_id"], maximum=256)
@@ -1489,6 +1677,15 @@ class AgentSessionRunEvidenceVerifier:
                     _require(payload["action_id"] in sample_catalogs.get(payload["basis_acquisition_id"], {}),
                              "native_session_sample_submission_member")
                 submissions[request_id] = payload
+                if opted_in:
+                    _dispatch_binding(payload["dispatch_binding"], payload["runtime_instance_id"])
+                    _require(refusal_fence is None and stale_awaiting_disposition is None,
+                             "native_session_submission_before_fresh_completion")
+                    assert last_report is not None
+                    submission_watermarks[request_id] = {
+                        key: last_report[key]
+                        for key in ("continuity_token", "consumption_id", "state_version")
+                    }
                 outstanding.add(request_id)
                 last_act, last_act_epoch = None, None
             elif kind == "native_submission_not_started":
@@ -1507,14 +1704,17 @@ class AgentSessionRunEvidenceVerifier:
                 )
                 outstanding.remove(request_id)
                 completed.add(request_id)
+                if opted_in:
+                    terminal_blocked = True
             elif kind == "native_result":
                 result = _object(payload["result"])
                 attempt = submissions.get(_text(result.get("request_id"), maximum=128))
+                duplicate = opted_in and result["request_id"] in terminal_results
                 _require(
                     attempt is not None
-                    and result["request_id"] in outstanding
-                    and result["request_id"] not in completed
-                    and pending is None,
+                    and (duplicate or (result["request_id"] in outstanding
+                                       and result["request_id"] not in completed
+                                       and pending is None)),
                     "native_session_result_without_submission",
                 )
                 assert attempt is not None
@@ -1522,12 +1722,58 @@ class AgentSessionRunEvidenceVerifier:
                 if agent["input"]["history_mode"] == "sampled_current" and result["action"] is not None:
                     _require(result["action"] == sample_catalogs.get(attempt["basis_acquisition_id"], {}).get(attempt["action_id"]),
                              "native_session_sample_result_member")
-                completed.add(result["request_id"])
-                outstanding.remove(result["request_id"])
-                tainted |= result["delivery"] in {"partially_delivered", "unknown"}
+                if not opted_in or record_terminal(result):
+                    completed.add(result["request_id"])
+                    outstanding.remove(result["request_id"])
+                    direct_results.add(result["request_id"])
+                    tainted |= result["delivery"] in {"partially_delivered", "unknown"}
+                    if opted_in and result["delivery"] != "delivered":
+                        terminal_blocked = True
+                    if opted_in and _known_stale(result):
+                        stale_awaiting_disposition = result["request_id"]
+            elif kind == "native_stale_decision_deferred":
+                request = _text(payload["request_id"], maximum=128)
+                attempt = submissions.get(request)
+                result = terminal_results.get(request)
+                watermark = submission_watermarks.get(request)
+                _integer(payload["known_stale_rejections"])
+                _integer(payload["consecutive_known_stale_rejections"])
+                _integer(payload["state_version"], positive=True)
+                _require(attempt is not None and result is not None and watermark is not None
+                         and request in direct_results and request not in deferred_requests
+                         and request == stale_awaiting_disposition and refusal_fence is None
+                         and _known_stale(result), "native_session_deferred_original_result")
+                assert attempt is not None and watermark is not None and policy is not None
+                _require(mode == "auto" and controller == "held" and sample_known
+                         and recorded_budget is not None and recorded_budget["state"] == "active"
+                         and not tainted and not agent_uncertain and not path_failed
+                         and stream.gap is None and not outstanding
+                         and pending is None and not sample_ended and sample_pending_next is None
+                         and sample_completed_next is None
+                         and current_epoch == attempt["recovery_epoch"]
+                         and last_report is not None
+                         and payload["basis_acquisition_id"] == attempt["basis_acquisition_id"]
+                         == last_report["acquisition_id"]
+                         and payload["consumption_id"] == watermark["consumption_id"]
+                         == last_report["consumption_id"]
+                         and payload["state_version"] == watermark["state_version"]
+                         == last_report["state_version"], "native_session_deferred_owner_prefix")
+                _require(payload["known_stale_rejections"] == known_stale_rejections
+                         and payload["consecutive_known_stale_rejections"] == consecutive_known_stale_rejections
+                         and known_stale_rejections < policy["max_known_stale_rejections"]
+                         and consecutive_known_stale_rejections < policy["max_consecutive_known_stale_rejections"],
+                         "native_session_deferred_counts")
+                # Recorded control/mode/budget state is checked; neither this
+                # event nor held-only controller events prove LIVE expiry or
+                # current remaining-budget eligibility. Runtime owns that gate.
+                refusal_fence = dict(payload)
+                deferred_requests.add(request)
+                stale_awaiting_disposition = None
+                terminal_blocked = False
             elif kind == "native_request_pending":
                 original = _pending(
-                    payload["original"], run["run_id"], current_session, submissions
+                    payload["original"], run["run_id"], current_session, submissions,
+                    opted_in=opted_in,
                 )
                 _require(
                     pending is None
@@ -1540,10 +1786,15 @@ class AgentSessionRunEvidenceVerifier:
                 pending = original
             elif kind in {"native_request_reconciled", "native_request_unresolved"}:
                 original = _pending(
-                    payload["original"], run["run_id"], current_session, submissions
+                    payload["original"], run["run_id"], current_session, submissions,
+                    opted_in=opted_in,
                 )
+                duplicate = (opted_in and kind == "native_request_reconciled"
+                             and payload["result"] is not None
+                             and original["request_id"] in terminal_results
+                             and reconciled_originals.get(original["request_id"]) == original)
                 _require(
-                    pending == original and mode == "human",
+                    (pending == original or duplicate) and mode == "human",
                     "native_session_reconcile_original",
                 )
                 if kind == "native_request_unresolved":
@@ -1579,11 +1830,13 @@ class AgentSessionRunEvidenceVerifier:
                             and (resolution == "tainted") == unknown,
                             "native_session_reconcile_result",
                         )
-                        tainted |= unknown
-                        completed.add(original["request_id"])
-                        outstanding.discard(original["request_id"])
-                        if not unknown:
-                            pending = None
+                        if not opted_in or record_terminal(result):
+                            reconciled_originals[original["request_id"]] = original
+                            tainted |= unknown
+                            completed.add(original["request_id"])
+                            outstanding.discard(original["request_id"])
+                            if not unknown:
+                                pending = None
             elif kind == "controller_acquired":
                 _require(payload["controller"] == "held", "native_session_controller")
                 controller = "held"
@@ -1601,7 +1854,7 @@ class AgentSessionRunEvidenceVerifier:
                 "handoff_to_human",
                 "stopped",
             }:
-                _budget(payload["autonomy_budget"])
+                recorded_budget = _budget(payload["autonomy_budget"])
                 _require(
                     payload["controller"] in {"held", "released", "unknown"},
                     "native_session_controller",
@@ -1646,6 +1899,7 @@ class AgentSessionRunEvidenceVerifier:
                     _require(payload["agent_state"] != "known" or sample_known,
                              "native_session_sample_known_without_child_directive")
                 agent_uncertain = payload["agent_state"] == "uncertain"
+                path_failed = True
                 stream.interrupted_batch()
             elif kind == "native_gap":
                 stream.record_gap(_object(payload["gap"]))
@@ -1703,7 +1957,9 @@ class AgentSessionRunEvidenceVerifier:
         _require(offered_samples <= set(sample_records) | discarded_samples, "native_session_undisposed_sample_offer")
         if agent["input"]["history_mode"] == "sampled_current":
             _require(sample_segment is None or sample_ended, "native_session_open_sample_segment")
-        return events
+        counts = ((len(submissions), len(terminal_results), known_delivered,
+                   known_stale_rejections, consecutive_known_stale_rejections) if opted_in else None)
+        return events, counts
 
     @staticmethod
     def _sample_files(directory: Path, payload: dict[str, Any], agent: dict[str, Any],

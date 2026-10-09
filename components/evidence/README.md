@@ -124,6 +124,50 @@ Checksummed transfer uses this same typed verifier; generic file integrity canno
 replace it. An installed consumer needs a release containing this additive API;
 the older rc.24 package does not acquire it from a source checkout edit.
 
+### Opt-in owned Current and known stale results
+
+The optional `sts2.policy-runtime/agent-execution-policy-1` manifest extension
+selects reader-owned Current and bounded fresh decisions under the closed
+[Agent Session contract](../policy-runtime/docs/AGENT_SESSION_PROTOCOL.md).
+It requires sampled-current/once-per-occurrence, no state recovery, and both
+`current` and `current_owned` methods. Legacy manifests retain their exact
+five-field Next and event/pending shapes. New policy Next has exactly one extra
+nullable `operational_outcome` field.
+
+Opted-in submissions record `dispatch_binding`. Every full terminal result must
+join its original runtime, client session, controller lease and generation.
+Pending/reconciliation records retain that binding, including after Human/Stop.
+Both terminal branches share original-result deduplication and classification:
+identical repeated terminals count once; changed original bodies fail. All exact
+`not_started`/`stale_snapshot_or_binding` results count, including threshold and
+Stop/deadline arrivals. Only delivered results reset consecutive count; total
+never resets. A pre-submit closure or pending lookup is not a full terminal.
+
+The closed `native_stale_decision_deferred` event follows its original result,
+has exact rebuilt counts strictly below both ceilings, and matches recorded
+Auto/epoch/known/no-pending/untainted accepted prefix. Notifications repeat the
+entire original result through unchanged readiness. An Act on the refused basis
+fails; only a new advanced ACK and matching completed Next retire the notification.
+These records do not prove private Teacher correction or numerical W contents.
+
+A verified opted-in value exposes a fresh `terminal_summary` dict copy; legacy
+values return `None`. Schema is `sts2.evidence/agent-session-terminal-summary-1`.
+Fields are `run_id`, `content_id`, `original_submission_count`,
+`terminal_result_count`, `known_delivered`, `known_stale_rejections`,
+`consecutive_known_stale_rejections`,
+`proof_scope: recorded_dispatch_and_terminal_results` and
+`live_eligibility_proved: false`. Submission count is durable intent count, not
+an independently inferred SDK-started/used-budget count. Counts reflect recorded
+full terminals: they invent no pending/absent result or admitted research N.
+
+Evidence validates recorded mode/epoch/prefix/dispatch/counter facts. Held-only
+controller events and deferral records have no live lease-expiry or current
+remaining-budget snapshot, so verification cannot independently prove live
+continuation eligibility. Those mandatory Runtime guards require their source
+tests and final native admission. Root must promote the version, exact external
+pin/lock and installed verifier before production use; no source-checkout
+fallback is introduced for the installed older package.
+
 ```text
 producer bundle
   -> typed verifier
