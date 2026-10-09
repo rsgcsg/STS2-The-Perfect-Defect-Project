@@ -884,8 +884,8 @@ def declared_teacher_fixture(original, definition=None):
     assert sources.evidence_owner.verify_agent_session_run_evidence(original.directory).passed
 
 
-def _synthetic_policy_relation(monkeypatch):
-    """Private unit-test tuple only; never an offered production producer."""
+def _synthetic_policy_relation(monkeypatch, producer_input=None):
+    """Explicit private synthetic test tuple; never an offered production producer."""
     from stpd import native_agent_sampled_source_spec as spec
     from stpd.canonical import semantic_hash
 
@@ -896,7 +896,16 @@ def _synthetic_policy_relation(monkeypatch):
                       artifact_sha256="d" * 64, execution_policy=copy.deepcopy(policy))
     definition["adapter"].update(id="synthetic-owned-stale-adapter", code_sha256="c" * 64)
     definition["agent_spec"].update(id="synthetic-owned-stale-program", version="0.0.0-synthetic")
-    body = {**copy.deepcopy(spec.FOCUS_TEACHER_RELATION_BODY),
+    original_body = spec.FOCUS_TEACHER_RELATION_BODY
+    if producer_input is not None:
+        from stpd.native_sampled_carry_spec import INPUT_SPEC_BODY
+
+        definition.update(input_spec=copy.deepcopy(producer_input["input_spec"]),
+                          input_spec_body=copy.deepcopy(INPUT_SPEC_BODY),
+                          state_format_version=producer_input["state_format_version"],
+                          state_recovery=copy.deepcopy(producer_input["state_recovery"]))
+        original_body = spec.RELATION_BODY
+    body = {**copy.deepcopy(original_body),
             "id": "synthetic-owned-stale-producer-relation-unit-test",
             "producer_definition": definition}
     relation = {"id": body["id"], "version": "1.0.0", "sha256": semantic_hash(body)}
@@ -909,6 +918,114 @@ def _synthetic_policy_relation(monkeypatch):
     monkeypatch.setattr(spec, "_closed_relations", lambda: (
         *tuples, ((FIXTURE_COHORT,), body, relation, projection)))
     return definition, relation, projection
+
+
+@pytest.fixture
+def owned_stale_original(monkeypatch):
+    """Owning sealed synthetic writer + actual source-local new Evidence verifier.
+
+    Components/evidence is selected only by the explicit pure TEST command.
+    No installed package/pin/version or production relation is changed here.
+    """
+    monkeypatch.syspath_prepend(str(ROOT / "components/evidence/tests"))
+    tools = runpy.run_path(str(ROOT / "components/evidence/tests/"
+                              "test_sampled_agent_session_run_evidence.py"))
+    helper = tools["OwnedStaleEvidenceFixture"]()
+    definition, relation, projection = _synthetic_policy_relation(
+        monkeypatch, helper.f.agent["input"])
+    helper.f.agent["adapter"] = copy.deepcopy(definition["adapter"])
+    helper.f.agent["agent"] = {"id": definition["agent_spec"]["id"],
+        "version": definition["agent_spec"]["version"], "provider": "stpd",
+        "architecture": "explicit_native_public_program_teacher"}
+    helper.f.agent["artifact"].update(id=definition["artifact_id"],
+                                     sha256=definition["artifact_sha256"])
+    helper.f.run.update(agent_id=definition["agent_spec"]["id"],
+                        agent_version=definition["agent_spec"]["version"],
+                        agent_artifact_sha256=definition["artifact_sha256"])
+    try:
+        yield helper, relation, projection, tools["OwnedStaleAgentSessionEvidenceTests"].original
+    finally:
+        helper.close()
+
+
+def test_typed_owned_stale_context_and_fresh_N_share_original_known_prefix(owned_stale_original):
+    helper, relation, _, _ = owned_stale_original
+    refused = helper.terminal(helper.submission(), defer=True)
+    helper.readiness()
+    helper.sample()
+    helper.terminal(helper.submission(), delivery="delivered")
+    helper.stop()
+    verified = sources._verified(helper.directory)
+    summary = verified.terminal_summary
+    assert {key: summary[key] for key in (
+        "original_submission_count", "terminal_result_count", "known_delivered",
+        "known_stale_rejections", "consecutive_known_stale_rejections")} == {
+            "original_submission_count": 2, "terminal_result_count": 2, "known_delivered": 1,
+            "known_stale_rejections": 1, "consecutive_known_stale_rejections": 0}
+    assert summary["proof_scope"] == "recorded_dispatch_and_terminal_results"
+    assert summary["live_eligibility_proved"] is False
+    runs, report = sources._projection(verified, "a" * 64, FIXTURE_COHORT, relation)
+    assert len(runs) == 1 and len(runs[0]["steps"]) == 2
+    first, later = runs[0]["steps"]
+    assert first["chosen_action_id"] is None
+    assert first["evidence"]["target"]["reason"] == "original_delivery_or_execution_not_N"
+    assert first["evidence"]["target"]["original_result"] == refused
+    assert later["chosen_action_id"] == later["catalog"][0]["action_id"]
+    assert [step["reset_before"] for step in (first, later)] == [True, False]
+    for key in ("runtime_instance_id", "session_id", "recovery_epoch"):
+        assert first["evidence"][key] == later["evidence"][key]
+    assert first["evidence"]["report"]["continuity_token"] == (
+        later["evidence"]["report"]["continuity_token"])
+    assert [step["evidence"]["report"]["state_version"] for step in (first, later)] == [1, 2]
+    assert report["counts"]["known_context_samples"] == 2
+    assert report["counts"]["eligible_unique_N"] == 1
+    assert report["counts"]["readiness_exclusions"] == 1 and report["censored_tail"] is None
+    assert report["counts"]["real_native_samples"] == 0
+
+
+@pytest.mark.parametrize("binding", ["different_valid_policy", "legacy_relation"])
+def test_new_typed_verifier_does_not_open_source_producer_policy_admission(
+    tmp_path, owned_stale_original, binding
+):
+    from stpd.native_agent_sampled_source_spec import RELATION_SPEC
+
+    helper, relation, _, _ = owned_stale_original
+    if binding == "different_valid_policy":
+        helper.f.agent["execution_policy"]["max_known_stale_rejections"] -= 1
+    else:
+        relation = RELATION_SPEC
+    helper.terminal(helper.submission(), defer=True)
+    helper.stop()
+    # Actual strict Evidence accepts the declared policy and original trace.
+    verified = sources._verified(helper.directory)
+    assert verified.terminal_summary["known_stale_rejections"] == 1
+    store, _ = setup_store(tmp_path)
+    with pytest.raises(BoundaryError, match="producer_execution_policy_relation"):
+        sources.publish_native_agent_sampled_raw(
+            store, helper.directory, IMPORTER, relation=relation)
+    assert not store.manifest_ids(), "typed grammar acceptance cannot bypass the closed producer"
+
+
+@pytest.mark.parametrize("delivery", ["unknown", "partially_delivered", "pending"])
+def test_typed_owned_policy_keeps_uncertain_or_pending_original_tail_censored(
+    owned_stale_original, delivery
+):
+    helper, relation, _, pending_original = owned_stale_original
+    attempt = helper.submission()
+    if delivery == "pending":
+        pending = pending_original(attempt)
+        helper.f.add("native_request_pending", original=copy.deepcopy(pending))
+        helper.stop(pending=pending)
+    else:
+        helper.terminal(attempt, delivery=delivery)
+        helper.stop()
+    verified = sources._verified(helper.directory)
+    runs, report = sources._projection(verified, "a" * 64, FIXTURE_COHORT, relation)
+    assert len(runs[0]["steps"]) == 1 and runs[0]["steps"][0]["chosen_action_id"] is None
+    assert report["counts"]["eligible_unique_N"] == 0
+    assert report["censored_tail"]["reason"] == (
+        "original_delivery_outstanding_tail" if delivery == "pending"
+        else "original_delivery_uncertain_tail")
 
 
 @pytest.mark.parametrize("name", ["fixture", "TEACHER", "MAP_TEACHER", "FOCUS_TEACHER"])

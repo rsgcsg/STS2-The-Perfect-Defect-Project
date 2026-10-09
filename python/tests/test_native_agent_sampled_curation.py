@@ -17,6 +17,9 @@ from test_native_agent_sampled_source import (
 from test_native_agent_sampled_source import (
     original as original,
 )
+from test_native_agent_sampled_source import (
+    owned_stale_original as owned_stale_original,
+)
 from test_protocol_source import setup_store
 
 from spireagent.artifact_contracts import Producer
@@ -26,6 +29,41 @@ from stpd.fullrun import ordered_source as ordered
 
 SOURCE3 = ROOT / "components/evidence/tests/fixtures/source_session_v3/bundle"
 RECORDER = Producer("fixture://original-Source3-production-path", "e" * 40, "a" * 64)
+
+
+def test_owned_stale_synthetic_prefix_replays_and_reserves_every_original_offer(
+    tmp_path, owned_stale_original
+):
+    """Source-local owning Evidence + private synthetic tuple, never production admission."""
+    helper, relation, _, _ = owned_stale_original
+    helper.terminal(helper.submission(), defer=True)
+    helper.readiness()
+    helper.sample()
+    helper.terminal(helper.submission(), delivery="delivered")
+    helper.stop()
+    original_bytes = {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+    store, owner = setup_store(tmp_path)
+    raw = direct.publish_native_agent_sampled_raw(
+        store, helper.directory, IMPORTER, relation=relation)
+    ref = direct.publish_native_agent_sampled_admission(store, raw.artifact_id, PROJECTOR)
+    partition = direct.publish_native_agent_sampled_partition(store, (ref,), "train", PROJECTOR)
+    verified = direct.verify_native_agent_sampled_partition(store, partition.manifest.artifact_id)
+    assert verified.source_ids == (raw.artifact_id,) and len(verified.index) == 3
+    assert [row["admitted"] for row in verified.index] == [True, False, True]
+    assert [row["N_eligible"] for row in verified.index] == [False, False, True]
+    assert verified.index[0]["target_eligibility"] == "original_delivery_or_execution_not_N"
+    assert {row["source_group"] for row in verified.index} == {"protocol-runtime:runtime-fixture"}
+    reservation = owner.reserve_verified_native_agent_sampled_source(
+        store, partition.manifest.artifact_id)
+    assert reservation["source_groups"] == ["protocol-runtime:runtime-fixture"]
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_source_decisions WHERE source=?",
+                          (raw.artifact_id,)).fetchone() == (3,)
+        assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone() == (0,)
+    with pytest.raises(BoundaryError, match="protocol_training_use_missing"):
+        owner.require_verified_native_agent_sampled_training_use(
+            store, partition.manifest.artifact_id, "1" * 32)
+    assert original_bytes == {path.name: path.read_bytes() for path in helper.directory.iterdir()}
 
 
 def source3(store, split="train"):
