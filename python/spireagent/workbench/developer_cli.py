@@ -179,9 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--predecessor-source3-bundle",
         type=Path,
-        help="already packed immutable typed Source3 closure bundle; never packs during preflight",
+        help="recorded predecessor only; forbidden for Source3-off; no preflight packing",
     )
-    parser.add_argument("--predecessor-source3-content-id")
+    parser.add_argument(
+        "--predecessor-source3-content-id",
+        help="paired with the recorded predecessor's Source3 bundle",
+    )
     parser.add_argument(
         "--plan-only",
         action="store_true",
