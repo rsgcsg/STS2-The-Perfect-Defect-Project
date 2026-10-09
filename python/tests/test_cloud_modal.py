@@ -82,7 +82,10 @@ def test_submit_serialize_poll_and_cancel_use_exact_target_and_receipt() -> None
     assert "signed-URL" not in str(error.value)
 
 
-def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmission() -> None:
+@pytest.mark.parametrize("poll_timeout", [modal_exceptions.TimeoutError, TimeoutError])
+def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmission(
+    poll_timeout,
+) -> None:
     selected = target()
     request = ComputeRequest("training", "a" * 64, PRODUCER, "attempt-1")
     receipt = ComputeReceipt(
@@ -91,7 +94,7 @@ def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmissi
     )
     call = FakeCall(
         {"target_id": selected.target_id, "receipt": receipt.to_dict()},
-        modal_exceptions.TimeoutError("no result yet"),
+        poll_timeout("no result yet"),
     )
     function = FakeFunction(call)
     provider = ModalProvider(selected, sdk=sdk_for(function, selected))
@@ -110,7 +113,6 @@ def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmissi
     "failure,code",
     [
         (modal_exceptions.FunctionTimeoutError, "execution_timeout"),
-        (TimeoutError, "result_unavailable"),
         (ConnectionError, "result_unavailable"),
         (RuntimeError, "result_unavailable"),
     ],

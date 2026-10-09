@@ -33,6 +33,7 @@ class Wire:
         self.polls = []
         self.cancellations = []
         self.submit_error = None
+        self.cancel_error = None
         self.result = None
         self.execution_timeout = False
         self.live_app_unavailable = False
@@ -91,6 +92,8 @@ class Wire:
         assert isinstance(request, api.FunctionCallCancelRequest)
         assert request.function_call_id == self.call_id and request.terminate_containers
         self.cancellations.append(request)
+        if self.cancel_error is not None:
+            raise self.cancel_error
         return Empty()
 
 
@@ -210,3 +213,17 @@ def test_real_sdk_cancel_ack_does_not_create_a_terminal_receipt_or_new_call(sdk_
     assert len(wire.lookups) == len(wire.submissions) == 1
     assert all(item.function_call_id == saved["call_id"]
                for item in [*wire.polls, *wire.cancellations])
+
+
+def test_real_sdk_cancel_transport_timeout_remains_unknown_without_retry(sdk_wire):
+    provider, wire = sdk_wire
+    handle = provider.submit(request())
+    saved = handle.to_dict()
+    wire.cancel_error = TimeoutError("cancel acknowledgement may have been lost")
+    with pytest.raises(BoundaryError) as error:
+        provider.cancel(provider.restore_handle(saved))
+    assert error.value.code == "cancellation_unknown"
+    assert handle.to_dict() == saved
+    assert len(wire.submissions) == len(wire.cancellations) == 1
+    assert wire.cancellations[0].function_call_id == saved["call_id"]
+    assert not wire.polls and wire.result is None
