@@ -207,7 +207,7 @@ def synthetic_completion(tmp_path):
     )
     ObjectStoreRunReporter(archive, archive.blobs).complete(result)
     calls = []
-    owner = SimpleNamespace(require_training_datasets=lambda *args: calls.append(args))
+    owner = SimpleNamespace(verified_training_receipt=lambda *args: calls.append(args))
     return archive, model, owner, calls
 
 
@@ -261,6 +261,9 @@ def test_common_export_register_rebind_and_budget_route(tmp_path, monkeypatch):
     exported.start(model.artifact_id)
     exported.thread.join(timeout=10)
     assert exported.status()["operation"]["status"] == "completed"
+    assert inference_loads == [{"runtime_device": "cpu"}]
+    previous = exported.status()["operation"]
+    assert exported.start(model.artifact_id)["operation"] == previous
     assert inference_loads == [{"runtime_device": "cpu"}]
     destination = exported.verified_public_m0_for_registration(model.artifact_id)
     assert inference_loads == [{"runtime_device": "cpu"}]  # byte proof rebind, no second load

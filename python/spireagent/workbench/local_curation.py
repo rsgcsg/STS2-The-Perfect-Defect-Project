@@ -6,6 +6,7 @@ not: opening an existing workspace never creates or repairs either one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -27,7 +28,8 @@ from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.hub.database import create_private_database
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
+from spireagent.package_identity import file_sha256
 from spireagent.research_curation import CurationLedger, InventoryPending
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
@@ -57,6 +59,40 @@ REQUIRED_INDEXES = {
     "curation_run_claims",
     "curation_latest_annotation",
 }
+
+TRAINING_PROJECTION_RECEIPT_SCHEMA = "stpd/local-training-projection-receipt-v2"
+# decision_cache owns the installed Evidence and base projection fingerprint.
+# These are its canonical-curation admission dependencies, not all Python owners.
+TRAINING_PROJECTION_ADMISSION_FILES = (
+    "stpd/fullrun/curated_dataset.py", "stpd/fullrun/dataset_policy.py",
+    "stpd/fullrun/semantic_projection.py", "stpd/canonical.py",
+    "spireagent/artifact_contracts.py", "spireagent/hub/database.py",
+    "spireagent/hub/uploads.py", "spireagent/research_curation.py",
+    "spireagent/storage/archives.py", "spireagent/storage/blobs.py",
+    "spireagent/storage/local.py", "spireagent/storage/store.py",
+    "spireagent/workbench/local_curation.py", "uv.lock",
+)
+
+
+def training_projection_compatibility() -> str:
+    """Pin the actual installed verifier/projection and exact admission semantics."""
+    from sts2_platform_evidence.human_session_bundle_v3 import DESCRIPTOR
+
+    from stpd.fullrun.decision_cache import implementation_identity
+
+    root = Path(__file__).resolve().parents[2]
+    rows = []
+    for name in TRAINING_PROJECTION_ADMISSION_FILES:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            raise BoundaryError("local_curation", "projection_source_unavailable")
+        rows.append({"path": name, "sha256": file_sha256(path)})
+    return hashlib.sha256(json_bytes({
+        "projection_verifier_sha256": implementation_identity(),
+        "admission_files": rows,
+        "verifier": {"type_id": DESCRIPTOR.type_id, "schema": DESCRIPTOR.schema,
+                     "version": DESCRIPTOR.version},
+    })).hexdigest()
 
 
 class LocalLedger(CurationLedger):
@@ -870,6 +906,105 @@ class LocalCurationOwner:
                 binding["qualified_run_ids"], operation_id,
             )
         return self._training_use_summary(bindings, operation_id)
+
+    def _training_receipt_context(self, store: ManifestArtifactStore,
+                                  dataset_ids: tuple[str, ...], operation_id: str
+                                  ) -> tuple[str, str]:
+        digest(operation_id, "local_curation.training_operation", length=32)
+        if (not isinstance(store.blobs, LocalBlobStore)
+                or store.blobs.root != self.store_dir.resolve()):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        if (not isinstance(dataset_ids, tuple) or not 1 <= len(dataset_ids) <= 100
+                or len(set(dataset_ids)) != len(dataset_ids)):
+            raise BoundaryError("local_curation", "training_dataset_selection_invalid")
+        for identity in dataset_ids:
+            digest(identity, "local_curation.training_dataset")
+        compatibility = training_projection_compatibility()
+        context = hashlib.sha256(json_bytes({
+            "owner": list(self.identity), "dataset_ids": sorted(dataset_ids),
+            "operation_id": operation_id, "compatibility_sha256": compatibility,
+        })).hexdigest()
+        return context, compatibility
+
+    def verified_training_receipt(self, store: ManifestArtifactStore,
+                                  dataset_ids: tuple[str, ...], operation_id: str) -> str:
+        """Explicit full verification once; no new training uses or reservations.
+
+        V1/unbound proofs remain historical. A changed verifier/projection creates
+        a different context and requires a new full check under this owner.
+        """
+        context, compatibility = self._training_receipt_context(store, dataset_ids, operation_id)
+        with self.transaction() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS local_training_projection_receipts("
+                       "context TEXT PRIMARY KEY,identity TEXT UNIQUE NOT NULL,"
+                       "receipt TEXT NOT NULL)")
+            previous = db.execute("SELECT identity FROM local_training_projection_receipts "
+                                  "WHERE context=?", (context,)).fetchone()
+        if previous is not None:
+            self.require_training_receipt(store, dataset_ids, operation_id, previous[0])
+            return str(previous[0])
+        summary = self.require_training_datasets(store, dataset_ids, operation_id)
+        value = {"schema": TRAINING_PROJECTION_RECEIPT_SCHEMA, "owner": list(self.identity),
+                 "compatibility_sha256": compatibility, "summary": summary}
+        raw = json_bytes(value)
+        identity = hashlib.sha256(raw).hexdigest()
+        with self.transaction() as db:
+            db.execute("INSERT OR IGNORE INTO local_training_projection_receipts VALUES(?,?,?)",
+                       (context, identity, raw.decode("utf-8")))
+            actual = db.execute("SELECT identity FROM local_training_projection_receipts "
+                                "WHERE context=?", (context,)).fetchone()
+            if actual is None or actual[0] != identity:
+                raise BoundaryError("local_curation", "training_receipt_conflict")
+        self.require_training_receipt(store, dataset_ids, operation_id, identity)
+        return identity
+
+    def require_training_receipt(self, store: ManifestArtifactStore,
+                                 dataset_ids: tuple[str, ...], operation_id: str,
+                                 receipt_id: str) -> dict:
+        """Consume only the owner-held proof, while rechecking today's live authority.
+
+        This checks immutable manifests and current indexes/claims/Gold/use rows;
+        it does not claim to rehash every historical source payload on each rebind.
+        """
+        from stpd.fullrun.dataset_policy import training_sources
+
+        digest(receipt_id, "local_curation.training_receipt")
+        context, compatibility = self._training_receipt_context(store, dataset_ids, operation_id)
+        with self.transaction() as db:
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                "AND name='local_training_projection_receipts'").fetchone()
+            row = (db.execute("SELECT identity,receipt FROM local_training_projection_receipts "
+                              "WHERE context=?", (context,)).fetchone() if exists else None)
+        if (row is None or row[0] != receipt_id
+                or hashlib.sha256(row[1].encode("utf-8")).hexdigest() != receipt_id):
+            raise BoundaryError("local_curation", "verified_training_receipt_required")
+        value = object_fields(json.loads(row[1]), {
+            "schema", "owner", "compatibility_sha256", "summary",
+        }, "local_curation.training_receipt")
+        summary = value["summary"]
+        if not isinstance(summary, dict) or not isinstance(summary.get("datasets"), list):
+            raise BoundaryError("local_curation", "training_receipt_binding_mismatch")
+        bindings = summary["datasets"]
+        if (value["schema"] != TRAINING_PROJECTION_RECEIPT_SCHEMA
+                or value["owner"] != list(self.identity)
+                or value["compatibility_sha256"] != compatibility
+                or summary.get("operation_id") != operation_id
+                or sorted(binding["artifact_id"] for binding in bindings) != sorted(dataset_ids)
+                or summary != self._training_use_summary(bindings, operation_id)):
+            raise BoundaryError("local_curation", "training_receipt_binding_mismatch")
+        for binding in bindings:
+            training_sources(store, binding["artifact_id"])
+            for source in binding["sources"]:
+                evidence = store.get_manifest(source["artifact_id"])
+                if evidence.payload("archive").sha256 != source["archive_sha256"]:
+                    raise BoundaryError("local_curation", "source_identity_conflict")
+        self._check_training_bindings(bindings)
+        for binding in bindings:
+            self.ledger.require_training_use(
+                binding["artifact_id"], (s["artifact_id"] for s in binding["sources"]),
+                binding["qualified_run_ids"], operation_id,
+            )
+        return dict(summary)
 
     def reserve_allocation_dev(self, store: ManifestArtifactStore, model_id: str,
                                allocation_id: str, training_operation_id: str,

@@ -590,6 +590,11 @@ class LocalModelRegistration:
                  models: LocalModelService) -> None:
         self.config, self.export, self.models = config, export, models
 
+    def _export_status(self, identity: str) -> dict[str, Any]:
+        status_for_model = getattr(self.export, "status_for_model", None)
+        return (status_for_model(identity) if callable(status_for_model)
+                else self.export.status())
+
     def _entries(self) -> list[dict[str, Any]]:
         # LocalModelService validates the shipped and private catalog together.
         self.models.registry()
@@ -699,8 +704,11 @@ class LocalModelRegistration:
 
     def _status(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
-        observed = self.export.status()
+        observed = self._export_status(identity)
         operation = observed["operation"]
+        if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
+            return _public(identity, "unavailable", profile="public-snapshot-m2-v1",
+                           reason_code="public_m2_runtime_contract_unavailable")
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._status_native(identity, observed, environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m0":
@@ -899,8 +907,11 @@ class LocalModelRegistration:
 
         deadline = monotonic() + REGISTRATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
-        observed = self.export.status()
+        observed = self._export_status(identity)
         operation = observed["operation"]
+        if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
+            raise BoundaryError("local_model_registration",
+                                "public_m2_runtime_contract_unavailable")
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._register_native(identity, environment_kind=environment_kind,
                                          deadline=deadline)

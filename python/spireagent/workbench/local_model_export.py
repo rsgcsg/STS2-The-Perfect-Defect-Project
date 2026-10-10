@@ -50,6 +50,7 @@ RECEIPT_SCHEMA = "stpd/local-memory-export-verification-v1"
 OPERATION_FILE = "local-model-export-operation.json"
 LOCK_FILE = ".local-model-export.lock"
 EXPORT_ROOT = "model-exports"
+COMPLETED_ROOT = "model-export-receipts"
 SUPPORT_SCHEMA = "stpd/local-model-export-support-v1"
 
 
@@ -65,7 +66,8 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
 
 
 def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
-                 structured: bool = False, native: bool = False, public_m0: bool = False) -> Path:
+                 structured: bool = False, native: bool = False, public_m0: bool = False,
+                 public_m2: bool = False) -> Path:
     state = config.state_dir
     if not _ordinary(state, directory=True):
         raise BoundaryError("local_model_export", "unsafe_export_root")
@@ -79,12 +81,13 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
     if target.exists() or target.is_symlink():
         if not _ordinary(target, directory=True):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
-        names = (("model.json", "weights.safetensors", "state-tokenizer.json", "action-codec.json")
+        names = (("model.json", "weights.tensor-tree", "state_tokenizer.json") if public_m2 else
+                 ("model.json", "weights.safetensors", "state-tokenizer.json", "action-codec.json")
                  if public_m0 else ("model.json", "weights.tensor-tree")
                  if structured or native else
                  ("model.json", "weights.tensor-tree", "tokenizer.json") if memory
                  else ("model.json", "weights.safetensors", "tokenizer.json"))
-        if (memory or structured or native or public_m0) and (
+        if (memory or structured or native or public_m0 or public_m2) and (
                 {path.name for path in target.iterdir()} != set(names)):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
         for name in names:
@@ -395,7 +398,15 @@ class LocalModelExport:
             return result
         schema = info.get("schema")
         memory_recipe = None
-        if schema == "stpd/stage1a-light-action-m0-public-model-v1":
+        if schema == "stpd/public-m2-model-v1":
+            config = info.get("config", {})
+            if (not isinstance(config, dict)
+                    or config.get("sequence_profile") != "stpd/public-m2-observation-only-v1"
+                    or config.get("prior_action_profile") != "stpd/public-m2-no-prior-action-v1"
+                    or config.get("feedback_profile") != "stpd/public-m2-no-feedback-v1"):
+                return result
+            model_type, profile = "public_m2", "public-snapshot-m2-v1"
+        elif schema == "stpd/stage1a-light-action-m0-public-model-v1":
             config = info.get("config", {})
             if (not isinstance(config, dict)
                     or config.get("recipe") != "stage1a.dsimple.light-action.m0.s.v1"
@@ -426,19 +437,23 @@ class LocalModelExport:
     def _path(self) -> Path:
         return self.config.state_dir / OPERATION_FILE
 
-    def _read(self) -> dict[str, Any]:
-        path = self._path()
+    def _read(self, path: Path | None = None) -> dict[str, Any]:
+        path = path or self._path()
         if not path.exists() and not path.is_symlink():
             return {"status": "idle"}
         if not _ordinary(path, directory=False):
             raise BoundaryError("local_model_export", "operation_recovery_required")
         try:
-            if path.stat().st_size > 4096:
+            if path.stat().st_size > 64 * 1024:
                 raise ValueError
             value = json.loads(path.read_bytes())
-            if (not isinstance(value, dict) or value.get("schema") not in {SCHEMA, SCHEMA_V2}
+            if (not isinstance(value, dict) or value.get("schema") not in {
+                    SCHEMA, SCHEMA_V2, "stpd/local-model-export-operation-v4"}
                     or value.get("status") not in {"pending", "completed", "failed"}
                     or not isinstance(value.get("store_root"), str)):
+                raise ValueError
+            if (value["schema"] == "stpd/local-model-export-operation-v4"
+                    and value.get("model_type") != "public_m2"):
                 raise ValueError
             if value["schema"] == SCHEMA_V2:
                 if (value.get("model_type") != "memory"
@@ -485,6 +500,10 @@ class LocalModelExport:
                         raise ValueError
                     digest(receipt["lineage_sha256"], "local_model_export.lineage")
                     digest(receipt["package_sha256"], "local_model_export.package")
+            if value.get("model_type") == "public_m2":
+                from spireagent.workbench.public_m2_export_support import checked_operation
+
+                checked_operation(value)
             digest(value["model_id"], "local_model_export.model_id")
             digest(value["operation_id"], "local_model_export.operation_id", length=32)
             if value["status"] == "completed" and (
@@ -497,12 +516,45 @@ class LocalModelExport:
         except (OSError, ValueError, KeyError, TypeError, BoundaryError) as error:
             raise BoundaryError("local_model_export", "operation_recovery_required") from error
 
+    def _model_operation(self, identity: str) -> dict[str, Any]:
+        """The active slot is distinct from a previously completed model proof."""
+        active = self._read()
+        if active.get("model_id") == identity:
+            return active
+        root = self.config.state_dir / COMPLETED_ROOT
+        if (root.exists() or root.is_symlink()) and not _ordinary(root, directory=True):
+            raise BoundaryError("local_model_export", "operation_recovery_required")
+        value = self._read(root / (identity + ".json"))
+        if value.get("status") != "idle" and (
+                value.get("status") != "completed" or value.get("model_id") != identity):
+            raise BoundaryError("local_model_export", "operation_recovery_required")
+        return value
+
+    def _archive_completed(self, value: dict[str, Any]) -> None:
+        """Retain a known terminal receipt in the same export owner, never pending."""
+        if value.get("status") != "completed":
+            raise BoundaryError("local_model_export", "completed_export_required")
+        identity = digest(value.get("model_id"), "local_model_export.model_id")
+        root = self.config.state_dir / COMPLETED_ROOT
+        if root.exists() or root.is_symlink():
+            if not _ordinary(root, directory=True):
+                raise BoundaryError("local_model_export", "operation_recovery_required")
+        else:
+            root.mkdir(mode=0o700)
+        target = root / (identity + ".json")
+        if target.exists() or target.is_symlink():
+            previous = self._read(target)
+            if previous.get("status") != "completed" or previous.get("model_id") != identity:
+                raise BoundaryError("local_model_export", "operation_recovery_required")
+        atomic_json(target, value)
+
     def _public(self, value: dict[str, Any]) -> dict[str, Any]:
         operation = {key: value[key] for key in
                      ("status", "operation_id", "model_id", "model_type",
                       "payload_bytes", "error_code")
                      if key in value}
-        if value.get("model_type") == "public_m0" and value.get("verified_receipt") is not None:
+        if (value.get("model_type") in {"public_m0", "public_m2"}
+                and value.get("verified_receipt") is not None):
             operation["verified_receipt"] = value["verified_receipt"]
         if (operation["status"] == "pending"
                 and (self.thread is None or not self.thread.is_alive())):
@@ -523,8 +575,14 @@ class LocalModelExport:
         return {"schema": value.get("schema", SCHEMA), "operation": operation}
 
     def status(self) -> dict[str, Any]:
+        return self._status()
+
+    def status_for_model(self, model_id: object) -> dict[str, Any]:
+        return self._status(digest(model_id, "local_model_export.model_id"))
+
+    def _status(self, identity: str | None = None) -> dict[str, Any]:
         with self.lock:
-            value = self._read()
+            value = self._model_operation(identity) if identity is not None else self._read()
             result = self._public(value)
             try:
                 selected = (self._source(value["model_id"])
@@ -544,7 +602,7 @@ class LocalModelExport:
         """Explicitly recheck the completed export against the selected store."""
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
-            operation = self._read()
+            operation = self._model_operation(identity)
             if operation.get("status") != "completed" or operation.get("model_id") != identity:
                 raise BoundaryError("local_model_export", "verified_export_required")
             source = self._source(identity)
@@ -552,6 +610,8 @@ class LocalModelExport:
             if not isinstance(root, Path) or operation["store_root"] != str(root):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = source.get_manifest(identity)
+            if model.parameters.value().get("schema") == "stpd/public-m2-model-v1":
+                return self.verified_public_m2_for_registration(identity)
             if (model.parameters.value().get("schema") ==
                     "stpd/stage1a-light-action-m0-public-model-v1"):
                 return self.verified_public_m0_for_registration(identity)
@@ -574,7 +634,7 @@ class LocalModelExport:
 
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
-            operation = self._read()
+            operation = self._model_operation(identity)
             if (operation.get("status") != "completed"
                     or operation.get("model_id") != identity
                     or operation.get("model_type") != "public_m0"
@@ -593,6 +653,34 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "export_identity_mismatch")
             return destination
 
+    def verified_public_m2_for_registration(self, model_id: object, *,
+                                            deadline: float | None = None) -> Path:
+        from spireagent.workbench.public_m2_export_support import require_lineage
+        from stpd.policy.public_m2_export import receipt
+
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._model_operation(identity)
+            if (operation.get("status") != "completed"
+                    or operation.get("model_type") != "public_m2"
+                    or operation.get("model_id") != identity):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            store = self._source(identity)
+            root = getattr(getattr(store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = store.get_manifest(identity)
+            lineage = require_lineage(store, self._memory_owner(store), model,
+                                      stage_id=operation["lineage"]["stage_id"])
+            if lineage != operation["lineage"]:
+                raise BoundaryError("local_model_export", "public_m2_lineage_mismatch")
+            destination = _destination(self.config, identity, public_m2=True)
+            if receipt(destination) != operation["verified_receipt"]:
+                raise BoundaryError("local_model_export", "export_identity_mismatch")
+            if deadline is not None and monotonic() >= deadline:
+                raise BoundaryError("local_model_registration", "registration_timeout")
+            return destination
+
     def verified_memory_for_registration(self, model_id: object, *,
                                          deadline: float | None = None) -> Path:
         """Bind a child-verified M2 export to current admission and immutable store facts."""
@@ -600,7 +688,7 @@ class LocalModelExport:
 
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
-            operation = self._read()
+            operation = self._model_operation(identity)
             if (operation.get("schema") != SCHEMA_V2
                     or operation.get("status") != "completed"
                     or operation.get("model_id") != identity
@@ -677,7 +765,7 @@ class LocalModelExport:
         """Read the recipe from the same verified immutable model/run lineage."""
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
-            operation = self._read()
+            operation = self._model_operation(identity)
             if (operation.get("schema") != SCHEMA_V2
                     or operation.get("status") != "completed"
                     or operation.get("model_id") != identity
@@ -717,7 +805,10 @@ class LocalModelExport:
         if (current.get("operation_id") != operation_id
                 or current.get("status") != "pending"):
             raise BoundaryError("local_model_export", "operation_superseded")
-        atomic_json(self._path(), {**current, **updates})
+        completed = {**current, **updates}
+        atomic_json(self._path(), completed)
+        if completed.get("status") == "completed":
+            self._archive_completed(completed)
 
     def start(self, model_id: object) -> dict[str, Any]:
         from spireagent.workbench.developer_server import instance_lock
@@ -740,6 +831,36 @@ class LocalModelExport:
                     and previous["store_root"] != str(root)):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = store.get_manifest(identity)
+            public_schema = model.parameters.value().get("schema") in {
+                "stpd/stage1a-light-action-m0-public-model-v1", "stpd/public-m2-model-v1",
+            }
+            if previous.get("status") != "pending" and public_schema:
+                completed = self._model_operation(identity)
+                if completed.get("status") == "completed":
+                    # This is an explicit reuse of an already-known proof, not
+                    # resolution of a pending/unknown export. Recheck current
+                    # owner admission, manifests and own immutable package bytes.
+                    lock_path = self.config.state_dir / LOCK_FILE
+                    if lock_path.is_symlink() or (lock_path.exists()
+                                                 and not _ordinary(lock_path, directory=False)):
+                        raise BoundaryError("local_model_export", "operation_recovery_required")
+                    try:
+                        with instance_lock(lock_path):
+                            current = self._read()
+                            if current.get("status") == "pending":
+                                raise BoundaryError("local_model_export",
+                                                    "previous_export_outcome_unknown")
+                            completed = self._model_operation(identity)
+                            self.verified_for_registration(identity)
+                            if current.get("status") == "completed":
+                                self._archive_completed(current)
+                            atomic_json(self._path(), completed)
+                            return self._public(completed)
+                    except BoundaryError as error:
+                        if error.code == "already_running":
+                            raise BoundaryError("local_model_export",
+                                                "export_in_progress") from error
+                        raise
             native = is_native_model_schema(model.parameters.value().get("schema"))
             if native:
                 require_native_models("local_model_export")
@@ -750,11 +871,27 @@ class LocalModelExport:
             structured = is_structured_model_schema(model.parameters.value().get("schema"))
             public_m0 = (model.parameters.value().get("schema") ==
                          "stpd/stage1a-light-action-m0-public-model-v1")
+            public_m2 = model.parameters.value().get("schema") == "stpd/public-m2-model-v1"
+            public_m2_lineage = None
+            if public_m2:
+                from spireagent.storage.registry import SQLiteRegistry
+                from spireagent.workbench.public_m2_export_support import require_lineage
+
+                workspace = self._workspace()
+                if not isinstance(workspace.registry, SQLiteRegistry):
+                    raise BoundaryError("local_model_export", "indexed_epoch_stage_required")
+                stages = [candidate for candidate in workspace.registry.dependents(
+                    identity, kind="analysis") if candidate.parameters.value().get("schema")
+                    == "stpd/public-m2-epoch-stage-v1"]
+                if len(stages) != 1:
+                    raise BoundaryError("local_model_export", "indexed_epoch_stage_required")
+                public_m2_lineage = require_lineage(store, self._memory_owner(store), model,
+                                                   stage_id=stages[0].artifact_id)
             if public_m0:
                 from spireagent.workbench.public_m0_export_support import lineage
 
                 lineage(store, self._memory_owner(store), model)
-            if not memory and not structured and not native and not public_m0:
+            if not memory and not structured and not native and not public_m0 and not public_m2:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
             if lock_path.is_symlink() or (lock_path.exists()
@@ -768,15 +905,31 @@ class LocalModelExport:
                     raise BoundaryError("local_model_export", "export_in_progress") from error
                 raise
             try:
+                # Preflight may be slow and ran before the cross-process lock.
+                # Another writer's new pending/unknown intent must survive it.
+                current = self._read()
+                if current.get("status") == "pending" and (
+                        previous.get("status") != "pending"
+                        or current.get("operation_id") != previous.get("operation_id")
+                        or current.get("model_id") != identity
+                        or current.get("store_root") != str(root)):
+                    raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
                 destination = _destination(self.config, identity, memory=memory,
                                            structured=structured, native=native,
-                                           public_m0=public_m0)
-                operation = {"schema": SCHEMA_V2 if memory else SCHEMA,
+                                           public_m0=public_m0, public_m2=public_m2)
+                if current.get("status") == "completed":
+                    self._archive_completed(current)
+                schema = ("stpd/local-model-export-operation-v4" if public_m2 else
+                          SCHEMA_V2 if memory else SCHEMA)
+                operation: dict[str, Any] = {"schema": schema,
                              "status": "pending",
                              "operation_id": uuid.uuid4().hex, "model_id": identity,
                              "store_root": str(root)}
                 if public_m0:
                     operation.update(model_type="public_m0")
+                if public_m2:
+                    operation.update(model_type="public_m2", profile="public-snapshot-m2-v1",
+                                     lineage=public_m2_lineage)
                 if structured:
                     operation.update(model_type="structured")
                 if native:
@@ -852,7 +1005,40 @@ class LocalModelExport:
             child_started = True
 
         try:
-            if (model.parameters.value().get("schema") ==
+            if model.parameters.value().get("schema") == "stpd/public-m2-model-v1":
+                from spireagent.workbench.public_m2_export_support import require_lineage
+                from stpd.policy.public_m2_export import receipt as public_m2_receipt
+
+                operation = self._read()
+                public_lineage = require_lineage(store, self._memory_owner(store), model,
+                                                 stage_id=operation["lineage"]["stage_id"])
+                if public_lineage != operation["lineage"]:
+                    raise BoundaryError("local_model_export", "public_m2_lineage_mismatch")
+                root = getattr(getattr(store, "blobs", None), "root", None)
+                if not isinstance(root, Path):
+                    raise BoundaryError("local_model_export", "unsupported_workspace_store")
+                environment = dict(os.environ)
+                for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
+                    environment.pop(name, None)
+                log_path = self.config.state_dir / ("local-model-export-" + operation_id + ".log")
+                exit_code, captured = private_child(
+                    [sys.executable, "-I", "-m", "stpd.policy.public_m2_cli", "export",
+                     "--store", str(root), "--model", model.artifact_id,
+                     "--stage", public_lineage["stage_id"], "--destination", str(destination)],
+                    log_path, environment, on_started=mark_started)
+                if exit_code:
+                    raise BoundaryError("local_model_export", "public_m2_export_process_failed")
+                checked = public_m2_receipt(destination)
+                if json.loads(captured) != checked:
+                    raise BoundaryError("local_model_export", "public_m2_export_result_invalid")
+                require_lineage(store, self._memory_owner(store), model,
+                                stage_id=public_lineage["stage_id"])
+                verified = True
+                with self.lock:
+                    self._finish(operation_id, status="completed",
+                                 payload_bytes=checked["payload_bytes"], verified_receipt=checked)
+                return
+            elif (model.parameters.value().get("schema") ==
                     "stpd/stage1a-light-action-m0-public-model-v1"):
                 from spireagent.workbench.public_m0_export_support import lineage, package_receipt
                 from stpd.policy.token_decision import export_light_action_m0_model
@@ -861,6 +1047,7 @@ class LocalModelExport:
                 if not destination.exists():
                     export_light_action_m0_model(store, model.artifact_id, destination)
                 public_receipt = package_receipt(model, destination, binding, verify_inference=True)
+                lineage(store, self._memory_owner(store), model)
                 count = public_receipt["payload_bytes"]
             elif is_native_model_schema(model.parameters.value().get("schema")):
                 count = _native_package(store, model, destination, materialize=True)
