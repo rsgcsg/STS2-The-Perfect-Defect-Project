@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
-import { ownedCommand, runStages, sourceAccepted, workspaceStages } from "./check-workspace.mjs";
+import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages } from "./check-workspace.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -74,6 +74,18 @@ test("successful stages cannot qualify a changed or dirty full candidate", async
   assert.equal(sourceAccepted(source, { ...source, dirty: true }, "python"), false);
   assert.equal(sourceAccepted({ ...source, dirty: true }, source, "full"), false);
   assert.equal(sourceAccepted({ ...source, dirty: true }, { ...source, dirty: true }, "components"), true);
+});
+
+test("repository validators follow real script references and reject missing, recursive or merely named guards", () => {
+  const scripts = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).scripts;
+  for (const guard of ["project:check", "check:governance"]) {
+    assert.equal(scriptIncludesGuard(scripts, "check", guard), true);
+    const corrupted = { ...scripts, "check:repository": "node other.mjs" };
+    assert.equal(scriptIncludesGuard(corrupted, "check", guard), false);
+    assert.equal(scriptIncludesGuard({ check: "echo npm-not-a-guard", [guard]: "node x.mjs" }, "check", guard), false);
+    assert.equal(scriptIncludesGuard({ check: "npm run loop", loop: "npm run check" }, "check", guard), false);
+    assert.equal(scriptIncludesGuard({ check: `npm run ${guard}` }, "check", guard), false);
+  }
 });
 
 test("cancelling an actual owned parent terminates its continuing grandchild before returning", async () => {

@@ -45,6 +45,19 @@ export function workspaceStages(scope) {
   return stages;
 }
 
+// Existing repository validators follow the guarded runner rather than requiring
+// one textual shell chain. Only this known entrypoint expands to its fixed plan.
+export function scriptIncludesGuard(scripts, name, guard, visited = new Set()) {
+  if (visited.has(name) || typeof scripts[name] !== "string") return false;
+  if (name === guard) return true;
+  visited.add(name);
+  const command = scripts[name];
+  const references = [...command.matchAll(/\bnpm\s+run\s+([A-Za-z0-9:_-]+)/gu)].map(match => match[1]);
+  if (command === "node tools/check-workspace.mjs full") references.push(...workspaceStages("full")
+    .filter(stage => stage.args[0] === "run").map(stage => stage.args[1]));
+  return references.some(reference => scriptIncludesGuard(scripts, reference, guard, visited));
+}
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export function ownedCommand(command, args, options = {}) {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { scriptIncludesGuard } from "./check-workspace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CURRENT_CONTEXT_BUDGET_BYTES = 8 * 1024;
@@ -219,7 +220,7 @@ export function packageFindings(workspaceRoot = root) {
   if (packageJson.scripts?.["check:governance"] !== expected) {
     findings.push(finding("governance-command-invalid", relative, `check:governance must equal ${expected}`));
   }
-  if (!packageJson.scripts?.check?.includes("npm run check:governance")) {
+  if (!scriptIncludesGuard(packageJson.scripts ?? {}, "check", "check:governance")) {
     findings.push(finding("governance-check-not-portable", relative, "check must compose check:governance"));
   }
   return findings;

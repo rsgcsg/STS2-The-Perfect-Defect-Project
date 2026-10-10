@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { makePlan, scopeCommands } from "./check-plan.mjs";
 import { CURRENT_CONTEXT_BUDGET_BYTES, currentContextFindings } from "./check-governance.mjs";
+import { scriptIncludesGuard } from "./check-workspace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const AGENT_CHAIN_BUDGET_BYTES = 16 * 1024;
@@ -411,7 +412,7 @@ export function projectIntegrityFindings(workspaceRoot = root) {
       findings.push(finding("project-system-command-invalid", "package.json", `${name} must equal ${command}`));
     }
   }
-  if (!packageJson.scripts?.check?.includes("npm run project:check")) {
+  if (!scriptIncludesGuard(packageJson.scripts ?? {}, "check", "project:check")) {
     findings.push(finding("project-system-check-not-portable", "package.json", "check must compose project:check"));
   }
   for (const duplicate of [
