@@ -66,9 +66,9 @@ def fresh_stdio(folder: Path, manifest_path: Path) -> dict:
                "--manifest", str(manifest_path)]
     child = subprocess.Popen(command, cwd=ROOT / "python", env=dict(os.environ),
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True)
+                             stderr=subprocess.PIPE)
     assert child.stdin is not None and child.stdout is not None and child.stderr is not None
-    received: queue.Queue[str] = queue.Queue()
+    received: queue.Queue[bytes] = queue.Queue()
 
     def drain():
         assert child.stdout is not None
@@ -87,7 +87,7 @@ def fresh_stdio(folder: Path, manifest_path: Path) -> dict:
         assert child.stdin is not None
         child.stdin.write(json_bytes({"schema": SESSION_SCHEMA, "message_type": kind,
             "session_id": "common-source-ordinary-stdio", "recovery_epoch": 0,
-            "request_id": identity, field: value}).decode())
+            "request_id": identity, field: value}))
         child.stdin.flush()
 
     prefix = {"continuity_token": "segment-1", "consumption_id": None, "state_version": 0,
@@ -142,7 +142,7 @@ def fresh_stdio(folder: Path, manifest_path: Path) -> dict:
         assert directives == ["act", "await", "act", "act", "await", "close"]
         child.stdin.close()
         assert child.wait(timeout=10) == 0
-        assert child.stderr.read() == ""
+        assert child.stderr.read() == b""
         reader.join(timeout=2)
         assert not reader.is_alive()
         return {"pid": child.pid, "command": command, "exit_code": child.returncode,

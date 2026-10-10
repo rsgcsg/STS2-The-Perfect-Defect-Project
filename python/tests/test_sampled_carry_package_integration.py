@@ -421,11 +421,10 @@ def test_fresh_real_stdio_child_query_consume_ack_original_member_and_summary(cl
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env={**os.environ, "PYTHONPATH": str(ROOT / "python")},
     )
     assert child.stdin is not None and child.stdout is not None
-    received: queue.Queue[str] = queue.Queue()
+    received: queue.Queue[bytes] = queue.Queue()
 
     def reader():
         assert child.stdout is not None
@@ -457,7 +456,7 @@ def test_fresh_real_stdio_child_query_consume_ack_original_member_and_summary(cl
                     "request_id": request,
                     field: value,
                 }
-            ).decode()
+            )
         )
         child.stdin.flush()
 
@@ -530,7 +529,7 @@ def test_fresh_real_stdio_child_query_consume_ack_original_member_and_summary(cl
         assert directives == ["act", "await", "act", "act", "await", "await", "close"]
         child.stdin.close()
         assert child.wait(timeout=10) == 0
-        assert child.stderr is not None and child.stderr.read() == ""
+        assert child.stderr is not None and child.stderr.read() == b""
         thread.join(timeout=2)
         assert not thread.is_alive()
     finally:
