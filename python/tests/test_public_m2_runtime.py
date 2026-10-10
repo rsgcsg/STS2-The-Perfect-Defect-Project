@@ -287,6 +287,30 @@ def test_shared_public_m2_registration_registry_and_stop_owner_routes(tmp_path, 
     assert (
         model.parameters.value()["epoch"] == 1 and model.parameters.value()["run_complete"] is False
     )
+    from stpd.policy.public_m2_task import ready_summary_task_spec
+    from stpd.public_m2_policy_installation import TASK_ADAPTER_VERSION, TASK_CONFIG_SCHEMA
+
+    manifest_path = service.entry_path(entry, "manifest")
+    config_path = service.entry_path(entry, "config")
+    before = manifest_path.read_bytes(), config_path.read_bytes()
+    assert json.loads(config_path.read_bytes())["schema"] == TASK_CONFIG_SCHEMA
+    assert json.loads(config_path.read_bytes())["task_spec"] == ready_summary_task_spec()
+    catalog = next(row for row in service.catalog()["policies"]
+                   if row["selection_id"] == registered["selection_id"])
+    assert catalog["task_spec"] == ready_summary_task_spec()
+    assert catalog["agent_version"] == TASK_ADAPTER_VERSION
+    assert "至结算页" in catalog["label"]
+    assert registration.status(model.artifact_id, task=None)["status"] == "not_registered"
+    baseline = registration.register(model.artifact_id, task=None)
+    assert baseline["selection_id"] != registered["selection_id"]
+    assert registration.register(model.artifact_id, task=None) == baseline
+    assert registration.status(model.artifact_id, task=None) == baseline
+    assert registration.status(model.artifact_id) == registered
+    assert registration.register(model.artifact_id) == registered
+    assert before == (manifest_path.read_bytes(), config_path.read_bytes())
+    baseline_entry = service.selection(baseline["selection_id"])
+    assert "task_spec" not in json.loads(service.entry_path(baseline_entry, "config").read_bytes())
+    assert "无任务基线" in baseline_entry["label"]
 
 
 def test_public_m2_register_cannot_bypass_missing_runtime_contract(tmp_path, monkeypatch):

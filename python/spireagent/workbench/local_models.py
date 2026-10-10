@@ -1005,6 +1005,10 @@ class LocalModelService:
                             "public_m0", {}).get("task_spec"),
                         "agent_version": manifest.get("adapter", {}).get("version")}
                        if entry["adapter"] == PUBLIC_M0_ADAPTER else {}),
+                    **({"task_spec": manifest.get("adapter_config", {}).get(
+                            "public_m2_installation", {}).get("task_spec"),
+                        "agent_version": manifest.get("adapter", {}).get("version")}
+                       if entry["adapter"] == PUBLIC_M2_ADAPTER else {}),
                     **({"agent_scope": "s0_text_v2_compatibility_only"}
                        if entry["adapter"] == "stpd-s0-structured-adapter" else {}),
                     "default_run_profile": "short",
