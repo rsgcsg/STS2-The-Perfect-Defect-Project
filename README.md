@@ -42,8 +42,8 @@ restrictions; local and cloud views do not create separate copies of authority.
   abstract layers, full interaction target, I/F-off Agent and user approval gates.
 - [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
   [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
-- [Completed S0 learning loop](docs/evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md):
-  real Agent collection, structured-model training/export, native play and exact limits.
+- [Status and evidence](docs/STATUS.md): integrated source, candidate builds,
+  installed/deployed observations and their separate qualification limits.
 - [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
   [testing](docs/TESTING.md), [workflow](docs/DEVELOPMENT_WORKFLOW.md),
   [governance](docs/ENGINEERING_GOVERNANCE.md) and [project standards](docs/PROJECT_SYSTEM.md).
@@ -56,9 +56,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 The first completed instance is a bounded text-menu-v2 compatibility loop. Full
 G2/V1 implementation and verification continue against the retained requirements;
 only the user can approve those gates. Source/test, installed/loaded execution,
-Human origin and scientific results remain separate. The latest owner
-has authorized lead-managed implementation and necessary operations within the
-execution packet; paid model/training spend is capped at USD 20 in aggregate.
+Human origin and scientific results remain separate. The execution packet owns
+the current authorization, resources and approval boundary; it does not turn a proposed design or a branch into deployed capability.
 
 ## Workspace
 

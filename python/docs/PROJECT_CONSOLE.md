@@ -81,6 +81,48 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
 this inventory alone does not make it a usable training set, installed model or validated result.
 
+The local Data page and paired native Workbench also expose **原生交互与观察**
+lifecycle controls through one Application/NativeTasks path. They query only scalar
+recording status and use the configured local Connector (or its documented Mod
+default) to check the exact game instance. Start and ChangeSource require an explicit
+本人操作 / AI界面操作 / Agent协议 / 未知来源 plus actor ID; no Human default or
+machine-verifiable origin is introduced. ChangeSource requires Pause and the
+observed session/segment. Resume is explicit. Close remains pending until owner
+durable completion. An unknown write retains its notice through refresh and pair
+renewal, never replays, and permits a deliberate isolated next session only after
+known durable Closed. Known active Workbench model recovery is required before
+Start/Change away from Agent Protocol; Human/Stop recovery stays independent.
+
+Model activation passes fresh run/input-profile/recovery context to the typed v2
+handoff. Healthy Recording Source3 Agent Protocol is retained only with exact Native
+Agent `native-logical-v1` compatibility; Paused and accounting failure block model
+preparation. Human/AI UI/unknown, older profiles and incompatible known legacy inputs
+still Close through the Recorder owner. These are application sequencing checks,
+not research admission, origin attestation or new gameplay legality. Context is
+caller metadata and the original Runtime recovery binding is retained for Mode/Tick.
+All Source lifecycle intents and new non-recovery Workbench model intents now
+share atomic admission in LocalModelService; only Start/Change away from Agent
+Protocol requires Human/model-recovery eligibility. Existing Auto may still
+Pause/Resume/Close its recording, without cancelling an already admitted model intent. Source I/O holds a logical
+reservation, not an HTTP-duration lock, so Human/Stop/reconcile remain available.
+Unknown Source outcomes keep the existing admission fence after client timeout;
+same-runtime refresh does not clear it. Accepted exact durable Close can release
+sequencing, and a typed recording-status query that verifies a new runtime before
+and after against Connector can make an old notice inapplicable without Source
+Start or rewriting the unknown. Shared browser/paired native Workbench owns product Source3 and model execution.
+The Mod's duplicate non-recovery Policy entries and Source3 Recorder controls now
+navigate explicitly to Workbench play/data. Legacy native Human recording and
+direct Human/Stop retain their original independent recovery boundary; external
+Runtime/SDK callers remain outside this coordination.
+
+The browser persists a pending confirmation marker before non-recovery Source
+POST. If browser storage cannot preserve it, the action rejects before submission.
+A live fallback retains notices through same-page auth renewal; a full reload with
+unavailable storage instead blocks new Source changes, without claiming it recovered
+old notices. Close remains an explicit recovery lane. A failed marker cleanup retains
+a conservative fence; no status refresh or browser retry resolves the original
+unknown. These markers are presentation state, not a second Recorder command ledger.
+
 The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
 byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported
 recordings root; it does not read Game Mod configuration files directly or guess a default path.
@@ -101,6 +143,21 @@ are private local grouping labels, not account or person identity. The long-runn
 persisted pending/completed/failed/interrupted status; page refresh never retries it.
 This local manifest has no Hub receipt and is not itself a Dataset or training input.
 The separate purpose-bound Dataset path below rechecks the source before selecting samples.
+
+Closed Source 3 recordings use the same **验证并导入本机** action with Human attestation
+disabled; the request sends `human_origin_attested: false` and preserves the originals'
+declared origins. Unsupported CollectionTool capability shows its owner's reason and blocks
+import. Open the verified raw artifact, or select raw Source 3 artifacts across catalog pages,
+then explicitly choose an owner-advertised cohort and data view in **从 Source 3 录制准备训练例子**.
+The default view, labels and history/qualification scope come from `source3_support`; the product
+default is the sampled carry view. **检查所选 Source 3 训练例子** submits exactly the selected raw IDs,
+cohort and view. The resulting counts, exclusions and exact-delivered N coverage stay separate
+from legacy Human labels and canonical transitions. Changing any selection invalidates the
+save action. **确认保存训练用途数据集** uses the existing checked-preview publication and use-reservation
+owner; failed/interrupted publication requires explicit reconciliation. Open the resulting
+partition for the existing explicit training controls, with the owner's matching recommended
+recipe selected when advertised by the training service. Imported originals, preview and
+training-use reservation do not start training, upload data or prove Human origin or model quality.
 
 Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
 The local browser POST starts one bounded background read of the selected store; GET only reads
@@ -374,6 +431,29 @@ new selection. An explicit offline Runtime install can stage its kit-verified pr
 private directory. A missing private profile is reported separately from a missing or drifted
 Runtime install.
 
+The long-lived local service owns `state_dir/workbench-tmp`, rather than inheriting an
+installer phase's scratch directory. Both `project open` and direct `serve` reject a finite
+POSIX `RLIMIT_FSIZE` as `workbench_file_limit_incompatible`; they never raise or remove an
+administrator's soft/hard limit. Start the service through a launcher outside a bounded
+installer phase. This is a process resource contract, not unlimited storage or a verification
+time guarantee. POSIX scratch permissions are checked for the current owner and no group/other
+access; on Windows privacy depends on the selected state directory's ACL. Normal temporary
+files are removed by their operation owner. Hard-kill orphan cleanup is not provided here.
+
+A SQLite storage failure during explicit registration returns HTTP 500 with
+`error=registration_verification_storage_failed`, `stage=local_model_registration`,
+`category=storage`, `status=failed`, and a random `error_id`. The local service log records the
+same ID with SQLite diagnostics; the browser receives no database path or traceback. This is
+separate from the existing HTTP 409 identity/precondition blockers. The browser releases its
+pending command, displays the safe log ID, and never automatically repeats the POST. Inspect
+the storage/resource environment before another explicit attempt. A listening port alone
+does not prove that registration or model loading succeeded.
+The authenticated native Workbench command endpoint preserves its existing HTTP 200
+command-result envelope: this non-precondition storage error is `unconfirmed` with
+its bounded code and `automatic_retry=false`. It exposes no SQLite path/traceback
+and does not reinterpret the failure as a retryable identity blocker. Its existing
+wire format does not carry the browser's log correlation ID.
+
 The local **准备本机模型环境** panel has three fixed actions: text-menu v1,
 M2 v1 and M2 v2.
 Each explicit request reuses an exact installed private Runtime and pin when both
@@ -407,11 +487,74 @@ compatible by installing the UI. Current Full-Run offline views have no qualifie
 parity/adapter here, so **Full-Run online evaluation remains BLOCKED** until that separate owner
 work is implemented and qualified. Do not manufacture missing features or filter the native catalog.
 
+Native Workbench play exposes fixed Auto/Shadow/OneStep/Tick commands for its owned
+loaded model. The original run/game/recovery tuple comes from a readonly typed owner
+status/environment query; strict payload validation and fresh matching happen before
+admission and again before recorder preparation. The same captured tuple accompanies
+the effect. Unknown outcomes do not retry; pair renewal cannot clear the UI fence.
+Direct diagnostic UI keeps Human/Stop and status, and links ordinary execution to
+this same task owner. Tick is one bounded current-mode tick with no Mode POST;
+OneStep still performs Mode then at most one tick. Browser advanced Tick uses the
+existing local-model command endpoint and owner. Existing native/default, S1 and
+text-menu adapter, artifact, profile and backend limits are unchanged.
+
 A compatible local selection loads in Human mode first. Shadow, One-Step, Auto, Human and Stop
 use typed Platform Runtime requests; deliberate execution is distinct from loading. Cloud pages
 never start a local game. An uncertain effectful response is not automatically resent. A workbench
 restart requires exact instance recovery before new execution. Local Agent evidence and bounded
 operation reports remain separate from Human collection, win-rate evaluation and scientific results.
+
+Native logical Model artifacts use the same export journal, downloaded-byte
+verification and local registry as other models. The fixed
+`stpd-native-structured-m2-agent` adapter delegates package validation and
+AgentManifest construction to STPD. The immutable Model ArtifactID and package
+model ID stay distinct. Registration requires the fixed public native publication
+profile, every required seam, the actual SDK and Agent Runtime APIs, and the
+installed native Agent-session Evidence verifier. It reads capabilities without
+attaching or acquiring a controller. The native lane uses the existing primary
+Runtime installation pin; it does not choose an executable from model bytes.
+
+The browser model detail reads
+`GET /api/local-model-exports/support?model_id=<ArtifactID>` through the same
+LocalModelExport owner. The versioned metadata descriptor recognizes the closed
+token, memory, structured and native families and their registration profiles.
+`verification_state=not_checked` is deliberate: this read never opens weights,
+imports the numerical backend, exports, registers or declares a model ready.
+Unknown metadata or an unavailable source exposes no export/use controls. Native
+and structured exports keep their existing v1 operation schema and explicit
+`model_type`; memory exports keep v2. Existing artifact identities are unchanged.
+
+For the matching completed export and current registered selection, **使用这个模型**
+requests the existing `prepare_and_load` application action once, in Human mode,
+then opens that exact selection on the model page. It reuses the export and
+registration; the existing preparation owner reuses a valid Runtime installation
+and still checks actual loading conditions. Rendering never repeats these stages.
+Missing prerequisites retain explicit export/registration actions under **详情**;
+Runtime setup is also under details. There is no browser cold-preparation chain.
+Changed source bindings, incompatible profiles and unknown/pending Runtime state
+block use. An unconfirmed preparation opens the original status and cannot be
+redispatched from the old button. Loading does not take game control or prove
+model quality, Human origin, runtime qualification or G2/V1 acceptance.
+
+The current primary pin is the sealed rc.24 candidate with bundled Connector SDK
+rc.7. It currently supports explicit offline archive installation; no download URL
+is declared before publication. Automatic download therefore remains unavailable.
+The independent public Host/SDK tools and three text Runtime profiles retain their
+own pins. Before upgrading an existing primary slot, stop/reconcile its predecessor
+with the original package and preserve the old archive/pin outside that slot; the
+primary installer does not retain a rollback generation. A pin update does not
+upgrade an existing installation or qualify a model/game run.
+
+Native status keeps its Agent/directive/result namespace. A pending original
+request exposes one explicit `models.reconcile` recovery action through the same
+Runtime HTTP client. The selected request, Runtime run, game instance and current
+recovery epoch must still match. Runtime performs one original Result lookup and
+records its terminal or unresolved disposition while staying Human. Refreshing
+does not look up, resubmit or resume Auto. Unknown delivery and sticky taint stay
+visible. Stop/restart verifies sealed native Agent-session evidence and records an
+operational handoff; opaque state hashes do not prove numerical memory, gameplay
+qualification or scientific evaluation. The direct in-game Human and Stop
+controls consume the explicit native status DTO with their existing binding guards.
 
 Runtime commands use the versioned HTTP/2 mutation routes and the process run ID captured at
 startup. The Runtime checks that ID before any command, including Stop during Workbench shutdown.
@@ -595,3 +738,158 @@ not reconstruct a creation form. Navigation remains active while a status reques
 pending, and a late response cannot update a different page/account. An authentication
 denial clears private displayed data; an ordinary transient failure leaves the last
 observation with an explicit notice. These are presentation changes, not cached access grants.
+
+## Trusted local training service contract
+
+`LocalTrainingService` is the shared owning service for the existing local slot.
+A static code-owned recipe registry describes configuration fields, required
+optional dependencies, supported control actions and placement. Discovery does
+not import Torch, load model bytes or scan a source. Token and memory recipes
+retain their historical IDs/configurations, artifact schemas and legacy
+`start(dataset_id, recipe=..., after_completed_operation_id=...)` API.
+
+The typed application entry uses only immutable artifact IDs and the configured
+local CPU placement. It accepts no program, shell, import, executable path,
+remote URL or downloadable plugin. For example:
+
+```python
+from spireagent.workbench.recipe_contracts import TrainingRequest
+
+request = TrainingRequest(
+    intent_id="0123456789abcdef0123456789abcdef",
+    recipe_id="structured-m2-cpu-v2",
+    source_id=immutable_source_id,
+    config={"epochs": 1, "max_updates": 1000},
+    placement_id="local-cpu",
+    limits={"wall_seconds": 600},
+)
+capabilities = service.capabilities()
+operation = service.start(request)["operation"]
+status = service.status(operation["operation_id"])["operation"]
+ack = service.cancel(operation["operation_id"], operation["attempt_id"])
+# ACK remains pending until the parent observes actual child exit and publishes terminal state.
+# Query status first, then explicitly select the immutable checkpoint:
+resumed = service.resume(operation_id, expected_attempt_id, checkpoint_id,
+                         new_intent_id, {"wall_seconds": 600})
+reconciled = service.reconcile(operation_id, expected_attempt_id)
+```
+
+Typed requests have a strict JSON equivalent `spireagent/training-request-v1`.
+They migrate the same operation file to `spireagent/local-training-operation-v3`
+and preserve previous completion identities. There is no second job database.
+Snapshots retain legacy stage/artifact fields and add intent, attempt, phase,
+timestamps, actual progress, input/run/checkpoint/result/model refs and supported
+actions. Each resumed attempt retains the same input/run/config/producer and the
+prior attempt's terminal proof. Checkpoints require the owning immutable event;
+v1 final checkpoints cannot resume. Reconcile verifies an existing completed
+result or leaves the outcome unknown; it never restarts numerical work.
+
+The OS owner lock spans the entire worker lifecycle. Journal publication and
+control share the service mutex; application-supplied attempt fencing guards
+numerical durable publication. A different live service can observe the slot;
+it cannot pretend to own that worker's control channel. Service loss needs
+explicit reconciliation under the released owner lock. Legacy recipes advertise
+no cancel/resume capabilities. Typed legacy requests use empty `limits` because
+the legacy subprocess recipes do not enforce the new boundary wall limit.
+
+The structured recipe runs numerical work in a fixed private child process;
+Torch imports, RNG and thread settings stay in that child. The parent alone
+writes the application journal. The child publishes immutable domain artifacts
+through a bounded NDJSON channel and holds its own OS lifecycle lock until exit.
+Parent loss does not prove the child stopped: recovery must acquire both owner
+locks before admitting a new attempt. No PID guess or stale-file deletion grants
+publication authority.
+
+The parent enforces cumulative wall time across attempts, including numerical
+calls and evaluation/export. It monitors the child at up to 250ms wait intervals
+plus callback/inventory latency and can kill a hung child. Cancel records intent,
+then allows a one-second cooperative grace period before forced termination;
+pause waits for a safe numerical boundary or the wall deadline. A writer becomes
+terminal only after actual exit or proof that no child was spawned. Forced exit
+preserves the latest verified checkpoint and records an unknown domain outcome;
+its public terminal status remains `interrupted_unknown`, including after a cancel
+request. The cancel intent/disposition and `selected_result=false` remain recorded
+separately. A safe cooperative cancelled terminal requires its verified checkpoint
+and actual child exit; initial preparation/engine construction is not that boundary.
+Application cancellation and result selection remain separate from domain completion.
+
+The optimizer-update bound, wall budget, artifact publication reservations and
+scratch boundary remain cumulative through explicit resume; total attempts are
+limited to 32. Artifact byte reservations precede immutable publication. Scratch
+monitoring counts every retained attempt directory in the operation, including
+forced attempts, with one bounded inventory that rejects symlinks and unsafe
+entries. Resume rejects exhausted retained scratch before changing the journal
+or creating another attempt. These are separate byte checks under the original
+`scratch_bytes` setting. Scratch is a monitored detection threshold, not a kernel
+or filesystem hard allocation quota: a write can overshoot between checks, after
+which the parent kills the child, retains the files for audit, and blocks further
+resume. Logs and immutable checkpoints/results are retained outside scratch;
+there is no automatic cleanup of old or orphan attempt directories. Resume cannot
+increase or reset any original limit. Checkpoint cadence accepts 1–100 completed
+boundaries and defaults to 100.
+
+A cancel request that races completion retains artifacts for audit and does not
+select them as a normal completed result, including after explicit reconciliation.
+Indexing follows verified durable completion, so index failure does not permit
+another numerical run. Unexpected numerical exceptions leave an unknown outcome
+with an actual exit receipt and bounded private diagnostic; public status does
+not expose exception text or claim domain completion.
+
+Current structured source admission supports both explicitly marked immutable
+`synthetic_fixture` engineering sources and typed E2 protocol-source partitions.
+The typed verifier must join the exact immutable original source/report records,
+accepted projection and row mappings; only TRAIN partitions may enter this
+service. Existing curation purpose, exact-source claims and operation-bound use
+reservations are required. DEV/TEST sources are rejected before journal creation
+or use reservation and do not enter training-input/model ancestry. An ordinary
+Agent source JSON, capsule hash or `engineering_only` label cannot establish
+provenance. Historical S0 input meaning is unchanged.
+
+The native structured Agent registry entry uses STPD's public package verifier
+and installation builder through the fixed application adapter. Typed source
+admission, training, export/registration and online Runtime execution remain
+separate checks. Source implementations and synthetic tests do not complete
+native runtime/Human qualification or final G2/V1 user acceptance. Historical
+structured adapters without a public installation builder retain their explicit
+`structured_installation_adapter_required` disposition.
+
+
+## Local training browser boundary
+
+The existing loopback Workbench exposes authenticated `GET /api/local-training/capabilities`
+and `GET /api/local-training/status`. An optional exact `operation_id` query on status
+rejects a different current operation. Discovery is metadata-only; opening the page
+or refreshing does not start, reconcile or resume training.
+
+`POST /api/local-training/start` accepts the exact `spireagent/training-request-v1`
+JSON contract, including a fresh intent, recipe, selected source, advertised config,
+placement, resource limits and explicit completed-operation precondition. The existing
+bounded legacy `dataset_id`/`recipe` body remains compatible. `POST` to `pause`,
+`cancel` or `reconcile` requires exactly `operation_id` and `expected_attempt_id`.
+`resume` additionally requires the exact `checkpoint_id`, a new `intent_id`, and
+unchanged original `limits`. Every mutation uses the existing browser cookie,
+Origin/CSRF checks and running configuration/instance guard. Remote compute is
+unavailable unless declared by an owning service; the current service advertises
+only local CPU.
+
+The ordinary local artifact detail offers capability-driven recipe, source,
+placement, numeric configuration and cumulative time/scratch controls. Fixed
+legacy recipes expose fixed configuration and no recovery controls. Structured
+sequence sources expose the same explicit training form; showing a form does not
+admit a source or grant training use. Existing recipe preflight, source verification
+and curation/use owners remain authoritative. Missing or unknown capability/status
+schemas disable mutations and preserve browsing.
+
+Typed task presentation separately reports progress, requested pause/cancel,
+worker state, domain completion, validation and result selection. Control ACK means
+intent recorded while the worker remains pending. Unsupported/currently unavailable
+controls are disabled with reasons. Unknown outcomes require explicit reconciliation;
+there is no automatic restart or retry. Resume uses the snapshot's copied canonical
+configuration and original cumulative limits, including after a browser/service
+reload, and targets the old exact attempt and checkpoint with a new intent. A
+single uncertain submission cannot be resent from the same rendered control.
+
+Focused HTTP tests exercise the real service with immutable synthetic fixtures,
+CPU 2 and a private child; JavaScript tests verify presentation and exact requests.
+This is source/test evidence, not real-data training, installed/game execution,
+Human origin, model quality, remote placement or complete G2/V1 acceptance.

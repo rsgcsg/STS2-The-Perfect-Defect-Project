@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using STS2Connector.PlayerEnvironment.Witness;
+using STS2Platform.NativeFoundation;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -119,7 +120,7 @@ internal static class NativeGeneratedDecisionFactoryPatch
 [HarmonyPatch]
 internal static class NativeSelectorCardDecisionPatch
 {
-    internal sealed record State(RecorderRuntime.SelectorInput? Input, object[] Selected, bool Terminal, Task? Completion);
+    internal sealed record State(RecorderRuntime.SelectorInputHandle? Input, object[] Selected, bool Terminal, Task? Completion);
     internal static IEnumerable<MethodBase> TargetMethods()
     {
         foreach (Type type in new[] { typeof(NSimpleCardSelectScreen), typeof(NCombatPileCardSelectScreen),
@@ -138,7 +139,8 @@ internal static class NativeSelectorCardDecisionPatch
     [HarmonyPriority(Priority.First)]
     private static void Prefix(object __instance, object __0, MethodBase __originalMethod, out State? __state)
     {
-        if (RecorderRuntime.SelectorInputActive) { __state = null; return; }
+        NativeSourceInputProvider.BeforeInputPrefix();
+        if (RecorderRuntime.SelectorInputActive && !RecorderRuntime.IsOrderedSourceProfile) { __state = null; return; }
         __state = NativeNestedCallbackSafety.Run("selector.card.before", () =>
         {
             object? subject = __0 switch
@@ -159,9 +161,9 @@ internal static class NativeSelectorCardDecisionPatch
             var completion = NativeSelectorInputFacts.CompletionTask(__instance);
             string verb = __originalMethod.Name == "DeselectCard"
                 || before.Any(value => ReferenceEquals(value, subject)) ? "deselect" : "select";
-            return new State(RecorderRuntime.BeginSelectorInput(__instance,
+            return new State(RecorderRuntime.BeginSelectorInputWithSourceVerb(__instance,
                 $"{__originalMethod.DeclaringType!.FullName}.{__originalMethod.Name}",
-                subject, NativeSelectorInputFacts.CardOperations(__instance, verb == "deselect")), before, wasTerminal, completion);
+                subject, verb, NativeSelectorInputFacts.CardOperations(__instance, verb == "deselect")), before, wasTerminal, completion);
         }, null);
     }
 
@@ -174,7 +176,8 @@ internal static class NativeSelectorCardDecisionPatch
                 NativeSelectorInputFacts.Changed(__instance, __state.Selected)
                     || !__state.Terminal && (__state.Completion?.IsCompletedSuccessfully
                         ?? NativeSelectorInputFacts.Terminal(__instance)),
-                NativeSelectorInputFacts.Terminal(__instance)));
+                NativeSelectorInputFacts.Terminal(__instance),
+                sourceAcceptanceProven: NativeSelectorInputFacts.Changed(__instance, __state.Selected)));
     }
 
     private static Exception? Finalizer(State? __state, Exception? __exception) =>
@@ -193,21 +196,28 @@ internal static class NativeSelectorCardDecisionPatch
 [HarmonyPatch]
 internal static class NativeSelectorControlDecisionPatch
 {
-    internal sealed record State(RecorderRuntime.SelectorInput? Input, object Owner, object[] Selected,
+    internal sealed record State(RecorderRuntime.SelectorInputHandle? Input, object Owner, object[] Selected,
         bool Terminal, string Verb);
     internal static MethodBase TargetMethod() => AccessTools.Method(typeof(NClickableControl), "OnReleaseHandler");
     [HarmonyPriority(Priority.First)]
     private static void Prefix(NClickableControl __instance, out State? __state)
     {
-        if (RecorderRuntime.SelectorInputActive) { __state = null; return; }
+        NativeSourceInputProvider.BeforeInputPrefix();
+        if (RecorderRuntime.SelectorInputActive && !RecorderRuntime.IsOrderedSourceProfile) { __state = null; return; }
         __state = NativeNestedCallbackSafety.Run("selector.control.before", () =>
         {
             if (NativeSelectorInputFacts.Field(__instance, "_isPressed") is not true)
                 return null;
             for (Node? owner = __instance.GetParent(); owner != null; owner = owner.GetParent())
             {
-                if (!NativeNestedSelectorBindings.TryGet(owner, out var binding) || binding == null)
-                    continue;
+                if (RecorderRuntime.IsOrderedSourceProfile)
+                {
+                    if (owner is not (NPlayerHand or NSimpleCardSelectScreen or NCombatPileCardSelectScreen
+                        or NDeckCardSelectScreen or NDeckUpgradeSelectScreen or NDeckTransformSelectScreen
+                        or NDeckEnchantSelectScreen or NCardRewardSelectionScreen or NChooseACardSelectionScreen
+                        or NChooseABundleSelectionScreen)) continue;
+                }
+                else if (!NativeNestedSelectorBindings.TryGet(owner, out var binding) || binding == null) continue;
                 string? verb = null;
                 string? controlField = null;
                 foreach (var (field, action) in new[] {
@@ -221,9 +231,13 @@ internal static class NativeSelectorControlDecisionPatch
                     { verb = action; controlField = field; }
                 }
                 if (verb == null) return null;
-                var input = RecorderRuntime.BeginSelectorInput(owner,
+                string? callback = (owner, controlField) switch {
+                    (NChooseACardSelectionScreen, "_skipButton") => "NChooseACardSelectionScreen.OnSkipButtonReleased",
+                    (NPlayerHand, "_selectModeConfirmButton") => "NPlayerHand.OnSelectModeConfirmButtonPressed",
+                    _ => null };
+                var input = RecorderRuntime.BeginSelectorControlInput(owner, __instance,
                     $"{owner.GetType().FullName}.{__instance.Name}.Released",
-                    null, NativeSelectorInputFacts.ControlOperations(controlField!));
+                    verb, NativeSelectorInputFacts.ControlOperations(controlField!), callback);
                 return new State(input, owner, NativeSelectorInputFacts.Selected(owner),
                     NativeSelectorInputFacts.Terminal(owner), verb);
             }
@@ -239,7 +253,10 @@ internal static class NativeSelectorControlDecisionPatch
             bool terminal = NativeSelectorInputFacts.Terminal(__state.Owner);
             // Exact pressed/enabled control bound to a native advertised action;
             // preview/confirm can change only UI state without selected-set change.
-            RecorderRuntime.EndSelectorInput(__state.Input, true, terminal);
+            // The exact pressed original OnReleaseHandler emits Released after
+            // OnRelease on normal return. Its throwing finalizer proves no such
+            // terminal and retains unknown instead.
+            RecorderRuntime.EndSelectorInput(__state.Input, true, terminal, sourceAcceptanceProven: true);
         });
     }
     private static Exception? Finalizer(State? __state, Exception? __exception) =>

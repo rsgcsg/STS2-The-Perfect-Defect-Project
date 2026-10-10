@@ -6,6 +6,14 @@ using STS2HumanAnnotator.Core;
 return args switch
 {
     ["audit", string directory] => Audit(directory),
+    ["audit-source-v2", string directory] => AuditSourceV2(directory),
+    ["audit-source-v3", string directory] => AuditSourceV2(directory, 3),
+    ["export-source-v2", string directory, string output] => ExportSourceV2(directory, output),
+    ["export-source-v3", string directory, string output] => ExportSourceV2(directory, output, 3),
+    ["pack-source-v2", string directory, string worker, string campaign, string output, string revision] =>
+        PackSourceV2(directory, worker, campaign, output, revision),
+    ["pack-source-v3", string directory, string worker, string campaign, string output, string revision] =>
+        PackSourceV2(directory, worker, campaign, output, revision, 3),
     ["audit-native-semantic", string directory] => AuditNativeSemantic(directory),
     ["export", string directory, string output] => Export(directory, output),
     ["export-compatibility", string directory, string output] => Export(directory, output, compatibility: true),
@@ -19,6 +27,24 @@ return args switch
     ["recover-interrupted", string recordings, string recovered] => RecoverInterrupted(recordings, recovered),
     _ => Usage()
 };
+
+static int AuditSourceV2(string directory, int version = 2)
+{
+    var audit = version == 3 ? SourceSessionAuditV3.Audit(directory) : SourceSessionAuditV2.Audit(directory);
+    Console.WriteLine(JsonSerializer.Serialize(audit, EvidenceJson.IndentedOptions));
+    return audit.Status == "pass" ? 0 : 1;
+}
+static int ExportSourceV2(string directory, string output, int version = 2)
+{
+    var result = version == 3 ? SourceSessionBundlePackerV3.Export(directory, output) : SourceSessionBundlePackerV2.Export(directory, output);
+    Console.WriteLine(JsonSerializer.Serialize(result, EvidenceJson.IndentedOptions)); return 0;
+}
+static int PackSourceV2(string directory, string worker, string campaign, string output, string revision, int version = 2)
+{
+    var result = version == 3 ? SourceSessionBundlePackerV3.Pack(directory, worker, campaign, output, revision)
+        : SourceSessionBundlePackerV2.Pack(directory, worker, campaign, output, revision);
+    Console.WriteLine(JsonSerializer.Serialize(result, EvidenceJson.IndentedOptions)); return 0;
+}
 
 static int RecoverInterrupted(string recordings, string recovered)
 {
@@ -102,6 +128,6 @@ static int Identity(string assembly)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: sts2-human-annotator audit <recording-dir> | audit-native-semantic <recording-dir> | export[-compatibility] <recording-dir> <output.jsonl> | pack-session[-compatibility] <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> human_origin_attested | identity <assembly> | recover-interrupted <recordings-root> <recovered-root>");
+    Console.Error.WriteLine("usage: sts2-human-annotator audit <recording-dir> | audit-native-semantic <recording-dir> | audit-source[-v2] <recording-dir> | export-source[-v2] <recording-dir> <output-dir> | pack-source[-v2] <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> | export[-compatibility] <recording-dir> <output.jsonl> | pack-session[-compatibility] <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> human_origin_attested | identity <assembly> | recover-interrupted <recordings-root> <recovered-root>");
     return 2;
 }

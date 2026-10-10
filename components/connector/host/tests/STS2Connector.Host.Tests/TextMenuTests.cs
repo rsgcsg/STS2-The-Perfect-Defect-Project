@@ -123,11 +123,11 @@ public sealed class TextMenuTests
         Assert.Equal("information", result.Successor!.Menu.Cursor);
         Assert.Equal(root.Menu.NativeSnapshotId, result.Successor.Menu.NativeSnapshotId);
         Assert.NotEqual(root.SnapshotId, result.Successor.SnapshotId);
-        Assert.Same(root.Persistent, result.Successor.Persistent);
-        Assert.Same(root.Interaction.Content, result.Successor.Interaction.Content);
+        RequestTestDriver.AssertWireEqual(root.Persistent, result.Successor.Persistent);
+        RequestTestDriver.AssertWireEqual(root.Interaction.Content, result.Successor.Interaction.Content);
         Assert.Equal(0, nativeCalls);
-        Assert.Same(result, executor.Submit(enter));
-        Assert.Same(result, executor.Find("enter"));
+        RequestTestDriver.AssertWireEqual(result, executor.Submit(enter));
+        RequestTestDriver.AssertWireEqual(result, executor.Find("enter"));
         for (int i = 0; i < 3; i++)
         {
             Assert.Equal(result.Successor.SnapshotId, executor.Observe().SnapshotId);
@@ -232,10 +232,7 @@ public sealed class TextMenuTests
     {
         string? controller = "client:1";
         var frame = Frame();
-        var executor = new TextMenuExecutor(new object(), new(), () => frame,
-            _ => MutationAdmission.Allow(new MutationAttribution(
-                "runtime", "client", "instance", "test", "Test", "1", "lease", 1)),
-            () => controller);
+        var executor = new TextMenuExecutor(new object(), RequestTestDriver.Namespace(), () => frame, () => controller);
         executor.Submit(Request(executor.Observe(), "open_information", "enter"));
         Assert.Equal("information", executor.Observe().Menu.Cursor);
         var oldBack = Request(executor.Observe(), "back", "stale-back");
@@ -255,13 +252,16 @@ public sealed class TextMenuTests
     }
 
     [Fact]
-    public void UnifiedRequestNamespaceRejectsLegacyOrOtherActionReuse()
+    public async System.Threading.Tasks.Task UnifiedRequestNamespaceRejectsLegacyOrOtherActionReuse()
     {
-        var ledger = new ConcurrentDictionary<string, string>();
+        var ledger = RequestTestDriver.Namespace();
         var frame = Frame();
         var executor = Executor(() => frame, ledger: ledger);
         var request = Request(executor.Observe(), "open_information", "same");
-        ledger["same"] = PlayerEnvironmentService.ActionRequestFingerprint(request with { InputProfile = null });
+        var original = ledger.Admit(request with { InputProfile = null });
+        Assert.Equal("admitted", original.Status);
+        Assert.True(ledger.CancelQueued("same", "fixture_preinput"));
+        (await original.OriginalCompletion!).Dispose();
         Assert.Equal("request_id_conflict", executor.Submit(request).ReasonCode);
         Assert.Equal("root", executor.Observe().Menu.Cursor);
         var result = executor.Submit(request with { RequestId = "new" });
@@ -282,7 +282,7 @@ public sealed class TextMenuTests
         Assert.Equal("unknown", result.NativeDelivery);
         Assert.Equal("never", result.Retry);
         Assert.Null(result.Successor);
-        Assert.Same(result, executor.Submit(request));
+        RequestTestDriver.AssertWireEqual(result, executor.Submit(request));
         Assert.Equal(1, calls);
     }
 
@@ -301,6 +301,33 @@ public sealed class TextMenuTests
         Assert.Equal("delivered", delivered.NativeDelivery);
         Assert.Equal("successor_observation_unavailable", delivered.ReasonCode);
         Assert.Null(delivered.Successor);
+    }
+
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("unknown")]
+    [InlineData("unconfirmed")]
+    public void RichNativeOutcomeCannotBecomeRetryableLegacyRejection(string outcome)
+    {
+        int calls = 0;
+        var stage = new NativeInputStage(NativeInputStageKind.TargetFocus,
+            NativeInputDelivery.Delivered, "native_focus_input");
+        NativeInputResult result = outcome switch
+        {
+            "partial" => NativeInputResult.PartiallyDelivered("later_guard", "focus already delivered", stage),
+            "unknown" => NativeInputResult.Unknown("unresolved", "confirmation unresolved", stage),
+            _ => NativeInputResult.DeliveredWithoutAcceptance("focus_unconfirmed", "input was delivered", stage)
+        };
+        var executor = Executor(() => Frame(() => { calls++; return result; }));
+        var request = Request(executor.Observe(), "select", "rich-outcome");
+        var receipt = executor.Submit(request);
+        Assert.Equal("unknown", receipt.Status);
+        Assert.Equal("unknown", receipt.NativeDelivery);
+        Assert.Equal("never", receipt.Retry);
+        Assert.Null(receipt.Successor);
+        Assert.NotNull(receipt.Attribution);
+        RequestTestDriver.AssertWireEqual(receipt, executor.Submit(request));
+        Assert.Equal(1, calls);
     }
 
     [Fact]
@@ -330,12 +357,27 @@ public sealed class TextMenuTests
         Assert.DoesNotContain("dispatch", json.ToJsonString().ToLowerInvariant());
     }
 
+    [Fact]
+    public void MandatoryNavigationSuccessorCapacityFailureLeavesCursorRevisionSequenceAndNativeInputsUnchanged()
+    {
+        int inputs = 0;
+        var frame = Frame(() => { inputs++; return NativeInputResult.Delivered("fixture"); });
+        frame.Page.Interaction.Content.Surface["large-current-fact"] = new string('x', 8_000);
+        using var requests = RequestTestDriver.Namespace(legacyEnvelope: 4096);
+        var executor = new TextMenuExecutor(new object(), requests, () => frame);
+        var before = executor.Observe(); var request = Request(before, "open_information", "capacity-navigation");
+        var rejected = executor.Submit(request);
+        Assert.Equal("not_applied", rejected.Status); Assert.Equal("result_core_capacity_exceeded", rejected.ReasonCode);
+        Assert.Null(rejected.Successor); Assert.Equal(0, inputs);
+        var after = executor.Observe(); RequestTestDriver.AssertWireEqual(before, after);
+        Assert.Equal(before.Menu.Revision, after.Menu.Revision); Assert.Equal(before.Sequence, after.Sequence);
+        Assert.Equal(before.SnapshotId, after.SnapshotId); Assert.Equal(1, requests.SpentIdCount);
+        RequestTestDriver.AssertWireEqual(rejected, executor.Submit(request)); Assert.Equal(0, inputs);
+    }
+
     private static TextMenuExecutor Executor(Func<TextMenuFrame> capture,
         Func<MutationAuthorizationRequest, MutationAdmission>? authorize = null,
-        ConcurrentDictionary<string, string>? ledger = null) => new(new object(),
-            ledger ?? new ConcurrentDictionary<string, string>(), capture,
-            authorize ?? (_ => MutationAdmission.Allow(new MutationAttribution(
-                "runtime", "client", "client-instance", "test", "Test", "1", "lease", 1))));
+        RequestNamespace? ledger = null) => new(new object(), ledger ?? RequestTestDriver.Namespace(authorize), capture);
 
     private static PlayerEnvironmentActionRequest Request(TextMenuSnapshot snapshot, string verb, string id) =>
         new(id, snapshot.SnapshotId, snapshot.MenuActions.Actions.Single(a => a.Verb == verb).ActionId,

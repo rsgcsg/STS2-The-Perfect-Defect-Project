@@ -21,7 +21,7 @@ public sealed record PlatformLiveLayoutState(
         CurrentVersion,
         new Vector2(52, 64),
         new Vector2(760, 500),
-        "human_recorder");
+        "workbench");
 }
 
 public static class PlatformLiveLayout
@@ -104,7 +104,7 @@ public static class PlatformLiveLayout
         PlatformLiveLayoutState state,
         string selectedSurface)
     {
-        if (selectedSurface is not ("agent_run" or "human_recorder"))
+        if (selectedSurface is not ("agent_run" or "human_recorder" or "workbench"))
             return state;
         return state with { ActiveSurface = selectedSurface };
     }

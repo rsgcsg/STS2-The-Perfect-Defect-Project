@@ -17,33 +17,8 @@ from torch.nn import functional as F
 from spireagent.json_boundary import BoundaryError
 
 from ..fullrun.structured_sequences import StructuredDataset, StructuredRun
+from ..structured_workload_contracts import StructuredTrainingConfig as StructuredTrainingConfig
 from .structured_m2 import StructuredM2
-
-
-@dataclass(frozen=True)
-class StructuredTrainingConfig:
-    epochs: int = 1
-    learning_rate: float = 1e-3
-    seed: int = 0
-    tbptt_advances: int = 4
-    cpu_threads: int = 2
-    max_updates: int = 1000
-
-    def validate(self) -> None:
-        if (
-            type(self.epochs) is not int
-            or not 1 <= self.epochs <= 100
-            or self.learning_rate != 1e-3
-            or type(self.seed) is not int
-            or self.seed != 0
-            or type(self.tbptt_advances) is not int
-            or self.tbptt_advances != 4
-            or type(self.cpu_threads) is not int
-            or self.cpu_threads != 2
-            or type(self.max_updates) is not int
-            or not 1 <= self.max_updates <= 10000
-        ):
-            raise BoundaryError("structured_training", "unsupported_fixed_recipe")
 
 
 @dataclass

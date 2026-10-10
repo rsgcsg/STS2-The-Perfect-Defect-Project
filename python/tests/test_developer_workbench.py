@@ -895,10 +895,12 @@ def test_native_workbench_registration_follows_server_lifecycle(
         def close(self):
             events.append("unregister")
 
-    def register(url, instance_id):
+    def register(url, instance_id, *, access):
         runtime = json.loads((config.state_dir / "runtime.json").read_bytes())
         assert url == f"http://127.0.0.1:{runtime['port']}/"
         assert instance_id == runtime["instance_id"]
+        assert access.app.instance_id == instance_id
+        assert access.app.config == config and access.app.config_path == path
         events.append("register")
         return Registration()
 

@@ -32,6 +32,25 @@ test("CI contract rejects replacing selected gates with a hand-picked subset", (
   assert.ok(ciWorkflowErrors(source).includes("Linux portability must run the selected root check"));
 });
 
+test("partition scheduling cannot drop siblings, defaults, diagnostics or original artifact isolation", () => {
+  for (const [before, after, error] of [
+    ["fail-fast: false", "fail-fast: true", "Linux must retain two isolated pytest shards"],
+    ["shard: [1, 2]", "shard: [1]", "Linux must retain two isolated pytest shards"],
+    ["timeout-minutes: 55", "timeout-minutes: 60", "Linux must retain its 55-minute budget"],
+    ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
+    ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
+    ["pattern: pytest-*-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
+  ]) assert.ok(ciWorkflowErrors(currentSource().replace(before, after)).includes(error), error);
+  assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
+});
+
+test("aggregate implementation verifies original coverage before minting a fresh receipt", () => {
+  const source = fs.readFileSync(new URL("./check-plan.mjs", import.meta.url), "utf8");
+  assert.ok(source.includes("currentShardIdentity(root, e)"));
+  assert.ok(source.indexOf("const coverage =") < source.indexOf('"receipt.json"'));
+  assert.ok(source.includes("pytest_coverage: coverage"));
+});
+
 test("CI contract rejects a required status that does not aggregate Windows", () => {
   const source = currentSource().replace(
     "needs: [plan, docs, linux-portability, windows-portability]",

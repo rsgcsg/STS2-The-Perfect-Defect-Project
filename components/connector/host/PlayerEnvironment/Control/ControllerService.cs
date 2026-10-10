@@ -40,6 +40,15 @@ internal static partial class PlayerEnvironmentService
             snapshot.Controller == null ? null : ToPublicController(snapshot.Controller));
     }
 
+    public static PlayerEnvironmentClientRevocationResponse RevokePlayerEnvironmentClient(
+        PlayerEnvironmentClientRevocationRequest request)
+    {
+        MutationClientRevocationResult result = MutationControlRuntime.Revoke(new(
+            request.RuntimeInstanceId, request.ClientSessionId));
+        return new(PlayerEnvironmentContract.ProtocolVersion, PlayerEnvironmentContract.ClientRevocationSchema,
+            result.RuntimeInstanceId, result.ClientSessionId, result.Status, result.Closed, null);
+    }
+
     public static PlayerEnvironmentControllerLeaseResponse AcquirePlayerEnvironmentController(
         PlayerEnvironmentControllerLeaseRequest request) =>
         ToPlayerEnvironmentControlResponse(MutationControlRuntime.Acquire(

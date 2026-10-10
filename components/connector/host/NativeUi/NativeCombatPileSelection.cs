@@ -116,10 +116,8 @@ internal static class NativeCombatPileSelection
             .Select(holder => cardIds[holder.CardModel])
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToArray();
-        bool canConfirm = preferences.RequireManualConfirmation
-                          && selected.Count >= preferences.MinSelect
-                          && selected.Count <= preferences.MaxSelect
-                          && FindConfirm(screen) != null;
+        bool canConfirm = NativeSelectorControl.Available(FindConfirm(screen),
+            control => control.IsEnabled && ConnectorMod.IsNodeVisible(control));
         bool canCancel = preferences.Cancelable && FindClose(screen) != null;
         string? prompt = ReadNodeText(screen, "%BottomLabel");
         var surface = new NativeCombatPileSelectionSurface(
@@ -266,14 +264,10 @@ internal static class NativeCombatPileSelection
             return Delivered("native_combat_pile_holder_pressed");
         }
 
-        if (operation == ConfirmOperation
-            && selectedCards.Count >= preferences.MinSelect
-            && selectedCards.Count <= preferences.MaxSelect
-            && FindConfirm(screen) is { } confirm)
-        {
-            confirm.ForceClick();
-            return Delivered("native_combat_pile_confirm_clicked");
-        }
+        if (operation == ConfirmOperation)
+            return NativeSelectorControl.Click(FindConfirm(screen), () => IsCurrent(screen),
+                control => control.IsEnabled && ConnectorMod.IsNodeVisible(control),
+                control => control.ForceClick(), "native_combat_pile_confirm_clicked");
         if (operation == CancelOperation && preferences.Cancelable && FindClose(screen) is { } close)
         {
             close.ForceClick();

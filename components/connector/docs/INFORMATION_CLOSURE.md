@@ -22,6 +22,24 @@ Every read is advertised by the current snapshot, runtime/environment coherent,
 read-only and rejected when stale. A consumer may read lazily or aggregate reads
 downstream without changing C truth.
 
+## Native tooltip source availability
+
+A visible source is not sufficient to advertise a tooltip operation. The native
+creature callback can have no tips before combat is in progress, divert to target
+selection, or decline while the hand is in card play. Capture checks that actual
+entry capability before requiring its public subject; unreadable capability or
+an eligible source with missing facts remains partial. It does not become a
+complete or settling observation merely because binding failed.
+
+A native local empty orb slot is independently available during setup. Its owner
+may reuse only this capture's exact same-player persistent HUD identity/name;
+foreign owners and missing power, intent or occupied-orb display facts are not
+invented. Entry capability is distinct from the retained exact source identity:
+withdrawn entry does not itself prevent safely unfocusing/returning an existing
+tip. Creature and resource tips use the same declared retained-tip grammar as the
+other emitted groups. Source/controller checks and unknown-input handling remain
+in their existing owners; compilation and portable tests are not runtime proof.
+
 ## Supported Interaction Classification
 
 | Interaction family | Stable Snapshot | Advertised Read | Explicit limit |
@@ -89,6 +107,14 @@ evidence for the current Host artifact.
 Hidden RNG, true draw order, future rewards/events, unrevealed options and
 other information unavailable to a normal player are excluded even if native
 objects are reachable by reflection.
+
+Public native aliases use cryptographic entropy independent of native enumeration.
+Sorting a pile after allocating IDs must not leak its prior draw order through
+an allocation counter. The exact native draw-pile screen sorts its visible cards;
+the Connector's declared unordered multiset keeps stable object aliases without
+encoding that hidden order. Alias tests inject deterministic entropy to verify
+this construction and continuity; random uniqueness checks do not prove privacy
+statistically. Existing immutable recordings keep their producer's original IDs.
 
 ## Closure Gate
 

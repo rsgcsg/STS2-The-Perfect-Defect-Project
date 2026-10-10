@@ -195,8 +195,7 @@ internal static class NativeDeckUpgradeSelection
                                   && IsVisibleEnabled(close);
         bool canCancelPreview = stage == "preview" && IsVisibleEnabled(previewCancel);
         bool canConfirm = stage == "preview"
-                          && selected.Count >= prefs.MinSelect
-                          && IsVisibleEnabled(previewConfirm);
+                          && NativeSelectorControl.Available(previewConfirm, IsVisibleEnabled);
         bool canToggleUpgradeView = stage == "selecting"
                                     && upgrades.IsEnabled
                                     && ConnectorMod.IsNodeVisible(upgrades);

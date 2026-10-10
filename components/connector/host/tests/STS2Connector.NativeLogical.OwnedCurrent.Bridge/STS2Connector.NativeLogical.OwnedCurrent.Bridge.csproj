@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>false</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../../contracts/native-logical-publication-profile-v1.json"
+                      LogicalName="STS2Connector.NativeLogicalPublicationProfileV1" />
+    <Compile Include="*.cs" />
+    <Compile Include="../../MainThreadWorkQueue.cs" Link="MainThreadWorkQueue.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/TextMenuContracts.cs" Link="Protocol/TextMenuContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Requests/*.cs" Link="Requests/%(Filename)%(Extension)" />
+    <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/ClientRevocationWire.cs" Link="Protocol/ClientRevocationWire.cs" />
+    <Compile Include="../../Authority/MutationControlContracts.cs" Link="Authority/MutationControlContracts.cs" />
+    <Compile Include="../../Authority/MutationClientLifetime.cs" Link="Authority/MutationClientLifetime.cs" />
+    <Compile Include="../../Authority/MutationControllerCoordinator*.cs" Link="Authority/%(Filename)%(Extension)" />
+    <Compile Include="../../PlayerEnvironment/NativeLogical/*.cs" Link="Core/%(Filename)%(Extension)" />
+    <None Include="../../../contracts/fixtures/native-logical-v1.json" Link="native-logical-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/native-logical-owned-current-v1.json" Link="native-logical-owned-current-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

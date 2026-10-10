@@ -143,9 +143,18 @@ class ModalProvider:
         return self._client().FunctionCall.from_id(handle.call_id)
 
     def poll(self, handle: ComputeHandle) -> ComputeReceipt | None:
+        sdk = self._client()
         try:
             value = self._call(handle).get(timeout=0)
-        except TimeoutError:
+        except sdk.exception.FunctionTimeoutError:
+            # This subclasses the SDK polling timeout, not Python's built-in
+            # TimeoutError. Keep it distinct without inventing a terminal receipt.
+            raise BoundaryError(
+                "modal", "execution_timeout",
+                "retain the exact call handle for terminal reconciliation; do not resubmit",
+            ) from None
+        except (sdk.exception.TimeoutError, TimeoutError):
+            # SDK 1.5.5's empty-output poll raises the built-in TimeoutError.
             return None
         except BoundaryError:
             raise

@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             "credential",
             "collection-tool",
             "collection-upgrade",
+            "collect-source3",
         ),
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -127,10 +128,12 @@ def main(argv: list[str] | None = None) -> int:
             "one_step",
             "auto",
             "stop",
+            "reconcile",
         ),
         help="local model action; generation changes require a stopped Workbench",
     )
     parser.add_argument("--credential-file", type=Path)
+    parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
     parser.add_argument(
         "--tool-directory", type=Path, help="absolute public CollectionTool directory"
     )
@@ -153,6 +156,44 @@ def main(argv: list[str] | None = None) -> int:
                         help="operator-provided exact private Host package pin JSON")
     parser.add_argument("--input-profile", choices=("text-menu-v1", "text-menu-v2"),
                         help="explicit Managed text-menu profile in the private Host setup")
+    parser.add_argument("--host-local-root", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--seed")
+    parser.add_argument("--target-choices", type=int, default=100)
+    parser.add_argument("--max-submissions", type=int, default=100)
+    parser.add_argument(
+        "--execution-policy", choices=("owned-current-known-stale-v1",),
+        help="explicit reader-owned Current and bounded fresh decisions after known stale refusals",
+    )
+    parser.add_argument("--deadline-ms", type=int, default=900_000)
+    parser.add_argument("--experimental-build-acknowledged", action="store_true")
+    parser.add_argument("--experimental-connector-acknowledged", action="store_true")
+    parser.add_argument(
+        "--no-source3",
+        action="store_true",
+        help="explicitly omit Source3 overlay; direct Agent evidence still records",
+    )
+    parser.add_argument(
+        "--predecessor-report-path",
+        type=Path,
+        help="explicit unknown predecessor report for a distinct fresh episode",
+    )
+    parser.add_argument("--predecessor-report-sha256")
+    parser.add_argument("--predecessor-marker-sha256")
+    parser.add_argument(
+        "--predecessor-source3-bundle",
+        type=Path,
+        help="recorded predecessor only; forbidden for Source3-off; no preflight packing",
+    )
+    parser.add_argument(
+        "--predecessor-source3-content-id",
+        help="paired with the recorded predecessor's Source3 bundle",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="validate collector metadata without Application, SDK or game launch",
+    )
     args = parser.parse_args(argv)
     try:
         result: Any
@@ -183,7 +224,44 @@ def main(argv: list[str] | None = None) -> int:
             config = ProjectConfig.load(
                 args.config, require_current_combination=args.command not in {"status", "stop"}
             )
-            if args.command == "model":
+            if args.command == "collect-source3":
+                from spireagent.workbench.native_source3_collection import (
+                    CollectionRequest,
+                    collect_source3,
+                    metadata_preflight,
+                )
+
+                if (
+                    args.game_directory is None
+                    or args.host_local_root is None
+                    or args.output is None
+                    or args.seed is None
+                ):
+                    raise BoundaryError("source3_collection", "collection_paths_and_seed_required")
+                request = CollectionRequest(
+                    installation=args.game_directory,
+                    host_local_root=args.host_local_root,
+                    output=args.output,
+                    seed=args.seed,
+                    target_choices=args.target_choices,
+                    max_submissions=args.max_submissions,
+                    execution_policy=args.execution_policy,
+                    deadline_ms=args.deadline_ms,
+                    experimental_build_acknowledged=args.experimental_build_acknowledged,
+                    experimental_connector_acknowledged=args.experimental_connector_acknowledged,
+                    record_source3=not args.no_source3,
+                    predecessor_report_path=args.predecessor_report_path,
+                    predecessor_report_sha256=args.predecessor_report_sha256,
+                    predecessor_marker_sha256=args.predecessor_marker_sha256,
+                    predecessor_source3_bundle=args.predecessor_source3_bundle,
+                    predecessor_source3_content_id=args.predecessor_source3_content_id,
+                )
+                result = (
+                    metadata_preflight(config, request)
+                    if args.plan_only
+                    else collect_source3(config, args.config, request)
+                )
+            elif args.command == "model":
                 from spireagent.workbench.local_model_cli import model_command
 
                 result = model_command(
@@ -191,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.action,
                     selection=args.selection,
                     artifact=args.artifact,
+                    request_id=args.request_id,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,
                     expected_active_sha256=args.expected_active_sha256,
@@ -266,7 +345,8 @@ def main(argv: list[str] | None = None) -> int:
                     tuple(args.role) if args.role is not None else None,
                 )
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 1 if result.get("status") == "BLOCKED" else 0
+        return 1 if (result.get("status") == "BLOCKED" or args.command == "collect-source3"
+                     and result.get("status") in {"failed", "unknown"}) else 0
     except (BoundaryError, OSError, ValueError, subprocess.SubprocessError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__
         print(json.dumps({"status": "FAIL", "code": code}))

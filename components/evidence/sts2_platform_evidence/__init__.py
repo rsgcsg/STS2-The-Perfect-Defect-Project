@@ -12,6 +12,12 @@ from .agent_run_evidence import (
     detect_agent_run_type,
     verify_agent_run_evidence,
 )
+from .agent_session_run_evidence import (
+    AgentSessionRunEvidence,
+    AgentSessionRunEvidenceVerifier,
+    detect_agent_session_run_type,
+    verify_agent_session_run_evidence,
+)
 from .human_session_bundle import (
     HumanSessionBundle,
     HumanSessionBundleV2,
@@ -32,6 +38,23 @@ from .delivery_http import HubTransport
 from .delivery_summary import inspect_delivery_status
 from .human_summary import summarize_verified_human_bundle
 from .store import ContentAddressedStore, StoreReceipt
+from .source_session_bundle import (
+    SourceSessionBundle,
+    SourceSessionBundleVerifier,
+    verify_source_session_bundle,
+)
+from .source_session_bundle_v2 import (
+    SourceSessionBundleV2,
+    SourceSessionBundleV2Verifier,
+    verify_source_session_bundle_v2,
+)
+
+from .source_session_bundle_v3 import (
+    SourceSessionBundleV3,
+    SourceSessionBundleV3Verifier,
+    verify_source_session_bundle_v3,
+)
+
 from .transfer import (
     DirectoryReceiver,
     DirectoryTransferManifest,
@@ -40,6 +63,15 @@ from .transfer import (
 )
 
 __all__ = [
+    "SourceSessionBundleV3",
+    "SourceSessionBundleV3Verifier",
+    "verify_source_session_bundle_v3",
+    "SourceSessionBundleV2",
+    "SourceSessionBundleV2Verifier",
+    "verify_source_session_bundle_v2",
+    "SourceSessionBundle",
+    "SourceSessionBundleVerifier",
+    "verify_source_session_bundle",
     "CollectionProfile",
     "CollectionTool",
     "DeliveryOutbox",
@@ -53,10 +85,13 @@ __all__ = [
     "reconcile_and_drain",
     "AgentRunEvidence",
     "AgentRunEvidenceVerifier",
+    "AgentSessionRunEvidence",
+    "AgentSessionRunEvidenceVerifier",
     "ContentAddressedStore",
     "DirectoryReceiver",
     "DirectoryTransferManifest",
     "detect_agent_run_type",
+    "detect_agent_session_run_type",
     "HumanSessionBundle",
     "HumanSessionBundleV2",
     "HumanSessionBundleV3",
@@ -72,6 +107,7 @@ __all__ = [
     "VerifierDescriptor",
     "VerifierRegistry",
     "verify_agent_run_evidence",
+    "verify_agent_session_run_evidence",
     "load_collection_profile",
     "verify_human_session_bundle",
 ]

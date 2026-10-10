@@ -27,10 +27,13 @@ broad autonomy does not permit silent changes of product goals or evidence claim
 ## Roles and actual access
 
 One local supervisor owns the work queue, architecture decisions, final evidence review
-and integration coordination. Use Sol for bounded complex implementation/native research
-and Luna for bounded reading, independent review or observing an actual task when useful.
-The current owner excludes Astra subagents. Model/tool availability must be observed,
-not inferred from these names. Do not delegate merely to fill slots or hide chains of
+and integration coordination. Owner update, 2026-10-09: new workers default to
+GPT-6.1-Sol with high reasoning, including implementation and independent review.
+Already-running workers may finish their current packets without a model restart.
+Astra is reserved for a material architecture, direction or fundamental-risk review;
+at most two Astra workers may run simultaneously. It is not the ordinary default.
+Model/tool availability must be observed, not inferred from these names.
+Do not delegate merely to fill slots or hide chains of
 workers. The lead may implement, but its own implementation and documentation require a
 separate review just as worker changes do. The author cannot self-accept a candidate.
 
@@ -147,7 +150,7 @@ unauthorized boundary only after architect review and explicit task authorizatio
 
 ## Mandatory independent review before acceptance
 
-Owner clarification, 2026-09-21: EVERY Luna return starts as submitted but unverified.
+Every worker return starts as submitted but unverified.
 This includes explanations, diagnosis, suggested plans, code, tests, claimed commands,
 installations, deployments and measured results. Confidence, a polished summary, a
 screenshot saying PASS, or the worker's own review is not acceptance. The same standard
@@ -200,7 +203,7 @@ spend, change production data, or start the next training batch.
 New commits or changed inputs, configuration, dependencies or installed artifacts require
 an impact review of the previous verdict. Reuse only what remains valid under TESTING.md;
 never copy an ancestor's green result or extend an approval to unreviewed changes. The
-architect must understand and explain what the implementation does, not merely relay Luna's
+architect must understand and explain what the implementation does, not merely relay a worker's
 conclusion. If it cannot explain a critical path, that path is not accepted yet.
 
 ### Design availability and branch discipline
@@ -245,11 +248,34 @@ parallel once shared semantics and examples are stable. One owner writes a share
 contract, lifecycle state machine or integration ref. A changed interface triggers
 an impact update for its consumers; no worker changes semantics merely to make
 its local test pass. Use real useful concurrency, not a target worker count.
+Freeze a common base and shared normal/negative examples before dependent implementation;
+workers can independently advance their owner paths without waiting for unrelated packets.
+The supervisor alone reconciles shared contract/ref/BOM changes and the local native slot.
+Accept useful increments by their next consumer's usable capability, not by the number of
+workers, commits or green tests. Native diagnosis, faithful old-model recovery, and data
+admission can proceed independently when each one's real prerequisites hold; none is a
+universal prerequisite merely because it was scheduled first. Resource budgets are one
+aggregate envelope for the round, never a fresh allowance per worker or resumed packet.
 
 Return exact head/artifact identity, behavior changed, actual checks and side
 effects, evidence scope, limitations, next consumer and remaining gate. Distinguish
 submitted, independently accepted, integrated and runtime-qualified. A claimed
 completion without usable artifacts and a consumer handoff is not delivery.
+
+### Resuming without selecting an obsolete task
+
+Keep one bounded active handoff in the existing task/PR or its private execution
+checkpoint: task ID, latest authorized goal, exact worktree/base/head, writable
+paths, current attempt/monitor, completed artifacts and one next action. Replace
+its active summary when the task changes; archive older details instead of
+prepending an ever-growing history. Never use an old worker name, session title
+or earlier completed canary as the current assignment.
+
+On restart/context loss, first resolve that active packet and reconcile live refs,
+original operation status and other writers. If the active assignment is missing,
+ask the lead for it while doing only independent read-only recovery; do not replay
+a prior experiment. Selected design and acceptance reasoning needed by another
+engineer must also be in the canonical spec/task, not only the private checkpoint.
 
 ## Five-minute passive-wait checkpoint
 

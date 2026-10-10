@@ -1,4 +1,5 @@
 using STS2Connector.PlayerEnvironment;
+using STS2Connector.NativeUi;
 using Xunit;
 
 namespace STS2Connector;
@@ -29,6 +30,103 @@ public sealed class NativeTipReturnTests
             Tip = null;
         }
         internal void Remove() => Tip = null;
+    }
+
+    [Theory]
+    [InlineData("card_tips")]
+    [InlineData("relic_tips")]
+    [InlineData("potion_tips")]
+    [InlineData("creature_tips")]
+    [InlineData("resource_tips")]
+    public void MerchantTipCaptureRetainsItsExactSourceUntilNativeExit(string kind)
+    {
+        var source = new LatchedTipSource();
+        source.Enter();
+        object? retainedSource = source;
+        object? retainedSet = source.Tip;
+        NativeTipEntry? retainedEntry = NativeTipEntry.Focus;
+        // Capture's kind gate must not discard an otherwise current native owner.
+        if (!NativeTextMenuInformation.IsTipKind(kind))
+        {
+            retainedSource = retainedSet = null;
+            retainedEntry = null;
+        }
+        Assert.Same(source, retainedSource);
+        Assert.Same(source.Tip, retainedSet);
+        // The same still-rendered registry set is reusable only with retained proof.
+        Assert.True(NativeTipReturn.CanReuse(retainedSource, source, retainedEntry,
+            NativeTipEntry.Focus, retainedSet, source.Tip!, true, true));
+        int exits = 0;
+        var closed = NativeTipReturn.Close(true,
+            () => NativeTextMenuInformation.IsTipKind(kind)
+                && ReferenceEquals(retainedSet, source.Tip),
+            () => ReferenceEquals(retainedSource, source) && retainedEntry == NativeTipEntry.Focus,
+            () => { exits++; source.Exit(); }, source.Remove,
+            () => { retainedSource = retainedSet = null; retainedEntry = null; });
+        Assert.True(closed.Accepted);
+        Assert.Equal(1, exits);
+        Assert.False(source.Focused);
+        Assert.Equal(0, source.HandHoverNotifications);
+        Assert.Null(retainedSource);
+        source.Enter();
+        Assert.NotNull(source.Tip);
+        Assert.Equal(2, source.Created);
+    }
+
+    [Fact]
+    public void WithdrawnEntryCapabilityDoesNotPreventClosingTheExactRetainedSource()
+    {
+        var source = new LatchedTipSource();
+        source.Enter();
+        object retainedSet = source.Tip!;
+        bool entryAvailable = false, sourceCurrent = true;
+        int probes = 0, entries = 0, exits = 0;
+        var blocked = NativeTextMenuInformation.EnterAvailableTip(
+            () => { probes++; return entryAvailable; },
+            () => { entries++; source.Enter(); return NativeInputResult.Delivered("native entry"); });
+        Assert.Equal("native_tip_entry_unavailable", blocked.ErrorCode);
+        Assert.Equal(LegacyNativeInputDisposition.NotDelivered, blocked.LegacyDisposition);
+        Assert.Equal(1, probes);
+        Assert.Equal(0, entries);
+        // The return owner is the same native set/source, independent of whether
+        // a new entry is allowed by phase/target/hand/tip-block capability.
+        var closed = NativeTipReturn.Close(true,
+            () => ReferenceEquals(source.Tip, retainedSet), () => sourceCurrent,
+            () => { exits++; source.Exit(); }, source.Remove, () => sourceCurrent = false);
+        Assert.True(closed.Accepted);
+        Assert.Equal(1, exits);
+        Assert.Null(source.Tip);
+        Assert.False(source.Focused);
+        Assert.Equal(0, source.HandHoverNotifications);
+    }
+
+    [Fact]
+    public void UnreadableEntryCapabilityRejectsBeforeExitOrEntryWithoutFallback()
+    {
+        int inputs = 0;
+        var result = NativeTextMenuInformation.EnterAvailableTip(
+            () => throw new InvalidOperationException("native source unreadable"),
+            () => { inputs++; return NativeInputResult.Delivered("unexpected input"); });
+        Assert.Equal("native_tip_entry_unreadable", result.ErrorCode);
+        Assert.Equal(LegacyNativeInputDisposition.NotDelivered, result.LegacyDisposition);
+        Assert.Equal(0, inputs);
+    }
+
+    [Theory]
+    [InlineData("unknown_tips")]
+    [InlineData("potion")]
+    [InlineData("native_map")]
+    public void UndeclaredTipKindsCannotRetainOrCloseNativeInput(string kind)
+    {
+        int exits = 0, removes = 0;
+        Assert.False(NativeTextMenuInformation.IsTipKind(kind));
+        var result = NativeTipReturn.Close(true,
+            () => NativeTextMenuInformation.IsTipKind(kind), () => true,
+            () => exits++, () => removes++, () => throw new InvalidOperationException("no cleanup"));
+        Assert.False(result.Accepted);
+        Assert.Equal("native_information_owner_changed", result.ErrorCode);
+        Assert.Equal(0, exits);
+        Assert.Equal(0, removes);
     }
 
     [Fact]
@@ -100,4 +198,88 @@ public sealed class NativeTipReturnTests
         Assert.Equal(0, removals);
         Assert.Equal(0, clears);
     }
+    [Theory]
+    [InlineData("deck")]
+    [InlineData("relic_inspect")]
+    [InlineData("map_back")]
+    [InlineData("map_topbar_close")]
+    [InlineData("map_travel")]
+    public void DepartingMapBalancesTheRetainedSourceBeforeTheNativePageTransition(string destination)
+    {
+        var source = new LatchedTipSource();
+        source.Enter();
+        object? first = source.Tip;
+        bool retained = true;
+        var order = new List<string>();
+        var result = NativeTipReturn.BeforeTransition(true, () => retained,
+            () => { order.Add("exit"); source.Exit(); },
+            () => { order.Add("forget"); retained = false; },
+            () =>
+            {
+                order.Add(destination);
+                Assert.False(source.Focused);
+                Assert.Null(source.Tip);
+                source.Remove(); // Native capstones may clear rendered tips again.
+                return NativeInputResult.Delivered(destination);
+            });
+        Assert.Equal(LegacyNativeInputDisposition.Delivered, result.LegacyDisposition);
+        Assert.Equal(new[] { "exit", "forget", destination }, order);
+        // After the native destination returns, the same source can create a fresh set.
+        source.Enter();
+        Assert.NotNull(source.Tip);
+        Assert.NotSame(first, source.Tip);
+        Assert.Equal(2, source.Created);
+    }
+
+    [Fact]
+    public void StaleDepartureSourceRejectsBeforeExitOrTransition()
+    {
+        var calls = new List<string>();
+        var result = NativeTipReturn.BeforeTransition(true, () => false,
+            () => calls.Add("exit"), () => calls.Add("forget"),
+            () => { calls.Add("transition"); return NativeInputResult.Delivered("unexpected"); });
+        Assert.Equal(LegacyNativeInputDisposition.NotDelivered, result.LegacyDisposition);
+        Assert.Empty(calls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExitOrTransitionExceptionsAreUnknownWithNoRetry(bool exitThrows)
+    {
+        int exits = 0, forgets = 0, transitions = 0;
+        var result = NativeTipReturn.BeforeTransition(true, () => true,
+            () => { exits++; if (exitThrows) throw new InvalidOperationException("exit received"); },
+            () => forgets++, () => { transitions++; throw new InvalidOperationException("transition received"); });
+        Assert.Equal(LegacyNativeInputDisposition.Unknown, result.LegacyDisposition);
+        Assert.Equal(1, exits);
+        Assert.Equal(exitThrows ? 0 : 1, forgets);
+        Assert.Equal(exitThrows ? 0 : 1, transitions);
+    }
+
+    [Fact]
+    public void RejectedTargetAfterDeliveredExitCannotBeRetriedAsNoInput()
+    {
+        int transitions = 0;
+        var result = NativeTipReturn.BeforeTransition(true, () => true, () => { }, () => { },
+            () => { transitions++; return NativeInputResult.Rejected("target_changed", "after native exit"); });
+        Assert.Equal(LegacyNativeInputDisposition.Unknown, result.LegacyDisposition);
+        Assert.Contains("target_changed", result.Detail);
+        Assert.Equal(1, transitions);
+    }
+
+    [Fact]
+    public void NoRetainedSignalKeepsTheOriginalTransitionResultAndDoesNoCleanup()
+    {
+        var expected = NativeInputResult.Rejected("stale", "no input");
+        int transitions = 0;
+        var actual = NativeTipReturn.BeforeTransition(false,
+            () => throw new InvalidOperationException("no source"),
+            () => throw new InvalidOperationException("no exit"),
+            () => throw new InvalidOperationException("no cleanup"),
+            () => { transitions++; return expected; });
+        Assert.Same(expected, actual);
+        Assert.Equal(1, transitions);
+    }
+
 }

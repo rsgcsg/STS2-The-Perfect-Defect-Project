@@ -11,7 +11,7 @@ namespace STS2Platform.GameMod;
 [ModInitializer("Initialize")]
 public static class UnifiedPlatformMod
 {
-    public const string Version = "0.2.0-rc.28";
+    public const string Version = "0.2.0-rc.38";
 
     public static void Initialize()
     {
@@ -38,6 +38,7 @@ public static class UnifiedPlatformMod
         NativeFoundationOwnerPatches.Initialize();
         ConnectorCardRewardPresentationPatches.Initialize();
         ConnectorMod.Initialize();
+        ConnectorNativeLogicalPatches.Initialize();
         RecorderMod.Initialize();
         PlatformLiveUiMod.Initialize();
         try { PlatformTaskBridge.Start(); }

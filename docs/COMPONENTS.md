@@ -3,8 +3,10 @@
 
 # Components
 
-For the proposed cross-system responsibility map, read [baseline foundations](design/BASELINE_FOUNDATION.zh-CN.md).
-The proposal does not move these components or transfer their current authority.
+For the selected cross-system direction, read the [current baseline specification](BASELINE_V1_SPEC.zh-CN.md).
+The table below owns component placement and authority; the execution packet and
+STATUS separately track implementation and qualification. Historical proposals
+do not move these boundaries or establish current capability.
 
 > Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection
@@ -26,7 +28,7 @@ The proposal does not move these components or transfer their current authority.
 | Native Foundation | `components/native-foundation` | STS2-owned semantic decisions, native lifecycle, process-local owner lineage | transport, evidence, public action authority, input execution |
 | Connector | `components/connector` | Player Environment, native binding/execution, REST/MCP, SDK | process lifecycle, strategy, annotation |
 | Host Runtime | `components/host-runtime` | discovery, isolation, launch/reset/stop, headless/managed experiments, qualification | gameplay legality, research models |
-| Human Annotator | `components/annotator` | native-human witness, one semantic causal tracker, derived current Decision/canonical projections, records, audit/export/bundle, workstation | action authority, research admission, a second causal adjudicator |
+| Annotator | `components/annotator` | native interaction/source recording; native-human witness and one semantic causal tracker for their declared contracts; derived Decision/canonical projections, audit/export/bundle, workstation | action authority, research admission, a second causal adjudicator |
 | Platform Evidence | `components/evidence` | typed verification, content identity, immutable store, transfer/receiver receipts | research eligibility, corpus policy, mutation |
 | Policy Runtime | `components/policy-runtime` | policy process boundary, Human/Shadow/One-Step/Auto, controller lifecycle, stale/Receipt/successor and Agent-run evidence | model inference, legality, native operands, candidate filtering |
 | Platform diagnostic API | `apps/workbench` | typed live status, explicit filesystem fallback, bounded Policy Runtime commands | gameplay submission, evidence admission, model loading |
@@ -68,9 +70,20 @@ boundary. It verifies current and explicitly archival Human bundles and owns
 local transfer mechanics;
 research consumers remain responsible for their own admission semantics.
 
-The Policy Runtime is a Connector consumer. A Policy Manifest names exact
+The Policy Runtime is a Connector consumer. The legacy Policy Manifest names exact
 model, adapter, representation, Reads, support and environment requirements.
-The adapter returns only an ordered score vector and selected index; Runtime
-resolves that index against the unchanged current Connector catalog. Workbench
+That scoring adapter returns an ordered score vector and selected index; Runtime
+resolves the index against the unchanged current Connector catalog. The explicit
+Agent Manifest instead selects the [generic Agent session port](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md),
+with declared consumption/query behavior, Act/Await/Abstain/Close and optional
+scores. Its selection still binds the original Connector catalog through an exact
+handle or unique Resolve. Both branches share one control/lifecycle owner. Workbench
 and Live UI issue only typed Runtime or Annotator application commands. STS2
 loads one `STS2_PLATFORM` manifest; logical authority does not follow DLL count.
+
+The [baseline specification](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)
+owns the common upper terms. Host capability, Agent-facing environment interface
+and Runtime-to-Agent program port are different boundaries mapped to existing components;
+they are not additional services. A complete Agent may compose fixed rules,
+optional Models and shared libraries. A Model does not itself acquire lifecycle
+or gameplay permissions, and a research TargetSpec does not enter current inputs.

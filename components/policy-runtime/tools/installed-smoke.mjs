@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -6,7 +8,7 @@ import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { AgentRunEvidence, ConnectorPolicyClient, PolicyRuntime, POLICY_RUNTIME_VERSION, startPolicyRuntimeHttpServer } from "@rsgcsg/sts2-policy-runtime";
+import { AgentRunEvidence, ConnectorPolicyClient, PolicyRuntime, POLICY_RUNTIME_VERSION, startPolicyRuntimeHttpServer, validateAgentManifest, NdjsonAgentSessionPort, validateAgentNextInput } from "@rsgcsg/sts2-policy-runtime";
 
 const manifest = {
   schema: "sts2.policy-runtime/policy-manifest-1", manifest_id: "installed-cpu-smoke",
@@ -116,7 +118,50 @@ try {
 // Exercise the actual installed SDK over loopback HTTP through the installed
 // Runtime. A synthetic Host controls navigation and native delivery separately.
 const sdkModule = new URL("../node_modules/@rsgcsg/sts2-connector-client/dist/index.js", import.meta.resolve("@rsgcsg/sts2-policy-runtime"));
-const { PlayerEnvironmentRestClient } = await import(sdkModule.href);
+const { PlayerEnvironmentRestClient, NativeLogicalSession, decodeNativeLogicalCapabilities,
+  NATIVE_LOGICAL_PUBLICATION_PROFILE, NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256 } = await import(sdkModule.href);
+// Exercise the actual archive's native composition without contacting a Host or
+// importing a model backend. Registration requires these installed public APIs.
+assert.equal(typeof PolicyRuntime.forAgent, "function");
+assert.equal(typeof NativeLogicalSession, "function");
+assert.equal(typeof NativeLogicalSession.prototype.capabilities, "function");
+assert.equal(typeof decodeNativeLogicalCapabilities, "function");
+const nativeProfileBytes = await readFile("native-publication-profile.json");
+assert.deepEqual(NATIVE_LOGICAL_PUBLICATION_PROFILE, JSON.parse(nativeProfileBytes));
+assert.equal(NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256, createHash("sha256").update(nativeProfileBytes).digest("hex"));
+const nativeManifest = validateAgentManifest(JSON.parse(await readFile("native-agent-manifest.json", "utf8")));
+assert.equal(nativeManifest.input.profile, NATIVE_LOGICAL_PUBLICATION_PROFILE.input_profile);
+assert.deepEqual(nativeManifest.input.attachment, {
+  eager_scope: NATIVE_LOGICAL_PUBLICATION_PROFILE.eager_scope,
+  required_seams: NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams,
+  delivery_mode: NATIVE_LOGICAL_PUBLICATION_PROFILE.delivery_mode
+});
+for (const missingMethod of ["submit", "result"]) {
+  const incompatibleManifest = structuredClone(nativeManifest);
+  incompatibleManifest.requirements.required_methods = nativeManifest.requirements.required_methods.filter(method => method !== missingMethod);
+  assert.throws(() => validateAgentManifest(incompatibleManifest), /required_methods_mismatch/,
+    `installed native Runtime admitted a Manifest without ${missingMethod}`);
+}
+// The native class is exported from the package main entry. ./child-port
+// remains the separate legacy decision-only executable surface.
+const ownedNorm = JSON.parse(await readFile("owned-stale-fixture.json", "utf8"));
+const explicitPolicy = structuredClone(ownedNorm.execution_policy);
+const nativeChild = Object.assign(new EventEmitter(), {
+  stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {}
+});
+const ownedPort = new NdjsonAgentSessionPort(nativeChild, ownedNorm.manifest.adapter,
+  ownedNorm.manifest.limits, undefined, explicitPolicy);
+try {
+  explicitPolicy.max_known_stale_rejections = 1;
+  assert.equal(ownedPort.executionPolicy.max_known_stale_rejections, 8);
+  assert.ok(Object.isFrozen(ownedPort.executionPolicy));
+  assert.equal(typeof Object.getOwnPropertyDescriptor(NdjsonAgentSessionPort.prototype, "executionPolicy").get, "function");
+  assert.deepEqual(validateAgentNextInput(ownedNorm.opted_next_initial, ownedPort.executionPolicy), ownedNorm.opted_next_initial);
+  assert.throws(() => validateAgentNextInput(ownedNorm.legacy_next, ownedPort.executionPolicy));
+  assert.throws(() => validateAgentNextInput(ownedNorm.opted_next_initial));
+  await assert.rejects(PolicyRuntime.forAgent({ manifest: ownedNorm.legacy_manifest,
+    port: ownedPort, environment: {}, evidence: {}, runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) } }), /agent_execution_policy_mismatch/);
+} finally { ownedPort.close(); }
 const textAction = { action_id: "menu.open_information.1", kind: "system_navigation", verb: "open_information", label: "Information", subject_referent_id: null, arguments: [], effect_domain: "text_menu" };
 const nativeAction = { action_id: "native.end_turn.2", kind: "native_input", verb: "end_turn", label: "End turn", subject_referent_id: null, arguments: [], effect_domain: "native_input" };
 function textFrame(number, cursor, action) {
@@ -494,4 +539,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_stale_reobserve_and_fresh_request: true, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, installed_native_agent_api_and_manifest: true, installed_native_owned_policy_fifth_argument_and_next_shapes: true, installed_native_missing_base_methods_rejected: true, installed_native_publication_profile_sha256: NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_stale_reobserve_and_fresh_request: true, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

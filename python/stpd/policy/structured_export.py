@@ -12,13 +12,22 @@ from typing import Any
 
 import torch
 
+from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
 
 from ..canonical import semantic_hash
 from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.text_menu_inputs import V2_SNAPSHOT_SCHEMA
 from ..models.structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
-from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+from ..models.structured_weights import encode_structured_weights, load_structured_weights
+from ..structured_code_scope import (
+    INFERENCE_SCOPE,
+    LEGACY_SCOPE,
+    SCOPED_PACKAGE_SCHEMA,
+    code_identity,
+    exporter_runtime,
+    inference_runtime,
+)
 
 PACKAGE_SCHEMA = "stpd/structured-m2-package-v1"
 WEIGHT_SCHEMA = "stpd/structured-m2-weights-v1"
@@ -90,32 +99,35 @@ def export_structured_package(
     source_kind: str,
     teacher_sha256: str,
     training: dict[str, Any],
+    code_scope: str = LEGACY_SCOPE,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     digest(source_revision, "structured_package.source_revision", length=40)
     digest(data_sha256, "structured_package.data_sha256")
     digest(teacher_sha256, "structured_package.teacher_sha256")
     if source_kind not in {"agent", "synthetic"} or not isinstance(training, dict):
         raise BoundaryError("structured_package", "source_or_training")
+    if code_scope not in {LEGACY_SCOPE, INFERENCE_SCOPE}:
+        raise BoundaryError("structured_package", "unsupported_code_scope")
+    scoped = code_scope == INFERENCE_SCOPE
+    if not scoped and provenance is not None:
+        raise BoundaryError("structured_package", "unexpected_scoped_provenance")
     model.validate_parameters()
+    if model.model_control is not None:
+        raise BoundaryError("structured_package", "native_control_not_legacy")
     if model.seed != 0:
         raise BoundaryError("structured_package", "unsupported_initialization_recipe")
-    raw = encode_checkpoint(
-        {
-            "schema": WEIGHT_SCHEMA,
-            "graph": GRAPH,
-            "projection": PROJECTION,
-            "seed": model.seed,
-            "state_dict": dict(model.state_dict()),
-        }
-    )
+    raw = encode_structured_weights(model, schema=WEIGHT_SCHEMA, graph=GRAPH,
+                                     projection=PROJECTION)
     if len(raw) > MAX_WEIGHTS_BYTES:
         raise BoundaryError("structured_package", "weights_size_limit")
     body = {
-        "schema": PACKAGE_SCHEMA,
+        "schema": SCOPED_PACKAGE_SCHEMA if scoped else PACKAGE_SCHEMA,
         "graph": GRAPH,
         "projection": PROJECTION,
         "seed": model.seed,
-        "adapter_code_sha256": code_digest(ROOT),
+        "adapter_code_sha256": (semantic_hash(code_identity(INFERENCE_SCOPE, ROOT))
+                                if scoped else code_digest(ROOT)),
         "weights": {
             "path": WEIGHTS_NAME,
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -128,9 +140,18 @@ def export_structured_package(
             "teacher_sha256": teacher_sha256,
         },
         "training": training,
-        "runtime": {"device": "cpu", "dtype": "float32", "torch_version": torch.__version__},
+        "runtime": (inference_runtime(str(torch.__version__)) if scoped else
+                    {"device": "cpu", "dtype": "float32", "torch_version": torch.__version__}),
         "qualification": "engineering_only",
     }
+    if scoped:
+        identity = code_identity(INFERENCE_SCOPE, ROOT)
+        body["code_identity"] = identity
+        supplied = object_fields(provenance, {"training_producer", "export_producer", "run_id",
+                                              "training_input_id", "checkpoint_id"},
+                                 "structured_package.export_provenance")
+        body["provenance"] = _provenance(
+            {**supplied, "export_runtime": exporter_runtime()}, source_revision, identity)
     manifest = {**body, "model_id": semantic_hash(body)}
     encoded = json_bytes(manifest)
     if len(encoded) > MAX_MANIFEST_BYTES:
@@ -144,6 +165,24 @@ def export_structured_package(
     load_structured_package(destination)
     return manifest
 
+
+
+def _provenance(value: object, source_revision: str, identity: dict[str, str]) -> dict[str, Any]:
+    result = object_fields(value, {"training_producer", "export_producer", "run_id",
+                                  "training_input_id", "checkpoint_id", "export_runtime"},
+                           "structured_package.provenance")
+    platform = object_fields(result["export_runtime"], {"python", "system", "machine"},
+                             "structured_package.export_runtime")
+    if any(not isinstance(item, str) or not item for item in platform.values()):
+        raise BoundaryError("structured_package", "export_provenance_mismatch")
+    training = Producer.decode(result["training_producer"])
+    exporter = Producer.decode(result["export_producer"])
+    for key in ("run_id", "training_input_id", "checkpoint_id"):
+        digest(result[key], "structured_package.provenance." + key)
+    if (training.source_revision != source_revision
+            or exporter.uv_lock_sha256 != identity["dependency_lock_sha256"]):
+        raise BoundaryError("structured_package", "producer_provenance_mismatch")
+    return result
 
 def load_structured_package(
     directory: Path,
@@ -159,8 +198,11 @@ def load_structured_package(
         expected_manifest_sha256, "structured_package.expected_manifest_sha256"
     ):
         raise BoundaryError("structured_package", "manifest_digest_mismatch")
+    decoded_manifest = decode_json(encoded)
+    scoped = (isinstance(decoded_manifest, dict)
+              and decoded_manifest.get("schema") == SCOPED_PACKAGE_SCHEMA)
     manifest = object_fields(
-        decode_json(encoded),
+        decoded_manifest,
         {
             "schema",
             "graph",
@@ -173,18 +215,20 @@ def load_structured_package(
             "runtime",
             "qualification",
             "model_id",
-        },
+        } | ({"code_identity", "provenance"} if scoped else set()),
         "structured_package",
     )
     if (
         encoded != json_bytes(manifest)
-        or manifest["schema"] != PACKAGE_SCHEMA
+        or manifest["schema"] != (SCOPED_PACKAGE_SCHEMA if scoped else PACKAGE_SCHEMA)
         or manifest["graph"] != GRAPH
         or manifest["projection"] != PROJECTION
         or manifest["qualification"] != "engineering_only"
         or type(manifest["seed"]) is not int
         or manifest["seed"] != 0
-        or manifest["adapter_code_sha256"] != code_digest(ROOT)
+        or manifest["adapter_code_sha256"] != (
+            semantic_hash(code_identity(INFERENCE_SCOPE, ROOT)) if scoped else code_digest(ROOT))
+        or scoped and manifest["code_identity"] != code_identity(INFERENCE_SCOPE, ROOT)
     ):
         raise BoundaryError("structured_package", "unsupported_package_identity")
     body = {key: value for key, value in manifest.items() if key != "model_id"}
@@ -202,15 +246,14 @@ def load_structured_package(
         manifest["training"], dict
     ):
         raise BoundaryError("structured_package", "source_or_training")
+    expected_runtime = (inference_runtime(str(torch.__version__)) if scoped else
+                        {"device": "cpu", "dtype": "float32", "torch_version": torch.__version__})
     runtime = object_fields(
-        manifest["runtime"], {"device", "dtype", "torch_version"}, "structured_package.runtime"
-    )
-    if (
-        runtime["device"] != "cpu"
-        or runtime["dtype"] != "float32"
-        or runtime["torch_version"] != torch.__version__
-    ):
+        manifest["runtime"], set(expected_runtime), "structured_package.runtime")
+    if runtime != expected_runtime:
         raise BoundaryError("structured_package", "runtime_identity_mismatch")
+    if scoped:
+        _provenance(manifest["provenance"], source["source_revision"], manifest["code_identity"])
     weights = object_fields(
         manifest["weights"], {"path", "sha256", "bytes"}, "structured_package.weights"
     )
@@ -222,29 +265,6 @@ def load_structured_package(
         or weights["sha256"] != hashlib.sha256(raw).hexdigest()
     ):
         raise BoundaryError("structured_package", "weights_digest_mismatch")
-    decoded = object_fields(
-        decode_checkpoint(raw),
-        {"schema", "graph", "projection", "seed", "state_dict"},
-        "structured_package.payload",
-    )
-    if (
-        decoded["schema"] != WEIGHT_SCHEMA
-        or decoded["graph"] != GRAPH
-        or decoded["projection"] != PROJECTION
-        or decoded["seed"] != manifest["seed"]
-        or not isinstance(decoded["state_dict"], dict)
-    ):
-        raise BoundaryError("structured_package", "weights_identity_mismatch")
-    model = StructuredM2(seed=manifest["seed"])
-    expected = model.state_dict()
-    actual = decoded["state_dict"]
-    if set(expected) != set(actual) or any(
-        not isinstance(actual[key], torch.Tensor)
-        or actual[key].dtype != tensor.dtype
-        or actual[key].shape != tensor.shape
-        for key, tensor in expected.items()
-    ):
-        raise BoundaryError("structured_package", "state_dict_shape_or_type")
-    model.load_state_dict(actual, strict=True)
-    model.validate_parameters()
-    return manifest, model.eval()
+    model = load_structured_weights(raw, schema=WEIGHT_SCHEMA, graph=GRAPH,
+                                    projection=PROJECTION, seed=manifest["seed"])
+    return manifest, model

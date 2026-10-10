@@ -1,5 +1,10 @@
 # Testing And Evidence
 
+This document owns test design, creation, maintenance, execution selection and
+evidence meanings. Governance owns failure classification and architectural
+decisions; the active task owns authorization, budgets and completion conditions.
+Use existing tests, commands and task/PR records, not another test manager or ledger.
+
 The root suite is the portable source and package gate. It does not require
 proprietary STS2 files and does not prove installation, loading, mutation, a
 journey, Human evidence, or qualification.
@@ -20,7 +25,74 @@ npm run project:closeout
 `project:check` is part of the root portable gate. `project:closeout` reports
 path-based review signals and never rewrites semantic truth.
 
-## Hosted CI contract
+## Test design and maintenance
+
+Choose a test from the decision its consumer needs to make:
+
+```text
+claim/risk -> owning fact -> faithful normal/negative checks
+  -> scoped evidence -> consumer decision
+```
+
+Name the observable guarantee, owner and real producer/caller/reader path in the
+existing task or PR. Define a successful example and the relevant duplicate,
+stale, cancel, partial, ambiguous, unknown or cleanup counterexample before coding.
+Choose the lowest layer that can falsify the guarantee, and state any stronger
+unproved claim. Assertions observe behavior, ordering, identity or durable results;
+they must not merely restate implementation structure or prose. A green lower
+layer never removes a higher gate required by the claim.
+
+### Add, change or retire coverage
+
+| Situation | Required treatment |
+| --- | --- |
+| Changed behavior, bug repair, public contract, new abstraction, unsafe refactor baseline or escaped CI/governance failure | Add or update the lowest-cost faithful regression in the same PR; contract changes cover real providers, consumers and rejection/migration paths. |
+| Production or Human incident | Preserve the failure, regress its family, repair its owning cause, and add a crossed-boundary regression where needed. Explain whether the check catches the original failure earlier. |
+| Exact existing coverage, prose clarification or dead-code removal with an already covered observable contract | Name the existing test/assertion and why it covers the risk; no separate test mirroring the edit is needed. |
+| Changed expectation, tolerance, fixture, timeout or skip | Explain the intended contract and evidence. A changed implementation or slow run alone does not justify weaker assertions or fewer cases. Preserve archival consumers when semantics change. |
+| Duplicate, obsolete or costly test proposed for deletion/replacement | Inspect actual callers, current and archival contracts and unique normal/error coverage. Name retained or replacement coverage in the PR; cost alone cannot delete a required signal. |
+| Suspected flake or environment failure | A confirmed flaky test is a defect. Preserve each attempt and diagnose separately from assertion failures. Do not label an unexplained result flaky or harmless; a green rerun does not erase the first failure or automatically permit merge. |
+| Quarantine | Require an owner, issue, replacement signal and removal deadline, with review of the lost coverage and merge requirements. No silent skip; this policy creates no automatic quarantine lane. |
+
+Maintain regressions with the owning behavior rather than accumulating literal
+incident snapshots. Repeated failures of the same assumption activate Governance's
+existing L3 contract/architecture review; unrelated symptoms do not prove an
+architecture defect. A test itself can encode a wrong assumption. Correct it from
+the actual contract/evidence and retain the observed mismatch, rather than changing
+production validation to accept an independently invented fixture.
+
+### Faithful fixtures and test shapes
+
+Critical lifecycle fixtures preserve realistic identity, ordering, duplicate,
+stale, cancel, unknown, persistence and final-auditor behavior. Declare mocked
+seams and claims they cannot prove. A stub, simplified flag or direct root
+injection can isolate a branch but cannot establish the production lifecycle it
+bypasses. Use production serializers or shared versioned contract fixtures at
+cross-owner seams, then exercise the real reader and verifier.
+
+Expensive immutable producer output may be built once and copied through the
+existing artifact transfer API into private stores per test. Preserve original
+bytes, identities and lineage; prove that damaging one copy leaves the baseline
+and another copy valid. Do not share writable databases, open handles, lifecycle
+state, controllers, process registries or mutable caches. Tests of construction,
+startup, migration or recovery still need a fresh instance when that is the risk.
+`python/tests/test_token_comparison.py` is an existing producer-to-comparator
+example with private copies and an isolation regression, not a claim about all
+fixture families or hosted performance.
+
+| Shape | Appropriate risk |
+| --- | --- |
+| Unit/static | deterministic calculations, parsers, codecs, schemas, bounds, identity mapping and local branches |
+| Component | collaborating classes and actual lifecycle/files/process cleanup inside one owner |
+| Contract/conformance | public providers, consumers and external adapters against the same versioned contract |
+| Short integration | a real A-to-B seam where independently green units may disagree |
+| Cross-layer causal | root/native identity through Commit, successor, persistence and the production final auditor |
+| Exact-game | compilation and conformance against the exact local STS2 |
+| Runtime/system | package, install, load, lifecycle, recovery and rollback |
+| Journey/E2E | a few critical workflows; presentation does not become semantic authority |
+| Performance/load/resilience/security | a risk owned by the change, with claim-adjacent baselines and metrics |
+
+## Local feedback and candidate checks
 
 ### Fast feedback without repeated assurance work
 
@@ -36,13 +108,111 @@ not assertion weakening or unrelated fixes. Existing selection, exact-tree recei
 reuse and higher evidence gates below remain mandatory; this rule does not permit
 skips, copied green results or changing CI routing to make a task cheaper.
 
+Before freezing a candidate or launching expensive gates, run `npm run project:closeout`
+against the final assembled documentation. It reuses the existing CURRENT safety and
+physical UTF-8 capacity rule, prints the actual size/limit, and rejects violations.
+An individually small added paragraph is not evidence that the whole handoff fits.
+
+### Small producer-to-reader checks before final dispatch
+
+For a cross-owner incident, first establish one short normal/error path through
+the actual producer and consumer. Generate critical DTOs and records with the
+production serializer/owner or a shared versioned contract fixture. Feed those
+original bytes to the real SDK, application reader and final verifier as needed;
+do not independently handwrite the supposedly matching final/report family.
+Declare every mocked seam and its unproved claim. A synthetic Host or promotion
+fixture does not establish game legality, native origin or production admission.
+
+Keep these decisions in the existing task packet: first incorrect fact/owner,
+exact dependencies, the risky claim and counterexample, the test's real/mocked
+seams, and its completion boundary. Source review and the short boundary check
+precede a frozen full candidate. Independently green leaf tests alone do not
+establish their joined contract. No additional manager, ledger or test framework
+is required for this procedure.
+
+On failure, retain the original outcome and useful bounded diagnostics: source,
+stage/operation/iteration, producer readiness, actual child exit, original error
+and reader disposition. A test must show why it failed before removing temporary
+state. Repair an observed cause, then repeat affected checks for the changed
+source; do not hide the failure by normalizing protocol bytes, raising deadlines,
+reducing pressure/coverage, skipping cases or retrying an unknown native mutation.
+Process startup readiness and a request deadline are different observations.
+An OS name or a termination offer does not establish an exit tuple: compare the
+receipt with an independent observation of the original child/PID/close event;
+an unconfirmed exit stays unconfirmed. Text fixtures and source readers use their
+declared encoding explicitly, and shared readers are exercised with non-ASCII
+content before broad tests rather than relying on the developer's locale.
+
+Distinguish the test runner's whole-fixture timeout from a product deadline or
+performance promise. Startup, durable fixture writes and independent final
+verification need their own bounded completion allowance. Correcting an
+unfounded runner cap requires phase measurements, an unchanged owner deadline
+and pressure/storage/durability assertions, plus a negative proving the original
+owner timer still fences work. Retain the old timeout and its unknown phases;
+label the correction as test strategy, not a performance repair or measured
+cross-platform guarantee. Never extend a product deadline to make a test pass.
+
+Before the final dispatch, mechanically check the assembled files and identity
+tuple, independently review the complete affected producer/caller/consumer diff,
+and freeze the exact candidate. Run its selected gates once, preserving failure,
+cancellation and skips. A new required repair invalidates the affected verdict;
+follow the owner's declared stop boundary rather than silently starting another
+complete experiment. TESTING's existing receipt reuse and evidence ladder remain
+the owners of any later integration or stronger claim.
+
 Parallelize independent cheap checks when useful. Avoid duplicate heavy local and
 hosted runs that prove the same thing; retain the required local native/runtime
 checks. The [passive-wait checkpoint](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)
 changes how the engineer waits, not the execution or acceptance status of a job.
 
+### Measure cost and use safe concurrency
+
+Measure command and phase duration, including collection/setup, producer/build,
+assertions and teardown, before choosing a speed repair. Use existing workspace
+stage summaries, Python command timings and pytest/JUnit duration diagnostics;
+report exact source, OS/tool versions, warm/cold state and fixture size. Optimize
+the measured bottleneck without weakening normal/error assertions, pressure,
+lineage, lifecycle isolation or cleanup. Local timing does not predict hosted
+Linux or Windows performance. There is no universal test percentage or timeout.
+
+Fast targeted feedback and earlier boundary failures are engineering aspirations,
+not promised durations. Hosted pytest partitioning below is the selected scheduling
+policy; other new lanes still need their own review. Reduce duplicate setup and
+unchanged reruns first; broader sharding, new routing or gate movement needs its
+own reviewed policy/code change. Broad compatibility, flake/soak and trend checks
+may use existing scheduled/on-demand gates where applicable; required PR checks
+are not moved there by this recommendation.
+
+Cheap independent read-only checks may run concurrently after their prerequisites.
+Concurrent executions need disjoint writable worktrees, environments, temporary
+state, stores, processes and ports; reserve shared writers explicitly. Never
+rebuild/delete generated SDK or Runtime `dist` while a consumer reads it. The
+lead (Root) coordinates the sole heavy local/game/integration/BOM writer slot under
+[AI collaboration](AI_COLLABORATION.md#roles-and-actual-access); available workers
+do not imply available machine resources. While gates run, continue independent
+authorized review or work without mutating the frozen candidate or its inputs.
+A dependent consumer waits for the actual contract/build/evidence prerequisite,
+not a queued job, stale generated output or another branch's green status.
+
+A bounded local runtime diagnostic may overlap isolated remote CI on the same
+frozen candidate once its relevant source review, short-seam checks, local exact
+build/artifact, install/load, rollback and stop prerequisites pass. Match this
+ordering to the diagnostic's claim and authorization; it is not a blanket waiver
+of a task or owner dependency. Do not bypass a failed relevant gate or unknown,
+or rebuild local generated output while the runtime consumes it. Selected full
+dual-OS portable checks remain required for merge, portability and stronger
+promotion. This scheduling rule grants no additional native attempt, Human
+recording, training, spending or deployment authority.
+
+## Hosted CI contract
+
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
-exact-game or runtime qualification environment.
+exact-game or runtime qualification environment. PR checks are deterministic,
+portable and diagnostically clear; path-conditional selection requires tests of
+the router itself. Proprietary exact-game, Human, production-secret, destructive
+production and raw-session operations stay outside public hosted CI. Release or
+manual qualification retains package/install/load/rollback, production-like E2E,
+load/resilience and Human gates when the claim requires them.
 
 The workflow always starts a `plan` job. The same local router is available as:
 
@@ -74,14 +244,74 @@ added/modified single-file Markdown reports under docs/evidence. They qualify on
 alongside a Python owner change; standalone eligible prose instead uses docs,
 and evidence deletions still use full. ADR/governance and unknown docs are not companions.
 
-The full and Python scopes also run `npm run check:s0`: the small shared SDK
-build, bounded runner lifecycle tests and offline capsule/Runtime dataset joins.
+The full and Python scopes also run `npm run check:s0`: the shared SDK and Runtime
+builds, bounded S0 runner and native Source3 collector lifecycle tests, and offline
+capsule/Runtime dataset joins.
 They run before the long Python suite so a local consumer/fixture failure does
 not wait behind unrelated training and application regressions. Both gates still
 run in full; this ordering grants no test skip or previous-head reuse.
 These use synthetic protocol fixtures and never start a game or train on real
 records. The S0 consumer tests live under `tools/test`, so Python's normal
 `tests/` discovery alone does not cover this cross-owner seam.
+
+The shared consumer precheck builds the Connector SDK and then Policy Runtime, so
+its real Agent-session tests also run from a fresh Python-scope checkout without
+depending on a previous full component build.
+
+### Execute by dependency and report every selected owner
+
+`tools/check-workspace.mjs` retains the existing full/Python component inventory.
+The dependency order is:
+
+```text
+repository/identity guards -> Connector SDK build -> Policy Runtime build
+  -> actual short S0 normal/error consumer checks -> broader selected owners
+```
+
+Dependencies are success conditions, not merely execution order. The current
+runner executes stages sequentially; this DAG explains which consumers must wait
+and which independent results remain useful, without claiming parallel scheduling.
+It runs the short S0 producer/consumer checks before the broad component/Python
+suites. A failed repository prerequisite blocks later stages. A failed generated-client
+build blocks its S0, Runtime and Python consumers; unrelated owner
+checks still execute. An Annotator or S0 test failure no longer hides independent
+Evidence, Runtime or Python results. S0 and Python read that generation before
+component checks that rebuild SDK/Runtime output; S0's existing test body is run
+without invoking its build prehook a second time. Workbench's diagnostic tests are
+independent of those generated outputs. It never starts native actions.
+
+The summary distinguishes passed, failed, cancelled and blocked, with exact
+commands, exit codes/signals, durations and initial/final Git identity. Full and
+Python runs require an unchanged clean candidate. Focused component runs may use
+dirty development source, which remains explicitly recorded and cannot become a
+frozen full result. Cancellation prevents subsequent execution; any required
+failure or blocked stage keeps the aggregate failed. Cancellation terminates the
+owned process group/tree and reports unresolved cleanup as a failure, rather than
+killing only an npm wrapper and leaving its descendants running. This changes diagnostic
+collection, not the dual-OS requirement, supported scope or scientific claims.
+CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
+on failure; the GitHub summary lists each reached or blocked stage. The existing
+successful execution receipt remains a separate artifact and is never generated
+from a failing diagnostic summary.
+
+Choose layers by the claim being falsified:
+
+| Layer | Cheapest useful evidence | What it cannot establish |
+| --- | --- | --- |
+| Static/unit | schema, calculation, bounds, identity and a local negative | actual cross-owner agreement or native semantics |
+| Component | real owner lifecycle, actual files/processes and cleanup | other independently implemented readers |
+| Contract/short integration | real producer bytes through the real SDK/reader, normal and negative paths | mocked native execution, lossless exposure, loaded identity |
+| Exact build/install/load | current game compilation and exact bytes admitted/observed in the owning runtime | successful continuous gameplay or learning |
+| Bounded native journey | one declared real attempt, full failure/stop/accounting and measured runtime | exhaustive mechanisms, Human origin or scientific usefulness |
+| Wider qualification | declared coverage, recovery/performance/product/data/model comparisons as needed | guarantees outside its fixed identity, scope and method |
+
+For timing and numeric claims, record the relevant environment and use measured
+budgets. A seed is not a universal promise of cross-platform tensor bytes; an
+immutable artifact still requires exact byte integrity on every reader. A
+requested stop is not proof of graceful termination or a durable checkpoint.
+If a test assumes either promise, verify that promise in the owner contract
+before adjusting its expected value. Retain the observed mismatch when correcting
+the scope of an invalid expectation.
 
 The Python scope still covers installed Platform consumers, application/research tests,
 SDK contracts, typecheck, CPU E2E and packaging. Platform never imports Python applications;
@@ -94,6 +324,47 @@ clean committed diff. `npm run check` always runs full.
 `portable` is the required aggregate: plan and all selected jobs must succeed;
 unselected jobs must be skipped. Failure/cancellation never becomes a PASS. A Python,
 docs or reuse result is labelled as such, not as a new full dual-OS execution.
+
+The local diagnostic scope may be smaller than merge or release scope. The current
+router, every selected leaf and `portable`, plus any stronger active-task
+prerequisite, remain binding until a separately reviewed policy/code change alters
+them. Testing/governance edits select full today. Hosted partitioning preserves
+that full or Python inventory and both OS requirements; it does not waive them.
+
+### Hosted pytest partition and complete execution proof
+
+Full and Python scopes use two isolated runner leaves per OS, with matrix
+`fail-fast: false` and the existing 55-minute limit per leaf. Each leaf repeats
+its selected repository guards, fresh SDK/Runtime build, full S0 checks, Python
+nonpytest commands and component-owner inventory. Only the top-level Python
+pytest invocation is partitioned. Local `npm run check` and Python `check`
+defaults remain complete and unpartitioned.
+
+Each top-level invocation explicitly loads `tools.pytest_shard` with shard
+index/count and a manifest path. It collects the unchanged default testpaths,
+normalizes relative POSIX node IDs/files, sorts unique files and assigns whole
+files by rank modulo two. Parameters, classes and module fixtures stay together;
+new files join automatically. No manually curated test list, `PYTEST_ADDOPTS`,
+automatic inherited environment plugin or conftest filters nested pytest.
+The Modal fresh child and other nested invocations keep their full case sets.
+
+Unique OS/shard/attempt artifacts retain the original complete collection,
+selection, actual setup/call/teardown and subtest outcomes, terminal execution,
+source identities and workspace results. Before sealing a fresh receipt,
+`portable` downloads the four current-run artifact directories separately and
+verifies clean exact head/tree/workflow/selector, run/attempt/scope/OS, identical
+same-OS collection, disjoint/exhaustive deterministic selections, and terminal
+executed IDs matching every selected item. Existing test-level skips remain
+explicit; a missing, duplicate, empty, wholly skipped, failed, cancelled,
+uncompleted or foreign-source leaf cannot pass. All selected owner stages must
+also pass. The small existing execution receipt adds only coverage digests/counts;
+original manifests remain diagnostics. Receipt eligibility, freshness, source
+binding, required OS groups and higher evidence gates remain unchanged.
+
+This changes scheduling, not coverage or deadlines. Historical timing estimates
+are predictions: duplicated session fixtures, collection, setup and other gates
+can change the result. Measure real leaf/aggregate duration and runner cost before
+claiming a speedup or that the candidate fits its budget.
 
 ### Integration receipts instead of repeated identical execution
 

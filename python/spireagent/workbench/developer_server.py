@@ -26,55 +26,20 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from spireagent.console.page import CSP, asset, render_shell
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, digest
 from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, doctor, tool_identity
 from spireagent.workbench.hub_client import HubClient
 from spireagent.workbench.identity import LocalIdentity
+from spireagent.workbench.instance_lock import instance_lock as instance_lock
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.member_client import MemberClient
 from spireagent.workbench.native_workbench import (
     WorkbenchRegistrationLoop,
     start_workbench_registration,
 )
-
-
-@contextlib.contextmanager
-def instance_lock(path: Path, *, create: bool = True) -> Iterator[None]:
-    """OS-held lock; process death releases it without PID guesses or stale deletion.
-
-    Observation callers use create=False to avoid initializing an owner path.
-    """
-    if create:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b" if create else "r+b") as handle:
-        handle.seek(0)
-        # Windows permits a byte lock beyond EOF; do not read another owner's
-        # locked byte merely to initialize the lock file.
-        try:
-            if os.name == "nt":
-                msvcrt = importlib.import_module("msvcrt")
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                fcntl = importlib.import_module("fcntl")
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            raise BoundaryError("project", "already_running") from None
-        try:
-            yield
-        finally:
-            if os.name == "nt":
-                msvcrt = importlib.import_module("msvcrt")
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl = importlib.import_module("fcntl")
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+from spireagent.workbench.service_process import service_environment, service_process
 
 
 @contextlib.contextmanager
@@ -160,7 +125,7 @@ def open_project(
             if report["status"] != "PASS":
                 raise BoundaryError("project", "doctor_blocked")
             config.state_dir.mkdir(parents=True, exist_ok=True)
-            environment = dict(os.environ)
+            environment = service_environment(config.state_dir)
             environment.pop("STPD_HUB_ADMIN_TOKEN", None)
             command = [sys.executable]
             if expected_identity is not None:
@@ -273,6 +238,11 @@ class Application:
         self.control_token = secrets.token_hex(32)
         self.identity = tool_identity()
         self.account = LocalIdentity(config)
+        from spireagent.workbench.native_workbench_access import NativeWorkbenchAccess
+        from spireagent.workbench.native_workbench_api import NativeWorkbenchApi
+
+        self.native_access = NativeWorkbenchAccess(self)
+        self.native_api = NativeWorkbenchApi(self)
         self.members = MemberClient(self.account)
         self.collection = CollectionSetup(self.members)
         self.delivery: subprocess.Popen[bytes] | None = None
@@ -291,6 +261,14 @@ class Application:
             config, hub=self.hub,
             managed_target=self.local_environment.managed_runtime_target,
         )
+        # Presentation intent fence only; Recorder retains its sole command ledger/lifecycle.
+        self._recording_intent_lock = self.models.lock
+        self._recording_intent_pending = False
+        self._recording_unknown_notice: dict[str, Any] | None = None
+        self._recording_unknown_blocks = False
+        self._recording_runtime_context: str | None = None
+        self._recording_previous_unknown: list[dict[str, Any]] = []
+        self.models.bind_recording_admission_guard(self._recording_model_admission_blocked)
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
@@ -566,10 +544,197 @@ class Application:
             raise BoundaryError("local_curation", "running_configuration_mismatch")
         return self.local_curation_preparation.start()
 
+    def _recording_endpoint(self) -> str:
+        from spireagent.workbench.native_tasks import NativeTasks
+
+        return NativeTasks.bound_connector(self.config.platform_url or "http://127.0.0.1:15526")
+
+    def _recording_model_admission_blocked(self) -> bool:
+        # Called only under models.lock. The notice remains the sole unknown fact;
+        # a separately validated new runtime merely makes its old scope inapplicable.
+        notice = self._recording_unknown_notice
+        return (
+            self._recording_unknown_blocks
+            and notice is not None
+            and (
+                self._recording_runtime_context is None
+                or notice["runtime_instance_id"] == self._recording_runtime_context
+            )
+        )
+
+    def _recording_model_recovery_required(self, *, fresh: bool = False) -> bool:
+        return self.models.recording_recovery_required(fresh=fresh)
+
+    def native_recording_status(self) -> dict[str, Any]:
+        endpoint = self._recording_endpoint()
+        owner = self.models.native_tasks.recording_status(endpoint)
+        with self._recording_intent_lock:
+            self._recording_runtime_context = owner["runtime_instance_id"]
+            notice = (
+                dict(self._recording_unknown_notice) if self._recording_unknown_notice else None
+            )
+            pending = self._recording_intent_pending
+            blocked = (
+                self._recording_unknown_blocks
+                and notice is not None
+                and (notice["runtime_instance_id"] == owner["runtime_instance_id"])
+            )
+            previous = [dict(item) for item in self._recording_previous_unknown]
+        # Scalar owner query only. This view does not poll the whole game or a model Snapshot.
+        return {
+            "schema": "spireagent/native-recording-view-1",
+            "status": owner,
+            "connection": endpoint,
+            "model_recovery_required": self._recording_model_recovery_required(),
+            "command_pending": pending,
+            "unconfirmed": notice,
+            "recovery_required": blocked,
+            "previous_unconfirmed": previous,
+        }
+
+    def control_native_recording(self, body: dict[str, Any]) -> dict[str, Any]:
+        from uuid import UUID, uuid4
+
+        from spireagent.workbench.native_tasks import NativeTasks
+
+        fields = {
+            "kind",
+            "runtime_instance_id",
+            "recording_session_id",
+            "source_segment_id",
+            "source_kind",
+            "actor_id",
+            "command_id",
+        }
+        if (
+            not isinstance(body, dict)
+            or set(body) != fields
+            or not isinstance(body["kind"], str)
+            or body["kind"]
+            not in {"start_new_session", "pause", "resume", "change_source", "close"}
+            or not NativeTasks._recording_identifier(body["runtime_instance_id"])
+            or not NativeTasks._recording_identifier(body["recording_session_id"], nullable=True)
+            or not NativeTasks._recording_identifier(body["source_segment_id"], nullable=True)
+        ):
+            raise BoundaryError("recording", "invalid_native_recording_command")
+        try:
+            if (
+                not isinstance(body["command_id"], str)
+                or str(UUID(body["command_id"])) != body["command_id"]
+            ):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise BoundaryError("recording", "invalid_native_recording_command") from None
+        declaration = None
+        if body["kind"] in {"start_new_session", "change_source"}:
+            declaration = {
+                "source_kind": body["source_kind"],
+                "actor_id": body["actor_id"],
+                "declaration_id": str(uuid4()),
+                "machine_verifiable": False,
+            }
+            if not NativeTasks._source_declaration(declaration):
+                raise BoundaryError("recording", "invalid_native_recording_command")
+        elif body["source_kind"] is not None or body["actor_id"] is not None:
+            raise BoundaryError("recording", "invalid_native_recording_command")
+        reservation = self.models.reserve_recording_source_mutation(
+            require_human=declaration is not None and body["source_kind"] != "agent_protocol"
+        )
+        with reservation:
+            endpoint = self._recording_endpoint()
+            observed = self.models.native_tasks.recording_status(endpoint)
+            if (
+                observed["runtime_instance_id"] != body["runtime_instance_id"]
+                or observed["recording_session_id"] != body["recording_session_id"]
+                or (observed["source"]["segment_id"] if observed["source"] is not None else None)
+                != body["source_segment_id"]
+            ):
+                raise BoundaryError("recording", "native_recording_context_changed")
+            with self._recording_intent_lock:
+                self._recording_runtime_context = observed["runtime_instance_id"]
+                if (
+                    declaration is not None
+                    and body["source_kind"] != "agent_protocol"
+                    and self._recording_model_recovery_required()
+                ):
+                    raise BoundaryError("recording", "model_recovery_required")
+                if self._recording_intent_pending:
+                    raise BoundaryError("recording", "native_recording_command_pending")
+                blocked = (
+                    self._recording_unknown_blocks
+                    and self._recording_unknown_notice is not None
+                    and (
+                        self._recording_unknown_notice["runtime_instance_id"]
+                        == observed["runtime_instance_id"]
+                    )
+                )
+                fresh_session = (
+                    body["kind"] == "start_new_session"
+                    and observed["recording_lifecycle"] == "closed"
+                    and observed["closeout_status"] == "closed"
+                )
+                if blocked and body["kind"] != "close" and not fresh_session:
+                    raise BoundaryError("recording", "native_recording_recovery_required")
+                self._recording_intent_pending = True
+            try:
+                value = self.models.native_tasks.recording_command(
+                    endpoint,
+                    observed,
+                    body["kind"],
+                    source_declaration=declaration,
+                    command_id=body["command_id"],
+                )
+                if not value["accepted"]:
+                    raise BoundaryError("recording", "native_recording_rejected")
+                with self._recording_intent_lock:
+                    after = value["status"]
+                    known_close = (
+                        body["kind"] == "close"
+                        and after["runtime_instance_id"] == observed["runtime_instance_id"]
+                        and after["recording_session_id"] == observed["recording_session_id"]
+                        and after["recording_lifecycle"] == "closed"
+                        and after["closeout_status"] == "closed"
+                    )
+                    isolated_start = (
+                        body["kind"] == "start_new_session"
+                        and after["recording_session_id"] is not None
+                        and after["recording_session_id"] != observed["recording_session_id"]
+                        and (
+                            fresh_session
+                            or (
+                                self._recording_unknown_notice is not None
+                                and after["runtime_instance_id"]
+                                != self._recording_unknown_notice["runtime_instance_id"]
+                            )
+                        )
+                    )
+                    # A distinct known Close/isolation can release sequencing; the
+                    # original unknown notice/history is never resolved or erased.
+                    if known_close or isolated_start:
+                        self._recording_unknown_blocks = False
+                return value
+            except BoundaryError as error:
+                if error.code == "native_recording_command_unknown":
+                    with self._recording_intent_lock:
+                        if self._recording_unknown_notice is not None:
+                            self._recording_previous_unknown = [
+                                *self._recording_previous_unknown[-7:],
+                                self._recording_unknown_notice,
+                            ]
+                        self._recording_unknown_notice = {
+                            "command_id": body["command_id"],
+                            "kind": body["kind"],
+                            "runtime_instance_id": body["runtime_instance_id"],
+                            "recording_session_id": body["recording_session_id"],
+                        }
+                        self._recording_unknown_blocks = True
+                raise
+            finally:
+                with self._recording_intent_lock:
+                    self._recording_intent_pending = False
+
     def start_local_recording_import(self, candidate_id: object,
-                                     human_origin_attested: object) -> dict[str, Any]:
-        if human_origin_attested is not True:
-            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+                                     human_origin_attested: object = None) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_import", "running_instance_unavailable")
         try:
@@ -612,6 +777,52 @@ class Application:
             raise BoundaryError("local_dataset", "running_configuration_mismatch")
         return self.local_datasets.start_human_preview(artifact_ids)
 
+    def start_local_source3_dataset_preview(self, artifact_ids: object, cohort: object,
+                                          view: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_dataset", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_dataset", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_dataset", "running_configuration_mismatch")
+        return self.local_datasets.start_source3_preview(artifact_ids, cohort, view)
+
+    def start_local_native_agent_import(
+        self, directory: object, cohort: object, relation_id: object, intent_id: object = None,
+    ) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_import", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_import", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_import", "running_configuration_mismatch")
+        return self.local_recording_import.start_native_agent_run(
+            directory, cohort, relation_id, intent_id)
+
+    def start_local_native_agent_dataset_preview(self, artifact_ids: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_dataset", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_dataset", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_dataset", "running_configuration_mismatch")
+        return self.local_datasets.start_native_agent_preview(artifact_ids)
+
     def start_local_dataset_publish(self, preview_id: object) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_dataset", "running_instance_unavailable")
@@ -629,6 +840,12 @@ class Application:
     def start_local_training(self, dataset_id: object, *,
                              after_completed_operation_id: object | None = None,
                              recipe: object = "stage1a.dsimple.s.v1") -> dict[str, Any]:
+        self._require_training_instance()
+        return self.local_training.start(
+            dataset_id, after_completed_operation_id=after_completed_operation_id,
+            recipe=recipe)
+
+    def _require_training_instance(self) -> None:
         if self.config_path is None:
             raise BoundaryError("local_training", "running_instance_unavailable")
         try:
@@ -640,9 +857,18 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_training", "running_configuration_mismatch")
-        return self.local_training.start(
-            dataset_id, after_completed_operation_id=after_completed_operation_id,
-            recipe=recipe)
+
+    def control_local_training(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        self._require_training_instance()
+        if action == "resume":
+            return self.local_training.resume(**body)
+        if action == "pause":
+            return self.local_training.pause(**body)
+        if action == "cancel":
+            return self.local_training.cancel(**body)
+        if action == "reconcile":
+            return self.local_training.reconcile(**body)
+        raise BoundaryError("local_training", "unsupported_training_action")
 
     def start_local_memory_evaluation(self, model_id: object, source_id: object,
                                       *, max_settling_events: object = None) -> dict[str, Any]:
@@ -742,7 +968,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 and hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), app.account.csrf)
             )
 
-        def json_body(self, maximum: int = 65536) -> dict[str, Any]:
+        def json_body(self, maximum: int = 65536, *,
+                      reject_duplicate: bool = False) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             if (
                 not 0 < length <= maximum
@@ -751,7 +978,12 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             ):
                 raise ValueError
             raw = self.rfile.read(length)
-            body = json.loads(raw)
+            if reject_duplicate:
+                from spireagent.workbench.native_workbench_access import unique_object
+
+                body = json.loads(raw, object_pairs_hook=unique_object)
+            else:
+                body = json.loads(raw)
             if len(raw) != length or not isinstance(body, dict):
                 raise ValueError
             return body
@@ -773,6 +1005,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return app.models.prepare(body["artifact_id"])
             if path == "/api/local-models/command" and set(body) == {"action"}:
                 return app.models.command(body["action"])
+            if (path == "/api/local-models/command" and set(body) == {"action", "request_id"}
+                    and body["action"] == "reconcile"):
+                return app.models.command("reconcile", request_id=body["request_id"])
             if path == "/api/local-models/install-runtime" and not body:
                 return app.models.install_runtime()
             if path == "/api/local-models/prepare-text-runtime" and set(body) == {
@@ -808,6 +1043,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(403, b"{}")
                 return
             parsed = urlsplit(self.path)
+            if parsed.path == "/api/native-workbench/v1/view":
+                from spireagent.workbench.native_workbench_api import bounded_response
+
+                try:
+                    pair = app.native_access.authenticate(self.headers)
+                    self.respond(200, bounded_response(app.native_api.view(parsed.query, pair)))
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_native_request"}')
+                return
             if parsed.path == "/health":
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
@@ -919,6 +1165,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
+            elif parsed.path == "/api/native-recording/status":
+                if not self.local_host() or not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                    return
+                try:
+                    value = {**app.native_recording_status(), "csrf_token": app.account.csrf}
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-recordings":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -935,7 +1193,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
-                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf}
+                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf,
+                         "workbench_instance_id": app.instance_id,
+                         "configuration_id": configuration_id(app.config)}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/preview/status":
                 if not self.authenticated_browser():
@@ -986,15 +1246,32 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-            elif parsed.path == "/api/local-training/status":
+            elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
-                if parsed.query:
+                try:
+                    if parsed.path.endswith("/capabilities"):
+                        if parsed.query:
+                            raise ValueError
+                        value = app.local_training.capabilities()
+                    else:
+                        query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                         keep_blank_values=True)
+                        if query and (set(query) != {"operation_id"} or
+                                      len(query["operation_id"]) != 1):
+                            raise ValueError
+                        operation_id = query.get("operation_id", [None])[0]
+                        if operation_id is not None:
+                            operation_id = digest(
+                                operation_id, "local_training.operation_id", length=32)
+                        value = app.local_training.status(operation_id)
+                    self.respond(200, json.dumps({**value,
+                                                  "csrf_token": app.account.csrf}).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_training_request"}')
-                    return
-                value = {**app.local_training.status(), "csrf_token": app.account.csrf}
-                self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-memory-evaluations/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1004,6 +1281,21 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = {**app.local_memory_evaluation.status(), "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-model-exports/support":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                     keep_blank_values=True)
+                    if set(query) != {"model_id"} or len(query["model_id"]) != 1:
+                        raise ValueError
+                    value = app.local_model_export.support(query["model_id"][0])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_model_export_request"}')
             elif parsed.path == "/api/local-model-exports/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1215,6 +1507,37 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/native-workbench/v1/"):
+                from spireagent.workbench.native_workbench_api import (
+                    ACTIONS,
+                    MAX_COMMAND_BYTES,
+                    PREFIX,
+                    bounded_response,
+                )
+
+                if not self.local_host():
+                    self.respond(403, b'{"error":"native_loopback_required"}')
+                    return
+                action = self.path.removeprefix(PREFIX + "/actions/")
+                if action not in ACTIONS:
+                    self.respond(404, b'{"error":"native_action_not_supported"}')
+                    return
+                try:
+                    body = self.json_body(maximum=MAX_COMMAND_BYTES, reject_duplicate=True)
+                    payload = body.get("payload")
+                    if (action in {"models.human", "models.stop"} and isinstance(payload, dict)
+                            and set(payload) == {"native_request_id"}):
+                        pair = app.native_access.authenticate_recovery(
+                            self.headers, payload["native_request_id"])
+                    else:
+                        pair = app.native_access.authenticate(self.headers)
+                    value = app.native_api.command(action, body, pair)
+                    self.respond(200, bounded_response(value))
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_native_request"}')
+                return
             if self.path.startswith("/api/local-environment/"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -1329,6 +1652,22 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_curation_request"}')
                 return
+            if self.path.startswith("/api/native-recording/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/native-recording/command":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=4096, reject_duplicate=True)
+                    value = app.control_native_recording(body)
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -1351,16 +1690,30 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
-                if self.path != "/api/local-recordings/import":
+                if self.path not in {"/api/local-recordings/import",
+                                     "/api/local-recordings/import/native-agent"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=256)
-                    if set(body) != {"candidate_id", "human_origin_attested"}:
-                        raise ValueError
-                    value = app.start_local_recording_import(
-                        body["candidate_id"], body["human_origin_attested"],
-                    )
+                    if self.path == "/api/local-recordings/import/native-agent":
+                        body = self.json_body(maximum=8192)
+                        if set(body) not in (
+                            {"directory", "cohort", "relation_id"},
+                            {"directory", "cohort", "relation_id", "intent_id"},
+                        ):
+                            raise ValueError
+                        if "intent_id" in body:
+                            digest(body["intent_id"], "local_import.intent_id", length=32)
+                        value = app.start_local_native_agent_import(**body)
+                    else:
+                        body = self.json_body(maximum=256)
+                        if set(body) not in (
+                            {"candidate_id"}, {"candidate_id", "human_origin_attested"},
+                        ):
+                            raise ValueError
+                        value = app.start_local_recording_import(
+                            body["candidate_id"], body.get("human_origin_attested"),
+                        )
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
@@ -1372,7 +1725,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
-                    maximum = 32768 if self.path == "/api/local-datasets/human-preview" else 256
+                    maximum = (32768 if self.path in {
+                        "/api/local-datasets/human-preview", "/api/local-datasets/source3-preview",
+                        "/api/local-datasets/native-agent-preview",
+                    } else 256)
                     body = self.json_body(maximum=maximum)
                     if self.path == "/api/local-datasets/preview":
                         if set(body) != {"artifact_id", "purpose", "paired_training"}:
@@ -1384,6 +1740,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         if set(body) != {"artifact_ids"}:
                             raise ValueError
                         value = app.start_local_human_dataset_preview(body["artifact_ids"])
+                    elif self.path == "/api/local-datasets/source3-preview":
+                        if set(body) != {"artifact_ids", "cohort", "view"}:
+                            raise ValueError
+                        value = app.start_local_source3_dataset_preview(**body)
+                    elif self.path == "/api/local-datasets/native-agent-preview":
+                        if set(body) != {"artifact_ids"}:
+                            raise ValueError
+                        value = app.start_local_native_agent_dataset_preview(body["artifact_ids"])
                     elif self.path == "/api/local-datasets/publish":
                         if set(body) != {"preview_id"}:
                             raise ValueError
@@ -1401,22 +1765,38 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
-                if self.path != "/api/local-training/start":
+                action = self.path.removeprefix("/api/local-training/")
+                if action not in {"start", "pause", "cancel", "resume", "reconcile"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=256)
-                    if not {"dataset_id"} <= set(body) or not set(body) <= {
-                        "dataset_id", "after_completed_operation_id", "recipe"
-                    }:
+                    body = self.json_body(maximum=4096 if action != "start" else 8192)
+                    if (action == "start" and "schema" not in body and
+                            int(self.headers.get("Content-Length", "0")) > 256):
                         raise ValueError
-                    if ("after_completed_operation_id" in body
-                            and not isinstance(body["after_completed_operation_id"], str)):
-                        raise ValueError
-                    value = app.start_local_training(
-                        body["dataset_id"],
-                        after_completed_operation_id=body.get("after_completed_operation_id"),
-                        recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
+                    if action == "start" and "schema" in body:
+                        from spireagent.workbench.recipe_contracts import TrainingRequest
+
+                        value = app.start_local_training(TrainingRequest.from_dict(body))
+                    elif action == "start":
+                        # Keep the bounded legacy body and its original contract.
+                        if (not {"dataset_id"} <= set(body) or not set(body) <= {
+                                    "dataset_id", "after_completed_operation_id", "recipe"}):
+                            raise ValueError
+                        if ("after_completed_operation_id" in body and
+                                not isinstance(body["after_completed_operation_id"], str)):
+                            raise ValueError
+                        value = app.start_local_training(
+                            body["dataset_id"],
+                            after_completed_operation_id=body.get("after_completed_operation_id"),
+                            recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
+                    else:
+                        fields = {"operation_id", "expected_attempt_id"}
+                        if action == "resume":
+                            fields |= {"checkpoint_id", "intent_id", "limits"}
+                        if set(body) != fields:
+                            raise ValueError
+                        value = app.control_local_training(action, body)
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
@@ -1479,7 +1859,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         body["model_id"], environment_kind=body.get("environment_kind", "native"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
-                    self.respond(409, json.dumps({"error": error.code}).encode())
+                    from spireagent.workbench.local_model_registration import (
+                        RegistrationStorageError,
+                    )
+
+                    if isinstance(error, RegistrationStorageError):
+                        self.respond(500, json.dumps(error.public_failure()).encode())
+                    else:
+                        self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_model_registration_request"}')
                 return
@@ -1610,7 +1997,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
 def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str, Any]:
     if doctor(config)["status"] != "PASS":
         raise BoundaryError("project", "doctor_blocked")
-    with instance_lock(config.state_dir / "instance.lock"):
+    with service_process(config.state_dir) as resources, instance_lock(
+        config.state_dir / "instance.lock"
+    ):
         app = Application(config, config_path=config_path)
         server = create_server(app)
         previous_signal = signal.getsignal(signal.SIGTERM)
@@ -1629,6 +2018,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     "configuration_id": configuration_id(config),
                     "pid": os.getpid(),
                     "identity": app.identity,
+                    "process_resources": resources,
                     "delivery": "configured" if config.delivery_config else "not_configured",
                 },
             )
@@ -1636,7 +2026,8 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
             # custom Host configuration must not silently bind to another game.
             if config.platform_url in {"http://127.0.0.1:15526", "http://localhost:15526"}:
                 registration = start_workbench_registration(
-                    f"http://127.0.0.1:{server.server_port}/", app.instance_id
+                    f"http://127.0.0.1:{server.server_port}/", app.instance_id,
+                    access=app.native_access,
                 )
             server.serve_forever(poll_interval=0.2)
         finally:

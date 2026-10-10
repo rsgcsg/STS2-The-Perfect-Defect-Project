@@ -3,6 +3,48 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
+The additive `SourceSessionBundleVerifier` verifies the explicit
+`source-session-bundle-v1` descriptor through `verify_source_session_bundle(path)`.
+It binds exact public observation and full catalogue bytes, source declaration
+segments, original input scopes and the durable close receipt. A declared source
+is never machine proof of Human origin; this format cannot enter the strict
+Human bundle verifier. Native exposure, causal transition proof and research
+admission remain separate gates.
+
+The additive `SourceSessionBundleV2Verifier` verifies `source-session-bundle-v2`
+through `verify_source_session_bundle_v2(path)` or `verify-source-bundle-v2`.
+It checks immutable attachment epochs, original actor/input bindings, native
+position coverage and all final drain seals. Typed receive uses
+`--verify-type source-session-bundle-v2` and verifies staged bytes and their
+content identity before promotion. Source v1 and Human readers retain their
+original schemas; Source v2 does not attest Human origin or research admission.
+
+The `0.1.0-rc.25` source candidate adds `SourceSessionBundleV3Verifier`,
+`verify_source_session_bundle_v3(path)` and `verify-source-bundle-v3`. It checks
+original input ordinals and actor/pause/epoch cuts over the same raw evidence
+pipeline. An input at the exact Resume watermark needs its original ordinal
+after that Resume cut; Source2 and publication pause rules remain unchanged.
+The verifier preserves missing captures and gaps, which research admission must
+evaluate separately. V3 neither attests Human origin nor qualifies continuous
+history. Consumers need the frozen package/pin containing this API; changing
+the source tree alone does not update an installed verifier.
+
+The `0.1.0-rc.26` candidate adds typed sampled-current Agent-session evidence
+and authenticated Source3 collection-tool capability discovery/packing. Sampled
+runs retain original observation/catalog bytes and exact consumption/ACK bindings;
+a null publication index does not fabricate full publication history. Legacy
+full-reference verification remains unchanged. Collection-tool support is checked
+against its immutable inventory; a source declaration is not Human attestation.
+Consumers need this candidate's actual locked package before using these APIs;
+source tests alone do not qualify a loaded runtime or research data.
+
+The `0.1.0-rc.27` source candidate adds the optional owned-Current execution
+policy, exact recorded dispatch/result joins, bounded known-stale accounting
+and the public typed terminal summary described below. Legacy manifests retain
+their original grammar. Production consumers require this candidate's exact
+external pin, lock and installed verifier; source acceptance does not complete
+that promotion or prove live continuation eligibility.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and
@@ -58,6 +100,85 @@ introduced in rc.18; the cancellation event and protocol-v3 attestation require
 rc.23. Earlier strict verifiers reject those newer records rather than silently
 ignoring them. Consumer pins must match the event and adapter contracts in use.
 
+Native logical Agent sessions use the separate public
+`verify_agent_session_run_evidence(directory, expected)` verifier and
+`sts2-evidence verify-agent-session-run DIRECTORY` command. Its registry type is
+`policy-runtime-agent-session-run`, and its run schema is
+`sts2.policy-runtime/agent-session-run-1`. It verifies the closed Agent Manifest,
+adapter attestation, event order, session/acquisition identities, original
+submission/result/reconcile bindings, controller and budget facts, sticky taint,
+and sealed checksums. Declared opaque state files require exact inventory, byte
+hashes and durable consumption metadata. The legacy Policy-run verifier retains
+its original namespace and rejects native Agent fields.
+
+Consumption metadata follows the Runtime ledger's occurrence, revision,
+authorized scope, fresh consumption ID and publication-prefix rules. A new
+Current capture of the same unit can be neutral and retain an earlier consumed
+publication; a declared incremental view can advance for newly included scopes.
+Every received publication view, including terminal and unavailable entries,
+contributes to omission metadata. Its kind does not declare task completion.
+Act and submission must follow an acknowledged input and durable watermark;
+pending, unknown or outstanding submissions cannot authorize replacements.
+The original-request-bound `native_submission_not_started` event closes a
+recorded intent only when Runtime knows the SDK submission never started. It is
+not a Native Result or Receipt. A generic failure reason cannot replace that
+fact, and an unclosed intent cannot produce a clean final run.
+
+This verification establishes the producer's typed operational evidence. It
+does not decode numerical Model state, inspect the artifact path, prove complete
+native capture or causal effects, establish Human origin, or admit research data.
+Checksummed transfer uses this same typed verifier; generic file integrity cannot
+replace it. An installed consumer needs a release containing this additive API;
+the older rc.24 package does not acquire it from a source checkout edit.
+
+### Opt-in owned Current and known stale results
+
+The optional `sts2.policy-runtime/agent-execution-policy-1` manifest extension
+selects reader-owned Current and bounded fresh decisions under the closed
+[Agent Session contract](../policy-runtime/docs/AGENT_SESSION_PROTOCOL.md).
+It requires sampled-current/once-per-occurrence, no state recovery, and both
+`current` and `current_owned` methods. Legacy manifests retain their exact
+five-field Next and event/pending shapes. New policy Next has exactly one extra
+nullable `operational_outcome` field.
+
+Opted-in submissions record `dispatch_binding`. Every full terminal result must
+join its original runtime, client session, controller lease and generation.
+Pending/reconciliation records retain that binding, including after Human/Stop.
+Both terminal branches share original-result deduplication and classification:
+identical repeated terminals count once; changed original bodies fail. All exact
+`not_started`/`stale_snapshot_or_binding` results count, including threshold and
+Stop/deadline arrivals. Only delivered results reset consecutive count; total
+never resets. A pre-submit closure or pending lookup is not a full terminal.
+
+The closed `native_stale_decision_deferred` event follows its original result,
+has exact rebuilt counts strictly below both ceilings, and matches recorded
+Auto/epoch/known/no-pending/untainted accepted prefix. Notifications repeat the
+entire original result through unchanged readiness. An Act on the refused basis
+fails; only a new advanced ACK and matching completed Next retire the notification.
+These records do not prove private Teacher correction or numerical W contents.
+Readiness witnesses additionally constrain their recorded occurrence, revision
+and available catalog/owner metadata. Discarded queries do not retain full
+public input bytes, so complete normalized coherence remains Runtime's required
+check; this metadata validation is not a substitute for that guard.
+
+A verified opted-in value exposes a fresh `terminal_summary` dict copy; legacy
+values return `None`. Schema is `sts2.evidence/agent-session-terminal-summary-1`.
+Fields are `run_id`, `content_id`, `original_submission_count`,
+`terminal_result_count`, `known_delivered`, `known_stale_rejections`,
+`consecutive_known_stale_rejections`,
+`proof_scope: recorded_dispatch_and_terminal_results` and
+`live_eligibility_proved: false`. Submission count is durable intent count, not
+an independently inferred SDK-started/used-budget count. Counts reflect recorded
+full terminals: they invent no pending/absent result or admitted research N.
+
+Evidence validates recorded mode/epoch/prefix/dispatch/counter facts. Held-only
+controller events and deferral records have no live lease-expiry or current
+remaining-budget snapshot, so verification cannot independently prove live
+continuation eligibility. Those mandatory Runtime guards require their source
+tests and final native admission. Root must promote the version, exact external
+pin/lock and installed verifier before production use; no source-checkout
+fallback is introduced for the installed older package.
+
 ```text
 producer bundle
   -> typed verifier
@@ -103,6 +224,15 @@ npm run evidence -- verify-human-bundle /path/to/session-bundle
 ```
 
 ## Transfer And Receive
+
+[Explicit carrier recovery](CARRIER_RECOVERY.md) creates a separate exact-inventory
+Human bundle carrier when only enumerated unlisted metadata polluted a directory.
+`sts2_platform_evidence.carrier_recovery.recover_human_bundle_carrier` preserves
+original bytes, manifest/attestation and source identities, records the original
+carrier and excluded metadata hashes outside the recovered bundle, and uses the
+unchanged typed verifier and receiver. It is an explicit operation, never an
+automatic import fallback or a new Human/use/Gold authority. Directory input is
+the first supported form; no permissive archive extraction is added.
 
 ```bash
 npm run evidence -- transfer-manifest /path/to/session-bundle \

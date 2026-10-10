@@ -9,38 +9,66 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
+import subprocess as subprocess
 import threading
+import time
 import traceback
 import uuid
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any
 
+from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, digest
-from spireagent.source import source_identity
+from spireagent.source import source_identity as source_identity
 from spireagent.storage.replaceable_file import (
     has_unresolved_replacement,
     read_replaceable_bytes,
     write_replaceable_json,
 )
 from spireagent.storage.store import ManifestArtifactStore
-from spireagent.workbench.developer import ROOT, ProjectConfig
-from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.developer import ROOT as ROOT
+from spireagent.workbench.developer import ProjectConfig
+from spireagent.workbench.instance_lock import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
-from spireagent.workbench.local_model_dependencies import require_local_models
+from spireagent.workbench.local_model_dependencies import require_recipe_dependencies
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
     MEMORY_RECIPES,
-    V2_MEMORY_RECIPES,
-    recipe_for_memory_config,
 )
-from spireagent.workbench.research_process import private_child as _private_child
+from spireagent.workbench.memory_recipe import (
+    V2_MEMORY_RECIPES as V2_MEMORY_RECIPES,
+)
+from spireagent.workbench.memory_recipe import (
+    recipe_for_memory_config as recipe_for_memory_config,
+)
+from spireagent.workbench.recipe_contracts import (
+    LOCAL_PLACEMENT,
+    SNAPSHOT_SCHEMA,
+    TrainingRequest,
+    validate_limits,
+)
+from spireagent.workbench.research_process import private_child
+from spireagent.workbench.training_scratch import retained_scratch_bytes
+from spireagent.workbench.trusted_recipes import (
+    MAX_TOTAL_ATTEMPTS,
+    STRUCTURED_RECIPES,
+    TRUSTED_RECIPES,
+    describe_recipe,
+    structured_recipe_is_scoped,
+    structured_recipe_run_schema,
+    validate_recipe_config,
+)
+from spireagent.workbench.trusted_recipes import (
+    STRUCTURED_RECIPE as STRUCTURED_RECIPE,
+)
+
+_private_child = private_child  # Legacy patchable child boundary.
 
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
+SCHEMA_V3 = "spireagent/local-training-operation-v3"
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
@@ -93,6 +121,11 @@ class LocalTrainingService:
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._failure_diagnostic: dict[str, Any] | None = None
+        self._active_attempt: str | None = None
+        self._attempt_started_monotonic: float | None = None
+        self._active_child_exit: dict[str, Any] | None = None
+        self._child_failure_diagnostic: dict[str, str] | None = None
+        self._cancel_requested_monotonic: float | None = None
 
     def _selected(self):
         return self._selection._selected()
@@ -108,6 +141,8 @@ class LocalTrainingService:
                 raise ValueError
             value = json.loads(read_replaceable_bytes(path))
             schema = value.get("schema") if isinstance(value, dict) else None
+            if schema == SCHEMA_V3:
+                return LocalTrainingService._validate_v3(value, identity)
             if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
                     or value.get("status") not in
                     {"pending", "completed", "failed", "interrupted_unknown"}
@@ -184,7 +219,7 @@ class LocalTrainingService:
                 "previous_completed", *IDS}
         return {key: item for key, item in value.items() if key in keys}
 
-    def status(self) -> dict[str, Any]:
+    def status(self, operation_id: object | None = None) -> dict[str, Any]:
         try:
             owner, _, _ = self._selected()
         except BoundaryError as error:
@@ -236,19 +271,55 @@ class LocalTrainingService:
                 if not isinstance(error, BoundaryError) or error.code != "already_running":
                     operation = {**operation, "status": "interrupted_unknown",
                                  "error_code": "previous_training_outcome_unknown"}
+        if operation_id is not None and operation.get("operation_id") != digest(
+            operation_id, "local_training.operation_id", length=32
+        ):
+            raise BoundaryError("local_training", "operation_not_current")
+        if operation.get("schema") == SCHEMA_V3:
+            return self._snapshot(operation)
         return {"schema": operation.get("schema", SCHEMA), "availability": "ready",
                 "operation": self._public(operation)}
 
-    @staticmethod
-    def _advance(path: Path, identity: str, **updates: Any) -> None:
-        current = json.loads(read_replaceable_bytes(path))
-        if current.get("operation_id") != identity or current.get("status") != "pending":
-            raise BoundaryError("local_training", "operation_superseded")
-        write_replaceable_json(path, {**current, **updates})
+    def _advance(self, path: Path, identity: str, **updates: Any) -> None:
+        with self._lock:
+            current = json.loads(read_replaceable_bytes(path))
+            if current.get("operation_id") != identity or current.get("status") != "pending":
+                raise BoundaryError("local_training", "operation_superseded")
+            if current.get("schema") == SCHEMA_V3:
+                updates.setdefault("updated_at", time.time())
+            write_replaceable_json(path, {**current, **updates})
 
     def start(self, dataset_id: object, *,
               after_completed_operation_id: object | None = None,
               recipe: object = DEFAULT_RECIPE) -> dict[str, Any]:
+        if isinstance(dataset_id, dict):
+            dataset_id = TrainingRequest.from_dict(dataset_id)
+        if isinstance(dataset_id, TrainingRequest):
+            request = dataset_id
+            request.validate()
+            canonical = validate_recipe_config(request.recipe_id, request.config)
+            request = TrainingRequest(request.intent_id, request.recipe_id, request.source_id,
+                                      canonical, request.placement_id,
+                                      validate_limits(request.limits),
+                                      request.after_completed_operation_id,
+                                      request.execution_policy)
+            if request.recipe_id in STRUCTURED_RECIPES:
+                if not request.limits:
+                    raise BoundaryError("local_training", "wall_limit_required")
+                return self._start_structured(request)
+            if request.limits:
+                raise BoundaryError("local_training", "recipe_limits_not_supported")
+            return self._start_legacy(request.source_id,
+                                      after_completed_operation_id=request.after_completed_operation_id,
+                                      recipe=request.recipe_id, _request=request)
+        return self._start_legacy(dataset_id,
+                                  after_completed_operation_id=after_completed_operation_id,
+                                  recipe=recipe)
+
+    def _start_legacy(self, dataset_id: object, *,
+              after_completed_operation_id: object | None = None,
+              recipe: object = DEFAULT_RECIPE,
+              _request: TrainingRequest | None = None) -> dict[str, Any]:
         if (not isinstance(recipe, str)
                 or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES}):
             raise BoundaryError("local_training", "unsupported_training_recipe")
@@ -269,13 +340,18 @@ class LocalTrainingService:
                     raise BoundaryError("local_training", "operation_in_progress") from error
                 operation = self._read(path, owner.identity)
                 if (operation.get("dataset_id") == dataset_id and operation["status"] == "pending"
-                        and operation.get("recipe", DEFAULT_RECIPE) == recipe):
+                        and operation.get("recipe", DEFAULT_RECIPE) == recipe
+                        and (_request is None or operation.get("request") == _request.to_dict())):
                     return self.status()
                 raise BoundaryError("local_training", "operation_in_progress") from error
             raise
         try:
             previous = self._read(path, owner.identity)
-            if previous["status"] in {"pending", "interrupted_unknown"} or (
+            if _request is not None and previous.get("intent_id") == _request.intent_id:
+                if previous.get("request") != _request.to_dict():
+                    raise BoundaryError("local_training", "intent_payload_mismatch")
+                return self._snapshot(previous)
+            if previous["status"] in {"pending", "paused", "cancelled", "interrupted_unknown"} or (
                 previous["status"] == "failed" and previous.get("run_id")
             ):
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
@@ -287,11 +363,16 @@ class LocalTrainingService:
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
                     and previous.get("recipe", DEFAULT_RECIPE) == recipe
                     and after_completed is None):
+                if _request is not None:
+                    raise BoundaryError("local_training", "new_experiment_precondition_failed")
                 return self.status()
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
                     and after_completed is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
-            require_local_models("local_training")
+            if previous.get("schema") == SCHEMA_V3 and _request is None:
+                _request = TrainingRequest(uuid.uuid4().hex, str(recipe), dataset_id, {},
+                                           limits={}, after_completed_operation_id=after_completed)
+            require_recipe_dependencies(str(recipe), "local_training")
             identity = uuid.uuid4().hex
             operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
                                     or previous.get("schema") == SCHEMA_V2 else SCHEMA),
@@ -304,7 +385,7 @@ class LocalTrainingService:
                     result_type="train_only" if recipe in MEMORY_RECIPES else "evaluated",
                     evaluation_status="not_run" if recipe in MEMORY_RECIPES else "pending",
                 )
-            if previous["status"] == "completed":
+            if previous["status"] == "completed" and _request is None:
                 if operation["schema"] == SCHEMA_V2 and previous["schema"] == SCHEMA:
                     # Preserve a v1 completion intact when changing recipes.
                     operation["previous_completed"] = {
@@ -320,14 +401,21 @@ class LocalTrainingService:
                     operation["previous_completed"] = {
                         key: previous[key] for key in PREVIOUS_COMPLETED_IDS
                     }
+            if _request is not None:
+                operation = self._new_operation(_request, owner, identity,
+                                                previous=previous)
             write_replaceable_json(path, operation)
             thread = threading.Thread(target=self._run, args=(held, path, identity, owner, store),
                                       name="local-small-b-training", daemon=True)
             with self._lock:
                 self._failure_diagnostic = None
                 self._thread = thread
+                self._active_attempt = operation.get("attempt_id")
+                self._attempt_started_monotonic = time.monotonic()
             thread.start()
             held = None  # type: ignore[assignment]
+            if operation.get("schema") == SCHEMA_V3:
+                return self._snapshot(operation)
             return {"schema": operation["schema"], "availability": "ready",
                     "operation": self._public(operation)}
         finally:
@@ -337,231 +425,20 @@ class LocalTrainingService:
     def _run(self, held: AbstractContextManager[None], path: Path, identity: str,
              owner: LocalCurationOwner, store: ManifestArtifactStore) -> None:
         run_started = False
+        initial_attempt: str | None = None
 
         def mark_started() -> None:
             nonlocal run_started
             run_started = True
 
         try:
-            from spireagent.storage.registry import SQLiteRegistry, sync_registry
-            from spireagent.storage.run_reporter import ObjectStoreRunReporter
-            from stpd.fullrun.curated_dataset import SCHEMA as DATASET_SCHEMA
-            from stpd.fullrun.curated_dataset import load_selection
-            from stpd.fullrun.decision_spool import SpoolSelection
-            from stpd.fullrun.decision_training import AllocationSpec, allocate, publish_allocation
-            from stpd.fullrun.managed_text_menu_import import (
-                SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
-            )
-            from stpd.fullrun.managed_text_menu_import import (
-                load_managed_text_menu_source,
-            )
-            from stpd.fullrun.public_bc import publish_public_bc_view
-            from stpd.fullrun.text_menu_human_import import (
-                SOURCE_SCHEMA as HUMAN_SOURCE_SCHEMA,
-            )
-            from stpd.fullrun.text_menu_human_import import (
-                _project as project_human_inputs,
-            )
-            from stpd.fullrun.text_menu_human_import import (
-                load_human_text_source,
-                load_verified_human_text_bundle,
-                publish_human_text_bc_view,
-            )
-            from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
-            from stpd.workers.token_ranking import TokenConfig
-            from stpd.workers.token_worker import _verify_completed, prepare_token_run
-
             operation = self._read(path, owner.identity)
-            dataset_id = operation["dataset_id"]
-            memory = operation.get("recipe") in MEMORY_RECIPES
-            producer = source_identity(ROOT)
-            manifest = store.get_manifest(dataset_id)
-            info = manifest.parameters.value()
-            human = info.get("schema") == HUMAN_SOURCE_SCHEMA
-            managed = info.get("schema") == MANAGED_SOURCE_SCHEMA
-            if managed and operation.get("recipe") not in V2_MEMORY_RECIPES:
-                raise BoundaryError("local_training", "managed_v2_recipe_required")
-            if human and operation.get("recipe") in V2_MEMORY_RECIPES:
-                raise BoundaryError("local_training", "managed_v2_source_required")
-            if human:
-                source_manifest, rows = load_human_text_source(store, dataset_id)
-                if source_manifest != manifest:
-                    raise BoundaryError("local_training", "human_source_identity_mismatch")
-                # This is the actual engineering split gate; session count alone
-                # cannot establish independent groups after duplicate collapse.
-                if not memory:
-                    samples, _ = project_human_inputs(rows)
-                    if (sum(sample.split == "train" for sample in samples) > 32
-                            or sum(sample.split == "dev" for sample in samples) > 8):
-                        raise BoundaryError("local_training", "human_engineering_sample_limit")
-                sources = {parent.artifact_id for parent in manifest.parents}
-                runs: set[str] = set()
-                for source_id in sources:
-                    _, bundle, _ = load_verified_human_text_bundle(store, source_id)
-                    runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
-                spec = None
-            elif managed:
-                managed_source = load_managed_text_menu_source(store, dataset_id)
-                if managed_source.manifest != manifest:
-                    raise BoundaryError("local_training", "managed_source_identity_mismatch")
-                runs = {managed_source.split_run_id}
-                sources = {dataset_id}
-                spec = None
-            else:
-                if memory:
-                    raise BoundaryError("local_training", "human_training_source_required")
-                if (manifest.kind != "dataset" or info.get("schema") != DATASET_SCHEMA
-                        or info.get("purpose") != "training" or info.get("merging") is not False
-                        or not manifest.parents or len(manifest.parents) > 100
-                        or any(p.role != "source_" + p.artifact_id for p in manifest.parents)):
-                    raise BoundaryError("local_training", "curated_training_dataset_required")
-                dataset = load_selection(store, manifest, cache=None)
-                try:
-                    runs = {row["run_id"] for row in dataset.records.summaries()} if isinstance(
-                        dataset.records, SpoolSelection
-                    ) else {record.run_id for record in dataset.records}
-                    spec = AllocationSpec(isolation="run", max_train=32, max_dev=8)
-                    allocate(dataset, spec)
-                finally:
-                    if isinstance(dataset.records, SpoolSelection):
-                        dataset.records.owner.close()
-                sources = {parent.artifact_id for parent in manifest.parents}
-            claim = owner.ledger.dataset(dataset_id)
-            if claim != ("training", runs):
-                raise BoundaryError("local_training", "training_claim_mismatch")
-            indexed_runs: set[str] = set()
-            for source in sorted(sources):
-                source_runs = owner.ledger.source_runs(source)
-                if source_runs is None:
-                    raise BoundaryError("local_training", "source_index_incomplete")
-                indexed_runs.update(source_runs)
-            if not runs <= indexed_runs:
-                raise BoundaryError("local_training", "source_run_identity_mismatch")
-            # All exposure records precede the first derivative publication or model step.
-            for source in sorted(sources):
-                owner.ledger.use_source(source, "training", identity)
-            owner.ledger.use(runs, "training", identity)
-            environment = dict(os.environ)
-            for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
-                environment.pop(name, None)
-            if memory:
-                self._advance(path, identity, stage="tokenizing")
-                self._advance(path, identity, stage="preparing_run")
-                prepare_command = [sys.executable, "-m", "spireagent.research_cli",
-                                   "--store", str(owner.store_dir),
-                                   "prepare-workbench-memory", "--source", dataset_id,
-                                   "--operation", identity,
-                                   "--recipe", operation["recipe"]]
-                prepare_log = owner.path.parent / ("local-training-" + identity + "-prepare.log")
-                prepare_exit, captured = _private_child(prepare_command, prepare_log,
-                                                        environment,
-                                                        on_started=mark_started)
-                if prepare_exit:
-                    failure = None
-                    with suppress(ValueError, TypeError):
-                        failure = json.loads(captured)
-                    if (isinstance(failure, dict) and set(failure) == {"error_code"}
-                            and isinstance(failure["error_code"], str)):
-                        raise BoundaryError("local_training", failure["error_code"])
-                    raise BoundaryError("local_training", "memory_preparation_process_failed")
-                prepared = json.loads(captured)
-                if (not isinstance(prepared, dict)
-                        or set(prepared) != {"run_id", "input_id", "verification",
-                                            "elapsed_seconds"}):
-                    raise BoundaryError("local_training", "memory_preparation_result_invalid")
-                run_id = digest(prepared["run_id"], "local_training.run_id")
-                input_id = digest(prepared["input_id"], "local_training.input_id")
-                run = store.get_manifest(run_id)
-                training_input = store.get_manifest(input_id)
-                if (run.producer != producer
-                        or run.parameters.value().get("operation_id") != identity
-                        or run.parent("training_input") != input_id
-                        or training_input.parent("source") != dataset_id):
-                    raise BoundaryError("local_training", "memory_preparation_result_invalid")
-                try:
-                    prepared_recipe = recipe_for_memory_config(
-                        run.parameters.value().get("config"),
-                        projection_config=training_input.parameters.value().get(
-                            "projection_config"))
-                except ValueError as error:
-                    raise BoundaryError("local_training",
-                                        "memory_preparation_result_invalid") from error
-                if prepared_recipe != operation["recipe"]:
-                    raise BoundaryError("local_training", "memory_preparation_profile_mismatch")
-                self._advance(path, identity, stage="training", input_id=input_id,
-                              run_id=run_id)
-                command_name = "run-memory"
-            elif human:
-                self._advance(path, identity, stage="public_view")
-                view = publish_human_text_bc_view(store, dataset_id, producer)
-            else:
-                assert spec is not None
-                self._advance(path, identity, stage="allocating")
-                allocation = publish_allocation(store, dataset_id, spec, producer)
-                self._advance(path, identity, stage="public_view",
-                              allocation_id=allocation.artifact_id)
-                view = publish_public_bc_view(store, allocation.artifact_id, producer)
-            if not memory:
-                self._advance(path, identity, stage="tokenizing", view_id=view.artifact_id)
-                inputs_manifest = publish_token_inputs(store, view.artifact_id, "s", producer,
-                                                       max_tokens=16384)
-                self._advance(path, identity, stage="preparing_run",
-                              input_id=inputs_manifest.artifact_id)
-                import torch
+            initial_attempt = operation.get("attempt_id")
+            from spireagent.workbench.trusted_recipes import recipe_adapter
 
-                torch.set_num_threads(2)
-                inputs = load_token_inputs(store, inputs_manifest.artifact_id)
-                config = TokenConfig(recipe=DEFAULT_RECIPE, width=48, layers=1,
-                                     heads=2, feedforward=96, dropout=0.0, steps=3,
-                                     device="cpu", max_tokens=16384)
-                run = prepare_token_run(store, inputs, config, producer,
-                                        replicate="local-" + identity)
-                self._advance(path, identity, stage="training", run_id=run.artifact_id)
-                command_name = "run-tokens"
-            command = [sys.executable, "-m", "spireagent.research_cli", "--store",
-                       str(owner.store_dir), command_name, "--run", run.artifact_id]
-            log_path = owner.path.parent / ("local-training-" + identity + ".log")
-            exit_code, _ = _private_child(command, log_path, environment,
-                                         on_started=mark_started)
-            self._advance(path, identity, stage="verifying_result", _exit_code=exit_code)
-            if exit_code:
-                raise BoundaryError("local_training", "training_process_failed")
-            reporter = ObjectStoreRunReporter(store, store.blobs)
-            result = reporter.completed(run.artifact_id)
-            if result is None:
-                raise BoundaryError("local_training", "completion_marker_missing")
-            if memory:
-                # The read-only verifier must use the exact child runtime identity.
-                verify_command = [sys.executable, "-m", "spireagent.research_cli",
-                                  "--store", str(owner.store_dir), "verify-memory",
-                                  "--run", run.artifact_id]
-                verify_log = owner.path.parent / ("local-training-" + identity + "-verify.log")
-                verify_exit, verified_output = _private_child(verify_command, verify_log,
-                                                             environment,
-                                                             on_started=mark_started)
-                if verify_exit:
-                    raise BoundaryError("local_training", "memory_verification_process_failed")
-                verified = json.loads(verified_output)
-                if (not isinstance(verified, dict) or verified.get("run_id") != run.artifact_id
-                        or verified.get("result_id") != result.artifact_id
-                        or verified.get("model_id") != result.parent("model")
-                        or verified.get("checkpoint_id") != result.parent("checkpoint")):
-                    raise BoundaryError("local_training", "memory_verification_result_invalid")
-            else:
-                _verify_completed(store, result, run)
-            model_id = result.parent("model")
-            model = store.get_manifest(model_id)
-            _, _, registry_path = self._selected()
-            sync_registry(store, SQLiteRegistry(registry_path))
-            completion = {"checkpoint_id": model.parent("checkpoint"),
-                          "result_id": result.artifact_id, "model_id": model_id}
-            if not memory:
-                completion["evaluation_id"] = result.parent("offline_evaluation")
-                if operation["schema"] == SCHEMA_V2:
-                    completion["evaluation_status"] = "completed"
-            self._advance(path, identity, stage="completed", status="completed", **completion)
-        except (BoundaryError, OSError, ValueError, KeyError, TypeError,
-                subprocess.SubprocessError) as error:
+            recipe_adapter(operation.get("recipe", DEFAULT_RECIPE)).execute(
+                self, path, identity, owner, store, mark_started)
+        except Exception as error:
             code = (error.code if isinstance(error, BoundaryError)
                     else "training_storage_or_process_error")
             stage = "unavailable"
@@ -571,13 +448,464 @@ class LocalTrainingService:
                     stage = recorded["stage"]
             with suppress(Exception):
                 self._failure_diagnostic = _safe_parent_failure(error, stage)
+                if self._child_failure_diagnostic is not None:
+                    self._failure_diagnostic["child"] = dict(self._child_failure_diagnostic)
             with suppress(Exception):
                 _write_parent_failure(path, identity, error)
             # The last durable pending operation remains blocking if terminal
             # persistence fails, so its run identity is never discarded.
-            with suppress(OSError, ValueError, BoundaryError):
-                self._advance(path, identity,
-                              status="interrupted_unknown" if run_started else "failed",
-                              error_code=code)
+            with suppress(OSError, ValueError, BoundaryError), self._lock:
+                recorded = self._read(path, owner.identity)
+                if recorded.get("schema") == SCHEMA_V3:
+                    self._finish_attempt(path, owner, identity,
+                                         status="interrupted_unknown" if run_started else "failed",
+                                         error_code=code, expected_attempt_id=initial_attempt)
+                else:
+                    self._advance(path, identity,
+                                  status="interrupted_unknown" if run_started else "failed",
+                                  error_code=code)
         finally:
             held.__exit__(None, None, None)
+
+    @staticmethod
+    def _validate_v3(value: dict[str, Any], owner: tuple[str, ...]) -> dict[str, Any]:
+        if (value.get("_owner") != list(owner)
+                or value.get("status") not in {"pending", "completed", "failed", "paused",
+                                                "cancelled", "interrupted_unknown"}
+                or value.get("stage") not in STAGES
+                or value.get("recipe") not in TRUSTED_RECIPES):
+            raise ValueError("operation_identity")
+        request = TrainingRequest.from_dict(value["request"])
+        if (request.recipe_id != value["recipe"] or request.source_id != value["dataset_id"]
+                or request.config != validate_recipe_config(request.recipe_id, request.config)
+                or value.get("intent_id") != request.intent_id):
+            raise ValueError("operation_request")
+        digest(value["operation_id"], "local_training.operation", length=32)
+        digest(value["attempt_id"], "local_training.attempt", length=32)
+        if (type(value.get("writer_terminal")) is not bool
+                or value.get("requested_action") not in {"continue", "pause", "cancel"}
+                or not isinstance(value.get("attempts"), list)
+                or type(value.get("elapsed_seconds")) not in {float, int}
+                or value["elapsed_seconds"] < 0):
+            raise ValueError("operation_attempt")
+        for key in ("created_at", "attempt_started_at", "updated_at"):
+            if type(value.get(key)) not in {float, int} or value[key] <= 0:
+                raise ValueError("operation_timestamp")
+        for attempt in value["attempts"]:
+            if not isinstance(attempt, dict) or type(attempt.get("writer_terminal")) is not bool:
+                raise ValueError("operation_attempt_history")
+            digest(attempt["attempt_id"], "local_training.prior_attempt", length=32)
+        if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                        value["recipe"]):
+            Producer.decode(value["attempt_producer"])
+            for attempt in value["attempts"]:
+                Producer.decode(attempt["attempt_producer"])
+        for key in IDS:
+            if key in value:
+                digest(value[key], "local_training." + key)
+        if value["status"] == "completed" and not all(value.get(key) for key in
+                                                       ("run_id", "result_id", "model_id")):
+            raise ValueError("operation_completion")
+        return value
+
+    def _snapshot(self, value: dict[str, Any]) -> dict[str, Any]:
+        running = value["status"] == "pending"
+        structured = value["recipe"] in STRUCTURED_RECIPES
+        actions = (["cancel", "pause"] if running else
+                   ["resume"] if value["status"] in {"paused", "cancelled", "interrupted_unknown"}
+                   and value.get("writer_terminal") and value.get("checkpoint_id") else [])
+        if structured and value["status"] == "interrupted_unknown":
+            actions = [*actions, "reconcile"]
+        if not structured or (running and self._active_attempt != value["attempt_id"]):
+            actions = []
+        operation = {"schema": SNAPSHOT_SCHEMA, "operation_id": value["operation_id"],
+                     "intent_id": value["intent_id"], "recipe_id": value["recipe"],
+                     "attempt_id": value["attempt_id"], "status": value["status"],
+                     "phase": value["stage"], "created_at": value["created_at"],
+                     "observed_at": time.time(), "updated_at": value["updated_at"],
+                     "last_progress_at": value.get("last_progress_at"),
+                     "placement_id": value["request"]["placement_id"],
+                     "config": dict(value["request"]["config"]),
+                     "limits": dict(value["request"]["limits"]),
+                     "supported_actions": actions, "requested_action": value["requested_action"],
+                     "input_refs": {"source_id": value["dataset_id"],
+                                    "training_input_id": value.get("input_id")},
+                     "progress": value.get("progress", {"unit": "optimizer_update",
+                                                          "completed": 0, "total": None}),
+                     "worker_state": "terminal" if value["writer_terminal"] else
+                                     "unknown" if value["status"] == "interrupted_unknown" else
+                                     "running",
+                     "validation_state": "verified" if value.get("domain_completion_state") ==
+                                         "completed" or value["status"] == "completed" else
+                                         "not_completed",
+                     "domain_completion_state": value.get("domain_completion_state", "unknown"),
+                     "selected_result": value.get("selected_result",
+                                                  value["status"] != "cancelled"),
+                     "application_disposition": value.get("application_disposition", "authorized"),
+                     "use_state": value.get("use_state", "not_reserved"),
+                     "elapsed_seconds": value["elapsed_seconds"]}
+        for key in {*IDS, "stage", "dataset_id", "recipe", "result_type", "evaluation_status",
+                    "child_exit", "worker_isolation", "artifact_reserved_bytes",
+                    "attempt_producer"}:
+            if key in value:
+                operation[key] = value[key]
+        if value.get("error_code"):
+            operation["error"] = {"code": value["error_code"], "automatic_retry": False}
+        if "execution_policy" in value["request"]:
+            operation["execution_policy"] = TrainingRequest.from_dict(
+                value["request"]).execution_policy
+        if "previous_completed" in value:
+            operation["previous_completed"] = value["previous_completed"]
+        return {"schema": SNAPSHOT_SCHEMA, "availability": "ready", "operation": operation}
+
+    def capabilities(self) -> dict[str, Any]:
+        from spireagent.workbench.trusted_agents import agent_capabilities
+
+        return {"schema": "spireagent/training-capabilities-v1",
+                "recipes": [describe_recipe(item) for item in sorted(TRUSTED_RECIPES)],
+                "placements": [{"placement_id": LOCAL_PLACEMENT, "device": "cpu",
+                                "remote": False, "paid": False}],
+                "agent_profiles": agent_capabilities(), "automatic_retry": False}
+
+    @staticmethod
+    def _new_operation(request: TrainingRequest, owner: LocalCurationOwner, identity: str,
+                       *, previous: dict[str, Any]) -> dict[str, Any]:
+        now = time.time()
+        value: dict[str, Any] = {
+            "schema": SCHEMA_V3, "status": "pending", "stage": "reserving",
+            "operation_id": identity, "attempt_id": uuid.uuid4().hex,
+            "intent_id": request.intent_id, "recipe": request.recipe_id,
+            "dataset_id": request.source_id, "request": request.to_dict(),
+            "_owner": list(owner.identity), "writer_terminal": False,
+            "requested_action": "continue", "created_at": now,
+            "attempt_started_at": now, "updated_at": now, "elapsed_seconds": 0.0,
+            "attempts": [], "mode": "start", "selected_result": True,
+            "artifact_reserved_bytes": 0,
+            "application_disposition": "authorized", "domain_completion_state": "not_completed",
+            "result_type": "train_only" if request.recipe_id in MEMORY_RECIPES else "evaluated",
+            "evaluation_status": "not_run" if request.recipe_id in MEMORY_RECIPES else "pending",
+        }
+        if request.recipe_id in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                request.recipe_id):
+            value["attempt_producer"] = source_identity(ROOT).to_dict()
+        if request.recipe_id in STRUCTURED_RECIPES:
+            value.update(worker_isolation="private_child-v1",
+                         child_lock_name="local-training-"+value["attempt_id"]+".child.lock",
+                         result_type="train_only", evaluation_status="not_run")
+        if previous["status"] == "completed":
+            value["previous_completed"] = LocalTrainingService._public(previous)
+        return value
+
+    def _start_structured(self, request: TrainingRequest) -> dict[str, Any]:
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        if lock_path.is_symlink():
+            raise BoundaryError("local_training", "operation_recovery_required")
+        held: Any = instance_lock(lock_path)
+        try:
+            held.__enter__()
+        except BoundaryError as error:
+            if error.code != "already_running":
+                raise
+            current = self._read(path, owner.identity)
+            if current.get("request") == request.to_dict():
+                return self.status(current["operation_id"])
+            raise BoundaryError("local_training", "operation_in_progress") from error
+        try:
+            previous = self._read(path, owner.identity)
+            if previous.get("intent_id") == request.intent_id:
+                if previous.get("request") != request.to_dict():
+                    raise BoundaryError("local_training", "intent_payload_mismatch")
+                return self._snapshot(previous)
+            if previous["status"] in {"pending", "paused", "cancelled", "interrupted_unknown"} or (
+                previous["status"] == "failed" and previous.get("run_id")
+            ):
+                raise BoundaryError("local_training", "previous_training_outcome_unknown")
+            after = request.after_completed_operation_id
+            if after is not None and (previous["status"] != "completed" or
+                                      previous["operation_id"] != after or
+                                      previous["dataset_id"] != request.source_id):
+                raise BoundaryError("local_training", "new_experiment_precondition_failed")
+            if (previous["status"] == "completed" and previous["dataset_id"] == request.source_id
+                    and after is None):
+                raise BoundaryError("local_training", "new_experiment_precondition_failed")
+            require_recipe_dependencies(request.recipe_id, "local_training")
+            # Fail admission before writing a pending operation. This is read-only
+            # verification; use reservation remains prior to preparation/fit.
+            from spireagent.workbench.recipes.structured import StructuredRecipeAdapter
+
+            StructuredRecipeAdapter(request.recipe_id).preflight(store, owner, request.source_id)
+            operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
+            self._prepare_child_ownership(path, operation)
+            write_replaceable_json(path, operation)
+            self._launch_attempt(held, path, operation, owner, store)
+            held = None
+            return self._snapshot(operation)
+        finally:
+            if held is not None:
+                held.__exit__(None, None, None)
+
+    def _launch_attempt(self, held: Any, path: Path, operation: dict[str, Any],
+                        owner: LocalCurationOwner, store: ManifestArtifactStore) -> None:
+        thread = threading.Thread(target=self._run,
+                                  args=(held, path, operation["operation_id"], owner, store),
+                                  name="local-training-" + operation["attempt_id"], daemon=True)
+        with self._lock:
+            self._active_attempt = operation["attempt_id"]
+            self._attempt_started_monotonic = time.monotonic()
+            self._thread = thread
+            self._failure_diagnostic = None
+            self._active_child_exit = None
+            self._child_failure_diagnostic = None
+            self._cancel_requested_monotonic = None
+        thread.start()
+
+    def _command_operation(self, path: Path, owner: LocalCurationOwner,
+                           operation_id: object, expected_attempt_id: object) -> dict[str, Any]:
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        expected = digest(expected_attempt_id, "local_training.expected_attempt_id", length=32)
+        value = self._read(path, owner.identity)
+        if (value.get("schema") != SCHEMA_V3 or value.get("operation_id") != operation_id
+                or value.get("attempt_id") != expected):
+            raise BoundaryError("local_training", "stale_operation_attempt")
+        if value["recipe"] not in STRUCTURED_RECIPES:
+            raise BoundaryError("local_training", "recipe_control_not_supported")
+        return value
+
+    def cancel(self, operation_id: object, expected_attempt_id: object) -> dict[str, Any]:
+        return self._request_control(operation_id, expected_attempt_id, "cancel")
+
+    def pause(self, operation_id: object, expected_attempt_id: object) -> dict[str, Any]:
+        return self._request_control(operation_id, expected_attempt_id, "pause")
+
+    def _request_control(self, operation_id: object, expected_attempt_id: object,
+                         action: str) -> dict[str, Any]:
+        owner, _, _ = self._selected()
+        path, _ = self._paths(owner)
+        with self._lock:
+            value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+            if (value["status"] != "pending" or self._active_attempt != value["attempt_id"]
+                    or self._thread is None or not self._thread.is_alive()):
+                raise BoundaryError("local_training", "writer_reconciliation_required")
+            if value["requested_action"] == "cancel" and action != "cancel":
+                raise BoundaryError("local_training", "cancel_already_requested")
+            value.update(requested_action=action, updated_at=time.time())
+            if action == "cancel":
+                if self._cancel_requested_monotonic is None:
+                    self._cancel_requested_monotonic = time.monotonic()
+                value.update(selected_result=False, application_disposition="cancel_requested")
+            write_replaceable_json(path, value)
+            # ACK records intent only. The worker is pending until a safe boundary
+            # produces a terminal receipt; this method never reports terminated.
+            return self._snapshot(value)
+
+    def _finish_attempt(self, path: Path, owner: LocalCurationOwner, operation_id: str,
+                        expected_attempt_id: str | None = None, **updates: Any) -> None:
+        with self._lock:
+            value = self._read(path, owner.identity)
+            if (value.get("operation_id") != operation_id or value.get("status") != "pending"
+                    or value.get("attempt_id") != expected_attempt_id):
+                raise BoundaryError("local_training", "operation_superseded")
+            if self._attempt_started_monotonic is None:
+                raise BoundaryError("local_training", "attempt_clock_required")
+            seconds = value["elapsed_seconds"] + max(
+                0.0, time.monotonic()-self._attempt_started_monotonic)
+            domain_status = updates.get("status")
+            value.update(updates, elapsed_seconds=seconds, updated_at=time.time())
+            value["domain_completion_state"] = ("completed" if domain_status == "completed" else
+                                                "unknown" if domain_status == "interrupted_unknown"
+                                                else "not_completed")
+            cancelled = (value.get("selected_result") is False or
+                         value["requested_action"] == "cancel")
+            if cancelled:
+                value.update(selected_result=False, application_disposition="cancel_requested")
+                # Cancel intent does not prove safe child/domain completion;
+                # unknown execution must retain its reconciliation status.
+                if value["status"] in {"completed", "cancelled"}:
+                    value["status"] = "cancelled"
+                if domain_status == "completed":
+                    value["error_code"] = "cancel_requested_during_completion"
+            if value.get("worker_isolation") == "private_child-v1":
+                receipt = self._active_child_exit
+                actual_exit = (receipt is not None and
+                               receipt.get("attempt_id") == expected_attempt_id)
+                if actual_exit:
+                    value["child_exit"] = receipt
+                value["writer_terminal"] = actual_exit or not value.get("child_spawned", False)
+            else:
+                # Legacy subprocess uncertainty retains its historical meaning.
+                value["writer_terminal"] = value["status"] == "completed"
+            write_replaceable_json(path, value)
+
+    def reconcile(self, operation_id: object, expected_attempt_id: object) -> dict[str, Any]:
+        return self._recover(operation_id, expected_attempt_id, mode="reconcile")
+
+    def resume(self, operation_id: object, expected_attempt_id: object, checkpoint_id: object,
+               intent_id: object, limits: object) -> dict[str, Any]:
+        return self._recover(operation_id, expected_attempt_id, mode="resume",
+                             checkpoint_id=digest(checkpoint_id, "local_training.checkpoint_id"),
+                             intent_id=digest(intent_id, "local_training.intent_id", length=32),
+                             limits=validate_limits(limits))
+
+    def _recover(self, operation_id: object, expected_attempt_id: object, *, mode: str,
+                 checkpoint_id: str | None = None, intent_id: str | None = None,
+                 limits: dict[str, int] | None = None) -> dict[str, Any]:
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        if lock_path.is_symlink():
+            raise BoundaryError("local_training", "operation_recovery_required")
+        held: Any = instance_lock(lock_path, create=False)
+        prior_child_lock: Any = None
+        try:
+            held.__enter__()
+        except BoundaryError as error:
+            raise BoundaryError("local_training", "writer_still_running") from error
+        try:
+            with self._lock:
+                value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+                if value.get("worker_isolation") == "private_child-v1":
+                    child_path = self._child_path(path, value)
+                    prior_child_lock = instance_lock(child_path, create=False)
+                    try:
+                        prior_child_lock.__enter__()
+                    except BoundaryError as error:
+                        prior_child_lock = None
+                        raise BoundaryError(
+                            "local_training", "orphan_child_still_running") from error
+                if len(value["attempts"])+1 >= MAX_TOTAL_ATTEMPTS:
+                    raise BoundaryError("local_training", "operation_attempt_limit")
+                if mode == "resume":
+                    if (not value["writer_terminal"] or value["status"] not in
+                            {"paused", "cancelled", "interrupted_unknown"}):
+                        raise BoundaryError("local_training", "prior_writer_terminal_required")
+                    if limits != value["request"]["limits"] or not limits:
+                        raise BoundaryError("local_training", "cumulative_limits_must_be_preserved")
+                    if (value["elapsed_seconds"] >= limits["wall_seconds"] or
+                            value.get("artifact_reserved_bytes", 0) >= limits["scratch_bytes"] or
+                            retained_scratch_bytes(path, value) >= limits["scratch_bytes"]):
+                        raise BoundaryError("local_training", "cumulative_budget_exhausted")
+                    from spireagent.workbench.recipes.structured import verify_resume_checkpoint
+
+                    verify_resume_checkpoint(store, value, checkpoint_id)
+                    if any(item.get("intent_id") == intent_id for item in value["attempts"]) or (
+                        value["intent_id"] == intent_id
+                    ):
+                        raise BoundaryError("local_training", "new_resume_intent_required")
+                elif not value.get("run_id"):
+                    resolved = self._resolve_prepared_run(store, value)
+                    if resolved is None:
+                        value.update(status=("cancelled" if value.get("selected_result") is False
+                                             else "failed"), writer_terminal=True,
+                                     error_code="reconciled_preparation_without_run",
+                                     domain_completion_state="not_completed",
+                                     updated_at=time.time())
+                        write_replaceable_json(path, value)
+                        return self._snapshot(value)
+                    value.update(run_id=resolved[0], input_id=resolved[1])
+                    value["writer_terminal"] = True
+                else:
+                    # Acquiring the same owner lock proves no prior writer retains
+                    # publication authority. Keep its outcome unknown until verified.
+                    value["writer_terminal"] = True
+                from spireagent.workbench.recipes.structured import verify_run_execution_policy
+
+                verify_run_execution_policy(store.get_manifest(value["run_id"]), value)
+                if "selected_result" not in value:
+                    value["selected_result"] = value["status"] != "cancelled"
+                prior = {key: value.get(key) for key in ("attempt_id", "intent_id", "status",
+                         "writer_terminal", "checkpoint_id", "attempt_started_at", "child_exit")}
+                if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                        value["recipe"]):
+                    prior["attempt_producer"] = value["attempt_producer"]
+                if value.get("worker_isolation") == "private_child-v1":
+                    prior["terminal_proof"] = "child_ownership_reconciled"
+                value["attempts"].append(prior)
+                if value["status"] == "pending":
+                    # A restarted process has no prior monotonic clock. Account
+                    # conservatively from the durable wall timestamp, and refuse
+                    # rollback instead of replenishing the cumulative budget.
+                    elapsed = time.time()-value["attempt_started_at"]
+                    if elapsed < 0:
+                        raise BoundaryError("local_training", "clock_recovery_required")
+                    value["elapsed_seconds"] += elapsed
+                value.update(attempt_id=uuid.uuid4().hex, status="pending", writer_terminal=False,
+                             requested_action="continue", mode=mode, attempt_started_at=time.time(),
+                             updated_at=time.time())
+                if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                        value["recipe"]):
+                    value["attempt_producer"] = source_identity(ROOT).to_dict()
+                value.pop("error_code", None)
+                value.pop("child_exit", None)
+                value.pop("child_spawned", None)
+                value.pop("child_handshake", None)
+                value.pop("artifact_reservation", None)
+                value.update(worker_isolation="private_child-v1",
+                             child_lock_name="local-training-"+value["attempt_id"]+".child.lock")
+                self._prepare_child_ownership(path, value)
+                if mode == "resume":
+                    value.update(selected_result=True, application_disposition="explicit_resume")
+                    value["intent_id"] = intent_id
+                    value["request"]["intent_id"] = intent_id
+                    value["resume_checkpoint_id"] = checkpoint_id
+                write_replaceable_json(path, value)
+                self._launch_attempt(held, path, value, owner, store)
+                held = None
+                return self._snapshot(value)
+        finally:
+            if prior_child_lock is not None:
+                prior_child_lock.__exit__(None, None, None)
+            if held is not None:
+                held.__exit__(None, None, None)
+
+    @staticmethod
+    def _child_path(path: Path, operation: dict[str, Any]) -> Path:
+        name = "local-training-"+operation["attempt_id"]+".child.lock"
+        if operation.get("child_lock_name") != name:
+            raise BoundaryError("local_training", "child_ownership_identity_mismatch")
+        child_path: Path = path.parent/name
+        if child_path.is_symlink() or not child_path.is_file():
+            raise BoundaryError("local_training", "child_ownership_recovery_required")
+        return child_path
+
+    @staticmethod
+    def _prepare_child_ownership(path: Path, operation: dict[str, Any]) -> None:
+        name = "local-training-"+operation["attempt_id"]+".child.lock"
+        if operation.get("child_lock_name") != name:
+            raise BoundaryError("local_training", "child_ownership_identity_mismatch")
+        descriptor = os.open(path.parent/name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        scratch_name = "local-training-"+operation["attempt_id"]+".scratch"
+        (path.parent/scratch_name).mkdir(mode=0o700)
+        operation["scratch_name"] = scratch_name
+
+    @staticmethod
+    def _resolve_prepared_run(store: ManifestArtifactStore,
+                              operation: dict[str, Any]) -> tuple[str, str] | None:
+        # Explicit orphan reconciliation only. Numeric execution cannot start
+        # before the parent's prepared-run ACK, so no run publication means no
+        # numerical execution in this fixed private-child protocol.
+        identities = store.manifest_ids()
+        if len(identities) > 10000:
+            raise BoundaryError("local_training", "run_reconciliation_inventory_limit")
+        matches = []
+        for identity in identities:
+            run = store.get_manifest(identity)
+            info = run.parameters.value()
+            if (run.kind != "run" or info.get("schema")
+                    != structured_recipe_run_schema(operation["recipe"])
+                    or info.get("operation_id") != operation["operation_id"]):
+                continue
+            if (structured_recipe_is_scoped(operation["recipe"])
+                    and run.producer != Producer.decode(operation["attempt_producer"])):
+                raise BoundaryError("local_training", "prepared_run_producer_mismatch")
+            training = store.get_manifest(run.parent("training_input"))
+            from spireagent.workbench.recipes.structured import verify_run_execution_policy
+
+            verify_run_execution_policy(run, operation)
+            if (training.kind != "training_input" or training.producer != run.producer
+                    or training.parent("source") != operation["dataset_id"]):
+                raise BoundaryError("local_training", "prepared_run_binding_mismatch")
+            matches.append((run.artifact_id, training.artifact_id))
+        if len(matches) > 1:
+            raise BoundaryError("local_training", "multiple_operation_runs_recovery_required")
+        return matches[0] if matches else None

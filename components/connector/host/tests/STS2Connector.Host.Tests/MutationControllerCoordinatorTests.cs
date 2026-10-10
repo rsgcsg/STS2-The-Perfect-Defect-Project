@@ -105,6 +105,24 @@ public sealed class MutationControllerCoordinatorTests
             coordinator.Register(Client("instance-a", "Different Agent")));
     }
 
+    [Fact]
+    public void ExpiryNotifiesControlWatchWithoutAStatusReadOrAnotherCommand()
+    {
+        DateTimeOffset epoch = DateTimeOffset.UtcNow; int elapsed = 0;
+        var coordinator = new MutationControllerCoordinator("runtime-expiry", 1000,
+            () => epoch.AddMilliseconds(Volatile.Read(ref elapsed)));
+        var client = coordinator.Register(Client("expiry", "Expiry"));
+        var lease = coordinator.Acquire(new(client.Client.ClientSessionId, null, null)).Controller!;
+        using var lost = new ManualResetEventSlim();
+        Assert.True(coordinator.TryWatch(Command(client, lease), lost.Set, out var watch));
+        using (watch)
+        {
+            Volatile.Write(ref elapsed, 1001);
+            Assert.True(lost.Wait(2000));
+            Assert.False(coordinator.TryBegin(Command(client, lease)).Accepted);
+        }
+    }
+
     private static MutationClientRegistrationRequest Client(string instanceId, string name) =>
         new(instanceId, "test-agent", name, "1.0.0");
 

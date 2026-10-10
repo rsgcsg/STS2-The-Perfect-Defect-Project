@@ -12,6 +12,16 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from stpd.fullrun.native_agent_sampled_source import VerifiedNativeAgentSampledSource
+    from stpd.fullrun.ordered_source import VerifiedOrderedSource
+    from stpd.fullrun.protocol_source import VerifiedProtocolSource
+
+    VerifiedPartitionSource = (
+        VerifiedProtocolSource | VerifiedOrderedSource | VerifiedNativeAgentSampledSource
+    )
 
 from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
@@ -26,15 +36,26 @@ LEDGER_NAME = "curation.sqlite"
 OWNER_NAME = ".curation-owner.json"
 OWNER_SCHEMA = "stpd/local-curation-owner-v1"
 REQUIRED_TABLES = {
-    "local_curation_identity", "local_source_pending", "curation_sources",
-    "curation_source_decisions", "curation_exact_source_index", "curation_source_runs",
-    "curation_fingerprints", "curation_occurrences", "curation_occurrence_details",
-    "curation_claims", "curation_claim_runs", "curation_uses",
-    "curation_source_uses", "curation_annotations",
+    "local_curation_identity",
+    "local_source_pending",
+    "curation_sources",
+    "curation_source_decisions",
+    "curation_exact_source_index",
+    "curation_source_runs",
+    "curation_fingerprints",
+    "curation_occurrences",
+    "curation_occurrence_details",
+    "curation_claims",
+    "curation_claim_runs",
+    "curation_uses",
+    "curation_source_uses",
+    "curation_annotations",
 }
 REQUIRED_INDEXES = {
-    "curation_decision_sources", "curation_run_fingerprints",
-    "curation_run_claims", "curation_latest_annotation",
+    "curation_decision_sources",
+    "curation_run_fingerprints",
+    "curation_run_claims",
+    "curation_latest_annotation",
 }
 
 
@@ -202,6 +223,433 @@ class LocalCurationOwner:
                           ).fetchone() is None:
                 raise BoundaryError("local_curation", "source_index_incomplete")
             db.execute("DELETE FROM local_source_pending WHERE candidate=?", (candidate,))
+
+    def _verified_protocol_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> VerifiedProtocolSource:
+        from stpd.fullrun.protocol_source import verify_protocol_source_partition
+
+        if (
+            not isinstance(store.blobs, LocalBlobStore)
+            or store.blobs.root != self.store_dir.resolve()
+        ):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        _ = self.ledger
+        return verify_protocol_source_partition(store, source_id)
+
+    def _verified_ordered_source(
+        self,
+        store: ManifestArtifactStore,
+        source_id: str,
+    ) -> VerifiedOrderedSource:
+        from stpd.fullrun.ordered_source import verify_ordered_source_partition
+
+        if (
+            not isinstance(store.blobs, LocalBlobStore)
+            or store.blobs.root != self.store_dir.resolve()
+        ):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        _ = self.ledger
+        return verify_ordered_source_partition(store, source_id)
+
+    @staticmethod
+    def _partition_row_ref(
+        source: VerifiedPartitionSource, row: dict[str, Any]
+    ) -> str:
+        schema = source.manifest.parameters.value()["partition_schema"]
+        if schema == "stpd/source3-ordered-partition-v1":
+            return "source3-record:" + str(row["record_ref"])
+        if schema == "stpd/protocol-source-partition-v1":
+            return "protocol-offer:" + str(row["capture_id"])
+        if schema == "stpd/native-agent-sampled-partition-v1":
+            return "native-agent-offer:" + str(row["record_ref"])
+        raise BoundaryError("local_curation", "typed_partition_required")
+
+    def _verified_native_agent_sampled_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> VerifiedNativeAgentSampledSource:
+        from stpd.fullrun.native_agent_sampled_source import verify_native_agent_sampled_partition
+
+        if (not isinstance(store.blobs, LocalBlobStore)
+                or store.blobs.root != self.store_dir.resolve()):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        _ = self.ledger
+        return verify_native_agent_sampled_partition(store, source_id)
+
+    def reserve_verified_native_agent_sampled_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> dict:
+        """Reserve all original offers under the same conservative runtime family."""
+        source = self._verified_native_agent_sampled_source(store, source_id)
+        fingerprints: dict[str, set[str]] = {}
+        for row in source.index:
+            fingerprints.setdefault(row["run_id"], set()).update(row["related_keys"])
+        return self._reserve_partition_source(store, source_id, source, fingerprints)
+
+    def record_verified_native_agent_sampled_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._record_partition_training_use(
+            store, self._verified_native_agent_sampled_source(store, source_id), operation_id
+        )
+
+    def require_verified_native_agent_sampled_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._require_partition_training_use(
+            store, self._verified_native_agent_sampled_source(store, source_id), operation_id
+        )
+
+    def reserve_verified_ordered_source(self, store: ManifestArtifactStore, source_id: str) -> dict:
+        """Reserve original run/timeline exposure, including masked and omitted rows.
+
+        Record locators use the existing ledger; they are not Human transitions.
+        Nothing here upgrades a declaration or creates an actual training use.
+        """
+        source = self._verified_ordered_source(store, source_id)
+        fingerprints: dict[str, set[str]] = {}
+        for row in source.index:
+            keys = fingerprints.setdefault(row["run_id"], set())
+            keys.update(row["related_keys"])
+            keys.add("source3-content:" + row["evidence"]["bundle_content_id"])
+        return self._reserve_partition_source(store, source_id, source, fingerprints)
+
+    def record_verified_ordered_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._record_partition_training_use(
+            store, self._verified_ordered_source(store, source_id), operation_id
+        )
+
+    def require_verified_ordered_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._require_partition_training_use(
+            store, self._verified_ordered_source(store, source_id), operation_id
+        )
+
+    def record_verified_ordered_evaluation_use(
+        self, store: ManifestArtifactStore, source_id: str, model_id: str, operation_id: str
+    ) -> dict:
+        return self._record_partition_evaluation_use(
+            store, self._verified_ordered_source(store, source_id), model_id, operation_id
+        )
+
+    def _check_partition_purpose(
+        self,
+        db: sqlite3.Connection,
+        store: ManifestArtifactStore,
+        source: VerifiedPartitionSource,
+        *,
+        require_claim: bool = False,
+    ) -> set[str]:
+        partition_schema = source.manifest.parameters.value()["partition_schema"]
+
+        ledger = self.ledger
+        related = ledger._groups(db, source.runs)
+        purpose = "training" if source.split == "train" else "test"
+        self._historical_claim_guard(db, purpose, related)
+        for kind, artifact in ledger._claims(db, related).values():
+            if kind == "gold":
+                raise BoundaryError("local_curation", "gold_reserved_data")
+            if kind != purpose or artifact is None:
+                raise BoundaryError("local_curation", "protocol_split_purpose_overlap")
+            if artifact != source.manifest.artifact_id:
+                # DEV is kept distinct from TEST without extending legacy purposes.
+                # A legacy claim cannot be relabelled as a protocol partition.
+                info = store.get_manifest(artifact).parameters.value()
+                if (
+                    info.get("partition_schema") != partition_schema
+                    or info.get("split") != source.split
+                ):
+                    raise BoundaryError("local_curation", "protocol_split_purpose_overlap")
+        if source.split != "train" and any(
+            db.execute(
+                "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
+                "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
+                "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
+                (run, run),
+            ).fetchone()
+            for run in related
+        ):
+            raise BoundaryError("local_curation", "held_out_data_cannot_train")
+        if require_claim:
+            claim = db.execute(
+                "SELECT id,purpose FROM curation_claims WHERE artifact=?",
+                (source.manifest.artifact_id,),
+            ).fetchall()
+            if len(claim) != 1 or claim[0][1] != purpose:
+                raise BoundaryError("local_curation", "protocol_source_claim_mismatch")
+            claimed = {
+                row[0]
+                for row in db.execute(
+                    "SELECT run FROM curation_claim_runs WHERE claim=?", (claim[0][0],)
+                )
+            }
+            if claimed != set(source.runs):
+                raise BoundaryError("local_curation", "protocol_source_claim_mismatch")
+            for raw_id in source.source_ids:
+                ready = db.execute(
+                    "SELECT s.complete FROM curation_sources s JOIN curation_exact_source_index i "
+                    "ON i.source=s.id WHERE s.id=?",
+                    (raw_id,),
+                ).fetchone()
+                expected_runs = {row["run_id"] for row in source.index if row["raw_id"] == raw_id}
+                recorded = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT run FROM curation_source_runs WHERE source=?", (raw_id,)
+                    )
+                }
+                recorded_rows = {
+                    tuple(row)
+                    for row in db.execute(
+                        "SELECT occurrence,transition_id FROM curation_source_decisions "
+                        "WHERE source=?",
+                        (raw_id,),
+                    )
+                }
+                expected_rows = {
+                    (row["occurrence_id"], self._partition_row_ref(source, row))
+                    for row in source.index
+                    if row["raw_id"] == raw_id
+                }
+                if ready != (1,) or recorded != expected_runs or recorded_rows != expected_rows:
+                    raise BoundaryError("local_curation", "source_index_incomplete")
+        return related
+
+    def reserve_verified_protocol_source(
+        self, store: ManifestArtifactStore, source_id: str
+    ) -> dict:
+        """Reserve existing exact S0 offers; original protocol semantics are unchanged."""
+        source = self._verified_protocol_source(store, source_id)
+        fingerprints = {}
+        for run in source.dataset.runs:
+            episode = run.identity.value()["episode"]
+            fingerprints[run.run_id] = {
+                "protocol-group:" + run.source_group,
+                "protocol-runtime:" + episode["host"]["runtime_instance_id"],
+                "protocol-profile:" + episode["profile"]["generation_id"],
+            }
+        return self._reserve_partition_source(store, source_id, source, fingerprints)
+
+    def _reserve_partition_source(
+        self,
+        store: ManifestArtifactStore,
+        source_id: str,
+        source: VerifiedPartitionSource,
+        fingerprints: dict[str, set[str]],
+    ) -> dict:
+        purpose = "training" if source.split == "train" else "test"
+        with self.transaction() as db:
+            # Join related runs before checking purposes in the same transaction.
+            for run_id, keys in fingerprints.items():
+                db.executemany(
+                    "INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
+                    ((key, run_id) for key in keys),
+                )
+            self._check_partition_purpose(db, store, source)
+            existing = db.execute(
+                "SELECT purpose,artifact FROM curation_claims WHERE id=?", (source_id,)
+            ).fetchone()
+            if existing is not None and existing != (purpose, source_id):
+                raise BoundaryError("local_curation", "reservation_identity_conflict")
+            for raw_id in source.source_ids:
+                archive = store.get_manifest(raw_id).payload("archive").sha256
+                old = db.execute(
+                    "SELECT archive FROM curation_sources WHERE id=?", (raw_id,)
+                ).fetchone()
+                if old is not None and old != (archive,):
+                    raise BoundaryError("local_curation", "source_identity_conflict")
+                db.execute(
+                    "INSERT OR IGNORE INTO curation_sources VALUES(?,?,0)", (raw_id, archive)
+                )
+                rows = [row for row in source.index if row["raw_id"] == raw_id]
+                db.executemany(
+                    "INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)",
+                    ((raw_id, row["run_id"]) for row in rows),
+                )
+                db.executemany(
+                    "INSERT OR IGNORE INTO curation_source_decisions VALUES(?,?,?)",
+                    (
+                        (raw_id, row["occurrence_id"], self._partition_row_ref(source, row))
+                        for row in rows
+                    ),
+                )
+                db.execute("UPDATE curation_sources SET complete=1 WHERE id=?", (raw_id,))
+                db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)", (raw_id,))
+            db.execute(
+                "INSERT OR IGNORE INTO curation_claims VALUES(?,?,?,?)",
+                (source_id, purpose, source_id, time.time()),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO curation_claim_runs VALUES(?,?)",
+                ((source_id, run) for run in sorted(source.runs)),
+            )
+            self._check_partition_purpose(db, store, source, require_claim=True)
+        return self._protocol_use_summary(source, None)
+
+    @staticmethod
+    def _protocol_use_summary(
+        source: VerifiedPartitionSource, operation_id: str | None
+    ) -> dict:
+        return {
+            "artifact_id": source.manifest.artifact_id,
+            "operation_id": operation_id,
+            "source_ids": list(source.source_ids),
+            "qualified_run_ids": sorted(source.runs),
+            "source_groups": sorted(source.source_groups),
+            "split": source.split,
+            "input_spec": source.manifest.parameters.value()["input_spec"],
+            "qualification": source.manifest.parameters.value()["qualification"],
+            "ledger_scope": "original_raw_source_and_related_run_exposure",
+            "historical_external_exposure": "unknown",
+        }
+
+    def record_verified_protocol_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._record_partition_training_use(
+            store, self._verified_protocol_source(store, source_id), operation_id
+        )
+
+    def require_verified_protocol_training_use(
+        self, store: ManifestArtifactStore, source_id: str, operation_id: str
+    ) -> dict:
+        return self._require_partition_training_use(
+            store, self._verified_protocol_source(store, source_id), operation_id
+        )
+
+    def _record_partition_training_use(
+        self,
+        store: ManifestArtifactStore,
+        source: VerifiedPartitionSource,
+        operation_id: str,
+    ) -> dict:
+        digest(operation_id, "local_curation.protocol_training_operation", length=32)
+        if source.split != "train":
+            raise BoundaryError("local_curation", "train_only_source_required")
+        with self.transaction() as db:
+            related = self._check_partition_purpose(db, store, source, require_claim=True)
+            db.executemany(
+                "INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                ((run, "training", operation_id, time.time()) for run in sorted(related)),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                ((raw_id, "training", operation_id) for raw_id in source.source_ids),
+            )
+        return self._require_partition_training_use(store, source, operation_id)
+
+    def _require_partition_training_use(
+        self,
+        store: ManifestArtifactStore,
+        source: VerifiedPartitionSource,
+        operation_id: str,
+    ) -> dict:
+        digest(operation_id, "local_curation.protocol_training_operation", length=32)
+        if source.split != "train":
+            raise BoundaryError("local_curation", "train_only_source_required")
+        with self.transaction() as db:
+            self._check_partition_purpose(db, store, source, require_claim=True)
+            if any(
+                db.execute(
+                    "SELECT 1 FROM curation_source_uses WHERE source=? "
+                    "AND kind='training' AND reference=?",
+                    (raw_id, operation_id),
+                ).fetchone()
+                is None
+                for raw_id in source.source_ids
+            ) or any(
+                db.execute(
+                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' AND reference=?",
+                    (run, operation_id),
+                ).fetchone()
+                is None
+                for run in source.runs
+            ):
+                raise BoundaryError("local_curation", "protocol_training_use_missing")
+        return self._protocol_use_summary(source, operation_id)
+
+    def record_verified_protocol_evaluation_use(
+        self, store: ManifestArtifactStore, source_id: str, model_id: str, operation_id: str
+    ) -> dict:
+        """Record fixed-model DEV/TEST exposure separately from any training use."""
+        return self._record_partition_evaluation_use(
+            store, self._verified_protocol_source(store, source_id), model_id, operation_id
+        )
+
+    @staticmethod
+    def _partition_related_keys(source: VerifiedPartitionSource) -> set[str]:
+        if source.manifest.parameters.value()["partition_schema"] in {
+            "stpd/source3-ordered-partition-v1", "stpd/native-agent-sampled-partition-v1",
+        }:
+            return {key for row in source.index for key in row["related_keys"]}
+        return {
+            "protocol-runtime:" + run.identity.value()["episode"]["host"]["runtime_instance_id"]
+            for run in source.dataset.runs
+        }
+
+    def _record_partition_evaluation_use(
+        self, store: ManifestArtifactStore,
+        source: VerifiedPartitionSource,
+        model_id: str, operation_id: str,
+    ) -> dict:
+        digest(operation_id, "local_curation.protocol_evaluation_operation", length=32)
+        if source.split not in {"dev", "test"}:
+            raise BoundaryError("local_curation", "held_out_source_required")
+        model = store.get_manifest(digest(model_id, "local_curation.protocol_evaluation_model"))
+        if model.kind != "model":
+            raise BoundaryError("local_curation", "fixed_model_required")
+        # Reject exact origins and source groups, including imported model ancestry
+        # whose training exposure was recorded on a different host's ledger.
+        from stpd.fullrun.ordered_source import (
+            PARTITION_SCHEMA as ORDERED_PARTITION_SCHEMA,
+        )
+        from stpd.fullrun.ordered_source import (
+            verify_ordered_source_partition,
+        )
+        from stpd.fullrun.protocol_source import (
+            PARTITION_SCHEMA,
+            verify_protocol_source_partition,
+        )
+
+        pending, seen = [model], set()
+        related_keys = self._partition_related_keys(source)
+        while pending:
+            current = pending.pop()
+            if current.artifact_id in seen:
+                continue
+            seen.add(current.artifact_id)
+            schema = current.parameters.value().get("partition_schema")
+            if schema in {PARTITION_SCHEMA, ORDERED_PARTITION_SCHEMA}:
+                ancestor = (verify_ordered_source_partition(store, current.artifact_id)
+                            if schema == ORDERED_PARTITION_SCHEMA else
+                            verify_protocol_source_partition(store, current.artifact_id))
+                if (ancestor.source_groups & source.source_groups
+                        or self._partition_related_keys(ancestor) & related_keys):
+                    raise BoundaryError("local_curation", "model_held_out_source_group_overlap")
+            if len(seen) > 512:
+                raise BoundaryError("local_curation", "lineage_limit")
+            pending.extend(store.get_manifest(parent.artifact_id) for parent in current.parents)
+        if seen & set(source.source_ids):
+            raise BoundaryError("local_curation", "model_held_out_origin_overlap")
+        with self.transaction() as db:
+            related = self._check_partition_purpose(db, store, source, require_claim=True)
+            db.executemany(
+                "INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                ((run, "evaluation", operation_id, time.time()) for run in sorted(related)),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                ((raw_id, "evaluation", operation_id) for raw_id in source.source_ids),
+            )
+        return {
+            **self._protocol_use_summary(source, operation_id),
+            "model_id": model_id,
+            "use": "evaluation",
+            "clean_held_out_claim": False,
+        }
 
     @staticmethod
     def _human_runs(store: ManifestArtifactStore, source: str) -> set[str]:

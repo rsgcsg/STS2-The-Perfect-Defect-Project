@@ -24,6 +24,10 @@ public sealed record MutationClientRegistrationRequest(
     string? ProductName,
     string? ProductVersion);
 
+internal sealed record MutationClientRevocationRequest(string? RuntimeInstanceId, string? ClientSessionId);
+internal sealed record MutationClientRevocationResult(string RuntimeInstanceId, string ClientSessionId,
+    string Status, bool Closed);
+
 public sealed record MutationClient(
     string ClientSessionId,
     string ClientInstanceId,

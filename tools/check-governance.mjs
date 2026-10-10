@@ -3,8 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { scriptIncludesGuard } from "./check-workspace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const CURRENT_CONTEXT_BUDGET_BYTES = 8 * 1024;
 
 const requiredPaths = [
   "docs/ENGINEERING_GOVERNANCE.md",
@@ -190,9 +192,11 @@ export function currentContextFindings(workspaceRoot = root) {
   const findings = [];
   const relative = "docs/memory/CURRENT.md";
   if (!has(workspaceRoot, relative)) return findings;
-  const source = read(workspaceRoot, relative);
-  if (Buffer.byteLength(source, "utf8") > 8 * 1024) {
-    findings.push(finding("current-context-oversized", relative, "bounded handoff must remain at or below 8 KiB"));
+  const bytes = fs.readFileSync(path.join(workspaceRoot, relative));
+  const source = bytes.toString("utf8").replace(/\r\n?/gu, "\n");
+  if (bytes.byteLength > CURRENT_CONTEXT_BUDGET_BYTES) {
+    findings.push(finding("current-context-oversized", relative,
+      `final UTF-8 file is ${bytes.byteLength} > ${CURRENT_CONTEXT_BUDGET_BYTES} bytes; move detail to linked evidence`));
   }
   for (const token of ["Resolve live GitHub refs", "override this file", "Remaining Platform non-claims"]) {
     if (!source.includes(token)) {
@@ -216,7 +220,7 @@ export function packageFindings(workspaceRoot = root) {
   if (packageJson.scripts?.["check:governance"] !== expected) {
     findings.push(finding("governance-command-invalid", relative, `check:governance must equal ${expected}`));
   }
-  if (!packageJson.scripts?.check?.includes("npm run check:governance")) {
+  if (!scriptIncludesGuard(packageJson.scripts ?? {}, "check", "check:governance")) {
     findings.push(finding("governance-check-not-portable", relative, "check must compose check:governance"));
   }
   return findings;

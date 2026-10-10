@@ -20,6 +20,7 @@ def model_command(
     *,
     selection: str | None = None,
     artifact: str | None = None,
+    request_id: str | None = None,
     runtime_archive: Path | None = None,
     runtime_profile: str | None = None,
     expected_active_sha256: str | None = None,
@@ -179,6 +180,11 @@ def model_command(
     elif action in {"human", "shadow", "one_step", "auto", "stop"}:
         route += "/command"
         body = {"action": action}
+    elif action == "reconcile":
+        if not isinstance(request_id, str) or not request_id:
+            raise BoundaryError("local_model", "native_pending_request_required")
+        route += "/command"
+        body = {"action": "reconcile", "request_id": request_id}
     elif action != "catalog":
         raise BoundaryError("local_model", "unsupported_local_command")
     request = Request(

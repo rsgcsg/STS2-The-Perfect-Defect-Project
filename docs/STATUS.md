@@ -1,6 +1,35 @@
-# Current Status
+# Current status and evidence index
 
-## Dataset library — application update deployed
+This page indexes claims, not live service state. Each observation keeps its date,
+source and scope; refresh its owning status/identity before an operational action.
+CURRENT owns the active task and next step, and the execution matrix owns progress.
+
+## G2/V1 candidate, observed 2026-10-09
+
+- [Current specification](BASELINE_V1_SPEC.zh-CN.md) and
+  [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): implementation
+  and verification continue; complete G2/V1 is unapproved.
+- [Bounded Source3 learning and native delivery](evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md):
+  eight Agent labels, three actual optimizer updates and verified export; two
+  separate Model attempts. The second proves one original delivery and Stop,
+  with execution/effect/cancel unknown. Neither is Human or whole-game evidence.
+- E6 rc30 / Live UI rc9 artifact `6557b5ae`, exact-built at `44ca35e6`, was
+  installed and cold-loaded in an isolated session. Independent review accepts
+  main menu and unforced exit only; authenticated panels and exit/resource health
+  remain unresolved. Later compiled-source changes require a new build.
+- Source3 product import/preparation, native Model reuse and sampled-current carry
+  are integrated source/test candidates through `659490a9`. Dependency/package
+  convergence and real sampled collection/training remain separate gates.
+- [Data/Host/model inventory](plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md):
+  scoped historical/local/cloud data and an observed Hub deployment. It does not
+  establish that current development source is deployed or that cloud training ran.
+
+Next gates and selected but unimplemented designs belong in
+[CURRENT](memory/CURRENT.md) and the execution matrix. The following combinations
+are historical accepted observations, not a current-installation recommendation
+or qualification transferable to the new profile.
+
+## Historical dataset-library deployment baseline
 
 Workbench source is `fedbed097e30fb78bf0e86efff560fd8b1263c99`. The accepted
 20-source dataset baseline used Hub source
@@ -33,9 +62,10 @@ recording/control/transfer journey; it is not a zero-failure Human or Full-Run g
 No raw disposition is reclassified. Only in-progress/resume run boundaries exist.
 
 Local model preparation, Recorder-to-model handoff and separately authorized Agent
-reports retain their own boundaries. Native model outcomes remain unmeasured and
+reports retain their own boundaries. That historical combination did not measure
+native model outcomes; the newer bounded native Model attempts are reported above.
 S1 requires CUDA. No Windows native, GPU training, scientific or production-throughput
-qualification is added. Compute budget remains zero.
+qualification is added. That historical acceptance granted no compute budget.
 
 See [the member task flow](../python/docs/UNIFIED_TASK_FLOW.zh-CN.md),
 [collection orchestration](../python/docs/COLLECTION_FLOW.md),

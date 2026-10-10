@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import re
 import threading
@@ -53,9 +54,10 @@ class NativeWorkbenchRegistrar:
         return value
 
     def _request(
-        self, method: str, route: str, *, body: dict[str, Any] | None = None
+        self, method: str, route: str, *, body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", **(headers or {})}
         data = None
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -146,6 +148,62 @@ class NativeWorkbenchRegistrar:
         except (URLError, OSError, ValueError, TypeError):
             return {"status": "unavailable", "reason": "game_bridge_unavailable"}
 
+    def register_native(self, url: str, instance_id: str, access: Any) -> dict[str, str]:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench.native_workbench_access import (
+            ACK_SCHEMA,
+            BINDING_FIELDS,
+            bounded_string,
+        )
+
+        try:
+            current = self._request("GET", "/v1/workbench/status")
+            if (set(current) != {"schema", "status", "runtime_instance_id",
+                                "workbench_url", "workbench_instance_id"}
+                    or current["schema"] != "sts2.platform/workbench-open-status-1"
+                    or current["status"] not in {"registered", "unregistered"}):
+                raise BoundaryError("native_workbench", "invalid_game_status")
+            runtime_id = bounded_string(current["runtime_instance_id"], 128)
+            # Legacy browser URL/instance is intentionally not native authority.
+            pair, bootstrap, generation = access.registration_candidate(
+                url, instance_id, runtime_id, self)
+            access.registration_open(pair, generation)
+            body = {"schema": "sts2.platform/native-workbench-pair-1", **pair.to_dict(),
+                    "signature": pair.sign(bootstrap.secret, "native-register-v1")}
+            access.registration_open(pair, generation)
+            ack = self._request("POST", "/v1/workbench/native-register", body=body)
+            if (set(ack) != {"schema", "signature", *BINDING_FIELDS}
+                    or ack["schema"] != ACK_SCHEMA
+                    or {key: ack[key] for key in BINDING_FIELDS} != pair.to_dict()
+                    or not isinstance(ack["signature"], str)
+                    or not hmac.compare_digest(
+                        ack["signature"], pair.sign(bootstrap.secret, "native-register-ack-v1"))):
+                raise BoundaryError("native_workbench", "native_pair_ack_invalid")
+            access.install(pair, self, generation=generation, bootstrap=bootstrap)
+            return {"native_status": "paired"}
+        except BoundaryError as error:
+            return {"native_status": "unavailable", "native_reason": error.code}
+        except (HTTPError, URLError, OSError, ValueError, TypeError, KeyError):
+            return {"native_status": "unavailable",
+                    "native_reason": "native_game_bridge_unavailable"}
+
+    def close_native(self, pair: Any, bootstrap: Any) -> dict[str, str]:
+        from spireagent.workbench.native_workbench_access import CLOSE_SCHEMA
+
+        try:
+            result = self._request("POST", "/v1/workbench/native-unregister",
+                                   body=pair.to_dict(), headers=pair.headers(bootstrap.secret))
+            if (set(result) != {"schema", "status", "binding"} or result["schema"] != CLOSE_SCHEMA
+                    or result["status"] not in {"closed", "already_closed"}
+                    or result["binding"] != pair.to_dict()):
+                return {"status": "unconfirmed", "reason": "native_close_response_invalid"}
+            return {"status": result["status"]}
+        except HTTPError as error:
+            return {"status": "unconfirmed", "reason": "native_close_conflict" if error.code == 409
+                    else "native_close_unavailable"}
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return {"status": "unconfirmed", "reason": "native_close_unavailable"}
+
     def unregister(self, url: object, instance_id: object) -> dict[str, str]:
         """Clear only this Workbench's exact registration on the current game."""
         if not self._valid_url(url) or not self._valid_instance_id(instance_id):
@@ -218,16 +276,23 @@ class WorkbenchRegistrationLoop:
         registrar: NativeWorkbenchRegistrar | None = None,
         stop_event: threading.Event | None = None,
         wait: Callable[[float], bool] | None = None,
+        access: Any | None = None,
     ) -> None:
         self.url = url
         self.instance_id = instance_id
         self.registrar = registrar or NativeWorkbenchRegistrar()
+        self.access = access
         self._stop_event = stop_event or threading.Event()
         self._wait = wait or self._stop_event.wait
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_result: dict[str, str] = {"status": "not_started"}
         self._ever_registered = False
+        self._closed = False
+        self._snapshot_ready = threading.Event()
+        self._cleanup_candidates: tuple[Any, ...] = ()
+        self._cleanup_started = False
+        self._cleanup: dict[str, Any] = {"status": "not_started"}
 
     @property
     def last_result(self) -> dict[str, str]:
@@ -236,7 +301,7 @@ class WorkbenchRegistrationLoop:
 
     def start(self) -> None:
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self._closed or self._thread is not None and self._thread.is_alive():
                 return
             self._stop_event.clear()
             self._thread = threading.Thread(
@@ -246,30 +311,71 @@ class WorkbenchRegistrationLoop:
             )
             self._thread.start()
 
-    def close(self, *, timeout: float = 4.5) -> None:
-        self._stop_event.set()
+    @property
+    def cleanup_result(self) -> dict[str, Any]:
         with self._lock:
+            return dict(self._cleanup)
+
+    def close(self, *, timeout: float = 4.5) -> None:
+        with self._lock:
+            first_close = not self._closed
+            self._closed = True
             thread = self._thread
+        if first_close:
+            # Access snapshots current/pending before revocation under its own lock.
+            candidates = self.access.close_lifecycle() if self.access is not None else ()
+            with self._lock:
+                self._cleanup_candidates = candidates
+                self._cleanup = {"status": "unconfirmed", "reason": "registration_inflight"}
+            self._snapshot_ready.set()
+        self._stop_event.set()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, timeout))
-            if not thread.is_alive() and self._ever_registered:
-                self.registrar.unregister(self.url, self.instance_id)
+        if thread is None or not thread.is_alive():
+            self._finish_cleanup()
+
+    def _finish_cleanup(self) -> None:
+        with self._lock:
+            if not self._closed or not self._snapshot_ready.is_set() or self._cleanup_started:
+                return
+            self._cleanup_started = True
+            candidates, legacy = self._cleanup_candidates, self._ever_registered
+        outcomes = []
+        for pair, bootstrap, peer in candidates:
+            outcomes.append(peer.close_native(pair, bootstrap))
+        if legacy:
+            self.registrar.unregister(self.url, self.instance_id)
+        with self._lock:
+            confirmed = all(item["status"] in {"closed", "already_closed"} for item in outcomes)
+            self._cleanup = {"status": "confirmed" if confirmed else "unconfirmed",
+                             "candidate_count": len(candidates), "outcomes": outcomes}
+            # A cleanup ACK never resets an application/model uncertainty fence.
+            if self._cleanup["status"] == "confirmed":
+                self._cleanup_candidates = ()
 
     def _run(self) -> None:
         delay = 10.0
-        while not self._stop_event.is_set():
-            result = self.registrar.register(self.url, self.instance_id)
-            with self._lock:
-                self._last_result = dict(result)
-                if result.get("status") == "registered":
-                    self._ever_registered = True
-            if self._wait(delay):
-                break
-            delay = min(30.0, delay * 2.0)
+        try:
+            while not self._stop_event.is_set():
+                result = self.registrar.register(self.url, self.instance_id)
+                if self.access is not None:
+                    result = {**result, **self.registrar.register_native(
+                        self.url, self.instance_id, self.access)}
+                with self._lock:
+                    self._last_result = dict(result)
+                    if result.get("status") == "registered":
+                        self._ever_registered = True
+                if self._wait(delay):
+                    break
+                delay = min(30.0, delay * 2.0)
+        finally:
+            # Finalize the same bounded snapshot after a timed-out join; no retry worker.
+            self._finish_cleanup()
 
 
-def start_workbench_registration(url: str, instance_id: str) -> WorkbenchRegistrationLoop:
+def start_workbench_registration(url: str, instance_id: str, *,
+                                 access: Any | None = None) -> WorkbenchRegistrationLoop:
     """Create/start the loop from Workbench ``serve`` when platform is configured."""
-    loop = WorkbenchRegistrationLoop(url, instance_id)
+    loop = WorkbenchRegistrationLoop(url, instance_id, access=access)
     loop.start()
     return loop

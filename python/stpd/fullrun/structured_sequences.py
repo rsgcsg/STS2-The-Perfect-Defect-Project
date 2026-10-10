@@ -58,6 +58,7 @@ class StructuredDataset:
     runs: tuple[StructuredRun, ...]
     source_sha256: str
     source_bytes: bytes
+    input_spec: FrozenObject | None = None
 
     @property
     def independent_test_eligible(self) -> bool:

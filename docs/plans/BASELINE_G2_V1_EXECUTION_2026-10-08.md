@@ -1,12 +1,46 @@
 # 完整 G2／V1 执行与验收矩阵
 
-日期：2026-10-08。起点 `develop@4256f952e6db3983b259f805121571c8d71a7f6c`；主 writer 分支 `codex/g2-v1-convergence`。**实施与验证进行中，G2/V1 未获用户批准。** 本包包括原定门之前的全部必需工作，不用 S0 代替完整范围。
+日期：2026-10-08，进度更新至 2026-10-11。起点 `develop@4256f952e6db3983b259f805121571c8d71a7f6c`；主 writer 分支 `codex/g2-v1-core-integration`，已包含 `develop@4e16e54e`。**实施与验证进行中，G2/V1 未获用户批准。** 本包包括原定门之前的全部必需工作，不用 S0 代替完整范围。
 
 [唯一规范](../BASELINE_V1_SPEC.zh-CN.md)拥有技术选择；[任务表](BASELINE_TASKS.zh-CN.md)拥有 19 个编号/依赖；本文件管理执行与验收位置。实际 source/runtime/data 原件才是证据，独立审查见[本轮审计](../evidence/BASELINE_G2_V1_AUDIT_2026-10-08.md)。
+
+## 当前实施轮：2026-10-11
+
+用户要求立即执行实际修改与验证，快速核实 refs/PR/任务/阻塞后启动安全并行工作，
+按既有独立审查和集成规则收敛成果。Root 继续担任 supervisor，拥有共享 refs/BOM 和
+唯一重本地/native 槽；实际 writer 为 `governance_convergence_impl`（E0）、
+`native_rejection_diagnostics_impl`（E1）、`public_m0_restoration_impl`（E3/E6）、
+`native_data_admission_impl`（E2/E4），均位于 `/root/` 下。独立审查另行完成。
+当前 dependent base 为 `fa789104`；Root 集成本地已审 test-only 修复后为 `1c021bdd`，
+focused12 通过只属本地 source/test，不是 Windows 终态。最终 head 以实际 refs 为准。
+
+优先取得真实 stale 拒绝类别与匹配证据，恢复 d6 M0 的既有 export→共同应用/Runtime
+路径，核准 Source-off 原件可否进入现有训练投影，并将本轮规则落实到既有规范。
+三个 owning correction 可并行；旧模型未就绪不阻塞已就绪的 native 或新学习。
+实际数据/用途/合同就绪后复用现有 recipe/engine 完成已授权小闭环；约 10k 与原 V1
+场景/性能/30 attempts 义务保留，100–300 不是策略能力的数据充分性结论。
+
+最近 `fa789104` 原生结果为60 known/68 submissions/8 stale，Source-off，
+`admission:not_run`，N 未知；已释放 controller，Host 正常退出，Teacher SIGKILL 另记。
+CI[38055431750](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38055431750)
+针对 `0ed61be1` 已 completed/failure，不能借给新候选。各原件、未知和失败保留。
+
+本轮 GPU 合计上限 USD20，已知支出 USD0，尚无提交的 provider job；不是每 worker
+USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 job/费用和共享余量。
+已授权必要隔离/native 操作继续；生产部署、main/release、破坏性权限未扩大。
+完整 G2/V1 最终批准仍属于用户，本文更新不是通过记录。
 
 ## 1. 完成与审批规则
 
 每项区分设计、implemented、source-tested、exact-built/installed/loaded、runtime、capture/data/learning、独立 review 和用户批准。基线、actor、setup/自主、sampled/完整曝光不同不能互借。`不适用`需要确切原生/配置理由和独立核对，不能代替未实现。
+
+当前用户选定的交付切片：积累 100–300 个经准入的真实选择，报告总数、排除项、来源和
+多候选/场景分布；用固定数据版本完成实际训练、checkpoint 和结果，导出/注册/加载，
+让学习 Agent 在新游戏任务中连续推进到自然胜负/summary，并提供游戏内可见的本轮模型
+身份、运行接入和 Stop。若循环、预算或 unsupported 停止，保留未完成与环境/Agent 时机/
+训练/数据覆盖/模型归因；不把脚本示范或 train-fit 当新局策略质量。最后完成适用检查、
+独立审查、PR 合并/对齐和可复现交接。其他并行工作继续；完整 G2/V1 的剩余矩阵不删除，
+本切片通过也不自动批准完整 G2/V1。
 
 历史 S0 的[实证报告](../evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md)保留 174 offers/172 labels、45 updates、11 native play、确认 Stop 等原范围证据。新 profile/产物/数据重新核受影响资格。全部 required 格补齐后才标 `ready_for_owner_review`，用户批准后才填 G2/V1 通过。
 
@@ -14,25 +48,45 @@
 
 | 原任务子包 | 第一错误事实／交付 | 依赖、writer 与当前状态 |
 | --- | --- | --- |
-| P0–P5/G1 对账 | 原需求未完整映射，旧状态仍称未启动；分清抽象/协议/实例 | lead 汇总独立审计和历史修正；完整规范/矩阵工作稿 |
-| E0.1 | 旧 PR/组件的唯一增量、复用/改造/保留/替代依据；治理与测试经济性 | lead 盘点，不清空旧资产或盲合 stack |
-| E1.1 | native selector enabled 与额外 raw-min/manual veto 冲突 | native writer 独立分支；精确原生核对后修复/回归中 |
-| E1.2 | 完整 native logical relation、读取/分页/Resolve、事件、终局 | 先共享 wire/源时钟/失败样例；Connector 一 writer，合同细化中 |
-| E2.1 | 原生 UI 来源与 Human 来源混同；观察/输入/持久化未统一 | shared freeze→Annotator→Evidence additive source-aware 流；待 wire |
-| E2.2 | 原件→投影/历史/目标/use，无动作/缺口/假设资格 | 与新 InputSpec 同版；旧数据不改义，待实现 |
-| E3.1 | 普通奖励 teacher 与公开 verb 不匹配；runner 丢 Host close 回执 | runner writer 独立分支，两个 owning correction 分别回归 |
-| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | Runtime/SDK/研究 adapter 同一合同，待实现 |
-| E4.1 | 结构训练仅 final checkpoint、无 exact resume | model writer 独立分支；安全边界/身份/attempt 契约已讨论，实施中 |
-| E4.2/E6.1 | 新模型不在普通 prepare/train/export/register/load 用例 | 单 operation/journal＋静态可信 recipe/Agent adapters，合同细化中 |
+| P0–P5/G1 对账 | 原需求未完整映射，旧状态仍称未启动；分清抽象/协议/实例 | 当前唯一规范 v1.3 与完整分母已形成；新发现继续修正设计，非最终冻结 |
+| E0.1 | 旧 PR/组件的唯一增量、复用/改造/保留/替代依据；治理与测试经济性 | lead 更新文档职责/入口/状态对账与新成员路径；最低成本机械防漂移和独立复核进行中 |
+| E1.1 | native selector enabled 与额外 raw-min/manual veto 冲突 | 忠实性修复已集成并测试；各原生机制的完整实机资格仍待验 |
+| E1.2 | 完整 native logical relation、读取/分页/Resolve、事件、终局 | SDK/生命周期/公开状态及资料修复已集成；L34 新事件 profile、特殊机制和全范围闭合仍在实施 |
+| E2.1 | 原生 UI 来源与 Human 来源混同；观察/输入/持久化未统一 | Source3 顺序与物理/协议生产者已集成；真实 Agent 协议小录制独立通过，真正 Human 小录制尚待 |
+| E2.2 | 原件→投影/历史/目标/use，无动作/缺口/假设资格 | 顺序训练桥、真实准入/use 与小训练通过；分片索引包源码审查通过，整合与容量实测尚待 |
+| E3.1 | 普通奖励 teacher 与公开 verb 不匹配；runner 丢 Host close 回执 | 旧实例修复与原范围证据保留；新默认连续任务及各类结果/退出仍需实际验收 |
+| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | 原 full-reference 端口与冷会话单步/Stop 有限定证据；新默认 current-decision sampled carry 已集成并通过分层源码测试，`e7dfd694` 正式合成包/真实子进程组合已独立通过，真实 sampled 运行和产品状态恢复另验 |
+| E4.1 | 结构训练仅 final checkpoint、无 exact resume | 结构训练/checkpoint/严格恢复已实现和测试；本轮真实小训练/导出完成，完整中断恢复旅程待验 |
+| E4.2/E6.1 | 新模型不在普通 prepare/train/export/register/load 用例 | 实际应用训练/导出/注册/加载、既有模型单步运行已形成限定闭环；完整 GUI/异常/重复使用旅程尚待 |
 | E4.3 | 原 Stage1a 约 10k 合格交互训练尝试、K/Reset、backbone、N/Z/O 有界比较 | 按数据/目标资格和累计预算安排实际执行；Gate/R 条件触发，缺项未完成 |
 | E5.1 | 本地/远端 intent/attempt/cancel/reconcile、权限/用途/派生传播 | 复用既有 owner；指定资源实际链与故障矩阵待完成 |
-| E6.2 | 游戏内核心用例未贯通，浏览器首页链接不足 | 同 backend 的 CLI/API/外部/native UI，待 service 合同 |
+| E6.2 | 游戏内核心用例未贯通，浏览器首页链接不足 | 共用 Source/Model admission 和直接入口已审查集成；rc31 安装/冷载/主菜单/非强退已独立通过，认证界面/共存/日志健康待验；Source3 产品数据与 native Model 复用已集成，新增 compiled-source 改动仍需重新构建 |
 | V1.1 | 全机制、角色难度及真实场景资格 | 最短原生用例→连续默认 Agent；setup 单列 |
 | V1.2 | 全用户旅程、恢复、安装回退、远端和权限 | 同一推荐组合；AI 功能操作如实记录来源 |
 | V1.3 | 资源、200/500 功能、10000 压力、30 attempt 稳定性 | pilot 固定测法/资源，再冻结候选与批次，保留全部结果 |
 | V1.4 | 冷工程师复现、跨层复核和最终材料 | required 格完成后独立审查，最终交用户批准 |
 
-共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续，付费累计上限 20 USD；当前累计 0，无新付费任务。
+共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续；当前 GPU 资源与历史费用按上面的本轮授权分别核对，不按 worker 或旧段落重新发放。
+
+本次[真实学习与投递报告](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md)
+区分两次 Model 运行：首次 Shadow 已评分但接管后状态不确定，整次仍失败；第二次明确的新冷会话完成一次原始投递和停止，未证明 effect/Commit/后继。两者不拼接成同 W 连续旅程，也不将下面任一全范围格自动标为通过。
+
+### 下一批交付与明确依赖
+
+| 交付／现有任务 | writer／消费入口 | 状态与下一门 |
+| --- | --- | --- |
+| 文档/管理对齐 E0.1 | lead；规范、CURRENT、入门路由及既有 project-system 工具 | 上层逻辑角色/历史术语与实际组件映射正在统一，连同来源和观察标签；不改旧 wire/数据身份，不为文档改动部署游戏/Hub |
+| 已构建 E6 候选 | lead 独占安装/游戏；Game Mod rc31 / Live UI rc10 | `e7dfd694` 构建 `c82306c6` 已安装并通过精确隔离冷载/主菜单/非强退；rc30 回退保留。认证界面和日志健康仍待；不因无关工具改动重建相同 compiled source |
+| Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
+| native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
+| 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
+| 有用的真实采集 E2.1/E4 | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | `ffb9649f` 已集成共享地图等待并通过 Full9；四次分别达 1/4/6/6 次已知投递。第四轮八个 ACKed context、三个地图 Await 后 Current incomplete，input operation 保持 unknown，非未知 native delivery；Source6/19/零缺口与清理通过。独立新诊断捕获 creature_subject 缺失，不回填第四轮原因。100–300 准入 N 尚未达成；投递不替代 N/覆盖 |
+| 直接 Agent 数据 E2.2 | typed Evidence→固定 producer/student 投影→既有 curation | PhaseA `e61381a4` 已独立审查集成；真实第三轮准入八 context/六 N，无预留/训练。旧 tuple 保留，共同 direct/Source3 training/package core `38bf01f2` 已审查；`37d024c3` 一次合成真实 child/use/export/Registry 绑定/fresh stdio 通过。实际 public preflight、产品入口及新真实训练未通过，不冒充 Source3 或原生来源验证 |
+| 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
+
+采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。
+这些义务仍保留在下表；遇到真正影响当前任务的信息/动作缺失时修 owning fact，不能靠重置 W 或外置策略遮盖。
+当前每次 Cold start、连续运行、Human 接管和来源切换保留实际区分。新协议/视图必须独立身份和验证。
 
 ## 3. 要求矩阵（12 项）
 
@@ -44,7 +98,7 @@
 | REQ-04 | 模型研究需要封装 Agent 与不同计算/状态设计 | 对外是一个个体；信息取得、表示、状态和选择在登记边界内；D-M2 为当前贯通实例，其他设计仍可扩展 | 待全范围实现/证据，按场景和产品交叉核验 |
 | REQ-05 | 采集者需要可验证且低干扰的记录 | 保留实际事实、来源、顺序、缺口；可以判断支持哪些用途 | 待全范围实现/证据，按场景和产品交叉核验 |
 | REQ-06 | 数据使用者需要可解释的转换 | 原始证据能按明确规则形成目标协议轨迹、样本或被排除 | 待全范围实现/证据，按场景和产品交叉核验 |
-| REQ-07 | 学习者需要训练与运行语义一致 | 同一输入与状态规则在线、离线相符，产物可回到环境 | 待全范围实现/证据，按场景和产品交叉核验 |
+| REQ-07 | 学习者需要可解释的训练与运行连接 | 共有输入/状态递推相符；取得、历史、截断和目标差异显式且可验证，产物可回到环境 | 待全范围实现/证据，按场景和产品交叉核验 |
 | REQ-08 | 研究者需要可归因的评价 | 控制信息、历史、数据、资源和环境条件，记录曝光与独立性 | 待全范围实现/证据，按场景和产品交叉核验 |
 | REQ-09 | 开发者与 coding Agent 需要可编程工具 | 内部库、CLI、API 可完成主要用例，GUI 调用相同服务 | 待全范围实现/证据，按场景和产品交叉核验 |
 | REQ-10 | 本地用户和团队需要产物流通与计算 | 相同任务可在符合条件的资源上执行，权限、预算和恢复明确 | 待全范围实现/证据，按场景和产品交叉核验 |
@@ -177,13 +231,13 @@
 
 | 门 | 必需实际证据 | 当前状态 |
 | --- | --- | --- |
-| A 基线可恢复 | code/package/install/model/game/service 配对；旧记录/队列、回退 | S0 局部身份已有；完整组合待验 |
-| B 游戏内入口 | 配置/连接；任务可发现、操作、监测、回结果；外部上下文一致 | 完整入口未实现 |
+| A 基线可恢复 | code/package/install/model/game/service 配对；旧记录/队列、回退 | 新 Source3/模型限定链已有确切身份；完整组合与恢复待验 |
+| B 游戏内入口 | 配置/连接；任务可发现、操作、监测、回结果；外部上下文一致 | Source/Model 统一入口已审查集成；新安装与完整界面旅程待验 |
 | C 采集到数据 | start/pause/close、封存、队列、上传/核验/下载、来源/质量 | AI 功能和真实 Human 来源分开；完整链待验 |
-| D 数据到训练 | 不可变数据/use/split、真实本地任务、progress、checkpoint 恢复/失败 | S0 数值链已有；普通应用链待补 |
-| E 训练到模型 | dev/错误分析、来源/配置、导出/下载/注册/加载/切换 | 普通新默认路径待补 |
-| F 全场景连接 | 全机制、默认 Agent 输入/动作、自主连续旅程、Stop/重连/终局 | reward 循环等缺口，未完成 |
-| G 日常可用 | 无终端串流程；重开不丢任务；离线/权限/错误清楚；UI 不阻塞 | 待实现与 actual-user-path |
+| D 数据到训练 | 不可变数据/use/split、真实本地任务、progress、checkpoint 恢复/失败 | 真实 Source3 原件经应用服务完成小训练；界面、规模与恢复旅程待验 |
+| E 训练到模型 | dev/错误分析、来源/配置、导出/下载/注册/加载/切换 | 实际导出/注册/加载和既有模型单步投递已限定通过；分析/切换/恢复仍待 |
+| F 全场景连接 | 全机制、默认 Agent 输入/动作、自主连续旅程、Stop/重连/终局 | 资料页单步投递已有证据；战斗、奖励等连续过程和全族实机未闭合 |
+| G 日常可用 | 无终端串流程；重开不丢任务；离线/权限/错误清楚；UI 不阻塞 | 关键服务/入口已有实现；完整实际用户路径和异常恢复待验 |
 | H 交付管理 | source/CI/native/service/更新回退/用户签收分开 | 本包交用户审批；R1 正式发布另门 |
 
 实际入口包括：新采集→验证/用途→固定数据→训练/恢复→分析→导出/注册→游戏运行/停止→报告；已有数据/模型直接进入且不重复安装/登记；本地独立使用；指定远端任务→产物验证→下载→本机运行；同场景比较与恢复。旧产品 A–H 的责任不能因选用 CLI 实例被取消。

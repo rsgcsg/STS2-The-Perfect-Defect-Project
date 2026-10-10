@@ -13,6 +13,10 @@ import { ManagedServicePolicyClient, type ManagedTarget } from "./managed.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
 import { PolicyRuntime } from "./runtime.js";
 import { startPolicyRuntimeHttpServer } from "./server.js";
+import { AGENT_MANIFEST_SCHEMA, validateAgentManifest, type AgentManifest } from "./agent-session-contracts.js";
+import { NdjsonAgentSessionPort } from "./agent-session-port.js";
+import type { NativeAgentRuntimeOwner } from "./agent-native-runtime.js";
+import type { AgentRuntimeStartup } from "./agent-runtime-contracts.js";
 
 interface CliOptions {
   manifestPath: string;
@@ -32,7 +36,12 @@ interface CliOptions {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const manifestPath = resolve(options.manifestPath);
-  const manifest = validatePolicyManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+  const rawManifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
+  if (rawManifest !== null && typeof rawManifest === "object" && !Array.isArray(rawManifest)
+    && (rawManifest as Record<string, unknown>).schema === AGENT_MANIFEST_SCHEMA) {
+    await runAgent(options, manifestPath, validateAgentManifest(rawManifest)); return;
+  }
+  const manifest = validatePolicyManifest(rawManifest);
   const isManaged = "kind" in manifest.requirements.environment;
   if (options.observationAcquisition === "sealed-text-menu-v2"
     && (isManaged || manifest.representation.input_schema !== "sts2.player-environment/text-menu-snapshot-2"))
@@ -146,6 +155,55 @@ async function main(): Promise<void> {
   })}\n`);
   service.startDriving();
 
+  process.once("SIGINT", () => { void shutdown(); });
+  process.once("SIGTERM", () => { void shutdown(); });
+  await exit;
+}
+
+async function runAgent(options: CliOptions, manifestPath: string, manifest: AgentManifest): Promise<void> {
+  if (options.managed || options.observationAcquisition !== "direct")
+    throw new Error("native Agent session does not support Managed or legacy sealed text acquisition");
+  const artifactPath = isAbsolute(manifest.artifact.path) ? manifest.artifact.path : resolve(dirname(manifestPath), manifest.artifact.path);
+  const artifactSha256 = createHash("sha256").update(await readFile(artifactPath)).digest("hex");
+  if (artifactSha256 !== manifest.artifact.sha256) throw new Error("Agent artifact SHA-256 differs from Agent Manifest");
+  const agentManifestSha256 = createHash("sha256").update(canonicalJson(manifest)).digest("hex");
+  const runtimeCodeSha256 = await codeDigest(dirname(fileURLToPath(import.meta.url)));
+  await mkdir(resolve(options.evidenceRoot), { recursive: true });
+  const evidence = await AgentRunEvidence.createSession({ root: resolve(options.evidenceRoot), agentManifest: manifest,
+    runtimeVersion: POLICY_RUNTIME_VERSION, runtimeCodeSha256, mode: options.mode });
+  let runtime: NativeAgentRuntimeOwner | undefined;
+  let port: NdjsonAgentSessionPort | undefined;
+  let service: Awaited<ReturnType<typeof startPolicyRuntimeHttpServer>> | undefined;
+  let shuttingDown = false;
+  let resolveExit!: () => void;
+  const exit = new Promise<void>(resolvePromise => { resolveExit = resolvePromise; });
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { await runtime?.stop(); }
+    finally { try { await service?.close(); } finally { port?.close(); resolveExit(); } }
+  };
+  try {
+    port = NdjsonAgentSessionPort.spawn(options.adapterCommand, options.adapterArgs,
+      manifest.adapter, manifest.limits, { cwd: options.adapterCwd, executionPolicy: manifest.execution_policy });
+    runtime = await PolicyRuntime.forAgent({ manifest, environment: new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms),
+      port, evidence, mode: options.mode, autoBudget: options.autoBudget,
+      runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
+    service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,
+      deferAutoDrive: true, onStopped: shutdown });
+  } catch (error) {
+    try {
+      if (runtime) await runtime.stop();
+      else await evidence.finalize({ status: "stopped", tainted: false, mode: "human" });
+    } finally { port?.close(); }
+    throw error;
+  }
+  const startup: AgentRuntimeStartup = { schema: "sts2.policy-runtime/agent-session-startup-1", address: service.address,
+    run_id: evidence.runId, agent_manifest_id: manifest.manifest_id, agent_artifact_sha256: artifactSha256,
+    agent_manifest_sha256: agentManifestSha256, runtime_version: POLICY_RUNTIME_VERSION, runtime_code_sha256: runtimeCodeSha256,
+    mode: runtime.status().mode, autonomy_budget: options.autoBudget, managed_environment: null, adapter: manifest.adapter };
+  process.stdout.write(`${JSON.stringify(startup)}\n`);
+  service.startDriving();
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });
   await exit;

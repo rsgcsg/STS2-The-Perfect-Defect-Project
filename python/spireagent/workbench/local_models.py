@@ -18,8 +18,8 @@ import subprocess
 import sys
 import threading
 from collections import Counter
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -39,6 +39,7 @@ from spireagent.workbench.kit_runtime import (
     KIT_RUNTIME_PAIRS,
     text_runtime_pin,
 )
+from spireagent.workbench.local_model_export import LocalModelExport
 from spireagent.workbench.managed_model_target import (
     confirm_target,
     managed_manifest,
@@ -57,6 +58,8 @@ from spireagent.workbench.runtime_install import (
 SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
 MODES = frozenset({"human", "shadow", "one_step", "auto"})
+AGENT_STARTUP = "sts2.policy-runtime/agent-session-startup-1"
+AGENT_STATUS = "sts2.policy-runtime/agent-session-status-1"
 JSON_LIMIT = 1024 * 1024
 RUN_PROFILES = {
     "short": {"max_submissions": 16, "max_policy_calls": 32, "deadline_ms": 60_000},
@@ -71,6 +74,8 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                  "text-menu-m2-v2": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v2.json",
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
+NATIVE_PROFILE = "native-logical-v1"
+NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 
 
 def _validate_text_profile(profile: dict[str, Any], schema: str,
@@ -175,8 +180,19 @@ def _loopback(url: str) -> str:
     return str(result)
 
 
-
-
+def _startup_identity(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+    native = manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
+    prefix = "agent" if native else "policy"
+    return {
+        "schema": AGENT_STARTUP if native else "sts2.policy-runtime/startup-1",
+        "agent_manifest_id" if native else "manifest_id": manifest["manifest_id"],
+        f"{prefix}_artifact_sha256": manifest["artifact"]["sha256"],
+        f"{prefix}_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "runtime_version": package["version"],
+        "runtime_code_sha256": package["code_sha256"],
+        "address": "http://127.0.0.1:15527",
+        **({"adapter": manifest["adapter"], "managed_environment": None} if native else {}),
+    }
 
 
 @dataclass(frozen=True)
@@ -227,9 +243,23 @@ class RuntimeClient:
         *, binding: RuntimeControlBinding | None = None,
     ) -> dict[str, Any]:
         if (
-            route not in {"/status", "/environment", "/mode", "/tick", "/stop"}
+            route not in {"/status", "/environment", "/mode", "/tick", "/stop", "/reconcile"}
             or (route == "/environment" and body is not None)
-            or (binding is not None and (body is None or route not in {"/mode", "/tick"}))
+            or (
+                binding is not None
+                and (body is None or route not in {"/mode", "/tick", "/reconcile"})
+            )
+            or (
+                route == "/reconcile"
+                and (
+                    self.startup.get("schema") != AGENT_STARTUP
+                    or binding is None
+                    or not isinstance(body, dict)
+                    or set(body) != {"request_id"}
+                    or not isinstance(body["request_id"], str)
+                    or not body["request_id"]
+                )
+            )
         ):
             raise BoundaryError("local_model", "invalid_runtime_route")
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -261,6 +291,12 @@ class RuntimeClient:
             expected = "sts2.policy-runtime/http-2" + ("/tick-1" if route == "/tick" else "")
             if not isinstance(value, dict) or value.get("schema") != expected:
                 raise ValueError
+            if route == "/reconcile" and (
+                set(value) != {"schema", "request_id", "resolution", "status"}
+                or value["request_id"] != body["request_id"]  # type: ignore[index]
+                or value["resolution"] not in {"resolved", "pending", "unresolved", "tainted"}
+            ):
+                raise ValueError
             self.validate_status(value.get("status"))
             return value
         except HTTPError as error:
@@ -285,6 +321,10 @@ class RuntimeClient:
                     },
                     503: {"runtime_environment_unavailable"},
                 }
+                if self.startup.get("schema") == AGENT_STARTUP:
+                    allowed[409].update({"runtime_run_mismatch", "runtime_pending_request_mismatch",
+                                         "runtime_profile_reconcile_unsupported",
+                                         "runtime_reconcile_requires_human"})
                 if (
                     isinstance(rejected, dict) and set(rejected) == {"schema", "error"}
                     and rejected["schema"] == "sts2.policy-runtime/http-2"
@@ -300,6 +340,9 @@ class RuntimeClient:
     def validate_status(self, status: object) -> None:
         if not isinstance(status, dict):
             raise ValueError
+        if self.startup.get("schema") == AGENT_STARTUP:
+            self._validate_agent_status(status)
+            return
         policy, runtime = status.get("policy"), status.get("runtime")
         if (
             status.get("schema") != "sts2.policy-runtime/status-1"
@@ -332,6 +375,130 @@ class RuntimeClient:
             ):
                 raise ValueError
 
+    def _validate_agent_status(self, status: dict[str, Any]) -> None:
+        fields = {
+            "schema",
+            "runtime",
+            "run_id",
+            "agent_manifest_sha256",
+            "agent",
+            "lifecycle",
+            "mode",
+            "controller",
+            "autonomy_budget",
+            "tainted",
+            "taint_reason",
+            "refreshing",
+            "invalidations",
+            "errors",
+            "environment",
+            "session",
+            "last_observation",
+            "last_directive",
+            "last_result",
+            "pending_request",
+        }
+        agent, runtime = status.get("agent"), status.get("runtime")
+        if (
+            set(status) != fields
+            or status["schema"] != AGENT_STATUS
+            or status["run_id"] != self.startup["run_id"]
+            or status["agent_manifest_sha256"] != self.startup["agent_manifest_sha256"]
+            or status["mode"] not in MODES
+            or status["lifecycle"] not in {"running", "stopped"}
+            or status["controller"] not in {"held", "released", "unknown"}
+            or type(status["tainted"]) is not bool
+            or type(status["refreshing"]) is not bool
+            or (status["taint_reason"] is not None and not isinstance(status["taint_reason"], str))
+            or not isinstance(agent, dict)
+            or set(agent)
+            != {
+                "manifest_id",
+                "agent_id",
+                "agent_version",
+                "provider",
+                "architecture",
+                "artifact_id",
+                "artifact_sha256",
+                "adapter",
+            }
+            or agent["manifest_id"] != self.startup["agent_manifest_id"]
+            or agent["artifact_sha256"] != self.startup["agent_artifact_sha256"]
+            or agent["adapter"] != self.startup["adapter"]
+            or not isinstance(runtime, dict)
+            or runtime.get("version") != self.startup["runtime_version"]
+            or runtime.get("code_sha256") != self.startup["runtime_code_sha256"]
+        ):
+            raise ValueError
+        for key in ("errors", "invalidations"):
+            if not isinstance(status[key], list) or any(
+                not isinstance(item, str) for item in status[key]
+            ):
+                raise ValueError
+        budget = status["autonomy_budget"]
+        if (
+            not isinstance(budget, dict)
+            or set(budget)
+            != {
+                "state",
+                "max_submissions",
+                "submissions_used",
+                "max_policy_calls",
+                "policy_calls_used",
+                "deadline_ms",
+                "elapsed_ms",
+                "remaining_ms",
+                "exhausted_reason",
+                "ended_reason",
+            }
+            or type(budget.get("remaining_ms")) is not int
+            or budget["remaining_ms"] < 0
+        ):
+            raise ValueError
+        if _recorded_budget(budget) is None or any(
+            budget[status_key] != self.startup["autonomy_budget"][startup_key]
+            for startup_key, status_key in (
+                ("maxSubmissions", "max_submissions"),
+                ("maxPolicyCalls", "max_policy_calls"),
+                ("deadlineMs", "deadline_ms"),
+            )
+        ):
+            raise ValueError
+        pending = status["pending_request"]
+        if pending is not None and (
+            not isinstance(pending, dict)
+            or set(pending)
+            != {
+                "request_id",
+                "run_id",
+                "runtime_instance_id",
+                "session_id",
+                "submission_epoch",
+                "basis_acquisition_id",
+                "snapshot_id",
+                "action_id",
+                "status",
+                "reason",
+            }
+            or pending["run_id"] != self.startup["run_id"]
+            or any(
+                not isinstance(pending[key], str) or not pending[key]
+                for key in (
+                    "request_id",
+                    "runtime_instance_id",
+                    "session_id",
+                    "basis_acquisition_id",
+                    "snapshot_id",
+                    "action_id",
+                )
+            )
+            or type(pending["submission_epoch"]) is not int
+            or pending["submission_epoch"] < 0
+            or pending["status"] not in {"pending", "unresolved"}
+            or (pending["reason"] is not None and not isinstance(pending["reason"], str))
+        ):
+            raise ValueError
+
 
 class LocalModelService:
     def __init__(self, config: ProjectConfig, hub: HubClient | None = None, *,
@@ -347,6 +514,9 @@ class LocalModelService:
         self.lock = threading.RLock()
         self.control_send_lock = threading.Lock()
         self.intent_generation = 0
+        self._recording_source_reservation: object | None = None
+        self._recording_admission_guard: Callable[[], bool] | None = None
+        self._native_authorizer: Callable[[], None] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.client: RuntimeClient | None = None
         self.thread: threading.Thread | None = None
@@ -396,7 +566,13 @@ class LocalModelService:
                     or not isinstance(local["policies"], list)
                     or any(not isinstance(entry, dict)
                            or entry.get("adapter") not in {"token-v1",
-                                                            "stpd-m2-decision-adapter"}
+                                                            "stpd-m2-decision-adapter",
+                                                            "stpd-s0-structured-adapter",
+                                                            NATIVE_ADAPTER}
+                           or (entry.get("adapter") == NATIVE_ADAPTER
+                               and entry.get("runtime_profile") != NATIVE_PROFILE)
+                           or (entry.get("adapter") == "stpd-s0-structured-adapter"
+                               and entry.get("runtime_profile") != "text-menu-m2-v2")
                            or (entry.get("adapter") == "stpd-m2-decision-adapter"
                                and entry.get("runtime_profile") not in
                                {"text-menu-m2-v1", "text-menu-m2-v2"})
@@ -409,9 +585,17 @@ class LocalModelService:
             if not isinstance(entry, dict):
                 raise BoundaryError("local_model", "invalid_policy_entry")
             profile = entry.get("runtime_profile")
+            if entry.get("adapter") == NATIVE_ADAPTER and profile != NATIVE_PROFILE:
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
+            if (entry.get("adapter") == "stpd-s0-structured-adapter"
+                    and profile != "text-menu-m2-v2"):
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
             if "runtime_profile" in entry and (
-                profile not in TEXT_PROFILES
-                or entry.get("adapter") != TEXT_PROFILES[profile][0]
+                (profile == NATIVE_PROFILE and entry.get("adapter") != NATIVE_ADAPTER)
+                or (profile != NATIVE_PROFILE and (profile not in TEXT_PROFILES
+                or (entry.get("adapter") != TEXT_PROFILES[profile][0]
+                    and not (profile == "text-menu-m2-v2" and
+                             entry.get("adapter") == "stpd-s0-structured-adapter"))))
             ):
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
@@ -448,7 +632,9 @@ class LocalModelService:
                     str(self.entry_path(entry, "config")), "--manifest",
                     str(self.entry_path(entry, "manifest")), "--binding-root",
                     str(self.entry_root(entry))]
-        return cast(list[str], policy_support(entry["adapter"]).arguments(entry))
+        resolved = {**entry, "config": str(self.entry_path(entry, "config")),
+                    "manifest": str(self.entry_path(entry, "manifest"))}
+        return cast(list[str], policy_support(entry["adapter"]).arguments(resolved))
 
     def selection(self, identity: str) -> dict[str, Any]:
         for entry in self.registry()["policies"]:
@@ -471,6 +657,11 @@ class LocalModelService:
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
         else:
             directory, pin = self.directory, self.registry()["runtime_package"]
+            if entry is not None and entry.get("runtime_profile") == NATIVE_PROFILE:
+                manifest = _object_file(self.entry_path(entry, "manifest"))
+                if (manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
+                        or manifest.get("input", {}).get("profile") != NATIVE_PROFILE):
+                    raise BoundaryError("local_model", "native_runtime_requires_native_agent")
         if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
             raise BoundaryError("local_model", "runtime_package_not_pinned")
         return directory, pin
@@ -528,11 +719,50 @@ class LocalModelService:
                 else self.root / "node_modules")
 
     def _public_manifest_contract(self, manifest_path: Path, identity: str | None = None) -> None:
+        from spireagent.workbench.native_agent_support import (
+            PUBLICATION_PROFILE_ID,
+            PUBLICATION_PROFILE_SHA256,
+        )
+
         self._runtime_package(identity)
+        native = _object_file(manifest_path).get("schema") == "sts2.policy-runtime/agent-manifest-1"
         script = (
             "import {readFile} from 'node:fs/promises';"
-            "const {validatePolicyManifest}=await import(process.argv[1]);"
-            "validatePolicyManifest(JSON.parse(await readFile(process.argv[2],'utf8')));"
+            "const runtime=await import(process.argv[1]);"
+            "const manifest=JSON.parse(await readFile(process.argv[2],'utf8'));"
+            "if(manifest.schema==='sts2.policy-runtime/agent-manifest-1'){"
+            "if(typeof runtime.PolicyRuntime?.forAgent!=='function'||"
+            "typeof runtime.validateAgentManifest!=='function')"
+            "throw Error('native_runtime_required');"
+            "runtime.validateAgentManifest(manifest);"
+            "const history=manifest.input.history_mode;"
+            "if(history!=='full_reference'&&history!=='sampled_current')"
+            "throw Error('native_model_history_unsupported');"
+            "const sdk=await import(process.argv[3]);"
+            "if(typeof sdk.NativeLogicalSession!=='function'||"
+            "typeof sdk.decodeNativeLogicalCapabilities!=='function')"
+            "throw Error('native_sdk_required');"
+            "if(Object.hasOwn(manifest,'execution_policy')){"
+            "if(typeof runtime.validateAgentExecutionPolicy!=='function'||"
+            "typeof runtime.NdjsonAgentSessionPort!=='function'||"
+            "typeof Object.getOwnPropertyDescriptor(runtime.NdjsonAgentSessionPort.prototype,"
+            "'executionPolicy')?.get!=='function'||"
+            "typeof sdk.NativeLogicalSession.prototype.currentOwned!=='function')"
+            "throw Error('owned_current_runtime_required');"
+            "runtime.validateAgentExecutionPolicy(manifest.execution_policy);"
+            "}"
+            "const target=sdk.NATIVE_LOGICAL_PUBLICATION_PROFILE;"
+            "if(!target||target.profile_id!==process.argv[4]||"
+            "sdk.NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256!==process.argv[5])"
+            "throw Error('fixed_native_profile_required');"
+            "const seams=v=>JSON.stringify(v.map(x=>[x.source_seam,x.version,x.coverage]));"
+            "const eager=history==='sampled_current'?[]:target.eager_scope;"
+            "const delivery=history==='sampled_current'?'scoped':target.delivery_mode;"
+            "if(seams(manifest.input.attachment.required_seams)!==seams(target.required_seams)||"
+            "JSON.stringify(manifest.input.attachment.eager_scope)!==JSON.stringify(eager)||"
+            "manifest.input.attachment.delivery_mode!==delivery)"
+            "throw Error('fixed_native_profile_mismatch');"
+            "}else{runtime.validatePolicyManifest(manifest);}"
         )
         environment = {
             key: value
@@ -547,6 +777,10 @@ class LocalModelService:
                 script,
                 (self._node_modules(identity) / RUNTIME_PACKAGE / "dist/index.js").as_uri(),
                 str(manifest_path),
+                (self._node_modules(identity) / RUNTIME_PACKAGE / "node_modules" /
+                 CONNECTOR_PACKAGE / "dist/index.js").as_uri(),
+                PUBLICATION_PROFILE_ID,
+                PUBLICATION_PROFILE_SHA256,
             ],
             env=environment,
             capture_output=True,
@@ -554,7 +788,15 @@ class LocalModelService:
             check=False,
         )
         if result.returncode != 0:
-            raise BoundaryError("local_model", "public_policy_manifest_incompatible")
+            raise BoundaryError("local_model", "native_runtime_contract_unavailable" if native
+                                else "public_policy_manifest_incompatible")
+        if native:
+            import sts2_platform_evidence
+
+            if not callable(
+                getattr(sts2_platform_evidence, "verify_agent_session_run_evidence", None)
+            ):
+                raise BoundaryError("local_model", "native_evidence_contract_unavailable")
 
     def install_runtime(self) -> dict[str, Any]:
         if self.client is not None or (self.process is not None and self.process.poll() is None):
@@ -704,10 +946,10 @@ class LocalModelService:
         entries = []
         for entry in self.registry()["policies"]:
             manifest = _object_file(self.entry_path(entry, "manifest"))
-            text_menu = entry.get("runtime_profile") in TEXT_PROFILES
-            profiles = [{"id": "short", "label": "短时检查" if text_menu else "默认运行",
-                         "limits": RUN_PROFILES["short"] if text_menu else None}]
-            if text_menu:
+            bounded = entry.get("runtime_profile") in {*TEXT_PROFILES, NATIVE_PROFILE}
+            profiles = [{"id": "short", "label": "短时检查" if bounded else "默认运行",
+                         "limits": RUN_PROFILES["short"] if bounded else None}]
+            if bounded:
                 profiles.append({"id": "extended",
                                  "label": "较长尝试（每次自主授权最多 30 分钟）",
                                  "limits": RUN_PROFILES["extended"]})
@@ -719,10 +961,12 @@ class LocalModelService:
                     "claims": manifest.get("claims"),
                     "artifact_sha256": manifest.get("artifact", {}).get("sha256"),
                     "readiness": "check_required",
+                    **({"agent_scope": "s0_text_v2_compatibility_only"}
+                       if entry["adapter"] == "stpd-s0-structured-adapter" else {}),
                     "default_run_profile": "short",
                     "run_profiles": profiles,
                     "run_profile_unavailable_reason": (
-                        None if text_menu
+                        None if bounded
                         else "extended_requires_text_menu_runtime"
                     ),
                 }
@@ -739,6 +983,15 @@ class LocalModelService:
                     downloaded = Manifest.from_bytes(manifest_path.read_bytes(), directory.name)
                     if downloaded.kind != "model":
                         continue
+                    export_supported = False
+                    try:
+                        support = LocalModelExport(self.config).support(downloaded.artifact_id)
+                        export_supported = (support.get("status") == "supported"
+                                            and support.get("model_type") == "structured")
+                    except (OSError, ValueError, BoundaryError):
+                        # Keep the downloaded artifact visible even when its
+                        # export owner cannot admit the available metadata.
+                        pass
                     downloads.append(
                         {
                             "artifact_id": downloaded.artifact_id,
@@ -746,8 +999,12 @@ class LocalModelService:
                             "model_schema": downloaded.parameters.value().get("schema"),
                             "local_download": (directory / "download.json").is_file(),
                             "loaded": False,
-                            "support_status": "unsupported",
-                            "reason": "no_compatible_live_adapter_and_input_parity",
+                            "support_status": ("export_and_registration_required" if
+                                export_supported else
+                                "unsupported"),
+                            "reason": ("s0_text_v2_only" if
+                                export_supported else
+                                "no_compatible_live_adapter_and_input_parity"),
                         }
                     )
                 except (OSError, ValueError, BoundaryError):
@@ -802,16 +1059,24 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
-            from spireagent.workbench.local_model_dependencies import local_models_available
+        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
+                                 "stpd-s0-structured-adapter", NATIVE_ADAPTER}:
+            from spireagent.workbench.local_model_dependencies import (
+                local_models_available,
+                native_models_available,
+            )
 
-            if local_models_available():
+            available = (native_models_available() if entry["adapter"] == NATIVE_ADAPTER
+                         else local_models_available())
+            if available:
                 adapter = policy_support(entry["adapter"])
                 checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
                                               binding_root=self.entry_root(entry)))
             else:
                 checks["policy_identity"] = {
-                    "status": "blocked", "code": "local_models_extra_required",
+                    "status": "blocked", "code": ("native_models_extra_required"
+                                                  if entry["adapter"] == NATIVE_ADAPTER
+                                                  else "local_models_extra_required"),
                 }
         else:
             adapter = policy_support(entry["adapter"])
@@ -838,6 +1103,65 @@ class LocalModelService:
     def _save(self) -> None:
         atomic_json(self.directory / "session.json", self.state)
 
+    def _recording_recovery_required(self, model: dict[str, Any]) -> bool:
+        operation = model.get("operation")
+        if model.get("status") in {"loading", "command_unknown", "recovery_required"} or (
+            isinstance(operation, dict)
+            and operation.get("status") == "pending"
+            and operation.get("action") not in {"human", "stop", "reconcile"}
+        ):
+            return True
+        if not model.get("loaded") and self.client is None:
+            return False
+        runtime = model.get("runtime")
+        return (
+            model.get("observation_error") is not None
+            or not isinstance(runtime, dict)
+            or runtime.get("mode") != "human"
+            or runtime.get("controller") != "released"
+            or runtime.get("tainted") is True
+            or runtime.get("pending_request") is not None
+        )
+
+    def recording_recovery_required(self, *, fresh: bool = False) -> bool:
+        observed = self.status() if fresh else None
+        with self.lock:
+            return self._recording_recovery_required(self.state) or (
+                observed is not None and self._recording_recovery_required(observed)
+            )
+
+    @contextmanager
+    def reserve_recording_source_mutation(self, *, require_human: bool) -> Iterator[None]:
+        """Reserve application sequencing, never gameplay or external SDK authority."""
+        reservation = object()
+        with self.lock:
+            if require_human and (self.closed or self._recording_recovery_required(self.state)):
+                raise BoundaryError("recording", "model_recovery_required")
+            if self._recording_source_reservation is not None:
+                raise BoundaryError("recording", "native_recording_command_pending")
+            self._recording_source_reservation = reservation
+        try:
+            # HTTP is outside the lock. Existing model admissions reject immediately;
+            # Human/Stop retain the independent recovery lane while this intent waits.
+            if require_human and self.recording_recovery_required(fresh=True):
+                raise BoundaryError("recording", "model_recovery_required")
+            yield
+        finally:
+            with self.lock:
+                if self._recording_source_reservation is reservation:
+                    self._recording_source_reservation = None
+
+    def bind_recording_admission_guard(self, guard: Callable[[], bool]) -> None:
+        """Application's existing unresolved notice is read under this owner lock."""
+        with self.lock:
+            self._recording_admission_guard = guard
+
+    def _require_model_admission(self) -> None:
+        if self._recording_source_reservation is not None or (
+            self._recording_admission_guard is not None and self._recording_admission_guard()
+        ):
+            raise BoundaryError("local_model", "native_recording_command_pending")
+
     def _begin(
         self, action: str, operation: Callable[[], None], *, recovery: bool = False,
         admission: Callable[[], None] | None = None,
@@ -845,6 +1169,8 @@ class LocalModelService:
         with self.lock:
             if self.closed:
                 raise BoundaryError("local_model", "service_closed")
+            if not recovery:
+                self._require_model_admission()
             if self.thread and self.thread.is_alive() and not recovery:
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.state["status"] in {"command_unknown", "recovery_required"} and not recovery:
@@ -893,6 +1219,9 @@ class LocalModelService:
                                 "runtime_recovery_epoch_mismatch",
                                 "runtime_game_precondition_required",
                                 "runtime_recovery_precondition_required",
+                                "native_pending_request_required", "native_pending_request_changed",
+                                "runtime_pending_request_mismatch", "runtime_run_mismatch",
+                                "runtime_profile_reconcile_unsupported",
                                 "managed_environment_unavailable",
                                 "managed_environment_target_unavailable",
                                 "managed_environment_target_changed",
@@ -938,23 +1267,54 @@ class LocalModelService:
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:
             raise BoundaryError("local_model", "unsupported_run_profile")
-        text_menu = self.selection(identity).get("runtime_profile") in TEXT_PROFILES
-        if profile == "extended" and not text_menu:
+        bounded = self.selection(identity).get("runtime_profile") in {
+            *TEXT_PROFILES,
+            NATIVE_PROFILE,
+        }
+        if profile == "extended" and not bounded:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
-        return text_menu
+        return bounded
 
     def start(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
         self._run_profile(identity, run_profile)
-        with self.lock:
+        intent = self.intent_generation
+
+        def admit() -> None:
+            nonlocal intent
             if self.process is not None and self.process.poll() is None:
                 raise BoundaryError("local_model", "runtime_already_running")
+            # A newly admitted ordinary start owns a new intent. It must not
+            # inherit native authorization or an old request's recovery proof.
+            # _begin runs this only after its rejection checks under our lock.
+            self.intent_generation += 1
             intent = self.intent_generation
+            self.state.pop("_native_intent", None)
+            self._native_authorizer = None
+
         return self._begin(
             "start", lambda: self._start(identity, intent) if run_profile == "short"
-            else self._start(identity, intent, run_profile)
+            else self._start(identity, intent, run_profile), admission=admit,
         )
 
-    def prepare_and_load(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
+    def prepare_and_load(self, identity: str, run_profile: str = "short", *,
+                         native_context: dict[str, Any] | None = None,
+                         native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+        """Prepare the existing selection in Human mode."""
+        return self._prepare_and_load(identity, run_profile, takeover=False,
+                                      native_context=native_context,
+                                      native_authorizer=native_authorizer)
+
+    def prepare_and_takeover(self, identity: str, run_profile: str = "short", *,
+                            native_context: dict[str, Any] | None = None,
+                            native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+        """One application intent owns preparation, Human load and bounded Auto."""
+        return self._prepare_and_load(identity, run_profile, takeover=True,
+                                      native_context=native_context,
+                                      native_authorizer=native_authorizer)
+
+    def _prepare_and_load(self, identity: str, run_profile: str, *,
+                          takeover: bool, native_context: dict[str, Any] | None,
+                          native_authorizer: Callable[[], None] | None) -> dict[str, Any]:
         """Prepare a reviewed selection, then load in Human mode; never fetch model weights.
 
         Only the existing bounded, hash-pinned Runtime installer is automatic.
@@ -1002,10 +1362,55 @@ class LocalModelService:
                 self._start(identity, intent)
             else:
                 self._start(identity, intent, run_profile)
+            if takeover:
+                with self.lock:
+                    self._require_intent(intent)
+                    client = self.client
+                    connector_endpoint = self.state.get("connector_endpoint")
+                    managed_environment = self.state.get("managed_environment")
+                if client is None:
+                    raise BoundaryError("local_model", "model_not_loaded")
+                self._execute_command("auto", intent, client, connector_endpoint,
+                                      managed_environment)
             with self.lock:
+                self._require_intent(intent)
                 self.state["preparation_stage"] = "ready"
 
-        return self._begin("prepare-and-load", prepare)
+        def admit() -> None:
+            self._require_intent(intent)
+            if native_context is not None:
+                if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
+                    raise BoundaryError("local_model", "native_intent_context_required")
+                digest(native_context["request_id"], "local_model.native_request", length=32)
+                from spireagent.workbench.native_workbench_access import NativePair
+
+                NativePair.from_dict(native_context["binding"])
+                self.state["_native_intent"] = {**json.loads(json.dumps(native_context)),
+                                                 "intent_generation": intent}
+                self._native_authorizer = native_authorizer
+            else:
+                self.state.pop("_native_intent", None)
+                self._native_authorizer = None
+
+        return self._begin("prepare-and-takeover" if takeover else "prepare-and-load", prepare,
+                           admission=admit)
+
+    def native_intent_context(self, request_id: object) -> dict[str, Any]:
+        identity = digest(request_id, "local_model.native_request", length=32)
+        with self.lock:
+            context = self.state.get("_native_intent")
+            if (not isinstance(context, dict) or context.get("request_id") != identity
+                    or context.get("intent_generation") != self.intent_generation or self.closed):
+                raise BoundaryError("local_model", "native_model_intent_superseded")
+            return cast(dict[str, Any], json.loads(json.dumps(context)))
+
+    def recover_native_intent(self, request_id: object, action: str) -> dict[str, Any]:
+        if action not in {"human", "stop"}:
+            raise BoundaryError("local_model", "native_recovery_action_required")
+        with self.lock:
+            self.native_intent_context(request_id)
+            # Validation and the existing command's intent increment are atomic.
+            return self.command(action)
 
     def _require_intent(self, intent: int) -> None:
         with self.lock:
@@ -1036,6 +1441,17 @@ class LocalModelService:
                 route == "/mode" and body.get("mode") != "human"
             )):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
+            native = self.state.get("_native_intent")
+            if (
+                route in {"/mode", "/tick"}
+                and not recovery
+                and isinstance(native, dict)
+                and native.get("intent_generation") == intent
+            ):
+                if self._native_authorizer is None:
+                    raise BoundaryError("local_model", "native_intent_authorization_required")
+                self._native_authorizer()
+                self._require_intent(intent)
             value = (client.request(route, body, binding=binding)
                      if binding is not None else client.request(route, body))
             self._require_intent(intent)
@@ -1043,7 +1459,7 @@ class LocalModelService:
 
     def _start(self, identity: str, intent: int | None = None,
                run_profile: str = "short") -> None:
-        text_menu = self._run_profile(identity, run_profile)
+        bounded = self._run_profile(identity, run_profile)
         if intent is None:
             intent = self.intent_generation
         report = self.readiness(identity)
@@ -1059,6 +1475,10 @@ class LocalModelService:
         package = self._runtime_package(identity)
         _check_runtime_port(15527)
         managed = managed_manifest(manifest)
+        native_context = self.state.get("_native_intent")
+        if (managed and isinstance(native_context, dict)
+                and native_context.get("intent_generation") == intent):
+            raise BoundaryError("local_model", "native_model_target_unavailable")
         target = self._managed_runtime_target() if managed else None
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
@@ -1067,6 +1487,15 @@ class LocalModelService:
             environment_arguments = runtime_arguments(target, self.private_root)
         else:
             assert connector is not None
+            if (isinstance(native_context, dict)
+                    and native_context.get("intent_generation") == intent):
+                if self._native_authorizer is None:
+                    raise BoundaryError("local_model", "native_intent_authorization_required")
+                self._native_authorizer()
+                if (self.native_tasks.connector_instance(connector)
+                        != native_context["binding"]["runtime_instance_id"]):
+                    raise BoundaryError("local_model", "native_model_context_changed")
+                self._require_intent(intent)
             environment_arguments = ["--connector-endpoint", connector]
         command = [
             "node",
@@ -1086,7 +1515,7 @@ class LocalModelService:
             "--mode",
             "human",
         ]
-        if text_menu:
+        if bounded:
             limits = RUN_PROFILES[run_profile]
             command.extend(("--max-auto-submissions", str(limits["max_submissions"]),
                             "--max-policy-calls", str(limits["max_policy_calls"]),
@@ -1134,25 +1563,17 @@ class LocalModelService:
             startup = decode_json(raw)
             if not isinstance(startup, dict) or len(raw) > JSON_LIMIT:
                 raise ValueError
-            expected = {
-                "schema": "sts2.policy-runtime/startup-1",
-                "mode": "human",
-                "manifest_id": manifest["manifest_id"],
-                "policy_artifact_sha256": manifest["artifact"]["sha256"],
-                "policy_manifest_sha256": hashlib.sha256(
-                    canonical_json(manifest).encode()
-                ).hexdigest(),
-                "runtime_version": package["version"],
-                "runtime_code_sha256": package["code_sha256"],
-                "address": "http://127.0.0.1:15527",
-            }
+            expected = {**_startup_identity(manifest, package), "mode": "human"}
             if any(
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
                 raise ValueError
+            if expected["schema"] == AGENT_STARTUP and set(startup) != {
+                *expected, "run_id", "autonomy_budget"}:
+                raise ValueError
             if startup.get("managed_environment") != selected_target:
                 raise ValueError
-            if text_menu and startup.get("autonomy_budget") != {
+            if bounded and startup.get("autonomy_budget") != {
                 "maxSubmissions": limits["max_submissions"],
                 "maxPolicyCalls": limits["max_policy_calls"],
                 "deadlineMs": limits["deadline_ms"],
@@ -1160,7 +1581,7 @@ class LocalModelService:
                 raise ValueError
             client = RuntimeClient(startup["address"], startup)
             runtime = client.request("/status")["status"]
-            if text_menu and (not isinstance(runtime.get("autonomy_budget"), dict)
+            if bounded and (not isinstance(runtime.get("autonomy_budget"), dict)
                               or any(runtime["autonomy_budget"].get(key) != value
                                      for key, value in limits.items())):
                 raise ValueError
@@ -1219,23 +1640,126 @@ class LocalModelService:
         with self.lock:
             return cast(dict[str, Any], json.loads(json.dumps(self.state)))
 
-    def command(self, action: str) -> dict[str, Any]:
-        if action not in MODES | {"stop"}:
-            raise BoundaryError("local_model", "unsupported_local_command")
+    @staticmethod
+    def read_control_context(value: object) -> tuple[str, RuntimeControlBinding]:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"runtime_run_id", "runtime_instance_id", "recovery_epoch"}
+            or not NativeTasks._recording_identifier(value["runtime_run_id"])
+            or not NativeTasks._recording_identifier(value["runtime_instance_id"])
+        ):
+            raise BoundaryError("local_model", "invalid_model_control_context")
+        return value["runtime_run_id"], RuntimeControlBinding(
+            value["runtime_instance_id"], value["recovery_epoch"]
+        )
+
+    def control_context(self) -> dict[str, Any]:
+        """Readonly owned Runtime precondition; never infer ownership from a listening port."""
         with self.lock:
-            recovery = action in {"human", "stop"}
+            client = self.client
+            generation = self.intent_generation
+            if client is None or not self.state["loaded"]:
+                raise BoundaryError("local_model", "model_not_loaded")
+        observed = client.request("/status")["status"]
+        binding = RuntimeControlBinding.from_environment(
+            client.request("/environment"), observed["run_id"]
+        )
+        NativeTasks.confirm_runtime(observed, binding.runtime_instance_id)
+        NativeTasks.model_context(observed, observed["run_id"], binding.recovery_epoch)
+        with self.lock:
+            self._require_intent(generation)
+            if self.client is not client or not self.state["loaded"]:
+                raise BoundaryError("local_model", "native_model_context_changed")
+        return {
+            "schema": "spireagent/local-model-control-context-1",
+            "runtime_run_id": observed["run_id"],
+            "runtime_instance_id": binding.runtime_instance_id,
+            "recovery_epoch": binding.recovery_epoch,
+        }
+
+    def command(
+        self,
+        action: str,
+        *,
+        request_id: str | None = None,
+        expected_context: dict[str, Any] | None = None,
+        native_context: dict[str, Any] | None = None,
+        native_authorizer: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        if action not in MODES | {"stop", "reconcile", "tick"} or (
+            (action == "reconcile") != (request_id is not None)
+        ):
+            raise BoundaryError("local_model", "unsupported_local_command")
+        expected = (
+            self.read_control_context(expected_context) if expected_context is not None else None
+        )
+        if expected is not None and action not in {"auto", "shadow", "one_step", "tick"}:
+            raise BoundaryError("local_model", "invalid_model_control_context")
+        observed_generation = None
+        if expected is not None:
+            with self.lock:
+                self._require_model_admission()
+                if self.client is None or self.client.startup.get("run_id") != expected[0]:
+                    raise BoundaryError("local_model", "runtime_run_mismatch")
+                observed_generation = self.intent_generation
+            fresh = self.control_context()
+            if fresh["runtime_run_id"] != expected[0]:
+                raise BoundaryError("local_model", "runtime_run_mismatch")
+            if fresh["runtime_instance_id"] != expected[1].runtime_instance_id:
+                raise BoundaryError("local_model", "runtime_game_mismatch")
+            if fresh["recovery_epoch"] != expected[1].recovery_epoch:
+                raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
+        with self.lock:
+            if observed_generation is not None and observed_generation != self.intent_generation:
+                raise BoundaryError("local_model", "native_model_context_changed")
+            if expected is not None and (
+                self.client is None or self.client.startup.get("run_id") != expected[0]
+            ):
+                raise BoundaryError("local_model", "runtime_run_mismatch")
+            if native_context is not None:
+                if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
+                    raise BoundaryError("local_model", "native_intent_context_required")
+                digest(native_context["request_id"], "local_model.native_request", length=32)
+                from spireagent.workbench.native_workbench_access import NativePair
+
+                NativePair.from_dict(native_context["binding"])
+            if action == "reconcile":
+                observed = self.state.get("runtime")
+                pending = observed.get("pending_request") if isinstance(observed, dict) else None
+                if (
+                    not isinstance(observed, dict)
+                    or observed.get("schema") != AGENT_STATUS
+                    or not isinstance(pending, dict)
+                    or pending.get("request_id") != request_id
+                ):
+                    raise BoundaryError("local_model", "native_pending_request_required")
+                pending_request = json.loads(json.dumps(pending))
+            else:
+                pending_request = None
+            recovery = action in {"human", "stop", "reconcile"}
+            if self.closed:
+                raise BoundaryError("local_model", "service_closed")
+            if not recovery:
+                self._require_model_admission()
+                if self.state["status"] in {"command_unknown", "recovery_required"}:
+                    raise BoundaryError("local_model", "previous_operation_requires_recovery")
             if not recovery and self.thread is not None and self.thread.is_alive():
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.client is None or not self.state["loaded"]:
-                if recovery and self.state.get("previous_session"):
+                if action in {"human", "stop"} and self.state.get("previous_session"):
                     self.intent_generation += 1
                     intent = self.intent_generation
                     return self._begin(
                         action, lambda: self._recover(action, intent), recovery=True
                     )
-                if recovery and self.thread is not None and self.thread.is_alive() and (
-                    (self.state.get("operation") or {}).get("action")
-                    in {"start", "prepare-and-load"}
+                if (
+                    action in {"human", "stop"}
+                    and self.thread is not None
+                    and self.thread.is_alive()
+                    and (
+                        (self.state.get("operation") or {}).get("action")
+                        in {"start", "prepare-and-load", "prepare-and-takeover"}
+                    )
                 ):
                     self.intent_generation += 1
                     intent = self.intent_generation
@@ -1248,66 +1772,137 @@ class LocalModelService:
             client = self.client
             connector_endpoint = self.state.get("connector_endpoint")
             managed_environment = self.state.get("managed_environment")
+            if native_context is not None:
+                self.state["_native_intent"] = {
+                    **json.loads(json.dumps(native_context)),
+                    "intent_generation": intent,
+                }
+                self._native_authorizer = native_authorizer
 
-        def execute() -> None:
-            assert client is not None
-            self._require_intent(intent)
-            # Observe exact instance before every mutation; never address a new
-            # process that reused the same port after our owned process exited.
-            observation = client.request("/status")["status"]
-            binding = None
-            if action in {"shadow", "one_step", "auto"}:
-                self._require_intent(intent)
-                binding = RuntimeControlBinding.from_environment(
-                    client.request("/environment"), observation["run_id"]
+            if action == "reconcile":
+                assert isinstance(pending_request, dict)
+                return self._begin(
+                    action,
+                    lambda: self._execute_reconcile(intent, client, pending_request),
+                    recovery=True,
                 )
-                # Capture the shared Runtime epoch before native preparation.
-                # A recovery from either UI invalidates this exact observation;
-                # never refresh its epoch to make a stale intent eligible again.
-                if managed_environment is not None:
-                    current_target = self._managed_runtime_target()
-                    confirm_target(managed_environment, current_target)
-                    if current_target["runtime_instance_id"] != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    # Managed attaches to the selected Host. It must never call
-                    # the native Mod's recorder preparation or reset the Host.
-                    self._require_intent(intent)
-                else:
-                    bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
-                    instance = self.native_tasks.connector_instance(bound_endpoint)
-                    if instance != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
-                    self._require_intent(intent)
-                    native = self.native_tasks.prepare_model(observation, bound_endpoint)
-                    if native["runtime_instance_id"] != binding.runtime_instance_id:
-                        raise BoundaryError("local_model", "runtime_game_mismatch")
-                    # Native Close cannot authorize a replacement Runtime or game.
-                    latest = client.request("/status")["status"]
-                    NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
-            if action == "stop":
-                runtime = self._send_control(client, "/stop", {}, intent)["status"]
-            else:
-                runtime = self._send_control(
-                    client, "/mode", {"mode": action}, intent, binding
-                )["status"]
-                if action == "one_step":
-                    runtime = self._send_control(
-                        client, "/tick", {"max_ticks": 1}, intent, binding
-                    )["status"]
-            with self.lock:
-                self._require_intent(intent)
-                if not self.closed and self.state["status"] != "stopped":
-                    self.state.update(runtime=runtime, status="loaded", error_code=None)
-            if action == "stop":
-                self._stop_process()
-                self._evaluation_handoff()
-                with self.lock:
-                    self.state.update(status="stopped", loaded=False)
-                    self.state.pop("observation_error", None)
-                    self.client = None
+            return self._begin(
+                action,
+                lambda: self._execute_command(
+                    action, intent, client, connector_endpoint, managed_environment, expected
+                ),
+                recovery=action in {"human", "stop"},
+            )
 
-        return self._begin(action, execute, recovery=action in {"human", "stop"})
+    def _execute_reconcile(self, intent: int, client: RuntimeClient,
+                           pending_request: dict[str, Any]) -> None:
+        self._require_intent(intent)
+        observed = client.request("/status")["status"]
+        if (observed.get("schema") != AGENT_STATUS
+                or observed.get("pending_request") != pending_request):
+            raise BoundaryError("local_model", "native_pending_request_changed")
+        binding = RuntimeControlBinding.from_environment(
+            client.request("/environment"), pending_request["run_id"])
+        if binding.runtime_instance_id != pending_request["runtime_instance_id"]:
+            raise BoundaryError("local_model", "runtime_game_mismatch")
+        result = self._send_control(client, "/reconcile",
+                                    {"request_id": pending_request["request_id"]}, intent, binding)
+        with self.lock:
+            self._require_intent(intent)
+            if self.client is not client:
+                raise BoundaryError("local_model", "command_superseded")
+            self.state.update(runtime=result["status"], status="loaded", error_code=None,
+                              last_reconciliation={"request_id": result["request_id"],
+                                                   "resolution": result["resolution"]})
+
+    def _execute_command(
+        self,
+        action: str,
+        intent: int,
+        client: RuntimeClient,
+        connector_endpoint: Any,
+        managed_environment: Any,
+        expected: tuple[str, RuntimeControlBinding] | None = None,
+    ) -> None:
+        assert client is not None
+        self._require_intent(intent)
+        # Observe exact instance before every mutation; never address a new
+        # process that reused the same port after our owned process exited.
+        observation = client.request("/status")["status"]
+        binding = None
+        if action in {"shadow", "one_step", "auto", "tick"}:
+            self._require_intent(intent)
+            binding = RuntimeControlBinding.from_environment(
+                client.request("/environment"), observation["run_id"]
+            )
+            if expected is not None:
+                if observation["run_id"] != expected[0]:
+                    raise BoundaryError("local_model", "runtime_run_mismatch")
+                if binding.runtime_instance_id != expected[1].runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                if binding.recovery_epoch != expected[1].recovery_epoch:
+                    raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
+                binding = expected[1]
+            native_context = self.state.get("_native_intent")
+            if (isinstance(native_context, dict)
+                    and native_context.get("intent_generation") == intent
+                    and native_context["binding"]["runtime_instance_id"]
+                    != binding.runtime_instance_id):
+                raise BoundaryError("local_model", "native_model_context_changed")
+            # Capture the shared Runtime epoch before native preparation.
+            # A recovery from either UI invalidates this exact observation;
+            # never refresh its epoch to make a stale intent eligible again.
+            if managed_environment is not None:
+                current_target = self._managed_runtime_target()
+                confirm_target(managed_environment, current_target)
+                if current_target["runtime_instance_id"] != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                # Managed attaches to the selected Host. It must never call
+                # the native Mod's recorder preparation or reset the Host.
+                self._require_intent(intent)
+            else:
+                bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
+                instance = self.native_tasks.connector_instance(bound_endpoint)
+                if instance != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
+                self._require_intent(intent)
+                context = NativeTasks.model_context(
+                    observation, observation["run_id"], binding.recovery_epoch
+                )
+                native = self.native_tasks.prepare_model(
+                    observation, bound_endpoint, model_context=context
+                )
+                if native["runtime_instance_id"] != binding.runtime_instance_id:
+                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                # Native Close cannot authorize a replacement Runtime or game.
+                latest = client.request("/status")["status"]
+                NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
+        if action == "tick":
+            runtime = self._send_control(client, "/tick", {"max_ticks": 1}, intent, binding)[
+                "status"
+            ]
+        elif action == "stop":
+            runtime = self._send_control(client, "/stop", {}, intent)["status"]
+        else:
+            runtime = self._send_control(
+                client, "/mode", {"mode": action}, intent, binding
+            )["status"]
+            if action == "one_step":
+                runtime = self._send_control(
+                    client, "/tick", {"max_ticks": 1}, intent, binding
+                )["status"]
+        with self.lock:
+            self._require_intent(intent)
+            if not self.closed and self.state["status"] != "stopped":
+                self.state.update(runtime=runtime, status="loaded", error_code=None)
+        if action == "stop":
+            self._stop_process()
+            self._evaluation_handoff()
+            with self.lock:
+                self.state.update(status="stopped", loaded=False)
+                self.state.pop("observation_error", None)
+                self.client = None
 
     def _cancel_loading(self, intent: int) -> None:
         with self.control_send_lock, self.lock:
@@ -1324,18 +1919,14 @@ class LocalModelService:
         entry = self.selection(previous.get("selection_id", ""))
         manifest = _object_file(self.entry_path(entry, "manifest"))
         package = self._runtime_package(entry["id"])
+        expected_startup = _startup_identity(manifest, package)
+        if manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1":
+            # Preserve the established legacy recovery identity contract.
+            # Native startup provenance always requires its explicit namespace.
+            expected_startup.pop("schema")
         if not isinstance(startup, dict) or any(
             startup.get(key) != expected
-            for key, expected in {
-                "manifest_id": manifest["manifest_id"],
-                "policy_artifact_sha256": manifest["artifact"]["sha256"],
-                "policy_manifest_sha256": hashlib.sha256(
-                    canonical_json(manifest).encode()
-                ).hexdigest(),
-                "runtime_version": package["version"],
-                "runtime_code_sha256": package["code_sha256"],
-                "address": "http://127.0.0.1:15527",
-            }.items()
+            for key, expected in expected_startup.items()
         ):
             raise BoundaryError("local_model", "recovery_identity_drift")
         client = RuntimeClient(startup["address"], startup)
@@ -1399,8 +1990,11 @@ class LocalModelService:
         from sts2_platform_evidence import verify_agent_run_evidence
 
         startup = previous.get("startup")
+        native = isinstance(startup, dict) and startup.get("schema") == AGENT_STARTUP
         required = {
-            "run_id", "manifest_id", "policy_manifest_sha256", "policy_artifact_sha256",
+            "run_id", "agent_manifest_id" if native else "manifest_id",
+            "agent_manifest_sha256" if native else "policy_manifest_sha256",
+            "agent_artifact_sha256" if native else "policy_artifact_sha256",
             "runtime_version", "runtime_code_sha256",
         }
         if not isinstance(startup, dict) or any(
@@ -1413,7 +2007,12 @@ class LocalModelService:
         ):
             return False
         directory = self.directory / "agent-runs" / startup["run_id"]
-        result = verify_agent_run_evidence(directory, startup)
+        if native:
+            from sts2_platform_evidence import verify_agent_session_run_evidence
+
+            result: Any = verify_agent_session_run_evidence(directory, startup)
+        else:
+            result = verify_agent_run_evidence(directory, startup)
         if not result.passed or result.value is None:
             return False
         raw = (directory / "events.jsonl").read_bytes()
@@ -1518,6 +2117,9 @@ class LocalModelService:
         from sts2_platform_evidence import verify_agent_run_evidence
 
         startup = self.state["startup"]
+        if startup.get("schema") == AGENT_STARTUP:
+            self._native_operation_handoff(startup)
+            return
         directory = self.directory / "agent-runs" / startup["run_id"]
         result = verify_agent_run_evidence(directory, startup)
         report = {
@@ -1641,6 +2243,77 @@ class LocalModelService:
             )
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = identity
+        target = self.directory / "evaluations" / (identity + ".json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        raw = canonical_json(report).encode()
+        try:
+            with target.open("xb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+        except FileExistsError:
+            if target.is_symlink() or target.read_bytes() != raw:
+                raise BoundaryError("local_model", "evaluation_identity_collision") from None
+        with self.lock:
+            self.state["evaluation"] = report
+
+    def _native_operation_handoff(self, startup: dict[str, Any]) -> None:
+        from sts2_platform_evidence import verify_agent_session_run_evidence
+
+        directory = self.directory / "agent-runs" / startup["run_id"]
+        result = verify_agent_session_run_evidence(directory, startup)
+        report: dict[str, Any] = {
+            "schema": "stpd/local-native-agent-operation-handoff-v1",
+            "selection_id": self.state["selection_id"], "run_id": startup["run_id"],
+            "model_sha256": startup["agent_artifact_sha256"],
+            "agent_manifest_sha256": startup["agent_manifest_sha256"],
+            "runtime_code_sha256": startup["runtime_code_sha256"],
+            "evidence_verification": result.status,
+            "findings": [finding.code for finding in result.findings],
+            "scope": "bounded_native_agent_operation", "game_outcome": "not_measured",
+            "scientific_verdict": "not_claimed", "training_admission": "not_claimed",
+            "human_origin": "not_claimed", "native_coverage": "not_qualified",
+            "tainted": None, "pending_request": None, "agent_state": None,
+            "submission_attempt_count": None, "request_outcome_counts": None,
+        }
+        if result.value is not None:
+            raw = (directory / "events.jsonl").read_bytes()
+            entry = next(item for item in result.value.evidence_manifest["files"]
+                         if item["path"] == "events.jsonl")
+            if hashlib.sha256(raw).hexdigest() != entry["sha256"] or len(raw) != entry["bytes"]:
+                raise BoundaryError("local_model", "finalized_stop_evidence_changed")
+            events = [json.loads(line) for line in raw.splitlines()]
+            counts = Counter(event["kind"] for event in events)
+            outcomes: dict[str, dict[str, Any]] = {}
+            stop = None
+            for event in events:
+                payload = event["payload"]
+                if event["kind"] == "native_result" or (
+                    event["kind"] == "native_request_reconciled" and payload["result"] is not None
+                ):
+                    outcomes[payload["result"]["request_id"]] = payload["result"]
+                if event["kind"] == "stopped":
+                    stop = payload
+            report.update(
+                evidence_content_id=result.value.content_id,
+                event_count=result.value.event_count,
+                event_counts=dict(counts),
+                tainted=result.value.manifest["tainted"],
+                submission_attempt_count=counts.get("native_submission_requested", 0),
+                request_outcome_counts=dict(
+                    Counter(item["delivery"] for item in outcomes.values())
+                ),
+                pending_request=stop["pending_request"] if stop is not None else None,
+                agent_state=stop["agent_state"] if stop is not None else None,
+                budget_summary=_recorded_budget(stop["autonomy_budget"])
+                if stop is not None
+                else None,
+                controller_at_stop=stop["controller"] if stop is not None else None,
+            )
+        identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
+        report["evaluation_id"] = (
+            identity  # Existing operational journal ID; schema remains native.
+        )
         target = self.directory / "evaluations" / (identity + ".json")
         target.parent.mkdir(parents=True, exist_ok=True)
         raw = canonical_json(report).encode()

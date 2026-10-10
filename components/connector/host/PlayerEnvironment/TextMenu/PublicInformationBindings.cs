@@ -60,6 +60,22 @@ internal sealed class PublicInformationBindings
         Missing(scope);
         return null;
     }
+
+    internal PlayerEnvironmentReferent? CreatureTooltipSubject(
+        Func<bool> nativeAvailable, Func<string> currentSubjectId)
+    {
+        try
+        {
+            if (!nativeAvailable()) return null;
+        }
+        catch (Exception)
+        {
+            // An unreadable source is not a known native-unavailable tooltip.
+            Missing("creature_tip_source_unreadable");
+            return null;
+        }
+        return Existing(currentSubjectId(), "creature_subject");
+    }
     private PlayerEnvironmentReferent? Declare(string id, string role, string? label,
         JsonObject properties, string? owner = null)
     {
@@ -82,6 +98,47 @@ internal sealed class PublicInformationBindings
         ?? (visible.GetValueOrDefault(id)?.Role switch
             { "enemy" => "Enemy", "companion" => "Companion", "player" => "Player", _ => "Creature" });
 
+    internal PlayerEnvironmentReferent? PublicControl(string id, string role, string label, JsonObject properties)
+    {
+        PlayerEnvironmentReferent? subject = Declare(id, role, label, properties);
+        if (subject != null) visible[id] = subject = subject with { Kind = "control" };
+        return subject;
+    }
+
+    internal PlayerEnvironmentReferent? Potion(string id)
+    {
+        JsonObject? facts = Find(Hud?["player"]?["potions"], "entity_id", id);
+        if (facts == null) { Missing("potion_subject"); return null; }
+        return Declare(id, "potion", Text(facts["name"]), Copy(facts, "definition_id", "name", "slot"));
+    }
+
+    internal PlayerEnvironmentReferent? MerchantOffer(string id, string kind)
+    {
+        if (kind is not ("card" or "relic" or "potion"))
+        { Missing("merchant_kind"); return null; }
+        JsonObject? offer = Find(source.Interaction.Content.Surface[kind + "s"], "entity_id", id);
+        PlayerEnvironmentReferent? existing = Existing(id, "merchant_offer");
+        if (offer?["stocked"]?.GetValue<bool>() != true || offer["visible"]?.GetValue<bool>() != true
+            || existing == null)
+        { Missing("merchant_stock"); return null; }
+        JsonObject? model = kind == "potion" ? offer : offer[kind] as JsonObject;
+        if (model == null || string.IsNullOrWhiteSpace(Text(model["definition_id"])))
+        { Missing("merchant_model"); return null; }
+        // Offer identity is the public subject. It is not an owned inventory
+        // item; price/affordability do not determine whether its tips can open.
+        string? label = Text(model["name"]);
+        if (string.IsNullOrWhiteSpace(label)) { Missing("merchant_label"); return null; }
+        // Preserve the existing offer facts (including price and purchase state);
+        // only add this same-offer information relation with already public identity.
+        JsonObject properties = existing.Properties is JsonObject shown
+            ? (JsonObject)shown.DeepClone() : new JsonObject();
+        properties["information_model"] = Copy(model, "entity_id", "definition_id", "name");
+        properties["offer_referent_id"] = id;
+        properties["offer_kind"] = kind;
+        visible[id] = existing with { Label = label, Properties = properties };
+        return visible[id];
+    }
+
     internal PlayerEnvironmentReferent? Card(string id)
     {
         var card = Existing(id, "card_subject", "card", "playable_card", "hand");
@@ -103,6 +160,36 @@ internal sealed class PublicInformationBindings
             };
         if (string.IsNullOrWhiteSpace(card.Label)) { Missing("card_label"); return null; }
         return card;
+    }
+
+    internal void PrepareRenderedCardSubject(string id, Func<PlayerEnvironmentReferent?> capture)
+    {
+        // A current-page subject owns its role, visibility and facts even when
+        // it cannot bind. A later rendered source must not overwrite it.
+        if (visible.ContainsKey(id)) return;
+        try
+        {
+            PlayerEnvironmentReferent? subject = capture();
+            if (subject == null || subject.ReferentId != id || subject.Role != "card"
+                || subject.Kind != "entity" || !subject.State.Visible
+                || subject.PropertiesSchema != "sts2.player-environment/referent/native_displayed_card-1"
+                || string.IsNullOrWhiteSpace(subject.Label)
+                || subject.Properties is not JsonObject facts
+                || Text(facts["card_referent_id"]) != id
+                || Text(facts["displayed_title"]) != subject.Label
+                || Text(facts["displayed_cost"]) == null
+                || Text(facts["displayed_description"]) == null)
+            {
+                Missing("card_subject");
+                return;
+            }
+            visible.Add(id, subject with { Properties = facts.DeepClone() });
+        }
+        catch (Exception)
+        {
+            // Unreadable rendered input is not proof of native unavailability.
+            Missing("card_tip_source_unreadable");
+        }
     }
     internal PlayerEnvironmentReferent? Relic(string id)
     {
@@ -146,6 +233,7 @@ internal sealed class PublicInformationBindings
     {
         if (slot < 0 || slot >= nativeSlots)
         { Missing("orb_slot_membership"); return null; }
+        if (!BindFrozenEmptyOrbPlayer(owner)) return null;
         var subject = Declare(id, "orb_slot", "Empty orb slot", new JsonObject
         {
             ["presentation_basis"] = "native_current_orb_ui",
@@ -153,6 +241,25 @@ internal sealed class PublicInformationBindings
         }, owner);
         if (subject != null) visible[id] = subject = subject with { Kind = "control" };
         return subject;
+    }
+
+    private bool BindFrozenEmptyOrbPlayer(string owner)
+    {
+        if (visible.TryGetValue(owner, out PlayerEnvironmentReferent? current))
+        {
+            if (current.State.Visible) return true;
+            Missing("empty_orb_owner");
+            return false;
+        }
+        // The native local empty-slot callback can exist before combat context.
+        // Only this capture's persistent player already supplies its exact alias.
+        if (Hud?["player"] is not JsonObject player || Text(player["entity_id"]) != owner)
+        {
+            Missing("empty_orb_owner");
+            return false;
+        }
+        return Declare(owner, "player", Text(player["character_name"]),
+            Copy(player, "entity_id", "character_id", "character_name")) != null;
     }
 
     internal PlayerEnvironmentReferent? Power(string id, string owner, string definition,

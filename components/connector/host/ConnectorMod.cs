@@ -1,6 +1,5 @@
 using STS2Connector.PlayerEnvironment.Protocol;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -22,7 +21,7 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.14";
+    public const string Version = "1.3.0-rc.20";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
@@ -32,7 +31,7 @@ public static partial class ConnectorMod
 
     private static HttpListener? _listener;
     private static Thread? _serverThread;
-    private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+    private static readonly MainThreadWorkQueue _mainThreadQueue = new();
     internal static readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = true,
@@ -172,6 +171,7 @@ public static partial class ConnectorMod
             var tree = (SceneTree)Engine.GetMainLoop();
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(ProcessMainThreadQueue));
 
+            PlayerEnvironment.PlayerEnvironmentService.InitializeNativeLogical();
             RuntimeConfig config = LoadRuntimeConfig();
             PlayerEnvironment.PlayerEnvironmentService.ConfigureNativePageEvidence(
                 config.NativePageEvidenceEnabled);
@@ -211,36 +211,14 @@ public static partial class ConnectorMod
 
     private static void ProcessMainThreadQueue()
     {
-        int processed = 0;
-        while (_mainThreadQueue.TryDequeue(out var action) && processed < 10)
-        {
-            try { action(); }
-            catch (Exception ex) { GD.PrintErr($"[STS2 Connector] Main thread action error: {ex}"); }
-            processed++;
-        }
+        _mainThreadQueue.Drain(10);
     }
 
-    internal static Task<T> RunOnMainThread<T>(Func<T> func)
-    {
-        var tcs = new TaskCompletionSource<T>();
-        _mainThreadQueue.Enqueue(() =>
-        {
-            try { tcs.SetResult(func()); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        });
-        return tcs.Task;
-    }
+    internal static Task<T> RunOnMainThread<T>(Func<T> func, CancellationToken cancellationToken = default) =>
+        _mainThreadQueue.Enqueue(func, cancellationToken);
 
-    internal static Task RunOnMainThread(Action action)
-    {
-        var tcs = new TaskCompletionSource<bool>();
-        _mainThreadQueue.Enqueue(() =>
-        {
-            try { action(); tcs.SetResult(true); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        });
-        return tcs.Task;
-    }
+    internal static Task RunOnMainThread(Action action, CancellationToken cancellationToken = default) =>
+        _mainThreadQueue.Enqueue(() => { action(); return true; }, cancellationToken);
 
     private static void ServerLoop()
     {
@@ -317,6 +295,10 @@ public static partial class ConnectorMod
                 else
                     SendError(response, 405, "Method not allowed");
             }
+            else if (path.StartsWith("/api/player-environment/native-logical/", StringComparison.Ordinal))
+            {
+                HandleNativeLogical(path["/api/player-environment/native-logical/".Length..], request, response);
+            }
             else if (path.StartsWith(SealedObservationContract.Route + "/", StringComparison.Ordinal))
             {
                 HandleSealedObservation(path[(SealedObservationContract.Route.Length + 1)..], request, response);
@@ -337,6 +319,11 @@ public static partial class ConnectorMod
                     HandlePostPlayerEnvironmentClientRegistration(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
+            }
+            else if (path == "/api/player-environment/clients/revoke")
+            {
+                if (request.HttpMethod == "POST") HandlePostPlayerEnvironmentClientRevocation(request, response);
+                else SendError(response, 405, "Method not allowed");
             }
             else if (path == "/api/player-environment/controller")
             {

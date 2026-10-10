@@ -26,10 +26,13 @@ from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_evaluation import summary
 from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_training import _private_child
+from stpd.ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
+from stpd.structured_code_scope import is_structured_model_schema
 
 SCHEMA = "stpd/local-memory-evaluation-operation-v1"
 OPERATION_FILE = "local-memory-evaluation-operation.json"
 LOCK_FILE = ".local-memory-evaluation.lock"
+STRUCTURED_EVALUATION_SECONDS = 600.0
 
 
 class LocalMemoryEvaluationService:
@@ -63,14 +66,19 @@ class LocalMemoryEvaluationService:
             if (not isinstance(value, dict) or value.get("schema") != SCHEMA
                     or value.get("status") not in {
                         "pending", "completed", "failed", "interrupted_unknown"}
-                    or value.get("purpose") != "dev"
+                    or value.get("purpose") not in {"dev", "test"}
                     or type(value.get("semantic_overlap")) not in {type(None), bool}
                     or value.get("_owner") != list(identity)
                     or type(value.get("max_settling_events")) is not int
                     or not 0 <= value["max_settling_events"] <= 64):
                 raise ValueError
             digest(value["operation_id"], "local_memory_evaluation.operation", length=32)
-            for key in ("model_id", "source_id", "training_operation_id", "train_source_id"):
+            keys = (("model_id", "source_id") if value.get("model_type") == "structured" else
+                    ("model_id", "source_id", "training_operation_id", "train_source_id"))
+            if (value.get("model_type") == "structured"
+                    and value.get("partition") != value["purpose"]):
+                raise ValueError
+            for key in keys:
                 digest(value[key], "local_memory_evaluation." + key,
                        length=32 if key == "training_operation_id" else 64)
             if value["status"] == "completed":
@@ -88,6 +96,8 @@ class LocalMemoryEvaluationService:
         return {key: item for key, item in value.items() if key in {
             "status", "purpose", "operation_id", "model_id", "source_id",
             "evaluation_id", "evaluation_input_id", "error_code", "semantic_overlap",
+            "model_type", "partition", "qualification", "source_group_overlap_check", "child_exit",
+            "wall_seconds",
         }}
 
     def status(self) -> dict[str, Any]:
@@ -159,6 +169,11 @@ class LocalMemoryEvaluationService:
                  or not 0 <= max_settling_events <= 64)):
             raise BoundaryError("local_memory_evaluation", "invalid_settling_limit")
         owner, store, registry_path = self._selected()
+        schema = store.get_manifest(model_id).parameters.value().get("schema")
+        if is_structured_model_schema(schema) or schema == ORDERED_MODEL_SCHEMA:
+            if max_settling_events is not None:
+                raise BoundaryError("local_memory_evaluation", "structured_projection_is_fixed")
+            return self._start_structured(model_id, source_id, owner, store, registry_path)
         path, lock_path = self._path(owner), self._lock_path(owner)
         if lock_path.is_symlink():
             raise BoundaryError("local_memory_evaluation", "operation_recovery_required")
@@ -217,6 +232,115 @@ class LocalMemoryEvaluationService:
         finally:
             if held is not None:
                 held.__exit__(None, None, None)
+
+    def _start_structured(self, model_id: str, source_id: str, owner: Any,
+                          store: Any, registry_path: Path) -> dict[str, Any]:
+        """Use this owner's existing slot for fixed-weight source-aware evaluation."""
+        path, lock_path = self._path(owner), self._lock_path(owner)
+        if lock_path.is_symlink():
+            raise BoundaryError("local_memory_evaluation", "operation_recovery_required")
+        held: Any = instance_lock(lock_path)
+        try:
+            held.__enter__()
+        except BoundaryError as error:
+            if error.code == "already_running":
+                raise BoundaryError("local_memory_evaluation", "evaluation_in_progress") from error
+            raise
+        try:
+            previous = self._read(path, owner.identity)
+            if previous["status"] in {"pending", "interrupted_unknown"}:
+                raise BoundaryError(
+                    "local_memory_evaluation", "previous_evaluation_outcome_unknown")
+            if (previous["status"] == "completed" and previous.get("model_type") == "structured"
+                    and previous["model_id"] == model_id and previous["source_id"] == source_id):
+                return self.status()
+            require_local_models("local_memory_evaluation")
+            identity = uuid.uuid4().hex
+            # Original source bytes, exact claim/use/Gold, partition and model ancestry
+            # are checked before any ML child is launched or input is published.
+            source_schema = store.get_manifest(source_id).parameters.value().get("partition_schema")
+            use = (owner.record_verified_ordered_evaluation_use
+                   if source_schema == "stpd/source3-ordered-partition-v1" else
+                   owner.record_verified_protocol_evaluation_use)
+            admission = use(store, source_id, model_id, identity)
+            partition = admission["split"]
+            operation = {
+                "schema": SCHEMA, "status": "pending", "purpose": partition,
+                "partition": partition, "model_type": "structured",
+                "wall_seconds": STRUCTURED_EVALUATION_SECONDS,
+                "operation_id": identity, "model_id": model_id, "source_id": source_id,
+                "semantic_overlap": None, "max_settling_events": 0,
+                "qualification": "engineering_descriptive",
+                "source_group_overlap_check": "verified_available_ancestry_no_clean_claim",
+                "_owner": list(owner.identity), "legacy_guard": owner.legacy_guard,
+            }
+            atomic_json(path, operation)
+            thread = threading.Thread(target=self._run_structured,
+                args=(held, path, identity, owner, store, registry_path, operation),
+                name="local-structured-fixed-evaluation", daemon=True)
+            with self._lock:
+                self._thread = thread
+            thread.start()
+            held = None
+            return {"schema": SCHEMA, "availability": "ready", "operation": self._public(operation)}
+        finally:
+            if held is not None:
+                held.__exit__(None, None, None)
+
+    def _run_structured(self, held: Any, path: Path, identity: str, owner: Any,
+                        store: Any, registry_path: Path, operation: dict[str, Any]) -> None:
+        child_started = False
+
+        def mark_started() -> None:
+            nonlocal child_started
+            child_started = True
+            self._mark_child_started(path, identity)
+
+        try:
+            environment = dict(os.environ)
+            for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
+                environment.pop(name, None)
+            command = [sys.executable, "-m", "spireagent.workbench.structured_evaluation_child",
+                       "--operation-file", str(path), "--ledger", str(owner.path),
+                       "--operation", identity]
+            def mark_exited(exit_code: int, forced: bool, elapsed: float) -> None:
+                self._advance(path, identity, child_exit={
+                    "exit_code": exit_code, "forced": forced,
+                    "elapsed_seconds": elapsed})
+
+            exit_code, captured = _private_child(command,
+                owner.path.parent / ("local-memory-evaluation-" + identity + ".log"),
+                environment, on_started=mark_started, on_exited=mark_exited,
+                timeout_seconds=STRUCTURED_EVALUATION_SECONDS)
+            if exit_code:
+                raise BoundaryError("local_memory_evaluation", "evaluation_process_failed")
+            result = json.loads(captured)
+            evaluation_id = digest(result["evaluation_id"], "local_memory_evaluation.result")
+            input_id = digest(result["evaluation_input_id"], "local_memory_evaluation.input")
+            evaluation = store.get_manifest(evaluation_id)
+            info = evaluation.parameters.value()
+            if (evaluation.parent("evaluation_input") != input_id
+                    or evaluation.parent("model") != operation["model_id"]
+                    or evaluation.parent("source") != operation["source_id"]
+                    or info.get("request") != {
+                        "model_id": operation["model_id"], "source_id": operation["source_id"],
+                        "operation_id": identity, "partition": operation["partition"],
+                        "intent": "fixed_model_descriptive"}):
+                raise BoundaryError("local_memory_evaluation", "evaluation_result_invalid")
+            summary(store, evaluation_id)
+            sync_registry(store, SQLiteRegistry(registry_path))
+            self._advance(path, identity, status="completed", evaluation_id=evaluation_id,
+                          evaluation_input_id=input_id)
+        except (BoundaryError, OSError, ValueError, KeyError, TypeError,
+                subprocess.SubprocessError) as error:
+            error_code = (error.code if isinstance(error, BoundaryError) else
+                          "evaluation_storage_or_process_error")
+            with suppress(OSError, ValueError, BoundaryError):
+                self._advance(path, identity,
+                    status="interrupted_unknown" if child_started else "failed",
+                    error_code=error_code)
+        finally:
+            held.__exit__(None, None, None)
 
     @staticmethod
     def _advance(path: Path, identity: str, **updates: Any) -> None:

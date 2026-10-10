@@ -1,0 +1,433 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+using MegaCrit.Sts2.Core.Runs;
+using STS2Connector.Authority;
+using STS2Connector.PlayerEnvironment.NativeLogical;
+using STS2Connector.PlayerEnvironment.Protocol;
+using STS2Platform.NativeFoundation;
+
+namespace STS2Connector.PlayerEnvironment;
+
+internal static partial class PlayerEnvironmentService
+{
+    private static readonly Lazy<NativeLogicalService> NativeLogicalOwner = new(CreateNativeLogicalOwner);
+    private static NativeLogicalService CreateNativeLogicalOwner() => new(
+        CaptureNativeLogicalFrame, () => RunManager.Instance.DebugOnlyGetState() is { } run
+            ? Entities.GetId(run, "run") : null, Requests, clientLifetime: new ClientLifetimeDependency(), clientActive: MutationControlRuntime.IsActiveClient);
+    private sealed class ClientLifetimeDependency : INativeLogicalClientLifetimeDependency
+    {
+        public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
+    }
+    internal static NativeLogicalService NativeLogical => NativeLogicalOwner.Value;
+    internal static void InitializeNativeLogical() => NativeLogical.Initialize();
+    internal static NativeLogicalCapabilities GetNativeLogicalCapabilities()
+    {
+        var game = EnvironmentIdentityRuntime.ReadGame();
+        var host = EnvironmentIdentityRuntime.HostIdentity();
+        var publication = NativeLogical.Hub.ReadDeclaration();
+        return new(PlayerEnvironmentContract.ProtocolVersion, NativeLogicalContract.CapabilitiesSchema,
+            NativeLogicalContract.Profile, ToHostIdentity(host), ToGameIdentity(game), ToSessionReference(host, game),
+            publication.StreamGeneration,
+            new[] { "capabilities", "current", "current_owned", "read", "catalog", "resolve", "attach", "events", "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result" },
+            new[] { "native_current_frame", "native_current_reader_owned_v1" }.Concat(publication.Coverage.Where(s => s.Coverage != "unsupported")
+                .Select(s => s.SourceSeam)).Distinct(StringComparer.Ordinal).ToArray(),
+            publication.Coverage,
+            new("u64_decimal_string", "u64_decimal_string", "native_source_occurrence", "contiguous_completed_projections_not_causal_commit_order"),
+            NativeLogical.Limits, new(MutationControlRuntime.Capability().RecommendedRenewalMs),
+            new[] { "Coverage describes implemented source seams, not all L01-L64 obligations or runtime qualification.",
+                "Input delivery never proves execution, Commit, effects or causal successors.",
+                "Incomplete native sources remain explicit missing positions; Current cannot backfill history.",
+                "Unimplemented native exposure families remain unsupported; no polling completeness is claimed.",
+                "At most four pending or active native capture encodings are admitted; this is not a measured performance qualification." });
+    }
+}
+
+// One native owner. Only the game thread touches current private closures;
+// the serial encoder receives detached public DTOs and private binding strings.
+internal sealed partial class NativeLogicalService : IDisposable
+{
+    internal const string Bootstrap = "connector_initial_observation";
+    internal static readonly IReadOnlyList<NativeLogicalSeamCoverage> Coverage = Array.AsReadOnly(new[]
+    {
+        new NativeLogicalSeamCoverage(Bootstrap, "1", "complete_at_seam"),
+        new NativeLogicalSeamCoverage("native_owner_ready", "1", "sampled"),
+        new NativeLogicalSeamCoverage("native_target_focus", "1", "sampled"),
+        new NativeLogicalSeamCoverage("native_card_preview", "1", "sampled"),
+        new NativeLogicalSeamCoverage("native_inspect_preview", "1", "sampled"),
+        new NativeLogicalSeamCoverage("native_input_callback", "1", "sampled"),
+        new NativeLogicalSeamCoverage("connector_input_start", "1", "sampled"),
+        new NativeLogicalSeamCoverage("native_terminal_entry", "1", "sampled"),
+        new NativeLogicalSeamCoverage("other_native_exposures", "1", "unsupported")
+    });
+    internal NativeLogicalLimits Limits { get; } = new();
+    internal NativeLogicalCaptureStore Store { get; }
+    internal NativeLogicalPublicationHub Hub { get; }
+    private readonly NativeLogicalProjector projector;
+    private readonly Func<TextMenuFrame> capture;
+    private readonly Func<string?> continuity;
+    private readonly Func<RunState?> actualRunState;
+    private readonly Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)> sourceIdentity;
+    private readonly Func<MutationClientRegistrationRequest, MutationClientRegistrationResult> registerSourceClient;
+    private readonly object basisGate = new();
+    private readonly SemaphoreSlim encodingAdmission = new(4, 4);
+    private readonly ConcurrentQueue<Action> encodings = new();
+    private int encodingWorker;
+    private int mainThread;
+    private bool initialized, runKnown;
+    private string? runId, ownerKey, focusedId;
+    private string ownerId = NativeLogicalWire.Id("owner"), occurrence = NativeLogicalWire.Id("occurrence");
+    private string bindingRevision = NativeLogicalWire.Id("binding"), focusOccurrence = NativeLogicalWire.Id("focus");
+    private TextMenuFrame? currentNative;
+    private NativeLogicalPublicFrame? currentFacts, projectedBasis;
+    private IReadOnlyDictionary<string, string> currentActionKeys = new Dictionary<string, string>();
+    private string? projectedSnapshot;
+    private readonly NativeLogicalExecutor executor;
+    private readonly NativeLogicalRevalidationDiagnostics revalidationDiagnostics;
+    private readonly Func<string, bool> clientActive;
+    internal Func<bool> ExecutionAllowed { get; }
+    private readonly Func<Func<Prepared>, CancellationToken, Task<Prepared>> nativeQueue;
+
+    internal NativeLogicalService(Func<TextMenuFrame> capture, Func<string?> continuity,
+        RequestNamespace requests,
+        Func<Func<Prepared>, CancellationToken, Task<Prepared>>? nativeQueue = null, Func<bool>? executionAllowed = null,
+        INativeLogicalClientLifetimeDependency? clientLifetime = null, Func<string, bool>? clientActive = null,
+        Func<RunState?>? actualRunState = null,
+        Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)>? sourceIdentity = null,
+        Func<MutationClientRegistrationRequest, MutationClientRegistrationResult>? registerSourceClient = null,
+        NativeLogicalRevalidationDiagnostics? revalidationDiagnostics = null)
+    {
+        this.capture = capture; this.continuity = continuity;
+        this.revalidationDiagnostics = revalidationDiagnostics ?? CreateRevalidationDiagnostics();
+        this.clientActive = clientActive ?? MutationControlRuntime.IsActiveClient;
+        this.registerSourceClient = registerSourceClient ?? MutationControlRuntime.Register;
+        this.actualRunState = actualRunState ?? (() => RunManager.Instance.DebugOnlyGetState());
+        this.sourceIdentity = sourceIdentity ?? (() => (PlayerEnvironmentService.GetCapabilities(TextMenuContract.Profile), STS2Connector.PlayerEnvironment.Witness.PlayerEnvironmentTextMenuWitness.SourceDigest()));
+        ExecutionAllowed = executionAllowed ?? (() => EnvironmentIdentityRuntime.ExecutionAvailable(EnvironmentIdentityRuntime.ReadGame()));
+        this.nativeQueue = nativeQueue ?? ((work, cancellation) => ConnectorMod.RunOnMainThread(work, cancellation));
+        Store = new(limits: Limits); projector = new(Limits);
+        Hub = new(Store, Coverage, limits: Limits, controls: new ControlDependency());
+        executor = new(requests, this);
+        var lifetime = clientLifetime ?? new OwnedClientLifetimeDependency();
+        Hub.BindClientLifetime(lifetime, this.clientActive);
+        Store.BindClientLifetime(lifetime, this.clientActive);
+    }
+    private sealed class OwnedClientLifetimeDependency : INativeLogicalClientLifetimeDependency
+    {
+        public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
+    }
+    internal void ExpireClient(string originalClient, string reason)
+    {
+        Hub.ExpireClient(originalClient, reason);
+        Store.ExpireClient(originalClient);
+    }
+    internal void Initialize()
+    {
+        if (initialized) return;
+        mainThread = Environment.CurrentManagedThreadId; initialized = true;
+        NativeDecisionOwnerReadyProvider.Observed += ObserveOwnerReady;
+        NativeRunLifecycleProvider.Observed += ObserveSourceLifecycle;
+        NativeRunLifecycleProvider.AccountingFailure += ObserveSourceAccountingFailure;
+        NativeSourceInputProvider.BeforePrefix += ObserveSourceInputPrefix;
+    }
+    private void AssertMainThread()
+    {
+        if (!initialized || Environment.CurrentManagedThreadId != mainThread)
+            throw new InvalidOperationException("Native logical capture requires the initialized game main thread.");
+    }
+    private void SynchronizeRun()
+    {
+        AssertMainThread();
+        if (NativeRunLifecycleProvider.HasPendingSetup)
+            NativeRunLifecycleProvider.ConsumeActualSetup(actualRunState());
+        string? next = continuity();
+        bool generationChanged = runKnown && runId != next;
+        if (generationChanged) lock (sourceGate) sourceEpochTransitioning = true;
+        try
+        {
+            if (generationChanged)
+            {
+                SourceBeforeGenerationChange();
+                Hub.ChangeGeneration();
+                lock (basisGate) { projectedBasis = null; projectedSnapshot = null; currentActionKeys = new Dictionary<string, string>(); currentFacts = null; }
+                ownerKey = null;
+            }
+            runKnown = true; runId = next;
+            if (generationChanged) SourceAfterGenerationChange(next);
+        }
+        finally { if (generationChanged) lock (sourceGate) sourceEpochTransitioning = false; }
+    }
+    internal sealed record Prepared(NativeLogicalPublicFrame Facts, string? Continuity, DateTimeOffset Time);
+    private Prepared Prepare()
+    {
+        AssertMainThread();
+        TextMenuFrame native = capture();
+        if (native.GameContinuityId != runId) throw new TextMenuRunContinuityChangedException();
+        var page = native.Page;
+        string? focus = page.Interaction.Content.Surface["focused_target_referent_id"]?.GetValue<string>();
+        if (ownerKey != native.OwnerKey)
+        { ownerKey = native.OwnerKey; ownerId = NativeLogicalWire.Id("owner"); occurrence = NativeLogicalWire.Id("occurrence"); }
+        if (focusedId != focus)
+        { focusedId = focus; focusOccurrence = NativeLogicalWire.Id("focus"); }
+        var missing = page.Completeness.Missing.ToList();
+        if (page.Completeness.Status != "complete") missing.Add("native_public_frame_incomplete");
+        if (page.BoundActions.Status != "complete") missing.Add("native_relation_incomplete");
+        if (page.Status is "visible_unsupported" or "unsupported") missing.Add("native_owner_unsupported");
+        if (native.Leaves.Select(l => l.Key).Distinct(StringComparer.Ordinal).Count() != native.Leaves.Count)
+            missing.Add("native_binding_ambiguous");
+        var facts = new NativeLogicalPublicFrame(Hub.StreamGeneration, page.Session,
+            new(ownerId, occurrence, bindingRevision, focus, focus is null ? null : focusOccurrence),
+            page.Status, page.Persistent is null ? null : page.Persistent with { Content = page.Persistent.Content.DeepClone() },
+            page.Interaction with
+            {
+                Content = new(page.Interaction.Content.Surface.DeepClone(), page.Interaction.Content.Context.DeepClone()),
+                Capabilities = Array.AsReadOnly(page.Interaction.Capabilities.Select(c => c with { Arguments = Array.AsReadOnly(c.Arguments.ToArray()) }).ToArray())
+            },
+            Array.AsReadOnly(page.Referents.Select(r => r with { Properties = r.Properties?.DeepClone() }).ToArray()),
+            page.InformationPolicy,
+            Array.AsReadOnly(native.Leaves.Select(l => new NativeLogicalLeaf(l.Verb, l.Label, l.SubjectReferentId,
+                Array.AsReadOnly(l.Arguments.Select(a => new NativeLogicalArgument(a.Role, a.ReferentId)).ToArray()), "native_ui") { BindingKey = l.Key }).ToArray()),
+            new(missing.Count == 0 ? "complete" : "partial", Array.AsReadOnly(missing.Distinct(StringComparer.Ordinal).ToArray())));
+        lock (basisGate)
+        {
+            if (currentFacts is not null && !SameFacts(currentFacts, facts))
+            { bindingRevision = NativeLogicalWire.Id("binding"); facts = facts with { OwnerOccurrence = facts.OwnerOccurrence with { BindingRevision = bindingRevision } }; }
+            currentFacts = facts; currentNative = native;
+        }
+        return new(facts, native.GameContinuityId, DateTimeOffset.UtcNow);
+    }
+    // Equality only revalidates an already generated current snapshot. The
+    // existing projector alone assigns snapshots, catalogs and action handles.
+    internal static bool SameFacts(NativeLogicalPublicFrame a, NativeLogicalPublicFrame b)
+        => NativeLogicalFactComparison.Compare(a, b) == NativeLogicalFactChange.None;
+    private void Enqueue(Action encode)
+    {
+        encodings.Enqueue(() => { try { encode(); } finally { encodingAdmission.Release(); } });
+        if (Interlocked.CompareExchange(ref encodingWorker, 1, 0) != 0) return;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            do
+            {
+                while (encodings.TryDequeue(out var work)) { try { work(); } catch { /* Each job accounts its own failure. */ } }
+                Volatile.Write(ref encodingWorker, 0);
+            } while (!encodings.IsEmpty && Interlocked.CompareExchange(ref encodingWorker, 1, 0) == 0);
+        });
+    }
+    private void AcceptBasis(Prepared prepared, NativeLogicalCatalog? catalog)
+    {
+        if (catalog is null) return;
+        var actions = catalog.Actions;
+        var keys = actions.Select((action, i) => (action.ActionId, prepared.Facts.Leaves[i].BindingKey)).ToDictionary(x => x.ActionId, x => x.BindingKey, StringComparer.Ordinal);
+        lock (basisGate)
+            if (currentFacts is not null && SameFacts(currentFacts, prepared.Facts))
+            { projectedBasis = prepared.Facts; projectedSnapshot = catalog.Descriptor.SnapshotId; currentActionKeys = keys; }
+    }
+    private void RequireActiveClient(string originalClient)
+    {
+        if (!clientActive(originalClient))
+            throw new NativeLogicalException("client_session_expired", "The original Authority client is absent or permanently closed.");
+    }
+    internal NativeLogicalRetainReply Retain(NativeLogicalRetainRequest request)
+    {
+        RequireActiveClient(request.ClientSessionId);
+        var reply = Store.RetainPublic(request);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
+        return reply;
+    }
+    internal Task<NativeLogicalCurrentReply> CurrentAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
+        => CurrentCoreAsync(request, false, cancellation);
+    internal Task<NativeLogicalCurrentReply> CurrentOwnedAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
+        => CurrentCoreAsync(request, true, cancellation);
+    private async Task<NativeLogicalCurrentReply> CurrentCoreAsync(NativeLogicalCurrentRequest request, bool readerOwned, CancellationToken cancellation)
+    {
+        RequireActiveClient(request.ClientSessionId);
+        if (!encodingAdmission.Wait(0)) return new(NativeLogicalContract.CurrentSchema, NativeLogicalContract.Profile, "capacity_exceeded", null, null, null, "encoding_capacity_exceeded");
+        request = request with { EagerScope = Array.AsReadOnly(request.EagerScope.ToArray()) };
+        var source = new TaskCompletionSource<NativeLogicalCurrentReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool queued = false;
+        try
+        {
+            await nativeQueue(() =>
+            {
+                RequireActiveClient(request.ClientSessionId);
+                SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
+                // Enqueue in the same native turn as capture. A continuation
+                // on an HTTP/worker thread cannot reorder an older Current
+                // behind a later source callback and change handle identity.
+                Enqueue(() =>
+                {
+                    NativeLogicalCurrentReply? reply = null;
+                    try
+                    {
+                        if (readerOwned) cancellation.ThrowIfCancellationRequested();
+                        RequireActiveClient(request.ClientSessionId);
+                        reply = readerOwned
+                            ? projector.CurrentOwned(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
+                                () => Environment.TickCount64, Store, prepared.Continuity)
+                            : projector.Current(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
+                                () => Environment.TickCount64, Store, prepared.Continuity);
+                        if (!clientActive(request.ClientSessionId))
+                        {
+                            ExpireClient(request.ClientSessionId, "client_session_expired");
+                            RequireActiveClient(request.ClientSessionId);
+                        }
+                        if (reply.Capture is { } value)
+                            AcceptBasis(prepared, request.EagerScope.Contains("catalog") ? Store.Catalog(value.CaptureId) : null);
+                        if (reply.Status == "source_capture_incomplete") reply = reply with { Reason = prepared.Facts.SourceCompleteness.Missing.FirstOrDefault() ?? reply.Reason };
+                        if (readerOwned) cancellation.ThrowIfCancellationRequested();
+                        source.SetResult(reply);
+                    }
+                    catch (Exception e)
+                    {
+                        Exception failure = e;
+                        try
+                        {
+                            if (readerOwned && reply?.Retention is { } retention)
+                                Store.Release(request.ClientSessionId, retention.RetentionHandleId);
+                        }
+                        catch (Exception cleanup) { failure = new AggregateException(e, cleanup); }
+                        source.TrySetException(failure);
+                    }
+                });
+                queued = true;
+                return prepared;
+            }, cancellation).ConfigureAwait(false);
+        }
+        catch { if (!queued) encodingAdmission.Release(); throw; }
+        return await source.Task.ConfigureAwait(false);
+    }
+    internal NativeLogicalAttachReply Attach(NativeLogicalAttachRequest request)
+    {
+        RequireActiveClient(request.ClientSessionId);
+        SynchronizeRun();
+        var initial = Hub.AttachWithInitialReservation(request, Bootstrap);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
+        if (initial.InitialReservation is { } reservation) CaptureReservation(reservation);
+        return initial.Attach;
+    }
+    private void ObserveOwnerReady(NativeDecisionOwnerReadyObservation observed) =>
+        Publish("native_owner_ready", observed.Domain, observed.Domain == NativeDecisionOwnerReadyProvider.GameOverDomain ? "terminal" : "observation");
+    internal void Publish(string seam, string phase, string kind = "observation") => _ = PublishTracked(seam, phase, kind);
+    // Acknowledges original source accounting only, including explicit missing;
+    // it never means readiness, dispatch acceptance, effects or native Commit.
+    internal bool PublishTracked(string seam, string phase, string kind = "observation")
+    {
+        try { SynchronizeRun(); CaptureReservation(Hub.Reserve(seam, phase, kind)); return true; }
+        catch (Exception) { return false; /* Native observer failure cannot alter gameplay. */ }
+    }
+    private void CaptureReservation(NativeLogicalPublicationReservation reservation)
+    {
+        using var nativeFreeze = BeginSourceNativeFreeze();
+        // No observer has acquired Current and no subscription selected this
+        // position: keep the source clock without materializing a game frame.
+        // A standalone Current basis still needs observed owner re-entry.
+        if (reservation.Subscriptions.Count == 0 && currentFacts is null)
+        { Hub.Complete(reservation, Array.Empty<NativeLogicalProjectionOutcome>()); return; }
+        void Missing(string reason) => Hub.Complete(reservation, reservation.Subscriptions.Select(s => new NativeLogicalProjectionOutcome(s.ScopeId, null, reason)).ToArray());
+        if (!encodingAdmission.Wait(0)) { Missing("encoding_capacity_exceeded"); return; }
+        Prepared prepared;
+        try { prepared = Prepare(); }
+        catch { encodingAdmission.Release(); Missing("native_capture_failed"); return; }
+        bool sourceOrderProven = nativeFreeze?.Proven ?? true;
+        var sourceScope = nativeFreeze?.Epoch.Subscription.ScopeId;
+        Enqueue(() =>
+        {
+            var outcomes = new List<NativeLogicalProjectionOutcome>();
+            foreach (var subscription in reservation.Subscriptions)
+            {
+                if (!sourceOrderProven && subscription.ScopeId == sourceScope)
+                { outcomes.Add(new(subscription.ScopeId, null, SourceOrderUnproven)); continue; }
+                try
+                {
+                    var projection = projector.Capture(prepared.Facts, subscription.EagerScope, subscription.ScopeId,
+                        prepared.Time, Environment.TickCount64 + Limits.RetentionMs, () => Environment.TickCount64, Store);
+                    AcceptBasis(prepared, projection.Catalog);
+                    outcomes.Add(new(subscription.ScopeId, projection.Capture, null, projection.Catalog?.Descriptor.TotalCount > 0));
+                }
+                catch (NativeLogicalException e) { outcomes.Add(new(subscription.ScopeId, null, e.Code)); }
+                catch { outcomes.Add(new(subscription.ScopeId, null, "encoding_failed")); }
+            }
+            try { Hub.Complete(reservation, outcomes); }
+            finally
+            {
+                // Successful event publication now owns independent hub pins;
+                // late/abandoned encodes have no reason to retain an owner pin.
+                foreach (var outcome in outcomes)
+                    if (outcome.Capture is { } value) Store.ReleaseCapture(value.CaptureId);
+            }
+        });
+    }
+    private static NativeLogicalRevalidationDiagnostics CreateRevalidationDiagnostics()
+    {
+        bool enabled;
+        try { enabled = Environment.GetEnvironmentVariable(NativeLogicalRevalidationDiagnostics.EnvironmentVariable) == "1"; }
+        catch { enabled = false; }
+        return new(enabled, line => Godot.GD.Print($"[STS2 Connector] native-revalidation {line}"));
+    }
+    internal TextMenuLeaf? Revalidate(string expectedSnapshot, string actionId, string? requestId = null)
+    {
+        try
+        {
+            SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
+            lock (basisGate)
+            {
+                TextMenuLeaf? Reject(NativeLogicalRejectionGate rejection)
+                {
+                    revalidationDiagnostics.Reject(requestId, expectedSnapshot, actionId, projectedSnapshot,
+                        rejection, projectedBasis, prepared.Facts);
+                    return null;
+                }
+                // Preserve original priority, comparisons and the single native Prepare.
+                if (projectedSnapshot != expectedSnapshot) return Reject(NativeLogicalRejectionGate.SnapshotMismatch);
+                if (projectedBasis is null) return Reject(NativeLogicalRejectionGate.BasisMissing);
+                if (!SameFacts(projectedBasis, prepared.Facts)) return Reject(NativeLogicalRejectionGate.PublicFactsChanged);
+                if (prepared.Facts.SourceCompleteness.Status != "complete") return Reject(NativeLogicalRejectionGate.SourceIncomplete);
+                if (!currentActionKeys.TryGetValue(actionId, out var key)) return Reject(NativeLogicalRejectionGate.ActionUnknown);
+                var leaf = currentNative!.Leaves.SingleOrDefault(l => l.Key == key);
+                return leaf ?? Reject(NativeLogicalRejectionGate.NativeLeafMissing);
+            }
+        }
+        catch
+        {
+            // No exception text, private native state or extra Capture is logged.
+            revalidationDiagnostics.Reject(requestId, expectedSnapshot, actionId, null,
+                NativeLogicalRejectionGate.RevalidationException);
+            throw;
+        }
+    }
+    internal bool RunAdmitted(PlayerEnvironmentActionRequest request) => executor.RunAdmitted(request);
+    public void Dispose()
+    {
+        if (initialized)
+        {
+            NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;
+            NativeRunLifecycleProvider.Observed -= ObserveSourceLifecycle;
+            NativeRunLifecycleProvider.AccountingFailure -= ObserveSourceAccountingFailure;
+            NativeSourceInputProvider.BeforePrefix -= ObserveSourceInputPrefix;
+        }
+        sourceRecorder?.Dispose();
+        Hub.Dispose();
+        lock (basisGate) { currentNative = null; currentFacts = null; projectedBasis = null; currentActionKeys = new Dictionary<string, string>(); }
+    }
+
+    private sealed class ControlDependency : INativeLogicalControlDependency
+    {
+        public bool TryWatch(string clientSessionId, NativeLogicalControlBinding binding, Action controlLost, out IDisposable? watch)
+        {
+            try { return MutationControlRuntime.TryWatch(new(clientSessionId, binding.ControllerLeaseId, binding.ControllerGeneration), controlLost, out watch); }
+            catch (MutationWatchCapacityException) { throw new NativeLogicalException("capacity_exceeded", "Authority control watch admission is full."); }
+        }
+    }
+}

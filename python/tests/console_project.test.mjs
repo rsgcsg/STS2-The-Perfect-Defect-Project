@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import {webcrypto} from "node:crypto";
 
 class Element {
   constructor(tag) {
@@ -75,6 +76,30 @@ const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => 
       max_chunk_input_tokens:24576, max_actions_per_step:256}},
   parents:[], payloads:[],
 });
+// Server fixtures project metadata support separately from export/registration readiness.
+const modelSupport = model => {
+  const result = {schema:"stpd/local-model-export-support-v1", model_id:model?.artifact_id,
+    status:"unsupported", verification_state:"not_checked", reason_code:"unsupported_model_for_offline_export"};
+  const info = model?.parameters || {}, config = info.config || {};
+  let type, profile;
+  if (model?.kind !== "model") return result;
+  if (["stpd/native-structured-m2-model-v1", "stpd/native-structured-m2-model-v2",
+       "stpd/source3-ordered-native-m2-model-v1", "stpd/native-trained-m2-model-v2"].includes(info.schema))
+    [type, profile] = ["native", "native-logical-v1"];
+  else if (["stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2", "stpd/structured-m2-model-v3"].includes(info.schema))
+    [type, profile] = ["structured", "text-menu-m2-v2"];
+  else if (info.schema === "stpd/experimental-m2-model-v1"
+      && /^stage1a\.dsimple\.(m2|reset)\.k(1|8)\.(experimental|confirmed-interaction)\.v(1|2)$/.test(model.workbench_memory_recipe || ""))
+    [type, profile] = ["memory", model.workbench_memory_recipe.endsWith(".v2") ? "text-menu-m2-v2" : "text-menu-m2-v1"];
+  else if (info.schema === "stpd/stage1a-model-v1" && info.qualification === "engineering_only"
+      && ["stage1a.b.s.v2", "stage1a.dsimple.s.v1"].includes(config.recipe)
+      && config.device === "cpu" && info.backbone?.kind === "scratch"
+      && JSON.stringify(info.serializer) === JSON.stringify(textMenuScratchModel().parameters.serializer))
+    [type, profile] = ["token", "text-menu-v1"];
+  if (!type) return result;
+  delete result.reason_code;
+  return {...result, status:"supported", model_type:type, runtime_profile:profile};
+};
 const modelExportStatus = (operation, extra = {}) => ({
   schema:"stpd/local-model-export-operation-v1",
   availability:"ready",
@@ -91,6 +116,15 @@ const modelRegistrationStatus = (model, status = "not_registered", extra = {}) =
   csrf_token:"registration-csrf",
   ...extra,
 });
+const trainingCapabilities = {schema:"spireagent/training-capabilities-v1", automatic_retry:false,
+  placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+  recipes:["stage1a.dsimple.s.v1", ...["v1","v2"].flatMap(version =>
+    ["m2","reset"].flatMap(model => [1,8].flatMap(k => [
+      `stage1a.dsimple.${model}.k${k}.experimental.${version}`,
+      `stage1a.dsimple.${model}.k${k}.confirmed-interaction.${version}`,
+    ])))].map(recipe_id => ({recipe_id,placement_ids:["local-cpu"], dependencies_available:true,
+      supported_actions:[],config_defaults:{},config_fields:{},limits:{}})),
+};
 const uploadId = "a".repeat(32);
 const enrollmentId = "e".repeat(32);
 const memberId = "f".repeat(32);
@@ -144,6 +178,11 @@ function setup({
   renderOnReload = false,
   sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[]},
   comparisonData = {schema:"stpd/local-managed-start-comparison-v1",items:[]},
+  trainingCapabilitiesData = trainingCapabilities,
+  nativeRecordingData = null,
+  recordingStorage = new Map(),
+  recordingStorageApi = null,
+  supportData = null,
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -152,9 +191,13 @@ function setup({
     generation = 0,
     reloads = 0,
     livePage = null;
+  const modelFixtures = new Map();
   const timers = new Map();
   let nextTimer = 1;
   const context = vm.createContext({
+    crypto:webcrypto,
+    sessionStorage:recordingStorageApi || {getItem:key => recordingStorage.get(key) || null,
+      setItem:(key,value) => recordingStorage.set(key,value), removeItem:key => recordingStorage.delete(key)},
     setTimeout: (callback) => {
       const id = nextTimer++;
       timers.set(id, callback);
@@ -194,18 +237,26 @@ function setup({
     },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      const body = url === "/api/local-recordings/import/status"
-        ? importStatus
+      const body = url.startsWith("/api/local-model-exports/support?")
+        ? (supportData ? await supportData(url) : modelSupport(modelFixtures.get(new URL(url, "http://fixture").searchParams.get("model_id"))))
+        : url === "/api/native-recording/status"
+        ? (typeof nativeRecordingData === "function" ? nativeRecordingData() : nativeRecordingData) || {httpStatus:409,error:"native_recording_unavailable"}
+        : url === "/api/local-training/capabilities"
+        ? trainingCapabilitiesData
+        : url === "/api/local-recordings/import/status"
+        ? (typeof importStatus === "function" ? importStatus() : importStatus)
         : url === "/api/local-workspace/curation"
           ? curationStatus
           : view === "local-environment" && url === "/api/local-environment/scenes"
             ? sceneData
             : view === "local-environment" && url === "/api/local-environment/comparisons"
               ? comparisonData : await handler(url, options);
+      if (url.startsWith("/api/local-workspace/artifacts/") && body?.artifact_id)
+        modelFixtures.set(body.artifact_id, body);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
-        json: async () => body,
+        json: async () => url === "/api/native-recording/status" ? JSON.parse(JSON.stringify(body)) : body,
       };
     },
   });
@@ -323,9 +374,10 @@ test("local artifact detail presents data history facts and keeps uncertainty ex
   assert.equal(post(env.calls).length, 0);
 });
 function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = null,
-  trainingStatus = null, trainingHandler = () => {}} = {}) {
+  trainingStatus = null, trainingHandler = () => {}, capabilities = trainingCapabilities} = {}) {
   return setup({
     identity: {status:"signed_out"}, view:"local-workspace", query:`&id=${artifact}`,
+    trainingCapabilitiesData:capabilities,
     curationStatus:{schema:"stpd/local-curation-preparation-v1", status:"ready"},
     handler:async (url, options) => {
       if (url === "/api/local-workspace/managed") return {
@@ -381,6 +433,18 @@ function localHumanDatasetEnv({items, total = null, operation = {status:"idle"},
 const post = (calls) => calls.filter((call) => call.options.method === "POST");
 const body = (call) => JSON.parse(call.options.body);
 
+function fixedTrainingBody(call) {
+  const payload = body(call);
+  assert.equal(payload.schema, "spireagent/training-request-v1");
+  assert.match(payload.intent_id, /^[a-f0-9]{32}$/);
+  assert.equal(payload.placement_id, "local-cpu");
+  assert.deepEqual(payload.config, {});
+  assert.deepEqual(payload.limits, {});
+  assert.deepEqual(Object.keys(payload).sort(), ["schema", "intent_id", "recipe_id", "source_id", "config", "placement_id", "limits", "after_completed_operation_id"].sort());
+  return {dataset_id:payload.source_id,
+    ...(payload.recipe_id === "stage1a.dsimple.s.v1" ? {} : {recipe:payload.recipe_id}),
+    ...(payload.after_completed_operation_id === null ? {} : {after_completed_operation_id:payload.after_completed_operation_id})};
+}
 test("local research workspace browses the local API without project identity", async () => {
   const artifactId = id("a");
   const env = setup({
@@ -417,10 +481,11 @@ test("local research workspace browses the local API without project identity", 
   assert.match(text(page), /数据集/);
   assert.match(text(page), /证据/);
   assert.match(text(page), /本机索引/);
-  assert.equal(env.calls.length, 3);
+  assert.equal(env.calls.length, 4);
   assert.equal(env.calls[0].url === "/api/local-workspace/managed", true);
   assert.equal(env.calls[1].url, "/api/local-recordings/import/status");
-  assert.equal(env.calls[2].url.startsWith("/api/local-workspace?"), true);
+  assert.equal(env.calls[2].url, "/api/native-recording/status");
+  assert.equal(env.calls[3].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
 });
 
@@ -1223,7 +1288,7 @@ test("local training appears only on a fixed training dataset and starts once on
   assert.equal(post(env.calls).length, 1, "double click is guarded while the POST is unresolved");
   const start = post(env.calls)[0];
   assert.equal(start.url, "/api/local-training/start");
-  assert.deepEqual(JSON.parse(start.options.body), {dataset_id:dataset});
+  assert.deepEqual(fixedTrainingBody(start), {dataset_id:dataset});
   assert.equal(start.options.headers["X-CSRF-Token"], "training-csrf");
   finishStart();
   await Promise.all([first, duplicate]);
@@ -1306,7 +1371,7 @@ test("completed training offers one explicit new experiment with exact prior ide
   assert.equal(button.disabled, false);
   const first = button.onclick(), duplicate = button.onclick();
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {
     dataset_id:dataset, after_completed_operation_id:operationId,
   });
   finishStart();
@@ -1333,7 +1398,7 @@ for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and comp
   assert.equal(selection.children.some(option => option.value.endsWith(".v2")), false);
   selection.value = recipe;
   await action(page, "start-local-training").onclick();
-  assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
+  assert.deepEqual(fixedTrainingBody(post(ready.calls)[0]), {dataset_id:dataset, recipe});
 
   const done = localTrainingEnv({artifact:dataset, trainingStatus:{
     schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
@@ -1364,7 +1429,7 @@ for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only reci
   const button = action(page, "start-local-training");
   await Promise.all([button.onclick(), button.onclick()]);
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe:reset});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, recipe:reset});
   assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
 
   const operationId = "1".repeat(32);
@@ -1385,7 +1450,7 @@ for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only reci
   assert.equal(post(done.calls).length, 0);
   await action(completed, "start-local-training-new").onclick();
   assert.equal(post(done.calls).length, 1);
-  assert.deepEqual(body(post(done.calls)[0]), {
+  assert.deepEqual(fixedTrainingBody(post(done.calls)[0]), {
     dataset_id:dataset, after_completed_operation_id:operationId, recipe:reset});
 });
 
@@ -1444,7 +1509,7 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} trai
   const button = action(page, "start-local-training");
   await Promise.all([button.onclick(), button.onclick()]);
   assert.equal(post(env.calls).length, 1);
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, recipe});
   assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
 });
 
@@ -1460,7 +1525,7 @@ test("completed confirmed-interaction training preserves its explicit recipe for
   assert.match(text(page), /操作记忆（含已确认的上一操作）/);
   assert.equal(post(env.calls).length, 0);
   await action(page, "start-local-training-new").onclick();
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, after_completed_operation_id:operationId, recipe});
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:dataset, after_completed_operation_id:operationId, recipe});
 });
 
 test("unknown or cross-profile training selection cannot silently fall back to the default", async () => {
@@ -2384,8 +2449,8 @@ test("completed local model export registers only on one explicit click and link
     },
   });
   const page = await env.render();
-  assert.match(text(page), /登记会依据本机文本菜单运行环境/);
-  assert.match(text(page), /不会安装运行组件、加载模型或进入游戏/);
+  assert.match(text(page), /已准备的模型可直接使用/);
+  assert.match(text(page), /登记本身不会加载模型/);
   assert.doesNotMatch(text(page), /尚未加载/);
   assert.equal(action(page, "register-local-model").disabled, false);
   assert.equal(post(env.calls).length, 0, "detail render only reads registration state");
@@ -2478,6 +2543,41 @@ test("current registration integrity blockers are reconciled by GET and disable 
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false);
   assert.match(text(env.livePage), /本机模型登记资料无法安全确认/);
   assert.equal(post(env.calls).length, 1, "reconciliation does not replay the rejected POST");
+});
+
+test("terminal registration storage failure releases pending and shows only safe log ID", async () => {
+  const model = id("d"), errorId = "b".repeat(32);
+  let attempts = 0;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`)
+        return modelRegistrationStatus(model);
+      if (url === "/api/local-model-registrations/register") {
+        attempts++;
+        return {httpStatus:500, error:"registration_verification_storage_failed",
+          stage:"local_model_registration", category:"storage", status:"failed", error_id:errorId,
+          internal_path:"/private/synthetic/rows.sqlite", traceback:"must not display"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render(), register = action(page, "register-local-model");
+  await register.onclick();
+  assert.equal(register.disabled, false);
+  assert.equal(attempts, 1);
+  assert.equal(post(env.calls).length, 1, "a terminal failure is never automatically replayed");
+  assert.match(text(env.notice), /临时存储写入失败/);
+  assert.match(text(env.notice), new RegExp(errorId));
+  assert.doesNotMatch(text(env.notice), /private|sqlite|must not display/);
+  await register.onclick();
+  assert.equal(attempts, 2, "another attempt requires an explicit click");
 });
 
 test("registration only appears for the matching completed export and unavailable reasons stay bounded", async () => {
@@ -3730,7 +3830,7 @@ test("Managed training source offers explicit v2 M2 and Reset without GET work",
     "stage1a.dsimple.reset.k8.confirmed-interaction.v2",
   ]);
   await action(page, "start-local-training").onclick();
-  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
+  assert.deepEqual(fixedTrainingBody(post(env.calls)[0]), {dataset_id:source,
     recipe:"stage1a.dsimple.m2.k1.experimental.v2"});
 });
 
@@ -6373,4 +6473,1009 @@ test("Managed registration response cannot reuse a Native status", async () => {
   assert.equal(walk(page).some(item => item.dataset?.action === "register-managed-model"), false);
   assert.match(text(page), /登记状态格式未知/);
   assert.equal(post(env.calls).length, 0);
+});
+
+const structuredTrainingCapabilities = () => ({...trainingCapabilities,
+  recipes:[{recipe_id:"structured-m2-cpu-v2", placement_ids:["local-cpu"], dependencies_available:true,
+    automatic_retry:false, supported_actions:["pause","cancel","resume","reconcile"],
+    config_defaults:{epochs:1,max_updates:10,learning_rate:0.001,cpu_threads:2,checkpoint_every_boundaries:100},
+    config_fields:{epochs:[1,100],max_updates:[1,10000],checkpoint_every_boundaries:[1,100]},
+    fixed_config_fields:["learning_rate","cpu_threads"],
+    limits:{wall_seconds:{minimum:1,maximum:3600},scratch_bytes:{minimum:16777216,maximum:1073741824,default:536870912}},
+  }],
+});
+const structuredTrainingStatus = overrides => ({
+  schema:"spireagent/training-operation-snapshot-v1",availability:"ready",csrf_token:"training-csrf",
+  operation:{operation_id:"a".repeat(32),attempt_id:"b".repeat(32),recipe_id:"structured-m2-cpu-v2",
+    status:"pending",phase:"training",worker_state:"running",validation_state:"not_completed",
+    domain_completion_state:"not_completed",requested_action:"continue",selected_result:true,
+    input_refs:{source_id:id("a")}, supported_actions:["pause","cancel"],
+    progress:{completed:3,total:10,unit:"optimizer_update"},elapsed_seconds:2.5,
+    config:{epochs:1,max_updates:10},limits:{wall_seconds:600,scratch_bytes:536870912},...overrides},
+});
+const structuredTrainingEnv = options => localTrainingEnv({
+  parameters:{schema:"stpd/structured-sequence-source-v1",source_kind:"synthetic",qualification:"synthetic_fixture"},
+  capabilities:structuredTrainingCapabilities(),...options,
+});
+
+test("structured source starts exact advertised configuration and cumulative limits on explicit click", async () => {
+  const env = structuredTrainingEnv({trainingHandler:async () => structuredTrainingStatus()});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(field(page,"local-training-source").value,id("a"));
+  assert.equal(field(page,"local-training-placement").value,"local-cpu");
+  field(page,"local-training-config-epochs").value = "2";
+  field(page,"local-training-config-checkpoint_every_boundaries").value = "7";
+  field(page,"local-training-limit-wall_seconds").value = "80";
+  await action(page,"start-local-training").onclick();
+  const payload = body(post(env.calls)[0]);
+  assert.match(payload.intent_id,/^[a-f0-9]{32}$/);
+  assert.deepEqual({...payload,intent_id:"generated"},{schema:"spireagent/training-request-v1",intent_id:"generated",
+    recipe_id:"structured-m2-cpu-v2",source_id:id("a"),placement_id:"local-cpu",
+    config:{epochs:2,max_updates:10,learning_rate:0.001,cpu_threads:2,checkpoint_every_boundaries:7},
+    limits:{wall_seconds:80,scratch_bytes:536870912},after_completed_operation_id:null});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"training-csrf");
+  await action(page,"start-local-training").onclick();
+  assert.equal(post(env.calls).length,1);
+});
+
+test("structured configuration, dependency and capability failures never submit", async () => {
+  for (const value of ["", "0", "101", "1.5"]) {
+    const env = structuredTrainingEnv();
+    const page = await env.render();
+    field(page,"local-training-config-epochs").value = value;
+    await action(page,"start-local-training").onclick();
+    assert.equal(post(env.calls).length,0);
+  }
+  const capabilities = structuredTrainingCapabilities();
+  capabilities.recipes[0].dependencies_available = false;
+  const missing = structuredTrainingEnv({capabilities});
+  const page = await missing.render();
+  assert.equal(action(page,"start-local-training").disabled,true);
+  assert.match(text(page),/依赖尚未/);
+  const unknown = structuredTrainingEnv({capabilities:{schema:"future/training-capabilities"}});
+  const unknownPage = await unknown.render();
+  assert.match(text(unknownPage),/能力声明暂不可用/);
+  assert.equal(walk(unknownPage).some(item => item.dataset?.action === "start-local-training"),false);
+});
+
+test("pause intent is distinct from terminal status and controls bind exact attempt", async () => {
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({requested_action:"pause"}),
+    trainingHandler:async () => structuredTrainingStatus({requested_action:"cancel",selected_result:false})});
+  const page = await env.render();
+  assert.match(text(page),/暂停请求已登记.*尚未终止/);
+  assert.match(text(page),/3 \/ 10/);
+  assert.equal(action(page,"local-training-pause").disabled,true);
+  assert.equal(action(page,"local-training-resume").disabled,true);
+  await action(page,"local-training-cancel").onclick();
+  assert.equal(post(env.calls)[0].url,"/api/local-training/cancel");
+  assert.deepEqual(body(post(env.calls)[0]),{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32)});
+  assert.equal(post(env.calls).length,1);
+  await action(page,"local-training-cancel").onclick();
+  assert.equal(post(env.calls).length,1);
+});
+
+test("unknown attempt requires explicit reconcile and never auto-resumes or starts", async () => {
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"interrupted_unknown",
+    worker_state:"terminal",checkpoint_id:id("c"),supported_actions:["resume","reconcile"]}),
+    trainingHandler:async () => ({httpStatus:409,error:"writer_still_running"})});
+  const page = await env.render();
+  assert.match(text(page),/结果未知.*先明确核对/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(action(page,"local-training-resume").disabled,true);
+  assert.equal(walk(page).some(item => item.dataset?.action === "start-local-training"),false);
+  await action(page,"local-training-reconcile").onclick();
+  await action(page,"local-training-reconcile").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.deepEqual(body(post(env.calls)[0]),{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32)});
+});
+
+test("reloaded paused attempt resumes with exact checkpoint new intent and original cumulative limits", async () => {
+  const limits = {wall_seconds:81,scratch_bytes:16777216};
+  const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"paused",worker_state:"terminal",
+    checkpoint_id:id("c"),supported_actions:["resume"],limits}),
+    trainingHandler:async url => url.startsWith("/api/local-training/status?")
+      ? structuredTrainingStatus({status:"paused"}) : structuredTrainingStatus()});
+  await env.render();
+  const page = await env.render();
+  assert.equal(post(env.calls).length,0);
+  await action(page,"local-training-resume").onclick();
+  const payload = body(post(env.calls)[0]);
+  assert.equal(post(env.calls)[0].url,"/api/local-training/resume");
+  assert.match(payload.intent_id,/^[a-f0-9]{32}$/);
+  assert.notEqual(payload.intent_id,"b".repeat(32));
+  assert.deepEqual({...payload,intent_id:"generated"},{operation_id:"a".repeat(32),expected_attempt_id:"b".repeat(32),
+    checkpoint_id:id("c"),intent_id:"generated",limits});
+  await action(page,"refresh-local-training-status").onclick();
+  assert.ok(env.calls.some(call => call.url === `/api/local-training/status?operation_id=${"a".repeat(32)}`));
+});
+
+test("resume is disabled when checkpoint or saved limits are absent and unavailable actions give a reason", async () => {
+  for (const extra of [{checkpoint_id:null},{limits:{}},{worker_state:"unknown"}]) {
+    const env = structuredTrainingEnv({trainingStatus:structuredTrainingStatus({status:"paused",worker_state:"terminal",
+      checkpoint_id:id("c"),supported_actions:["resume"],...extra})});
+    const page = await env.render();
+    assert.equal(action(page,"local-training-resume").disabled,true);
+    assert.match(text(page),/需要先核对未知结果、明确停止回执、checkpoint 与原累计预算/);
+    assert.equal(post(env.calls).length,0);
+  }
+});
+
+
+const recordingView = (lifecycle = "ready", session = null) => ({
+  schema:"spireagent/native-recording-view-1", connection:"http://127.0.0.1:15526", csrf_token:"recording-csrf",
+  command_pending:false, recovery_required:false, model_recovery_required:false, unconfirmed:null, previous_unconfirmed:[],
+  status:{runtime_instance_id:"game-1", recording_session_id:session, recording_lifecycle:lifecycle,
+    capture_profile_id:session ? "native-logical-source-v3" : null, closeout_status:lifecycle === "closed" ? "closed" : "idle",
+    source:session ? {segment_id:"segment-1", observations:7, inputs:3, pending_inputs:1, gaps:4, accounting_complete:true,
+      declaration:{source_kind:"agent_protocol", actor_id:"explicit-operator"}} : null, health:{}, non_claims:[]},
+});
+const recordingPageHandler = async (url, options) => {
+  if (url === "/api/local-workspace/managed") return {status:"not_created"};
+  if (url.startsWith("/api/local-workspace?")) return {items:[],total:0};
+  throw new Error(`unexpected route ${url}`);
+};
+
+test("Source recording forms require explicit actor and source, preserve exact context and never start a model", async () => {
+  const view = recordingView(); const mutations=[];
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", nativeRecordingData:()=>view,
+    handler:async (url, options) => {
+      if (url === "/api/native-recording/command") { mutations.push(JSON.parse(options.body)); return {status:{recording_session_id:"fresh-session"}}; }
+      return recordingPageHandler(url, options);
+    }});
+  const page=await env.render(); const start=action(page,"native-recording-start_new_session");
+  assert.match(text(page), /键鼠\/UI/);
+  assert.match(text(page), /本人声明/);
+  assert.match(text(page), /记录内操作者代号/);
+  assert.equal(field(page,"native-recording-kind").value, "");
+  assert.equal(field(page,"native-recording-actor").value, "");
+  assert.equal(start.disabled,true);
+  const kind=field(page,"native-recording-kind"), actor=field(page,"native-recording-actor");
+  kind.value="agent_protocol"; kind.onchange(); assert.equal(start.disabled,true);
+  actor.value="explicit-operator"; actor.oninput(); assert.equal(start.disabled,false);
+  await start.onclick(); assert.equal(mutations.length,1);
+  assert.deepEqual({...mutations[0],command_id:null}, {kind:"start_new_session", runtime_instance_id:"game-1",
+    recording_session_id:null, source_segment_id:null, source_kind:"agent_protocol", actor_id:"explicit-operator", command_id:null});
+  assert.ok(mutations[0].command_id);
+  assert.ok(!env.calls.some(item=> /local-models|training|upload/.test(item.url)));
+});
+
+test("lost recording reply survives refresh and explicit new isolation keeps the original notice", async () => {
+  let view=recordingView("recording","original-session"), lost=true; const mutations=[];
+  const storage=new Map();
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",renderOnReload:true,
+    nativeRecordingData:()=>view,recordingStorage:storage, handler:async (url,options)=> {
+      if (url === "/api/native-recording/command") {
+        mutations.push(JSON.parse(options.body));
+        if (lost) throw new Error("socket lost");
+        view=recordingView("recording","new-isolated-session");
+        return {status:view.status};
+      }
+      return recordingPageHandler(url, options);
+    }});
+  let page=await env.render(); await action(page,"native-recording-pause").onclick();
+  assert.equal(mutations.length,1); assert.equal(action(page,"native-recording-pause").disabled,true);
+  env.account(owner("member", "renewed-user"));
+  page=await env.render(); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.match(text(page),/保留未确认/); assert.equal(action(page,"native-recording-close").disabled,false);
+  view=recordingView("closed","original-session"); lost=false;
+  page=await env.render(); const kind=field(page,"native-recording-kind"),actor=field(page,"native-recording-actor");
+  kind.value="agent_protocol"; kind.onchange(); actor.value="explicit-operator"; actor.oninput();
+  await action(page,"native-recording-start_new_session").onclick();
+  page=env.livePage; assert.equal(action(page,"native-recording-pause").disabled,false);
+  assert.match(text(page),/保留未确认/); assert.equal(mutations.length,2);
+  assert.ok([...storage.values()].some(value=>value.includes("new-isolated-session")));
+});
+
+test("recording marker is saved before POST and survives a fresh module while its response is pending", async () => {
+  const storage=new Map(); const view=recordingView("recording","source-session");
+  let rejectPost, entered=false;
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorage:storage,
+    nativeRecordingData:()=>view,handler:async (url,options)=> {
+      if (url === "/api/native-recording/command") {
+        const marker=JSON.parse([...storage.values()][0]);
+        assert.equal(marker.pending,true); assert.equal(marker.command_id,JSON.parse(options.body).command_id);
+        entered=true;
+        return new Promise((_,reject)=>{rejectPost=reject;});
+      }
+      return recordingPageHandler(url, options);
+    }});
+  const page=await env.render(); const submitted=action(page,"native-recording-pause").onclick();
+  await Promise.resolve(); assert.equal(entered,true);
+  const reloaded=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorage:storage,
+    nativeRecordingData:()=>view,handler:recordingPageHandler});
+  const fresh=await reloaded.render();
+  assert.equal(action(fresh,"native-recording-pause").disabled,true);
+  assert.equal(action(fresh,"native-recording-close").disabled,false);
+  rejectPost(new Error("lost response")); await submitted;
+  assert.equal(JSON.parse([...storage.values()][0]).unknown,true);
+  assert.equal(view.recovery_required,false, "fresh HTTP server fixture was not mutated by presentation");
+});
+
+test("failed confirmation write rejects before recording POST and storage recovery needs a new explicit action", async () => {
+  const storage=new Map(), mutations=[]; let broken=true;
+  const api={getItem:key=>storage.get(key)||null,
+    setItem:(key,value)=>{if(broken)throw new Error("quota");storage.set(key,value);},removeItem:key=>storage.delete(key)};
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorageApi:api,
+    nativeRecordingData:()=>recordingView("recording","source-session"),handler:async(url,options)=>{
+      if(url === "/api/native-recording/command"){mutations.push(JSON.parse(options.body));return {status:{recording_session_id:"source-session"}};}
+      return recordingPageHandler(url,options);
+    }});
+  let page=await env.render(); await action(page,"native-recording-pause").onclick();
+  assert.equal(mutations.length,0); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.match(text(page),/本次没有发送/); assert.equal(action(page,"native-recording-close").disabled,false);
+  broken=false; page=await env.render(); assert.equal(action(page,"native-recording-pause").disabled,false);
+  assert.equal(mutations.length,0); await action(page,"native-recording-pause").onclick();
+  assert.equal(mutations.length,1); assert.equal(storage.size,0);
+});
+
+test("unavailable storage fails closed across reload and module fallback keeps Close uncertainty across auth renewal", async () => {
+  const storageApi={getItem:()=>{throw new Error("unavailable");},setItem:()=>{throw new Error("unavailable");},removeItem:()=>{throw new Error("unavailable");}};
+  let mutations=0; const view=recordingView("recording","source-session");
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorageApi:storageApi,
+    nativeRecordingData:()=>view,handler:async(url,options)=>{
+      if(url === "/api/native-recording/command"){mutations++;throw new Error("lost response");}
+      return recordingPageHandler(url,options);
+    }});
+  let page=await env.render(); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.equal(action(page,"native-recording-close").disabled,false);
+  await action(page,"native-recording-close").onclick(); assert.equal(mutations,1);
+  env.account(owner("member","renewed-user")); page=await env.render();
+  assert.match(text(page),/保留未确认录制请求/); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.equal(mutations,1); assert.equal(view.unconfirmed,null, "GET fixture is a fresh HTTP clone");
+  const fullReload=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorageApi:storageApi,
+    nativeRecordingData:()=>view,handler:recordingPageHandler});
+  page=await fullReload.render(); assert.equal(action(page,"native-recording-pause").disabled,true);
+  assert.equal(action(page,"native-recording-close").disabled,false);
+  assert.match(text(page),/确认存储不可用/);
+});
+
+test("known recording success with failed marker cleanup retains a conservative fence on a fresh HTTP view", async () => {
+  const storage=new Map();let view=recordingView("recording","source-session");
+  const api={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:()=>{throw new Error("cleanup failure");}};
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",recordingStorageApi:api,nativeRecordingData:()=>view,
+    handler:async(url,options)=>{
+      if(url === "/api/native-recording/command"){view=recordingView("paused","source-session");return {status:view.status};}
+      return recordingPageHandler(url,options);
+    }});
+  let page=await env.render();await action(page,"native-recording-pause").onclick();
+  page=await env.render();assert.equal(action(page,"native-recording-resume").disabled,true);
+  assert.equal(action(page,"native-recording-close").disabled,false);
+  assert.equal(JSON.parse([...storage.values()][0]).pending,true);
+});
+
+
+test("browser advanced Tick preserves current mode through the same command endpoint", async () => {
+  const calls=[];
+  const env=setup({identity:{status:"signed_out"},view:"local-models",handler:async(url,options)=>{
+    if(url === "/api/local-models/status")return {status:"loaded",loaded:true,operation:null,
+      runtime:{mode:"shadow",controller:"released",lifecycle:"running",tainted:false}};
+    if(url === "/api/local-models/command"){calls.push(JSON.parse(options.body));return {status:"pending"};}
+    return modelHandler(url,options);
+  }});
+  const page=await env.render();assert.equal(action(page,"model-command-tick").disabled,false);
+  await action(page,"model-command-tick").onclick();
+  assert.deepEqual(calls,[{action:"tick"}]);
+  assert.ok(!env.calls.some(call=>call.url.includes("/mode")));
+});
+
+const nativeWorkflowModel = (artifact = id("a"), schema = "stpd/source3-ordered-native-m2-model-v1") => ({
+  artifact_id:artifact, kind:"model", parameters:{schema, display_name:"八次操作模型"},
+  parents:[], payloads:[],
+});
+function nativeModelWorkflowEnv({model = nativeWorkflowModel(), exported = {status:"completed"},
+  registration = {}, state = {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:null},
+  supportData = null, use = () => ({status:"pending"}), renderOnReload = false} = {}) {
+  const selection = "local-native-reviewed-model";
+  const env = setup({identity:{status:"signed_out"},view:"local-workspace",
+    query:`&id=${model.artifact_id}`,supportData,renderOnReload,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model.artifact_id}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        model_id:model.artifact_id,model_type:"native",...exported});
+      if (url === `/api/local-model-registrations/status?model_id=${model.artifact_id}`)
+        return modelRegistrationStatus(model.artifact_id,"registered",{
+          runtime_profile:"native-logical-v1",selection_id:selection,...registration});
+      if (url === "/api/local-models/status") return state;
+      if (url === "/api/local-models/prepare") return use(options);
+      throw new Error(`unexpected workflow route ${url}`);
+    }});
+  const destinations = [];
+  env.ui.navigate = (view, selected) => destinations.push([view, selected]);
+  return {env,selection,destinations};
+}
+
+test("named native model reuse sends one existing Human prepare intent and repeats no setup stage", async () => {
+  const {env,selection,destinations} = nativeModelWorkflowEnv();
+  const page = await env.render();
+  assert.match(text(page), /八次操作模型/);
+  assert.doesNotMatch(text(page), /状态格式未知/);
+  assert.equal(action(page,"use-local-model").textContent,"使用这个模型");
+  assert.equal(post(env.calls).length,0);
+  await Promise.all([action(page,"use-local-model").onclick(),action(page,"use-local-model").onclick()]);
+  await action(page,"use-local-model").onclick();
+  assert.deepEqual(post(env.calls).map(call => [call.url,body(call)]),[
+    ["/api/local-models/prepare",{selection_id:selection}],
+  ], "existing prepare defaults to Human; UI does not send takeover or chain owners");
+  assert.deepEqual(destinations,[["local-models",selection]]);
+  assert.equal(action(page,"use-local-model").disabled,true);
+  assert.equal(env.calls.some(call => /install|prepare-text-runtime|exports\/start|registrations\/register/.test(call.url)),false);
+  assert.ok(walk(page).some(item => item.tagName === "DETAILS" && /模型登记/.test(text(item))));
+});
+
+for (const status of ["idle","pending","failed","interrupted"])
+  test(`native export ${status} is understood without false registration readiness`, async () => {
+    const {env} = nativeModelWorkflowEnv({exported:status === "idle" ? {status,model_id:undefined,model_type:undefined} : {status}});
+    const page = await env.render();
+    assert.doesNotMatch(text(page),/状态格式未知/);
+    assert.equal(walk(page).some(item => item.dataset?.action === "use-local-model"),false);
+    assert.equal(action(page,"start-local-model-export").disabled,status === "pending");
+    assert.equal(env.calls.some(call => call.url.includes("registrations/status")),false);
+    assert.equal(post(env.calls).length,0);
+  });
+
+for (const override of [
+  {status:"not_registered",reason_code:"source_binding_changed"},
+  {status:"unavailable",reason_code:"native_models_extra_required"},
+  {status:"future"},
+  {runtime_profile:"text-menu-v1"},
+  {model_id:id("b")},
+]) test(`native registration blocks reuse for ${JSON.stringify(override)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({registration:override});
+  const page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "use-local-model"),false);
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/status"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const state of [
+  {schema:"stpd/local-models-v1",status:"command_unknown",loaded:false},
+  {schema:"stpd/local-models-v1",status:"recovery_required",loaded:false},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"pending"}},
+  {schema:"stpd/local-models-v1",status:"loaded",loaded:true},
+  {schema:"future",status:"idle",loaded:false},
+  {schema:"stpd/local-models-v1",status:"future",loaded:false},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"future"}},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:{status:"unknown"}},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false,operation:[]},
+  {schema:"stpd/local-models-v1",status:"idle",loaded:false},
+]) test(`native reuse waits for original runtime disposition: ${JSON.stringify(state)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({state});
+  const page = await env.render();
+  assert.equal(action(page,"use-local-model").disabled,true);
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const support of [
+  {schema:"future"},
+  {model_id:id("b")},
+  {status:"unsupported"},
+  {verification_state:"verified"},
+  {model_type:"future"},
+  {model_type:["native"]},
+  {runtime_profile:"text-menu-v1"},
+]) test(`unknown support cannot authorize native controls: ${JSON.stringify(support)}`, async () => {
+  const {env} = nativeModelWorkflowEnv({supportData:() => ({...modelSupport(nativeWorkflowModel()),...support})});
+  const page = await env.render();
+  assert.match(text(page),/模型使用暂不可用/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-model-exports/status"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("native unknown prepare is observed on the exact selection page without redispatch", async () => {
+  const {env,selection,destinations} = nativeModelWorkflowEnv({use:() => { throw new Error("disconnected"); }});
+  const page = await env.render();
+  await action(page,"use-local-model").onclick();
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.deepEqual(destinations,[["local-models",selection]]);
+  assert.equal(action(page,"use-local-model").disabled,true);
+});
+
+test("native stale model page cannot request use after scope changes", async () => {
+  const {env} = nativeModelWorkflowEnv();
+  const page = await env.render();
+  env.scope("project");
+  await action(page,"use-local-model").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+test("structured v1 export keeps its actual structured type and owner profile", async () => {
+  const model = nativeWorkflowModel(id("a"),"stpd/structured-m2-model-v3");
+  const {env} = nativeModelWorkflowEnv({model,exported:{status:"completed",model_type:"structured"},
+    registration:{runtime_profile:"text-menu-m2-v2"}});
+  const page = await env.render();
+  assert.doesNotMatch(text(page),/状态格式未知/);
+  assert.equal(action(page,"use-local-model").disabled,false);
+  assert.equal(post(env.calls).length,0);
+});
+
+const source3BrowserSupport = {
+  source_profile:"native-logical-source-v3", cohorts:["agent_protocol", "declared_human"],
+  default_cohort:"declared_human", default_view:"decision_sample_carry",
+  source_labels:{agent_protocol:"Owner machine protocol",declared_human:"Owner human declaration"},
+  views:[{view:"publication_memory",label:"Owner published history",
+    history_scope:"original_admitted_attachment_epoch_prefix",qualification:"owner-published",recommended_recipe_id:"owner-published-recipe"},
+  {view:"decision_sample_carry",label:"Owner sampled memory",
+    history_scope:"declared_original_input_basis_sampled_segments",qualification:"owner-sampled",recommended_recipe_id:"owner-sampled-recipe"}],
+};
+const source3Raw = artifact => ({kind:"evidence",artifact_id:artifact,
+  parameters:{schema:"stpd/source3-original-bundle-v1",source_kinds:["agent_protocol", "unknown"],human_origin_verified:false}});
+const source3Preview = (artifact, extra = {}) => ({kind:"ordered_source3",status:"preview_ready",
+  artifact_id:artifact,artifact_ids:[artifact],cohort:"declared_human",view:"decision_sample_carry",
+  sample_type:"ordered_source3",source_kind:"declared_human",source_view:"decision_sample_carry",
+  selected:3,accepted_labels:3,can_publish:true,preview_id:"1".repeat(32),
+  history_scope:"declared_original_input_basis_sampled_segments",qualification:"owner-sampled",
+  recommended_recipe_id:"owner-sampled-recipe",counts:{eligible_unique_N:3},
+  N_coverage:{cohort:"declared_human",eligible:3,denominator:4},exclusions:{unknown_delivery:1},
+  human_origin_verified:false,split_status:"not_reserved",...extra});
+function source3BrowserEnv({artifact = id("a"), detail = true, operation = {status:"idle"},
+  support = source3BrowserSupport, availability = "ready", csrf = "source3-csrf",
+  items = [source3Raw(artifact)], handler = () => emptyList()} = {}) {
+  return setup({identity:{status:"local_only"},view:"local-workspace",query:detail ? `&id=${artifact}` : "",
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready",curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return source3Raw(artifact);
+      if (url.startsWith("/api/local-workspace?")) return {items,total:items.length};
+      if (url === "/api/local-datasets/status") return {schema:"stpd/local-dataset-operation-v1",
+        availability,source3_support:support,csrf_token:csrf,
+        operation:typeof operation === "function" ? operation() : operation};
+      return handler(url, options);
+    }});
+}
+
+test("Source3 import preserves original declarations without Human attestation and blocks unsupported tools", async () => {
+  const supported = id("a"), blocked = id("b"), legacy = id("c");
+  const env = setup({identity:{status:"local_only"},view:"local-workspace",handler:async url => {
+    if (url === "/api/local-workspace/managed") return {status:"ready"};
+    if (url.startsWith("/api/local-workspace?")) return emptyList();
+    if (url === "/api/local-recordings") return {status:"ready",candidate_count:3,candidates:[
+      {candidate_id:supported,session_id:"source3-a",recording_type:"source3",created_at:"owner-created-time",import_supported:true},
+      {candidate_id:blocked,session_id:"source3-b",recording_type:"source3",import_supported:false,import_reason:"source3_tool_support_required"},
+      {candidate_id:legacy,session_id:"legacy",recording_type:"legacy_human"}]};
+    if (url === "/api/local-recordings/import") return {status:"pending"};
+    return emptyList();
+  }});
+  await action(await env.render(), "read-local-recordings").onclick();
+  const page = await env.render();
+  const choice = field(page,"local-recording-selection"), checkbox = field(page,"local-recording-attestation");
+  const button = action(page,"import-local-recording");
+  choice.value = legacy; choice.onchange(); checkbox.checked = true; checkbox.onchange();
+  assert.equal(button.disabled,false);
+  choice.value = blocked; choice.onchange();
+  assert.equal(checkbox.checked,false); assert.equal(checkbox.disabled,true); assert.equal(button.disabled,true);
+  assert.match(text(page),/source3_tool_support_required/);
+  await button.onclick(); assert.equal(post(env.calls).length,0);
+  choice.value = supported; choice.onchange();
+  assert.equal(checkbox.disabled,true); assert.equal(button.disabled,false);
+  assert.match(text(page),/owner-created-time/); assert.match(text(page),/原始来源声明/);
+  await button.onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{candidate_id:supported,human_origin_attested:false});
+  choice.value = legacy; choice.onchange();
+  assert.equal(checkbox.disabled,false); assert.equal(checkbox.checked,false); assert.equal(button.disabled,true);
+});
+
+test("Source3 raw detail uses owner sampled default and explicit exact preview, publication and result link", async () => {
+  const artifact = id("a"), partition = id("f");
+  let operation = {status:"idle"};
+  const env = source3BrowserEnv({artifact,operation:() => operation,handler:async (url, options) => {
+    if (url === "/api/local-datasets/source3-preview") {
+      assert.deepEqual(body({options}),{artifact_ids:[artifact],cohort:"declared_human",view:"decision_sample_carry"});
+      operation = source3Preview(artifact); return {status:"pending"};
+    }
+    if (url === "/api/local-datasets/publish") {
+      assert.deepEqual(body({options}),{preview_id:"1".repeat(32)});
+      operation = source3Preview(artifact,{status:"completed",result_artifact_id:partition,actual_training_use:false});
+      return {status:"pending"};
+    }
+    throw new Error(`unexpected Source3 route ${url}`);
+  }});
+  let page = await env.render();
+  assert.equal(field(page,"local-source3-view").value,"decision_sample_carry");
+  assert.equal(field(page,"local-source3-cohort").value,"declared_human","content origins do not override the owner's cohort default");
+  assert.match(text(page), /Owner human declaration/);
+  assert.match(text(page), /Owner machine protocol/);
+  assert.match(text(page), /默认选项不会改判原始记录的来源/);
+  assert.match(text(page),/agent_protocol · unknown/);
+  assert.match(text(page),/declared_original_input_basis_sampled_segments/);
+  assert.match(text(page),/Owner sampled memory/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(env.calls.some(call => /local-recordings\/preview|local-training|upload/.test(call.url)),false);
+  await action(page,"preview-source3-dataset").onclick();
+  page = await env.render();
+  assert.match(text(page),/unknown_delivery/); assert.match(text(page),/owner-sampled-recipe/);
+  assert.equal(post(env.calls).length,1);
+  await action(page,"publish-source3-dataset").onclick();
+  page = await env.render();
+  assert.match(text(page),/尚未开始训练/);
+  const result = find(page,item => item.textContent === "打开 Source 3 训练数据集");
+  assert.match(result.href,new RegExp(partition));
+  assert.deepEqual(post(env.calls).map(call => call.url),["/api/local-datasets/source3-preview","/api/local-datasets/publish"]);
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"source3-csrf");
+});
+
+test("Source3 selection changes invalidate preview even if restored, and retain cross-page source selection", async () => {
+  const first = id("a"), second = id("b");
+  const env = source3BrowserEnv({detail:false,items:[source3Raw(first),source3Raw(second)]});
+  let page = await env.render();
+  assert.equal(action(page,"preview-source3-dataset").disabled,true);
+  for (const artifact of [second,first]) {
+    const checkbox = field(page,`local-source3-source-${artifact}`); checkbox.checked = true; checkbox.onchange();
+  }
+  assert.equal(action(page,"preview-source3-dataset").disabled,false);
+  await action(page,"local-workspace-category-datasets").onclick();
+  page = await env.render();
+  assert.equal(field(page,`local-source3-source-${first}`).checked,true);
+  assert.equal(field(page,`local-source3-source-${second}`).checked,true);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{artifact_ids:[first,second],cohort:"declared_human",view:"decision_sample_carry"});
+
+  for (const controlName of ["local-source3-cohort", "local-source3-view", `local-source3-source-${first}`]) {
+    const matching = source3BrowserEnv({operation:source3Preview(first)});
+    const current = await matching.render(), button = action(current,"publish-source3-dataset");
+    const control = field(current,controlName), original = control.value;
+    if (control.type === "checkbox") control.checked = false;
+    else control.value = controlName.endsWith("cohort") ? "agent_protocol" : "publication_memory";
+    control.onchange(); assert.equal(button.disabled,true);
+    if (control.type === "checkbox") control.checked = true;
+    else control.value = original;
+    control.onchange(); await button.onclick();
+    assert.equal(post(matching.calls).length,0,"restoring controls never reuses an invalidated preview");
+  }
+});
+
+for (const override of [
+  {availability:"recovery_required"}, {csrf:null}, {support:null},
+  {operation:{status:"pending"}},
+  {operation:source3Preview(id("a"),{status:"failed",can_publish:false,recovery_available:true})},
+]) test(`Source3 blocked preparation remains GET-only: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv(override), page = await env.render();
+  const preview = walk(page).find(item => item.dataset?.action === "preview-source3-dataset");
+  if (preview) { assert.equal(preview.disabled,true); await preview.onclick(); }
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const override of [
+  {artifact_ids:[id("b")]}, {cohort:"agent_protocol"}, {view:"publication_memory"},
+  {sample_type:"human_input"}, {source_view:"publication_memory"},
+  {can_publish:false,selected:0,accepted_labels:0,error_code:"no_eligible_source3_N"},
+]) test(`Source3 publication refuses stale or ineligible result: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv({operation:source3Preview(id("a"),override)}), page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "publish-source3-dataset"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+for (const status of ["failed", "interrupted"])
+  test(`Source3 publication recovery reconciles exact ${status} preview despite can_publish false`, async () => {
+    const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+      status,can_publish:false,recovery_available:true,error_code:"publish_failed",
+    })});
+    const page = await env.render();
+    assert.equal(action(page,"preview-source3-dataset").disabled,true);
+    assert.match(text(page),/核对上次 Source 3 保存结果/);
+    assert.equal(post(env.calls).length,0,"reading a recoverable failure never retries publication");
+    await action(page,"publish-source3-dataset").onclick();
+    assert.equal(post(env.calls).length,1);
+    assert.deepEqual(body(post(env.calls)[0]),{preview_id:"1".repeat(32)});
+    assert.equal(post(env.calls)[0].url,"/api/local-datasets/publish");
+    assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"source3-csrf");
+  });
+
+for (const override of [
+  {recovery_available:false,error_code:"publication_recovery_required"},
+  {recovery_available:undefined,error_code:"publication_recovery_required"}, {preview_id:null},
+  {artifact_ids:[id("b")]}, {cohort:"agent_protocol"}, {view:"publication_memory"},
+  {sample_type:"human_input"}, {source_kind:"agent_protocol"}, {source_view:"publication_memory"},
+]) test(`Source3 publication recovery rejects unavailable permission or mismatched preview: ${JSON.stringify(override)}`, async () => {
+  const env = source3BrowserEnv({operation:source3Preview(id("a"),{
+    status:"failed",can_publish:false,recovery_available:true,error_code:"publish_failed",...override,
+  })});
+  const page = await env.render();
+  assert.equal(walk(page).some(item => item.dataset?.action === "publish-source3-dataset"),false);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.equal(post(env.calls).length,0);
+});
+
+test("Source3 saved partition exposes existing typed training with matching owner recipe and no automatic training", async () => {
+  const artifact = id("f");
+  const env = setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+    trainingCapabilitiesData:{schema:"spireagent/training-capabilities-v1",automatic_retry:false,
+      placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+      recipes:["unrelated-recipe","owner-sampled-recipe"].map(recipe_id => ({recipe_id,placement_ids:["local-cpu"],
+        dependencies_available:true,supported_actions:[],config_defaults:{steps:3},config_fields:{},limits:{}}))},
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return {kind:"dataset",artifact_id:artifact,
+        parameters:{schema:"stpd/source3-ordered-native-training-source-v1",partition_schema:"stpd/source3-ordered-partition-v1",
+          qualification:"owner-sampled",source_kind:"agent_protocol"}};
+      if (url === "/api/local-training/status") return {schema:"stpd/local-training-operation-v1",
+        availability:"ready",operation:{status:"idle"},csrf_token:"train-csrf"};
+      if (url === "/api/local-datasets/status") return {source3_support:source3BrowserSupport};
+      if (url === `/api/local-datasets/binding/${artifact}`) return {
+        schema:"stpd/local-dataset-binding-v1",artifact_id:artifact,sample_type:"ordered_source3",
+        source_schema:"stpd/source3-ordered-native-training-source-v1",curation_purpose:"training",
+        recommended_recipe_id:"owner-sampled-recipe"};
+      if (url === "/api/local-training/start") return {status:"pending"};
+      throw new Error(`unexpected partition route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page),/明确开始本机训练/);
+  assert.equal(field(page,"local-training-recipe").value,"owner-sampled-recipe");
+  assert.equal(post(env.calls).length,0);
+  await action(page,"start-local-training").onclick();
+  assert.equal(post(env.calls).length,1);
+  assert.equal(post(env.calls)[0].url,"/api/local-training/start");
+  assert.equal(body(post(env.calls)[0]).source_id,artifact);
+  assert.equal(body(post(env.calls)[0]).recipe_id,"owner-sampled-recipe");
+});
+
+test("Source3 data preview uses new owner-advertised choices without browser taxonomy copies", async () => {
+  const artifact = id("a"), support = {cohorts:["owner-new-cohort"],default_cohort:"owner-new-cohort",
+    default_view:"owner-new-view",views:[{view:"owner-new-view",label:"Owner new view label",history_scope:"Owner history contract"}]};
+  const env = source3BrowserEnv({support}), page = await env.render();
+  assert.match(text(page),/Owner new view label/); assert.match(text(page),/Owner history contract/);
+  await action(page,"preview-source3-dataset").onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{artifact_ids:[artifact],cohort:"owner-new-cohort",view:"owner-new-view"});
+  assert.equal(post(env.calls).length,1);
+});
+
+const commonNativeRecipe = "native-m2-k1d96-carry-N-sampled-v2";
+const nativeAgentBrowserSupport = {
+  source_profile:"native_agent_sampled_v1",product_entry_enabled:true,
+  raw_schema:"stpd/native-agent-sampled-original-bundle-v1",max_raw_references:256,
+  cohorts:["declared_native_machine_teacher","synthetic_conformance"],
+  default_cohort:"declared_native_machine_teacher",default_relation_id:"owner-teacher",
+  cohort_labels:{declared_native_machine_teacher:"Owner program declaration",synthetic_conformance:"Owner synthetic"},
+  relations:[{relation:{id:"owner-teacher",sha256:id("1")},label:"Owner public program",cohorts:["declared_native_machine_teacher","synthetic_conformance"]},
+    {relation:{id:"owner-synthetic",sha256:id("2")},label:"Owner synthetic program",cohorts:["synthetic_conformance"]}],
+  recommended_recipe_id:commonNativeRecipe,
+};
+const nativeAgentRaw = artifact => ({kind:"evidence",artifact_id:artifact,parameters:{
+  schema:"stpd/native-agent-sampled-original-bundle-v1",source_profile:"native_agent_sampled_v1"}});
+const nativeAgentPreview = (artifact,extra={}) => ({kind:"native_agent_sampled",status:"preview_ready",
+  artifact_ids:[artifact],artifact_id:artifact,source_profile:"native_agent_sampled_v1",
+  sample_type:"native_agent_sampled",preview_id:"3".repeat(32),accepted_labels:3,can_publish:true,
+  counts:{original_offers:13,known_context_samples:10,readiness_exclusions:3,known_ready_summary_samples:0,real_native_samples:null},
+  coverage:{multi_candidate_N:2,chosen_action_verbs:{activate:2,open_information:1},native_interaction_kinds:{native_map:7,native_information:3}},
+  exclusions:{discarded_readiness_no_sample:3},censored_tails:[{reason:"original_delivery_uncertain_tail",sequence:41}],
+  native_origin_status:"not_established_by_this_verifier",qualification:"declared_student_reexpression",
+  recommended_recipe_id:commonNativeRecipe,split_status:"not_reserved",...extra});
+function nativeAgentBrowserEnv({artifact=id("a"),detail=true,operation={status:"idle"},
+  support=nativeAgentBrowserSupport,raw=nativeAgentRaw(artifact),items=[raw],
+  importStatus={status:"idle"},storage=new Map(),storageApi=null,identity={status:"local_only"},handler=()=>emptyList()}={}) {
+  return setup({identity,view:"local-workspace",query:detail?`&id=${artifact}`:"",
+    recordingStorage:storage,recordingStorageApi:storageApi,
+    importStatus:()=>({schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",
+      configuration_id:id("9"),workbench_instance_id:"fixture-workbench-instance",
+      native_agent_support:support,...(typeof importStatus==="function"?importStatus():importStatus)}),
+    handler:async(url,options)=>{
+      if(url==="/api/local-workspace/managed")return{status:"ready",curation_status:"ready"};
+      if(url===`/api/local-workspace/artifacts/${artifact}`)return raw;
+      if(url.startsWith("/api/local-workspace?"))return{items,total:items.length};
+      if(url==="/api/local-recordings/import/status")return{
+        schema:"stpd/local-recording-import-operation-v1",csrf_token:"native-import-csrf",native_agent_support:support,...importStatus};
+      if(url==="/api/local-datasets/status")return{schema:"stpd/local-dataset-operation-v1",
+        availability:"ready",csrf_token:"native-data-csrf",native_agent_support:support,
+        operation:typeof operation==="function"?operation():operation};
+      return handler(url,options);
+    }});
+}
+
+test("Native AgentRun owner counts preserve N/MultiC/readiness/censor and unknown origin without mutation",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  assert.match(text(page),/已确认上下文/);assert.match(text(page),/多候选选择 N/);
+  assert.match(text(page),/等待检查排除/);assert.match(text(page),/原生样本来源核验数/);
+  assert.match(text(page),/未知/);assert.match(text(page),/original_delivery_uncertain_tail/);
+  assert.equal(post(env.calls).length,0);
+  assert.equal(action(page,"publish-native-agent-dataset").disabled,false);
+});
+
+test("Native AgentRun preview and publication are two exact explicit owners and never start training",async()=>{
+  const artifact=id("a"),partition=id("f");let operation={status:"idle"};
+  const env=nativeAgentBrowserEnv({operation:()=>operation,handler:async(url,options)=>{
+    if(url==="/api/local-datasets/native-agent-preview"){
+      assert.deepEqual(body({options}),{artifact_ids:[artifact]});operation=nativeAgentPreview(artifact);return{status:"pending"};
+    }
+    if(url==="/api/local-datasets/publish"){
+      assert.deepEqual(body({options}),{preview_id:"3".repeat(32)});
+      operation=nativeAgentPreview(artifact,{status:"completed",result_artifact_id:partition,actual_training_use:false});return{status:"pending"};
+    }throw Error(`unexpected Native AgentRun mutation ${url}`);
+  }});
+  let page=await env.render();assert.equal(post(env.calls).length,0);
+  await action(page,"preview-native-agent-dataset").onclick();page=await env.render();
+  await action(page,"publish-native-agent-dataset").onclick();page=await env.render();
+  assert.match(text(page),/尚未开始训练/);
+  assert.deepEqual(post(env.calls).map(call=>call.url),["/api/local-datasets/native-agent-preview","/api/local-datasets/publish"]);
+  assert.ok(post(env.calls).every(call=>call.options.headers["X-CSRF-Token"]==="native-data-csrf"));
+});
+
+for(const support of [null,{...nativeAgentBrowserSupport,product_entry_enabled:false},
+  {...nativeAgentBrowserSupport,product_entry_enabled:"true"},{...nativeAgentBrowserSupport,relations:[]},
+  {...nativeAgentBrowserSupport,source_profile:"unknown-profile"}])
+  test(`Native AgentRun unsupported capability cannot expose mutations ${JSON.stringify(support)}`,async()=>{
+    const env=nativeAgentBrowserEnv({support}),page=await env.render();
+    assert.equal(walk(page).some(node=>/preview-native-agent-dataset|publish-native-agent-dataset/.test(node.dataset?.action||"")),false);
+    assert.equal(post(env.calls).length,0);
+  });
+
+test("Native AgentRun changed source selection invalidates the exact prior preview",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  const checkbox=field(page,`local-native-agent-source-${id("a")}`);checkbox.checked=false;checkbox.onchange();
+  assert.equal(action(page,"publish-native-agent-dataset").disabled,true);
+  await action(page,"publish-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
+});
+
+test("Native AgentRun raw profile mismatch cannot dispatch a preview",async()=>{
+  const raw=nativeAgentRaw(id("a"));raw.parameters.source_profile="different-route";
+  const env=nativeAgentBrowserEnv({raw}),page=await env.render();
+  assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
+});
+
+test("Native AgentRun interrupted publication keeps exact preview and only explicit reconciliation",async()=>{
+  const operation=nativeAgentPreview(id("a"),{status:"failed",can_publish:false,recovery_available:true});
+  const env=nativeAgentBrowserEnv({operation,handler:async(url,options)=>{
+    assert.equal(url,"/api/local-datasets/publish");assert.deepEqual(body({options}),{preview_id:operation.preview_id});return{status:"pending"};
+  }}),page=await env.render();
+  assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  assert.equal(post(env.calls).length,0);
+  await action(page,"publish-native-agent-dataset").onclick();assert.equal(post(env.calls).length,1);
+});
+
+test("Native AgentRun directory import uses owner choices and excludes Human declaration",async()=>{
+  const env=nativeAgentBrowserEnv({detail:false,items:[],handler:async(url,options)=>{
+    assert.equal(url,"/api/local-recordings/import/native-agent");assert.deepEqual(body({options}),{
+      directory:"/explicit/stopped/run",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher",
+      intent_id:body({options}).intent_id});
+    assert.match(body({options}).intent_id,/^[a-f0-9]{32}$/);return{status:"pending",intent_id:body({options}).intent_id};
+  }}),page=await env.render();
+  assert.equal(walk(page).some(node=>node.name==="human_origin_attested"),false);
+  const directory=field(page,"native-agent-import-directory");directory.value="/explicit/stopped/run";directory.oninput();
+  const relation=field(page,"native-agent-import-relation");relation.value="owner-synthetic";relation.onchange();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  relation.value="owner-teacher";relation.onchange();assert.equal(action(page,"import-native-agent-run").disabled,false);
+  assert.equal(post(env.calls).length,0);
+  await Promise.all([action(page,"import-native-agent-run").onclick(),action(page,"import-native-agent-run").onclick()]);
+  assert.equal(post(env.calls).length,1);assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"],"native-import-csrf");
+});
+
+test("Native AgentRun unknown import cannot be reissued by redraw or a second click",async()=>{
+  const env=nativeAgentBrowserEnv({detail:false,items:[],handler:async()=>{throw Error("lost response");}});
+  const page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/explicit/stopped/run";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();
+  await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,1);
+  const redraw=await env.render();assert.match(action(redraw,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(post(env.calls).length,1,"redraw cannot automatically retry");
+  await action(redraw,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  assert.deepEqual(body(post(env.calls)[1]),body(post(env.calls)[0]),"explicit reconciliation retains exact intent/body");
+});
+
+test("Native AgentRun completed A cannot acknowledge lost reply B with same cohort relation",async()=>{
+  let status={status:"idle"},seen=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:()=>status,handler:async(url,options)=>{
+    const request=body({options});seen.push(request);
+    if(seen.length===1){status={status:"completed",recording_type:"native_agent_sampled",cohort:request.cohort,
+      producer_student_relation:{id:request.relation_id},intent_id:request.intent_id||"a".repeat(32),artifact_id:id("a")};return status;}
+    throw Error("B reply lost before any new status observed");
+  }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  page=await env.render();assert.equal(post(env.calls).length,2,"status read cannot retry B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/,
+    "A's old completed status cannot acknowledge B or present a new intent");
+  assert.match(text(page),/属于另一请求/);
+  assert.equal(walk(page).some(node=>node.tagName==="A"&&node.textContent==="打开已保存的程序示范原件"),false);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  await action(page,"import-native-agent-run").onclick();assert.equal(post(env.calls).length,2);
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(seen[2],seen[1],"only explicit SAME B intent/body reconciliation is permitted");
+  assert.notEqual(seen[1].intent_id,seen[0].intent_id);
+});
+
+test("Native AgentRun hard reload restores scoped unknown fence and only same request reconciliation",async()=>{
+  const storage=new Map(),sent=[];
+  const handler=async(url,options)=>{sent.push(body({options}));throw Error("lost B reply");};
+  const oldStatus={status:"completed",recording_type:"native_agent_sampled",intent_id:"a".repeat(32),
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},artifact_id:id("a")};
+  const first=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  let page=await first.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  const reload=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:oldStatus,handler});
+  page=await reload.render();assert.equal(field(page,"native-agent-import-directory").value,"/original/B-private");
+  assert.equal(sent.length,1);assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  directory=field(page,"native-agent-import-directory");directory.value="/different/C";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  directory.value="/original/B-private";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    importStatus:{...oldStatus,configuration_id:id("8")},handler});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"","different config cannot expose private body");
+});
+
+test("Native AgentRun lost browser fence uses server original intent and user body only explicitly",async()=>{
+  const intent="b".repeat(32),sent=[];
+  const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:"publication_unknown",
+    recording_type:"native_agent_sampled",intent_id:intent,cohort:"declared_native_machine_teacher",
+    producer_student_relation:{id:"owner-teacher"}},handler:async(url,options)=>{
+      sent.push(body({options}));return{status:"pending",intent_id:intent};
+    }});
+  const page=await env.render();assert.match(text(page),/浏览器原正文未保留/);assert.equal(sent.length,0);
+  assert.equal(action(page,"import-native-agent-run").disabled,true);
+  const directory=field(page,"native-agent-import-directory");directory.value="/operator/original-B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent.length,1);
+  assert.equal(sent[0].intent_id,intent,"recovery cannot generate new identity");
+});
+
+test("Native AgentRun account reset retains only same owner original pending fence",async()=>{
+  const storage=new Map(),sent=[],owner={status:"signed_in",principal:{subject:"original-owner",role:"researcher"}};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    handler:async(url,options)=>{const request=body({options});sent.push(request);return{status:"pending",intent_id:request.intent_id};}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/pending-B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,1,"known pending reply must retain original body until terminal outcome");
+  env.account({status:"signed_out"});await env.render();
+  env.account(owner);page=await env.render();
+  assert.equal(sent.length,1,"account renewal and render only read the original fence");
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/pending-B");
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+  const other=nativeAgentBrowserEnv({detail:false,items:[],storage,
+    identity:{status:"signed_in",principal:{subject:"other-owner",role:"researcher"}}});
+  assert.equal(field(await other.render(),"native-agent-import-directory").value,"");
+  const otherInstance=nativeAgentBrowserEnv({detail:false,items:[],storage,identity:owner,
+    importStatus:{workbench_instance_id:"other-instance"}});
+  assert.equal(field(await otherInstance.render(),"native-agent-import-directory").value,"");
+});
+
+test("Native AgentRun completed drafts never mask remaining owner intents and wrong body corrects same ID",async()=>{
+  const storage=new Map(),sent=[],B="b".repeat(32),C="c".repeat(32);
+  const unresolved=intent_id=>({intent_id,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"});
+  let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{
+      const request=body({options});sent.push(request);
+      if(request.intent_id===B && request.directory!=="/original/B")
+        return{httpStatus:409,error:"intent_payload_mismatch"};
+      status={status:"completed",recording_type:"native_agent_sampled",intent_id:request.intent_id,
+        cohort:request.cohort,producer_student_relation:{id:request.relation_id},artifact_id:id("a"),
+        native_intent_recovery:request.intent_id===B?[unresolved(C)]:[]};
+      return status;
+    }});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/A";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(storage.size,0,"completed A clears its fence but its draft remains in the same VM");
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:B,
+    cohort:"declared_native_machine_teacher",producer_student_relation:{id:"owner-teacher"},
+    native_intent_recovery:[unresolved(B),unresolved(C)]};
+  page=await env.render();assert.equal(sent.length,1,"redraw does not POST or manufacture a new intent");
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  assert.match(action(page,"import-native-agent-run").textContent,/同一导入请求/);
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/wrong/B";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[1].intent_id,B);
+  assert.equal(storage.size,0,"known pre-IO mismatch cannot fence an incorrect original body");
+  directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false,"known mismatch permits same-page explicit correction");
+  page=await env.render();assert.equal(sent.length,2);
+  assert.equal(field(page,"native-agent-recovery-intent").value,B);
+  directory=field(page,"native-agent-import-directory");directory.value="/original/B";directory.oninput();
+  assert.equal(action(page,"import-native-agent-run").disabled,false);
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[2].intent_id,B);
+  assert.equal(storage.size,0);
+  page=await env.render();assert.equal(sent.length,3);
+  assert.equal(field(page,"native-agent-recovery-intent").value,C,"completed B draft cannot hide unresolved C");
+  assert.equal(field(page,"native-agent-import-directory").value,"");
+  directory=field(page,"native-agent-import-directory");directory.value="/original/C";directory.oninput();
+  await action(page,"import-native-agent-run").onclick();assert.equal(sent[3].intent_id,C);
+  assert.deepEqual(sent.slice(1).map(item=>item.intent_id),[B,B,C]);
+});
+
+test("Native AgentRun unacknowledged local fence cannot be adopted by another owner recovery",async()=>{
+  const storage=new Map(),sent=[],C="c".repeat(32);let status={status:"idle"};
+  const env=nativeAgentBrowserEnv({detail:false,items:[],storage,importStatus:()=>status,
+    handler:async(url,options)=>{sent.push(body({options}));throw Error("original B reply lost");}});
+  let page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  status={status:"publication_unknown",recording_type:"native_agent_sampled",intent_id:C,
+    native_intent_recovery:[{intent_id:C,status:"publication_unknown",cohort:"declared_native_machine_teacher",relation_id:"owner-teacher"}]};
+  page=await env.render();assert.equal(sent.length,1);
+  assert.equal(field(page,"native-agent-import-directory").value,"/original/B");
+  assert.equal(walk(page).some(item=>item.name==="native-agent-recovery-intent"),false);
+  await action(page,"import-native-agent-run").onclick();assert.deepEqual(sent[1],sent[0]);
+});
+
+for(const state of ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"])
+  test(`Native AgentRun original legacy three-field ${state} closes modern save without invented ID`,async()=>{
+    const env=nativeAgentBrowserEnv({detail:false,items:[],importStatus:{status:state,
+      recording_type:"native_agent_sampled",cohort:"declared_native_machine_teacher",
+      producer_student_relation:{id:"owner-teacher"},native_legacy_recovery:{required:true,
+        body_binding:"canonical_original_directory",requires_original_three_fields:true}},
+      handler:async()=>assert.fail("legacy owner recovery cannot create a modern request")});
+    const page=await env.render();assert.match(text(page),/旧版三字段导入请求仍待核对/);
+    assert.match(text(page),/原始规范目录/);
+    assert.equal(walk(page).some(item=>item.dataset?.action==="import-native-agent-run"),false);
+    await action(page,"refresh-native-agent-import").onclick();assert.equal(post(env.calls).length,0);
+  });
+
+for(const failure of ["read","write","invalid"])test(`Native AgentRun unavailable session storage closes ${failure} boundary`,async()=>{
+  const sent=[],env=nativeAgentBrowserEnv({detail:false,items:[],storageApi:{
+    getItem:()=>{if(failure==="read")throw Error("blocked storage");return failure==="invalid"?JSON.stringify({request:null}):null;},
+    setItem:()=>{throw Error("quota/blocked storage");},removeItem:()=>{}},
+    handler:async(url,options)=>{sent.push(body({options}));return{status:"pending"};}});
+  const page=await env.render(),directory=field(page,"native-agent-import-directory");
+  directory.value="/original/B";directory.oninput();await action(page,"import-native-agent-run").onclick();
+  assert.equal(sent.length,0);assert.match(text(page),/存储/);
+});
+
+for(const [schema,sample_type] of [["stpd/native-agent-sampled-training-source-v1","native_agent_sampled"],
+    ["stpd/source3-ordered-native-training-source-v1","ordered_source3"]])
+  test(`Recorded sampled routes use the SAME owner common recipe and exact training binding ${sample_type}`,async()=>{
+    const artifact=id("e"),env=setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+      trainingCapabilitiesData:{schema:"spireagent/training-capabilities-v1",automatic_retry:false,
+        placements:[{placement_id:"local-cpu",device:"cpu",remote:false,paid:false}],
+        recipes:[commonNativeRecipe,"structured-m2-cpu-v2"].map(recipe_id=>({recipe_id,placement_ids:["local-cpu"],
+          dependencies_available:true,supported_actions:[],config_defaults:{epochs:1},config_fields:{},limits:{}}))},
+      handler:async(url,options)=>{
+        if(url==="/api/local-workspace/managed")return{status:"ready"};
+        if(url===`/api/local-workspace/artifacts/${artifact}`)return{kind:"dataset",artifact_id:artifact,parameters:{schema}};
+        if(url===`/api/local-datasets/binding/${artifact}`)return{schema:"stpd/local-dataset-binding-v1",
+          artifact_id:artifact,sample_type,source_schema:schema,curation_purpose:"training",recommended_recipe_id:commonNativeRecipe};
+        if(url==="/api/local-training/status")return{schema:"stpd/local-training-operation-v1",availability:"ready",operation:{status:"idle"},csrf_token:"train-csrf"};
+        if(url==="/api/local-training/start")return{status:"pending"};
+        throw Error(`unexpected recorded route ${url}`);
+      }});
+    const page=await env.render();assert.equal(field(page,"local-training-recipe").value,commonNativeRecipe);
+    assert.equal(post(env.calls).length,0);await action(page,"start-local-training").onclick();
+    assert.equal(body(post(env.calls)[0]).recipe_id,commonNativeRecipe);
+  });
+
+test("Recorded source missing reservation cannot fall back to unrelated training",async()=>{
+  const artifact=id("e"),env=setup({identity:{status:"local_only"},view:"local-workspace",query:`&id=${artifact}`,
+    handler:async url=>{
+      if(url==="/api/local-workspace/managed")return{status:"ready"};
+      if(url===`/api/local-workspace/artifacts/${artifact}`)return{kind:"dataset",artifact_id:artifact,parameters:{schema:"stpd/native-agent-sampled-training-source-v1"}};
+      if(url===`/api/local-datasets/binding/${artifact}`)return{schema:"stpd/local-dataset-binding-v1",artifact_id:artifact,
+        sample_type:"native_agent_sampled",source_schema:"stpd/native-agent-sampled-training-source-v1",curation_purpose:null};
+      throw Error(`unreserved source cannot query training ${url}`);
+    }}),page=await env.render();
+  assert.equal(walk(page).some(node=>node.dataset?.action==="start-local-training"),false);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("Common native Model schema reuses generic verified export registration and Human prepare",async()=>{
+  const model=nativeWorkflowModel(id("b"),"stpd/native-trained-m2-model-v2");
+  const {env}=nativeModelWorkflowEnv({model}),page=await env.render();
+  assert.equal(action(page,"use-local-model").disabled,false);assert.equal(post(env.calls).length,0);
+  await action(page,"use-local-model").onclick();
+  assert.deepEqual(post(env.calls).map(call=>call.url),["/api/local-models/prepare"]);
+  assert.equal(body(post(env.calls)[0]).mode,undefined,"UI cannot infer Auto or native loaded readiness");
+});
+
+test("Native AgentRun cross-page selections are preserved and empty C1 labels stay explicit",async()=>{
+  const first=id("a"),second=id("b"),env=nativeAgentBrowserEnv({detail:false,
+    items:[nativeAgentRaw(first),nativeAgentRaw(second)],handler:async(url,options)=>{
+      assert.equal(url,"/api/local-datasets/native-agent-preview");assert.deepEqual(body({options}),{artifact_ids:[first,second]});return{status:"pending"};
+    }});
+  let page=await env.render();assert.equal(action(page,"preview-native-agent-dataset").disabled,true);
+  for(const artifact of[first,second]){const checkbox=field(page,`local-native-agent-source-${artifact}`);checkbox.checked=true;checkbox.onchange();}
+  page=await env.render();assert.equal(field(page,`local-native-agent-source-${first}`).checked,true);
+  assert.equal(field(page,`local-native-agent-source-${second}`).checked,true);
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,1);
+  const zero=nativeAgentBrowserEnv({operation:nativeAgentPreview(first,{accepted_labels:0,can_publish:false,
+    coverage:{multi_candidate_N:0},counts:{known_context_samples:4,real_native_samples:0}})}),empty=await zero.render();
+  assert.match(text(empty),/没有可保存的选择标签/);
+  assert.equal(walk(empty).some(node=>node.dataset?.action==="publish-native-agent-dataset"),false);
+});
+
+test("Native AgentRun stale page context cannot publish or preview",async()=>{
+  const env=nativeAgentBrowserEnv({operation:nativeAgentPreview(id("a"))}),page=await env.render();
+  env.scope("other-device");
+  await action(page,"publish-native-agent-dataset").onclick();
+  await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
 });

@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/STS2HumanAnnotator.Core/STS2HumanAnnotator.Core.csproj" />
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/SourcePublicationBinding.cs" Link="SourcePublicationBinding.cs" />
   </ItemGroup>
 </Project>
