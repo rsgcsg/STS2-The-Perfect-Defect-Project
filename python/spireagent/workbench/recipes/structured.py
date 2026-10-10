@@ -24,9 +24,10 @@ from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
     checked_recipe_execution_policy,
-    structured_recipe_is_scoped,
-    structured_recipe_run_schema,
     structured_recipe_scope,
+    typed_recipe_checkpoint_schema,
+    typed_recipe_is_scoped,
+    typed_recipe_run_schema,
 )
 
 _private_child = private_child
@@ -44,6 +45,13 @@ def verify_run_execution_policy(run: Any, operation: dict[str, Any]) -> dict[str
 
 
 def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_id: Any) -> None:
+    from spireagent.workbench.trusted_recipes import REWARD_M0_RECIPE
+
+    if operation["recipe"] == REWARD_M0_RECIPE:
+        from spireagent.workbench.recipes.reward_m0 import verify_reward_resume_checkpoint
+
+        verify_reward_resume_checkpoint(store, operation, checkpoint_id)
+        return
     checkpoint = store.get_manifest(checkpoint_id)
     run = store.get_manifest(operation["run_id"])
     verify_run_execution_policy(run, operation)
@@ -51,9 +59,9 @@ def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_i
 
     info = checkpoint.parameters.value()
     scope = structured_recipe_scope(operation["recipe"])
-    scoped = structured_recipe_is_scoped(operation["recipe"])
+    scoped = typed_recipe_is_scoped(operation["recipe"])
     if (
-        run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"])
+        run.parameters.value().get("schema") != typed_recipe_run_schema(operation["recipe"])
         or run_code_scope(run.parameters.value().get("schema")) != scope
         or checkpoint.kind != "checkpoint"
         or not scoped
@@ -189,19 +197,8 @@ class StructuredRecipeAdapter:
             raise BoundaryError("local_training", "source_index_incomplete")
         return dataset
 
-    def execute(self, service: Any, path: Any, identity: str, owner: Any,
-                store: Any, mark_started: Any) -> None:
-        operation = service._read(path, owner.identity)
-        expected_policy = TrainingRequest.from_dict(operation["request"]).execution_policy
-        if operation["mode"] != "start":
-            verify_run_execution_policy(store.get_manifest(operation["run_id"]), operation)
-        dataset = self.preflight(store, owner, operation["dataset_id"])
-        runs = {run.run_id for run in dataset.runs}
-        source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
-        scoped = structured_recipe_is_scoped(operation["recipe"])
-        attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
-                            source_identity(ROOT))
-        expected_run_schema = structured_recipe_run_schema(operation["recipe"])
+    def record_training_use(self, owner: Any, store: Any, operation: dict[str, Any],
+                            source_id: str, identity: str, runs: set[str]) -> None:
         protocol_source = "partition_schema" in store.get_manifest(source_id).parameters.value()
         ordered_source = store.get_manifest(source_id).parameters.value().get(
             "partition_schema") == "stpd/source3-ordered-partition-v1"
@@ -222,6 +219,29 @@ class StructuredRecipeAdapter:
                 owner.ledger.use_source(source_id, "training", identity)
                 owner.ledger.use(runs, "training", identity)
             owner.ledger.require_training_use(source_id, {source_id}, runs, identity)
+
+
+    def preflight_request(self, store: Any, owner: Any, request: TrainingRequest) -> Any:
+        return self.preflight(store, owner, request.source_id)
+
+    def validate_terminal(self, store: Any, operation: dict[str, Any],
+                          terminal: dict[str, Any]) -> None:
+        """Existing structured terminals are validated by their registered domain worker."""
+
+    def execute(self, service: Any, path: Any, identity: str, owner: Any,
+                store: Any, mark_started: Any) -> None:
+        operation = service._read(path, owner.identity)
+        expected_policy = TrainingRequest.from_dict(operation["request"]).execution_policy
+        if operation["mode"] != "start":
+            verify_run_execution_policy(store.get_manifest(operation["run_id"]), operation)
+        dataset = self.preflight(store, owner, operation["dataset_id"])
+        runs = {run.run_id for run in dataset.runs}
+        source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
+        scoped = typed_recipe_is_scoped(operation["recipe"])
+        attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
+                            source_identity(ROOT))
+        expected_run_schema = typed_recipe_run_schema(operation["recipe"])
+        self.record_training_use(owner, store, operation, source_id, identity, runs)
 
         def current() -> dict[str, Any]:
             value: dict[str, Any] = service._read(path, owner.identity)
@@ -320,13 +340,11 @@ class StructuredRecipeAdapter:
                         cp_id = digest(event_details.get("checkpoint_id"),
                                        "local_training.checkpoint")
                         checkpoint = store.get_manifest(cp_id)
-                        from stpd.structured_code_scope import checkpoint_schema
-
                         cp_info = checkpoint.parameters.value()
                         if (checkpoint.kind != "checkpoint"
                                 or checkpoint.producer != event.producer
-                                or cp_info.get("schema") != checkpoint_schema(
-                                    structured_recipe_scope(operation["recipe"]))
+                                or cp_info.get("schema") != typed_recipe_checkpoint_schema(
+                                    operation["recipe"])
                                 or scoped and cp_info.get("attempt_producer")
                                 != attempt_producer.to_dict()
                                 or checkpoint.parent("run") != run.artifact_id
@@ -362,6 +380,7 @@ class StructuredRecipeAdapter:
                             digest(details[key], "local_training."+key)
                         elif details[key] is not None:
                             raise BoundaryError("local_training", "child_terminal_invalid")
+                    self.validate_terminal(store, recorded, details)
                     terminal = details
                 elif kind == "error":
                     if (set(details) != {"error_code", "exception_type"}

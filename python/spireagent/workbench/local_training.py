@@ -57,11 +57,11 @@ from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
-    STRUCTURED_RECIPES,
     TRUSTED_RECIPES,
+    TYPED_RECIPES,
     describe_recipe,
-    structured_recipe_is_scoped,
-    structured_recipe_run_schema,
+    typed_recipe_is_scoped,
+    typed_recipe_run_schema,
     validate_recipe_config,
 )
 from spireagent.workbench.trusted_recipes import (
@@ -323,7 +323,7 @@ class LocalTrainingService:
                                       validate_limits(request.limits),
                                       request.after_completed_operation_id,
                                       request.execution_policy)
-            if request.recipe_id in STRUCTURED_RECIPES:
+            if request.recipe_id in TYPED_RECIPES:
                 if not request.limits:
                     raise BoundaryError("local_training", "wall_limit_required")
                 return self._start_structured(request)
@@ -520,7 +520,7 @@ class LocalTrainingService:
             if not isinstance(attempt, dict) or type(attempt.get("writer_terminal")) is not bool:
                 raise ValueError("operation_attempt_history")
             digest(attempt["attempt_id"], "local_training.prior_attempt", length=32)
-        if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+        if value["recipe"] in TYPED_RECIPES and typed_recipe_is_scoped(
                         value["recipe"]):
             Producer.decode(value["attempt_producer"])
             for attempt in value["attempts"]:
@@ -536,7 +536,7 @@ class LocalTrainingService:
 
     def _snapshot(self, value: dict[str, Any]) -> dict[str, Any]:
         running = value["status"] == "pending"
-        structured = value["recipe"] in STRUCTURED_RECIPES
+        structured = value["recipe"] in TYPED_RECIPES
         limits = effective_training_limits(value)
         charged = value["elapsed_seconds"]
         if running and self._active_attempt == value["attempt_id"] and (
@@ -648,10 +648,10 @@ class LocalTrainingService:
             "result_type": "train_only" if request.recipe_id in MEMORY_RECIPES else "evaluated",
             "evaluation_status": "not_run" if request.recipe_id in MEMORY_RECIPES else "pending",
         }
-        if request.recipe_id in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+        if request.recipe_id in TYPED_RECIPES and typed_recipe_is_scoped(
                 request.recipe_id):
             value["attempt_producer"] = source_identity(ROOT).to_dict()
-        if request.recipe_id in STRUCTURED_RECIPES:
+        if request.recipe_id in TYPED_RECIPES:
             value.update(worker_isolation="private_child-v1",
                          child_lock_name="local-training-"+value["attempt_id"]+".child.lock",
                          result_type="train_only", evaluation_status="not_run")
@@ -695,9 +695,9 @@ class LocalTrainingService:
             require_recipe_dependencies(request.recipe_id, "local_training")
             # Fail admission before writing a pending operation. This is read-only
             # verification; use reservation remains prior to preparation/fit.
-            from spireagent.workbench.recipes.structured import StructuredRecipeAdapter
+            from spireagent.workbench.trusted_recipes import recipe_adapter
 
-            StructuredRecipeAdapter(request.recipe_id).preflight(store, owner, request.source_id)
+            recipe_adapter(request.recipe_id).preflight_request(store, owner, request)
             operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
             self._prepare_child_ownership(path, operation)
             write_replaceable_json(path, operation)
@@ -731,7 +731,7 @@ class LocalTrainingService:
         if (value.get("schema") != SCHEMA_V3 or value.get("operation_id") != operation_id
                 or value.get("attempt_id") != expected):
             raise BoundaryError("local_training", "stale_operation_attempt")
-        if value["recipe"] not in STRUCTURED_RECIPES:
+        if value["recipe"] not in TYPED_RECIPES:
             raise BoundaryError("local_training", "recipe_control_not_supported")
         return value
 
@@ -945,7 +945,7 @@ class LocalTrainingService:
                     value["selected_result"] = value["status"] != "cancelled"
                 prior = {key: value.get(key) for key in ("attempt_id", "intent_id", "status",
                          "writer_terminal", "checkpoint_id", "attempt_started_at", "child_exit")}
-                if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                if value["recipe"] in TYPED_RECIPES and typed_recipe_is_scoped(
                         value["recipe"]):
                     prior["attempt_producer"] = value["attempt_producer"]
                 if value.get("worker_isolation") == "private_child-v1":
@@ -962,7 +962,7 @@ class LocalTrainingService:
                 value.update(attempt_id=uuid.uuid4().hex, status="pending", writer_terminal=False,
                              requested_action="continue", mode=mode, attempt_started_at=time.time(),
                              updated_at=time.time())
-                if value["recipe"] in STRUCTURED_RECIPES and structured_recipe_is_scoped(
+                if value["recipe"] in TYPED_RECIPES and typed_recipe_is_scoped(
                         value["recipe"]):
                     value["attempt_producer"] = source_identity(ROOT).to_dict()
                 value.pop("error_code", None)
@@ -1024,10 +1024,10 @@ class LocalTrainingService:
             run = store.get_manifest(identity)
             info = run.parameters.value()
             if (run.kind != "run" or info.get("schema")
-                    != structured_recipe_run_schema(operation["recipe"])
+                    != typed_recipe_run_schema(operation["recipe"])
                     or info.get("operation_id") != operation["operation_id"]):
                 continue
-            if (structured_recipe_is_scoped(operation["recipe"])
+            if (typed_recipe_is_scoped(operation["recipe"])
                     and run.producer != Producer.decode(operation["attempt_producer"])):
                 raise BoundaryError("local_training", "prepared_run_producer_mismatch")
             training = store.get_manifest(run.parent("training_input"))
