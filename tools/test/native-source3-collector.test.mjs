@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -43,28 +43,45 @@ test("metadata helper timeout observes its original close or records an unconfir
   { timeout: 10000 }, async t => {
     const root = await mkdtemp(path.join(os.tmpdir(), "source3-helper-lifecycle-"));
     t.after(() => rm(root, { recursive: true, force: true }));
-    const program = path.join(root, "helper.mjs"), executable = path.join(root, "helper");
-    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-    await writeFile(executable, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(program)} "$@"\n`);
-    await chmod(executable, 0o700);
+    const program = path.join(root, "helper.mjs");
     for (const { mode, delay, expectedCode, expectedSignal } of [
       { mode: "observed-code", delay: 0, expectedCode: 7, expectedSignal: null },
-      { mode: "observed-signal", delay: null, expectedCode: null, expectedSignal: "SIGTERM" },
+      { mode: "observed-signal", delay: null,
+        expectedCode: process.platform === "win32" ? 1 : null,
+        expectedSignal: process.platform === "win32" ? null : "SIGTERM" },
       { mode: "unconfirmed", delay: 300, expectedCode: 7, expectedSignal: null },
     ]) {
       await t.test(mode, async () => {
         await writeFile(program, "process.stdin.resume(); setInterval(() => {}, 1000);\n"
-          + (delay === null ? "" : `process.on('SIGTERM', () => setTimeout(() => process.exit(7), ${delay}));\n`));
+          + (delay === null ? "" : `process.on('message', message => {
+  if (message === 'fixture-termination-offer') setTimeout(() => process.exit(7), ${delay});
+});\n`));
         let child, exited;
         const offers = [];
-        const spawnChild = (...args) => {
-          child = spawn(...args);
+        let launches = 0;
+        const spawnChild = (command, args, spawnOptions) => {
+          launches++;
+          assert.equal(command, process.execPath);
+          assert.deepEqual(args,
+            ["-m", "spireagent.workbench.native_source3_collection", "--verify-terminal-summary"]);
+          assert.deepEqual(spawnOptions.stdio, ["pipe", "pipe", "pipe"]);
+          // Only the executable fixture and its termination reaction are
+          // substituted. The helper owner still observes this real child's close.
+          child = spawn(process.execPath, [program], { ...spawnOptions,
+            stdio: [...spawnOptions.stdio, "ipc"] });
           exited = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
           const kill = child.kill.bind(child);
-          child.kill = signal => { offers.push(signal); return kill(signal); };
+          child.kill = signal => {
+            offers.push(signal);
+            if (delay === null) return kill(signal); // Real OS termination on both platforms.
+            // Windows cannot handle SIGTERM in the child. IPC models an
+            // immediate/delayed exit reaction without inventing a close receipt.
+            child.send("fixture-termination-offer");
+            return true;
+          };
           return child;
         };
-        const error = await verifiedTerminalSummary({ options: { python_executable: executable },
+        const error = await verifiedTerminalSummary({ options: { python_executable: process.execPath },
           directory: root, expected: {}, execution_policy: OWNED_EXECUTION_POLICY },
         { spawnChild, timeoutMs: 1000, exitObservationMs: mode === "unconfirmed" ? 30 : 1000 })
           .then(() => assert.fail("a timed out helper cannot provide a counter proof"), value => value);
@@ -75,6 +92,7 @@ test("metadata helper timeout observes its original close or records an unconfir
             signal: mode === "unconfirmed" ? null : expectedSignal,
             actual_exit: mode !== "unconfirmed" });
           assert.deepEqual(offers, ["SIGTERM"]);
+          assert.equal(launches, 1);
         } finally {
           // The delayed fixture exits by its own timer; no test SIGKILL or second offer.
           assert.deepEqual(await exited, { code: expectedCode, signal: expectedSignal });

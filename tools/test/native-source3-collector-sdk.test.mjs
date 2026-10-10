@@ -322,8 +322,12 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
   if (!sourceOff) assert.deepEqual(seen.order, ["SourceClose", "HostClose", ...(ownedPolicy ? ["TerminalProof"] : [])]);
   assert.ok(final.teacher_exit.pid > 0);
   assert.equal(final.teacher_exit.actual_exit, true);
-  assert.equal(final.teacher_exit.code, null);
-  assert.equal(final.teacher_exit.signal, "SIGKILL"); // Existing public port owns termination; never fake exit0.
+  assert.equal(final.teacher_exit.owner, "public_NdjsonAgentSessionPort");
+  // The public port owns SIGKILL. Windows reports its forced termination as
+  // exit code 1 without a POSIX signal; preserve that actual close tuple.
+  assert.deepEqual({ code: final.teacher_exit.code, signal: final.teacher_exit.signal },
+    process.platform === "win32" ? { code: 1, signal: null } : { code: null, signal: "SIGKILL" });
+  if (full) assert.deepEqual(full.teacher_exit, final.teacher_exit);
   const events = (await readFile(path.join(final.direct_evidence.directory, "events.jsonl"), "utf8"))
     .trim().split("\n").filter(Boolean).map(JSON.parse);
   return { final: { ...final, runtime_status: full?.runtime_status ?? null }, wireFinal, full, seen, events, output };
