@@ -753,7 +753,13 @@ class LocalModelService:
         )
 
         self._runtime_package(identity)
-        native = _object_file(manifest_path).get("schema") == "sts2.policy-runtime/agent-manifest-1"
+        candidate = _object_file(manifest_path)
+        native = candidate.get("schema") == "sts2.policy-runtime/agent-manifest-1"
+        if (candidate.get("adapter", {}).get("protocol")
+                == "sts2.policy-runtime/decision-only-ndjson-4"):
+            from stpd.public_m2_policy_installation import require_evidence
+
+            require_evidence()
         script = (
             "import {readFile} from 'node:fs/promises';"
             "const runtime=await import(process.argv[1]);"

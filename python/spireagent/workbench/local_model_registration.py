@@ -1185,6 +1185,9 @@ class LocalModelRegistration:
 
 
     def _public_m2_runtime(self, *, deadline: float) -> tuple[Path, Path]:
+        from stpd.public_m2_policy_installation import require_evidence
+
+        require_evidence()
         node_modules, sdk = self._native_runtime(deadline=deadline)
         script = (
             "const runtime=await import(process.argv[1]);"
@@ -1260,11 +1263,12 @@ class LocalModelRegistration:
                            reason_code=getattr(error, "code", "registration_metadata_invalid"))
 
     def _register_public_m2(self, identity: str, *, environment_kind: str) -> dict[str, Any]:
-        from stpd.public_m2_policy_installation import bind_public_m2_export
+        from stpd.public_m2_policy_installation import bind_public_m2_export, require_evidence
 
         if environment_kind != "native":
             raise BoundaryError("local_model_registration",
                                 "public_snapshot_managed_environment_not_supported")
+        require_evidence()
         require_local_models("local_model_registration")
         verification_deadline = monotonic() + 300.0
         export = self.export.verified_public_m2_for_registration(

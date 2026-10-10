@@ -80,6 +80,13 @@ previous-action control must match one unused delivered Receipt and recorded
 observed successor in that same segment. No event may resume that path after an
 unknown disposition or Stop.
 
+Public `SUPPORTED_POLICY_DECISION_PROTOCOLS` is the immutable tuple of implemented
+decision readers v1–v4. Public M2 registration, readiness and loading require the
+installed SDK to advertise Port4 explicitly; an old or absent capability blocks
+before Model use. The application neither guesses from a package version nor
+falls back to a repository reader. Exact installed package promotion is separate
+from this source declaration.
+
 Port4 declares `bounded_policy_segment`; it supplies no single-game identity and
 does not relabel public Snapshot1 as native-logical input. These checks verify
 recorded Runtime associations and cached output consistency, not physical neural

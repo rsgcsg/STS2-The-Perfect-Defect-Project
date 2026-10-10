@@ -30,6 +30,17 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parent
 
 
+def advertise_public_reader(monkeypatch):
+    import sts2_platform_evidence
+
+    monkeypatch.setattr(
+        sts2_platform_evidence,
+        "SUPPORTED_POLICY_DECISION_PROTOCOLS",
+        ("sts2.policy-runtime/decision-only-ndjson-4",),
+        raising=False,
+    )
+
+
 def typed_verify(directory: Path):
     # This source candidate's real verifier in an isolated process. The locked
     # external Corpus dependency remains unchanged; this is not installed proof.
@@ -213,6 +224,7 @@ def metadata_export(tmp_path):
 
 
 def test_shared_public_m2_registration_registry_and_stop_owner_routes(tmp_path, monkeypatch):
+    advertise_public_reader(monkeypatch)
     export, model = metadata_export(tmp_path)
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     service = LocalModelService(config)
@@ -278,6 +290,7 @@ def test_shared_public_m2_registration_registry_and_stop_owner_routes(tmp_path, 
 
 
 def test_public_m2_register_cannot_bypass_missing_runtime_contract(tmp_path, monkeypatch):
+    advertise_public_reader(monkeypatch)
     export, model = metadata_export(tmp_path)
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     service = LocalModelService(config)
@@ -300,3 +313,117 @@ def test_public_m2_register_cannot_bypass_missing_runtime_contract(tmp_path, mon
     with pytest.raises(BoundaryError, match="public_m2_runtime_contract_unavailable"):
         registration.register(model.artifact_id)
     assert not service.private_root.exists()
+
+
+@pytest.mark.parametrize(
+    "protocols",
+    [
+        None,
+        (),
+        ("sts2.policy-runtime/decision-only-ndjson-3",),
+        ["sts2.policy-runtime/decision-only-ndjson-4"],
+    ],
+)
+def test_installed_evidence_capability_blocks_public_registration_and_model_inspection(
+    tmp_path,
+    monkeypatch,
+    protocols,
+):
+    import sts2_platform_evidence
+
+    import stpd.public_m2_policy_installation as installation
+
+    monkeypatch.setattr(
+        sts2_platform_evidence, "SUPPORTED_POLICY_DECISION_PROTOCOLS", protocols, raising=False
+    )
+    identity = "a" * 64
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    service = LocalModelService(config)
+    export_calls, runtime_calls, weights_calls = [], [], []
+    exported = SimpleNamespace(
+        status_for_model=lambda _: {
+            "availability": "ready",
+            "operation": {
+                "model_id": identity,
+                "model_type": "public_m2",
+                "status": "completed",
+                "verified_receipt": {"fixture": True},
+            },
+        },
+        verified_public_m2_for_registration=lambda *args, **kwargs: export_calls.append(args),
+    )
+    registration = LocalModelRegistration(config, exported, service)
+    monkeypatch.setattr(
+        registration, "_native_runtime", lambda **kwargs: runtime_calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        installation, "validate_package", lambda *args, **kwargs: weights_calls.append(args)
+    )
+    with pytest.raises(BoundaryError, match="public_m2_evidence_contract_unavailable"):
+        registration.register(identity)
+    assert registration.status(identity)["reason_code"] == "public_m2_evidence_contract_unavailable"
+    inspected = installation.inspect(ROOT, {"config": "missing", "manifest": "missing"}, {}, {})
+    assert inspected == {
+        "policy_identity": {"status": "blocked", "code": "public_m2_evidence_contract_unavailable"}
+    }
+    assert export_calls == runtime_calls == weights_calls == []
+    assert not service.private_root.exists()
+
+
+def test_source_evidence_explicit_capability_matches_implemented_port4_reader():
+    script = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sts2_platform_evidence as sdk
+from sts2_platform_evidence.agent_run_evidence import SUPPORTED_POLICY_DECISION_PROTOCOLS
+assert type(sdk.SUPPORTED_POLICY_DECISION_PROTOCOLS) is tuple
+assert sdk.SUPPORTED_POLICY_DECISION_PROTOCOLS == SUPPORTED_POLICY_DECISION_PROTOCOLS
+print(json.dumps(list(sdk.SUPPORTED_POLICY_DECISION_PROTOCOLS)))
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(REPOSITORY / "components/evidence")],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert json.loads(result.stdout) == [
+        f"sts2.policy-runtime/decision-only-ndjson-{version}" for version in (1, 2, 3, 4)
+    ]
+
+
+def test_absent_evidence_package_is_an_explicit_public_m2_capability_failure(monkeypatch):
+    from stpd.public_m2_policy_installation import require_evidence
+
+    monkeypatch.setitem(sys.modules, "sts2_platform_evidence", None)
+    with pytest.raises(BoundaryError, match="public_m2_evidence_contract_unavailable"):
+        require_evidence()
+
+
+def test_common_public_manifest_load_gate_rejects_an_uninstalled_port4_reader(
+    tmp_path, monkeypatch
+):
+    import sts2_platform_evidence
+
+    monkeypatch.delattr(
+        sts2_platform_evidence, "SUPPORTED_POLICY_DECISION_PROTOCOLS", raising=False
+    )
+    service = LocalModelService(ProjectConfig(tmp_path / "state", "", "", None, combination()))
+    manifest = tmp_path / "candidate.json"
+    manifest.write_bytes(
+        json_bytes(
+            {
+                "schema": "sts2.policy-runtime/policy-manifest-1",
+                "adapter": {"protocol": "sts2.policy-runtime/decision-only-ndjson-4"},
+            }
+        )
+    )
+    node_calls = []
+    monkeypatch.setattr(service, "_runtime_package", lambda *args: {})
+    monkeypatch.setattr(
+        "spireagent.workbench.local_models.subprocess.run",
+        lambda *args, **kwargs: node_calls.append(args),
+    )
+    with pytest.raises(BoundaryError, match="public_m2_evidence_contract_unavailable"):
+        service._public_manifest_contract(manifest)
+    assert node_calls == []

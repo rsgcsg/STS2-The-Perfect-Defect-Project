@@ -95,6 +95,18 @@ ADAPTER_SOURCE_CLOSURE = (
 )
 
 
+def require_evidence() -> None:
+    """Use the installed reader's explicit capability, never a repository fallback."""
+    try:
+        import sts2_platform_evidence
+    except ImportError as error:
+        raise BoundaryError(
+            "public_m2_policy", "public_m2_evidence_contract_unavailable"
+        ) from error
+
+    protocols = getattr(sts2_platform_evidence, "SUPPORTED_POLICY_DECISION_PROTOCOLS", None)
+    if not isinstance(protocols, tuple) or PROTOCOL not in protocols:
+        raise BoundaryError("public_m2_policy", "public_m2_evidence_contract_unavailable")
 
 def code_digest(root: Path) -> str:
     # The pin excludes Workbench and Hub application lifecycle. Shared archive
@@ -239,6 +251,7 @@ def inspect(root: Path, entry: dict[str, Any], manifest: dict[str, Any],
             ) -> dict[str, dict[str, str]]:
     owner = binding_root or root
     try:
+        require_evidence()
         config, checked = validate(root, _inside(owner, entry["config"]),
                                    _inside(owner, entry["manifest"]), binding_root=owner)
         if checked != manifest or config != policy_config:

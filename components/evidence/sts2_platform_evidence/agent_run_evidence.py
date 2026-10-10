@@ -26,6 +26,12 @@ EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1"
 POLICY_MANIFEST_SCHEMA = "sts2.policy-runtime/policy-manifest-1"
 ADAPTER_ATTESTATION_SCHEMA = "sts2.policy-runtime/adapter-attestation-1"
 AGENT_RUN_TYPE = "policy-runtime-agent-run"
+SUPPORTED_POLICY_DECISION_PROTOCOLS = (
+    "sts2.policy-runtime/decision-only-ndjson-1",
+    "sts2.policy-runtime/decision-only-ndjson-2",
+    "sts2.policy-runtime/decision-only-ndjson-3",
+    "sts2.policy-runtime/decision-only-ndjson-4",
+)
 
 _MANIFEST_FILE = "manifest.json"
 _EVENTS_FILE = "events.jsonl"
@@ -563,12 +569,7 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
     _enum(
         value,
         "protocol",
-        {
-            "sts2.policy-runtime/decision-only-ndjson-1",
-            "sts2.policy-runtime/decision-only-ndjson-2",
-            "sts2.policy-runtime/decision-only-ndjson-3",
-            "sts2.policy-runtime/decision-only-ndjson-4",
-        },
+        set(SUPPORTED_POLICY_DECISION_PROTOCOLS),
         path,
     )
     digest = _text(value, "code_sha256", path)

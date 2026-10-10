@@ -45,6 +45,12 @@ extended authorizations, Source handoff, Stop and unknown recovery as other
 reviewed selections. Registration requires the current verified export owner,
 exact generic SDK capabilities and installed Port4 contract before publishing a
 new selection; missing support does not trigger a text/native fallback.
+The installed Evidence SDK must separately advertise Port4 in its immutable
+`SUPPORTED_POLICY_DECISION_PROTOCOLS` tuple. Missing/older support blocks
+registration before export verification and blocks readiness/load before
+inference. Node Runtime support alone cannot make its post-Stop record readable.
+No version guess or source-reader fallback replaces the installed capability;
+the historical locked Corpus dependency and exact SDK promotion stay separate.
 
 Runtime owns bounded policy segment/token/episode-control identifiers and
 observation ordinals. It observes the real complete Snapshot1/Read-free bundle,
