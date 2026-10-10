@@ -214,7 +214,9 @@ class RealStoreCollectionTests(unittest.TestCase):
         failure_reply = json.loads(
             (self.request.output / "native-current-failure-reply.json").read_bytes()
         )
-        self.assertEqual(failure_reply["original_sdk_reply"]["raw"], proof["currents"][-1], diagnostic)
+        self.assertEqual(
+            failure_reply["original_sdk_reply"]["raw"], proof["currents"][-1], diagnostic
+        )
         marker, report, request = self.fresh_request(result)
         before = {p: p.read_bytes() for p in (marker, report)}
         boundary = module.verified_fresh_predecessor(marker, request)
@@ -233,7 +235,9 @@ class RealStoreCollectionTests(unittest.TestCase):
         self.assertEqual(len(proof["submits"]), 2, diagnostic)
         marker, report, request = self.fresh_request(result)
         before = {p: p.read_bytes() for p in (marker, report)}
-        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_native_outcome_unresolved", msg=diagnostic):
+        with self.assertRaisesRegex(
+            BoundaryError, "fresh_predecessor_native_outcome_unresolved", msg=diagnostic
+        ):
             module.verified_fresh_predecessor(marker, request)
         self.assertEqual({p: p.read_bytes() for p in before}, before, diagnostic)
         self.assertFalse(request.output.exists(), diagnostic)
