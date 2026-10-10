@@ -245,7 +245,8 @@ Skill-candidate impacts; it never rewrites semantic truth.
 Before producing that report, closeout reuses governance's CURRENT rule to reject
 an unsafe or oversized assembled handoff. Capacity uses the final physical UTF-8
 file bytes, including CRLF, and the output shows its size and existing 8 KiB limit.
-Run it after assembling the candidate documentation and before expensive gates;
+The mandatory `project:check` also includes that same rule, before later component
+and research gates in the root command. Run closeout after assembling the candidate documentation and before expensive gates;
 reviewing a small added paragraph does not validate the resulting whole file.
 
 ## External-tool decisions
