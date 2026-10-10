@@ -147,3 +147,28 @@ rewrite original bytes or infer effects from known delivery. Keep the same
 100-known/200-original-submission/8-total-3-consecutive-known-stale/15-minute limits.
 An actual renewed native problem ends that one attempt safely; no automatic
 repair/restart or second native attempt follows it.
+
+## Testing-flow refinement and the current prerequisite
+
+The owner's later request includes permanent test creation, maintenance, execution,
+dependency and parallel-work rules while this task continues. TESTING owns those
+rules, Governance owns failure/architecture decisions and Workflow links them.
+Disjoint documentation and read-only Windows diagnosis ran in parallel; Root
+retains shared identities, integration and the sole heavy/native slot. There is
+no new test manager or permission to merge/release/train.
+
+CI38039349993 at f435 ended cancelled at the Windows 55-minute job cap; portable
+failed. The original Python stage result, missing terminal XML and cleanup error
+remain preserved. Static progress plus a bounded fresh local Windows-socketpair
+reproduction identified a test fixture blocking the SDK's local dispatcher before
+readiness. The test-only correction preserves real SDK/wire behavior and generic
+network refusals. Pytest now prints reached test names and uses its built-in
+60-second traceback dump; this is diagnostic output, not a new abort timer,
+extended deadline, weaker coverage or established hosted fix.
+
+Independently review the focused repair and assembled candidate, then complete
+its selected current gates. Broader speed/routing proposals do not waive this
+packet's required full dual-OS, exact-game/identity and native prerequisites.
+Preparation failures do not consume the one real target-100 attempt, which stays
+unstarted until those prerequisites pass. The final report distinguishes tested
+source, built/installed/loaded artifact and the actual native outcome.

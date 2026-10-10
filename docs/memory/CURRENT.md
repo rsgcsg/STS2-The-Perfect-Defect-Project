@@ -57,6 +57,15 @@ and [task index](../plans/BASELINE_TASKS.zh-CN.md) retain the wider requirements
   and separate fresh compilation from the application clock. Fresh review/gates
   remain required; no native attempt or new installation occurred.
   Rc36/rc37 remain built-only.
+- Candidate `f43527b1`: local full/exact/Host and Linux passed;
+  CI38039349993 attempt 1 ended cancelled. Windows completed repository/shared
+  build/S0, then stalled in Python until the 55-minute job cap; eight later owners
+  were blocked and portable failed. Its raw logs/partial stage artifact remain
+  cancelled, with no Python terminal XML or graceful-cleanup claim. A fresh local
+  Windows-socketpair experiment reproduced the real SDK fixture's readiness hang.
+  The reviewed test-only repair starts its local dispatcher before generic socket
+  guards, retains remote-client/network refusal, and adds a bounded fresh-child
+  regression. Focused local checks passed; current dual-OS CI remains required.
   Actual installation remains
   rc34, DLL SHA prefix7c817a88, MVID9c4b89a5. Installed Runtime26/Evidence27 and
   lock46eb8386 remain separate pins. Re-resolve full identities before native work.
@@ -81,6 +90,13 @@ control; workers use isolated topics and receive independent review. Component
 source integrates with normal merges. Preserve private state/config/rollback.
 PR171 remains a draft until current review and required gates permit integration;
 no merge is implied by this engineering/native-test packet.
+
+The owner's testing-flow refinement is implemented on this topic in
+[TESTING](../TESTING.md#test-design-and-maintenance): test maintenance, measured cost,
+safe concurrency and claim-dependent evidence. Independent review accepted its
+source; it changes no selected CI or active native prerequisite. Actual new
+native dispatch remains 0/100. The separate runtime-qualification Skill topic
+PR172 passed its own source/dual-OS gate; that does not qualify PR171 or a runtime.
 
 The UTF-8 Teacher repair has a new code-artifact hash; frozen historical producer
 tuples and research admission remain unchanged. The explicit Source-off diagnostic
