@@ -1,137 +1,78 @@
-# Current project context, 2026-10-09
+# Current project context — stopped engineering handoff
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Resolve live GitHub refs and installed
 identities before using this handoff; current source and runtime evidence override this file.
 A workspace head is not a running artifact.
 
-## Active task and authority
+## Active objective and stop boundary
 
-Complete G2/V1 remains active and unapproved. Only the user finally approves it.
-The [specification](../BASELINE_V1_SPEC.zh-CN.md) owns selected behavior and rationale;
-the [execution matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns full
-scope, active packets, permissions and the aggregate USD20 budget (spent USD0).
-The [task index](../plans/BASELINE_TASKS.zh-CN.md) keeps the stable IDs.
+Full G2/V1 remains unapproved; only the user approves it. The
+[baseline specification](../BASELINE_V1_SPEC.zh-CN.md),
+[execution packet](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
+[task index](../plans/BASELINE_TASKS.zh-CN.md) retain the wider requirements.
+Aggregate cloud budget is USD20; recorded spend is USD0.
 
-The owner selected the current delivery slice: 100–300 admitted real choices,
-explicit training/checkpoint/results, export/registration/load, a new continuous
-learned-Agent game with visible in-game model integration, failure analysis,
-independent review, PR integration and reproducible handoff. A budget/loop stop
-remains incomplete. Full G2/V1 obligations remain outside this slice's sign-off.
+The selected slice was 100–300 admitted real choices, a new actual fit/checkpoint/results,
+THIS model's export/registration/load, a new continuous learned native task and visible
+in-game model, failure analysis, tests/review/PR integration and reproducible handoff.
+The new data/fit/model/game outcomes remain incomplete. Historical 8N/three updates
+are separate old results, never a substitute for this slice.
 
-Reuse lead topic `codex/g2-v1-core-integration` in its development worktree;
-`git worktree list` locates it. It contains `develop@4e16e54e`; refresh before
-integration. Each other writer has a separate branch/worktree. Preserve private
-`.local/s0` and `.local/g2-v1` originals; the running installation is separate.
+The owner's global limit has reached **two failed complete repair/qualification rounds**.
+New collection, fit, model and game experiments have stopped. No component/worker/state-dir
+reset, local full/exact/Host retry or third functional repair wave is authorized by this
+handoff. The sealed private visible harness stays null, execution-closed and blocked.
+Only safe preservation, bounded editorial correction, reviewed source/docs PR with its
+required hosted source CI, mainline alignment and detailed incomplete delivery continue.
 
-## Latest last-round preparation, owner stop bound
+## Exact reached evidence
 
-This paragraph supersedes the installed/current-source sentences below; those
-sentences retain their earlier evidence scopes. The user has set a global limit
-of two further complete failed repair/qualification rounds. Round1 source tests
-and the rc34 cold load passed, but actual Native8 failed after nine of 100
-requested known deliveries at Current HTTP409 `public_information_binding_card_subject`.
-The original unfinished-input status stays unknown. All nine native deliveries
-were known; execution/effect/cancel remain unknown. Completed failures are **1/2**.
-The next complete Root/native failure stops new experiments, preserves originals,
-closes through existing owners, aligns reviewed source and delivers the detailed
-incomplete engineer package. No component/worker/state-dir counter reset or third wave.
+- Round1: complete local source/package gate at `4b7266b2` passed; new rc34
+  installation, isolated main menu and owned unforced Close passed independent review.
+  Actual Native8 then stopped at 9/100 known deliveries with Current HTTP409
+  `public_information_binding_card_subject`. Its unfinished input remains unknown;
+  all nine deliveries were known, while execution/effect/cancel remain unknown.
+- Round2: source candidates were independently accepted: rendered-card binding
+  `27a6f430`, version/BOM alignment `96c6f037`/`92fbbc5d`, fresh-predecessor v3 reader
+  `760c6892`. Original result counters use the installed Evidence27 typed owner;
+  legacy Source-on obligations and unknown/no-resume/no-retry laws remain intact.
+  The complete local gate at clean `eb705356` failed because Root's CURRENT addition
+  was 9,702 bytes, exceeding the 8,192-byte contract. Its chain stopped after project
+  and governance checks; no later component/Python/exact/Host/new-native gate ran.
+  This editorial error does not establish whether the card repair works in a new game.
+- Connector rc18 / unified Mod rc35 are Source-only candidates, **not newly built,
+  installed or loaded**. Actual installation stays rc34, DLL `7c817a88`, MVID
+  `9c4b89a5`. Runtime rc26 was installed through its owner with exact archive evidence;
+  that is separate from loading any new Model. Evidence27 and lock `46eb8386` remain pinned.
+- Native8 original report/marker and 114 files are preserved unchanged. Runtime ended
+  Human/released/untainted/no pending; Node exited0, Host exited0 unforced, Teacher
+  had an actual SIGKILL exit. Those are distinct cleanup facts. No new N admission/use
+  or fit occurred. The exact Source1 state_dir and unknown marker are retained.
 
-Connector rc18 / unified Mod rc35 are reviewed source candidates; rc34 remains
-the installed artifact (`7c817a88`, MVID `9c4b89a5`). The current rendered-card
-binding repair preserves source coherence and strict partial/failure behavior.
-The Source-only Workbench fresh-predecessor candidate at `760c6892` binds v3
-records and the installed Evidence27 public original terminal summary; it cannot resume,
-retry or settle the old unknown operation. Legacy Source-on archival obligations
-remain unchanged. Source-only candidates do not upgrade installation/runtime claims.
+The [stop and source closeout report](../evidence/BASELINE_G2_V1_STOP2_CLOSEOUT_2026-10-09.md)
+and private engineer package carry complete hashes, command/exit receipts, architecture,
+major history, branch inventory, remaining deliverables and reproducible next gates.
+Current source and original evidence take priority over old CURRENT snapshots.
 
-The new 100–300 admitted-N dataset, new fit/checkpoint/results, immutable new Model,
-registration/load and visible continuous learned game remain unexecuted. Historical
-8N/three-update training stays separately identified. A sealed private visible-run
-harness has bounded static preparation acceptance only; actual IDs are null,
-execution remains closed, and after a final2/2 failure it stays blocked handoff-only.
-The older CURRENT facts below are historical routing, not current qualification.
+## Checkout, history and mainline
 
-## Earlier integrated and runtime facts (retain original evidence scopes)
+Reuse the existing lead `codex/g2-v1-core-integration`; `git worktree list` locates
+`SpireAgent-g1-s0-integration`. The app-default STS2-AI-PLATFORM checkout is another
+repository. Preserve private `.local/s0`/`.local/g2-v1`, Source1 configs and rollback bytes.
+Resolve actual topic/develop/main/PR/CI immediately before any operation. Component-source
+PRs use normal merges; source CI never promotes native or scientific qualification.
 
-- Native/Source3, ordered training and E6 direct Workbench source are integrated.
-  The [bounded learning/delivery report](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md)
-  records eight Agent labels, real three-update training/export and two distinct
-  Model attempts. Attempt1 remains failed; attempt2 proves one delivery and Stop,
-  with execution/effect/cancel unknown. No natural full-game or Human claim.
-- E6 rc31 artifact `c82306c6`, built from clean `e7dfd694`, is installed. Exact
-  loaded identity, isolated main menu and owned unforced Close passed independent
-  review; rc30 rollback remains. Authenticated panels and runtime/resource health
-  remain unverified. Workspace provenance and compiled component identity differ.
-- Versions/BOM and locked Evidence `a42bf1e4` are aligned. Full9 local checks
-  passed at `ffb9649f` (Python 3,262 passes, five conditional skips, 23 subtests;
-  Runtime 336 passes, three opt-in skips). This covers the integrated public-Runtime
-  program teacher, direct PhaseA, shared Teacher/Student map timing and normal
-  SDK→Runtime consumer-build prerequisite. Later diagnostic/Modal/application
-  candidates require their own integrated gate; Full9 is not reused for them.
-  Full6 remains failed; its live temporary-scratch race was repaired in the owning
-  inventory reader and the real child pause/resume regression passed. Earlier fresh synthetic
-  sampled train/export/real constructor/stdio/Runtime composition passed independent
-  review. One zero-loss synthetic update proves execution, not useful learning.
-- First new collect-only attempt at `e7dfd694` stopped after one of 100 requested
-  choices: OpenDeck delivery was known, execution/effect unknown. Source closed
-  with one input, six observations and no gaps; control and Host cleanup succeeded.
-  A wrong SDK starting-cursor field caused the consumer stop. Repair `4f55fea5`
-  and real-SDK regression are integrated. A distinct second attempt at `e7759f28`
-  reached four of 100 choices, then stopped after inspection Return:
-  the scripted teacher lacked Await for expected owner arrival. All four deliveries
-  were known; effects remain unknown. Source closed with four inputs, 15 observations,
-  zero gaps and known control/Host cleanup. Originals are retained, never relabeled Human.
-- Third collection at `e4665b69` reached six of 100 deliveries, with eight known
-  ACKed samples. Map travel retained legal information actions but no route;
-  teacher 1.0.2 closed prematurely. Source sealed six inputs/19 observations/zero
-  gaps; exact control/Host/Node cleanup passed. All result effects remain unknown.
-  Shared Teacher/Student map timing is integrated at `ffb9649f`. Originals and
-  the old teacher identity remain intact. Fourth collection used Teacher1.0.4
-  and reached six known deliveries/eight ACKed contexts; three map Awaits did
-  not produce another native action. Its next Current failed before offer/ACK,
-  with `query_current_source_capture_incomplete`. Aggregate status remains
-  unknown for the unfinished input operation, not unknown native delivery.
-  Source6/19/zero gaps and all owner cleanup passed; no automatic resume/retry.
-- First Source3 product publication retains one N and train reservation without
-  fit. Common terminology is integrated; the corrected reservation display was
-  verified through actual HTTP. Direct native PhaseA `e61381a4` is independently
-  accepted and integrated: actual third-round originals lower to eight
-  known contexts/six eligible N in a private store, without reservation/use/train.
-  Source3 remains the current product training bridge; direct recipe/export/UI
-  dispatch needs its separate PhaseB. Common direct/Source3 package core `38bf01f2`
-  is independently accepted; `37d024c3` has one actual synthetic child/use/export/
-  Registry-binding/fresh-stdio pass. Its real public compatibility preflight was
-  bypassed by an explicit fixture, so it does not prove installed product load.
-- Fresh diagnostic3 at `a3f281ae`, unchanged loaded rc31, retained exactly one
-  failed passive Current after six known prefix deliveries: HTTP409 and
-  `public_information_binding_creature_subject`. Its typed direct run and cleanup
-  passed independent review. Earlier diagnostic2's later positive read does not
-  establish original fourth-round cause or transient recovery. Native context/tip
-  binding investigation is active; the original fourth-round reason remains absent.
-- Visible sampled-model preparation found two application blockers: primary
-  registry Runtime rc24 instead of reviewed rc25, and public preflight requiring
-  full-reference attachment for a correct sampled/scoped manifest. Narrow owner
-  repairs are separate candidates. Other live Workbench ownership/pair handoff
-  remains to establish before the new owned visible-game experiment.
-- L34 event/content, special selectors, L64 management, product memory recovery,
-  remote use and full coverage/stability still need their scoped gates. Disabled
-  candidate reviews do not qualify the active profile. Current c060 is unchanged.
-
-## Execution priority
-
-Verify the Runtime-backed teacher → useful 100–300-choice real collection
-and explicit sampled training → early natural whole-game attempt and error analysis.
-Count multi-candidate labels, owner/action coverage and exclusions separately;
-report train-fit versus new-game performance. Script imitation does not establish
-policy quality. The owner must be able to see this trained model loaded/running
-inside the game before delivery, with its actual identity and Stop control.
-E6 authenticated panels and a minimum genuine Human record/Close remain separate gates. Independent source/data/model/docs work continues in
-parallel; unrelated final gates do not block this path and remain in the matrix.
-One game/install owner and one heavy local build/train slot remain coordinated.
+The two unmerged historical carriers #163/#164 must both be retained; neither contains
+the other, #161 is only in #163, and #155 plus Workshop heads remain outside both.
+Some storage/launcher/conformance purposes are already preserved; that is not whole-PR
+acceptance. No wholesale historical-stack merge or bulk cleanup has been performed.
+Main is formal publication provenance, not the running-install pointer.
 
 ## Remaining Platform non-claims
 
-Source/test, build, installed/loaded, real-data learning, Human and qualification
-stay distinct. Stop only at a real access/authority/Human boundary; unknown delivery
-never authorizes retry. [STATUS](../STATUS.md) routes claims and historical evidence;
-[PROJECT_SYSTEM](../PROJECT_SYSTEM.md) owns where decisions and updates belong.
+The stopped slice does not prove new100–300N, new useful learning, natural learned-game
+completion, visible THIS model, Human origin, performance/non-interference, cloud game
+qualification or full G2/V1. L34/events/selectors/L64, genuine Human/Close, recovery/fault,
+remote permissions, coverage and scientific comparisons retain their separate gates.
+A later engineer must establish a new explicit scope before resuming experiments;
+this handoff itself grants none. Current repository and runtime evidence override this file.
