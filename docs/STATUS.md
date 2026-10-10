@@ -4,7 +4,37 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
-## G2/V1 candidate, observed 2026-10-09
+## G2/V1 supervisor checkpoint, observed 2026-10-11
+
+The [active packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md) and
+[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) contain the current
+identities, counts and remaining gates at source `9c1c14f4`. Original private
+receipts are routed through the lead's existing
+`.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md`; they are not public uploads.
+
+- Native1 rc38 reached62 known/70 submissions/8 stale; native2 rc39 reached50/58/8.
+  Both released control and stopped the Host under the same limit; Teacher SIGKILL
+  remains a separate fact. All 16 diagnostic refusals identify
+  public-facts changes; rc39 records bounded card/discard/orb/enemy-HP paths.
+  Strict validation is unchanged; no safe-intent,100-delivery or natural-summary proof.
+- Installed rc39 SHA63230ad9/MVID880bad57, compiled19bac/build-workspaceb82,
+  has exact build and configured bridge35 evidence; the original unconfigured
+  compilation failure remains. This is bounded native evidence, not Human/full product qualification.
+- Source469 has three reviewed earlier segments:137 N/342 context/451 offers,
+  84 distinct state/C/chosen combinations and53 repeated rows. This is declared
+  Agent-teacher/student re-expression, without independent held-out/Human/quality proof.
+- Explicit owner budget amendment/resume preserved original300s timeout and132-update
+  checkpoint, then completed168 updates/cumulative404.100506s under effective600s.
+  New Model8eb1/export completed and final weights changed; no learned new-game use yet.
+- d6 M0 parity passed one fixed sample and current-owner export836a completed;
+  actual registration/load remains blocked by the old default rc26 Runtime pin.
+  Public M2 stage1 source31cc is under review; Port4 remains unintegrated.
+- CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
+  for `d0e671f2` failed all four OS leaves and portable. Windows Python shard passes
+  and process-fixture success do not erase other owner failures. No overall green,
+  complete G2/V1, whole-game/quality,10k or publication acceptance is added.
+
+## Earlier G2/V1 candidate, observed 2026-10-09
 
 - [Current specification](BASELINE_V1_SPEC.zh-CN.md) and
   [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): implementation
