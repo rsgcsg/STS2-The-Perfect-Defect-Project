@@ -9,6 +9,7 @@ from spireagent.workbench.local_model_dependencies import recipe_dependencies_av
 from spireagent.workbench.memory_recipe import MEMORY_RECIPES
 from stpd.native_training_source_spec import RECIPE as NATIVE_SAMPLED_RECIPE
 from stpd.ordered_source_spec import RECIPES as ORDERED_RECIPE_CONFIGS
+from stpd.reward_m0_spec import RECIPE as REWARD_M0_RECIPE
 
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 STRUCTURED_RECIPE = "structured-m2-cpu-v2"
@@ -19,7 +20,32 @@ STRUCTURED_RECIPES = frozenset({
 })
 MAX_TOTAL_ATTEMPTS = 32
 DEFAULT_CHECKPOINT_CADENCE = 100
-TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *STRUCTURED_RECIPES, *MEMORY_RECIPES})
+TYPED_RECIPES = frozenset({*STRUCTURED_RECIPES, REWARD_M0_RECIPE})
+TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *TYPED_RECIPES, *MEMORY_RECIPES})
+
+
+def typed_recipe_run_schema(recipe_id: str) -> str:
+    if recipe_id == REWARD_M0_RECIPE:
+        from stpd.reward_m0_spec import RUN_SCHEMA
+
+        return RUN_SCHEMA
+    return structured_recipe_run_schema(recipe_id)
+
+
+def typed_recipe_checkpoint_schema(recipe_id: str) -> str:
+    if recipe_id == REWARD_M0_RECIPE:
+        from stpd.reward_m0_spec import CHECKPOINT_SCHEMA
+
+        return CHECKPOINT_SCHEMA
+    from stpd.structured_code_scope import checkpoint_schema
+
+    return checkpoint_schema(structured_recipe_scope(recipe_id))
+
+
+def typed_recipe_is_scoped(recipe_id: str) -> bool:
+    if recipe_id == REWARD_M0_RECIPE:
+        return False  # New reward runs retain their exact original producer.
+    return structured_recipe_is_scoped(recipe_id)
 
 
 def checked_recipe_execution_policy(recipe_id: str, value: object) -> dict[str, Any]:
@@ -80,6 +106,27 @@ def structured_recipe_is_scoped(recipe_id: str) -> bool:
 def describe_recipe(recipe_id: str) -> dict[str, Any]:
     if recipe_id not in TRUSTED_RECIPES:
         raise BoundaryError("local_training", "unsupported_training_recipe")
+    if recipe_id == REWARD_M0_RECIPE:
+        from stpd.reward_m0_spec import INPUT_SPECS, SOURCE_SCHEMA, RewardM0Config
+
+        return {"recipe_id": recipe_id, "placement_ids": ["local-cpu"],
+                "numerical_devices": ["cpu", "mps"], "remote_execution": False,
+                "dependencies_available": recipe_dependencies_available(recipe_id),
+                "automatic_retry": False,
+                "supported_actions": ["cancel", "pause", "resume", "reconcile"],
+                "wall_budget_amendment": False,
+                "result_type": "train_only", "evaluation_scope": "TRAIN_internal_diagnostic",
+                "source_schema": SOURCE_SCHEMA, "input_specs": INPUT_SPECS,
+                "config_defaults": RewardM0Config().to_dict(),
+                "config_fields": {},
+                "limits": {
+                    "wall_seconds": {"minimum": 1, "maximum": 3600},
+                    "scratch_bytes": {"minimum": 16 * 1024**2, "maximum": 1024**3,
+                                      "default": 512 * 1024**2},
+                },
+                "paired_configuration": "source_frozen_config_must_match_except_arm",
+                "worker_isolation": "private_child-v1", "cumulative_limits": True,
+                "max_total_attempts": MAX_TOTAL_ATTEMPTS}
     structured = recipe_id in STRUCTURED_RECIPES
     descriptor: dict[str, Any] = {
         "recipe_id": recipe_id,
@@ -210,6 +257,13 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
         raise BoundaryError("local_training", "unsupported_training_recipe")
     if not isinstance(config, dict):
         raise BoundaryError("local_training", "invalid_recipe_config")
+    if recipe_id == REWARD_M0_RECIPE:
+        from stpd.reward_m0_spec import RewardM0Config
+
+        try:
+            return RewardM0Config(**config).to_dict()
+        except TypeError as error:
+            raise BoundaryError("local_training", "invalid_recipe_config") from error
     if recipe_id in STRUCTURED_RECIPES:
         from dataclasses import asdict
 
@@ -231,6 +285,10 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
 
 
 def recipe_adapter(recipe_id: str) -> Any:
+    if recipe_id == REWARD_M0_RECIPE:
+        from spireagent.workbench.recipes.reward_m0 import RewardM0RecipeAdapter
+
+        return RewardM0RecipeAdapter(recipe_id)
     # Explicit imports only: a manifest or HTTP request cannot select an import,
     # executable, path, URL, plugin or arbitrary worker.
     if recipe_id in STRUCTURED_RECIPES:

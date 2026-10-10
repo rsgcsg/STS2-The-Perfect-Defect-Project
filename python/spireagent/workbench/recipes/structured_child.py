@@ -33,9 +33,9 @@ from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
     checked_recipe_execution_policy,
-    structured_recipe_is_scoped,
-    structured_recipe_run_schema,
     structured_recipe_scope,
+    typed_recipe_is_scoped,
+    typed_recipe_run_schema,
 )
 
 EVENT_SCHEMA = "spireagent/structured-child-event-v1"
@@ -98,7 +98,7 @@ class ReadOnlyAttemptFence:
                   if "execution_policy" in info else None)
         training = self.store.get_manifest(run.parent("training_input"))
         if (run.kind != "run"
-                or info.get("schema") != structured_recipe_run_schema(self._recipe_id)
+                or info.get("schema") != typed_recipe_run_schema(self._recipe_id)
                 or info.get("operation_id") != self.operation_id
                 or json_bytes(policy) != self._policy_bytes
                 or training.kind != "training_input" or training.producer != run.producer
@@ -281,8 +281,7 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     )
     operation = fence.operation()
     fence.channel = channel
-    scope = structured_recipe_scope(operation["recipe"])
-    scoped = structured_recipe_is_scoped(operation["recipe"])
+    scoped = typed_recipe_is_scoped(operation["recipe"])
     current_producer = source_identity(ROOT)
     if scoped and current_producer != Producer.decode(operation["attempt_producer"]):
         raise BoundaryError("structured_child", "current_attempt_producer_mismatch")
@@ -290,6 +289,14 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     for name in ("TMPDIR", "TMP", "TEMP"):
         os.environ[name] = str(args.scratch_dir)
     tempfile.tempdir = str(args.scratch_dir)
+    from spireagent.workbench.trusted_recipes import REWARD_M0_RECIPE
+
+    if operation["recipe"] == REWARD_M0_RECIPE:
+        from spireagent.workbench.recipes.reward_m0 import run_reward_child
+
+        run_reward_child(args, channel, store, fence, current_producer)
+        return
+    scope = structured_recipe_scope(operation["recipe"])
     # Numerical imports happen only after immutable application admission and
     # the independent child lifecycle mutex are established.
     from stpd.fullrun.structured_sequences import parse_structured_dataset
@@ -368,7 +375,7 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
         fence.wait_for_parent_run(run.artifact_id, input_id)
     else:
         run = store.get_manifest(operation["run_id"])
-    if run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"]):
+    if run.parameters.value().get("schema") != typed_recipe_run_schema(operation["recipe"]):
         raise BoundaryError("structured_child", "recipe_run_scope_mismatch")
     request = StructuredWorkloadRequest(
         run.artifact_id,
