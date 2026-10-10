@@ -63,6 +63,23 @@ navigation or native delivery resets that count. Other unapplied results,
 unknown delivery, evidence or release failure, and cancellation do not continue
 Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
 
+For generic Snapshot1 and the existing retryable text-menu-v2 path, the first
+and second consecutive, correlated known stale non-deliveries release control
+and schedule monotonic 250 ms and 500 ms cooldowns before the next observation.
+A tick before eligibility returns the existing `not_admitted` shape with reason
+`stale_submission_cooldown`; it makes no capability, observation, policy or
+submission call and consumes no additional call/submission budget. Equality at
+cooldown eligibility permits a fresh complete bundle, new decision/request identities
+and fresh scoring. The existing server tick loop drives this without a sleep
+inside the serialized owner or an additional timer.
+
+Stop, Human recovery and finite authorization expiry retain priority. A late
+result from an old recovery epoch cannot arm a cooldown; a new authorized Auto,
+delivery, Stop or Human handoff clears it. The three-stale ceiling, receipt
+correlation, explicit retry admission and evidence/release failure behavior
+remain unchanged. This is operational backpressure, not a readiness or effect
+settlement proof. The separately declared native Agent 8/3 policy is unchanged.
+
 Before observation, each Connector Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
 Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any

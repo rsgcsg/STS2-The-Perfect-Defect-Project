@@ -1826,6 +1826,7 @@ describe("continuous native decision recovery", () => {
   const policy = (input: {candidate_digest: string; candidate_count: number}) => ({candidate_digest: input.candidate_digest, scores: Array(input.candidate_count).fill(1), selected_index: 0});
 
   it("rescans and rescores after a known stale non-delivery, with new request and action IDs", async () => {
+    let clock = 100;
     const connector = new FakeConnector(bundle(["old"]), "not_delivered");
     connector.stale = false;
     const original = connector.submit.bind(connector);
@@ -1833,20 +1834,201 @@ describe("continuous native decision recovery", () => {
     connector.submit = async input => {
       requests.push(input);
       const receipt = await original(input);
-      connector.current = bundle(["fresh"], "snapshot-fresh");
+      connector.current = bundle(["fresh", "other"], `snapshot-fresh-${requests.length}`);
       return {...receipt, reason_code: "stale_snapshot", retry: {allowed: true, reason: "fresh_snapshot_required"}};
     };
     const scorer = vi.fn(policy);
-    const runtime = new PolicyRuntime({manifest: manifest(), connector, mode: "auto", policy: scorer});
+    const capabilities = vi.spyOn(connector, "capabilities");
+    const sleep = vi.fn(async () => {});
+    const runtime = new PolicyRuntime({manifest: manifest(), connector, mode: "auto", policy: scorer,
+      monotonicNow: () => clock, sleep});
     await runtime.tick();
     expect(runtime.status().mode).toBe("auto");
     expect(runtime.status().controller).toBe("released");
+    const firstDecisionId = runtime.status().last_decision!.decision_id;
+    const used = runtime.status().autonomy_budget;
+    clock = 349;
+    expect(await runtime.tick({ gameInstanceId: "runtime", recoveryEpoch: 0 })).toMatchObject({
+      type: "not_admitted", reason: "stale_submission_cooldown" });
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(connector.observeCount).toBe(1);
+    expect(scorer).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(1);
+    expect(runtime.status().autonomy_budget).toMatchObject({
+      policy_calls_used: used.policy_calls_used, submissions_used: used.submissions_used });
+    clock = 350; // Equality is eligible; no sleep or timer advances it.
     await runtime.tick();
     expect(scorer).toHaveBeenCalledTimes(2);
     expect(requests[1]!.boundActionId).toBe("fresh");
     expect(requests[1]!.requestId).not.toBe(requests[0]!.requestId);
+    expect(requests[1]!.expectedSnapshotId).toBe("snapshot-fresh-1");
+    expect(scorer.mock.calls[1]![0].candidate_count).toBe(2);
+    expect(runtime.status().last_decision?.decision_id).not.toBe(firstDecisionId);
+    clock = 849;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "stale_submission_cooldown" });
+    expect(connector.observeCount).toBe(2);
+    expect(scorer).toHaveBeenCalledTimes(2);
+    clock = 850;
     await runtime.tick();
     expect(runtime.status().mode).toBe("human"); // bounded repeated stale failures
+    expect(requests).toHaveLength(3);
+    expect(new Set(requests.map(request => request.requestId)).size).toBe(3);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  const staleConnector = (releaseFailure?: Error) => {
+    const connector = new FakeConnector(bundle(["a"]), "not_delivered", undefined, releaseFailure);
+    connector.stale = false;
+    const submit = connector.submit.bind(connector);
+    connector.submit = async input => ({ ...await submit(input), reason_code: "stale_snapshot",
+      retry: { allowed: true, reason: "fresh_snapshot_required" } });
+    return connector;
+  };
+
+  it("starts cooldown only after confirmed release and rejects a failed release", async () => {
+    let clock = 0;
+    const connector = staleConnector();
+    const release = deferred<void>();
+    connector.releaseGate = release.promise;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy,
+      monotonicNow: () => clock });
+    const first = runtime.tick();
+    await eventually(() => connector.releaseCount === 1);
+    clock = 1000;
+    release.resolve();
+    await first;
+    expect(runtime.status().controller).toBe("released");
+    clock = 1249;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "stale_submission_cooldown" });
+    expect(connector.observeCount).toBe(1);
+    clock = 1250;
+    await runtime.tick();
+    expect(connector.observeCount).toBe(2);
+    await runtime.setMode("human");
+
+    const failing = staleConnector(new Error("release denied"));
+    const failed = new PolicyRuntime({ manifest: manifest(), connector: failing, mode: "auto", policy });
+    await expect(failed.tick()).rejects.toThrow("release denied");
+    expect(failed.status()).toMatchObject({ mode: "human", tainted: true });
+    expect(await failed.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(failing.observeCount).toBe(1);
+    expect(failing.submitCount).toBe(1);
+  });
+
+  it.each(["human", "stop"] as const)("lets %s end idle cooldown immediately without another tick", async command => {
+    const connector = staleConnector();
+    const scorer = vi.fn(policy);
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy: scorer,
+      monotonicNow: () => 0 });
+    await runtime.tick();
+    if (command === "stop") await runtime.stop(); else await runtime.setMode("human");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+    expect(connector.observeCount).toBe(1);
+    expect(scorer).toHaveBeenCalledTimes(1);
+    if (command === "human") {
+      await runtime.setMode("auto");
+      expect((await runtime.tick()).type).toBe("not_delivered");
+      expect(connector.observeCount).toBe(2);
+      await runtime.setMode("human");
+    } else expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_stopped" });
+  });
+
+  it("honors the existing deadline during idle cooldown without another tick or GET", async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = 0;
+      const connector = staleConnector();
+      const capabilities = vi.spyOn(connector, "capabilities");
+      const scorer = vi.fn(policy);
+      const events: { kind: string; payload: Record<string, unknown> }[] = [];
+      const evidence = { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as unknown as AgentRunEvidence;
+      const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy: scorer,
+        evidence, runtimeIdentity: { version: "test", code_sha256: "e".repeat(64) },
+        monotonicNow: () => clock, autoBudget: { deadlineMs: 100 } });
+      await runtime.tick();
+      expect(vi.getTimerCount()).toBe(1); // Existing authorization timer only.
+      clock = 100;
+      vi.advanceTimersByTime(100);
+      await drainMicrotasks();
+      expect(events.filter(event => event.kind === "autonomy_budget_exhausted")).toEqual([
+        expect.objectContaining({ payload: expect.objectContaining({ reason: "deadline", controller: "released" }) })]);
+      expect(runtime.status()).toMatchObject({ mode: "human", autonomy_budget: { state: "exhausted" } });
+      expect(capabilities).toHaveBeenCalledTimes(1);
+      expect(connector.observeCount).toBe(1);
+      expect(scorer).toHaveBeenCalledTimes(1);
+      expect(connector.submitCount).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("hands off an exhausted call wallet before a cooldown tick without doing environment work", async () => {
+    const connector = staleConnector();
+    const capabilities = vi.spyOn(connector, "capabilities");
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy,
+      monotonicNow: () => 0, autoBudget: { maxPolicyCalls: 1 } });
+    await runtime.tick();
+    // Arming is read-only: existing Auto driver can issue its next tick, which
+    // owns the exhaustion handoff instead of stopping at auto/exhausted idle.
+    expect(runtime.status().autonomy_budget.state).toBe("active");
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released",
+      autonomy_budget: { state: "exhausted", exhausted_reason: "policy_call_limit" } });
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(connector.observeCount).toBe(1);
+    expect(connector.submitCount).toBe(1);
+  });
+
+  it("does not let a correlated late old-epoch stale receipt pace a new Auto authorization", async () => {
+    const connector = staleConnector();
+    const submitted = deferred<void>();
+    const receipt = deferred<PlayerEnvironmentReceipt>();
+    const submit = connector.submit.bind(connector);
+    connector.submit = async input => {
+      const result = await submit(input);
+      submitted.resolve();
+      await receipt.promise;
+      return result;
+    };
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy,
+      monotonicNow: () => 0 });
+    const tick = runtime.tick();
+    await submitted.promise;
+    const human = runtime.setMode("human");
+    const auto = runtime.setMode("auto");
+    receipt.resolve();
+    await tick; await human; await auto;
+    expect((await runtime.tick()).type).toBe("not_delivered");
+    expect(connector.observeCount).toBe(2);
+    await runtime.setMode("human");
+  });
+
+  it.each(["human", "stop"] as const)("preserves winning %s attribution for a held submission's late known stale receipt", async command => {
+    const connector = staleConnector();
+    const entered = deferred<void>();
+    const finish = deferred<void>();
+    const submit = connector.submit.bind(connector);
+    connector.submit = async input => {
+      const receipt = await submit(input);
+      entered.resolve();
+      await finish.promise;
+      return receipt;
+    };
+    const events: { kind: string; payload: Record<string, unknown> }[] = [];
+    const evidence = { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); },
+      finalize: async () => {} } as unknown as AgentRunEvidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy,
+      evidence, runtimeIdentity: { version: "test", code_sha256: "e".repeat(64) }, monotonicNow: () => 0 });
+    const tick = runtime.tick();
+    await entered.promise;
+    const recovery = command === "stop" ? runtime.stop() : runtime.setMode("human");
+    finish.resolve();
+    expect((await tick).type).toBe("not_delivered");
+    await recovery;
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: false,
+      autonomy_budget: { state: "inactive", ended_reason: command === "stop" ? "stopped" : "human_recovery" } });
+    expect(events.filter(event => event.kind === "receipt")).toHaveLength(1);
+    expect(events.filter(event => event.kind === "handoff_to_human")).toHaveLength(0);
+    expect(connector.observeCount).toBe(1);
+    expect(connector.submitCount).toBe(1);
   });
 
   it.each(["not_delivered", "unknown"] as const)("never continues %s without explicit stale retry admission", async delivery => {

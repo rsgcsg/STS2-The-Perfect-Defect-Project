@@ -91,6 +91,7 @@ export class PolicyRuntime {
   private submittedRequestIds = new Set<string>();
   private tickActive = false;
   private consecutiveStaleSubmissions = 0;
+  private staleSubmissionCooldown: { eligibleAt: number; epoch: number; generation: number } | null = null;
   private nativeSubmissionsUsed = 0;
   private menuNavigationsUsed = 0;
   private requestedMode: RuntimeMode | null = null;
@@ -218,7 +219,7 @@ export class PolicyRuntime {
       runtime_instance_id: runtimeInstanceId, recovery_epoch: recoveryEpoch };
   }
 
-  private advanceRecoveryEpoch(): void { this.owner.advanceEpoch(); }
+  private advanceRecoveryEpoch(): void { this.staleSubmissionCooldown = null; this.owner.advanceEpoch(); }
 
   private checkRecoveryEpoch(expected: number | undefined): void { this.owner.checkEpoch(expected); }
 
@@ -290,7 +291,7 @@ export class PolicyRuntime {
         else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
-        if (mode === "auto") this.consecutiveStaleSubmissions = 0;
+        if (mode === "auto") { this.consecutiveStaleSubmissions = 0; this.staleSubmissionCooldown = null; }
         if (!(await this.appendEvidence("mode_changed", { mode, autonomy_budget: this.autonomyBudgetStatus() }))) {
           this.mode = "human";
           if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
@@ -310,6 +311,17 @@ export class PolicyRuntime {
     this.tickActive = true;
     try {
       return await this.serialize(async () => {
+        // A refused cooldown tick does no environment work, including the
+        // optional fresh-game precondition lookup. Fences and budget still win;
+        // eligibility restores the ordinary complete admission path.
+        this.checkRecoveryEpoch(expected?.recoveryEpoch);
+        if (this.staleSubmissionCooldownPending()) {
+          if (!this.autonomyBudgetAvailable()) {
+            await this.handoffAutonomyBudget();
+            return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+          }
+          return { type: "not_admitted", reason: "stale_submission_cooldown", status: this.status() };
+        }
         await this.checkControlPreconditions(expected);
         return this.tickOnce();
       });
@@ -620,13 +632,15 @@ export class PolicyRuntime {
         // Only a correlated, explicitly unapplied stale submission allows a new
         // decision next tick. Never reuse its scores, action or request identity.
         const refreshable = receiptRecorded && !this.tainted
+          && submissionEpoch === this.recoveryEpoch && !this.mutationCancellationRequested()
           && receipt.reason_code === "stale_snapshot" && receipt.retry.allowed
           && receipt.retry.reason === "fresh_snapshot_required";
-        await this.finishKnownNonDelivery(refreshable, "action_not_delivered");
+        await this.finishKnownNonDelivery(refreshable, "action_not_delivered", submissionEpoch);
       }
       return { type: "not_delivered", decision, receipt, status: this.status() };
     }
     this.consecutiveStaleSubmissions = 0;
+    this.staleSubmissionCooldown = null;
     try {
       const successor = await this.stableSuccessor(bundle.observation);
       if (this.mutationCancellationRequested()) {
@@ -714,11 +728,12 @@ export class PolicyRuntime {
           && previous.schema === "sts2.player-environment/text-menu-snapshot-2"
           && result.reason_code === "stale_snapshot" && result.retry === "reobserve"
           && result.native_delivery === null;
-        await this.finishKnownNonDelivery(refreshable, "action_not_applied");
+        await this.finishKnownNonDelivery(refreshable, "action_not_applied", submissionEpoch);
       }
       return { type: "text_not_applied", decision, result, status: this.status() };
     }
     this.consecutiveStaleSubmissions = 0;
+    this.staleSubmissionCooldown = null;
     if (action.effect_domain === "text_menu") {
       if (result.native_delivery !== null || !result.successor || !this.validTextMenuSuccessor(previous, result.successor, true)) {
         await this.taint("menu_navigation_successor_invalid");
@@ -779,10 +794,36 @@ export class PolicyRuntime {
     this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
   }
 
-  private async finishKnownNonDelivery(refreshable: boolean, handoffReason: string): Promise<void> {
+  private async finishKnownNonDelivery(refreshable: boolean, handoffReason: string,
+                                      submissionEpoch: number): Promise<void> {
+    this.staleSubmissionCooldown = null;
+    if (submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()) {
+      // The queued winning recovery owns Human/Stop/deadline attribution.
+      // Keep the correlated known receipt and release; do not synthesize a
+      // stale-result handoff or end its authorization as mode_changed.
+      await this.releaseController();
+      return;
+    }
     if (!refreshable || ++this.consecutiveStaleSubmissions >= 3)
       await this.releaseControllerAndReturnHuman(handoffReason);
-    else await this.releaseController();
+    else {
+      await this.releaseController();
+      if (this.mode === "auto" && !this.tainted && submissionEpoch === this.recoveryEpoch
+          && !this.mutationCancellationRequested() && this.autonomyBudgetState.state === "active")
+        this.staleSubmissionCooldown = { eligibleAt: this.monotonicNow()
+          + (this.consecutiveStaleSubmissions === 1 ? 250 : 500), epoch: submissionEpoch,
+          generation: this.autonomyBudgetGeneration };
+    }
+  }
+
+  private staleSubmissionCooldownPending(): boolean {
+    const cooldown = this.staleSubmissionCooldown;
+    if (cooldown === null) return false;
+    if (this.mode === "auto" && !this.stopped && !this.tainted && !this.mutationCancellationRequested()
+        && cooldown.epoch === this.recoveryEpoch && cooldown.generation === this.autonomyBudgetGeneration
+        && this.monotonicNow() < cooldown.eligibleAt) return true;
+    this.staleSubmissionCooldown = null;
+    return false;
   }
 
   async stop(): Promise<RuntimeStatus> {
@@ -883,6 +924,7 @@ export class PolicyRuntime {
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
+    this.staleSubmissionCooldown = null;
     this.nativeSubmissionsUsed = 0;
     this.menuNavigationsUsed = 0;
     this.autonomyBudgetHandoffQueued = false;
@@ -891,7 +933,7 @@ export class PolicyRuntime {
     this.owner.begin(() => this.requestAutonomyBudgetHandoff());
   }
 
-  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void { this.owner.end(reason); }
+  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void { this.staleSubmissionCooldown = null; this.owner.end(reason); }
   private budgetElapsedMs(): number { return this.owner.elapsed(); }
   private autonomyBudgetStatus(): RuntimeStatus["autonomy_budget"] {
     return this.owner.status(() => this.requestAutonomyBudgetHandoff());
