@@ -108,7 +108,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pytest-${{ runner.os }}-${{ github.run_attempt }}
-          path: python/.local/pytest.xml
+          path: |
+            python/.local/pytest.xml
+            .local/checks/workspace-*.json
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
@@ -154,7 +156,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pytest-${{ runner.os }}-${{ github.run_attempt }}
-          path: python/.local/pytest.xml
+          path: |
+            python/.local/pytest.xml
+            .local/checks/workspace-*.json
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

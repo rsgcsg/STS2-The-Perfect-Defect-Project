@@ -143,6 +143,37 @@ Keep these categories distinct:
 A generic `Ready`, `CanPlay`, or `Finished` must not silently represent several
 categories.
 
+### Classify failures before choosing a repair
+
+Keep the original failure and locate the first incorrect fact, rather than naming
+the last exception or counting every failing test as a different defect. Write
+the intended guarantee, its owner, the producer-to-consumer path, the observed
+counterexample and one bounded experiment that could disprove the explanation.
+When the cause is unknown, label it unknown; do not call it flaky, harmless or
+architectural merely because a rerun differs or many tests fail.
+
+| Finding | Distinguishing evidence | Appropriate correction |
+| --- | --- | --- |
+| Implementation defect | The existing contract can express the required behavior; an owner emits or handles a wrong fact. | Repair that owner and regress the failure family, including its negative/cleanup path. |
+| Fixture or conformance defect | Production serialization or validation rejects the test's independently invented DTO, ordering or identity. | Use the actual producer/shared contract; preserve strict validation and the original rejection. |
+| Protocol defect | Correct participants cannot distinguish or express a required result, ordering, validity, scope or failure under the contract. | Revise the owning versioned contract and test both producer and consumer, including migration. |
+| Architecture defect | The selected information flow or allocation of responsibility cannot provide the guarantee, or multiple owners repeatedly reconstruct the same high-risk fact. | Demonstrate the incompatible flow or recurring duplication, change the responsible boundary and remove the workarounds. |
+| Cost or scope mismatch | Measured latency, memory, throughput, maintenance or coupling exceeds an explicit task budget even when behavior is correct. | Measure the bottleneck, compare bounded alternatives and record the required tradeoff; do not silently lower the promised outcome. |
+| Requirement ambiguity | There is no agreed observable outcome or two requirements conflict. | Resolve the material choice in the owning specification before dependent work. |
+
+A large diff, slow suite, many symptoms or one integration failure is a signal to
+investigate, not proof that the architecture is wrong. Test the suspected boundary
+against two structurally different real mechanisms when generalizing it. Inspect
+the actual native/external owner before importing assumptions from a similarly
+named object. A falsified explanation is useful evidence; discard its proposed
+patch instead of writing a test that makes the assumption appear true.
+
+Separate provenance from compatibility, seeded construction from immutable
+artifact equality, acknowledgement from termination, and termination from durable
+recoverability. The exact distinction depends on the domain; require the source
+and consumers to preserve it before treating a convenient status label as a
+universal fact. Historical hashes and outcomes stay immutable.
+
 ## 4. Causal change and abstraction admission
 
 Prefer the smallest **clean causal change**, not the smallest textual diff. A
@@ -239,6 +270,31 @@ with exact existing coverage; the PR names that coverage.
 Critical lifecycle fixtures use realistic identities, ordering, duplicate,
 stale, cancel, unknown, and final-auditor behavior. Simplified flags or direct
 root injection cannot prove a production lifecycle they bypass.
+
+### Prevent expensive discovery of cheap failures
+
+For each changed guarantee, name the lowest faithful check, the stronger evidence
+still needed, and the cost/stop boundary before execution. A green lower layer
+never removes the need for the higher layer that owns the claim. Use an actual
+producer/consumer short path early for crossed seams; faithful happy paths and
+stale/cancel/partial/unknown/cleanup counterexamples matter more than test count.
+Do not make every local repair depend on a new whole-system design exercise.
+
+Fail prerequisites early. After valid prerequisites, collect results from
+independent selected owners so the first failure does not hide later defects.
+Mark unavailable dependent stages blocked with their failed prerequisite; do not
+run them against stale generated output or report them skipped/passed. Cancellation
+ends execution. Any failed, cancelled or blocked required stage fails the overall
+gate. TESTING owns the exact executable inventory and source binding.
+
+Escaped defects must change the discovery path: add the cheapest faithful family
+regression, strengthen the crossed seam only where missing, and update its owning
+rule when the assumption was wrong. Repeated failures of the same assumption
+activate the existing L3 contract/architecture review; several unrelated defects
+do not automatically activate a general rewrite. Review whether the new check
+would have caught the preserved failure earlier and whether it still leaves a
+stated native, service or scientific unknown. Passing the newly added test alone
+does not answer those questions.
 
 ### Where tests run
 

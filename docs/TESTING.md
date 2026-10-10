@@ -126,6 +126,47 @@ The shared consumer precheck builds the Connector SDK and then Policy Runtime, s
 its real Agent-session tests also run from a fresh Python-scope checkout without
 depending on a previous full component build.
 
+### Execute by dependency and report every selected owner
+
+`tools/check-workspace.mjs` retains the existing full/Python component inventory.
+It runs repository/identity guards, then the shared SDK/Runtime build and the
+short S0 producer/consumer checks before the broad component/Python suites. A
+failed repository prerequisite blocks later stages. A failed generated-client
+build blocks its S0, Runtime, Workbench and Python consumers; unrelated owner
+checks still execute. An Annotator or S0 test failure no longer hides independent
+Evidence, Runtime or Python results. It never starts native actions.
+
+The summary distinguishes passed, failed, cancelled and blocked, with exact
+commands, exit codes/signals, durations and initial/final Git identity. Full and
+Python runs require an unchanged clean candidate. Focused component runs may use
+dirty development source, which remains explicitly recorded and cannot become a
+frozen full result. Cancellation prevents subsequent execution; any required
+failure or blocked stage keeps the aggregate failed. This changes diagnostic
+collection, not the dual-OS requirement, supported scope or scientific claims.
+CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
+on failure; the GitHub summary lists each reached or blocked stage. The existing
+successful execution receipt remains a separate artifact and is never generated
+from a failing diagnostic summary.
+
+Choose layers by the claim being falsified:
+
+| Layer | Cheapest useful evidence | What it cannot establish |
+| --- | --- | --- |
+| Static/unit | schema, calculation, bounds, identity and a local negative | actual cross-owner agreement or native semantics |
+| Component | real owner lifecycle, actual files/processes and cleanup | other independently implemented readers |
+| Contract/short integration | real producer bytes through the real SDK/reader, normal and negative paths | mocked native execution, lossless exposure, loaded identity |
+| Exact build/install/load | current game compilation and exact bytes admitted/observed in the owning runtime | successful continuous gameplay or learning |
+| Bounded native journey | one declared real attempt, full failure/stop/accounting and measured runtime | exhaustive mechanisms, Human origin or scientific usefulness |
+| Wider qualification | declared coverage, recovery/performance/product/data/model comparisons as needed | guarantees outside its fixed identity, scope and method |
+
+For timing and numeric claims, record the relevant environment and use measured
+budgets. A seed is not a universal promise of cross-platform tensor bytes; an
+immutable artifact still requires exact byte integrity on every reader. A
+requested stop is not proof of graceful termination or a durable checkpoint.
+If a test assumes either promise, verify that promise in the owner contract
+before adjusting its expected value. Retain the observed mismatch when correcting
+the scope of an invalid expectation.
+
 The Python scope still covers installed Platform consumers, application/research tests,
 SDK contracts, typecheck, CPU E2E and packaging. Platform never imports Python applications;
 repository boundary guards run in both scopes. This is owner-level routing, not yet a

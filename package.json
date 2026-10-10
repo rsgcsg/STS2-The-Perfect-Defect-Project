@@ -23,15 +23,15 @@
     "check:governance": "node --test tools/check-governance.test.mjs && node tools/check-governance.mjs",
     "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs && node tools/check-ci-contract.mjs",
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
-    "check:entrypoints": "node --test tools/root-entrypoints.test.mjs",
+    "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
     "check:boundaries": "node --test tools/check-boundaries.test.mjs && node tools/check-boundaries.mjs",
     "check:history": "node tools/check-migration-history.mjs && node tools/check-project-import.mjs",
-    "check:components": "npm --prefix components/connector run check && npm --prefix components/host-runtime run check && npm --prefix components/annotator run test && npm --prefix components/evidence run check && npm --prefix components/policy-runtime run check && npm --prefix apps/workbench run test && npm --prefix apps/ingame-ui run check && npm --prefix apps/game-mod run check",
+    "check:components": "node tools/check-workspace.mjs components",
     "project:context": "node tools/project-system.mjs context",
     "project:check": "node --test tools/project-system.test.mjs && node tools/project-system.mjs check",
     "project:closeout": "node tools/project-system.mjs closeout",
-    "check": "npm run project:check && npm run check:governance && npm run check:ci && npm run check:identity && npm run check:entrypoints && npm run check:bom && npm run check:boundaries && npm run check:history && npm run check:components && npm run check:s0 && npm run check:python",
+    "check": "node tools/check-workspace.mjs full",
     "check:exact-game": "npm --prefix components/connector run check && npm --prefix components/connector run build && npm --prefix components/annotator run check && npm --prefix apps/game-mod run build",
     "build": "npm --prefix components/policy-runtime run build && npm --prefix apps/game-mod run build",
     "doctor": "node tools/platform-doctor.mjs",
@@ -78,8 +78,9 @@
     "check:plan": "node tools/check-plan.mjs",
     "check:docs": "npm run check:repository && git diff --check",
     "check:repository": "npm run project:check && npm run check:governance && npm run check:ci && npm run check:identity && npm run check:entrypoints && npm run check:bom && npm run check:boundaries && npm run check:history",
-    "check:python-scope": "npm run check:repository && npm run check:s0 && npm run check:python",
+    "check:python-scope": "node tools/check-workspace.mjs python",
     "precheck:s0": "npm --prefix components/connector/sdk/typescript run build && npm --prefix components/policy-runtime run build",
-    "check:s0": "node --test tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
+    "check:s0": "npm run check:s0-tests",
+    "check:s0-tests": "node --test tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
   }
 }

@@ -79,9 +79,9 @@ Store pressure suite cannot substitute for this real-game test. Freeze at most
 deadline before dispatch. Failed prerequisites leave the real test unstarted;
 they do not authorize bypassing a required source/identity/runtime gate.
 
-Stop after this verification's success, failure or unresolved outcome and return a
-plain-language report. An unexplained final-gate failure leaves later levels
-unexecuted. Do not launch a second native attempt, actual fit/new Model/visible-model
+Stop after the real attempt's success, failure or unresolved outcome and return a
+plain-language report. An unexplained prerequisite failure leaves later levels
+unexecuted but does not consume the real attempt. Do not launch a second native attempt, actual fit/new Model/visible-model
 journey, paid cloud job, Human recording or whole-game research campaign. Do not
 merge/publish a release or clean historical branches as a side effect of this packet.
 
@@ -93,3 +93,46 @@ exact artifact/installed/load/native identities only where reached, safe owner e
 and independent review. Source/test/build/loaded/native/Human/research remain distinct.
 The present permission is a bounded engineering test, not approval of full G2/V1 or
 the unfinished 100–300 admitted N/new-learning delivery.
+
+## Clarified attempt accounting and engineering repair, 2026-10-10
+
+The owner clarified that **one attempt means one real native test targeting 100
+known deliveries**; preparation/CI failures are not that attempt. The first
+verification at `5259eaa4` stopped before installation with real 0/100, so the
+authorized real attempt remains unstarted. Its original failure report and
+Windows/Linux CI38022534114 remain immutable.
+
+The owner's subsequent request authorizes diagnosing and repairing the observed
+failures and applying general engineering methods to reduce repeated rework.
+This includes Annotator Close/hash/stream lifetime, truthful training
+cancellation/termination/checkpoint status, portable tests versus exact producer
+identity/numeric assumptions, and dependency-aware collection of existing
+selected check results. Canonical classification, test-layer and discovery rules
+belong in Governance/TESTING/Workflow rather than a new parallel authority or
+case-specific checklist. Routine prerequisite repair does not reset historical
+failures or authorize another native attempt, training, release or paid job.
+
+Root coordinates disjoint topic work based on the dependent exact 5259 candidate,
+reviews original source and full affected diff, owns shared identities and freezes
+one repaired candidate. Preserve all required assertions or explicitly correct an
+invalid promise with independent reference/consumer evidence; never merely change
+a hash, extend a deadline, skip a failing case or add consumer legality. Existing
+full dual-OS aggregate, exact-game/build/install/load and rollback requirements
+remain. A failed prerequisite stays failed until its owning correction is verified.
+
+Current evidence supports narrow owner/test-orchestration repairs, not replacing
+the overall architecture. Native8 establishes missing public card binding but
+does not identify its exact native holder/phase or verify the repaired runtime.
+The rejected disabled-Hitbox theory is preserved as a falsified explanation:
+native card-holder focus can create tips while clicking is unavailable. Public
+presentation, information entry and click/play legality remain different facts.
+Sampled Current does not prove lossless transient history; a 100-delivery success
+would remain a bounded sampled diagnostic and not full G2/V1/Human qualification.
+
+Before native dispatch, reconcile original UNKNOWN/control/process facts through
+their existing owners and create a distinct fresh world/runtime only where
+permitted. Never resume/retry Native8, clear its marker to unblock a command,
+rewrite original bytes or infer effects from known delivery. Keep the same
+100-known/200-original-submission/8-total-3-consecutive-known-stale/15-minute limits.
+An actual renewed native problem ends that one attempt safely; no automatic
+repair/restart or second native attempt follows it.

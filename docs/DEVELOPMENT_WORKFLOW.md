@@ -65,6 +65,15 @@ Integrate reviewed increments regularly; do not stockpile all work until the fin
 baseline gate. The baseline task index coordinates future work, not authority to
 merge, run or publish it.
 
+For a behavioral packet, record the observable guarantee, first owning fact,
+actual producer/consumer path, one falsifying example, faithful lowest-cost gate,
+mocked seams and stronger unproved claim. On failure use Governance's
+[classification rules](ENGINEERING_GOVERNANCE.md#classify-failures-before-choosing-a-repair)
+before choosing a local fix, contract change, boundary redesign or measured scope
+tradeoff. A repeated failure must improve its discovery path, not just add another
+outer-layer workaround. The selected check inventory and aggregate requirement
+remain in TESTING; task-specific real-attempt budgets remain in the active packet.
+
 1. Create a topic branch from current origin/develop; record exact base/head and owner.
    Implement the first owning correction, add the cheapest faithful regression, run the
    relevant component/root gates, closeout and diff review. Open a PR to develop.
