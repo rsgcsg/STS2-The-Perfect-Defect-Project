@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { fixtureProgress } from "./fixture-progress.js";
 import { AgentByteBudget } from "../src/agent-session-budget.js";
 import { AgentConsumptionLedger, type AgentAcquisition } from "../src/agent-session-consumption.js";
 import { AGENT_SESSION_SCHEMA, type AgentManifest } from "../src/agent-session-contracts.js";
@@ -129,24 +130,33 @@ describe("opaque Agent state wire, not numerical Model qualification", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("reserves the file-count bound for concurrently queued distinct state snapshots", async () => {
+    const progress = fixtureProgress("opaque-state-file-count");
     const root = await mkdtemp(join(tmpdir(), "agent-state-count-"));
     try {
       const evidence = await AgentRunEvidence.createSession({ root, agentManifest: shared.manifest,
         runtimeVersion: "fixture", runtimeCodeSha256: "a".repeat(64), mode: "human" });
+      progress("session-created"); let completed = 0;
       const raw = Buffer.from("s"), payload = makeAgentStatePayload(raw, 100);
       const outcomes = await Promise.allSettled(Array.from({ length: 130 }, (_, index) => {
         const distinct = structuredClone(metadata());
         distinct.consumption_id = `synthetic-${index}`;
         distinct.state_version = index + 1;
-        return evidence.storeAgentState(distinct, raw, payload.sha256);
+        return evidence.storeAgentState(distinct, raw, payload.sha256).then(receipt => {
+          completed++; if (completed % 32 === 0) progress("state-files-durable", { snapshots: completed, files: completed * 2 });
+          return receipt;
+        });
       }));
       expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(128);
       expect(outcomes.filter(outcome => outcome.status === "rejected")).toHaveLength(2);
       const files = (await readdir(evidence.directory)).filter(name => name.startsWith("agent-state-"));
       expect(files).toHaveLength(256);
       const result = await evidence.finalize({ status: "stopped", tainted: false, mode: "human" });
+      progress("finalized", { files: files.length });
       expect(result.files.filter(file => file.path.startsWith("agent-state-"))).toHaveLength(256);
       await verifyEvidenceDirectory(evidence.directory);
+      progress("independently-verified");
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  // Harness completion includes all 256 fsyncs and independent file verification;
+  // this is not a state-storage latency contract or a change to capacity.
+  }, 15000);
 });
