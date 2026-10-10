@@ -503,8 +503,9 @@ def test_registration_sqlite_failure_is_safe_unconfirmed_without_replay(
     with sqlite3.connect(storage_path) as database:
         database.execute("CREATE TABLE rows(body TEXT)")
     attempts = []
+    assert not app.models.private_root.exists()
 
-    def fail_verification(model_id, *, environment_kind):
+    def fail_verification(model_id, *, environment_kind, task):
         attempts.append((model_id, environment_kind))
         with sqlite3.connect(storage_path.as_uri() + "?mode=ro", uri=True) as database:
             database.execute("INSERT INTO rows VALUES ('synthetic')")
@@ -522,6 +523,9 @@ def test_registration_sqlite_failure_is_safe_unconfirmed_without_replay(
     assert str(storage_path) not in json.dumps(result)
     assert "Traceback" not in json.dumps(result)
     assert "sqlite_errorname=SQLITE_READONLY" in caplog.text
+    with sqlite3.connect(storage_path.as_uri() + "?mode=ro", uri=True) as database:
+        assert database.execute("SELECT COUNT(*) FROM rows").fetchone()[0] == 0
+    assert not app.models.private_root.exists()  # No registry or model artifact publication.
     assert call("/health", headers={}) == {"instance_id": app.instance_id}
     assert len(attempts) == 1
 

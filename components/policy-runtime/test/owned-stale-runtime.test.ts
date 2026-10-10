@@ -265,18 +265,26 @@ describe("continuous strict policy2 uses the original owner and fresh-decision f
       live_eligibility_proved: false });
   });
   it("records more than eight separated stale refusals without resetting total or replaying an original", async () => {
+    const progress = fixtureProgress("continuous-strict-nine-separated-stale");
     const f = await fixture({ continuous: true }); let index = 0;
+    progress("initialized");
     for (let i = 1; i <= 9; i++) {
       if (index) f.advance(index); f.behavior("stale");
       expect(await f.runtime.tick()).toMatchObject({ type: "fresh_decision_required" }); index++;
       f.advance(index++); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
+      progress("original-results-recorded", { stale_results: i,
+        original_submissions: f.runtime.status().autonomy_budget.submissions_used });
     }
     const events = await f.events(), submitted = f.calls.filter(c => c.operation === "submit");
+    progress("original-events-read", { durable_events: events.length });
     expect(events.filter(e => e.kind === "native_stale_decision_deferred").map(e => e.payload.known_stale_rejections)).toEqual([1,2,3,4,5,6,7,8,9]);
     expect(submitted).toHaveLength(18); expect(new Set(submitted.map(c => c.body.request_id)).size).toBe(18);
     expect(new Set(submitted.map(c => c.body.expected_snapshot_id)).size).toBe(18);
     expect(f.runtime.status()).toMatchObject({ mode: "auto", tainted: false, session: { state_version: 18, agent_state: "known" } });
-  });
+  // Same finite harness budget as the adjacent 15-submission OS-child/durable
+  // evidence regression. Keep all 18 submissions and the original 60s product
+  // wallet; phase records diagnose runner/filesystem/child cost without retries.
+  }, 15000);
   it("unchanged readiness only Awaits and a changed input must complete a new ACK and Next before Act", async () => {
     const f = await fixture({ continuous: true });
     expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
