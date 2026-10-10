@@ -248,6 +248,14 @@ parallel once shared semantics and examples are stable. One owner writes a share
 contract, lifecycle state machine or integration ref. A changed interface triggers
 an impact update for its consumers; no worker changes semantics merely to make
 its local test pass. Use real useful concurrency, not a target worker count.
+Freeze a common base and shared normal/negative examples before dependent implementation;
+workers can independently advance their owner paths without waiting for unrelated packets.
+The supervisor alone reconciles shared contract/ref/BOM changes and the local native slot.
+Accept useful increments by their next consumer's usable capability, not by the number of
+workers, commits or green tests. Native diagnosis, faithful old-model recovery, and data
+admission can proceed independently when each one's real prerequisites hold; none is a
+universal prerequisite merely because it was scheduled first. Resource budgets are one
+aggregate envelope for the round, never a fresh allowance per worker or resumed packet.
 
 Return exact head/artifact identity, behavior changed, actual checks and side
 effects, evidence scope, limitations, next consumer and remaining gate. Distinguish

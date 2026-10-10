@@ -1,5 +1,12 @@
 # Native structured M2 input, package and Agent
 
+Current selection and authorization live in the root
+[specification](../../docs/BASELINE_V1_SPEC.zh-CN.md) and
+[execution packet](../../docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
+Full-reference below names an existing package/InputSpec, not a universal current
+default. Sampled Current with segment carry is a separately identified candidate;
+neither changes old full-reference data, weights or exposure history.
+
 This guide owns the shared native structured projection/scorer and its synthetic
 source/conformance package contracts. [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
 owns real recording admission, views and trained Source3 lineage separately.
@@ -49,7 +56,7 @@ by changing a flag or schema.
 `models.native_structured_scorer` stages Consume, then commits W and the actual
 input/binding cache only after matching consume_ack. Unacknowledged state cannot
 score, export or authorize Next. Explicit new continuity starts zero W; a changed
-generation without that declared reset fails. The default Agent uses full-reference,
+generation without that declared reset fails. The full-reference Agent uses its declared InputSpec,
 once-per-occurrence and handoff on gap. Independent receipts do not update W.
 
 `policy.native_structured_export` creates a closed native package over the shared

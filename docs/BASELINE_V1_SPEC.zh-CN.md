@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.5 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.6 工作稿，2026-10-11。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -14,7 +14,7 @@
 
 G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们需要的 G2/V1 前置能力、接口、迁移与验收设计必须补齐。约 10k 合格交互的真实训练尝试、独立 K/Reset、backbone、N/Z/O 有界比较是保留的 Stage1a 义务，映射到本轮 E4/V1 的实际证据；不统一推迟到 R2，也不以小训练宣布完成。最强模型是研究目标，工程门不预先承诺胜率。
 
-必要游戏生命周期、隔离准备、安装、GitHub 和部署授权继续有效；累计 model/train/API/GPU 付费上限仍为 20 USD，前包支出 0，不是每个 worker 各有一份预算。共享存档、旧任务、凭据、数据/use/Gold 保持各自 owner。AI 可代执行功能步骤并标明实际来源，不能冒充 Human。
+必要游戏生命周期、隔离准备、安装及 GitHub 操作保持已授权范围。2026-10-11 用户授权本轮合计 20 USD GPU 资源；本轮已知支出 0、尚无 provider submission。所有 worker 共用此上限，不按任务或恢复轮次重置。前包累计 0 与更早 d6 M0 原回执 USD3.34482950 分属其原范围，历史实际费用不抹掉；本轮未核最终账单。生产部署、main/release 与破坏性权限未扩大。共享存档、旧任务、凭据、数据/use/Gold 保持各自 owner。AI 可代执行功能步骤并标明实际来源，不能冒充 Human。
 
 ### 设计调整的依据与当前选择
 
@@ -80,6 +80,32 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 具体目录与依赖见[组件](COMPONENTS.md)。名称调整须消除真实耦合，不为风格重写组件。
 
 共享抽象须由默认结构 M2 和另一实际查询/结构请求消费者共同检验。历史合成例子只能提供反例。新增机制扩 owning adapter，不另建模型仓库、原生动作队列、许可账本或因果 tracker。
+
+### 统一责任与允许差异的判定
+
+一套平台统一世界/公开操作权威、应用入口、控制/Stop、数据用途和任务归属；
+不要求所有 Agent 使用一个 wire、历史定义或动作粒度。旧完整评分组合是完整 Agent，
+不是只有 Model；忠实恢复旧组合可以检验共同抽象，不能把新采样语义套给旧权重。
+
+| 变化 | owning 位置与必须保留的边界 |
+| --- | --- |
+| 同样冻结事实的字段、编码、分块或 transport | SDK/端口 adapter；证明语义、顺序与重复处理一致，不改变曝光、记忆步或行动机会 |
+| 已合法取得的信息转文本/tensor、模型 scores 转原目录选择 | 表示/InputSpec adapter 与明示 chooser；线上/离线一致，保留完整 C，不加入未取得信息 |
+| 何时浏览、读取、调用模型、等待、返回或执行已选意图 | AgentSpec；固定或学习行为及成本可见。多步计划逐步复验原 owner/对象，意外分支重新决定或停止 |
+| 控制权、预算、进程端口、取消、结果核对和 Stop | Runtime driver；复用同一控制 owner，不在 Agent 外暗补策略，也不把 Runtime 嵌入另一个 Agent Runtime |
+| 改变公开范围、取得时点、动作粒度、中间机会、取消或失败含义 | versioned environment profile/owning contract；需要公平性、生产者/消费者、记录与迁移验证 |
+| 原始记录的重表达、截断、上下文或目标选择 | 研究投影/InputSpec/TargetSpec；保留原来源、缺口、分母与 use/split，明确它是派生训练假设 |
+
+例如旧 `Play(card,target)` 迁移到 Begin→Focus→Confirm，可属于显式 Agent 执行计划，
+但完整合法 card-target 关系必须来自 Connector/native owner。缺该关系时留在原 profile，
+或由 owner 设计另一个语义 profile；Agent 不得重建合法性。打开详情再返回不是免费 Query。
+查询冻结 chunks 不推进记忆；真实重访不能因正文 hash 相同被抹掉。
+
+旧 decision-only 端口与 native Agent-session 可以作为同一平台的不同 driver 并存。
+恢复 Public M2 必须保持原 segment/ordinal/digest、每个新观察一次 W 更新及 reset 规则；
+改变消费/ACK 或 sampled exposure 时声明新 Agent/InputSpec，权重可复用，资格不自动继承。
+当前 strict whole-basis 复验继续有效；观察身份与意图有效性是否解耦，只能由实际拒绝证据、
+明确 profile 与负例决定，不能静默换句柄、删复验或用稳定轮次/queue-idle猜原生就绪。
 
 ## 3. 默认交互语义与场景范围
 

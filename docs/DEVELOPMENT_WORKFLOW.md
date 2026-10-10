@@ -55,6 +55,25 @@ main/develop, force-push, bypass required CI or reuse an already merged topic br
 Root AGENTS.md and Engineering Governance own G0-G6; historical STPD classes are not a
 second governance system. A PR may cross components when one causal change requires it.
 
+### Shared baseline and independent increments
+
+For parallel work, pin one reviewed shared base and the contracts/examples each packet
+consumes. Each writer has a separate topic/worktree and private mutable state. Disjoint
+implementation, data inventory and review may proceed once their actual prerequisites
+are stable; a queued full CI job is not a universal dependency. TESTING owns diagnostics
+that may overlap isolated CI and the unchanged selected merge gates.
+
+The supervisor owns shared refs/contract changes/BOM and reconciles changed dependencies
+before integration. Independently review useful increments and integrate them regularly;
+a final system gate does not require stockpiling every compatible repair. A dependent
+unmerged candidate must be explicit. Do not let temporary workstreams become permanent
+component branches, or mutate a frozen build/profile used by another consumer.
+
+Legacy migration follows Governance's [consumer migration rule](ENGINEERING_GOVERNANCE.md#preserve-one-product-while-migrating-consumers):
+restore one real consumer path with parity and rollback, reuse common application/control/
+data/task owners, then evolve a declared profile. Keep unique old PR increments available
+until their callers and evidence are reconciled; closing all old PRs is not a delivery goal.
+
 ## Normal change and release sequence
 
 Before implementation, use the [governance investigation and placement rule](ENGINEERING_GOVERNANCE.md#investigate-before-placement-iterate-after-the-boundary-is-clear)

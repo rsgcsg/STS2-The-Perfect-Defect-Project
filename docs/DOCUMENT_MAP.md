@@ -11,6 +11,9 @@ not another requirements, identity or status registry.
 - [Execution and acceptance matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
   active packets, dependencies, authorization, budget and exact remaining gates.
 - [Task index](plans/BASELINE_TASKS.zh-CN.md): stable P/E/G/V/R IDs.
+- [Boundary round](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md):
+  latest supervisor authorization, native failure accounting and finite legacy
+  PR entry points; historical restrictions below its updates stay historical.
 - [Status](STATUS.md): dated claim/evidence index, including the latest bounded
   Source3 learning/Model delivery and historical operating combinations.
 - [Data/Host/model planning](plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md):
