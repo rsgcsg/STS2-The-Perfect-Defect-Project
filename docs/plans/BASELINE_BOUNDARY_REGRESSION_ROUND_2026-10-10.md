@@ -362,8 +362,8 @@ The closed compatibility source was independently accepted and normally merged a
 `e40…`, with56 integrated tests passing, but actual migration operation `f665…`
 interrupted after journalling derived intent `be827…`. At Root's read-only check,
 the new derived manifest/export were absent; original8eb/package/history remained
-unchanged and no automatic retry occurred. This does not assert that the original
-Model was never published or turn intent into a derived artifact. Diagnosis traced
+unchanged and no automatic retry occurred. This does not prove the derived manifest
+was never published or turn intent into a derived artifact. Diagnosis traced
 `_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
 `hasattr(publish)` had not established write capability. The author is repairing the
 owning mutable-publication/managed-workspace seam and explicit original-operation

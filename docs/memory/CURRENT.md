@@ -64,8 +64,8 @@ retried automatically and every new canary has a distinct explicit identity.
 
 In parallel, finish the explicit native-package migration and compare original/
 current locked inference before registration or gameplay promotion. Candidate CAS
-publication/export enables that comparison and is not qualification. Repair Paired
-Reward proof/limits before freezing a real cohort. Revalidate actual installed-reader and source gates,
+publication/export enables that comparison and is not qualification. Freeze and
+preflight the actual paired cohort/cost before real training. Revalidate actual installed-reader and source gates,
 then run fresh selected full dual-OS/portable CI for the coherent reviewed candidate.
 Old local/hosted successes do not pass a changed lock or new source. Local source/test,
 installed/runtime, data/learning and gameplay/quality claims remain separate;
