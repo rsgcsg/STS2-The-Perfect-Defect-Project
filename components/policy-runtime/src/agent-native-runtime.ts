@@ -832,7 +832,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const ineligible = dispatchBinding ? this.freshDecisionIneligibility(epoch, dispatchBinding) : "original_terminal_dispatch_binding";
       if (ineligible === null) {
         const policy = this.manifest.execution_policy!;
-        const limit = this.knownStaleRejections >= policy.max_known_stale_rejections ? "known_stale_rejection_limit"
+        const limit = policy.schema === "sts2.policy-runtime/agent-execution-policy-1"
+          && this.knownStaleRejections >= policy.max_known_stale_rejections ? "known_stale_rejection_limit"
           : this.consecutiveKnownStaleRejections >= policy.max_consecutive_known_stale_rejections ? "known_stale_streak_limit" : null;
         if (limit) await this.handoff(limit);
         else {

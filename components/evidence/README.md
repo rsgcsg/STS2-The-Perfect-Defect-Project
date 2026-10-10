@@ -3,6 +3,18 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
+The typed Agent-session verifier accepts explicitly declared execution policy1
+and continuous strict policy2. Public
+`SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` advertises those two implemented
+parsers as an immutable tuple. Policy2 retains original dispatch/result joins,
+changed-input ACK/Next fences and monotonic counters, with consecutive3 and
+recorded finite Runtime authorization; it removes only the separate lifetime
+stale threshold. Historical policy1 parsing and its deferral ceilings remain
+unchanged. This declaration proves implemented verification support, not live
+controller/budget eligibility or native legality. A policy2 collector requires
+the installed tuple to include schema2 before Host launch; terminal-summary API
+presence alone is insufficient, and there is no repository verifier fallback.
+
 The additive `SourceSessionBundleVerifier` verifies the explicit
 `source-session-bundle-v1` descriptor through `verify_source_session_bundle(path)`.
 It binds exact public observation and full catalogue bytes, source declaration

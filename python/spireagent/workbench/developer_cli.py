@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-choices", type=int, default=100)
     parser.add_argument("--max-submissions", type=int, default=100)
     parser.add_argument(
-        "--execution-policy", choices=("owned-current-known-stale-v1",),
+        "--execution-policy", choices=("owned-current-known-stale-v1", "progress-aware-strict-v2"),
         help="explicit reader-owned Current and bounded fresh decisions after known stale refusals",
     )
     parser.add_argument("--deadline-ms", type=int, default=900_000)

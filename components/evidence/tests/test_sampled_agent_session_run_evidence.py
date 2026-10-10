@@ -860,5 +860,137 @@ class OwnedStaleAgentSessionEvidenceTests(unittest.TestCase):
         f.terminal(f.submission(), delivery="delivered"); f.stop(); self.assert_fixture(f)
 
 
+class ContinuousStrictAgentSessionEvidenceTests(unittest.TestCase):
+    def fixture(self) -> OwnedStaleEvidenceFixture:
+        f = OwnedStaleEvidenceFixture()
+        self.addCleanup(f.close)
+        policy = json.loads(
+            (
+                ROOT / "policy-runtime/contracts/fixtures/continuous-strict-v2.json"
+            ).read_bytes()
+        )["execution_policy"]
+        f.f.agent["execution_policy"] = policy
+        return f
+
+    def verify(self, f: OwnedStaleEvidenceFixture, passed: bool = True):
+        result = verify_agent_session_run_evidence(f.directory)
+        self.assertEqual(result.passed, passed, result.findings)
+        return result
+
+    def test_public_supported_schemas_name_exactly_the_actual_v1_and_v2_parsers(
+        self,
+    ) -> None:
+        from sts2_platform_evidence import SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS
+
+        self.assertEqual(
+            SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS,
+            (
+                "sts2.policy-runtime/agent-execution-policy-1",
+                "sts2.policy-runtime/agent-execution-policy-2",
+            ),
+        )
+        for schema in SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS:
+            f = self.fixture()
+            if schema.endswith("-1"):
+                f.f.agent["execution_policy"] = copy.deepcopy(
+                    f.owned["execution_policy"]
+                )
+            f.terminal(f.submission(), delivery="delivered")
+            f.stop()
+            self.assertEqual(
+                self.verify(f).value.agent_manifest["execution_policy"]["schema"],
+                schema,
+            )
+
+    def test_v2_reconstructs_more_than_eight_separated_refusals_without_resetting_total(
+        self,
+    ) -> None:
+        f = self.fixture()
+        for i in range(9):
+            if i:
+                f.sample("map_a")
+            f.terminal(f.submission(), defer=True)
+            f.readiness()
+            f.sample("inspect_b")
+            f.terminal(f.submission(), delivery="delivered")
+        f.stop("external_stop")
+        summary = self.verify(f).value.terminal_summary
+        self.assertEqual(
+            (
+                summary["original_submission_count"],
+                summary["terminal_result_count"],
+                summary["known_delivered"],
+                summary["known_stale_rejections"],
+                summary["consecutive_known_stale_rejections"],
+            ),
+            (18, 18, 9, 9, 0),
+        )
+        self.assertFalse(summary["live_eligibility_proved"])
+        # The same new synthetic stream cannot be relabelled as archival8/3.
+        f.f.agent["execution_policy"] = copy.deepcopy(f.owned["execution_policy"])
+        f.f.write()
+        self.verify(f, False)
+
+    def test_v2_streak_threshold_and_late_stop_keep_original_counters(self) -> None:
+        f = self.fixture()
+        for i in range(3):
+            if i:
+                f.sample("inspect_b" if i == 1 else "map_c")
+            f.terminal(f.submission(), defer=i < 2)
+        f.stop("known_stale_streak_limit")
+        summary = self.verify(f).value.terminal_summary
+        self.assertEqual(
+            (
+                summary["known_stale_rejections"],
+                summary["consecutive_known_stale_rejections"],
+            ),
+            (3, 3),
+        )
+        late = self.fixture()
+        attempt = late.submission()
+        late.f.add(
+            "handoff_to_human",
+            reason="stopped",
+            autonomy_budget=late.f.budget,
+            controller="released",
+        )
+        late.terminal(attempt)
+        late.stop("stopped")
+        self.assertEqual(
+            self.verify(late).value.terminal_summary["known_stale_rejections"], 1
+        )
+
+    def test_v2_policy_budget_attribution_and_forged_deferral_remain_closed(
+        self,
+    ) -> None:
+        mutations = [
+            lambda f: f.f.agent["execution_policy"].update(
+                max_known_stale_rejections=8
+            ),
+            lambda f: f.f.agent["execution_policy"].update(
+                max_consecutive_known_stale_rejections=4
+            ),
+            lambda f: f.f.events[1]["payload"]["autonomy_budget"].update(deadline_ms=0),
+            lambda f: next(
+                e["payload"]["result"]
+                for e in f.f.events
+                if e["kind"] == "native_result"
+            )["attribution"].update(controller_generation=99),
+            lambda f: next(
+                e["payload"]
+                for e in f.f.events
+                if e["kind"] == "native_stale_decision_deferred"
+            ).update(known_stale_rejections=0),
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                f = self.fixture()
+                f.terminal(f.submission(), defer=True)
+                f.readiness()
+                f.stop()
+                mutation(f)
+                f.f.write()
+                self.verify(f, False)
+
 if __name__ == "__main__":
     unittest.main()

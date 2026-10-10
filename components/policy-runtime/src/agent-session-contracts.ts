@@ -5,8 +5,9 @@ export const AGENT_MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1" as c
 export const AGENT_SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1" as const;
 export const AGENT_SESSION_PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1" as const;
 export const AGENT_EXECUTION_POLICY_SCHEMA = "sts2.policy-runtime/agent-execution-policy-1" as const;
+export const AGENT_CONTINUOUS_STRICT_POLICY_SCHEMA = "sts2.policy-runtime/agent-execution-policy-2" as const;
 export const AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA = "sts2.policy-runtime/known-not-started-outcome-1" as const;
-export interface AgentExecutionPolicy {
+export interface AgentExecutionPolicyV1 {
   schema: typeof AGENT_EXECUTION_POLICY_SCHEMA;
   current_mode: "reader_owned_v1";
   known_stale: "fresh_changed_current_v1";
@@ -14,6 +15,14 @@ export interface AgentExecutionPolicy {
   max_known_stale_rejections: number;
   max_consecutive_known_stale_rejections: number;
 }
+export interface AgentContinuousStrictPolicy {
+  schema: typeof AGENT_CONTINUOUS_STRICT_POLICY_SCHEMA;
+  current_mode: "reader_owned_v1";
+  known_stale: "fresh_changed_current_v1";
+  operational_outcome: "known_not_started_v1";
+  max_consecutive_known_stale_rejections: 3;
+}
+export type AgentExecutionPolicy = AgentExecutionPolicyV1 | AgentContinuousStrictPolicy;
 export interface AgentOperationalOutcome {
   schema: typeof AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA;
   basis_acquisition_id: string;
@@ -142,6 +151,14 @@ export function sessionDigest(value: unknown): string {
   return value;
 }
 export function validateAgentExecutionPolicy(value: unknown): Readonly<AgentExecutionPolicy> {
+  if (sessionObject(value).schema === AGENT_CONTINUOUS_STRICT_POLICY_SCHEMA) {
+    const policy = sessionObject(value, ["schema", "current_mode", "known_stale", "operational_outcome",
+      "max_consecutive_known_stale_rejections"]);
+    if (policy.current_mode !== "reader_owned_v1" || policy.known_stale !== "fresh_changed_current_v1"
+      || policy.operational_outcome !== "known_not_started_v1" || policy.max_consecutive_known_stale_rejections !== 3)
+      throw new AgentSessionError("agent_execution_policy_unsupported");
+    return Object.freeze({ ...policy }) as unknown as Readonly<AgentContinuousStrictPolicy>;
+  }
   const policy = sessionObject(value, ["schema", "current_mode", "known_stale", "operational_outcome",
     "max_known_stale_rejections", "max_consecutive_known_stale_rejections"]);
   if (policy.schema !== AGENT_EXECUTION_POLICY_SCHEMA || policy.current_mode !== "reader_owned_v1" ||

@@ -13,6 +13,7 @@ from .agent_run_evidence import (
     verify_agent_run_evidence,
 )
 from .agent_session_run_evidence import (
+    SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS,
     AgentSessionRunEvidence,
     AgentSessionRunEvidenceVerifier,
     detect_agent_session_run_type,
@@ -63,6 +64,7 @@ from .transfer import (
 )
 
 __all__ = [
+    "SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS",
     "SourceSessionBundleV3",
     "SourceSessionBundleV3Verifier",
     "verify_source_session_bundle_v3",

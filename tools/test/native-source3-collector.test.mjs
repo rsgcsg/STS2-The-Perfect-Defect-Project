@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createCollectionLifetime, createPipePeer, observeNativeCurrentFailure, OWNED_EXECUTION_POLICY, OWNED_PIPE_SCHEMA,
+  CONTINUOUS_EXECUTION_POLICY, CONTINUOUS_PIPE_SCHEMA,
   PIPE_SCHEMA, runNativeSource3, runtimeTerminationReason, validateFreshDecisionTick, validateOptions, validateTerminalSummary,
   verifiedTerminalSummary }
   from "../native-source3-collector.mjs";
@@ -117,6 +118,23 @@ test("only an explicit owned-current policy permits200 attempts; its omitted bud
     { ...owned, execution_policy: null }, { ...owned, execution_policy: {} },
     { ...owned, execution_policy: { ...OWNED_EXECUTION_POLICY, max_known_stale_rejections: 16 } }])
     assert.throws(() => validateOptions(invalid));
+});
+
+test("continuous strict selection is a distinct v4 family with finite unchanged pilot budgets and an explicit target", () => {
+  const target = { kind: "bounded_known_delivered_choices", known_delivered_choices: 100, natural_summary_required: false };
+  const selected = { ...options, execution_policy: { ...CONTINUOUS_EXECUTION_POLICY }, termination_target: target };
+  assert.equal(validateOptions(selected).max_submissions, 100);
+  assert.equal(validateOptions({ ...selected, max_submissions: 200 }).target_choices, 100);
+  assert.equal(CONTINUOUS_PIPE_SCHEMA, "spireagent/native-source3-collector-pipe-v4");
+  assert.equal(OWNED_EXECUTION_POLICY.max_known_stale_rejections, 8);
+  for (const invalid of [
+    { ...selected, termination_target: { ...target, natural_summary_required: true } },
+    { ...selected, termination_target: { ...target, known_delivered_choices: 99 } },
+    { ...selected, termination_target: { ...target, extra: true } },
+    { ...selected, execution_policy: { ...CONTINUOUS_EXECUTION_POLICY, max_known_stale_rejections: 8 } },
+    { ...selected, max_submissions: 201 }, { ...selected, deadline_ms: 900001 },
+    { ...selected, execution_policy: OWNED_EXECUTION_POLICY },
+  ]) assert.throws(() => validateOptions(invalid));
 });
 
 test("fresh decisions trust only the declared Runtime owner tick joined to its original terminal projection", () => {

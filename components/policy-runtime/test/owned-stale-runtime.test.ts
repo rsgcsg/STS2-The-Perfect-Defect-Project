@@ -18,16 +18,18 @@ import { fixtureProgress } from "./fixture-progress.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8")).execution_policy;
+const continuousPolicy = JSON.parse(readFileSync(new URL("../contracts/fixtures/continuous-strict-v2.json", import.meta.url), "utf8")).execution_policy;
 const child = fileURLToPath(new URL("./fixtures/sampled-agent-child.mjs", import.meta.url));
 const cleanup: (() => Promise<void>)[] = [];
 function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 
 // Real SDK assembly/dispatch and OS Ndjson child, with explicitly scripted
 // source/authority responses. This does not replace the real C# Store pressure gate.
-async function fixture(options: { legacy?: boolean; maxSubmissions?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
+async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "owned-stale-runtime-")), source = new SyntheticNativeHttp(1, "interactive", options.failRenewal ? 1000 : 120000);
   const manifest = structuredClone(shared.manifest) as AgentManifest;
-  if (!options.legacy) { manifest.execution_policy = structuredClone(policy); manifest.requirements.required_methods.push("current_owned"); }
+  const selectedPolicy = options.continuous ? continuousPolicy : policy;
+  if (!options.legacy) { manifest.execution_policy = structuredClone(selectedPolicy); manifest.requirements.required_methods.push("current_owned"); }
   let teacherPython: string | undefined;
   if (options.teacher) {
     const candidates = process.env.E6_OWNED_STALE_TEACHER_PYTHON ? [process.env.E6_OWNED_STALE_TEACHER_PYTHON]
@@ -37,7 +39,7 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
     }
     if (!teacherPython) throw new Error("existing Python3.11 source-test interpreter required");
     const code = "import json,sys\nfrom pathlib import Path\nfrom stpd.policy.native_teacher_agent import descriptor,write_artifact\np=json.loads(sys.argv[2]);d=descriptor(execution_policy=p);a=write_artifact(Path(sys.argv[1]),execution_policy=p)\nassert 'torch' not in sys.modules\nprint(json.dumps(dict(artifact=a,adapter=d['adapter'],version=d['agent_spec']['version'],input_spec=d['input_spec'])))";
-    const descriptor = JSON.parse(execFileSync(teacherPython, ["-c", code, join(root, "private-teacher-code.json"), JSON.stringify(policy)],
+    const descriptor = JSON.parse(execFileSync(teacherPython, ["-c", code, join(root, "private-teacher-code.json"), JSON.stringify(selectedPolicy)],
       { encoding: "utf8", timeout: 10000, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } }));
     manifest.adapter = descriptor.adapter; manifest.artifact = descriptor.artifact; manifest.input.input_spec = descriptor.input_spec;
     manifest.agent = { id: "stpd-native-public-program-teacher", version: descriptor.version, provider: "programmed_teacher", architecture: "finite_public_program" };
@@ -47,6 +49,7 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
   const calls: { operation: string; body: JsonObject }[] = [], releases: string[] = [], handles = new Set<string>();
   let serial = 0, clock = 0, behavior: "stale" | "delivered" | "unknown" | "partial" | "pending" = "stale";
   let submitGate: ReturnType<typeof gate> | undefined;
+  let awaitGate: ReturnType<typeof gate> | undefined;
   let onSubmit: (() => void) | undefined, failRelease: ((id: string) => boolean) | undefined;
   const applyFrame = (name: string) => {
     const frame = structuredClone(shared.frames[name]); source.observation = frame.observation; source.capture = frame.capture;
@@ -70,6 +73,7 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
     nativeLogicalRequest: async (operation: NativeLogicalTransportOperation, body: JsonObject = {}, transportOptions: NativeLogicalTransportOptions = {}) => {
       transportOptions.signal?.throwIfAborted(); calls.push({ operation, body: structuredClone(body) });
       if (operation === "submit") { onSubmit?.(); await submitGate?.promise; }
+      if (operation === "await") await awaitGate?.promise;
       let response;
       if (operation === "current_owned") {
         source.capture.capture_id = "owned-capture-" + ++serial;
@@ -105,7 +109,7 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
   port.next = (...args) => { inputs.push(structuredClone(args[1])); return next(...args); };
   let runtime: NativeAgentRuntimeOwner;
   try { runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence, mode: "auto", monotonicNow: () => clock,
-    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: 1000, deadlineMs: 60000 } }); }
+    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: options.maxPolicyCalls ?? 1000, deadlineMs: options.deadlineMs ?? 60000 } }); }
   catch (error) { const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString(); await closePort(); await rm(root, { recursive: true, force: true }); throw new Error(String(error) + "\n" + diagnostics, { cause: error }); }
   cleanup.push(async () => { await runtime.stop().catch(() => undefined); await closePort(); await rm(root, { recursive: true, force: true }); });
   const events = async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
@@ -118,8 +122,9 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
   return { runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
     manifest: structuredClone(manifest),
     behavior: (value: typeof behavior) => { behavior = value; }, holdSubmit: () => { submitGate = gate(); return submitGate; },
+    holdAwait: () => { awaitGate = gate(); return awaitGate; },
     onSubmit: (fn: () => void) => { onSubmit = fn; }, failRelease: (fn: (id: string) => boolean) => { failRelease = fn; },
-    expire: () => { clock = 60000; } };
+    expire: () => { clock = options.deadlineMs ?? 60000; } };
 }
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0)) await close(); });
 
@@ -238,5 +243,111 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     vi.spyOn(f.evidence, "finalize").mockRejectedValue(new Error("finalize disk failure"));
     await expect(f.runtime.stop()).rejects.toThrow();
     expect(before.every(id => f.releases.includes(id))).toBe(true); expect(f.runtime.status()).toMatchObject({ lifecycle: "stopped", tainted: true, controller: "released" }); expect(f.port.byteBudget.used).toBe(0);
+  });
+});
+
+
+describe("continuous strict policy2 uses the original owner and fresh-decision fences", () => {
+  it("joins the actual v2 Teacher Runtime bytes to the independent typed Evidence parser", async () => {
+    const f = await fixture({ continuous: true, teacher: true });
+    expect(f.port.executionPolicy).toEqual(continuousPolicy);
+    expect(f.manifest.agent.version).toBe("1.7.0");
+    expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    expect((await f.runtime.tick()).type).toBe("awaited");
+    f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
+    await f.runtime.stop();
+    const python = process.env.E6_OWNED_STALE_TEACHER_PYTHON ?? "python3";
+    const check = "import json,sys\nfrom pathlib import Path\nfrom sts2_platform_evidence import verify_agent_session_run_evidence\nv=verify_agent_session_run_evidence(Path(sys.argv[1]));assert v.passed,v.findings\nprint(json.dumps(v.require_value().terminal_summary))";
+    const summary = JSON.parse(execFileSync(python, ["-c", check, f.evidence.directory], { encoding: "utf8", timeout: 10000,
+      env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../evidence", import.meta.url)) } }));
+    expect(summary).toMatchObject({ original_submission_count: 2, terminal_result_count: 2,
+      known_delivered: 1, known_stale_rejections: 1, consecutive_known_stale_rejections: 0,
+      live_eligibility_proved: false });
+  });
+  it("records more than eight separated stale refusals without resetting total or replaying an original", async () => {
+    const f = await fixture({ continuous: true }); let index = 0;
+    for (let i = 1; i <= 9; i++) {
+      if (index) f.advance(index); f.behavior("stale");
+      expect(await f.runtime.tick()).toMatchObject({ type: "fresh_decision_required" }); index++;
+      f.advance(index++); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
+    }
+    const events = await f.events(), submitted = f.calls.filter(c => c.operation === "submit");
+    expect(events.filter(e => e.kind === "native_stale_decision_deferred").map(e => e.payload.known_stale_rejections)).toEqual([1,2,3,4,5,6,7,8,9]);
+    expect(submitted).toHaveLength(18); expect(new Set(submitted.map(c => c.body.request_id)).size).toBe(18);
+    expect(new Set(submitted.map(c => c.body.expected_snapshot_id)).size).toBe(18);
+    expect(f.runtime.status()).toMatchObject({ mode: "auto", tainted: false, session: { state_version: 18, agent_state: "known" } });
+  });
+  it("unchanged readiness only Awaits and a changed input must complete a new ACK and Next before Act", async () => {
+    const f = await fixture({ continuous: true });
+    expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    expect((await f.runtime.tick()).type).toBe("awaited");
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
+    expect(f.runtime.status().session.state_version).toBe(1);
+    f.advance(2); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
+    const events = await f.events(), submitted = events.filter(e => e.kind === "native_submission_requested");
+    expect(submitted).toHaveLength(2);
+    const second = submitted[1], next = events.filter(e => e.kind === "agent_sample_next_completed" && e.sequence < second.sequence).at(-1);
+    expect(next.payload.output.state_version).toBe(2);
+    expect(second.payload.basis_acquisition_id).not.toBe(submitted[0].payload.basis_acquisition_id);
+  });
+  it("stops exactly on the third consecutive refusal and keeps all three original results", async () => {
+    const f = await fixture({ continuous: true });
+    expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    f.advance(1); expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    f.advance(2); expect(await f.runtime.tick()).toMatchObject({ type: "not_delivered", reason: "known_stale_streak_limit" });
+    const events = await f.events();
+    expect(events.filter(e => e.kind === "native_result")).toHaveLength(3);
+    expect(events.filter(e => e.kind === "native_stale_decision_deferred").map(e => e.payload.consecutive_known_stale_rejections)).toEqual([1,2]);
+    expect(f.runtime.status().mode).toBe("human");
+  });
+  it.each(["submission", "policy_call", "deadline"] as const)("the existing finite %s budget fences policy2", async kind => {
+    const f = await fixture({ continuous: true, ...(kind === "submission" ? { maxSubmissions: 1 }
+      : kind === "policy_call" ? { maxPolicyCalls: 1 } : {}) });
+    if (kind === "deadline") f.expire();
+    await f.runtime.tick();
+    expect(f.runtime.status()).toMatchObject({ mode: "human", autonomy_budget: { state: "exhausted",
+      exhausted_reason: kind === "submission" ? "submission_attempt_limit" : kind === "policy_call" ? "policy_call_limit" : "deadline" } });
+    expect((await f.events()).filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(0);
+    // The last admitted policy call may complete its one Act; it cannot start
+    // another Next/fresh decision once that finite call budget is spent.
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(kind === "deadline" ? 0 : 1);
+    if (kind === "policy_call") expect(f.runtime.status().autonomy_budget.policy_calls_used).toBe(1);
+  });
+  it.each(["human", "stop", "deadline"] as const)("late stale after %s still counts and cannot reacquire", async winner => {
+    const f = await fixture({ continuous: true }), held = f.holdSubmit(); let entered!: () => void;
+    const entering = new Promise<void>(resolve => { entered = resolve; }); f.onSubmit(entered);
+    const tick = f.runtime.tick(); await entering;
+    const ending = winner === "human" ? f.runtime.setMode("human") : winner === "stop" ? f.runtime.stop() : Promise.resolve(f.expire());
+    held.release(); await tick; await ending;
+    const events = await f.events(); expect(events.filter(e => e.kind === "native_result")).toHaveLength(1);
+    expect(events.filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(0);
+    expect(f.runtime.status().mode).toBe("human");
+    expect(events.filter(e => e.kind === "controller_acquired")).toHaveLength(1);
+  });
+  it.each(["unknown", "partial"] as const)("%s delivery remains tainted and never continues", async behavior => {
+    const f = await fixture({ continuous: true }); f.behavior(behavior); await f.runtime.tick();
+    expect(f.runtime.status()).toMatchObject({ mode: "human", tainted: true });
+    expect((await f.events()).filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(0);
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
+  });
+  it.each(["hang_after_query", "hang_after_ack"] as const)("Stop fences a pending %s Next before scorer/Act completion", async scenario => {
+    const f = await fixture({ continuous: true, scenario });
+    const tick = f.runtime.tick();
+    await vi.waitFor(() => expect(f.calls.some(c => c.operation === "current_owned")).toBe(true));
+    if (scenario === "hang_after_ack") await vi.waitFor(() => expect(f.runtime.status().session.state_version).toBe(1));
+    await f.runtime.stop(); await tick.catch(() => undefined);
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(0);
+    expect(f.runtime.status()).toMatchObject({ mode: "human", lifecycle: "stopped", controller: "released" });
+  });
+  it("Stop cancels an owned unchanged Await without another consumption or submission", async () => {
+    const f = await fixture({ continuous: true });
+    expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    const held = f.holdAwait();
+    const tick = f.runtime.tick();
+    await vi.waitFor(() => expect(f.calls.some(c => c.operation === "await")).toBe(true));
+    const stop = f.runtime.stop(); held.release(); await stop; await tick.catch(() => undefined);
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
+    expect(f.runtime.status()).toMatchObject({ mode: "human", lifecycle: "stopped", controller: "released" });
+    expect((await f.events()).filter(e => e.kind === "agent_consumed")).toHaveLength(1);
   });
 });

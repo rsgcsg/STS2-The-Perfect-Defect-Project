@@ -31,6 +31,10 @@ RUN_SCHEMA = "sts2.policy-runtime/agent-session-run-1"
 EVENT_SCHEMA = "sts2.policy-runtime/agent-session-event-1"
 MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1"
 ATTESTATION_SCHEMA = "sts2.policy-runtime/agent-session-adapter-attestation-1"
+SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS = (
+    "sts2.policy-runtime/agent-execution-policy-1",
+    "sts2.policy-runtime/agent-execution-policy-2",
+)
 TYPE_ID = "policy-runtime-agent-session-run"
 PROFILE = "native-logical-v1"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
@@ -264,9 +268,18 @@ def _environment(value: object) -> dict[str, Any]:
 
 
 def _execution_policy(value: object) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("schema") == SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS[1]:
+        policy = _object(value, _EXECUTION_POLICY_FIELDS - {"max_known_stale_rejections"})
+        _require(policy["current_mode"] == "reader_owned_v1"
+                 and policy["known_stale"] == "fresh_changed_current_v1"
+                 and policy["operational_outcome"] == "known_not_started_v1"
+                 and type(policy["max_consecutive_known_stale_rejections"]) is int
+                 and policy["max_consecutive_known_stale_rejections"] == 3,
+                 "native_session_execution_policy")
+        return policy
     policy = _object(value, _EXECUTION_POLICY_FIELDS)
     _require(
-        policy["schema"] == "sts2.policy-runtime/agent-execution-policy-1"
+        policy["schema"] == SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS[0]
         and policy["current_mode"] == "reader_owned_v1"
         and policy["known_stale"] == "fresh_changed_current_v1"
         and policy["operational_outcome"] == "known_not_started_v1",
@@ -1785,7 +1798,8 @@ class AgentSessionRunEvidenceVerifier:
                          == last_report["state_version"], "native_session_deferred_owner_prefix")
                 _require(payload["known_stale_rejections"] == known_stale_rejections
                          and payload["consecutive_known_stale_rejections"] == consecutive_known_stale_rejections
-                         and known_stale_rejections < policy["max_known_stale_rejections"]
+                         and (policy["schema"] == "sts2.policy-runtime/agent-execution-policy-2"
+                              or known_stale_rejections < policy["max_known_stale_rejections"])
                          and consecutive_known_stale_rejections < policy["max_consecutive_known_stale_rejections"],
                          "native_session_deferred_counts")
                 # Recorded control/mode/budget state is checked; neither this

@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.native_graph_spec import NativeGraphControl
 from stpd.native_sampled_carry_spec import sampled_agent_execution_policy, sampled_agent_spec
+from stpd.policy import native_operational_outcome_v2 as continuous_contract
 from stpd.policy import native_teacher_agent as module
 from stpd.policy.native_operational_outcome import (
     checked_execution_policy,
@@ -30,6 +31,7 @@ from stpd.policy.native_operational_outcome import (
     manifest_execution_policy,
     owned_current_known_stale_policy,
 )
+from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
 from stpd.policy.native_public_teacher import NativePublicTeacher
 
 REPO = Path(__file__).resolve().parents[2]
@@ -878,6 +880,157 @@ class PureOperationalContractTests(unittest.TestCase):
             namespace["begin_sampled_next"](child, value)
         child.last_intention = child.last_outcome = None
         self.assertEqual(namespace["begin_sampled_next"](child, legacy), legacy)
+
+class ContinuousStrictTeacherTests(unittest.TestCase):
+    def fixture(self):
+        base = OwnedStaleTeacherTests()
+        base.setUp()
+        self.addCleanup(base.tearDown)
+        self.addCleanup(base.doCleanups)
+        base.policy = progress_aware_strict_policy()
+        base.manifest["artifact"] = module.write_artifact(
+            base.root / "continuous-code.json", execution_policy=base.policy
+        )
+        base.manifest["adapter"] = module.descriptor(execution_policy=base.policy)["adapter"]
+        base.manifest["execution_policy"] = copy.deepcopy(base.policy)
+        base.path.write_bytes(json_bytes(base.manifest))
+        base.agent = module.NativeTeacherAgent(base.path)
+        return base
+
+    def test_exact_new_teacher_composition_preserves_input_and_never_upgrades_legacy(self):
+        legacy = module.descriptor()
+        old = module.descriptor(execution_policy=owned_current_known_stale_policy())
+        new = module.descriptor(execution_policy=progress_aware_strict_policy())
+        self.assertEqual(
+            (old["agent_spec"]["version"], old["agent_spec"]["teacher"]["version"]),
+            ("1.6.0", "1.0.10"),
+        )
+        self.assertEqual(
+            (new["agent_spec"]["version"], new["agent_spec"]["teacher"]["version"]),
+            ("1.7.0", "1.0.11"),
+        )
+        self.assertEqual(new["adapter"]["version"], "1.7.0")
+        self.assertEqual(new["input_spec"], legacy["input_spec"])
+        self.assertEqual(new["agent_spec"]["model_bindings"], [])
+        self.assertFalse(new["agent_spec"]["learned"])
+        self.assertNotIn("execution_policy", legacy["agent_spec"])
+        self.assertEqual(
+            continuous_contract.checked_execution_policy(progress_aware_strict_policy()),
+            progress_aware_strict_policy(),
+        )
+        for field in ("max_known_stale_rejections", "retry"):
+            with self.assertRaises(BoundaryError):
+                continuous_contract.checked_execution_policy(
+                    progress_aware_strict_policy() | {field: 8}
+                )
+        for streak in (0, 2, 4, True):
+            with self.assertRaises(BoundaryError):
+                continuous_contract.checked_execution_policy(
+                    progress_aware_strict_policy()
+                    | {"max_consecutive_known_stale_rejections": streak}
+                )
+
+    def test_v2_same_unit_waits_and_new_exact_ack_keeps_original_intention_correction(self):
+        base = self.fixture()
+        base.consume(current(1))
+        notice = base.notice()
+        base.agent.begin_next(notice)
+        before = base.agent.teacher.state()
+        kind, output = base.agent.propose_current(current(1), notice)
+        self.assertEqual((kind, output["directive"]["type"]), ("directive", "await"))
+        self.assertEqual(base.agent.teacher.state(), before)
+        fresh = current(2, actions=[action("new-open-deck", "open_run_deck")])
+        kind, report = base.agent.propose_current(fresh, notice)
+        self.assertEqual(kind, "consumed")
+        wrong = ack(report)
+        wrong["acquisition_id"] = "foreign"
+        with self.assertRaises(BoundaryError):
+            base.agent.acknowledge(wrong)
+        self.assertEqual(base.agent.teacher.state(), before)
+        base.agent.acknowledge(ack(report))
+        self.assertEqual(base.agent.state_version, 2)
+        self.assertIsNone(base.agent.pending_outcome)
+        output = base.agent.directive(notice)
+        self.assertEqual(output["directive"]["selection"]["action_id"], "new-open-deck")
+        bad = copy.deepcopy(notice)
+        bad["operational_outcome"]["result"]["delivery"] = "unknown"
+        with self.assertRaises(BoundaryError):
+            base.agent.begin_next(bad)
+
+    def test_actual_learned_composer_cannot_upgrade_an_existing_v1_package_to_v2(self):
+        from stpd.native_sampled_carry_spec import INPUT_SPEC as SAMPLED_INPUT_SPEC
+
+        control = NativeGraphControl()
+        metadata = {
+            "input_spec": SAMPLED_INPUT_SPEC,
+            "agent_spec": sampled_agent_spec(
+                control, execution_policy=owned_current_known_stale_policy()
+            ),
+        }
+        tree = ast.parse((REPO / "python/stpd/policy/native_agent.py").read_text(encoding="utf-8"))
+        function = next(
+            n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "bind_native_agent"
+        )
+        namespace = {
+            "Any": object,
+            "Path": Path,
+            "BoundaryError": BoundaryError,
+            "load_native_package": lambda path: (metadata, SimpleNamespace(model_control=control)),
+            "SAMPLED_INPUT_SPEC": SAMPLED_INPUT_SPEC,
+            "checked_execution_policy": checked_execution_policy,
+            "sampled_agent_execution_policy": sampled_agent_execution_policy,
+        }
+        # Production composition guard; package loading is the declared mocked
+        # seam, so this proves neither weight integrity nor numerical inference.
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), "actual-native-composer", "exec"),
+            namespace,
+        )
+        # The unchanged learned v1 parser rejects policy2 before creating any
+        # manifest, even though the new Teacher explicitly supports policy2.
+        with self.assertRaises(BoundaryError):
+            namespace["bind_native_agent"](
+                Path("unused-existing-package"),
+                Path("unused-manifest"),
+                manifest_id="new-composition",
+                requirements={},
+                support={},
+                required_seams=[],
+                execution_policy=progress_aware_strict_policy(),
+            )
+        self.assertEqual(
+            sampled_agent_execution_policy(metadata["agent_spec"], control),
+            owned_current_known_stale_policy(),
+        )
+
+    def test_v2_wrapper_preserves_declared_manifest_and_full_outcome_without_touching_v1_globals(
+        self,
+    ):
+        base = self.fixture()
+        base.consume(current(1))
+        notice = base.notice(observed=True)
+        manifest_before, notice_before = json_bytes(base.manifest), json_bytes(notice)
+        checker = checked_next_input
+        self.assertEqual(
+            continuous_contract.manifest_execution_policy(base.manifest),
+            progress_aware_strict_policy(),
+        )
+        clean, outcome = continuous_contract.checked_next_input(
+            notice,
+            execution_policy=progress_aware_strict_policy(),
+            intention=base.agent.last_intention,
+        )
+        self.assertEqual(json_bytes(base.manifest), manifest_before)
+        self.assertEqual(json_bytes(notice), notice_before)
+        self.assertEqual(json_bytes(outcome), json_bytes(notice["operational_outcome"]))
+        self.assertNotIn("max_known_stale_rejections", clean)
+        self.assertIs(checked_next_input, checker)
+        with self.assertRaises(BoundaryError):
+            checked_execution_policy(progress_aware_strict_policy())
+        self.assertIn("stpd/policy/native_operational_outcome_v2.py", module.CODE_FILES)
+        from stpd.native_code_scope import PATHS
+
+        self.assertNotIn("stpd/policy/native_operational_outcome_v2.py", PATHS)
 
 if __name__ == "__main__":
     unittest.main()
