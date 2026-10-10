@@ -67,7 +67,7 @@ try {
   c.supported_methods = [...new Set([...c.supported_methods, "capabilities", "submit", "result", "current_owned"])];
   c.implemented_mechanisms = [...new Set([...c.implemented_mechanisms, "native_current_reader_owned_v1"])];
   c.capture_coverage = clone(sdk.NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams); c.limits.max_captures = 4;
-  c.host = { ...c.host, host_kind: "test", version: "SYN_fixture", implementation: {
+  c.host = { ...c.host, runtime_instance_id: runtimeId, host_kind: "test", version: "SYN_fixture", implementation: {
     source_revision: "SYN_source", module_version_id: "SYN_module", artifact_sha256: "f".repeat(64) } };
   c.game = { ...c.game, version: "SYN_game", commit: "SYN_commit", modset: { ...c.game.modset, fingerprint: "b".repeat(64) } };
   const subscription = { ...clone(wire.attach.subscription), stream_generation: stream, eager_scope: [], delivery_mode: "scoped",
