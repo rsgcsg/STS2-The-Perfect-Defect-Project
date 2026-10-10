@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,8 +25,11 @@ from stpd.policy import native_agent
 assert sys.flags.utf8_mode == 0
 assert isinstance(sys.stdin, io.TextIOWrapper) and isinstance(sys.stdout, io.TextIOWrapper)
 assert sys.stdin.encoding == sys.stdout.encoding == "cp1252"
-sys.stderr.write("probe_pid=%d initial_stdio=cp1252 utf8_mode=0\n" % os.getpid())
-sys.stderr.flush()
+# This test-owned diagnostic uses binary LF framing independently of the
+# production stdout wire and the initial cp1252 TextIOWrappers.
+sys.stderr.buffer.write(("probe_pid=%d parent_pid=%d initial_stdio=cp1252 utf8_mode=0\n"
+                         % (os.getpid(), os.getppid())).encode("ascii"))
+sys.stderr.buffer.flush()
 
 class ProbeAgent:
     # Only numerical/package construction is replaced. The production main,
@@ -42,6 +46,22 @@ class ProbeAgent:
 native_agent.NativeStructuredAgent = ProbeAgent
 raise SystemExit(native_agent.main())
 '''
+
+
+def probe_pid(diagnostic: bytes, launcher_pid: int, *, windows: bool) -> int:
+    first_line, delimiter, _ = diagnostic.partition(b"\n")
+    assert delimiter == b"\n", diagnostic
+    header = first_line + delimiter
+    match = re.fullmatch(
+        rb"probe_pid=([1-9][0-9]*) parent_pid=([1-9][0-9]*) "
+        rb"initial_stdio=cp1252 utf8_mode=0\n", header,
+    )
+    assert match is not None, diagnostic
+    interpreter_pid, parent_pid = map(int, match.groups())
+    # Windows venv python.exe may be a redirector that owns the actual Python
+    # subprocess. Require its observed parent relation, not any positive PID.
+    assert interpreter_pid == launcher_pid or (windows and parent_pid == launcher_pid), header
+    return interpreter_pid
 
 
 def run_stdio(payload: bytes, tmp_path: Path) -> tuple[int, bytes, bytes]:
@@ -65,10 +85,28 @@ def run_stdio(payload: bytes, tmp_path: Path) -> tuple[int, bytes, bytes]:
         (tmp_path / "stderr.bin").write_bytes(diagnostic)
         (tmp_path / "exit.txt").write_text(
             f"pid={child.pid} exit={child.returncode}\n", encoding="ascii")
-        assert f"probe_pid={child.pid} initial_stdio=cp1252 utf8_mode=0\n".encode("ascii") \
-            in diagnostic
-        print(f"pid={child.pid} exit={child.returncode} stdout_bytes={len(output)}")
+        interpreter_pid = probe_pid(diagnostic, child.pid, windows=sys.platform == "win32")
+        print(f"pid={child.pid} interpreter_pid={interpreter_pid} "
+              f"exit={child.returncode} stdout_bytes={len(output)}")
         return child.returncode, output, diagnostic
+
+
+@pytest.mark.parametrize("windows,pid,parent,accepted", [
+    (False, 101, 99, True), (True, 101, 99, True),
+    (True, 202, 101, True), (False, 202, 101, False),
+    (True, 202, 99, False),
+])
+def test_probe_requires_launched_interpreter_or_windows_redirector_child(
+    windows: bool, pid: int, parent: int, accepted: bool,
+):
+    header = f"probe_pid={pid} parent_pid={parent} initial_stdio=cp1252 utf8_mode=0\n".encode()
+    if accepted:
+        assert probe_pid(header, 101, windows=windows) == pid
+    else:
+        with pytest.raises(AssertionError):
+            probe_pid(header, 101, windows=windows)
+    with pytest.raises(AssertionError):
+        probe_pid(header.replace(b"\n", b"\r\n"), 101, windows=windows)
 
 
 def test_actual_main_serve_preserves_unicode_and_lf_under_cp1252(tmp_path: Path):

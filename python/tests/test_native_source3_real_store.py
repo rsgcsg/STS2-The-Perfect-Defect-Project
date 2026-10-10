@@ -21,6 +21,33 @@ from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.workbench import native_source3_collection as module
 
 
+class DiagnosticChild(module.OwnedPipeChild):
+    """Keep original diagnostic bytes in this test before temporary cleanup."""
+
+    def __init__(self, child_path, cancel):
+        self.stderr_original = bytearray()
+        super().__init__(child_path, cancel)
+
+    def _stderr(self):
+        original = self.process.stderr
+        retained = self.stderr_original
+        assert original is not None
+
+        class TeeReader:
+            def read(self, size):
+                value = original.read(size)
+                retained.extend(value[:max(0, 64 * 1024 - len(retained))])
+                return value
+
+        # Delegate draining, byte accounting and capacity-stop behavior to the
+        # real owner. Only retain a bounded copy; no protocol or timer changes.
+        self.process.stderr = TeeReader()
+        try:
+            super()._stderr()
+        finally:
+            self.process.stderr = original
+
+
 class RealStoreCollectionTests(unittest.TestCase):
     setUp = collection_fixtures.CollectionTests.setUp
     tearDown = collection_fixtures.CollectionTests.tearDown
@@ -28,7 +55,7 @@ class RealStoreCollectionTests(unittest.TestCase):
     application = collection_fixtures.CollectionTests.application
 
     @staticmethod
-    def failure_diagnostic(result, proof):
+    def failure_diagnostic(result, proof, child_stderr=b""):
         """Bound actual failures/phases; never dump the full generated report."""
         errors = (result.get("runtime_status") or {}).get("errors", [])
         phases = proof.get("diagnostics", {}).get("events", [])
@@ -36,12 +63,21 @@ class RealStoreCollectionTests(unittest.TestCase):
             "status": str(result.get("status"))[:64],
             "error_code": str(result.get("error_code"))[:256],
             "runtime_errors": [str(error)[:512] for error in errors[:3]],
+            "child": result.get("child"),
+            "child_final_reason": (result.get("child_final") or {}).get("reason"),
+            "cleanup_errors": (result.get("child_final") or {}).get("cleanup_errors"),
+            # repr preserves CR/LF and malformed bytes rather than normalizing
+            # the failed child's original diagnostic stream.
+            "child_stderr_original": repr(child_stderr[:8192]),
+            "child_stderr_retained_bytes": len(child_stderr),
+            "child_stderr_display_truncated": len(child_stderr) > 8192,
             "producer_phases": [
                 {"phase": str(event.get("phase"))[:64],
-                 "operation": str(event.get("operation"))[:64]}
+                 "operation": str(event.get("operation"))[:64],
+                 "elapsed_ms": event.get("elapsed_ms")}
                 for event in phases[-6:]
             ],
-        }, ensure_ascii=True)[:2400]
+        }, ensure_ascii=True)
 
     def run_real_chain(self, scenario: str):
         import sts2_platform_evidence as evidence
@@ -90,7 +126,7 @@ class RealStoreCollectionTests(unittest.TestCase):
 
         def actual_child(child_path, cancel):
             self.assertEqual(child_path, fixture)
-            child = module.OwnedPipeChild(child_path, cancel)
+            child = DiagnosticChild(child_path, cancel)
             self.children.append(child)
             return child
 
@@ -99,10 +135,15 @@ class RealStoreCollectionTests(unittest.TestCase):
             app_factory=self.application, child_factory=actual_child,
             preflight=preflight, cancel=self.cancel,
         )
-        self.assertEqual(self.commands, [])
-        self.assertEqual(len(self.apps), 1)
-        self.assertEqual(len(self.children), 1)
-        self.assertEqual(self.children[0].process.poll(), 0)
+        proof_path = self.request.output / "real-chain-producer-proof.json"
+        proof = json.loads(proof_path.read_bytes()) if proof_path.is_file() else {}
+        diagnostic = self.failure_diagnostic(
+            result, proof, bytes(self.children[0].stderr_original) if self.children else b"",
+        )
+        self.assertEqual(self.commands, [], diagnostic)
+        self.assertEqual(len(self.apps), 1, diagnostic)
+        self.assertEqual(len(self.children), 1, diagnostic)
+        self.assertEqual(self.children[0].process.poll(), 0, diagnostic)
         report_path = self.request.output / "report.json"
         self.assertEqual(json.loads(report_path.read_bytes()), result)
         self.assertEqual(
@@ -110,8 +151,7 @@ class RealStoreCollectionTests(unittest.TestCase):
         )
         self.assertEqual(result["options"]["teacher_descriptor"], actual_descriptor)
         self.assertIsNone(result["promotion_gate"]["closed_producer_relation"])
-        proof = json.loads((self.request.output / "real-chain-producer-proof.json").read_bytes())
-        diagnostic = self.failure_diagnostic(result, proof)
+        self.assertTrue(proof_path.is_file(), diagnostic)
         self.assertEqual(proof["endpoint"], self.config.platform_url, diagnostic)
         self.assertEqual(proof["stats"], {
             "charged_bytes": 0, "charged_buffers": 0, "handles": 0,
@@ -221,3 +261,25 @@ class RealStoreCollectionTests(unittest.TestCase):
         self.assertEqual({p: p.read_bytes() for p in before}, before, diagnostic)
         self.assertFalse(request.output.exists(), diagnostic)
         self.assertEqual(len(self.children), 1, diagnostic)
+
+
+def test_failed_fixture_retains_original_stderr_and_phase_before_cleanup():
+    child = DiagnosticChild(
+        module.ROOT.parent / "tools/test/native-source3-real-store-fixture.mjs",
+        module.Cancellation(),
+    )
+    # Fail before launch/SDK work; the real fixture and real owner's drain/exit
+    # path must carry the original assertion through the test's diagnostic.
+    child.send({"schema": "SYN_invalid_initialization"})
+    receipt = child.finish()
+    original = bytes(child.stderr_original)
+    failure = json.loads(original)
+    diagnostic = RealStoreCollectionTests.failure_diagnostic({"child": receipt}, {}, original)
+    assert receipt["exit_code"] == 1, diagnostic
+    assert receipt["stderr_bytes"] == len(original), diagnostic
+    assert receipt["diagnostics_terminal"] is True, diagnostic
+    assert failure["phase"] == "awaiting_parent_init", diagnostic
+    assert "AssertionError" in failure["original_error"], diagnostic
+    assert failure["diagnostics"] is None, diagnostic
+    assert failure["scenario"] is None, diagnostic
+    assert json.loads(diagnostic)["child_stderr_original"] == repr(original), diagnostic
