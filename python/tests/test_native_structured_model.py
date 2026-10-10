@@ -539,7 +539,6 @@ def test_actual_stdio_agent_session_consume_ack_act_and_empty_c_await(agent_file
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
     )
     assert process.stdin and process.stdout
     try:
@@ -561,7 +560,7 @@ def test_actual_stdio_agent_session_consume_ack_act_and_empty_c_await(agent_file
                         "request_id": identity,
                         field: value,
                     }
-                ).decode()
+                )
             )
             process.stdin.flush()
 
