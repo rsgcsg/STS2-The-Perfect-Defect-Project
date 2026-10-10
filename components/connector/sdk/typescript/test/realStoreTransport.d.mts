@@ -14,4 +14,5 @@ export function openRealStoreTransport(options?: {
   fallback?: (url: URL, body: JsonObject) => unknown | Promise<unknown>;
   backendFactory?: () => ChildProcess;
   readinessTimeoutMs?: number;
+  port?: number;
 }): Promise<RealStoreTransport>;

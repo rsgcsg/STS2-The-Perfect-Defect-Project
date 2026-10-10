@@ -28,6 +28,8 @@ function spawnBackend() {
  * Current/Read/catalog/retain/release bytes and accounting here. Callers declare
  * their synthetic public-frame/control/action fixtures explicitly. */
 export async function openRealStoreTransport(options = {}) {
+  const port = options.port ?? 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("invalid bridge loopback port");
   const started = performance.now(), events = [];
   const trace = (phase, operation = null) => {
     if (events.length < 4096) events.push({ phase, operation, elapsed_ms: performance.now() - started });
@@ -109,7 +111,7 @@ export async function openRealStoreTransport(options = {}) {
         }
       }
     });
-    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    server.listen(port, "127.0.0.1"); await once(server, "listening");
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("bridge HTTP unavailable");
     return { endpoint: `http://127.0.0.1:${address.port}`, requests, call,
