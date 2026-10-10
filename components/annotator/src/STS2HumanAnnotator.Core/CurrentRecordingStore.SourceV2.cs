@@ -73,7 +73,7 @@ public sealed partial class RecordingSessionStore
                 }
                 finally
                 {
-                    _closed = true; _appendHealth = "failed"; _decisions = _decisions with { AccountingComplete = false };
+                    _closed = false; _appendHealth = "failed"; _decisions = _decisions with { AccountingComplete = false };
                 }
             }
         }

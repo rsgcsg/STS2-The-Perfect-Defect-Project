@@ -75,6 +75,28 @@ public sealed class SourceCloseLifecycleTests
         Assert.All(before, item => Assert.Equal(item.Value, File.ReadAllBytes(item.Key)));
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void ExplicitWorkerAbortReleasesResourcesWithoutClaimingSuccessfulClose(int version)
+    {
+        using var f = new Fixture(version);
+        f.Store.AbortSourceV2("original_worker_failure");
+        var status = f.Store.GetSnapshot();
+        Assert.False(status.Closed);
+        Assert.Equal("failed", status.AppendHealth);
+        Assert.False(status.Counters.Decisions!.AccountingComplete);
+        Assert.False(f.Store.GetSourceStatusV2()!.AccountingComplete);
+        Assert.False(File.Exists(f.Receipt));
+        Assert.All(f.Streams, stream => Assert.False(stream.CanWrite));
+        f.AssertOwnerReleased();
+        var before = Directory.GetFiles(f.Store.DirectoryPath).ToDictionary(path => path, File.ReadAllBytes);
+        f.Store.AbortSourceV2("later_error_must_not_replace_original");
+        f.Store.Dispose();
+        Assert.Throws<ObjectDisposedException>(f.AppendObservation);
+        Assert.All(before, item => Assert.Equal(item.Value, File.ReadAllBytes(item.Key)));
+    }
+
     private static T Field<T>(object owner, string name) =>
         (T)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
 

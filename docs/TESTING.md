@@ -132,16 +132,21 @@ depending on a previous full component build.
 It runs repository/identity guards, then the shared SDK/Runtime build and the
 short S0 producer/consumer checks before the broad component/Python suites. A
 failed repository prerequisite blocks later stages. A failed generated-client
-build blocks its S0, Runtime, Workbench and Python consumers; unrelated owner
+build blocks its S0, Runtime and Python consumers; unrelated owner
 checks still execute. An Annotator or S0 test failure no longer hides independent
-Evidence, Runtime or Python results. It never starts native actions.
+Evidence, Runtime or Python results. S0 and Python read that generation before
+component checks that rebuild SDK/Runtime output; S0's existing test body is run
+without invoking its build prehook a second time. Workbench's diagnostic tests are
+independent of those generated outputs. It never starts native actions.
 
 The summary distinguishes passed, failed, cancelled and blocked, with exact
 commands, exit codes/signals, durations and initial/final Git identity. Full and
 Python runs require an unchanged clean candidate. Focused component runs may use
 dirty development source, which remains explicitly recorded and cannot become a
 frozen full result. Cancellation prevents subsequent execution; any required
-failure or blocked stage keeps the aggregate failed. This changes diagnostic
+failure or blocked stage keeps the aggregate failed. Cancellation terminates the
+owned process group/tree and reports unresolved cleanup as a failure, rather than
+killing only an npm wrapper and leaving its descendants running. This changes diagnostic
 collection, not the dual-OS requirement, supported scope or scientific claims.
 CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
 on failure; the GitHub summary lists each reached or blocked stage. The existing
