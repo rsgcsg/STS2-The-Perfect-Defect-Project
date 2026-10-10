@@ -30,8 +30,10 @@ dependent worktrees; their current packet/base and actual operation state are
 reconciled at the private checkpoint. Root owns shared refs/BOM and native resources;
 author and Root changes receive separate review.
 
-Native/fit source checkpoint is `9c1c14f4`; later source/installer corrections
-below retain separate identities. Root integrates independently reviewed owner
+Earlier native/fit source checkpoint is `9c1c14f4`; the M0 Auto candidate was
+`b207107e2c423ed7a88521d0e1b227062947a860`. The separate v2 diagnostic below
+uses its own frozen source. Later source/installer
+corrections and original native attempts below retain separate identities. Root integrates independently reviewed owner
 fixes normally, without merging source/test and actual runtime evidence.
 The lead's existing private checkpoint
 `.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md` routes original logs, terminal
@@ -49,7 +51,7 @@ new attempts do not automatically enter training or prove native Commit/effect,
 100 deliveries or natural summary. The earlier60/68/8 report also stays unchanged;
 its later explicit admission is a separate operation below.
 
-Installed rc39 is DLLSHA `63230ad9da9c268199decd554a0542beda892b31e680a77e561e81563a43bdf2`,
+The retained rc39 install receipt is DLLSHA `63230ad9da9c268199decd554a0542beda892b31e680a77e561e81563a43bdf2`,
 MVID `880bad57-2db7-4a73-9632-8439c3b10502`, compiled source `19bac9ba`,
 build workspace `b82a7b6e`. Exact build and configured native bridge35 passed;
 original missing-environment compile errors are retained. Separate installed,
@@ -57,10 +59,12 @@ loaded and runtime observations qualify only that bounded diagnostic.
 
 Strict whole-basis/exact native validation, stale8/3, max200 submissions and900s
 remain in the original v1 diagnostics. Public changes do not prove an older intent
-remained safe. Root now prefers explicit progress-aware STRICT v2 first; the sole
-Runtime/Evidence writer `/root/native_rejection_diagnostics_impl` implements it on
-`codex/continuous-strict-policy`, dependent base `9c1c14f4`. Intent is DEFER; this
-design choice is not implemented/runtime proof. Native8 UNKNOWN is never resumed/retried. Shared refs/BOM/native slot stay Root-owned;
+remained safe. Explicit progress-aware STRICT v2 has now been independently reviewed
+and normally integrated, followed by Runtime/Evidence rc28. Its additive implementation
+retains the original v1 contracts, old learned closure/uv lock and the existing8eb
+load path. Public M0 has a declared ready-summary Task composition. Intent remains
+DEFER. These are source/test and bounded-consumer facts, not a v2 native or continuous
+natural-summary result. Native8 UNKNOWN is never resumed/retried. Shared refs/BOM/native slot stay Root-owned;
 independent review applies to authors and Root alike. Relevant local prerequisites
 may enable bounded native work alongside isolated CI; selected full dual-OS/portable
 still governs merge/promotion.
@@ -83,7 +87,7 @@ Independent original-manifest/tensor audit matches Source/use/Run/checkpoint/pac
 and confirms final weights differ from the132-update checkpoint. Three epochs/411
 label uses reduced train loss2.8026577→0.4583665 and raised teacher-choice accuracy
 8.759%→91.241% (multi-C91.045%). This is learning-smoke fit, with no dev/test or
-strategy-quality claim. The learned Model has not yet been used in a new game.
+strategy-quality claim. Its later distinct fresh-game choice is recorded below.
 
 CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
 at `d0e671f2` is completed/failure across all four leaves and portable. Linux's
@@ -144,27 +148,150 @@ Shadow success, natural-summary or quality evidence.
 
 Source investigation found the current PlatformModelContext producer's extra
 `NativeAgent` JSON field conflicts with the strict Python four-field shape.
-The original raw HTTP reply was not captured, so this source mismatch is a repair
-hypothesis rather than proof of that canary's exact reply. The actual HTTP
-regression/owning fix is in progress. Preserve both unknown operations, verify the
-repair and original disposition, then explicitly launch a distinct new canary;
-never automatically replay the unknown Shadow command. Public M2 `17eb…`
-old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
+The original raw HTTP reply was not captured, so this source mismatch does not
+prove that canary's exact reply. The C# owning wire repair `705ff42c` now excludes
+the computed helper from the strict task DTO; actual HTTP regression and exact
+build/install checks followed. Both unknown operations remain original; the later
+canaries use distinct identities, never automatic replay of the unknown Shadow.
+
+The repaired Mod rc40 is compiled source `e174079b`, build workspace `2d5c371b`,
+installed DLLSHA `4e2f6bab628d00ecc7f944fff779eaebd0db6cc67b42d37b49e26ebae2969999`,
+MVID `87ec9d9a-e416-4703-9446-e9073312c40b`. d6 M0 `native-canary3` completed
+registration/load/Shadow/OneStep on one original map catalog member, one delivered
+Receipt, Stop, Human-mode reopen and a second Stop; Host exit0 was unforced.
+Selection `local-public-m0-680d47d76d694427b616fb9239fa1fdf`, first run
+`run-ea486338-7305-4fe6-be11-b387375645a3`, reopened run
+`run-c7732189-05fd-42b4-9b95-082e6ca17c10`. This proves the bounded old-consumer
+service/game path, not a multi-candidate quality test, causal successor or whole game.
+
+The genuine Source137-trained Model8eb had a separate fresh native canary through
+the common application/Runtime owner: selection
+`local-native-m2-9d2f436773894672af7ea6ef990d4d34`, first run
+`run-44c9311b-10fc-4050-accf-95ee055e3bff`, reopened run
+`run-662e1ae9-7c04-4192-be9e-2119772f1d5d`. Independent typed Evidence confirms
+one acknowledged consume/state advance W1, all13 original catalog scores and the
+first score maximum selecting “Choose monster at (3,0).” The original request
+was delivered; execution/effect/cancel remain unknown, with no query/Await
+continuation or retry. Both Stops released control; fresh Human reopening had
+zero consumption/submissions and Host exited0 unforced. The137-source→fit/export→
+registration/load→fresh learned-choice chain is verified at this narrow scope;
+no Commit, causal successor, natural summary, strategy quality or full G2 is implied.
+
+Public M2 `17eb…` old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
 including a complete31-candidate catalog and whole32 rejection before W write. Root
 checked raw outputs for exact equality across five named cases;31 is not sequence length.
 Stage1 cache-lock-race correction `b57e4286` is independently accepted and normally
 merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 and an actual M2
 game run remain unimplemented/unproved.
 
-Next priorities are the d6 prepare-wire producer/consumer repair and a distinctly
-identified new canary after verification, then actual Shadow/OneStep/Stop/reopen;
-the learned Model's admission/register/load/fresh-game journey, explicit progress-aware
-STRICT v2 implementation/verification with intent DEFER, and fresh CI for reviewed
-fixture fixes. Faithful restoration remains required;
-comparison use does not block ready independent work. The137-N fit/export is now
-complete at its declared small scope; other G2/V1 stages remain open. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
-fit are engineering feedback, not strategy quality. Outcome measures remain environment
-execution, admitted data, learned use and decision quality separately.
+### Current rc28 source and consumer prerequisites
+
+At frozen `b207107e`, common runtime installation has prepared rc28 source
+`8f384ec3`, archive `1a2310dcae1d25bfcbae156d6b2adab72419c4729634652718b1b5ec7ed37975`,
+content `b566fe4b2924f477b445773ebe9b72b5753a89d8ff98befd15e5a98a23d4d5ee`;
+that installer receipt is not activated/loaded. Installed Evidence rc28 is byte-equal
+for28 package files and accepts both original v1 and new v2 policy schemas. Accepted
+metadata scope includes unchanged compiled Mod bytes; the earlier rc39 and8eb
+package/load evidence retain their own identity rather than being promoted to v2.
+
+The existing `rc28-prerequisites.json` through the private checkpoint preserves
+actual local results: Evidence369 passed; first Runtime invocation395 passed,
+one failed/three skipped because the owning verifier used system Python3.9;
+explicit supported-Python correction passed the33 owning-file cases and build/
+package smoke. This is not a fresh entire Runtime suite rerun. Integrated Python
+234 passed plus72 subtests, collector35 passed and common runtime install40 passed/
+one skipped. The original root-cwd Python import/collection failure is retained;
+the corrected owning-cwd invocation is a distinct pass. Repository/closeout passed.
+No collection/test environment failure or lower result is relabelled as full
+current dual-OS, a native v2 pilot or natural summary.
+
+New hosted CI[38076552712](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38076552712)
+at topic `2d5c371b` is completed/failure. The tested merge checkout `9b92d97c`
+has the exact same tree as that topic, not current `b207107e`. Linux1 passed1799/
+two skipped, Linux2 passed1859/two skipped, Windows2 passed1853/eight skipped;
+Windows1 had1757 passed/43 skipped/one failure, so portable failed. The sole
+underlying failure is
+`test_wrong_or_v1_checkpoint_rejected_before_new_attempt`: its fixture prerequisite
+expected cooperative cancelled but the1s exit bound forced interrupted_unknown
+before the checkpoint-rejection assertions. Original child terminal/forced exit
+and logs remain. The test-only owning correction `90eae085` is now independently
+accepted with three focused cases passing locally in14.89s; Root is integrating
+it before the next coherent CI batch. This is not a new Windows/full-green receipt.
+The Teacher Close repair passed in both Windows leaves (624/614ms), not an inferred
+Windows fix from local results. No current successful aggregate is claimed or borrowed.
+
+### Bounded M0 Auto pilot: reward re-entry loop
+
+Root explicitly dispatched the distinct Source3-off pilot at frozen `b207107e`,
+with declared Task max2000 submissions/max4000 policy calls/30 minutes through the
+common Model/Runtime/Host owners. Original run
+`run-c059edea-26f0-4ce2-9ed8-2d2fa6f53474`, selection
+`local-public-m0-88aa00119a8b4608b8282c7107c7ef56`, uses d6 and Runtime rc28.
+The initial `auto` mode-command completion only acknowledged launch; it is not
+Agent task completion or a finished natural game.
+
+First-combat rewards were observed at event84. Of182 published Receipt-successor
+observations,18 are combat_turn,83 reward_claim and81 card_reward_selection;
+the tail163 exactly alternates the two reward surfaces while staying at floor1.
+These are immediate public observations, not causal successor proof. The supervisor
+recorded `repeated_reward_entry_and_return_without_progress` at185 observed submissions
+and sent SIGTERM to its own driver; the existing models.close/Host.close path then
+sealed189 actual submissions/189 policy calls in85125ms. The four additional attempts
+before Close are retained. Budget was not exhausted; final Model/Runtime were stopped,
+not loaded, controller released and untainted with no pending error. Signed Host Stop
+returned HTTP200 and Host/driver exited0 unforced. The outer caller returned the
+expected `RuntimeError: supervisor_stop_requested`; no `result.json` was produced.
+
+Original run evidence contains577 events. Independent owning typed verifier PASS/no
+findings, content ID `51acf383527cbeec701e33e096f85af0ee3fb37d44a0d3bb62102865eb273e17`,
+retains189 decisions/unique Receipts =183 delivered +six known-stale refusals;
+184 decisions had C>1, of which179 were delivered. Full score/catalog bindings were
+reconstructed for184 recorded inputs; five missing inputs are not backfilled.
+There is no abstain/unknown-delivery/taint/handoff. Review accepts bounded runtime
+restoration and observed combat→reward progression with a censored loop, not strategy
+quality, lossless history or natural completion. The pilot is censored by the supervisor after a reward re-entry
+loop; the ready-summary Task rule itself was not exercised.
+
+Read-only gameplay diagnosis found identical compact inputs on recurring visits:
+outer838 bytes/SHA prefix7c…, inner2844 bytes/SHA prefixf4…, with fixed scores
+preferring Claim over Continue and Skip over the three cards. The renderer/action
+codec match the historical d6 path. The current evidence shows coupled learned
+preferences on identical inputs under that fixed contract; it does not prove absent
+Reads/projection loss caused this Defect loop, a new regression, NN/load failure
+or successful strategy. Detailed training-row/context investigation remains private;
+no label-error or player-psychology claim follows. Do not rewrite weights, source,
+data or the failed/censored attempt to make a whole-game claim.
+
+### Native v2 delivery-engineering pilot: explicit unsupported owner
+
+The separate Source3-off pilot completed at frozen
+`57a2aa0e7b7e74b042baba9bff7c25b352b23b68`, run
+`run-824b42d2-d618-49f8-9803-1f6d38b19c1b`, under accepted preflight and the
+explicit target100/max200 submissions/15-minute envelope. It reports `partial`,
+`unsupported_public_owner`:91 original attempts =79 known deliveries +12 known-stale
+refusals, terminal consecutive-stale count0 and269 policy calls. Target100 was not
+achieved; budget was not exhausted. The last original public input is
+`event_option`/`BYRDONIS_NEST`, ready/complete with C12; the unlearned Teacher
+explicitly closed for its unsupported owner. This identifies a consumer strategy
+boundary, not a proved missing Connector action or changed native legality.
+
+Public terminal-count proof content ID
+`20eca7011464c8f0393bc00a376b01d3d69dbdb01528975aad5316947f5fbafb` binds original
+dispatch/results. Runtime stopped/released/no pending/no taint and cleanup_errors=[];
+Host `73ea74c006224c898f34f6ef5a943957` and CLI exited0 unforced. Teacher's own
+confirmed exit is SIGKILL/code null, not a graceful0; it remains a separate fact.
+After-run independent review is pending. No Source3 recording, admission, training,
+Human origin, natural summary, quality or full G2/V1 is claimed. Known delivery is
+not execution/effect/Commit, and the failed/censored old attempts are unchanged.
+
+Next is faithful Public M2 Port4 restoration and evidence-led work on continuous
+native v2/learned use and the observed legacy loop, with separate new identities
+and reviewed prerequisites. Preserve source/generated output while each consumer
+runs and never automatically retry unknown delivery. Obtain fresh selected CI for
+the coherent reviewed source batch. Faithful restoration remains required;
+comparison use does not block independent ready work. Retain10k meaningful data,
+full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons and
+user approval. Each stage keeps its own exact evidence level.
 
 ## Historical baseline and authority
 
