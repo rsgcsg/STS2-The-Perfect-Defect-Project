@@ -184,13 +184,20 @@ def test_http_cancel_ack_retains_unknown_or_checkpoint_without_automatic_restart
         finally:
             released.set()
         terminal = settle(service)
-        assert terminal["status"] == "cancelled" and terminal["worker_state"] == "terminal"
+        assert terminal["worker_state"] == "terminal", terminal
         assert terminal["selected_result"] is False
         assert terminal["child_exit"]["attempt_id"] == started["attempt_id"]
         # Initialization can exceed cancel grace before any checkpoint exists.
         # Actual exit proves worker terminality; it does not invent domain completion.
         if terminal["child_exit"]["forced"]:
+            assert terminal["status"] == "interrupted_unknown", terminal
             assert terminal["domain_completion_state"] == "unknown"
+            assert "reconcile" in terminal["supported_actions"]
+        else:
+            assert terminal["status"] == "cancelled", terminal
+            assert terminal["domain_completion_state"] == "not_completed"
+            assert terminal["child_exit"]["exit_code"] == 0
+            assert terminal.get("checkpoint_id"), terminal
         rejected(call, "start", replace(request, intent_id="3" * 32).to_dict(),
                  409, "previous_training_outcome_unknown")
         assert call("status")["operation"]["attempt_id"] == started["attempt_id"]

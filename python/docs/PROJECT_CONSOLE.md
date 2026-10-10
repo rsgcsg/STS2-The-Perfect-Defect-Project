@@ -807,7 +807,11 @@ then allows a one-second cooperative grace period before forced termination;
 pause waits for a safe numerical boundary or the wall deadline. A writer becomes
 terminal only after actual exit or proof that no child was spawned. Forced exit
 preserves the latest verified checkpoint and records an unknown domain outcome;
-application cancellation and result selection remain separate from domain completion.
+its public terminal status remains `interrupted_unknown`, including after a cancel
+request. The cancel intent/disposition and `selected_result=false` remain recorded
+separately. A safe cooperative cancelled terminal requires its verified checkpoint
+and actual child exit; initial preparation/engine construction is not that boundary.
+Application cancellation and result selection remain separate from domain completion.
 
 The optimizer-update bound, wall budget, artifact publication reservations and
 scratch boundary remain cumulative through explicit resume; total attempts are

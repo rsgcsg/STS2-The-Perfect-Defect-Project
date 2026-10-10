@@ -120,7 +120,9 @@ def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch):
         original_message = kwargs["on_stdout_line"]
 
         def message(raw):
-            if json.loads(raw)["kind"] == "prepared":
+            value = json.loads(raw)
+            if (value["kind"] == "event" and store.get_manifest(
+                    value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
                 entered.set()
                 assert released.wait(3)
             original_message(raw)
@@ -140,7 +142,9 @@ def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch):
     released.set()
     cancelled = settle(service)
     assert cancelled["status"] == "cancelled", cancelled
-    assert cancelled["worker_state"] == "terminal" and cancelled["checkpoint_id"]
+    assert cancelled["worker_state"] == "terminal" and cancelled.get("checkpoint_id"), cancelled
+    assert cancelled["domain_completion_state"] == "not_completed"
+    assert cancelled["child_exit"]["forced"] is False
     assert cancelled["child_exit"]["exit_code"] == 0
     assert "result_id" not in cancelled
     with pytest.raises(BoundaryError, match="cumulative_limits"):
@@ -279,7 +283,8 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
         def message(raw):
             callback(raw)
             value = json.loads(raw)
-            if value["kind"] == "prepared":
+            if (value["kind"] == "event" and store.get_manifest(
+                    value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
                 service.cancel(value["operation_id"], value["attempt_id"])
 
         return original(command, *args, **{**kwargs, "on_stdout_line": message})
@@ -287,6 +292,9 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
     monkeypatch.setattr(adapter_module, "_private_child", cancelled)
     service.start(request)
     saved = settle(service)
+    assert saved["status"] == "cancelled" and saved.get("checkpoint_id"), saved
+    assert saved["domain_completion_state"] == "not_completed"
+    assert saved["child_exit"]["forced"] is False
     cp = store.get_manifest(saved["checkpoint_id"])
     wrong = Manifest(cp.kind, cp.producer, cp.parents, cp.payloads,
                      FrozenObject.of({**cp.parameters.value(),
@@ -578,3 +586,41 @@ service._thread.join()
             supervisor.communicate(timeout=5)
         if child_pid is not None:
             os.kill(child_pid, signal.SIGKILL)
+
+
+def test_forced_cancel_during_engine_initialization_retains_unknown_without_checkpoint(
+    tmp_path, monkeypatch,
+):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+
+    def cancel_prepared(raw, callback):
+        callback(raw)
+        value = json.loads(raw)
+        if value["kind"] == "prepared":
+            service.cancel(value["operation_id"], value["attempt_id"])
+
+    child_script(monkeypatch, """
+import time
+from stpd.models.structured_engine import StructuredTrainingEngine
+def blocked_initialization(self, *args, **kwargs):
+    time.sleep(30)
+StructuredTrainingEngine.__init__ = blocked_initialization
+""", on_line=cancel_prepared)
+    service.start(request)
+    stopped = settle(service)
+    assert stopped["status"] == "interrupted_unknown", stopped
+    assert stopped["domain_completion_state"] == "unknown"
+    assert stopped["requested_action"] == "cancel"
+    assert stopped["application_disposition"] == "cancel_requested"
+    assert stopped["selected_result"] is False
+    assert stopped["worker_state"] == "terminal"
+    assert stopped["child_exit"]["forced"] is True
+    assert stopped["child_exit"]["exit_code"] != 0
+    assert stopped["error"]["code"] == "private_child_stop_requested"
+    assert "checkpoint_id" not in stopped and "result_id" not in stopped
+    assert stopped["supported_actions"] == ["reconcile"]
+    before = set(store.manifest_ids())
+    journal = (owner.path.parent / OPERATION_FILE).read_bytes()
+    assert service.status()["operation"]["attempt_id"] == stopped["attempt_id"]
+    assert (owner.path.parent / OPERATION_FILE).read_bytes() == journal
+    assert set(store.manifest_ids()) == before
