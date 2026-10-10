@@ -66,6 +66,34 @@ This method starts an asynchronous local operation. Existing `status()` reports
 prerequisite, failed preparation can be retried. An active or unresolved Runtime
 must first be stopped/recovered before preparing a different one.
 
+Public-snapshot D-Simple M0 registration now defaults to the explicit
+`ready-standard-summary-v1` task, shown as **至结算页**. Its config-v2 and adapter
+1.1.0 pin the exact `stpd/public-m0-task-spec-v1` descriptor in both config and
+manifest. This is a new Agent program composition using the same Model artifact,
+renderer and unchanged neural scorer; it does not retrain or rewrite model bytes.
+The catalog exposes `task_spec` and `agent_version` for that selection.
+
+The task consumes only a complete interactive generic Snapshot with its original
+ordered action catalog. After the normal public representation/binding checks,
+the exact standard `game_over` ready summary (win or loss, summary stage, return
+enabled, advance disabled, main-menu/timeline destination and typed public
+score/floor/ascension) produces full-length zero placeholders and no selected
+index. These zeros are **program abstention**, not neural scores. Existing Runtime
+Auto handling of `policy_abstained` returns to Human and releases control; the
+task does not choose a return-to-menu action. Intro/animation continues through
+the original scorer, and malformed summary facts fail closed. Nonterminal inputs
+keep the original scorer and complete catalog.
+
+Low-level `bind_public_m0_export` still defaults to `task=None`; config-v1 and
+adapter 1.0.0 keep their original task-free behavior. Explicit
+`LocalModelRegistration.register(model_id, task=None)` registers that baseline,
+and `status(model_id, task=None)` queries it. Default registration/status selects
+the declared summary composition and never adopts or mutates a legacy binding.
+The catalog labels a newly registered task-free selection **无任务基线**. Each
+selection retains its own config/manifest and can be loaded through the existing
+common owner. A task descriptor or green source test does not prove a native
+summary journey, decision quality, whole-game coverage or G2/V1 acceptance.
+
 ## Recorder-to-model handoff
 
 Before `shadow`, `one_step` or `auto`, Workbench reads exact Runtime status and

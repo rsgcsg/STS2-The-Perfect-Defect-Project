@@ -12,7 +12,9 @@ from typing import Any
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, object_fields
 
+from ..fullrun.public_inputs import project_public_snapshot
 from ..public_m0_policy_installation import SNAPSHOT_SCHEMA, validate
+from .public_m0_task import ready_summary
 from .token_decision import LightActionM0DecisionScorer, check_light_action_m0_model
 from .token_port import serve
 
@@ -89,6 +91,15 @@ class PublicM0PolicyAdapter:
         if (interaction_kind not in support["interaction_kinds"]
                 or any(verb not in support["action_verbs"] for verb in verbs)):
             raise BoundaryError("public_m0_policy", "unsupported_whole_decision")
+        if self.config.get("task_spec") is not None:
+            # Completion may abstain only after the same whole-input integrity
+            # and public representation checks neural scoring would require.
+            project_public_snapshot(snapshot, compact=self.manifest["representation"]["id"]
+                                    == "public_compact")
+            if ready_summary(snapshot):
+                # Declared program abstention placeholders, not NN scores.
+                return {"candidate_digest": candidate_digest, "scores": [0.0] * len(keys),
+                        "selected_index": None}
         scores = self.scorer.score_snapshot(snapshot)
         if (
             not isinstance(scores, dict) or list(scores) != keys or not scores

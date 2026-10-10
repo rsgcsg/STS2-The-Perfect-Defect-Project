@@ -272,11 +272,30 @@ def test_common_export_register_rebind_and_budget_route(tmp_path, monkeypatch):
     monkeypatch.setattr(registration, "_native_runtime", lambda **kwargs: (state, state / "sdk.js"))
     monkeypatch.setattr(registration, "_capabilities", lambda *args, **kwargs: capabilities())
     monkeypatch.setattr(service, "_public_manifest_contract", lambda *args, **kwargs: None)
+    baseline = registration.register(model.artifact_id, task=None)
+    old_entry = service.selection(baseline["selection_id"])
+    old_config = service.entry_path(old_entry, "config")
+    old_manifest = service.entry_path(old_entry, "manifest")
+    original_bytes = old_config.read_bytes(), old_manifest.read_bytes()
+    assert registration.status(model.artifact_id)["status"] == "not_registered"
+    assert registration.status(model.artifact_id, task=None) == baseline
     registered = registration.register(model.artifact_id)
     assert registered["status"] == "registered" and registered["loaded"] is False
     assert registered["runtime_profile"] == PUBLIC_M0_PROFILE
     assert registration.register(model.artifact_id) == registered
     assert registration.status(model.artifact_id) == registered
+    assert baseline["selection_id"] != registered["selection_id"]
+    assert registration.register(model.artifact_id, task=None) == baseline
+    assert original_bytes == (old_config.read_bytes(), old_manifest.read_bytes())
+    from stpd.policy.public_m0_task import ready_summary_task_spec
+
+    catalog = {entry["selection_id"]: entry for entry in service.catalog()["policies"]}
+    assert catalog[registered["selection_id"]]["task_spec"] == ready_summary_task_spec()
+    assert catalog[registered["selection_id"]]["agent_version"] == "1.1.0"
+    assert "至结算页" in catalog[registered["selection_id"]]["label"]
+    assert catalog[baseline["selection_id"]]["task_spec"] is None
+    assert catalog[baseline["selection_id"]]["agent_version"] == "1.0.0"
+    assert "无任务基线" in catalog[baseline["selection_id"]]["label"]
     assert service._run_profile(registered["selection_id"], "short") is True
     assert service._run_profile(registered["selection_id"], "extended") is True
     assert service.adapter_arguments(service.selection(registered["selection_id"]))[1] == (
