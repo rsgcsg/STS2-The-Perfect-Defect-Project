@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import runpy
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -1282,7 +1283,7 @@ def declared_owned_teacher_fixture(helper, definition):
     assert sources._verified(helper.directory).terminal_summary["known_delivered"] == 1
 
 
-def test_owned_teacher_tuple_closes_current_descriptor_and_retains_sealed_original_prefix(
+def test_owned_teacher_tuple_retains_exact_frozen_descriptor_and_sealed_original_prefix(
     tmp_path, owned_stale_original,
 ):
     from stpd.native_agent_sampled_source_spec import (
@@ -1305,7 +1306,12 @@ def test_owned_teacher_tuple_closes_current_descriptor_and_retains_sealed_origin
         "runtime_provenance",
     )}}
     assert sha(json_bytes(frozen)) == new["artifact_sha256"]
-    assert frozen == descriptor(execution_policy=new["execution_policy"])
+    current = descriptor(execution_policy=new["execution_policy"])
+    # A qualified historical tuple includes its exact Python patch version.
+    # Portable source checks compare current code, while retaining that old runtime.
+    assert {**current, "runtime_provenance": frozen["runtime_provenance"]} == frozen
+    assert current["runtime_provenance"]["python_version"] == list(sys.version_info[:3])
+    assert frozen["runtime_provenance"]["python_version"] == [3, 11, 15]
     assert new["runtime_provenance"]["dependency_lock_sha256"] == (
         sha((ROOT / "python/uv.lock").read_bytes()))
     for old in (FOCUS_TEACHER_PRODUCER, MAP_TEACHER_PRODUCER, TEACHER_PRODUCER):
@@ -1459,3 +1465,53 @@ def test_malformed_relation_containers_fail_at_research_boundary(cohort, relatio
 
     with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
         checked_relation(relation, cohort)
+
+
+def test_current_runtime_teacher_tuple_is_only_admitted_by_exact_private_fixture_relation(
+    tmp_path, owned_stale_original, monkeypatch,
+):
+    from stpd import native_agent_sampled_source_spec as spec
+    from stpd.canonical import semantic_hash
+    from stpd.policy.native_teacher_agent import descriptor
+
+    current = descriptor(execution_policy=spec.OWNED_STALE_TEACHER_PRODUCER["execution_policy"])
+    definition = copy.deepcopy(spec.OWNED_STALE_TEACHER_PRODUCER)
+    definition.update({key: copy.deepcopy(value) for key, value in current.items()
+                       if key != "schema"})
+    definition["artifact_sha256"] = sha(json_bytes(current))
+    definition["artifact_id"] = "synthetic-current-runtime-teacher-" + definition["artifact_sha256"][:16]
+    helper, _, _, _ = owned_stale_original
+    declared_owned_teacher_fixture(helper, definition)
+    store, _ = setup_store(tmp_path)
+    # This current-runtime descriptor has no production qualification; no patch
+    # version is rewritten in the frozen tuple to make it fit this machine.
+    with pytest.raises(BoundaryError, match="fixed_teacher_producer_identity"):
+        sources.publish_native_agent_sampled_raw(
+            store, helper.directory, IMPORTER, cohort=spec.TEACHER_COHORT,
+            relation=spec.OWNED_STALE_TEACHER_RELATION_SPEC)
+    body = {**copy.deepcopy(spec.OWNED_STALE_TEACHER_RELATION_BODY),
+            "id": "synthetic-current-runtime-teacher-exact-tuple",
+            "producer_definition": definition}
+    relation = {"id": body["id"], "version": "1.0.0", "sha256": semantic_hash(body)}
+    projection_body = {**copy.deepcopy(spec.PROJECTION_BODY),
+                      "id": "synthetic-current-runtime-teacher-projection",
+                      "producer_student_relation": relation}
+    projection = {"id": projection_body["id"], "version": "1.0.0",
+                  "sha256": semantic_hash(projection_body)}
+    tuples = spec._closed_relations()
+    monkeypatch.setattr(spec, "_closed_relations", lambda: (
+        *tuples, ((FIXTURE_COHORT,), body, relation, projection)))
+    with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
+        spec.checked_relation(relation, spec.TEACHER_COHORT)
+    raw = sources.publish_native_agent_sampled_raw(
+        store, helper.directory, IMPORTER, cohort=FIXTURE_COHORT, relation=relation)
+    ref = sources.publish_native_agent_sampled_admission(store, raw.artifact_id, PROJECTOR)
+    report = json.loads(store.bytes(store.get_manifest(ref.admission_id).payload("report")))
+    assert report["native_origin_status"] == "synthetic_conformance"
+    assert report["counts"]["eligible_unique_N"] == 1
+    assert spec.relation_body(relation, FIXTURE_COHORT)["producer_definition"] == definition
+    # Exact fixture membership is also closed; restore the registry to show
+    # fixture registration cannot grant production or persistent admission.
+    monkeypatch.setattr(spec, "_closed_relations", lambda: tuples)
+    with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
+        spec.checked_relation(relation, FIXTURE_COHORT)

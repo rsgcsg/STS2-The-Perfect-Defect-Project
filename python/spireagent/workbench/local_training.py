@@ -719,7 +719,7 @@ class LocalTrainingService:
                          value["requested_action"] == "cancel")
             if cancelled:
                 value.update(selected_result=False, application_disposition="cancel_requested")
-                if value["status"] in {"completed", "interrupted_unknown", "cancelled"}:
+                if value["status"] in {"completed", "cancelled"}:
                     value["status"] = "cancelled"
                 if domain_status == "completed":
                     value["error_code"] = "cancel_requested_during_completion"
