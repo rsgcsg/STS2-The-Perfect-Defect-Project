@@ -384,6 +384,34 @@ class LocalModelExport:
             raise BoundaryError("local_model_export", "workspace_changed")
         return owner
 
+    def _native_publication_store(self, reader: Any, original: Manifest) -> Any:
+        """Open explicit publication through the existing marker-bound owner.
+
+        Discovery/download stores stay read-only. Having write-shaped methods
+        is not write authority; the existing workspace lifecycle must admit it.
+        """
+        from spireagent.storage.local import LocalBlobStore
+        from spireagent.storage.store import ManifestArtifactStore
+        from spireagent.workbench.local_dataset import LocalDatasetService
+
+        if not isinstance(reader, ManifestArtifactStore) or not isinstance(
+            reader.blobs, LocalBlobStore
+        ):
+            raise BoundaryError("local_model_export",
+                                "local_sampled_model_required_for_compatibility")
+        curation, selected, _ = LocalDatasetService(self.config)._selected()
+        if (
+            not isinstance(selected, ManifestArtifactStore)
+            or not isinstance(selected.blobs, LocalBlobStore)
+            or selected.blobs.readonly
+            or selected.blobs.root.resolve() != reader.blobs.root.resolve()
+            or curation.store_dir.resolve() != reader.blobs.root.resolve()
+            or selected.get_manifest(original.artifact_id).to_bytes() != original.to_bytes()
+        ):
+            raise BoundaryError("local_model_export",
+                                "compatibility_publication_workspace_mismatch")
+        return selected
+
     def support(self, model_id: object) -> dict[str, Any]:
         """Project closed metadata support without weights, backend or readiness checks.
 
@@ -864,10 +892,10 @@ class LocalModelExport:
             model = store.get_manifest(identity)
             compatibility = None
             if compatibility_profile is not None:
-                if (model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA
-                        or not hasattr(store, "publish") or not hasattr(store, "put_payload")):
+                if model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA:
                     raise BoundaryError("local_model_export",
                                         "local_sampled_model_required_for_compatibility")
+                store = self._native_publication_store(store, model)
                 producer = source_identity(ROOT)
                 compatibility = {"profile": compatibility_profile, "original_model_id": identity,
                                  "export_producer": producer.to_dict()}
@@ -1065,6 +1093,10 @@ class LocalModelExport:
                 def before_publish(derived: Manifest) -> None:
                     if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
                         raise BoundaryError("local_model_export", "compatibility_source_changed")
+                    selected = self._native_publication_store(
+                        self._source(model.artifact_id), model)
+                    if selected.blobs.root.resolve() != store.blobs.root.resolve():
+                        raise BoundaryError("local_model_export", "workspace_changed")
                     with self.lock:
                         self._finish(operation_id, model_id=derived.artifact_id,
                                      derived_model_id=derived.artifact_id)
