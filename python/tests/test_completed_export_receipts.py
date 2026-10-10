@@ -112,3 +112,38 @@ def test_cached_activation_uses_the_existing_cross_process_export_lock(tmp_path,
           pytest.raises(BoundaryError, match="export_in_progress")):
         owner.start("a" * 64)
     assert owner._read() == first
+
+
+@pytest.mark.parametrize("same_model", [False, True])
+def test_new_pending_during_fresh_preflight_cannot_be_overwritten(
+        tmp_path, monkeypatch, same_model):
+    import spireagent.workbench.local_model_export as module
+
+    owner = service(tmp_path, monkeypatch)
+    first = operation(tmp_path, "f" * 64)
+    atomic_json(owner._path(), first)
+    model = SimpleNamespace(artifact_id="a" * 64,
+                            parameters=SimpleNamespace(value=lambda: {"schema": "test/token"}))
+    archive = SimpleNamespace(blobs=SimpleNamespace(root=tmp_path / "store"),
+                              get_manifest=lambda _: model)
+    monkeypatch.setattr(owner, "_source", lambda _: archive)
+    monkeypatch.setattr(module, "require_local_models", lambda *_: None)
+    pending = {**operation(tmp_path, "a" * 64 if same_model else "c" * 64, status="pending"),
+               "operation_id": "e" * 32}
+
+    def other_writer_finishes_preflight(_model):
+        # Represents an independent process that acquired and released the same
+        # lock during this caller's slower preflight, leaving an unknown intent.
+        from spireagent.workbench.developer_server import instance_lock
+        from spireagent.workbench.local_model_export import LOCK_FILE
+
+        with instance_lock(tmp_path / LOCK_FILE):
+            atomic_json(owner._path(), pending)
+
+    monkeypatch.setattr(module, "_eligible", other_writer_finishes_preflight)
+    with pytest.raises(BoundaryError, match="previous_export_outcome_unknown"):
+        owner.start("a" * 64)
+    assert owner._read() == pending
+    assert owner.thread is None
+    assert not (tmp_path / COMPLETED_ROOT).exists()
+    assert not (tmp_path / module.EXPORT_ROOT).exists()

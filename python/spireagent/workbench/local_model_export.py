@@ -905,11 +905,20 @@ class LocalModelExport:
                     raise BoundaryError("local_model_export", "export_in_progress") from error
                 raise
             try:
+                # Preflight may be slow and ran before the cross-process lock.
+                # Another writer's new pending/unknown intent must survive it.
+                current = self._read()
+                if current.get("status") == "pending" and (
+                        previous.get("status") != "pending"
+                        or current.get("operation_id") != previous.get("operation_id")
+                        or current.get("model_id") != identity
+                        or current.get("store_root") != str(root)):
+                    raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
                 destination = _destination(self.config, identity, memory=memory,
                                            structured=structured, native=native,
                                            public_m0=public_m0, public_m2=public_m2)
-                if previous.get("status") == "completed":
-                    self._archive_completed(previous)
+                if current.get("status") == "completed":
+                    self._archive_completed(current)
                 schema = ("stpd/local-model-export-operation-v4" if public_m2 else
                           SCHEMA_V2 if memory else SCHEMA)
                 operation: dict[str, Any] = {"schema": schema,
