@@ -6,6 +6,7 @@ import argparse
 import base64
 import copy
 import hashlib
+import io
 import sys
 import uuid
 from pathlib import Path
@@ -844,6 +845,11 @@ def main() -> int:
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
+    if not isinstance(sys.stdin, io.TextIOWrapper) or not isinstance(sys.stdout, io.TextIOWrapper):
+        raise BoundaryError("native_agent", "native_stdio_required")
+    # AgentSession owns strict UTF-8 framing, independent of the host locale.
+    sys.stdin.reconfigure(encoding="utf-8", errors="strict", newline="")
+    sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n")
     torch.set_num_threads(2)
     return serve(NativeStructuredAgent(args.package, args.manifest), sys.stdin, sys.stdout)
 

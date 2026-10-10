@@ -65,7 +65,9 @@ exact environment/support/seam facts and writes the fixed Agent Manifest.
 `NativeStructuredAgent` implements Consume/Ack/Next and opaque state export/restore;
 CLI arguments are `python -m stpd.policy.native_agent --package /ABS/package
 --manifest /ABS/agent.json`. Static application registration and native Runtime
-lifecycle remain their existing owners. The child neither acquires control nor
+lifecycle remain their existing owners. The child uses strict UTF-8 NDJSON stdio,
+preserving input newlines and emitting LF independently of the host locale.
+The child neither acquires control nor
 submits native actions itself. The programmed policy greedily selects from the
 whole catalog or returns bounded Await for empty C. This timing policy is explicit,
 not learned. A terminal status alone does not imply task completion or force Close.
