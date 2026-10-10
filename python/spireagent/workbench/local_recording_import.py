@@ -59,8 +59,10 @@ NATIVE_IMPORT_UNCERTAIN = frozenset({
 def native_agent_import_choices() -> dict[str, Any]:
     """Closed producer metadata for the reviewed native data UI capability."""
     from stpd.native_agent_sampled_source_spec import (
+        AGGREGATE_TEACHER_RELATION_SPEC,
         FIXTURE_COHORT,
         FOCUS_TEACHER_RELATION_SPEC,
+        MAP_READY_TEACHER_RELATION_SPEC,
         MAP_TEACHER_RELATION_SPEC,
         MAX_RAW_REFERENCES,
         OWNED_STALE_TEACHER_RELATION_SPEC,
@@ -91,6 +93,10 @@ def native_agent_import_choices() -> dict[str, Any]:
             {"relation": MAP_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.4",
              "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
             {"relation": TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.2",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": MAP_READY_TEACHER_RELATION_SPEC, "label": "公开规则示范程序 1.0.10",
+             "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
+            {"relation": AGGREGATE_TEACHER_RELATION_SPEC, "label": "已审查程序片段聚合（仅训练）",
              "cohorts": [TEACHER_COHORT, FIXTURE_COHORT]},
             {"relation": RELATION_SPEC, "label": "合成协议测试", "cohorts": [FIXTURE_COHORT]},
         ],

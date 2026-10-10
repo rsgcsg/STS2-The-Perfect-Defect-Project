@@ -221,10 +221,7 @@ def _events(directory: Path) -> list[dict[str, Any]]:
     return [decode_json(line) for line in raw.splitlines()]
 
 
-def _producer(bundle: Any, cohort: str, relation: object) -> dict[str, Any]:
-    checked_relation(relation, cohort)
-    body = relation_body(relation, cohort)
-    agent = _plain(bundle.agent_manifest)
+def _checked_producer_manifest(agent: dict[str, Any], body: dict[str, Any]) -> None:
     input_ = agent["input"]
     if (
         input_["profile"] != "native-logical-v1"
@@ -237,6 +234,22 @@ def _producer(bundle: Any, cohort: str, relation: object) -> dict[str, Any]:
     ):
         _fail("producer_input_spec_relation")
     definition = body.get("producer_definition")
+    if "producer_definitions" in body:
+        matches = [
+            candidate for candidate in body["producer_definitions"]
+            if _same(agent["adapter"], candidate["adapter"])
+            and agent["artifact"]["id"] == candidate["artifact_id"]
+            and agent["artifact"]["sha256"] == candidate["artifact_sha256"]
+            and agent["agent"] == {
+                "id": candidate["agent_spec"]["id"],
+                "version": candidate["agent_spec"]["version"],
+                "provider": "stpd",
+                "architecture": "explicit_native_public_program_teacher",
+            }
+        ]
+        if len(matches) != 1:
+            _fail("fixed_teacher_producer_identity")
+        definition = matches[0]
     expected_policy = definition is not None and "execution_policy" in definition
     if ("execution_policy" in agent) != expected_policy or (
         definition is not None and expected_policy
@@ -256,6 +269,13 @@ def _producer(bundle: Any, cohort: str, relation: object) -> dict[str, Any]:
         }
     ):
         _fail("fixed_teacher_producer_identity")
+
+
+def _producer(bundle: Any, cohort: str, relation: object) -> dict[str, Any]:
+    checked_relation(relation, cohort)
+    body = relation_body(relation, cohort)
+    agent = _plain(bundle.agent_manifest)
+    _checked_producer_manifest(agent, body)
     return {
         "agent_manifest": agent,
         "agent_manifest_sha256": bundle.manifest["agent_manifest_sha256"],
@@ -546,6 +566,9 @@ def _projection(
         "native-agent-content:" + bundle.content_id,
         "native-agent-run:" + bundle.run_id,
     ]
+    aggregation = relation_body(relation, cohort).get("aggregation")
+    if aggregation is not None:
+        related.extend(aggregation["related_keys"])
     run_id = "native-agent:" + bundle.content_id + ":" + bundle.run_id
     steps: list[dict[str, Any]] = []
     index: list[dict[str, Any]] = []
@@ -997,6 +1020,9 @@ def parse_native_agent_sampled_dataset(raw: bytes) -> StructuredDataset:
         source["producer_student_relation"],
         source["cohort"],
     )
+    aggregation = relation_body(
+        source["producer_student_relation"], source["cohort"]
+    ).get("aggregation")
     if (
         source["schema"] != SOURCE_SCHEMA
         or source["source_profile"] != PROFILE
@@ -1044,10 +1070,23 @@ def parse_native_agent_sampled_dataset(raw: bytes) -> StructuredDataset:
             or not 0 < len(run["steps"]) <= MAX_KNOWN_SAMPLES
         ):
             _fail("projected_run_identity_or_train_only")
+        if aggregation is not None:
+            producer = identity.get("producer")
+            if (not isinstance(producer, dict)
+                or not _same(producer.get("producer_student_relation"),
+                             source["producer_student_relation"])
+                or not _same(producer.get("producer_relation_body"), relation_body(
+                    source["producer_student_relation"], source["cohort"]
+                ))):
+                _fail("projected_producer_relation_binding")
+            _checked_producer_manifest(producer["agent_manifest"],
+                                      producer["producer_relation_body"])
         runtime = identity["runtime_instance_id"]
         if (
             run["source_group"] != "protocol-runtime:" + runtime
             or run["source_group"] not in identity["related_keys"]
+            or aggregation is not None
+            and not set(aggregation["related_keys"]).issubset(identity["related_keys"])
         ):
             _fail("original_runtime_group_binding")
         steps = []
@@ -1138,7 +1177,7 @@ def parse_native_agent_sampled_dataset(raw: bytes) -> StructuredDataset:
                 run["run_id"], run["source_group"], "train", FrozenObject.of(identity), tuple(steps)
             )
         )
-    if len(runtime_ids) != 1:
+    if len(runtime_ids) != 1 and aggregation is None:
         _fail("one_original_runtime_required")
     return StructuredDataset(
         SOURCE_KIND,
@@ -1159,11 +1198,15 @@ def _partition(
         _fail("duplicate_raw_source")
     runs, index, contents = [], [], set()
     original_runtimes: set[str] = set()
+    original_captures: set[tuple[str, str]] = set()
     cohort = relation = None
     for ref in refs:
         original_runs, report = _verify_ref(store, ref)
         original_runtimes.add(report["runtime_instance_id"])
-        if len(original_runtimes) != 1:
+        aggregation = relation_body(
+            report["producer_student_relation"], report["cohort"]
+        ).get("aggregation")
+        if len(original_runtimes) != 1 and aggregation is None:
             _fail("one_original_runtime_required")
         if report["bundle_content_id"] in contents:
             _fail("duplicate_original_evidence_content")
@@ -1173,6 +1216,12 @@ def _partition(
             _fail("same_producer_student_relation_required")
         cohort, relation = report["cohort"], report["producer_student_relation"]
         contents.add(report["bundle_content_id"])
+        if aggregation is not None:
+            captures = {(report["runtime_instance_id"], row["capture_id"])
+                        for row in report["index"]}
+            if original_captures & captures:
+                _fail("shared_original_capture_alias")
+            original_captures.update(captures)
         runs.extend(original_runs)
         index.extend(report["index"])
     if not runs or cohort is None or relation is None:
