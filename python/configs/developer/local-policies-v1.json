@@ -2,11 +2,11 @@
   "schema": "stpd/local-policy-registry-v1",
   "runtime_package": {
     "package": "@rsgcsg/sts2-policy-runtime",
-    "version": "0.1.0-rc.29",
-    "source_revision": "c27902f54a606ca72ded51772878f4c7ff527184",
-    "component_tree_revision": "d62e2455d7eeec49fd02a374b7002768cb02703e",
-    "release_asset_sha256": "b91b75cb20a45a2f24eea71ca391c15a22c614bb7b2a0ac98bff1c1f168ff716",
-    "package_content_sha256": "859522011ed8f37e2a45592aa9e481ba730c3985c25465ba68b2f70d7e8c770c",
+    "version": "0.1.0-rc.30",
+    "source_revision": "390b662f574267329e795d56aa2b4194ef22749d",
+    "component_tree_revision": "5330112880018528b63d771988afa118820d4d0a",
+    "release_asset_sha256": "434c481fd0801cb38199597b21b8623009e81b332c36ef260099547468ac12b4",
+    "package_content_sha256": "08fefb768f589b2dcda0dda743e5f7acd9af763d1ecb06dd4dedbad5c4289e8a",
     "dependency_layout": "bundled_source_candidate",
     "bundled_connector_pin": {
       "mode": "bundled_source_candidate",
