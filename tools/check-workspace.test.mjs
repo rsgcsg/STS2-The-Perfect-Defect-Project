@@ -117,7 +117,8 @@ test("cancelling an actual owned parent terminates its continuing grandchild bef
     await owned.cancel("SIGTERM");
     const result = await owned.completion;
     assert.equal(result.signal, "SIGTERM");
-    assert.equal(result.error, undefined, result.error);
+    assert.equal(result.error, undefined, JSON.stringify({ error: result.error,
+      cleanup_diagnostic: result.cleanup_diagnostic }));
     const bytes = fs.readFileSync(marker);
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.deepEqual(fs.readFileSync(marker), bytes, "grandchild continues writing after cancellation");
@@ -126,3 +127,41 @@ test("cancelling an actual owned parent terminates its continuing grandchild bef
     await owned.cancel("SIGKILL"); fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("cancellation EPERM retains its original error and exact owned-group diagnostic",
+  { skip: process.platform === "win32" }, async t => {
+    for (const phase of ["send", "probe"]) await t.test(phase, async t => {
+      // A short-lived actual child permits a denied send without requiring an
+      // unrelated compensating signal. Only this exact group's syscall is injected.
+      const owned = ownedCommand(process.execPath,
+        ["-e", "process.stdout.write('ready\\n');setTimeout(()=>{},150)"],
+        { stdio: ["ignore", "pipe", "ignore"] });
+      await new Promise(resolve => owned.child.stdout.once("data", resolve));
+      const original = process.kill.bind(process);
+      const error = Object.assign(new Error("kill EPERM"),
+        { code: "EPERM", errno: -1, syscall: "kill" });
+      t.mock.method(process, "kill", (pid, signal) => {
+        if (pid === -owned.child.pid && signal === (phase === "probe" ? 0 : "SIGTERM")) throw error;
+        return original(pid, signal);
+      });
+      await owned.cancel("SIGTERM");
+      const result = await owned.completion;
+      assert.equal(result.error, String(error));
+      assert.deepEqual({ ...result.cleanup_diagnostic, group_state: undefined }, {
+        phase, signal: phase === "probe" ? 0 : "SIGTERM", pid: owned.child.pid,
+        pgid: owned.child.pid, uid: process.getuid(), error_code: "EPERM",
+        errno: -1, syscall: "kill", group_state: undefined,
+      });
+      const snapshot = result.cleanup_diagnostic.group_state;
+      assert.equal(snapshot.observation, "post_failure_sample");
+      assert.equal(snapshot.status, "observed");
+      assert.ok(snapshot.members.length <= 16);
+      assert.ok(snapshot.members.every(member => member.pgid === owned.child.pid));
+      assert.ok(snapshot.members.every(member => Object.keys(member).sort().join(",") ===
+        "pgid,pid,ppid,state,uid"));
+      const denied = await runStages([{ id: "owned", args: [], requires: [] }], async () => result);
+      assert.equal(denied.passed, false);
+      assert.equal(denied.results[0].error, String(error));
+      assert.deepEqual(denied.results[0].cleanup_diagnostic, result.cleanup_diagnostic);
+    });
+  });

@@ -70,14 +70,39 @@ export function scriptIncludesGuard(scripts, name, guard, visited = new Set()) {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+function cancellationFailure(child, phase, signal, exception) {
+  const diagnostic = { phase, signal, pid: child.pid, pgid: child.pid,
+    uid: process.getuid(), error_code: exception.code ?? null,
+    errno: exception.errno ?? null, syscall: exception.syscall ?? null,
+    group_state: { status: "unavailable", observation: "post_failure_sample" } };
+  // Diagnostics run only after the original failure. Never select another
+  // signal target from this snapshot, and never include command arguments.
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,uid=,stat="],
+    { encoding: "utf8", timeout: 1000, maxBuffer: 64 * 1024,
+      stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error || result.status !== 0) {
+    diagnostic.group_state.reason = result.error?.code ?? "ps_failed";
+    return diagnostic;
+  }
+  const members = result.stdout.split("\n").flatMap(line => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line);
+    return match && Number(match[3]) === child.pid ? [{ pid: Number(match[1]),
+      ppid: Number(match[2]), pgid: Number(match[3]), uid: Number(match[4]), state: match[5] }] : [];
+  });
+  diagnostic.group_state = { status: "observed", observation: "post_failure_sample",
+    members: members.slice(0, 16), truncated: members.length > 16 };
+  return diagnostic;
+}
+
 export function ownedCommand(command, args, options = {}) {
   const child = spawn(command, args, { ...options, detached: process.platform !== "win32" });
-  let error, cleanup, stop;
+  let error, cleanup, stop, cleanupDiagnostic;
   const completion = new Promise(resolve => {
     child.on("error", exception => { error = String(exception); });
     child.on("close", async (code, signal) => {
       if (cleanup) await cleanup;
-      resolve({ code, signal: stop ?? signal, ...(error ? { error } : {}) });
+      resolve({ code, signal: stop ?? signal, ...(error ? { error } : {}),
+        ...(cleanupDiagnostic ? { cleanup_diagnostic: cleanupDiagnostic } : {}) });
     });
   });
   const cancel = signal => {
@@ -89,11 +114,14 @@ export function ownedCommand(command, args, options = {}) {
         if (result.status !== 0) error = `owned tree termination failed: ${result.stderr ?? result.error ?? result.status}`;
         return;
       }
+      let phase, attemptedSignal;
       const alive = () => {
+        phase = "probe"; attemptedSignal = 0;
         try { process.kill(-child.pid, 0); return true; }
         catch (exception) { if (exception.code === "ESRCH") return false; throw exception; }
       };
       const send = value => {
+        phase = "send"; attemptedSignal = value;
         try { process.kill(-child.pid, value); }
         catch (exception) { if (exception.code !== "ESRCH") throw exception; }
       };
@@ -103,7 +131,13 @@ export function ownedCommand(command, args, options = {}) {
         if (alive()) send("SIGKILL");
         for (let count = 0; count < 100 && alive(); count++) await delay(20);
         if (alive()) error = "owned process group termination unresolved";
-      } catch (exception) { error = String(exception); }
+      } catch (exception) {
+        error = String(exception);
+        try { cleanupDiagnostic = cancellationFailure(child, phase, attemptedSignal, exception); }
+        catch { cleanupDiagnostic = { phase, signal: attemptedSignal, pid: child.pid,
+          pgid: child.pid, uid: process.getuid(), error_code: exception.code ?? null,
+          group_state: { status: "unavailable", reason: "diagnostic_capture_failed" } }; }
+      }
     })();
     return cleanup;
   };
@@ -128,6 +162,7 @@ export async function runStages(stages, invoke, { cancelled = () => false, recor
       status: cancelled() || outcome.signal ? "cancelled" : outcome.code === 0 && !outcome.error ? "passed" : "failed",
       exit_code: outcome.code ?? null, signal: outcome.signal ?? null,
       ...(outcome.error ? { error: outcome.error } : {}),
+      ...(outcome.cleanup_diagnostic ? { cleanup_diagnostic: outcome.cleanup_diagnostic } : {}),
       seconds: Math.round((performance.now() - started) / 10) / 100 };
     results.push(result); record(result);
   }
