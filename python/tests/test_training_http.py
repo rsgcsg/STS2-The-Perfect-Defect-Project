@@ -95,8 +95,10 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
     service, request, _owner, _store = ready(tmp_path, monkeypatch)
     original = adapter_module._private_child
     entered, released = threading.Event(), threading.Event()
+    remaining_caps = []
 
     def delayed(command, *args, **kwargs):
+        remaining_caps.append(kwargs["timeout_seconds"])
         on_line = kwargs["on_stdout_line"]
 
         def message(raw):
@@ -154,10 +156,20 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
         assert completed["run_id"] == stopped["run_id"]
         assert completed["effective_limits"] == amended["effective_limits"]
         assert completed["budget_amendments"] == amended["budget_amendments"]
+        assert remaining_caps[-1] > stopped["limits"]["wall_seconds"]
         owner, _, _ = app.local_training._selected()
         journal = app.local_training._read(app.local_training._paths(owner)[0], owner.identity)
         assert journal["request"]["intent_id"] == request.intent_id
         assert journal["attempts"][-1]["checkpoint_id"] == stopped["checkpoint_id"]
+        reconcile_body = {"operation_id": operation_id,
+                          "expected_attempt_id": completed["attempt_id"]}
+        reconciled = call("reconcile", reconcile_body)["operation"]
+        final = settle(app.local_training)
+        assert reconciled["attempt_id"] != completed["attempt_id"]
+        assert final["status"] == "completed" and final["result_id"] == completed["result_id"]
+        assert final["effective_limits"] == amended["effective_limits"]
+        journal = app.local_training._read(app.local_training._paths(owner)[0], owner.identity)
+        assert journal["request"]["intent_id"] == request.intent_id
         rejected(call, "cancel", body, 409, "stale_operation_attempt")
 
 

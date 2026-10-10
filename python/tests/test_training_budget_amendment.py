@@ -42,6 +42,9 @@ def test_amendment_is_explicit_append_only_idempotent_and_does_not_dispatch(tmp_
     before = service.status()["operation"]
     assert "resume" not in before["supported_actions"]
     assert "amend_wall_budget" in before["supported_actions"]
+    with pytest.raises(BoundaryError, match="cumulative_budget_exhausted"):
+        service.resume(value["operation_id"], value["attempt_id"], value["checkpoint_id"],
+                       "f" * 32, request.limits)
     amended = amend(service, value)["operation"]
     assert service._thread is None
     assert amended["limits"] == request.limits
@@ -49,6 +52,9 @@ def test_amendment_is_explicit_append_only_idempotent_and_does_not_dispatch(tmp_
     assert amended["budget_state"]["remaining_wall_seconds"] == pytest.approx(299.98)
     assert amended["budget_state"]["retained_scratch_bytes"] == 5
     assert "resume" in amended["supported_actions"]
+    with pytest.raises(BoundaryError, match="cumulative_limits_must_be_preserved"):
+        service.resume(value["operation_id"], value["attempt_id"], value["checkpoint_id"],
+                       "f" * 32, {**request.limits, "wall_seconds": 600})
     saved = json.loads(path.read_bytes())
     assert {key: saved[key] for key in value if key != "updated_at"} == {
         key: value[key] for key in value if key != "updated_at"}

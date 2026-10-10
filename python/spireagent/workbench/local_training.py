@@ -482,12 +482,13 @@ class LocalTrainingService:
         if (request.recipe_id != value["recipe"] or request.source_id != value["dataset_id"]
                 or request.config != validate_recipe_config(request.recipe_id, request.config)
                 or (value.get("intent_id") != request.intent_id and not (
-                    value.get("budget_amendments") and value.get("mode") == "resume"
-                    and any(item.get("intent_id") == request.intent_id
+                    value.get("budget_amendments")
+                    and any(isinstance(item, dict) and item.get("intent_id") == request.intent_id
                             for item in value.get("attempts", []))))):
             raise ValueError("operation_request")
         digest(value["operation_id"], "local_training.operation", length=32)
         digest(value["attempt_id"], "local_training.attempt", length=32)
+        digest(value["intent_id"], "local_training.intent", length=32)
         if (type(value.get("writer_terminal")) is not bool
                 or value.get("requested_action") not in {"continue", "pause", "cancel"}
                 or not isinstance(value.get("attempts"), list)
