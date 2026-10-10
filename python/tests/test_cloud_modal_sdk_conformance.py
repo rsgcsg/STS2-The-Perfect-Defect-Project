@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
+import os
 import socket
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import modal
@@ -109,12 +114,17 @@ def sdk_wire(monkeypatch):
     def forbidden(*_args, **_kwargs):
         pytest.fail("conformance test attempted network I/O")
 
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
-    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
     opened = AsyncMock(side_effect=AssertionError("SDK client open forbidden"))
     monkeypatch.setattr(_Client, "_open", opened)
     monkeypatch.setattr(_Client, "from_env", AsyncMock(return_value=internal))
+    # Windows creates the dispatcher's self-pipe with a local TCP socket pair.
+    # Open that local loop before guarding connects, with remote client opening
+    # already forbidden. Otherwise the guard kills loop startup while the public
+    # synchronous SDK caller waits forever for the dispatcher's readiness event.
+    synchronizer._get_loop(start=True)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
     yield ModalProvider(selected, sdk=modal), wire
     opened.assert_not_awaited()
 
@@ -227,3 +237,68 @@ def test_real_sdk_cancel_transport_timeout_remains_unknown_without_retry(sdk_wir
     assert len(wire.submissions) == len(wire.cancellations) == 1
     assert wire.cancellations[0].function_call_id == saved["call_id"]
     assert not wire.polls and wire.result is None
+
+
+@pytest.mark.parametrize("operation", ["connect", "connect_ex", "create_connection"])
+def test_ready_dispatcher_keeps_network_guard_active(sdk_wire, operation):
+    with pytest.raises(pytest.fail.Exception, match="attempted network I/O"):
+        if operation == "create_connection":
+            socket.create_connection(("127.0.0.1", 1))
+        else:
+            with socket.socket() as connection:
+                getattr(connection, operation)(("127.0.0.1", 1))
+
+
+def test_fresh_dispatcher_with_connect_based_self_pipe(tmp_path: Path):
+    # Exercise the Windows startup seam on every OS in a fresh interpreter. The
+    # only replacement is socketpair's local-TCP implementation; real Modal,
+    # synchronicity, adapter, serializers and the complete wire cases still run.
+    plugin = tmp_path / "modal_loopback_probe.py"
+    result = tmp_path / "loopback-result.json"
+    plugin.write_text('''import json
+import socket
+from pathlib import Path
+from modal._utils.async_utils import synchronizer
+
+pairs = []
+
+def loopback_pair():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        writer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            writer.setblocking(False)
+            try:
+                writer.connect(listener.getsockname())
+            except (BlockingIOError, InterruptedError):
+                pass
+            writer.setblocking(True)
+            reader, _ = listener.accept()
+        except BaseException:
+            writer.close()
+            raise
+    pairs.append([reader.getsockname(), writer.getsockname()])
+    return reader, writer
+
+def pytest_sessionstart(session):
+    assert synchronizer._get_loop(start=False) is None
+    socket.socketpair = loopback_pair
+
+def pytest_sessionfinish(session, exitstatus):
+    Path(__RESULT__).write_text(json.dumps({"exit": int(exitstatus), "pairs": pairs}))
+'''.replace("__RESULT__", repr(str(result))), encoding="utf-8")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, [
+        str(tmp_path), environment.get("PYTHONPATH"),
+    ]))
+    command = [sys.executable, "-m", "pytest", "-q", str(Path(__file__).resolve()),
+               "-k", "not fresh_dispatcher", "-p", "modal_loopback_probe",
+               "-o", "faulthandler_timeout=5"]
+    completed = subprocess.run(command, cwd=Path(__file__).resolve().parents[1],
+                               env=environment, capture_output=True, text=True,
+                               encoding="utf-8", timeout=20)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    observed = json.loads(result.read_text(encoding="utf-8"))
+    assert observed["exit"] == 0 and len(observed["pairs"]) == 1
+    assert all(endpoint[0] == "127.0.0.1" for endpoint in observed["pairs"][0])
