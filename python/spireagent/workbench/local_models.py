@@ -76,6 +76,8 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
 PUBLIC_M0_PROFILE = "public-snapshot-m0-v1"
 PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
+PUBLIC_M2_PROFILE = "public-snapshot-m2-v1"
+PUBLIC_M2_ADAPTER = "stpd-public-m2-decision-adapter"
 NATIVE_PROFILE = "native-logical-v1"
 NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 
@@ -570,9 +572,12 @@ class LocalModelService:
                            or entry.get("adapter") not in {"token-v1",
                                                             "stpd-m2-decision-adapter",
                                                             "stpd-s0-structured-adapter",
-                                                            NATIVE_ADAPTER, PUBLIC_M0_ADAPTER}
+                                                            NATIVE_ADAPTER, PUBLIC_M0_ADAPTER,
+                                                            PUBLIC_M2_ADAPTER}
                            or (entry.get("adapter") == PUBLIC_M0_ADAPTER
                                and entry.get("runtime_profile") != PUBLIC_M0_PROFILE)
+                           or (entry.get("adapter") == PUBLIC_M2_ADAPTER
+                               and entry.get("runtime_profile") != PUBLIC_M2_PROFILE)
                            or (entry.get("adapter") == NATIVE_ADAPTER
                                and entry.get("runtime_profile") != NATIVE_PROFILE)
                            or (entry.get("adapter") == "stpd-s0-structured-adapter"
@@ -596,10 +601,13 @@ class LocalModelService:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             if entry.get("adapter") == PUBLIC_M0_ADAPTER and profile != PUBLIC_M0_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
+            if entry.get("adapter") == PUBLIC_M2_ADAPTER and profile != PUBLIC_M2_PROFILE:
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
             if "runtime_profile" in entry and (
                 (profile == PUBLIC_M0_PROFILE and entry.get("adapter") != PUBLIC_M0_ADAPTER)
+                or (profile == PUBLIC_M2_PROFILE and entry.get("adapter") != PUBLIC_M2_ADAPTER)
                 or (profile == NATIVE_PROFILE and entry.get("adapter") != NATIVE_ADAPTER)
-                or (profile not in {NATIVE_PROFILE, PUBLIC_M0_PROFILE}
+                or (profile not in {NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}
                     and (profile not in TEXT_PROFILES
                 or (entry.get("adapter") != TEXT_PROFILES[profile][0]
                     and not (profile == "text-menu-m2-v2" and
@@ -634,6 +642,11 @@ class LocalModelService:
         return _inside(self.entry_root(entry), entry[key])
 
     def adapter_arguments(self, entry: dict[str, Any]) -> list[str]:
+        if entry["adapter"] == PUBLIC_M2_ADAPTER:
+            return ["-m", "stpd.policy.public_m2_cli", "serve", "--config",
+                    str(self.entry_path(entry, "config")), "--manifest",
+                    str(self.entry_path(entry, "manifest")), "--binding-root",
+                    str(self.entry_root(entry))]
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter", PUBLIC_M0_ADAPTER}:
             return ["-m", "stpd.policy.token_port" if entry["adapter"] == "token-v1"
                     else "stpd.policy.public_m0_port" if entry["adapter"] == PUBLIC_M0_ADAPTER
@@ -666,7 +679,8 @@ class LocalModelService:
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
         else:
             directory, pin = self.directory, self.registry()["runtime_package"]
-            if entry is not None and entry.get("runtime_profile") == PUBLIC_M0_PROFILE:
+            if (entry is not None
+                    and entry.get("runtime_profile") in {PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}):
                 manifest = _object_file(self.entry_path(entry, "manifest"))
                 if (manifest.get("representation", {}).get("input_schema") !=
                         "sts2.player-environment/snapshot-1"):
@@ -744,6 +758,11 @@ class LocalModelService:
             "import {readFile} from 'node:fs/promises';"
             "const runtime=await import(process.argv[1]);"
             "const manifest=JSON.parse(await readFile(process.argv[2],'utf8'));"
+            "if(manifest.adapter?.protocol==='sts2.policy-runtime/decision-only-ndjson-4'&&"
+            "(runtime.POLICY_PORT_V4_SCHEMA!=='sts2.policy-runtime/policy-port-4'||"
+            "runtime.PUBLIC_STATEFUL_PROFILE!=='sts2.policy-runtime/public-observation-stateful-v1'||"
+            "typeof runtime.NdjsonPolicyPort?.prototype.decideV4!=='function'))"
+            "throw Error('public_stateful_runtime_required');"
             "if(manifest.schema==='sts2.policy-runtime/agent-manifest-1'){"
             "if(typeof runtime.PolicyRuntime?.forAgent!=='function'||"
             "typeof runtime.validateAgentManifest!=='function')"
@@ -961,7 +980,7 @@ class LocalModelService:
         for entry in self.registry()["policies"]:
             manifest = _object_file(self.entry_path(entry, "manifest"))
             bounded = entry.get("runtime_profile") in {
-                *TEXT_PROFILES, NATIVE_PROFILE, PUBLIC_M0_PROFILE}
+                *TEXT_PROFILES, NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}
             profiles = [{"id": "short", "label": "短时检查" if bounded else "默认运行",
                          "limits": RUN_PROFILES["short"] if bounded else None}]
             if bounded:
@@ -1079,7 +1098,8 @@ class LocalModelService:
                 }
 
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
-                                 "stpd-s0-structured-adapter", NATIVE_ADAPTER, PUBLIC_M0_ADAPTER}:
+                                 "stpd-s0-structured-adapter", NATIVE_ADAPTER, PUBLIC_M0_ADAPTER,
+                                 PUBLIC_M2_ADAPTER}:
             from spireagent.workbench.local_model_dependencies import (
                 local_models_available,
                 native_models_available,
@@ -1288,7 +1308,7 @@ class LocalModelService:
             raise BoundaryError("local_model", "unsupported_run_profile")
         bounded = self.selection(identity).get("runtime_profile") in {
             *TEXT_PROFILES,
-            NATIVE_PROFILE, PUBLIC_M0_PROFILE,
+            NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE,
         }
         if profile == "extended" and not bounded:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")

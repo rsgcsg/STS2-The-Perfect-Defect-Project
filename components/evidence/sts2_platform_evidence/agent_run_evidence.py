@@ -136,6 +136,8 @@ class AgentRunEvidenceVerifier:
                                 adapter_protocol=policy_manifest["adapter"]["protocol"])
         if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
             _verify_v2_run_association(policy_manifest, manifest, events)
+        if policy_manifest["adapter"]["protocol"] == "sts2.policy-runtime/decision-only-ndjson-4":
+            _verify_public_run_association(policy_manifest, events)
         if any(event["kind"] == "decision" for event in events) and not adapter_attested:
             raise AgentRunEvidenceError(
                 "adapter_not_attested",
@@ -296,6 +298,8 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
                 "stateful adapter requires a declared text-menu snapshot representation",
                 _POLICY_MANIFEST_FILE,
             )
+    elif adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-4":
+        _verify_public_policy_manifest(policy_manifest)
     elif isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         raise AgentRunEvidenceError(
             "adapter_representation", "text-menu-snapshot-2 requires a stateful adapter", _POLICY_MANIFEST_FILE,
@@ -424,6 +428,71 @@ def _verify_v2_policy_manifest(value: Mapping[str, Any]) -> None:
         _literal(claims, key, False, path)
 
 
+def _verify_public_policy_manifest(value: Mapping[str, Any]) -> None:
+    """The bounded generic-Snapshot Port4; never text/native game identity."""
+    path = _POLICY_MANIFEST_FILE
+    _exact_keys(value, {"schema", "manifest_id", "policy", "adapter", "artifact",
+                        "representation", "requirements", "support", "adapter_config", "claims"},
+                "public policy manifest")
+    policy = _object(value["policy"], "public policy")
+    _exact_keys(policy, {"id", "version", "provider", "architecture"}, "public policy")
+    for key in policy:
+        _text(policy, key, path)
+    artifact = _object(value["artifact"], "public artifact")
+    _exact_keys(artifact, {"id", "path", "sha256"}, "public artifact")
+    for key in artifact:
+        _text(artifact, key, path)
+    if not _SHA256.fullmatch(artifact["sha256"]):
+        raise AgentRunEvidenceError("invalid_digest", "public artifact digest is invalid", path)
+    representation = _object(value["representation"], "public representation")
+    _exact_keys(representation, {"id", "version", "input_schema"}, "public representation")
+    _literal(representation, "input_schema", "sts2.player-environment/snapshot-1", path)
+    for key in ("id", "version"):
+        _text(representation, key, path)
+    requirements = _object(value["requirements"], "public requirements")
+    _exact_keys(requirements, {"connector_protocol_version", "environment", "reads",
+                               "whole_decision_admission", "candidate_order_digest",
+                               "score_count_matches_candidate_count", "selected_index",
+                               "successor_required"}, "public requirements")
+    _text(requirements, "connector_protocol_version", path)
+    _literal(requirements, "reads", [], path)
+    _literal(requirements, "candidate_order_digest", "sha256-json-bound-action-id-order", path)
+    for key in ("whole_decision_admission", "score_count_matches_candidate_count",
+                "selected_index", "successor_required"):
+        _literal(requirements, key, True, path)
+    environment = _object(requirements["environment"], "public required environment")
+    _exact_keys(environment, {"host_kind", "connector_version", "connector_source_revision",
+                              "connector_artifact_sha256", "connector_module_version_id",
+                              "modset_status", "modset_fingerprint", "loaded_mod_ids"},
+                "public required environment")
+    _enum(environment, "host_kind", {"live_ui", "headless", "replay", "test"}, path)
+    for key in ("connector_version", "connector_source_revision", "connector_module_version_id",
+                "modset_status", "modset_fingerprint"):
+        _text(environment, key, path)
+    if not _SHA256.fullmatch(_text(environment, "connector_artifact_sha256", path)):
+        raise AgentRunEvidenceError("invalid_digest", "public Connector digest is invalid", path)
+    _string_array(environment, "loaded_mod_ids", path)
+    if len(set(environment["loaded_mod_ids"])) != len(environment["loaded_mod_ids"]):
+        raise AgentRunEvidenceError("schema_value", "public loaded Mod IDs are duplicated", path)
+    support = _object(value["support"], "public support")
+    _exact_keys(support, {"game_versions", "game_commits", "interaction_kinds", "action_verbs"},
+                "public support")
+    for key in support:
+        _string_array(support, key, path)
+        if not support[key] or len(set(support[key])) != len(support[key]):
+            raise AgentRunEvidenceError("schema_value", "public support is empty or duplicated", path)
+    profile = _object(value["adapter_config"], "public adapter config")
+    _literal(profile, "public_stateful_profile",
+             "sts2.policy-runtime/public-observation-stateful-v1", path)
+    claims = _object(value["claims"], "public claims")
+    _exact_keys(claims, {"full_run", "selector", "catalog_filtered", "creates_action_authority",
+                        "creates_native_operands"}, "public claims")
+    for key in ("full_run", "selector"):
+        _boolean(claims, key, path)
+    for key in ("catalog_filtered", "creates_action_authority", "creates_native_operands"):
+        _literal(claims, key, False, path)
+
+
 def _managed_policy(value: Mapping[str, Any]) -> bool:
     requirements = value.get("requirements")
     environment = requirements.get("environment") if isinstance(requirements, dict) else None
@@ -498,12 +567,35 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
             "sts2.policy-runtime/decision-only-ndjson-1",
             "sts2.policy-runtime/decision-only-ndjson-2",
             "sts2.policy-runtime/decision-only-ndjson-3",
+            "sts2.policy-runtime/decision-only-ndjson-4",
         },
         path,
     )
     digest = _text(value, "code_sha256", path)
     if not _SHA256.fullmatch(digest):
         raise AgentRunEvidenceError("invalid_digest", "adapter code_sha256 is invalid", path)
+
+
+def _verify_public_run_association(policy: Mapping[str, Any],
+                                   events: list[Mapping[str, Any]]) -> None:
+    requirements, support = policy["requirements"], policy["support"]
+    for event in events:
+        if event["kind"] == "environment_admitted":
+            environment = event["payload"]["environment"]
+            if (environment["connector_protocol_version"] != requirements["connector_protocol_version"]
+                    or any(environment[key] != expected
+                           for key, expected in requirements["environment"].items())
+                    or environment["game_version"] not in support["game_versions"]
+                    or environment["game_commit"] not in support["game_commits"]):
+                raise AgentRunEvidenceError("environment_association",
+                                            "public admission differs from manifest", _EVENTS_FILE)
+        elif event["kind"] == "public_decision_input":
+            snapshot = event["payload"]["snapshot"]
+            if (snapshot["interaction"]["kind"] not in support["interaction_kinds"]
+                    or any(action["verb"] not in support["action_verbs"]
+                           for action in snapshot["bound_actions"]["actions"])):
+                raise AgentRunEvidenceError("manifest_support",
+                                            "public complete catalog is unsupported", _EVENTS_FILE)
 
 
 _EVENT_KINDS = {
@@ -522,6 +614,7 @@ _EVENT_KINDS = {
     "runtime_tainted",
     "stopped",
     "text_decision_input",
+    "public_decision_input",
     "text_observation_not_admitted",
     "text_menu_dispatch_attempt",
     "text_menu_dispatch_cancelled",
@@ -550,6 +643,120 @@ _PLAYER_VERBS = {
 }
 
 
+def _verify_public_input(
+    payload: Mapping[str, Any], environment: Mapping[str, Any], context: dict[str, Any] | None,
+    retired_tokens: set[str], retired_segments: set[str], consumed_actions: set[str],
+    decisions: Mapping[str, Mapping[str, Any]], receipts: Mapping[str, Mapping[str, Any]],
+    successors: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    _exact_keys(payload, {"decision_id", "snapshot", "mode", "control", "completion"}, "public input")
+    _enum(payload, "mode", {"shadow", "one_step", "auto"}, _EVENTS_FILE)
+    snapshot = _object(payload["snapshot"], "public snapshot")
+    _verify_snapshot(snapshot, environment, "public snapshot")
+    catalog = snapshot["bound_actions"]
+    if (snapshot["status"] != "interactive" or snapshot["completeness"]["status"] != "complete"
+            or catalog["status"] != "complete" or not catalog["actions"]
+            or catalog["total_count"] != len(catalog["actions"])
+            or catalog["materialized_count"] != len(catalog["actions"])):
+        raise AgentRunEvidenceError("public_input_incomplete", "Port4 requires complete public C", _EVENTS_FILE)
+    control = _object(payload["control"], "public control")
+    _exact_keys(control, {"continuity_token", "episode_scope", "episode_id", "segment_id",
+                          "observation_ordinal", "previous_action"}, "public control")
+    _literal(control, "episode_scope", "bounded_policy_segment", _EVENTS_FILE)
+    for key in ("continuity_token", "episode_id", "segment_id"):
+        _text(control, key, _EVENTS_FILE)
+    _positive_int(control, "observation_ordinal", _EVENTS_FILE)
+    ordinal = control["observation_ordinal"]
+    if ordinal > 2**53-1 or snapshot["sequence"] > 2**53-1:
+        raise AgentRunEvidenceError("public_observation_order", "public ordinal/watermark is not safe", _EVENTS_FILE)
+    previous = control["previous_action"]
+    previous_request = None
+    if previous is not None:
+        prior = _object(previous, "public previous action")
+        _exact_keys(prior, {"decision_id", "source_snapshot_id", "candidate_digest", "bound_action_id",
+                            "request_id", "receipt", "successor"}, "public previous action")
+        for key in ("decision_id", "source_snapshot_id", "candidate_digest", "bound_action_id", "request_id"):
+            _text(prior, key, _EVENTS_FILE)
+        prior_receipt = _object(prior["receipt"], "public previous receipt")
+        _exact_keys(prior_receipt, {"delivery", "reason_code"}, "public previous receipt")
+        _literal(prior_receipt, "delivery", "delivered", _EVENTS_FILE)
+        _nullable_text(prior_receipt, "reason_code", _EVENTS_FILE)
+        prior_successor = _object(prior["successor"], "public previous successor")
+        _exact_keys(prior_successor, {"snapshot_id", "sequence"}, "public previous successor")
+        _text(prior_successor, "snapshot_id", _EVENTS_FILE)
+        _nonnegative_int(prior_successor, "sequence", _EVENTS_FILE)
+        previous_decision = decisions.get(prior.get("decision_id"))
+        previous_receipt = receipts.get(prior.get("decision_id"))
+        successor = successors.get(prior.get("decision_id"))
+        if previous_decision is None or previous_receipt is None or successor is None:
+            raise AgentRunEvidenceError("public_history_binding", "previous action lacks known receipt/successor", _EVENTS_FILE)
+        decision = previous_decision["decision"]
+        source_control = previous_decision.get("public_control")
+        if not isinstance(source_control, dict) or any(
+            source_control[key] != control[key] for key in ("continuity_token", "episode_id", "segment_id")
+        ):
+            raise AgentRunEvidenceError("public_history_binding", "previous action belongs to another segment", _EVENTS_FILE)
+        expected = {
+            "decision_id": decision["decision_id"], "source_snapshot_id": decision["snapshot_id"],
+            "candidate_digest": decision["candidate_digest"],
+            "bound_action_id": previous_decision["resolved_action_id"],
+            "request_id": previous_receipt["request_id"],
+            "receipt": {"delivery": "delivered", "reason_code": previous_receipt.get("reason_code")},
+            "successor": {"snapshot_id": successor["snapshot_id"], "sequence": successor["sequence"]},
+        }
+        if (prior != expected or previous_receipt["delivery"] != "delivered"
+                or successor["session"] != snapshot["session"]
+                or snapshot["sequence"] < successor["sequence"]
+                or prior["request_id"] in consumed_actions):
+            raise AgentRunEvidenceError("public_history_binding", "previous action differs from unused known control", _EVENTS_FILE)
+        previous_request = prior["request_id"]
+        consumed_actions.add(previous_request)
+    completion = _object(payload["completion"], "public completion")
+    expected_completion = {
+        "continuity_token": control["continuity_token"], "episode_id": control["episode_id"],
+        "segment_id": control["segment_id"], "observation_ordinal": ordinal,
+        "snapshot_id": snapshot["snapshot_id"], "sequence": snapshot["sequence"],
+        "previous_action_request_id": previous_request,
+    }
+    if (completion != expected_completion or type(completion.get("observation_ordinal")) is not int
+            or type(completion.get("sequence")) is not int):
+        raise AgentRunEvidenceError("public_completion_binding", "public completion differs from qualified input", _EVENTS_FILE)
+    body = _canonical_json({key: item for key, item in snapshot.items() if key != "observed_at"})
+    cached = False
+    if context is None:
+        if (ordinal != 1 or control["continuity_token"] in retired_tokens
+                or control["segment_id"] in retired_segments or previous is not None):
+            raise AgentRunEvidenceError("public_observation_order", "new public segment is stale or carries history", _EVENTS_FILE)
+    else:
+        old = context["control"]
+        if any(control[key] != old[key] for key in ("continuity_token", "episode_id", "segment_id")):
+            raise AgentRunEvidenceError("public_observation_order", "public segment changed without recovery", _EVENTS_FILE)
+        if ordinal == old["observation_ordinal"]:
+            if body != context["body"]:
+                raise AgentRunEvidenceError("public_observation_order", "same public ordinal changed input", _EVENTS_FILE)
+            cached = True
+        elif ordinal != old["observation_ordinal"] + 1 or snapshot["sequence"] <= context["sequence"]:
+            raise AgentRunEvidenceError("public_observation_order", "public ordinal/watermark is out of order", _EVENTS_FILE)
+    return {"control": control, "body": body, "sequence": snapshot["sequence"],
+            "cached": cached, "output": context.get("output") if cached and context else None}
+
+
+def _verify_public_decision_binding(decision: Mapping[str, Any], resolved: str | None,
+                                    snapshot: Mapping[str, Any], context: dict[str, Any]) -> None:
+    keys = [action["bound_action_id"] for action in snapshot["bound_actions"]["actions"]]
+    if (decision["snapshot_id"] != snapshot["snapshot_id"]
+            or decision["candidate_count"] != len(keys)
+            or decision["candidate_digest"] != _sha256_bytes(_canonical_json(keys).encode("utf-8"))):
+        raise AgentRunEvidenceError("public_decision_binding", "public decision differs from complete ordered C", _EVENTS_FILE)
+    expected_resolved = None if decision["selected_index"] is None else keys[decision["selected_index"]]
+    if resolved != expected_resolved:
+        raise AgentRunEvidenceError("public_decision_binding", "public decision differs from complete ordered C", _EVENTS_FILE)
+    output = {key: decision[key] for key in ("candidate_digest", "scores", "selected_index")}
+    if context["cached"] and output != context["output"]:
+        raise AgentRunEvidenceError("public_cache_binding", "same public ordinal changed scores", _EVENTS_FILE)
+    context["output"] = output
+
+
 def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None, *,
                    adapter_protocol: str) -> list[Mapping[str, Any]]:
     raw = path.read_bytes()
@@ -570,6 +777,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_outcomes: dict[str, str] = {}
     text_successors: set[str] = set()
     pending_text_input: str | None = None
+    public_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-4"
+    public_inputs: dict[str, Mapping[str, Any]] = {}
+    pending_public_input: str | None = None
+    public_context: dict[str, Any] | None = None
+    retired_public_tokens: set[str] = set()
+    retired_public_segments: set[str] = set()
+    consumed_public_actions: set[str] = set()
+    public_unknown_seen = False
+    public_stopped = False
     context_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3"
     text_contexts: dict[str, str] = {}
     context_token: str | None = None
@@ -610,12 +826,50 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                                         "text_menu_result_rejected", "text_observed_successor"}:
             raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
         payload = value["payload"]
+        if pending_public_input is not None and kind not in {"decision", "fail_closed", "runtime_tainted"}:
+            raise AgentRunEvidenceError("public_decision_order",
+                                        "public input must immediately precede decision", _EVENTS_FILE)
+        if public_port and kind in {"handoff_to_human", "one_step_completed", "fail_closed",
+                                    "runtime_tainted", "stopped", "autonomy_budget_exhausted"}:
+            if public_context is not None:
+                retired_public_tokens.add(public_context["control"]["continuity_token"])
+                retired_public_segments.add(public_context["control"]["segment_id"])
+                public_context = None
+            if kind in {"fail_closed", "runtime_tainted"}:
+                pending_public_input = None
+            if kind == "runtime_tainted":
+                public_unknown_seen = True
+            if kind == "stopped":
+                public_stopped = True
+        if (public_port and kind == "mode_changed" and public_context is not None
+                and (payload.get("mode") == "human" or payload.get("mode") != observed_mode)):
+            retired_public_tokens.add(public_context["control"]["continuity_token"])
+            retired_public_segments.add(public_context["control"]["segment_id"])
+            public_context = None
         if pending_text_input is not None and kind not in {"decision", "fail_closed", "runtime_tainted"}:
             raise AgentRunEvidenceError("text_decision_order", "text input must immediately precede its decision", _EVENTS_FILE)
         if kind.startswith("text_") or kind == "menu_navigation":
             if input_schema not in _TEXT_SNAPSHOT_SCHEMAS:
                 raise AgentRunEvidenceError("text_profile_association", "text event requires a text-menu policy representation", _EVENTS_FILE)
-        if kind == "text_decision_input":
+        if kind == "public_decision_input":
+            if not public_port or input_schema != "sts2.player-environment/snapshot-1":
+                raise AgentRunEvidenceError("public_profile_association", "public input requires Port4", _EVENTS_FILE)
+            if environment is None or public_unknown_seen or public_stopped:
+                raise AgentRunEvidenceError("public_observation_order",
+                                            "public input lacks active known environment", _EVENTS_FILE)
+            public_context = _verify_public_input(
+                payload, environment, public_context, retired_public_tokens,
+                retired_public_segments, consumed_public_actions, decisions, receipts, successors,
+            )
+            if observed_mode is not None and payload["mode"] != observed_mode:
+                raise AgentRunEvidenceError("public_observation_order", "public mode differs from owner", _EVENTS_FILE)
+            observed_mode = payload["mode"]
+            decision_id = _text(payload, "decision_id", _EVENTS_FILE)
+            if decision_id in public_inputs or decision_id in decisions:
+                raise AgentRunEvidenceError("duplicate_decision", "duplicate public input", _EVENTS_FILE)
+            public_inputs[decision_id] = payload["snapshot"]
+            pending_public_input = decision_id
+        elif kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
             _exact_keys(payload, {"decision_id", "snapshot", "observation_context"}
@@ -714,6 +968,13 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 )
             decision, resolved_action_id = _verify_decision_event(payload, manifest)
             decision_id = str(decision["decision_id"])
+            if public_port:
+                if pending_public_input != decision_id or public_context is None:
+                    raise AgentRunEvidenceError("public_decision_order",
+                                                "Port4 decision lacks preceding public input", _EVENTS_FILE)
+                _verify_public_decision_binding(decision, resolved_action_id,
+                                                public_inputs[decision_id], public_context)
+                pending_public_input = None
             if input_schema in _TEXT_SNAPSHOT_SCHEMAS:
                 if pending_text_input != decision_id or decision_id not in text_inputs:
                     raise AgentRunEvidenceError("text_decision_order", "text decision has no immediately preceding input", _EVENTS_FILE)
@@ -727,6 +988,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 "decision": decision,
                 "resolved_action_id": resolved_action_id,
                 "environment": environment,
+                **({"public_control": public_context["control"]} if public_port and public_context else {}),
             }
         elif kind == "controller_acquired":
             if "environment_binding" in manifest:
@@ -757,6 +1019,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("duplicate_receipt", f"duplicate receipt for decision: {decision_id}", _EVENTS_FILE)
             rejected_receipts.add(decision_id)
             receipts[decision_id] = receipt
+            if public_port:
+                public_unknown_seen = True
         elif kind == "receipt":
             if environment is None:
                 raise AgentRunEvidenceError(
@@ -768,6 +1032,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if decision_id in receipts or decision_id in rejected_receipts:
                 raise AgentRunEvidenceError("duplicate_receipt", f"duplicate receipt for decision: {decision_id}", _EVENTS_FILE)
             receipts[decision_id] = receipt
+            if public_port and receipt["delivery"] == "unknown":
+                public_unknown_seen = True
         elif kind == "successor":
             if environment is None:
                 raise AgentRunEvidenceError(
@@ -860,6 +1126,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         events.append(value)
     if pending_text_input is not None and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)
+    if pending_public_input is not None and manifest["status"] != "tainted":
+        raise AgentRunEvidenceError("public_decision_order", "unmatched public input in finalized run", _EVENTS_FILE)
     if any(decision_id not in text_outcomes for decision_id in text_dispatches) and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_result_missing", "dispatched text action has no result in untainted run", _EVENTS_FILE)
     if managed_control is not None and manifest["status"] != "tainted":

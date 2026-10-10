@@ -53,6 +53,7 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/fullrun/public_compaction.py",
     "stpd/fullrun/public_inputs.py",
     "stpd/fullrun/representation.py",
+    "stpd/fullrun/semantic_projection.py",
     "stpd/fullrun/token_format.py",
     "stpd/light_action_codec.py",
     "stpd/linear_q.py",
@@ -75,6 +76,7 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/policy/public_m2_cli.py",
     "stpd/policy/public_m2_export.py",
     "stpd/policy/public_m2_port.py",
+    "stpd/policy/public_m0_task.py",
     "stpd/policy/s1.py",
     "stpd/public_m0_policy_installation.py",
     "stpd/public_m2_policy_installation.py",
@@ -246,3 +248,8 @@ def inspect(root: Path, entry: dict[str, Any], manifest: dict[str, Any],
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         return {"policy_identity": {"status": "blocked",
                 "code": getattr(error, "code", "metadata_or_backend_unavailable")}}
+
+
+def arguments(entry: dict[str, Any]) -> list[str]:
+    return ["-m", "stpd.policy.public_m2_cli", "serve", "--config", entry["config"],
+            "--manifest", entry["manifest"]]

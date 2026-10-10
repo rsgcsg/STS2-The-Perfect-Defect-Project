@@ -2,10 +2,12 @@
 
 This source restores the original Public M2 numerical/package consumer within
 the existing project model services. It adds no training recipe, provider job,
-second Workbench, store authority or native legality engine. Runtime Port4 is a
-separate required contract increment; until available, registration reports
-`public_m2_runtime_contract_unavailable`. Recognized export support is metadata
-discovery, not an executable or loaded model.
+second Workbench, store authority or native legality engine. The explicit generic
+Snapshot Port4 now routes through the existing Runtime/NDJSON/control/Evidence
+owners and common model registry/registration. Registration checks the actual
+installed Port4 API and exact Manifest; an older package still reports
+`public_m2_runtime_contract_unavailable`. Recognized export support remains
+metadata discovery, not an executable or loaded-model claim.
 
 ## Exact original model
 
@@ -32,6 +34,36 @@ The input remains complete public Snapshot1 with `reads=[]`, the original
 oversize decisions fail whole before W advances. Candidates are never truncated
 or filtered. Prior-action and feedback inputs remain off; Runtime delivery
 metadata cannot silently become either model channel.
+
+## Shared product and observation control
+
+The code-owned `stpd-public-m2-decision-adapter` selects
+`stpd.policy.public_m2_cli serve` through the common local model owner. Config-v1
+and adapter1.0.0 retain task-free scoring. The private `public-snapshot-m2-v1`
+selection uses the same generic Runtime slot, Human-mode load, finite short/
+extended authorizations, Source handoff, Stop and unknown recovery as other
+reviewed selections. Registration requires the current verified export owner,
+exact generic SDK capabilities and installed Port4 contract before publishing a
+new selection; missing support does not trigger a text/native fallback.
+
+Runtime owns bounded policy segment/token/episode-control identifiers and
+observation ordinals. It observes the real complete Snapshot1/Read-free bundle,
+retains its complete ordered C, and advances an ordinal once per qualified new
+watermark. A stable body/catalog at the same watermark ignores only poll time
+and reuses the same ordinal; the existing M2 adapter returns its cached scores
+without writing W again. Human, changed mode, Stop, budget handoff or uncertain
+offered completion starts a fresh segment, ordinal1 and W0. This declares a
+bounded authorization segment, not an independently proved native game episode.
+
+Known delivery/successor metadata is a separate optional control field. It is
+never encoded into model text, prior-action or feedback tensors. The matching
+typed Evidence reader joins the actual Runtime producer's full input/control/
+completion, decision, Receipt and observed-successor records, while preserving
+old ports and native Agent-session semantics. No polling or Receipt becomes a
+Human causal successor. The public consumer uses two CPU inference threads;
+training device, partial epoch, tensors and historical numerical identity remain
+unchanged. Source/wire tests, original-weight parity, installed load/Stop and
+actual native game use remain separate evidence levels.
 
 ## One export owner, multiple completed models
 

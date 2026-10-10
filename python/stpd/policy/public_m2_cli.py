@@ -53,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         directory = Path(config["export_path"])
         model, engine_config, _lineage = validate_package(directory)
         info = model.parameters.value()
+        import torch
+
+        torch.set_num_threads(2)
         adapter = PublicM2PolicyAdapter.from_export(
             (directory / FILES["weights"]).read_bytes(), engine_config,
             input_digest=info["engine_input_digest"], completed_epochs=info["epoch"],

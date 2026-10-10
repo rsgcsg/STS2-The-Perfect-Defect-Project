@@ -104,7 +104,12 @@ async function main(): Promise<void> {
     runtime = new PolicyRuntime({
       manifest,
       connector,
-      ...(manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1"
+      ...(manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-4"
+        ? { publicStatefulPolicy: (input: Parameters<NdjsonPolicyPort["decideV4"]>[0],
+            signal: Parameters<NdjsonPolicyPort["decideV4"]>[1],
+            onOffer: Parameters<NdjsonPolicyPort["decideV4"]>[2]) => port!.decideV4(input, signal, onOffer),
+          statefulOfferBoundary: "port_write" as const }
+        : manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1"
         ? { statefulPolicy: (input: Parameters<NdjsonPolicyPort["decideV2"]>[0],
             signal: Parameters<NdjsonPolicyPort["decideV2"]>[1],
             onOffer: Parameters<NdjsonPolicyPort["decideV2"]>[2]) => manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3"

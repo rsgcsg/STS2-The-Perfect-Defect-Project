@@ -5,12 +5,18 @@ import { decodeTextMenuSnapshot, decodeTextMenuV2Snapshot } from "@rsgcsg/sts2-c
 import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, PolicyPortV3ReadyResponse, PolicyPortV3DecisionResponse, PolicyPortV3ErrorResponse, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
 import { POLICY_PORT_SCHEMA, POLICY_PORT_V2_SCHEMA, POLICY_PORT_V3_SCHEMA, assertAdapterDecision, validateAdapterDecision, validatePolicyManifest } from "./contracts.js";
 import { admitWholeDecisionBundle } from "./runtime.js";
+import type { PublicStatefulPolicyDecisionInput, PublicStatefulAdapterDecision } from "./contracts.js";
+import { POLICY_PORT_V4_SCHEMA } from "./contracts.js";
+import { validatePublicObservationCompletion } from "./public-observation.js";
+
+type StatefulPortInput = StatefulPolicyDecisionInput | PublicStatefulPolicyDecisionInput;
+type StatefulPortSchema = typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA | typeof POLICY_PORT_V4_SCHEMA;
 
 export const DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS = 30_000;
 
 export class NdjsonPolicyPort {
   private readonly pending = new Map<string, { expectedDigest: string; expectedCount: number; resolve: (choice: AdapterDecision) => void; reject: (error: Error) => void }>();
-  private readonly pendingV2 = new Map<string, { input: StatefulPolicyDecisionInput; resolve: (choice: StatefulAdapterDecision) => void; reject: (error: Error) => void }>();
+  private readonly pendingV2 = new Map<string, { input: StatefulPortInput; schema: StatefulPortSchema; resolve: (choice: StatefulAdapterDecision) => void; reject: (error: Error) => void }>();
   private readonly cancelled = new Set<string>();
   private closed = false;
   private stderrTail = "";
@@ -94,12 +100,18 @@ export class NdjsonPolicyPort {
     return this.decideStateful(input, signal, onOffer, POLICY_PORT_V3_SCHEMA);
   }
 
-  private decideStateful(input: StatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): Promise<StatefulAdapterDecision> {
+  decideV4(input: PublicStatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void): Promise<PublicStatefulAdapterDecision> {
+    if (input.decision.manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-4")
+      return Promise.reject(new Error("public observation port requires protocol4"));
+    return this.decideStateful(input, signal, onOffer, POLICY_PORT_V4_SCHEMA) as Promise<PublicStatefulAdapterDecision>;
+  }
+
+  private decideStateful(input: StatefulPortInput, signal: AbortSignal, onOffer: () => void, schema: StatefulPortSchema): Promise<StatefulAdapterDecision> {
     if (this.closed) return Promise.reject(new Error("policy child port is closed"));
     if (signal.aborted) return Promise.reject(new Error("policy decision cancelled"));
     const requestId = randomUUID();
-    const request = { schema,
-      message_type: "decide", request_id: requestId, input };
+    const request = { schema, message_type: "decide", request_id: requestId,
+      ...("decision" in input ? input : { input }) };
     let wire: string;
     try { wire = `${JSON.stringify(request)}\n`; }
     catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
@@ -118,7 +130,7 @@ export class NdjsonPolicyPort {
         signal.removeEventListener("abort", onAbort);
         callback(value);
       };
-      this.pendingV2.set(requestId, { input, resolve: settle(resolve), reject: settle(reject) });
+      this.pendingV2.set(requestId, { input, schema, resolve: settle(resolve), reject: settle(reject) });
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) { onAbort(); return; }
       let writeInvoked = false;
@@ -179,11 +191,11 @@ export class NdjsonPolicyPort {
     try { value = JSON.parse(line); } catch { this.failAll(new Error("policy child port emitted invalid JSON")); return; }
     if (value === null || typeof value !== "object" || Array.isArray(value)) { this.failAll(new Error("policy child port emitted a non-object")); return; }
     const response = value as { schema?: unknown; request_id?: unknown; message_type?: unknown; adapter?: unknown; error?: { message?: unknown }; output?: unknown };
-    if ((response.schema === POLICY_PORT_SCHEMA || response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA) && response.message_type === "ready") {
+    if ((response.schema === POLICY_PORT_SCHEMA || response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA || response.schema === POLICY_PORT_V4_SCHEMA) && response.message_type === "ready") {
       try {
         if (this.readyAdapter) throw new Error("policy child emitted duplicate startup attestation");
         const adapter = validateReadyAdapter(response.adapter);
-        if (response.schema !== (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2" ? POLICY_PORT_V2_SCHEMA : POLICY_PORT_SCHEMA)) throw new Error("policy child ready schema/protocol mismatch");
+        if (response.schema !== (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-4" ? POLICY_PORT_V4_SCHEMA : adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2" ? POLICY_PORT_V2_SCHEMA : POLICY_PORT_SCHEMA)) throw new Error("policy child ready schema/protocol mismatch");
         this.readyAdapter = adapter;
         this.resolveReady(adapter);
       } catch (error) {
@@ -191,7 +203,7 @@ export class NdjsonPolicyPort {
       }
       return;
     }
-    if (response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA) {
+    if (response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA || response.schema === POLICY_PORT_V4_SCHEMA) {
       this.handleV2Response(response as Record<string, unknown>);
       return;
     }
@@ -223,7 +235,7 @@ export class NdjsonPolicyPort {
       return;
     }
     this.pendingV2.delete(response.request_id);
-    const expectedSchema = pending.input.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : POLICY_PORT_V2_SCHEMA;
+    const expectedSchema = pending.schema;
     if (response.schema !== expectedSchema) { pending.reject(new Error("policy child response schema mismatch")); return; }
     if (response.message_type === "error") {
       if (!exactKeys(response, ["schema", "message_type", "request_id", "error"]) ||
@@ -237,6 +249,13 @@ export class NdjsonPolicyPort {
     }
     try {
       const input = pending.input;
+      if ("decision" in input) {
+        const completion = validatePublicObservationCompletion(response.completion, input);
+        const output = validateAdapterDecision(response.output, input.decision.candidate_digest,
+          input.decision.candidate_count);
+        pending.resolve({ output, completion });
+        return;
+      }
       const completion = response.completion;
       if (completion === null || typeof completion !== "object" || Array.isArray(completion) ||
           !exactKeys(completion as Record<string, unknown>, expectedSchema === POLICY_PORT_V3_SCHEMA ? ["continuity_token", "snapshot_id", "sequence", "previous_interaction_request_id"] : ["continuity_token", "snapshot_id", "sequence"]) ||
@@ -274,7 +293,7 @@ function validateReadyAdapter(value: unknown): PolicyManifest["adapter"] {
   if (Object.keys(adapter).sort().join(",") !== "code_sha256,id,protocol,version"
       || typeof adapter.id !== "string" || !adapter.id
       || typeof adapter.version !== "string" || !adapter.version
-      || (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-2" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-3")
+      || (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-2" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-3" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-4")
       || typeof adapter.code_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(adapter.code_sha256)) {
     throw new Error("policy child emitted an invalid startup adapter identity");
   }

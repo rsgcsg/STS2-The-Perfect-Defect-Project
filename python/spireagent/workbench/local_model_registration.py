@@ -37,6 +37,8 @@ from spireagent.workbench.local_models import (
     NATIVE_PROFILE,
     PUBLIC_M0_ADAPTER,
     PUBLIC_M0_PROFILE,
+    PUBLIC_M2_ADAPTER,
+    PUBLIC_M2_PROFILE,
     LocalModelService,
     _loopback,
 )
@@ -171,7 +173,8 @@ const result = await (process.argv[3] === 'native-logical-v1'
   ? new NativeLogicalSession(client, new EnvironmentControllerSession(client,
       {productId:'spireagent-native-registration',productName:'SpireAgent',productVersion:'1.0.0'}))
       .capabilities() : process.argv[3] === 'text-menu-v2'
-  ? client.textMenuV2Capabilities() : process.argv[3] === 'public-snapshot-m0-v1'
+  ? client.textMenuV2Capabilities()
+  : ['public-snapshot-m0-v1','public-snapshot-m2-v1'].includes(process.argv[3])
   ? client.capabilities() : client.textMenuCapabilities());
 if(process.argv[3] === 'native-logical-v1'){
   const {NATIVE_LOGICAL_PUBLICATION_PROFILE,NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256} =
@@ -213,7 +216,7 @@ def _public(model_id: str, status: str, *, selection_id: str | None = None,
 def _requirements(value: Any, *, input_profile: str = PROFILE
                   ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Project only typed SDK capabilities; never derive support from a page."""
-    if input_profile == PUBLIC_M0_PROFILE:
+    if input_profile in {PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}:
         return _public_m0_requirements(value)
     try:
         v2 = input_profile == "text-menu-v2"
@@ -717,8 +720,7 @@ class LocalModelRegistration:
         observed = self._export_status(identity)
         operation = observed["operation"]
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
-            return _public(identity, "unavailable", profile="public-snapshot-m2-v1",
-                           reason_code="public_m2_runtime_contract_unavailable")
+            return self._status_public_m2(identity, observed, environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._status_native(identity, observed, environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m0":
@@ -923,8 +925,7 @@ class LocalModelRegistration:
         observed = self._export_status(identity)
         operation = observed["operation"]
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
-            raise BoundaryError("local_model_registration",
-                                "public_m2_runtime_contract_unavailable")
+            return self._register_public_m2(identity, environment_kind=environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._register_native(identity, environment_kind=environment_kind,
                                          deadline=deadline)
@@ -1182,6 +1183,147 @@ class LocalModelRegistration:
         except OSError as error:
             raise BoundaryError("local_model_registration", "registration_write_failed") from error
 
+
+    def _public_m2_runtime(self, *, deadline: float) -> tuple[Path, Path]:
+        node_modules, sdk = self._native_runtime(deadline=deadline)
+        script = (
+            "const runtime=await import(process.argv[1]);"
+            "if(runtime.POLICY_PORT_V4_SCHEMA!=='sts2.policy-runtime/policy-port-4'||"
+            "runtime.PUBLIC_STATEFUL_PROFILE!=='sts2.policy-runtime/public-observation-stateful-v1'||"
+            "typeof runtime.NdjsonPolicyPort?.prototype.decideV4!=='function')"
+            "throw Error('public_stateful_runtime_required');"
+        )
+        try:
+            result = subprocess.run(
+                ["node", "--input-type=module", "-e", script,
+                 (node_modules / RUNTIME_PACKAGE / "dist/index.js").as_uri()],
+                capture_output=True, timeout=_remaining(deadline), check=False,
+            )
+            if result.returncode:
+                raise ValueError("Port4 unavailable")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            _remaining(deadline)
+            raise BoundaryError("local_model_registration",
+                                "public_m2_runtime_contract_unavailable") from error
+        return node_modules, sdk
+
+    def _matching_public_m2(self, identity: str, export: Path, *,
+                            requirements: dict | None = None, support: dict | None = None
+                            ) -> tuple[str | None, bool]:
+        from stpd.public_m2_policy_installation import validate
+
+        stale = False
+        for entry in reversed(self._entries()):
+            if entry.get("adapter") != PUBLIC_M2_ADAPTER:
+                continue
+            config_path = _inside(self.models.private_root, entry["config"])
+            manifest_path = _inside(self.models.private_root, entry["manifest"])
+            config = _object_file(config_path)
+            if (config.get("model_id") != identity
+                    or config.get("export_path") != str(export.resolve())):
+                continue
+            try:
+                _, manifest = validate(self.models.root, config_path, manifest_path,
+                                       binding_root=self.models.private_root, verify_payloads=False)
+            except BoundaryError:
+                stale = True
+                continue
+            if (requirements is not None and manifest["requirements"] != requirements
+                    or support is not None and manifest["support"] != support):
+                stale = True
+                continue
+            return entry["id"], stale
+        return None, stale
+
+    def _status_public_m2(self, identity: str, observed: dict[str, Any],
+                          environment_kind: str) -> dict[str, Any]:
+        if environment_kind != "native":
+            return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
+                           reason_code="public_snapshot_managed_environment_not_supported")
+        if (observed.get("availability") != "ready"
+                or observed["operation"].get("status") != "completed"
+                or observed["operation"].get("verified_receipt") is None):
+            return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
+                           reason_code="verified_export_required")
+        if not local_models_available():
+            return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
+                           reason_code="local_models_extra_required")
+        try:
+            self._public_m2_runtime(deadline=monotonic() + REGISTRATION_SECONDS)
+            export = self.config.state_dir / "model-exports" / identity
+            found, stale = self._matching_public_m2(identity, export)
+            return _public(identity, "registered" if found else "not_registered",
+                           selection_id=found, profile=PUBLIC_M2_PROFILE,
+                           reason_code="source_binding_changed" if stale and not found else None)
+        except (BoundaryError, OSError, ValueError) as error:
+            return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
+                           reason_code=getattr(error, "code", "registration_metadata_invalid"))
+
+    def _register_public_m2(self, identity: str, *, environment_kind: str) -> dict[str, Any]:
+        from stpd.public_m2_policy_installation import bind_public_m2_export
+
+        if environment_kind != "native":
+            raise BoundaryError("local_model_registration",
+                                "public_snapshot_managed_environment_not_supported")
+        require_local_models("local_model_registration")
+        verification_deadline = monotonic() + 300.0
+        export = self.export.verified_public_m2_for_registration(
+            identity, deadline=verification_deadline)
+        _remaining(verification_deadline)
+        deadline = monotonic() + REGISTRATION_SECONDS
+        _, sdk = self._public_m2_runtime(deadline=deadline)
+        capabilities = self._capabilities(sdk, deadline=deadline, input_profile=PUBLIC_M2_PROFILE)
+        requirements, support = _requirements(capabilities, input_profile=PUBLIC_M2_PROFILE)
+        private = self.models.private_root
+        if private.exists() or private.is_symlink():
+            if not _ordinary(private, directory=True):
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        else:
+            private.mkdir(mode=0o700)
+        lock_path = private / LOCK
+        if lock_path.is_symlink() or (lock_path.exists()
+                                    and not _ordinary(lock_path, directory=False)):
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        with instance_lock(lock_path):
+            _remaining(deadline)
+            found, _ = self._matching_public_m2(identity, export,
+                                              requirements=requirements, support=support)
+            if found is not None:
+                return _public(identity, "registered", selection_id=found,
+                               profile=PUBLIC_M2_PROFILE)
+            folder = private / REGISTRATIONS
+            if folder.exists() or folder.is_symlink():
+                if not _ordinary(folder, directory=True):
+                    raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+            else:
+                folder.mkdir(mode=0o700)
+            selection = "local-public-m2-" + uuid.uuid4().hex
+            target = folder / selection
+            target.mkdir(mode=0o700)
+            config_path, manifest_path = target / "config.json", target / "manifest.json"
+            try:
+                bind_public_m2_export(
+                    self.models.root, export, config_path, manifest_path, manifest_id=selection,
+                    policy={"id": selection, "version": "1.0.0", "provider": "stpd",
+                            "architecture": "stpd.public-observation.light-action.m2.v1"},
+                    requirements=requirements, support=support, binding_root=private,
+                )
+                self.models._public_manifest_contract(manifest_path)
+                entry = {"id": selection, "label": "本机公开快照 M2 " + identity[:8],
+                         "adapter": PUBLIC_M2_ADAPTER, "runtime_profile": PUBLIC_M2_PROFILE,
+                         "manifest": manifest_path.relative_to(private).as_posix(),
+                         "config": config_path.relative_to(private).as_posix()}
+                entries = self._entries()
+                _remaining(deadline)
+                atomic_json(private / REGISTRY, {"schema": "stpd/local-token-policies-v1",
+                                                "policies": [*entries, entry]})
+            except Exception:
+                config_path.unlink(missing_ok=True)
+                manifest_path.unlink(missing_ok=True)
+                target.rmdir()
+                raise
+            return _public(identity, "registered", selection_id=selection,
+                           profile=PUBLIC_M2_PROFILE)
 
     def _matching_public_m0(self, identity: str, export: Path, *,
                             requirements: dict | None = None,
