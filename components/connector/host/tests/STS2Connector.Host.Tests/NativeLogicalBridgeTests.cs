@@ -121,6 +121,14 @@ public sealed class NativeLogicalBridgeTests
         Assert.Equal(request.ExpectedSnapshotId, row.GetProperty("expected_snapshot_id").GetString());
         Assert.Equal(request.BoundActionId, row.GetProperty("action_id").GetString());
         Assert.DoesNotContain("private exception", lines[0]);
+        if (mode == "facts")
+        {
+            var detail = row.GetProperty("revalidation_detail");
+            Assert.False(detail.GetProperty("truncated").GetBoolean());
+            Assert.Contains("interaction_prompt", detail.GetProperty("changed_members").EnumerateArray().Select(x => x.GetString()));
+            Assert.Contains("interaction.prompt", detail.GetProperty("changed_paths").EnumerateArray().Select(x => x.GetString()));
+        }
+        if (mode == "capture_exception") Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("revalidation_detail").ValueKind);
         if (mode == "partial") Assert.Contains("source_completeness",
             row.GetProperty("changed_fact_groups").EnumerateArray().Select(x => x.GetString()));
     }
