@@ -48,3 +48,13 @@ equality/Bdifference is a representation check, not a required prediction
 contradiction. Online Snapshot+Read adapter, export/registration and fresh
 reward/game evaluation are separate follow-up gates; this offline packet
 cannot claim natural summary, loop resolution or strategy quality.
+
+The paired recipe's wall/scratch limits remain frozen across arms and resumes.
+Generic single-arm wall-budget amendments are rejected and never advertised;
+stored amendment records also fail validation. A different pair envelope needs
+an explicitly reviewed source/experiment rather than modifying one arm. Unscoped
+resume/reconciliation requires the actual current producer to equal the original
+Run producer; a later writer cannot publish under the older producer's identity.
+Completed artifact validation binds Input/arm/source/InputSpec/creator/metrics and
+the expected seeded data identity, then checks the checkpoint tensor inventory
+against the existing M0 factory on `meta` and exact final Model weights.

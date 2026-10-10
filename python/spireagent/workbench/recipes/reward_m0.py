@@ -8,7 +8,9 @@ from typing import Any
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
+from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.workbench.developer import ROOT
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.reward_m0_data import (
     record_reward_m0_use,
@@ -114,6 +116,8 @@ def verify_reward_resume_checkpoint(
     from stpd.workers.reward_m0_run import verify_reward_m0_run
 
     run, config = verify_reward_m0_run(store, operation["run_id"])
+    if source_identity(ROOT) != run.producer:
+        raise BoundaryError("reward_m0_recipe", "unscoped_resume_current_producer_mismatch")
     checkpoint = store.get_manifest(checkpoint_id)
     info = checkpoint.parameters.value()
     if (
@@ -193,6 +197,8 @@ def run_reward_child(args: Any, channel: Any, store: Any, fence: Any, producer: 
         fence.wait_for_parent_run(run.artifact_id, input_id)
     else:
         run, existing = verify_reward_m0_run(store, operation["run_id"])
+        if producer != run.producer:
+            raise BoundaryError("reward_m0_recipe", "unscoped_resume_current_producer_mismatch")
         if config != existing:
             raise BoundaryError("reward_m0_recipe", "resume_configuration_mismatch")
     reporter = ChildReporter(

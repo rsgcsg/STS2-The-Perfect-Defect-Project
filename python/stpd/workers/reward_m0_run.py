@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
 
 from ..canonical import semantic_hash
@@ -23,6 +23,7 @@ from ..fullrun.reward_m0_inputs import (
 from ..fullrun.reward_m0_source import VerifiedRewardM0Source, verify_reward_m0_source
 from ..reward_m0_spec import (
     CHECKPOINT_SCHEMA,
+    INPUT_SCHEMA,
     INPUT_SPECS,
     MODEL_SCHEMA,
     RECIPE,
@@ -116,15 +117,100 @@ def verify_reward_m0_run(store: ArtifactStore, run_id: str) -> tuple[Manifest, R
         raise BoundaryError("reward_m0_run", "run_code_or_contract_mismatch")
     config = RewardM0Config.decode(info["config"])
     inputs = store.get_manifest(run.parent("training_input"))
+    input_info = inputs.parameters.value()
     if (
         inputs.producer != run.producer
         or inputs.parent("source") != info["source_id"]
         or info["arm"] != config.arm
         or info["input_spec"] != INPUT_SPECS[config.arm]
         or info["graph"] != LIGHT_ACTION_M0_GRAPH
+        or input_info.get("schema") != INPUT_SCHEMA
+        or input_info.get("arm") != config.arm
+        or input_info.get("input_spec") != INPUT_SPECS[config.arm]
+        or input_info.get("paired_schedule") != config.paired_schedule()
     ):
         raise BoundaryError("reward_m0_run", "run_input_arm_binding_mismatch")
     return run, config
+
+
+def _paired_plan(config: RewardM0Config, count: int) -> list[int]:
+    if count <= 0:
+        raise BoundaryError("reward_m0_run", "paired_choices_required")
+    plan = []
+    for epoch in range((config.steps + count - 1) // count):
+        order = list(range(count))
+        random.Random(f"stage1a:{config.seed}:{epoch}").shuffle(order)
+        plan.extend(order)
+    return plan[: config.steps]
+
+
+def _data_identity(
+    input_id: str, config: RewardM0Config, plan: list[int], backbone: dict[str, Any]
+) -> str:
+    return semantic_hash(
+        {
+            "schema": "stpd/reward-m0-numerical-data-v1",
+            "input_id": input_id,
+            "config": config.to_dict(),
+            "plan": plan,
+            "backbone": backbone,
+        }
+    )
+
+
+def _validate_completed_tensor_shape(
+    state: dict[str, Any],
+    backbone: dict[str, Any],
+    state_codec: dict[str, Any],
+    config: RewardM0Config,
+) -> None:
+    """Inspect the owning M0 factory on meta; allocate no real model parameters."""
+    import torch
+
+    from ..models.stage1a import build_scorer
+    from ..models.token_core import ScratchShape, ScratchTokenCore
+    from .token_ranking import LightActionM0Config, _scoring_seed, config_payload
+
+    shape = ScratchShape(state_codec["vocab_size"], max_tokens=config.max_state_tokens)
+    expected_backbone = {"kind": "scratch", "shape": asdict(shape), "state_codec": state_codec}
+    expected_backbone["core_fingerprint"] = semantic_hash(
+        {
+            "core": expected_backbone,
+            "graph": LIGHT_ACTION_M0_GRAPH,
+            "vocabulary_size": state_codec["vocab_size"],
+            "max_state_tokens": config.max_state_tokens,
+        }
+    )
+    numerical = LightActionM0Config(
+        **{
+            key: value
+            for key, value in asdict(config).items()
+            if key not in {"arm", "state_vocab_size", "checkpoint_every_boundaries"}
+        }
+    )
+    if (
+        backbone != expected_backbone
+        or state.get("config") != config_payload(numerical)
+        or state.get("schema") != "stpd/stage1a-light-action-m0-checkpoint-v1"
+        or not isinstance(state.get("model"), dict)
+    ):
+        raise BoundaryError("reward_m0_run", "completed_admitted_shape_or_config_mismatch")
+    with torch.device("meta"):
+        expected_model = build_scorer(
+            numerical.recipe,
+            ScratchTokenCore(shape),
+            max_action_bytes=config.max_action_bytes,
+            scoring_seed=_scoring_seed(config.seed),
+        )
+    expected = expected_model.state_dict()
+    actual = state["model"]
+    if set(actual) != set(expected) or any(
+        not isinstance(actual[key], torch.Tensor)
+        or actual[key].shape != reference.shape
+        or actual[key].dtype != reference.dtype
+        for key, reference in expected.items()
+    ):
+        raise BoundaryError("reward_m0_run", "completed_admitted_tensor_inventory_mismatch")
 
 
 @dataclass(frozen=True)
@@ -171,21 +257,9 @@ def _engine(inputs: LoadedRewardM0Inputs, config: RewardM0Config) -> Any:
             self.optimizer = torch.optim.AdamW(
                 self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay
             )
-            train = list(range(len(inputs.samples)))
-            self.plan = []
-            for epoch in range((config.steps + len(train) - 1) // len(train)):
-                order = list(train)
-                random.Random(f"stage1a:{config.seed}:{epoch}").shuffle(order)
-                self.plan.extend(order)
-            self.plan = self.plan[: config.steps]
-            self.data_identity = semantic_hash(
-                {
-                    "schema": "stpd/reward-m0-numerical-data-v1",
-                    "input_id": inputs.manifest.artifact_id,
-                    "config": config.to_dict(),
-                    "plan": self.plan,
-                    "backbone": self.backbone,
-                }
+            self.plan = _paired_plan(config, len(inputs.samples))
+            self.data_identity = _data_identity(
+                inputs.manifest.artifact_id, config, self.plan, self.backbone
             )
             self.step = 0
 
@@ -260,6 +334,7 @@ def execute_reward_m0_run(
                     "attempt": attempt_id,
                     "arm": config.arm,
                     "source_id": source.manifest.artifact_id,
+                    "input_id": inputs.manifest.artifact_id,
                     "input_spec": INPUT_SPECS[config.arm],
                     "optimizer_updates": engine.step,
                     "data_identity": engine.data_identity,
@@ -361,6 +436,7 @@ def execute_reward_m0_run(
                 "initial_weights_sha256": initial_sha,
                 "optimizer_updates": engine.step,
                 "paired_plan": engine.plan,
+                "data_identity": engine.data_identity,
                 "source_id": source.manifest.artifact_id,
                 "paired_feature_id": inputs.manifest.parent("paired_features"),
                 "qualification": "TRAIN_internal_engineering_only",
@@ -393,6 +469,11 @@ def execute_reward_m0_run(
                     "schema": RESULT_SCHEMA,
                     "evaluation_scope": "TRAIN_internal_diagnostic_no_independent_heldout",
                     "arm": config.arm,
+                    "source_id": source.manifest.artifact_id,
+                    "input_id": inputs.manifest.artifact_id,
+                    "input_spec": INPUT_SPECS[config.arm],
+                    "data_identity": engine.data_identity,
+                    "attempt": attempt_id,
                     "rows": diagnostics,
                     "mean_NLL": sum(row["NLL"] for row in diagnostics) / len(diagnostics),
                     "top1_correct": sum(row["top1_correct"] for row in diagnostics),
@@ -423,6 +504,8 @@ def execute_reward_m0_run(
                 "attempt": attempt_id,
                 "initial_weights_sha256": initial_sha,
                 "source_id": source.manifest.artifact_id,
+                "input_spec": INPUT_SPECS[config.arm],
+                "data_identity": engine.data_identity,
                 "heldout_or_Gold": False,
             }
         ),
@@ -452,10 +535,31 @@ def verify_reward_m0_completed(
     result_id = result.artifact_id
     model = store.get_manifest(result.parent("model"))
     checkpoint = store.get_manifest(result.parent("checkpoint"))
+    training = store.get_manifest(run.parent("training_input"))
+    feature = store.get_manifest(training.parent("paired_features"))
+    model_info = model.parameters.value()
+    checkpoint_info = checkpoint.parameters.value()
+    result_info = result.parameters.value()
+    source_id = run.parameters.value()["source_id"]
+    plan = _paired_plan(config, len(feature.parameters.value()["occurrence_ids"]))
+    backbone = model_info.get("backbone")
+    if (
+        not isinstance(backbone, dict)
+        or backbone.get("state_codec") != training.parameters.value()["state_codec"]
+    ):
+        raise BoundaryError("reward_m0_run", "completed_admitted_backbone_mismatch")
+    expected_identity = _data_identity(training.artifact_id, config, plan, backbone)
+    digest(result_info.get("attempt"), "reward_m0.completed_creator_attempt", length=32)
     if (
         result.kind != "run_result"
         or result.producer != run.producer
         or result.parent("run") != run_id
+        or result.parent("training_input") != training.artifact_id
+        or result_info.get("state") != "completed"
+        or result_info.get("arm") != config.arm
+        or result_info.get("source_id") != source_id
+        or result_info.get("input_spec") != INPUT_SPECS[config.arm]
+        or result_info.get("data_identity") != expected_identity
         or result.parameters.value().get("schema") != "stpd/run-result-v1"
         or result.parameters.value().get("domain_schema") != RESULT_SCHEMA
         or result.parameters.value().get("optimizer_updates") != config.steps
@@ -464,6 +568,11 @@ def verify_reward_m0_completed(
         or model.parameters.value().get("schema") != MODEL_SCHEMA
         or model.parameters.value().get("arm") != config.arm
         or model.parameters.value().get("config") != config.to_dict()
+        or model_info.get("source_id") != source_id
+        or model_info.get("input_spec") != INPUT_SPECS[config.arm]
+        or model_info.get("data_identity") != expected_identity
+        or model_info.get("paired_feature_id") != feature.artifact_id
+        or model_info.get("paired_plan") != plan
         or model.parameters.value().get("weights_sha256") != model.payload("weights").sha256
         or model.parent("run") != run_id
         or model.parent("training_input") != run.parent("training_input")
@@ -471,10 +580,55 @@ def verify_reward_m0_completed(
         or checkpoint.kind != "checkpoint"
         or checkpoint.producer != run.producer
         or checkpoint.parent("run") != run_id
+        or checkpoint.parent("training_input") != training.artifact_id
+        or checkpoint_info.get("arm") != config.arm
+        or checkpoint_info.get("source_id") != source_id
+        or checkpoint_info.get("input_spec") != INPUT_SPECS[config.arm]
+        or checkpoint_info.get("data_identity") != expected_identity
+        or checkpoint_info.get("paired_plan") != plan
+        or checkpoint_info.get("attempt") != result_info.get("attempt")
         or checkpoint.parameters.value().get("schema") != CHECKPOINT_SCHEMA
         or checkpoint.parameters.value().get("optimizer_updates") != config.steps
     ):
         raise BoundaryError("reward_m0_run", "completed_model_lineage_mismatch")
+    metrics = decode_json(b"".join(store.read_payload(result.payload("metrics"))))
+    if (
+        not isinstance(metrics, dict)
+        or metrics.get("schema") != RESULT_SCHEMA
+        or metrics.get("arm") != config.arm
+        or metrics.get("source_id") != source_id
+        or metrics.get("input_id") != training.artifact_id
+        or metrics.get("input_spec") != INPUT_SPECS[config.arm]
+        or metrics.get("data_identity") != expected_identity
+        or metrics.get("attempt") != result_info["attempt"]
+        or metrics.get("evaluation_scope") != "TRAIN_internal_diagnostic_no_independent_heldout"
+        or metrics.get("eligible_N") != len(feature.parameters.value()["occurrence_ids"])
+        or not isinstance(metrics.get("rows"), list)
+        or [row.get("occurrence_id") for row in metrics["rows"]]
+        != feature.parameters.value()["occurrence_ids"]
+    ):
+        raise BoundaryError("reward_m0_run", "completed_metric_input_identity_mismatch")
+    events = reporter.events(run_id)
+    creator_events = [
+        event.parameters.value()
+        for event in events
+        if event.kind == "run_event"
+        and event.producer == run.producer
+        and event.parent("run") == run_id
+        and event.parameters.value().get("schema") == "stpd/run-event-v1"
+        and event.parameters.value().get("attempt") == result_info["attempt"]
+    ]
+    if not any(
+        event.get("kind") == "checkpoint"
+        and event.get("details", {}).get("checkpoint_id") == checkpoint.artifact_id
+        for event in creator_events
+    ) or not any(
+        event.get("kind") == "completed"
+        and event.get("details", {}).get("result_id") == result_id
+        and event.get("details", {}).get("model_id") == model.artifact_id
+        for event in creator_events
+    ):
+        raise BoundaryError("reward_m0_run", "completed_creator_event_identity_mismatch")
     for payload in (*model.payloads, *result.payloads, *checkpoint.payloads):
         for _ in store.read_payload(payload):
             pass
@@ -485,18 +639,19 @@ def verify_reward_m0_completed(
     from .checkpoint_codec import decode_checkpoint
 
     state = decode_checkpoint(b"".join(store.read_payload(checkpoint.payload("checkpoint"))))
+    _validate_completed_tensor_shape(
+        state, backbone, training.parameters.value()["state_codec"], config
+    )
     if (
         state.get("step") != config.steps
-        or state.get("data_identity") != checkpoint.parameters.value()["data_identity"]
+        or state.get("data_identity") != expected_identity
         or save(state["model"]) != b"".join(store.read_payload(model.payload("weights")))
         or model.parameters.value()["initial_weights_sha256"]
         != (checkpoint.parameters.value()["initial_weights_sha256"])
         or model.parameters.value()["paired_plan"] != checkpoint.parameters.value()["paired_plan"]
     ):
         raise BoundaryError("reward_m0_run", "completed_checkpoint_weights_mismatch")
-    event_step = max(
-        (event.parameters.value().get("step", 0) for event in reporter.events(run_id)), default=0
-    )
+    event_step = max((event.parameters.value().get("step", 0) for event in events), default=0)
     return RewardM0Result(
         "completed",
         run_id,

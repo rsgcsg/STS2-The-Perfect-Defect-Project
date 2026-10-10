@@ -57,6 +57,7 @@ from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
+    REWARD_M0_RECIPE,
     TRUSTED_RECIPES,
     TYPED_RECIPES,
     describe_recipe,
@@ -496,6 +497,8 @@ class LocalTrainingService:
                 or value.get("recipe") not in TRUSTED_RECIPES):
             raise ValueError("operation_identity")
         request = TrainingRequest.from_dict(value["request"])
+        if value["recipe"] == REWARD_M0_RECIPE and value.get("budget_amendments"):
+            raise ValueError("frozen_pair_budget_amendment_forbidden")
         if (request.recipe_id != value["recipe"] or request.source_id != value["dataset_id"]
                 or request.config != validate_recipe_config(request.recipe_id, request.config)
                 or (value.get("intent_id") != request.intent_id and not (
@@ -565,7 +568,8 @@ class LocalTrainingService:
                 and value.get("checkpoint_id")
                 and value.get("worker_isolation") == "private_child-v1"
                 and scratch_available and limits["wall_seconds"] < 3600
-                and len(value.get("budget_amendments", [])) < 32):
+                and len(value.get("budget_amendments", [])) < 32
+                and value["recipe"] != REWARD_M0_RECIPE):
             actions.append("amend_wall_budget")
         if structured and value["status"] == "interrupted_unknown":
             actions = [*actions, "reconcile"]
@@ -827,6 +831,8 @@ class LocalTrainingService:
         try:
             with self._lock:
                 value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+                if value["recipe"] == REWARD_M0_RECIPE:
+                    raise BoundaryError("local_training", "frozen_pair_budget_amendment_forbidden")
                 if (not value["writer_terminal"] or value["status"] not in
                         {"paused", "cancelled", "interrupted_unknown"}
                         or not value.get("run_id") or not value.get("checkpoint_id")
