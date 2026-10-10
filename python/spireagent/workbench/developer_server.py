@@ -868,6 +868,8 @@ class Application:
             return self.local_training.cancel(**body)
         if action == "reconcile":
             return self.local_training.reconcile(**body)
+        if action == "amend_wall_budget":
+            return self.local_training.amend_wall_budget(**body)
         raise BoundaryError("local_training", "unsupported_training_action")
 
     def start_local_memory_evaluation(self, model_id: object, source_id: object,
@@ -1766,7 +1768,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 action = self.path.removeprefix("/api/local-training/")
-                if action not in {"start", "pause", "cancel", "resume", "reconcile"}:
+                if action not in {"start", "pause", "cancel", "resume", "reconcile",
+                                  "amend_wall_budget"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
@@ -1794,6 +1797,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         fields = {"operation_id", "expected_attempt_id"}
                         if action == "resume":
                             fields |= {"checkpoint_id", "intent_id", "limits"}
+                        elif action == "amend_wall_budget":
+                            fields |= {"intent_id", "wall_seconds"}
                         if set(body) != fields:
                             raise ValueError
                         value = app.control_local_training(action, body)

@@ -17,7 +17,7 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
-from spireagent.workbench.recipe_contracts import TrainingRequest
+from spireagent.workbench.recipe_contracts import TrainingRequest, effective_training_limits
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
@@ -404,7 +404,7 @@ class StructuredRecipeAdapter:
         started = service._attempt_started_monotonic
         if started is None:
             raise BoundaryError("local_training", "attempt_clock_required")
-        remaining = (operation["request"]["limits"]["wall_seconds"]-
+        remaining = (effective_training_limits(operation)["wall_seconds"]-
                      operation["elapsed_seconds"]-(time.monotonic()-started))
         if remaining <= 0:
             raise BoundaryError("local_training", "cumulative_budget_exhausted")

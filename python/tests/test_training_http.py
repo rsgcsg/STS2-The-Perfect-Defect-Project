@@ -68,7 +68,7 @@ def test_http_capabilities_exact_queries_body_and_configuration_guards(tmp_path,
         rejected(call, "status?operation_id=" + "a" * 32, None, 409, "operation_not_current")
         rejected(call, "capabilities", None, 401, "browser_session_required", selected_headers={})
         body = {"operation_id": "a" * 32, "expected_attempt_id": "b" * 32}
-        for action in ["pause", "cancel", "reconcile", "resume"]:
+        for action in ["pause", "cancel", "reconcile", "resume", "amend_wall_budget"]:
             denied = {key: value for key, value in headers.items() if key != "X-CSRF-Token"}
             rejected(call, action, body, 403, "browser_action_denied", selected_headers=denied)
             rejected(call, action, {**body, "extra": True}, 400, "invalid_local_training_request")
@@ -82,6 +82,9 @@ def test_http_capabilities_exact_queries_body_and_configuration_guards(tmp_path,
             rejected(call, action, body, 409, "running_configuration_mismatch")
         rejected(call, "resume", {**body, "checkpoint_id": "c" * 64,
                                  "intent_id": "d" * 32, "limits": request.limits},
+                 409, "running_configuration_mismatch")
+        rejected(call, "amend_wall_budget", {**body, "intent_id": "d" * 32,
+                                             "wall_seconds": 700},
                  409, "running_configuration_mismatch")
         rejected(call, "start", request.to_dict(), 409, "running_configuration_mismatch")
     assert set(store.manifest_ids()) == before
@@ -118,6 +121,9 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
             assert ack["status"] == "pending" and ack["requested_action"] == "pause"
             assert ack["worker_state"] == "running" and ack["selected_result"] is True
             rejected(call, "reconcile", body, 409, "writer_still_running")
+            rejected(call, "amend_wall_budget", {**body, "intent_id": "3" * 32,
+                                                 "wall_seconds": 700},
+                     409, "writer_still_running")
         finally:
             released.set()
         stopped = settle(service)
@@ -128,6 +134,14 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
         assert reloaded["limits"] == stopped["limits"] and reloaded["config"] == stopped["config"]
         reloaded["limits"]["wall_seconds"] = 1
         assert call("status")["operation"]["limits"]["wall_seconds"] == 600
+        amendment = {**body, "intent_id": "3" * 32, "wall_seconds": 700}
+        amended = call("amend_wall_budget", amendment)["operation"]
+        assert amended["attempt_id"] == attempt_id and amended["run_id"] == stopped["run_id"]
+        assert amended["elapsed_seconds"] == stopped["elapsed_seconds"]
+        assert amended["effective_limits"]["wall_seconds"] == 700
+        assert amended["limits"] == stopped["limits"]
+        assert call("amend_wall_budget", amendment)["operation"]["budget_amendments"] == (
+            amended["budget_amendments"])
         resume = {**body, "checkpoint_id": stopped["checkpoint_id"], "intent_id": "2" * 32,
                   "limits": stopped["limits"]}
         rejected(call, "resume", {**resume, "limits": {"wall_seconds": 601}},
@@ -137,6 +151,13 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
         completed = settle(app.local_training)
         assert completed["status"] == "completed", completed
         assert completed["elapsed_seconds"] >= stopped["elapsed_seconds"]
+        assert completed["run_id"] == stopped["run_id"]
+        assert completed["effective_limits"] == amended["effective_limits"]
+        assert completed["budget_amendments"] == amended["budget_amendments"]
+        owner, _, _ = app.local_training._selected()
+        journal = app.local_training._read(app.local_training._paths(owner)[0], owner.identity)
+        assert journal["request"]["intent_id"] == request.intent_id
+        assert journal["attempts"][-1]["checkpoint_id"] == stopped["checkpoint_id"]
         rejected(call, "cancel", body, 409, "stale_operation_attempt")
 
 
