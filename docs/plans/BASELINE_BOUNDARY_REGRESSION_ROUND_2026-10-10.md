@@ -182,7 +182,8 @@ W, cache and reset, including a complete31-candidate catalog and whole32 rejecti
 checked raw outputs for exact equality across five named cases;31 is not sequence length.
 Stage1 cache-lock-race correction `b57e4286` is independently accepted and normally
 merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 was not integrated at that checkpoint; later source acceptance is recorded
-below. An actual M2 game run remains unproved.
+below. An actual M2 game run was unproved at that checkpoint; the later bounded canary
+is recorded below.
 
 ### Current rc28 source and consumer prerequisites
 
@@ -333,8 +334,8 @@ original payload: final output SHA
 `9c8610639a01783bb54b53d1af17f043bba450639d2ec25f6c60014dec62da21`
 is byte-identical to the historical/a405 output. The five named W0/cache/new-ordinal/
 new-segment/complete31-candidate cases and whole32 refusal before W write retain
-NN digest `8e27fba3…`, epoch1 and run_complete=false. This is actual numerical
-compatibility, not new training or a Public M2 game result.
+NN digest `8e27fba3…`, epoch1 and run_complete=false. This is actual numerical compatibility, not new training; the subsequent real
+Public M2 canary is a separate receipt below.
 
 Runtime rc29 was built from clean `00ba9f38`, archive
 `b91b75cb20a45a2f24eea71ca391c15a22c614bb7b2a0ac98bff1c1f168ff716`, content
@@ -366,9 +367,34 @@ and corrected run retain their scopes. No real S01 cohort freeze/use/fit, held-o
 comparison, deployable export or online Read adapter is claimed; current formal
 lock/fingerprints require their own acceptance before actual work.
 
-Next is actual Public M2 common-owner export/register/Load/OneStep/Stop/reopen with
-reviewed private caller/Host cleanup, then bounded autonomous evaluation. Do not
-borrow M0 Shadow/reopen as M2 W evidence. In parallel, finish explicit native8eb compatibility migration and Paired Reward
+### Bounded original Public M2 native canary
+
+At frozen `1a709a67`, the common owner completed original17eb export operation
+`b0ab6c1b6205459dab90adaa4c10b53f`, packageSHA prefix `b8756a20…`, preserving
+epoch1/run_complete=false and original weights. No new fit occurred. The distinct
+registered selection `local-public-m2-c79e4f2fcfe347e2bf42d238bdf276a6` loaded through
+Runtime rc29/Mod rc40, then performed OneStep without Shadow or retry.
+First run `run-984f57ce-242a-4c4a-8769-d1427433b0f4` has one public observation,
+ordinal1 with empty previous-action control metadata, C1 map candidate and actual
+NN score `-0.19644924998283386`, selected index0/original handle, delivered Receipt.
+Independent installed-SDK/site-package verification and adapter attestation accept
+its ten-event typed evidence content ID prefix `fa0ac977…`. This is source-bound
+first-step scoring; the live W tensor is not recorded or independently observed.
+
+Stop released control, fresh Human-mode reopen created
+`run-d125b4cc-b79d-460b-9ee1-2687c42ab5af`, and a second Stop again released it;
+its one-event stopped evidence content ID prefix `200e67be…` has zero observations/
+submissions. Signed Host `617e5832ad634f26bd610aa67a7cc2d0` shutdown returned HTTP200,
+exit0/unforced; final Model is stopped/not loaded. The immediate Receipt successor
+was a settling map; later interactive combat/C6 was separately observed. Neither
+is causal S' or execution/effect/Commit proof. Review accepts this bounded original-
+model service/game restoration, not whole-game strategy, natural summary, Human,
+new learning or full G2/V1/current CI qualification.
+
+Next is separately reviewed Public M2 Auto preparation and a bounded autonomous
+attempt; it is private preparation, not yet started or a result. Preserve original
+partial identity and actual ordinal/history. Do not borrow M0 Shadow/reopen as M2
+W evidence. In parallel, finish explicit native8eb compatibility migration and Paired Reward
 proof repairs. Candidate artifact publication/export may precede the actual
 current-environment parity; accepted registration/gameplay use follows that proof,
 not merely publication. Real cohort work follows its own source/use acceptance. Obtain fresh selected CI for one coherent

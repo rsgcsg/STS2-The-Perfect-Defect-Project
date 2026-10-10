@@ -39,12 +39,11 @@ re-entry loop; the separate native v2 pilot closed at an unsupported Teacher own
 below its target. Mechanical continuation/count/cleanup acceptance is not natural
 summary or quality. No old unknown or censored attempt is rewritten.
 
-Formal dependency setup now installs the exact current Evidence SDK rather than
-relying on a manual wheel. Reviewed SDK/fixture corrections, Public M2 Port4 baseline/
-Task source, numerical parity and local integration are recorded in the packet.
-The current Runtime package is installed but unloaded through the common owner;
-compiled Mod evidence is unchanged. No actual Public M2 game result exists yet,
-and the latest hosted CI is still failed, not proof of the new candidate.
+Formal setup installs the current Evidence SDK; source/fixture fixes, Public M2
+Port4/Task and parity gates are recorded in the packet. Current Runtime installation
+and unchanged Mod bytes now support original partial M2's real export/load/C1 neural
+choice/delivery/Stop/reopen canary. No live W tensor was witnessed, and no whole-game,
+strategy or current hosted CI pass follows.
 
 The old native learned package now correctly rejects the changed formal lock.
 Its original package/load evidence remains valid in the original environment;
@@ -55,8 +54,8 @@ an actual cohort, training comparison or deployed online feature.
 
 ## Next actual dependencies
 
-Finish the reviewed Public M2 private export/caller preparation, then execute its
-own common-owner registration/load/OneStep/Stop/reopen path and bounded game task.
+Review the separately prepared Public M2 Auto caller and execution envelope, then
+exercise a distinct bounded game task; preparation is not started/completed evidence.
 Preserve partial Model/state/history identity; M0 Shadow is not M2 memory proof.
 Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
 retried automatically and every new canary has a distinct explicit identity.

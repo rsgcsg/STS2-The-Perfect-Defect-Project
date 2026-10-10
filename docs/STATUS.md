@@ -14,9 +14,10 @@ obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependenci
 
 Reached levels include bounded M0 restoration/Auto with a supervisor-censored
 reward loop, a learned fresh-choice chain at its original tuple, native diagnostic
-count/cleanup, and current formal SDK/Runtime installation plus Public M2 source/
-numerical parity. The packet distinguishes original native identities from changed
-lock/package provenance. Actual M2 gameplay and native-package migration are pending;
+count/cleanup, and current formal SDK/Runtime installation plus Public M2 numerical
+parity and a bounded real one-choice/Stop/reopen canary. The packet distinguishes
+original native identities from changed lock/package provenance. Public M2 autonomous
+whole-game use and native-package migration are pending;
 Paired Reward has synthetic/source evidence only. Latest hosted CI remains failed.
 No natural-game/strategy/Human/scientific or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
