@@ -116,6 +116,7 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
     source.capture.snapshot_id = source.observation.snapshot_id; source.observation.catalog.snapshot_id = source.observation.snapshot_id; source.rehash();
   };
   return { runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
+    manifest: structuredClone(manifest),
     behavior: (value: typeof behavior) => { behavior = value; }, holdSubmit: () => { submitGate = gate(); return submitGate; },
     onSubmit: (fn: () => void) => { onSubmit = fn; }, failRelease: (fn: (id: string) => boolean) => { failRelease = fn; },
     expire: () => { clock = 60000; } };
@@ -129,7 +130,9 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     expect(first.type, JSON.stringify({ result: first, stderr: Buffer.concat((f.port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8") })).toBe("fresh_decision_required");
     expect((await f.runtime.tick()).type).toBe("awaited"); expect(f.runtime.status().session.state_version).toBe(1);
     f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
-    expect(f.runtime.status()).toMatchObject({ agent: { agent_id: "stpd-native-public-program-teacher", agent_version: "1.2.0", adapter: { version: "1.2.0" } }, session: { state_version: 2, agent_state: "known" } });
+    // This seam runs the current source Teacher. Runtime must preserve the
+    // independently supplied manifest identity, not a historical producer pin.
+    expect(f.runtime.status()).toMatchObject({ agent: { agent_id: "stpd-native-public-program-teacher", agent_version: f.manifest.agent.version, adapter: { version: f.manifest.adapter.version } }, session: { state_version: 2, agent_state: "known" } });
     const submits = f.calls.filter(c => c.operation === "submit"); expect(submits).toHaveLength(2);
     expect(submits[1]!.body.bound_action_id).toBe("inspect_b-action"); expect(submits[1]!.body.request_id).not.toBe(submits[0]!.body.request_id);
     const e = await f.events(); expect(e.filter(x => x.kind === "agent_consumed")).toHaveLength(2); expect(e.filter(x => x.kind === "native_stale_decision_deferred")).toHaveLength(1);
