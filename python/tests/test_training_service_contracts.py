@@ -218,7 +218,9 @@ def child_script(monkeypatch, body, *, on_line=None, phases=None):
     return original
 
 
-def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False):
+def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False,
+                     expected_action="cancel"):
+    assert expected_action in {"cancel", "pause"}
     # Parent notification does not hold the actual child at a numerical boundary.
     # Gate this fixture's first checkpoint on the existing exact journal control;
     # production publication, control polling and process exit stay authoritative.
@@ -231,6 +233,7 @@ original_emit = child.ChildReporter.emit
 original_advance = StructuredTrainingEngine.advance_chunk
 original_channel_emit = child.ChildChannel.emit
 first = None
+expected_action = EXPECTED_ACTION
 
 def record(phase, **details):
     fence = first['fence']
@@ -242,13 +245,13 @@ def record(phase, **details):
             'phase': phase, 'observed_at': time.monotonic(), **details,
         }))
 
-def await_cancel():
+def await_control():
     deadline = time.monotonic() + 5
-    while first['fence'].requested_action() != 'cancel':
+    while first['fence'].requested_action() != expected_action:
         if time.monotonic() >= deadline:
-            raise AssertionError('fixture exact checkpoint cancel not observed')
+            raise AssertionError('fixture exact checkpoint ' + expected_action + ' not observed')
         time.sleep(0.005)
-    record('cancel_observed')
+    record(expected_action + '_observed')
 
 def emit(self, event):
     global first
@@ -268,7 +271,7 @@ def emit(self, event):
         record('checkpoint_emitted', sequence=self.channel.sequence,
                requested_action=current['requested_action'])
         if not ALLOW_ADVANCE:
-            await_cancel()
+            await_control()
     return identity
 
 def advance(self):
@@ -277,7 +280,7 @@ def advance(self):
     before = first['fence'].requested_action()
     progress = original_advance(self)
     record('chunk_advanced', requested_action_before=before, progress=asdict(progress))
-    await_cancel()
+    await_control()
     return progress
 
 def channel_emit(self, kind, **details):
@@ -289,7 +292,7 @@ child.ChildReporter.emit = emit
 child.ChildChannel.emit = channel_emit
 if ALLOW_ADVANCE:
     StructuredTrainingEngine.advance_chunk = advance
-""".replace("ALLOW_ADVANCE", repr(allow_advance))
+""".replace("ALLOW_ADVANCE", repr(allow_advance)).replace("EXPECTED_ACTION", repr(expected_action))
     return child_script(monkeypatch, body, on_line=on_line, phases=phases)
 
 
@@ -397,26 +400,41 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
         value = json.loads(raw)
         if (value["kind"] == "event" and store.get_manifest(
                 value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
-            service.cancel(value["operation_id"], value["attempt_id"])
-            phases["cancel_requested_at"] = service._cancel_requested_monotonic
+            service.pause(value["operation_id"], value["attempt_id"])
 
-    checkpoint_child(monkeypatch, on_line=message, phases=phases)
+    # Wrong-checkpoint admission requires a real stopped writer, independently
+    # of whether Windows process teardown fits the cooperative cancel grace.
+    # Actual safe/forced cancellation behavior remains covered separately.
+    checkpoint_child(monkeypatch, on_line=message, phases=phases, expected_action="pause")
     service.start(request)
     saved = settle(service)
     diagnostic = cancellation_diagnostic(service, owner, saved, phases)
-    assert saved["status"] == "cancelled" and saved.get("checkpoint_id"), diagnostic
+    assert saved["status"] == "paused" and saved.get("checkpoint_id"), diagnostic
     assert saved["domain_completion_state"] == "not_completed"
+    assert saved["worker_state"] == "terminal" and saved["requested_action"] == "pause"
     assert saved["child_exit"]["forced"] is False
+    assert saved["child_exit"]["exit_code"] == 0
+    assert service._cancel_requested_monotonic is None
     cp = store.get_manifest(saved["checkpoint_id"])
+    from spireagent.workbench.recipes.structured import verify_resume_checkpoint
+
+    verify_resume_checkpoint(store, service._read(owner.path.parent / OPERATION_FILE,
+                                                owner.identity), cp.artifact_id)
+    assert cp.parent("run") == saved["run_id"]
+    assert cp.parent("training_input") == saved["input_id"]
+    assert cp.parameters.value()["attempt"] == saved["attempt_id"]
+    assert cp.parameters.value()["optimizer_updates"] == 0
     wrong = Manifest(cp.kind, cp.producer, cp.parents, cp.payloads,
                      FrozenObject.of({**cp.parameters.value(),
                                       "schema": "stpd/structured-m2-training-checkpoint-v1"}))
     store.publish(wrong)
     journal = (owner.path.parent / OPERATION_FILE).read_bytes()
+    artifacts = set(store.manifest_ids())
     with pytest.raises(BoundaryError, match="checkpoint_run_identity_mismatch"):
         service.resume(saved["operation_id"], saved["attempt_id"], wrong.artifact_id,
                        "2" * 32, request.limits)
     assert (owner.path.parent / OPERATION_FILE).read_bytes() == journal
+    assert set(store.manifest_ids()) == artifacts
 
 
 def test_checkpoint_notification_does_not_hold_child_before_parent_cancel(tmp_path, monkeypatch):
