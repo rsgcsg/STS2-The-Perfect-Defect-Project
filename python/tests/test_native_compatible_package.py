@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
@@ -52,10 +53,25 @@ def bounded_cpu():
 
 
 @pytest.fixture
-def original(tmp_path):
+def original(tmp_path, monkeypatch):
     """Hand-built fixture asserts only synthetic own-byte package mechanics."""
     store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
     origin = Producer(COMPATIBILITY_REPOSITORY, ORIGINAL_EXPORT_REVISION, ORIGINAL_LOCK_SHA256)
+    # Portable source CI may have a shallow checkout. Use the committed exact
+    # Git-extracted proof at that read boundary; every production proof checker
+    # still runs. The separate proof test covers missing Git fail-closed, and
+    # actual original/target qualification reads the real original commit.
+    proof = decode_json(
+        (
+            Path(__file__).parent / "fixtures/native_compatibility/evidence_rc27_basis.json"
+        ).read_bytes()
+    )
+
+    def recorded_proof(actual):
+        assert actual == origin
+        return copy.deepcopy(proof)
+
+    monkeypatch.setattr(owner, "native_compatibility_proof", recorded_proof)
     parents = []
     for role, kind in (
         ("run", "run"),
