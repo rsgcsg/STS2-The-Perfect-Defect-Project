@@ -24,13 +24,13 @@ from spireagent.workbench.trusted_recipes import (
 from stpd.reward_m0_spec import RECIPE, RewardM0Config
 
 
-def publish_pair(fixture, monkeypatch):
+def publish_pair(fixture, monkeypatch, selected=None):
     _, _, config, historical, ids = fixture
     monkeypatch.setattr(
         "spireagent.workbench.local_dataset.source_identity", lambda _root: PRODUCER
     )
     service = LocalDatasetService(config)
-    selected = RewardM0Config(steps=2, state_vocab_size=256)
+    selected = selected or RewardM0Config(steps=2, state_vocab_size=256)
     service.start_reward_m0_preview(
         historical["cached_view_id"], ids, historical, selected.to_dict(), limits()
     )

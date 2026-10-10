@@ -15,7 +15,7 @@ from test_reward_m0_recipe import publish_pair
 from spireagent.workbench.local_training import LocalTrainingService
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.reward_m0_data import require_reward_m0_use
-from stpd.reward_m0_spec import MODEL_SCHEMA, RECIPE, RUN_SCHEMA
+from stpd.reward_m0_spec import MODEL_SCHEMA, RECIPE, RUN_SCHEMA, RewardM0Config
 
 
 def test_ordinary_two_arm_fit_has_shared_init_tokenizer_schedule_and_exact_artifacts(
@@ -24,7 +24,13 @@ def test_ordinary_two_arm_fit_has_shared_init_tokenizer_schedule_and_exact_artif
 ):
     pytest.importorskip("torch")
     store, owner, config, _, _ = pair_originals
-    source_id, frozen = publish_pair(pair_originals, monkeypatch)
+    # The real artifact reservation ACK fences the first update before the
+    # second. This makes the pause test observe an actual owned boundary.
+    source_id, frozen = publish_pair(
+        pair_originals,
+        monkeypatch,
+        RewardM0Config(steps=2, state_vocab_size=256, checkpoint_every_boundaries=1),
+    )
     models, runs, inputs = [], [], []
     previous = None
     operations = []
