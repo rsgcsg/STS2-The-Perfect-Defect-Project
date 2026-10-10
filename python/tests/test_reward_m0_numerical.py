@@ -44,16 +44,16 @@ def test_ordinary_two_arm_fit_has_shared_init_tokenizer_schedule_and_exact_artif
         )
         pause_sent = False
 
-        def child(*args, **kwargs):
+        def child(*args, _arm=arm, _service=service, **kwargs):
             callback = kwargs["on_stdout_line"]
 
             def observed(line):
                 nonlocal pause_sent
                 callback(line)  # Actual production validation/dispatch precedes control.
-                if arm == "A" and not pause_sent:
-                    current = service.status()["operation"]
+                if _arm == "A" and not pause_sent:
+                    current = _service.status()["operation"]
                     if current["progress"]["completed"] == 1:
-                        service.pause(current["operation_id"], current["attempt_id"])
+                        _service.pause(current["operation_id"], current["attempt_id"])
                         pause_sent = True
 
             kwargs["on_stdout_line"] = observed
