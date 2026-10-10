@@ -280,7 +280,9 @@ Public terminal-count proof content ID
 dispatch/results. Runtime stopped/released/no pending/no taint and cleanup_errors=[];
 Host `73ea74c006224c898f34f6ef5a943957` and CLI exited0 unforced. Teacher's own
 confirmed exit is SIGKILL/code null, not a graceful0; it remains a separate fact.
-After-run independent review is pending. No Source3 recording, admission, training,
+After-run independent review accepts the recorded count, all12 changed-Current/
+ConsumeACK/new-request continuation joins and cleanup; the100 target remains unmet.
+No Source3 recording, admission, training,
 Human origin, natural summary, quality or full G2/V1 is claimed. Known delivery is
 not execution/effect/Commit, and the failed/censored old attempts are unchanged.
 

@@ -53,7 +53,7 @@ outcome, not natural summary or strategy quality. Identical legacy inputs/fixed
 preferences are observed; absent Reads/projection loss is not proved causal, nor
 is NN/load failure. The separate native v2 delivery pilot stopped safely at an
 explicit unsupported event owner below its target; independent after-run review
-is pending. Current full CI/G2/V1 are not passed. Public M2 parity/cache work remains;
+accepts only its mechanical continuation/count/cleanup evidence. Current full CI/G2/V1 are not passed. Public M2 parity/cache work remains;
 faithful Port4 restoration and actual M2 game use are next.
 
 ## Next actual dependencies
