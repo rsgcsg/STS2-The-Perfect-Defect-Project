@@ -1321,8 +1321,10 @@ def test_owned_teacher_tuple_retains_exact_frozen_descriptor_and_sealed_original
         OWNED_STALE_TEACHER_RELATION_SPEC)
     assert current["runtime_provenance"]["python_version"] == list(sys.version_info[:3])
     assert frozen["runtime_provenance"]["python_version"] == [3, 11, 15]
-    assert new["runtime_provenance"]["dependency_lock_sha256"] == (
+    assert current["runtime_provenance"]["dependency_lock_sha256"] == (
         sha((ROOT / "python/uv.lock").read_bytes()))
+    assert frozen["runtime_provenance"]["dependency_lock_sha256"] == (
+        "46eb838668b984bc4f0cab203a7b3c759115cf05fe2107b21a1730dd9808feea")
     for old in (FOCUS_TEACHER_PRODUCER, MAP_TEACHER_PRODUCER, TEACHER_PRODUCER):
         assert old["runtime_provenance"]["dependency_lock_sha256"] != (
             new["runtime_provenance"]["dependency_lock_sha256"])
