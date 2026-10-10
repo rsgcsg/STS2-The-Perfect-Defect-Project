@@ -23,7 +23,35 @@ Reuse lead topic `codex/g2-v1-core-integration` in its development worktree;
 integration. Each other writer has a separate branch/worktree. Preserve private
 `.local/s0` and `.local/g2-v1` originals; the running installation is separate.
 
-## Current facts and next gates
+## Latest last-round preparation, owner stop bound
+
+This paragraph supersedes the installed/current-source sentences below; those
+sentences retain their earlier evidence scopes. The user has set a global limit
+of two further complete failed repair/qualification rounds. Round1 source tests
+and the rc34 cold load passed, but actual Native8 failed after nine of 100
+requested known deliveries at Current HTTP409 `public_information_binding_card_subject`.
+The original unfinished-input status stays unknown. All nine native deliveries
+were known; execution/effect/cancel remain unknown. Completed failures are **1/2**.
+The next complete Root/native failure stops new experiments, preserves originals,
+closes through existing owners, aligns reviewed source and delivers the detailed
+incomplete engineer package. No component/worker/state-dir counter reset or third wave.
+
+Connector rc18 / unified Mod rc35 are reviewed source candidates; rc34 remains
+the installed artifact (`7c817a88`, MVID `9c4b89a5`). The current rendered-card
+binding repair preserves source coherence and strict partial/failure behavior.
+The Source-only Workbench fresh-predecessor candidate at `760c6892` binds v3
+records and the installed Evidence27 public original terminal summary; it cannot resume,
+retry or settle the old unknown operation. Legacy Source-on archival obligations
+remain unchanged. Source-only candidates do not upgrade installation/runtime claims.
+
+The new 100–300 admitted-N dataset, new fit/checkpoint/results, immutable new Model,
+registration/load and visible continuous learned game remain unexecuted. Historical
+8N/three-update training stays separately identified. A sealed private visible-run
+harness has bounded static preparation acceptance only; actual IDs are null,
+execution remains closed, and after a final2/2 failure it stays blocked handoff-only.
+The older CURRENT facts below are historical routing, not current qualification.
+
+## Earlier integrated and runtime facts (retain original evidence scopes)
 
 - Native/Source3, ordered training and E6 direct Workbench source are integrated.
   The [bounded learning/delivery report](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md)
