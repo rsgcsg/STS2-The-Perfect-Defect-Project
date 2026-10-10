@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { makePlan, scopeCommands } from "./check-plan.mjs";
+import { CURRENT_CONTEXT_BUDGET_BYTES, currentContextFindings } from "./check-governance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const AGENT_CHAIN_BUDGET_BYTES = 16 * 1024;
@@ -611,6 +612,15 @@ function anyMatch(files, patterns) {
 }
 
 export function formatCloseout(workspaceRoot = root) {
+  const currentFindings = currentContextFindings(workspaceRoot);
+  if (currentFindings.length > 0) {
+    throw new Error(`Current handoff preflight failed:\n${currentFindings.map(item =>
+      `- [${item.code}] ${item.file}: ${item.message}`).join("\n")}`);
+  }
+  const currentPath = path.join(workspaceRoot, "docs/memory/CURRENT.md");
+  const currentBudget = fs.existsSync(currentPath)
+    ? `${fs.statSync(currentPath).size} / ${CURRENT_CONTEXT_BUDGET_BYTES} bytes`
+    : "not present; repository checks still own required surfaces";
   const files = changedFiles(workspaceRoot);
   const owners = ownersForFiles(files);
   const plan = makePlan({ base: "origin/develop", cwd: workspaceRoot });
@@ -652,6 +662,7 @@ export function formatCloseout(workspaceRoot = root) {
   const lines = [
     "# Project closeout review",
     "",
+    `- Final CURRENT budget: ${currentBudget}`,
     `- Changed files: ${files.length}`,
     `- Owning components/layers: ${owners.length ? owners.join(", ") : "none detected"}`,
     "",

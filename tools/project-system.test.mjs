@@ -391,3 +391,24 @@ test("closeout reports semantic review instead of rewriting truth", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("closeout rejects the assembled CURRENT before candidate checks and preserves its bytes", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    const header = "Resolve live GitHub refs. Current sources override this file. Remaining Platform non-claims\n";
+    const initial = header + "x".repeat(4800);
+    const addition = "雪".repeat(1200);
+    assert.ok(Buffer.byteLength(initial) < 8192 && Buffer.byteLength(addition) < 8192);
+    write(root, "docs/memory/CURRENT.md", initial);
+    assert.match(formatCloseout(root), /Project closeout review/u);
+    const assembled = initial + addition;
+    const file = path.join(root, "docs/memory/CURRENT.md");
+    write(root, "docs/memory/CURRENT.md", assembled);
+    assert.ok(Buffer.byteLength(assembled) > 8192);
+    assert.throws(() => formatCloseout(root), /current-context-oversized.*8192/su);
+    assert.deepEqual(fs.readFileSync(file), Buffer.from(assembled));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

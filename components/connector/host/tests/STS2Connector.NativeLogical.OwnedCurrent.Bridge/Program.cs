@@ -22,6 +22,12 @@ while (Console.ReadLine() is { } line)
         var body = input["body"]!.AsObject(); object value;
         switch (operation)
         {
+            case "set_frame":
+                // Explicit synthetic public facts for the root collector seam;
+                // the linked production Projector/Store still own all encoding,
+                // catalog IDs/digests, capacity and retention behavior.
+                frame = JsonSerializer.Deserialize<NativeLogicalPublicFrame>(body["frame"]!.ToJsonString(), NativeLogicalWire.Options)!;
+                value = new { source_fixture_replaced = true }; break;
             case "current": case "current_owned":
                 var request = JsonSerializer.Deserialize<NativeLogicalCurrentRequest>(body.ToJsonString(), NativeLogicalWire.Options)!;
                 var reply = operation == "current_owned"

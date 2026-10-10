@@ -1,10 +1,17 @@
-# Current project context — stopped engineering handoff
+# Current project context — one boundary verification round
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Resolve live GitHub refs and installed
 identities before using this handoff; current source and runtime evidence override this file.
 A workspace head is not a running artifact.
 
 ## Active objective and stop boundary
+
+Owner update, 2026-10-10: the [one boundary verification packet](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md)
+authorizes repair of escaped cross-layer tests/document assembly, one complete
+engineering verification and then stopping/reporting. It supersedes the prior stop
+only for that packet; old failures, unknowns and sealed delivery remain unchanged.
+No training/new Model/research campaign follows. CURRENT fits its 8 KiB byte budget;
+the owner's expansion option is retained if actual required routing cannot fit.
 
 Full G2/V1 remains unapproved; only the user approves it. The
 [baseline specification](../BASELINE_V1_SPEC.zh-CN.md),

@@ -36,6 +36,11 @@ not assertion weakening or unrelated fixes. Existing selection, exact-tree recei
 reuse and higher evidence gates below remain mandatory; this rule does not permit
 skips, copied green results or changing CI routing to make a task cheaper.
 
+Before freezing a candidate or launching expensive gates, run `npm run project:closeout`
+against the final assembled documentation. It reuses the existing CURRENT safety and
+physical UTF-8 capacity rule, prints the actual size/limit, and rejects violations.
+An individually small added paragraph is not evidence that the whole handoff fits.
+
 Parallelize independent cheap checks when useful. Avoid duplicate heavy local and
 hosted runs that prove the same thing; retain the required local native/runtime
 checks. The [passive-wait checkpoint](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)

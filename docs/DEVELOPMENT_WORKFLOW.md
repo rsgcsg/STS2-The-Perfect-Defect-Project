@@ -20,6 +20,8 @@ versions of those procedures into campaigns or incident notes.
 日常三个固定入口：`check:plan -- --base origin/develop --run` 选择检查，
 `project:closeout` 提醒影响，PR 完成审查和集成。命令前均为 `npm run`。
 开发过程中先跑最小忠实回归；待改动稳定后再跑计划检查，不在每次改一行后重复全仓。
+冻结候选和启动昂贵检查前，先运行 `npm run project:closeout`，检查拼接后的完整文档。
+该入口复用 CURRENT 的既有安全和实际 UTF-8 字节容量规则，超限直接失败；仅审新增段落不算通过。
 普通 topic PR 总是执行所选检查；合并/正式晋级允许按 TESTING 的回执规则复用同内容的已执行结果，
 并重新核对当前 Git 身份。手动 full 是强制重新执行入口。
 

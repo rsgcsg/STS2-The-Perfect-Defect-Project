@@ -30,11 +30,11 @@ public sealed class RequestLifetimeTests
     private static byte[] Copy(RequestNamespace.TerminalReply reply)
     { using (reply) { using var stream = new MemoryStream(); reply.WriteTo(stream); return stream.ToArray(); } }
     private static byte[] Encode(object result, bool native, RequestResultArena? arena = null,
-        int maximum = 2 * 1024 * 1024)
+        int maximum = 2 * 1024 * 1024, string? legacyNewLine = null)
     {
         arena ??= new RequestResultArena(8 * 1024 * 1024);
         using var reservation = arena.TryReserve(4 * 1024 * 1024, maximum)!;
-        var codec = new TerminalPayloadCodec(); Assert.True(codec.Supported, codec.FrameworkIdentity);
+        var codec = new TerminalPayloadCodec(legacyNewLine: legacyNewLine); Assert.True(codec.Supported, codec.FrameworkIdentity);
         codec.Encode(result, reservation, native);
         var frozen = reservation.Freeze();
         using var loan = frozen.Borrow(); using var stream = new MemoryStream(); loan.WriteTo(stream);
@@ -89,6 +89,15 @@ public sealed class RequestLifetimeTests
     [Fact]
     public void WholeLegacySuccessorHasOriginalNullDateNestedPropertyAndRawNumericBytes()
     {
+        var (result, parsed) = LegacyRawSuccessor();
+        Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(result, Legacy), Encode(result, false));
+        parsed.AsObject()["fresh-number"] = JsonValue.Create(1.25f);
+        parsed.AsObject()["fresh-double"] = JsonValue.Create(1.2345678901234567);
+        parsed.AsObject()["fresh-decimal"] = JsonValue.Create(1.2300m);
+        Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(result, Legacy), Encode(result, false));
+    }
+    private static (TextMenuV2ActionResult Result, JsonNode Parsed) LegacyRawSuccessor()
+    {
         JsonNode parsed = JsonNode.Parse("{\"\\u4E2D\\n\\\"\": [1.00e+2,-0.000,\"\\uD83D\\uDE00\\n\",true,null,{\"quote\\\"\":\"x\\/y\"}]}")!;
         var snapshot = new TextMenuV2Snapshot("1.0.0", TextMenuV2Contract.SnapshotSchema, TextMenuV2Contract.Profile,
             "snapshot", 7, DateTimeOffset.Parse("2026-10-08T11:12:13.1234000+10:00"), "interactive", null,
@@ -98,11 +107,29 @@ public sealed class RequestLifetimeTests
             new("root", 1, "source", Array.Empty<TextMenuV2Selection>()), new("complete", 0, 0, "native", Array.Empty<TextMenuAction>()));
         var result = new TextMenuV2ActionResult("1.0.0", TextMenuV2Contract.ResultSchema, TextMenuV2Contract.Profile,
             "r", "applied", "text_menu", null, null, null, "selection", "never", snapshot, null);
-        Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(result, Legacy), Encode(result, false));
-        parsed.AsObject()["fresh-number"] = JsonValue.Create(1.25f);
-        parsed.AsObject()["fresh-double"] = JsonValue.Create(1.2345678901234567);
+        return (result, parsed);
+    }
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void LegacyFramingMatchesBothFrameworkNewlinesWithoutRewritingRawTokens(string newline)
+    {
+        var (result, parsed) = LegacyRawSuccessor();
+        parsed.AsObject()["literal-lines"] = "a\r\nb\nc";
         parsed.AsObject()["fresh-decimal"] = JsonValue.Create(1.2300m);
-        Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(result, Legacy), Encode(result, false));
+        var options = new JsonSerializerOptions(Legacy) { NewLine = newline };
+        byte[] encoded = Encode(result, false, legacyNewLine: newline);
+        Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(result, options), encoded);
+        string text = Encoding.UTF8.GetString(encoded);
+        Assert.Contains("1.00e+2", text); Assert.Contains("-0.000", text);
+        Assert.Contains("a\\r\\nb\\nc", text);
+        Assert.StartsWith("{" + newline, text);
+        Assert.Equal(NativeLogicalWire.Encode(Result()), Encode(Result(), true, legacyNewLine: newline));
+    }
+    [Fact]
+    public void InvalidLegacyFramingIsRejectedBeforeEncoding()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TerminalPayloadCodec(legacyNewLine: "\r"));
     }
     [Fact]
     public void MaximumControlEscapesFitDeclaredNativeCoreAndExactEnvelopeBoundaryClosesWithoutExtraAllocation()

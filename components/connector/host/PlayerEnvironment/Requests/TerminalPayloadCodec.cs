@@ -23,9 +23,16 @@ internal sealed class TerminalPayloadCodec
     private sealed record Field(PropertyInfo Property, string Name, JsonIgnoreCondition? Ignore);
     private static readonly IReadOnlyDictionary<Type, Field[]> fields = CreateShapes();
     private readonly IResultJsonElementRawView raw;
+    private readonly bool legacyCarriageReturn;
     internal bool Supported => raw.Supported;
     internal string FrameworkIdentity => raw.FrameworkIdentity;
-    internal TerminalPayloadCodec(IResultJsonElementRawView? raw = null) => this.raw = raw ?? JsonElementRawView.Instance;
+    internal TerminalPayloadCodec(IResultJsonElementRawView? raw = null, string? legacyNewLine = null)
+    {
+        this.raw = raw ?? JsonElementRawView.Instance;
+        string newline = legacyNewLine ?? Environment.NewLine;
+        if (newline is not ("\n" or "\r\n")) throw new ArgumentOutOfRangeException(nameof(legacyNewLine));
+        legacyCarriageReturn = newline == "\r\n";
+    }
 
     internal void Encode(object terminal, RequestResultArena.ResultReservation target, bool native)
     {
@@ -34,7 +41,7 @@ internal sealed class TerminalPayloadCodec
             or TextMenuActionResult or TextMenuV2ActionResult))
             throw new JsonException("The result codec accepts only existing terminal DTOs.");
         target.ResetEncoding();
-        var writer = new Writer(target, raw, indented: !native, omitNull: !native);
+        var writer = new Writer(target, raw, indented: !native, omitNull: !native, legacyCarriageReturn);
         writer.Value(terminal, 0);
     }
 
@@ -75,20 +82,30 @@ internal sealed class TerminalPayloadCodec
         private readonly RequestResultArena.ResultReservation target;
         private readonly IResultJsonElementRawView raw;
         private readonly bool indented, omitNull;
+        private readonly bool carriageReturn;
         private readonly Span<byte> scratch;
         internal Writer(RequestResultArena.ResultReservation target, IResultJsonElementRawView raw,
-            bool indented, bool omitNull)
-        { this.target = target; this.raw = raw; this.indented = indented; this.omitNull = omitNull; scratch = target.Scratch; }
+            bool indented, bool omitNull, bool carriageReturn)
+        { this.target = target; this.raw = raw; this.indented = indented; this.omitNull = omitNull;
+            this.carriageReturn = carriageReturn; scratch = target.Scratch; }
 
         private void Separator(int count, int depth)
         {
             if (count != 0) target.Append((byte)',');
-            if (indented) { target.Append((byte)'\n'); for (int index = 0; index < depth * 2; index++) target.Append((byte)' '); }
+            if (indented) LineIndent(depth);
         }
         private void EndContainer(int count, int depth, byte end)
         {
-            if (indented && count != 0) { target.Append((byte)'\n'); for (int index = 0; index < depth * 2; index++) target.Append((byte)' '); }
+            if (indented && count != 0) LineIndent(depth);
             target.Append(end);
+        }
+        private void LineIndent(int depth)
+        {
+            // Match the existing .NET9 legacy serializer's framing, including
+            // Windows CRLF. String contents/raw numeric tokens stay untouched.
+            if (carriageReturn) target.Append((byte)'\r');
+            target.Append((byte)'\n');
+            for (int index = 0; index < depth * 2; index++) target.Append((byte)' ');
         }
         private void PropertyName(string name) { String(name); target.Append((byte)':'); if (indented) target.Append((byte)' '); }
         private void Utf8PropertyName(ReadOnlySpan<byte> name, bool escaped)
