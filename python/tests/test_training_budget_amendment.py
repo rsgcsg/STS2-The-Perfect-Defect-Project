@@ -11,7 +11,13 @@ from test_training_service_contracts import ready
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.replaceable_file import write_replaceable_json
 from spireagent.workbench.instance_lock import instance_lock
-from spireagent.workbench.local_training import OPERATION_FILE, LocalTrainingService
+from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.local_training import (
+    DEFAULT_RECIPE,
+    OPERATION_FILE,
+    SCHEMA_V3,
+    LocalTrainingService,
+)
 from spireagent.workbench.trusted_recipes import validate_recipe_config
 
 
@@ -140,6 +146,10 @@ def test_next_explicit_operations_retain_amended_completed_history(tmp_path, mon
     amend(service, value)
     completed = service._read(path, owner.identity)
     completed.update(status="completed", result_id="2" * 64, model_id="3" * 64)
+    prior = {"attempt_id": "0" * 32, "intent_id": "1" * 32,
+             "status": "interrupted_unknown", "writer_terminal": True,
+             "checkpoint_id": "d" * 64, "terminal_proof": "child_ownership_reconciled"}
+    completed["attempts"] = [{**prior, "diagnostic": "private detail" * 1000}]
     write_replaceable_json(path, completed)
     next_request = replace(request, intent_id="4" * 32,
                            after_completed_operation_id=completed["operation_id"])
@@ -149,8 +159,10 @@ def test_next_explicit_operations_retain_amended_completed_history(tmp_path, mon
     assert history["limits"] == request.limits
     assert history["effective_limits"] == {**request.limits, "wall_seconds": 600}
     for key in ("operation_id", "attempt_id", "checkpoint_id", "input_id", "run_id",
-                "attempts", "budget_amendments", "elapsed_seconds", "artifact_reserved_bytes"):
+                "budget_amendments", "elapsed_seconds", "artifact_reserved_bytes"):
         assert history[key] == completed[key]
+    assert history["attempts"] == [prior]
+    assert len(json.dumps(history)) < 5000
     # An ordinary next completion retains the earlier authorization chain.
     next_operation.update(status="completed", run_id="6" * 64,
                           checkpoint_id="7" * 64, result_id="8" * 64, model_id="9" * 64)
@@ -162,3 +174,37 @@ def test_next_explicit_operations_retain_amended_completed_history(tmp_path, mon
     retained["budget_amendments"][0]["wall_seconds"] = 1
     assert history["budget_amendments"][0]["wall_seconds"] == 600
     assert service._read(path, owner.identity)["budget_amendments"][0]["wall_seconds"] == 600
+
+
+def test_supported_legacy_recipe_transition_keeps_v3_budget_history(tmp_path, monkeypatch):
+    service, request, owner, _store, value, path = stopped(tmp_path, monkeypatch)
+    amend(service, value)
+    completed = service._read(path, owner.identity)
+    completed.update(status="completed", result_id="2" * 64, model_id="3" * 64)
+    write_replaceable_json(path, completed)
+    legacy_dataset = LocalDatasetService(service.config).status()["operation"]["result_artifact_id"]
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    # Exercise actual application admission/slot routing, without fitting a
+    # second model merely to test historical metadata compatibility.
+    monkeypatch.setattr(service, "_run", parked)
+    legacy = service.start(legacy_dataset, recipe=DEFAULT_RECIPE)["operation"]
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    journal = service._read(path, owner.identity)
+    assert journal["schema"] == SCHEMA_V3 and journal["request"]["limits"] == {}
+    history = legacy["previous_completed"]
+    assert history["limits"] == request.limits
+    assert history["effective_limits"]["wall_seconds"] == 600
+    assert history["budget_amendments"] == completed["budget_amendments"]
+    journal.update(status="completed", writer_terminal=True, run_id="6" * 64,
+                   result_id="7" * 64, model_id="8" * 64)
+    write_replaceable_json(path, journal)
+    back = service.start(replace(request, intent_id="9" * 32))["operation"]
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    current = service._read(path, owner.identity)
+    assert current["schema"] == SCHEMA_V3
+    assert back["previous_completed"]["previous_completed"] == history

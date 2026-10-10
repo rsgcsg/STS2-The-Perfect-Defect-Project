@@ -845,6 +845,11 @@ operations keep that chain, including operations without new amendments. This
 is durable local application-journal history; it does not rewrite immutable Run
 artifacts or claim older completions recorded fields that were absent. Its
 lifetime is the retained journal's lifetime; no automatic cleanup is added.
+Retained attempt entries project only IDs, status, writer-terminal and terminal-proof
+fields; they exclude worker diagnostics and arbitrary payloads. The existing
+32-attempt and 32-amendment bounds limit each added operation record. Legacy recipe
+transitions from v3 remain v3, preserving this history; old v1/v2 completions retain
+their historical projection and are not relabelled with missing budget evidence.
 No GPU, remote placement or fee authorization
 is implied. Operations without amendments retain their existing interpretation.
 Snapshots keep `limits` as the original request, expose `effective_limits`,

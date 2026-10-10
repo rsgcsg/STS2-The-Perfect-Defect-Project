@@ -15,8 +15,8 @@ import threading
 import time
 import traceback
 import uuid
-from copy import deepcopy
 from contextlib import AbstractContextManager, suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -226,11 +226,15 @@ class LocalTrainingService:
             # The slot may be replaced by a new explicit experiment. Retain its
             # audited authorization and exact attempts in the existing recursive
             # completed-operation history, rather than losing the cap change.
-            for key in ("request", "attempt_id", "intent_id", "attempts", "budget_amendments",
+            for key in ("request", "attempt_id", "intent_id", "budget_amendments",
                         "elapsed_seconds", "artifact_reserved_bytes", "child_exit",
                         "attempt_producer"):
                 if key in value:
                     public[key] = deepcopy(value[key])
+            attempt_keys = {"attempt_id", "intent_id", "status", "writer_terminal",
+                            "checkpoint_id", "terminal_proof"}
+            public["attempts"] = [{key: deepcopy(item) for key, item in attempt.items()
+                                   if key in attempt_keys} for attempt in value["attempts"]]
             public["limits"] = dict(value["request"]["limits"])
             public["effective_limits"] = effective_training_limits(value)
         return public
