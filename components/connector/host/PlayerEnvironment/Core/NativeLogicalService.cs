@@ -87,6 +87,7 @@ internal sealed partial class NativeLogicalService : IDisposable
     private IReadOnlyDictionary<string, string> currentActionKeys = new Dictionary<string, string>();
     private string? projectedSnapshot;
     private readonly NativeLogicalExecutor executor;
+    private readonly NativeLogicalRevalidationDiagnostics revalidationDiagnostics;
     private readonly Func<string, bool> clientActive;
     internal Func<bool> ExecutionAllowed { get; }
     private readonly Func<Func<Prepared>, CancellationToken, Task<Prepared>> nativeQueue;
@@ -97,9 +98,11 @@ internal sealed partial class NativeLogicalService : IDisposable
         INativeLogicalClientLifetimeDependency? clientLifetime = null, Func<string, bool>? clientActive = null,
         Func<RunState?>? actualRunState = null,
         Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)>? sourceIdentity = null,
-        Func<MutationClientRegistrationRequest, MutationClientRegistrationResult>? registerSourceClient = null)
+        Func<MutationClientRegistrationRequest, MutationClientRegistrationResult>? registerSourceClient = null,
+        NativeLogicalRevalidationDiagnostics? revalidationDiagnostics = null)
     {
         this.capture = capture; this.continuity = continuity;
+        this.revalidationDiagnostics = revalidationDiagnostics ?? CreateRevalidationDiagnostics();
         this.clientActive = clientActive ?? MutationControlRuntime.IsActiveClient;
         this.registerSourceClient = registerSourceClient ?? MutationControlRuntime.Register;
         this.actualRunState = actualRunState ?? (() => RunManager.Instance.DebugOnlyGetState());
@@ -200,35 +203,7 @@ internal sealed partial class NativeLogicalService : IDisposable
     // Equality only revalidates an already generated current snapshot. The
     // existing projector alone assigns snapshots, catalogs and action handles.
     internal static bool SameFacts(NativeLogicalPublicFrame a, NativeLogicalPublicFrame b)
-    {
-        if (a.StreamGeneration != b.StreamGeneration || a.Session != b.Session || a.OwnerOccurrence != b.OwnerOccurrence
-            || a.Status != b.Status || a.InformationPolicy != b.InformationPolicy || a.SourceCompleteness.Status != b.SourceCompleteness.Status
-            || !a.SourceCompleteness.Missing.SequenceEqual(b.SourceCompleteness.Missing)
-            || a.Persistent?.ContentSchema != b.Persistent?.ContentSchema || !JsonNode.DeepEquals(a.Persistent?.Content, b.Persistent?.Content)
-            || a.Interaction.InteractionId != b.Interaction.InteractionId || a.Interaction.Kind != b.Interaction.Kind
-            || a.Interaction.Stage != b.Interaction.Stage || a.Interaction.Prompt != b.Interaction.Prompt || a.Interaction.ContentSchema != b.Interaction.ContentSchema
-            || !JsonNode.DeepEquals(a.Interaction.Content.Surface, b.Interaction.Content.Surface)
-            || !JsonNode.DeepEquals(a.Interaction.Content.Context, b.Interaction.Content.Context)
-            || a.Referents.Count != b.Referents.Count || a.Leaves.Count != b.Leaves.Count || a.Interaction.Capabilities.Count != b.Interaction.Capabilities.Count) return false;
-        for (int i = 0; i < a.Referents.Count; i++)
-        {
-            var x = a.Referents[i]; var y = b.Referents[i];
-            if (x.ReferentId != y.ReferentId || x.Role != y.Role || x.Kind != y.Kind || x.Label != y.Label || x.State != y.State
-                || x.PropertiesSchema != y.PropertiesSchema || !JsonNode.DeepEquals(x.Properties, y.Properties)) return false;
-        }
-        for (int i = 0; i < a.Leaves.Count; i++)
-        {
-            var x = a.Leaves[i]; var y = b.Leaves[i];
-            if (x.BindingKey != y.BindingKey || x.Verb != y.Verb || x.Label != y.Label || x.SubjectReferentId != y.SubjectReferentId
-                || x.EffectDomain != y.EffectDomain || !x.Arguments.SequenceEqual(y.Arguments)) return false;
-        }
-        for (int i = 0; i < a.Interaction.Capabilities.Count; i++)
-        {
-            var x = a.Interaction.Capabilities[i]; var y = b.Interaction.Capabilities[i];
-            if (x.Verb != y.Verb || x.SubjectRole != y.SubjectRole || x.AvailabilityBasis != y.AvailabilityBasis || !x.Arguments.SequenceEqual(y.Arguments)) return false;
-        }
-        return true;
-    }
+        => NativeLogicalFactComparison.Compare(a, b) == NativeLogicalFactChange.None;
     private void Enqueue(Action encode)
     {
         encodings.Enqueue(() => { try { encode(); } finally { encodingAdmission.Release(); } });
@@ -394,14 +369,42 @@ internal sealed partial class NativeLogicalService : IDisposable
             }
         });
     }
-    internal TextMenuLeaf? Revalidate(string expectedSnapshot, string actionId)
+    private static NativeLogicalRevalidationDiagnostics CreateRevalidationDiagnostics()
     {
-        SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
-        lock (basisGate)
+        bool enabled;
+        try { enabled = Environment.GetEnvironmentVariable(NativeLogicalRevalidationDiagnostics.EnvironmentVariable) == "1"; }
+        catch { enabled = false; }
+        return new(enabled, line => Godot.GD.Print($"[STS2 Connector] native-revalidation {line}"));
+    }
+    internal TextMenuLeaf? Revalidate(string expectedSnapshot, string actionId, string? requestId = null)
+    {
+        try
         {
-            if (projectedSnapshot != expectedSnapshot || projectedBasis is null || !SameFacts(projectedBasis, prepared.Facts)
-                || prepared.Facts.SourceCompleteness.Status != "complete" || !currentActionKeys.TryGetValue(actionId, out var key)) return null;
-            return currentNative!.Leaves.SingleOrDefault(l => l.Key == key);
+            SynchronizeRun(); using var nativeFreeze = BeginSourceNativeFreeze(); var prepared = Prepare();
+            lock (basisGate)
+            {
+                TextMenuLeaf? Reject(NativeLogicalRejectionGate rejection)
+                {
+                    revalidationDiagnostics.Reject(requestId, expectedSnapshot, actionId, projectedSnapshot,
+                        rejection, projectedBasis, prepared.Facts);
+                    return null;
+                }
+                // Preserve original priority, comparisons and the single native Prepare.
+                if (projectedSnapshot != expectedSnapshot) return Reject(NativeLogicalRejectionGate.SnapshotMismatch);
+                if (projectedBasis is null) return Reject(NativeLogicalRejectionGate.BasisMissing);
+                if (!SameFacts(projectedBasis, prepared.Facts)) return Reject(NativeLogicalRejectionGate.PublicFactsChanged);
+                if (prepared.Facts.SourceCompleteness.Status != "complete") return Reject(NativeLogicalRejectionGate.SourceIncomplete);
+                if (!currentActionKeys.TryGetValue(actionId, out var key)) return Reject(NativeLogicalRejectionGate.ActionUnknown);
+                var leaf = currentNative!.Leaves.SingleOrDefault(l => l.Key == key);
+                return leaf ?? Reject(NativeLogicalRejectionGate.NativeLeafMissing);
+            }
+        }
+        catch
+        {
+            // No exception text, private native state or extra Capture is logged.
+            revalidationDiagnostics.Reject(requestId, expectedSnapshot, actionId, null,
+                NativeLogicalRejectionGate.RevalidationException);
+            throw;
         }
     }
     internal bool RunAdmitted(PlayerEnvironmentActionRequest request) => executor.RunAdmitted(request);

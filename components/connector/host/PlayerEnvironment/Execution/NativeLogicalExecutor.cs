@@ -38,7 +38,7 @@ internal sealed class NativeLogicalExecutor(RequestNamespace requests, NativeLog
         TextMenuLeaf? leaf;
         try
         {
-            leaf = owner.Revalidate(request.ExpectedSnapshotId!, request.BoundActionId!);
+            leaf = owner.Revalidate(request.ExpectedSnapshotId!, request.BoundActionId!, request.RequestId);
             if (leaf is null) { preparation.Seal(Result("not_started", "stale_snapshot_or_binding")); return true; }
             action = new NativeLogicalAction(request.BoundActionId!, "native_input", leaf.Verb, leaf.Label,
                 leaf.SubjectReferentId, Array.AsReadOnly(leaf.Arguments.Select(a => new NativeLogicalArgument(a.Role, a.ReferentId)).ToArray()), "native_ui");
