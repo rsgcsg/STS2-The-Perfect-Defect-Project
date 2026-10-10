@@ -89,10 +89,16 @@ describe("one passive renewal flight independent of the Model operation queue", 
     } finally { late.release(); await f.close(); }
   });
   it("fences and releases an idle held controller on genuine renewal failure without another tick", async () => {
-    const f = await nativeRuntimeFixture({ mode: "auto", retentionMs: 400 }); const route = f.source.route.bind(f.source);
+    const failedRenewal = gate();
+    const f = await nativeRuntimeFixture({ mode: "auto", retentionMs: 400,
+      beforeInitialize: ({ source }) => { source.renewGate = failedRenewal.promise; } });
+    const route = f.source.route.bind(f.source);
     f.source.route = (url, body) => url.pathname.endsWith("/renew") ? { value: expired } : route(url, body);
     try {
-      expect((await f.runtime.tick()).type).toBe("delivered");
+      const delivered = await f.runtime.tick(); expect(delivered.type, JSON.stringify(delivered)).toBe("delivered");
+      expect(f.runtime.status().controller).toBe("held");
+      await eventually(() => renews(f) === 1);
+      failedRenewal.release();
       await eventually(() => f.source.requests.some(r => r.path.endsWith("/controller/release")));
       await eventually(() => f.runtime.status().session.prefix.omissions.gap !== null);
       expect(f.runtime.status()).toMatchObject({ mode: "human", controller: "released" });
@@ -100,20 +106,25 @@ describe("one passive renewal flight independent of the Model operation queue", 
       const count = renews(f); await new Promise(resolve => setTimeout(resolve, 500)); expect(renews(f)).toBe(count); expect(count).toBe(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/controller/release"))).toHaveLength(1);
-    } finally { await f.close(); }
+    } finally { failedRenewal.release(); await f.close(); }
   });
   it("cancels the active Await immediately when the passive subscription fails", async () => {
-    const f = await nativeRuntimeFixture({ count: 0, mode: "auto", retentionMs: 400 }); const wait = gate(); f.source.waitGate = wait.promise;
+    const failedRenewal = gate();
+    const f = await nativeRuntimeFixture({ count: 0, mode: "auto", retentionMs: 400,
+      beforeInitialize: ({ source }) => { source.renewGate = failedRenewal.promise; } });
+    const wait = gate(); f.source.waitGate = wait.promise;
     const route = f.source.route.bind(f.source); f.source.route = (url, body) => url.pathname.endsWith("/renew") ? { value: expired } : route(url, body);
     try {
       const tick = f.runtime.tick(); await eventually(() => f.source.requests.some(r => r.path.endsWith("/await")));
+      await eventually(() => renews(f) === 1);
+      failedRenewal.release();
       await tick;
       await eventually(() => f.runtime.status().session.prefix.omissions.gap !== null);
       expect(f.runtime.status()).toMatchObject({ mode: "human", session: { state_version: 1, agent_state: "known" } });
       expect(f.source.requests.filter(r => r.path.endsWith("/cancel_wait"))).toHaveLength(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(0);
       expect(renews(f)).toBe(1);
-    } finally { wait.release(); await f.close(); }
+    } finally { failedRenewal.release(); wait.release(); await f.close(); }
   });
   it("writes a queued renewal gap before Stop seals an interrupted Close operation", async () => {
     const f = await nativeRuntimeFixture({ child: "close", mode: "shadow", retentionMs: 400 }); const paused = gate(), seen = gate();

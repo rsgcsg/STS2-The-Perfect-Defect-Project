@@ -15,6 +15,7 @@ import { AgentRunEvidence } from "../src/evidence.js";
 import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import type { AgentManifest } from "../src/agent-session-contracts.js";
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
+import { fixturePortCloser } from "./fixture-process.js";
 
 const native = JSON.parse(readFileSync(new URL("../../connector/contracts/fixtures/native-logical-v1.json", import.meta.url), "utf8")).wire_samples as Record<string, JsonObject>;
 const agent = JSON.parse(readFileSync(new URL("../contracts/fixtures/agent-session-v1.json", import.meta.url), "utf8")).manifest as AgentManifest;
@@ -164,6 +165,7 @@ export class SyntheticNativeHttp {
 export async function nativeRuntimeFixture(options: { count?: number; status?: NativeLogicalObservation["status"]; child?: string; mode?: "human" | "shadow" | "one_step" | "auto";
   deadlineMs?: number; maxPolicyCalls?: number; gapPolicy?: "handoff" | "explicit_reset";
   retentionMs?: number;
+  monotonicNow?: () => number;
   beforeInitialize?: (value: { source: SyntheticNativeHttp; port: NdjsonAgentSessionPort; evidence: AgentRunEvidence;
     environment: PlayerEnvironmentRestClient }) => void;
   numericalAgent?: { python: string; pythonPath: string; packagePath: string } } = {}) {
@@ -196,18 +198,19 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
     ["-m", "stpd.policy.native_agent", "--package", options.numericalAgent.packagePath, "--manifest", manifestPath],
     manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, manifestPath, options.child ?? "act"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
+  const closePort = fixturePortCloser(port);
   let runtime: NativeAgentRuntimeOwner;
   const environment = new PlayerEnvironmentRestClient(source.address, 2000);
   try { options.beforeInitialize?.({ source, port, evidence, environment });
     runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
-    mode: options.mode ?? "human", runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) },
+    mode: options.mode ?? "human", monotonicNow: options.monotonicNow, runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) },
     autoBudget: { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }
   catch (error) {
     const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8");
-    port.close(); await source.close(); await rm(root, { recursive: true, force: true });
+    await closePort(); await source.close(); await rm(root, { recursive: true, force: true });
     throw new Error(`actual conformance child startup failed: ${String(error)}\n${diagnostics}`, { cause: error });
   }
   return { root, source, manifest, manifestPath, runtime, port, evidence,
     events: async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
-    close: async () => { await runtime.stop().catch(() => undefined); port.close(); await source.close(); await rm(root, { recursive: true, force: true }); } };
+    close: async () => { await runtime.stop().catch(() => undefined); await closePort(); await source.close(); await rm(root, { recursive: true, force: true }); } };
 }

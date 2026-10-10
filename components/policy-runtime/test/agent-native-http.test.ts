@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -54,23 +55,25 @@ describe("same native Runtime HTTP/CLI application surface", () => {
     // stand in for this candidate's actual CLI/process behavior.
     const compiled = await mkdtemp(join(tmpdir(), "native-runtime-cli-source-"));
     const project = fileURLToPath(new URL("../../../", import.meta.url));
-    execFileSync(join(project, "node_modules/.bin/tsc"), ["-p", fileURLToPath(new URL("../tsconfig.json", import.meta.url)), "--outDir", compiled]);
-    await symlink(join(project, "node_modules"), join(compiled, "node_modules"));
-    await writeFile(join(compiled, "package.json"), '{"type":"module"}');
-    const cli = join(compiled, "cli.js");
-    const child = spawn(process.execPath, [cli, "--manifest", f.manifestPath, "--adapter-command", process.execPath,
-      "--adapter-arg", CHILD, "--adapter-arg", f.manifestPath, "--connector-endpoint", f.source.address,
-      "--listen-port", String(listen), "--evidence-root", f.root, "--mode", "human"], { stdio: ["ignore", "pipe", "pipe"] });
-    let diagnostics = ""; child.stderr.on("data", data => { diagnostics += String(data); });
-    const startup = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      let text = ""; const timer = setTimeout(() => reject(new Error(`CLI startup timeout: ${diagnostics}`)), 5000);
-      child.once("exit", code => { clearTimeout(timer); reject(new Error(`CLI early exit ${code}: ${diagnostics}`)); });
-      child.stdout.on("data", chunk => {
-        text += String(chunk); const newline = text.indexOf("\n");
-        if (newline >= 0) { clearTimeout(timer); resolve(JSON.parse(text.slice(0, newline))); }
-      });
-    });
+    let child: ChildProcess | undefined, closed: Promise<unknown[]> | undefined;
     try {
+      execFileSync(process.execPath, [createRequire(import.meta.url).resolve("typescript/bin/tsc"), "-p", fileURLToPath(new URL("../tsconfig.json", import.meta.url)), "--outDir", compiled]);
+      await symlink(join(project, "node_modules"), join(compiled, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      await writeFile(join(compiled, "package.json"), '{"type":"module"}');
+      const cli = join(compiled, "cli.js");
+      child = spawn(process.execPath, [cli, "--manifest", f.manifestPath, "--adapter-command", process.execPath,
+        "--adapter-arg", CHILD, "--adapter-arg", f.manifestPath, "--connector-endpoint", f.source.address,
+        "--listen-port", String(listen), "--evidence-root", f.root, "--mode", "human"], { stdio: ["ignore", "pipe", "pipe"] });
+      closed = once(child, "close");
+      let diagnostics = ""; child.stderr!.on("data", data => { diagnostics += String(data); });
+      const startup = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        let text = ""; const timer = setTimeout(() => reject(new Error(`CLI startup timeout: ${diagnostics}`)), 5000);
+        child!.once("exit", code => { clearTimeout(timer); reject(new Error(`CLI early exit ${code}: ${diagnostics}`)); });
+        child!.stdout!.on("data", chunk => {
+          text += String(chunk); const newline = text.indexOf("\n");
+          if (newline >= 0) { clearTimeout(timer); resolve(JSON.parse(text.slice(0, newline))); }
+        });
+      });
       expect(startup).toMatchObject({ schema: "sts2.policy-runtime/agent-session-startup-1", managed_environment: null,
         agent_manifest_id: f.manifest.manifest_id, mode: "human", adapter: f.manifest.adapter });
       expect(startup).not.toHaveProperty("policy_artifact_sha256"); expect(startup).not.toHaveProperty("manifest_id");
@@ -81,7 +84,7 @@ describe("same native Runtime HTTP/CLI application surface", () => {
       const stopped = await fetch(`${startup.address}/v2/stop`, { method: "POST",
         headers: { "content-type": "application/json", "x-sts2-policy-run-id": String(startup.run_id) }, body: "{}" });
       expect(stopped.status).toBe(200); expect((await stopped.json()).status.lifecycle).toBe("stopped");
-      const [code] = await once(child, "exit"); expect(code, diagnostics).toBe(0);
-    } finally { if (child.exitCode === null) child.kill("SIGKILL"); await f.close(); await rm(compiled, { recursive: true, force: true }); }
+      const [code] = await closed; expect(code, diagnostics).toBe(0);
+    } finally { if (child && child.exitCode === null) child.kill("SIGKILL"); if (closed) await closed; await f.close(); await rm(compiled, { recursive: true, force: true }); }
   });
 });

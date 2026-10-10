@@ -13,6 +13,8 @@ import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import type { AgentManifest } from "../src/agent-session-contracts.js";
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { SyntheticNativeHttp } from "./native-runtime-fixtures.js";
+import { fixturePortCloser } from "./fixture-process.js";
+import { fixtureProgress } from "./fixture-progress.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8")).execution_policy;
@@ -98,13 +100,14 @@ async function fixture(options: { legacy?: boolean; maxSubmissions?: number; sce
   const port = teacherPython ? NdjsonAgentSessionPort.spawn(teacherPython, ["-m", "stpd.policy.native_teacher_agent", "--manifest", manifestPath], manifest.adapter, manifest.limits,
     { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, options.scenario ?? "normal"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
+  const closePort = fixturePortCloser(port);
   const inputs: unknown[] = [], next = port.next.bind(port);
   port.next = (...args) => { inputs.push(structuredClone(args[1])); return next(...args); };
   let runtime: NativeAgentRuntimeOwner;
   try { runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence, mode: "auto", monotonicNow: () => clock,
     runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: 1000, deadlineMs: 60000 } }); }
-  catch (error) { const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString(); port.close(); await rm(root, { recursive: true, force: true }); throw new Error(String(error) + "\n" + diagnostics, { cause: error }); }
-  cleanup.push(async () => { await runtime.stop().catch(() => undefined); port.close(); await rm(root, { recursive: true, force: true }); });
+  catch (error) { const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString(); await closePort(); await rm(root, { recursive: true, force: true }); throw new Error(String(error) + "\n" + diagnostics, { cause: error }); }
+  cleanup.push(async () => { await runtime.stop().catch(() => undefined); await closePort(); await rm(root, { recursive: true, force: true }); });
   const events = async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
   const advance = (i: number) => {
     applyFrame(i % 2 ? "inspect_b" : "map_c");
@@ -122,7 +125,8 @@ afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice
 describe("owned Current stale continuation through actual SDK and Ndjson process", () => {
   it("composes the actual OS Python Teacher with a private source descriptor, without Torch or final producer promotion", async () => {
     const f = await fixture({ teacher: true });
-    expect(f.port.executionPolicy).toEqual(policy); expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    expect(f.port.executionPolicy).toEqual(policy); const first = await f.runtime.tick();
+    expect(first.type, JSON.stringify({ result: first, stderr: Buffer.concat((f.port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8") })).toBe("fresh_decision_required");
     expect((await f.runtime.tick()).type).toBe("awaited"); expect(f.runtime.status().session.state_version).toBe(1);
     f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
     expect(f.runtime.status()).toMatchObject({ agent: { agent_id: "stpd-native-public-program-teacher", agent_version: "1.2.0", adapter: { version: "1.2.0" } }, session: { state_version: 2, agent_state: "known" } });
@@ -158,13 +162,17 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     await expect(f.runtime.setMode("auto")).rejects.toThrow("runtime_sample_segment_ended");
   });
   it("delivered resets only the streak; total eight still stops in the same accepted prefix", async () => {
+    const progress = fixtureProgress("owned-stale-eight-total");
     const f = await fixture(); let index = 0;
+    progress("initialized");
     for (let i = 1; i <= 8; i++) {
       if (index) f.advance(index); f.behavior("stale"); const tick = await f.runtime.tick();
       expect(tick).toMatchObject(i === 8 ? { type: "not_delivered", reason: "known_stale_rejection_limit" } : { type: "fresh_decision_required" }); index++;
       if (i < 8) { f.advance(index++); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered"); }
+      progress("original-results-recorded", { stale_results: i, original_submissions: f.runtime.status().autonomy_budget.submissions_used });
     }
     const e = await f.events(), d = e.filter(x => x.kind === "native_stale_decision_deferred");
+    progress("original-events-read", { durable_events: e.length });
     expect(d.map(x => x.payload.known_stale_rejections)).toEqual([1, 2, 3, 4, 5, 6, 7]); expect(d.every(x => x.payload.consecutive_known_stale_rejections === 1)).toBe(true);
     expect(e.filter(x => x.kind === "native_result")).toHaveLength(15); expect(f.runtime.status().autonomy_budget.submissions_used).toBe(15);
   });

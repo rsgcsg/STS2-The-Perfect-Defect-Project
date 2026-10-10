@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFile, cp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { nativeRuntimeFixture } from "./native-runtime-fixtures.js";
@@ -198,6 +198,23 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
     const start = performance.now();
     await expect(nativeRuntimeFixture({ child: "hang_ready", mode: "auto", deadlineMs: 100 })).rejects.toThrow("autonomy_budget_exhausted");
     expect(performance.now() - start).toBeLessThan(1500);
+  });
+  it("does not return failed startup while its original deadline evidence is still writing", async () => {
+    const writing = gate(), seen = gate(); let returned = false;
+    const creating = nativeRuntimeFixture({ child: "hang_ready", mode: "auto", deadlineMs: 100,
+      beforeInitialize: ({ evidence }) => {
+        const append = evidence.append.bind(evidence);
+        evidence.append = async (...args) => {
+          if (args[0] === "autonomy_budget_exhausted") { seen.release(); await writing.promise; }
+          return append(...args);
+        };
+      } });
+    const failure = creating.then(() => { returned = true; return new Error("unexpected startup success"); }, error => { returned = true; return error; });
+    try {
+      await seen.promise; await new Promise(resolve => setTimeout(resolve, 25));
+      expect(returned).toBe(false);
+      writing.release(); expect(String(await failure)).toContain("autonomy_budget_exhausted");
+    } finally { writing.release(); await failure; }
   });
   it("rejects an unimplemented explicit reset before attaching or offering input", async () => {
     await expect(nativeRuntimeFixture({ gapPolicy: "explicit_reset" })).rejects.toThrow("native_explicit_reset_unsupported");
@@ -418,16 +435,23 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
     } finally { acquire.release(); await f.close(); }
   });
   it("deadline expires idle after delivery with no further tick or status GET", async () => {
-    const f = await nativeRuntimeFixture();
+    let clock = 0;
+    const f = await nativeRuntimeFixture({ monotonicNow: () => clock });
     try {
-      // The test starts its short wallet only after startup/stdio warmup.
+      // Hold only deadline timers during real child/HTTP/durable dispatch work.
+      // setMode must arm its production timer; advance that original timer only
+      // once the target idle-held state exists, without a tick or status GET.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       (f.runtime as unknown as { owner: { budget: { deadlineMs: number } } }).owner.budget.deadlineMs = 150;
-      await f.runtime.setMode("auto"); expect((await f.runtime.tick()).type).toBe("delivered");
+      await f.runtime.setMode("auto"); const delivered = await f.runtime.tick();
+      expect(delivered.type, JSON.stringify(delivered)).toBe("delivered");
+      expect(f.runtime.status().controller).toBe("held");
+      clock = 150; await vi.advanceTimersByTimeAsync(150); vi.useRealTimers();
       await eventually(() => f.source.requests.some(r => r.path.endsWith("/controller/release")), 1000);
       await eventually(async () => (await f.events()).some(e => e.kind === "autonomy_budget_exhausted"));
       expect((await f.events()).some(e => e.kind === "autonomy_budget_exhausted")).toBe(true);
       expect(f.runtime.status()).toMatchObject({ mode: "human", controller: "released", autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
-    } finally { await f.close(); }
+    } finally { vi.useRealTimers(); await f.close(); }
   });
   it("expired original pending outcomes stay unresolved and close as tainted without inferring non-delivery", async () => {
     const f = await nativeRuntimeFixture({ mode: "auto" }); f.source.behavior = "pending"; f.source.lookup = "expired";

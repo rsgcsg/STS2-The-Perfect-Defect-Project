@@ -161,6 +161,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await this.quiesceRenewal();
       if (this.native.subscription) await this.native.detach().catch(() => undefined);
       this.owner.clearDeadline();
+      // Deadline expiry owns serialized evidence even when initialization
+      // aborts. Finish that write before the caller releases failed-run files.
+      if (this.budgetHandoff) await this.budgetHandoff;
       throw error;
     } finally { if (this.owner.active?.controller === active) this.owner.active = null; }
   }

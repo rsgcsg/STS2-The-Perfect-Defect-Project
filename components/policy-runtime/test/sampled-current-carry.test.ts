@@ -14,9 +14,12 @@ import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { SyntheticNativeHttp } from "./native-runtime-fixtures.js";
+import { fixturePortCloser } from "./fixture-process.js";
+import { fixtureProgress } from "./fixture-progress.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const roots: string[] = [], owners: NativeAgentRuntimeOwner[] = [];
+const ports: (() => Promise<void>)[] = [];
 const child = fileURLToPath(new URL("./fixtures/sampled-agent-child.mjs", import.meta.url));
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
@@ -46,6 +49,7 @@ async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow"
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, mode, runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
   const manifestPath = join(root, "agent.json"); await writeFile(manifestPath, JSON.stringify(manifest));
   const port = NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, scenario], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
+  ports.push(fixturePortCloser(port));
   const runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
     runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, mode,
     autoBudget: { maxSubmissions: 400, maxPolicyCalls: 1000, deadlineMs: 60000 } });
@@ -69,7 +73,7 @@ function verify(directory: string): string {
       ...(process.env.STS2_EVIDENCE_PYTHON ? { PYTHON: process.env.STS2_EVIDENCE_PYTHON } : {}),
       PYTHONPATH: fileURLToPath(new URL("../../evidence", import.meta.url)) } });
 }
-afterEach(async () => { vi.restoreAllMocks(); for (const owner of owners.splice(0)) await owner.stop().catch(() => undefined); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const owner of owners.splice(0)) await owner.stop().catch(() => undefined); for (const close of ports.splice(0)) await close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 describe("sampled current carry, source/contract only", () => {
   it("freezes coherent sample quotas and rejects invalid closed mode combinations", () => {
@@ -100,10 +104,16 @@ describe("sampled current carry, source/contract only", () => {
     ledger.close(); full.close();
   });
   it("uses full Current/C, persists original bytes before ACK, cleans 300 unchanged acquisitions, and independently verifies", async () => {
+    const progress = fixtureProgress("sampled-carry-300-full-current");
     const f = await fixture();
+    progress("initialized");
     expect((await f.runtime.tick()).type).toBe("delivered");
     expect(f.runtime.status().session.state_version).toBe(1);
-    for (let i = 0; i < 300; i++) { const result = await f.runtime.tick(); expect(result.type, JSON.stringify({ i, status: f.runtime.status() })).toBe("awaited"); }
+    progress("first-original-delivery");
+    for (let i = 0; i < 300; i++) {
+      const result = await f.runtime.tick(); expect(result.type, JSON.stringify({ i, status: f.runtime.status() })).toBe("awaited");
+      if ((i + 1) % 75 === 0) progress("unchanged-acquisitions-cleaned", { acquisitions: i + 1 });
+    }
     expect(f.runtime.status().session.state_version).toBe(1);
     f.setFrame("inspect_b"); expect((await f.runtime.tick()).type).toBe("delivered");
     f.setFrame("map_c"); expect((await f.runtime.tick()).type).toBe("delivered");
@@ -112,6 +122,7 @@ describe("sampled current carry, source/contract only", () => {
     await expect(f.runtime.setMode("auto")).rejects.toThrow("runtime_sample_segment_ended");
     await f.runtime.stop();
     const recorded = await events(f.evidence);
+    progress("finalized-and-read", { durable_events: recorded.length });
     for (const event of recorded.filter(e => e.kind.startsWith("agent_sample_")))
       expect(Object.keys(event.payload).sort()).toEqual(shared.evidence.event_fields[event.kind]);
     const samples = recorded.filter(e => e.kind === "agent_sample_input_stored");
@@ -122,6 +133,7 @@ describe("sampled current carry, source/contract only", () => {
     expect(f.calls.filter(x => x === "catalog")).toHaveLength(303);
     expect(f.calls.filter(x => x === "submit")).toHaveLength(3);
     expect(verify(f.evidence.directory)).toContain("pass");
+    progress("independently-verified");
   }, 30000);
   it("does not sample complete empty-C wait, then ACKs actual ready summary before Close", async () => {
     const f = await fixture(); f.setFrame("empty_wait");
