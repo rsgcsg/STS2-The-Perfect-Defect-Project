@@ -31,8 +31,9 @@ receipts are routed through the lead's existing
 - d6 M0 parity passed one fixed sample and current-owner export836a completed;
   current rc27 pin f44200a6/archive85c902/content87f512 is privately installed through
   the common owner, not activated/loaded; live registration/game load remain next.
-  Public M2 17eb old/current31-step scores/W/cache/reset parity passed; cache-race
-  source b57e4286 is under review, Port4 remains unintegrated.
+  Public M2 17eb fixed-sequence scores/W/cache/reset parity passed, including31-candidate
+  full scores/32 rejected before W write. Cache-race fix b57e4286 is accepted/merged
+  at0a07e1cd with288 integrated tests passed; Port4 remains unintegrated.
 - CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
   for `d0e671f2` failed all four OS leaves and portable. Windows Python shard passes
   and process-fixture success do not erase other owner failures. Reviewed Windows

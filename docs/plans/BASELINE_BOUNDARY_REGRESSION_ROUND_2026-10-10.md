@@ -119,9 +119,12 @@ not a reason to re-export/retrain. Current rc27 pin `f44200a6` is now prepared
 and installed through the common owner into private M0 state: archive85c902/content87f512,
 not activated/loaded. Next is live capability registration and game load; the original
 registration UNKNOWN remains historical and is not replayed. Public M2 `17eb…`
-old/current `e302…`/`31cc…`31-step sequence parity passed all scores, W, cache and reset,
-with Root checking raw outputs for exact equality. Stage1 cache-lock-race correction
-`b57e4286` is under review; Port4 and an actual M2 game run remain unimplemented/unproved.
+old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
+including a complete31-candidate catalog and whole32 rejection before W write. Root
+checked raw outputs for exact equality across five named cases;31 is not sequence length.
+Stage1 cache-lock-race correction `b57e4286` is independently accepted and normally
+merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 and an actual M2
+game run remain unimplemented/unproved.
 
 Next priorities are actual d6 register/load and safe mode/Stop/reopen, the learned
 Model's admission/register/load/fresh-game journey, explicit progress-aware STRICT v2

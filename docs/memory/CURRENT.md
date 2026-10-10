@@ -72,8 +72,9 @@ only the user can approve it. Local diagnostic and merge/promotion gates stay di
   live capability registration. Current rc27 pin `f44200a6`, archive85c902/content87f512,
   is installed through the common owner into private M0 state; not activated/loaded.
   Original registration UNKNOWN is preserved, not replayed. Public M2 `17eb…`
-  old/current31-step parity passed all scores/W/cache/reset; stage1 cache-lock-race
-  correction `b57e4286` is under review. Port4/new M2 game use remain unproved.
+  old/current fixed-sequence scores/W/cache/reset parity passed, including31-candidate
+  full scores and32 rejected before W write. Cache-race fix `b57e4286` was independently
+  accepted/merged at `0a07e1cd`; integrated288 tests passed. Port4/game use remain unproved.
 - CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
   at `d0e671f2` ended failure:all four OS leaves and portable failed.
   Linux's stale Teacher literal has source fix `f0bee50b`; Windows additionally

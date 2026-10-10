@@ -25,7 +25,7 @@
 | 真实训练/checkpoint/Model/export | 原300.022s失败与132-update checkpoint保留；append-only明确600s cumulative cap，不改原300s请求；resume完成168 updates/404.100506s，Model `8eb1b166…`及导出完成，实际weights有变化。 |
 | learning smoke | 3 epochs/411 label uses；train loss2.8026577→0.4583665、teacher-choice accuracy8.759%→91.241%，无dev/test、尚无新游戏使用，不证明策略强。 |
 | 大 d6 M0 消费者 | 单固定样本旧/新parity通过；当前owning export `836a2e58…`完成。当前rc27 pin `f44200a6`（archive85c902/content87f512）已由共同owner安装到私有M0状态，未激活/load；下一步live capability register/load，原UNKNOWN不重放。 |
-| Public M2 | `17eb…`旧/新 `e302…`/`31cc…`31-step全scores/W/cache/reset parity已通过并核原输出；cache-lock-race修复 `b57e4286`审查中。原partial保留，Port4未集成，无新游戏投递声明。 |
+| Public M2 | `17eb…`旧/新 `e302…`/`31cc…`固定序列scores/W/cache/reset parity通过；包含完整31候选评分与32候选在W写入前拒绝，31不是步数。`b57e4286` cache-race修复已独立接受并正常合并为 `0a07e1cd`，288整合测试通过。原partial保留，Port4未集成，无新游戏投递声明。 |
 
 CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
 针对`d0e671f2`四个OS leaf与portable全失败。Linux旧Teacher literal有source修复`f0bee50b`；
