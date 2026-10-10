@@ -113,35 +113,32 @@ def test_actual_structured_service_training_result_use_and_idempotency(tmp_path,
 
 def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch):
     service, request, owner, store = ready(tmp_path, monkeypatch)
-    original = adapter_module._private_child
     entered, released = threading.Event(), threading.Event()
+    phases = {}
 
-    def delayed(command, *args, **kwargs):
-        original_message = kwargs["on_stdout_line"]
+    def message(raw, callback):
+        value = json.loads(raw)
+        if (value["kind"] == "event" and store.get_manifest(
+                value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
+            entered.set()
+            assert released.wait(3)
+        callback(raw)
 
-        def message(raw):
-            value = json.loads(raw)
-            if (value["kind"] == "event" and store.get_manifest(
-                    value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
-                entered.set()
-                assert released.wait(3)
-            original_message(raw)
-
-        return original(command, *args, **{**kwargs, "on_stdout_line": message})
-
-    monkeypatch.setattr(adapter_module, "_private_child", delayed)
+    checkpoint_child(monkeypatch, on_line=message, phases=phases)
     started = service.start(request)["operation"]
     assert entered.wait(15)
     with pytest.raises(BoundaryError, match="stale_operation_attempt"):
         service.cancel(started["operation_id"], "0" * 32)
     ack = service.cancel(started["operation_id"], started["attempt_id"])["operation"]
+    phases["cancel_requested_at"] = service._cancel_requested_monotonic
     assert ack["status"] == "pending" and ack["worker_state"] == "running"
     assert ack["requested_action"] == "cancel" and ack["selected_result"] is False
     with pytest.raises(BoundaryError, match="writer_still_running"):
         service.reconcile(started["operation_id"], started["attempt_id"])
     released.set()
     cancelled = settle(service)
-    assert cancelled["status"] == "cancelled", cancelled
+    diagnostic = cancellation_diagnostic(service, owner, cancelled, phases)
+    assert cancelled["status"] == "cancelled", diagnostic
     assert cancelled["worker_state"] == "terminal" and cancelled.get("checkpoint_id"), cancelled
     assert cancelled["domain_completion_state"] == "not_completed"
     assert cancelled["child_exit"]["forced"] is False
@@ -176,12 +173,35 @@ def test_source_json_and_unverified_agent_provenance_cannot_admit_training(tmp_p
         service.start(replace(request, placement_id="/tmp/worker"))
 
 
-def child_script(monkeypatch, body, *, on_line=None):
+def child_script(monkeypatch, body, *, on_line=None, phases=None):
     original = adapter_module._private_child
     script = "import sys\nfrom spireagent.workbench.recipes import structured_child as child\n"
     script += body+"\nraise SystemExit(child.main(sys.argv[1:]))\n"
 
     def injected(command, *args, **kwargs):
+        if phases is not None:
+            callback_exit = kwargs["on_exited"]
+
+            def exited(code, forced, seconds):
+                phases.setdefault("exits", []).append({
+                    "code": code, "forced": forced, "seconds": seconds,
+                    "observed_at": time.monotonic(),
+                })
+                callback_exit(code, forced, seconds)
+
+            kwargs["on_exited"] = exited
+            callback_line = kwargs["on_stdout_line"]
+
+            def observed(raw):
+                value = json.loads(raw)
+                if value["kind"] == "terminal":
+                    phases.setdefault("terminals", []).append({
+                        "attempt_id": value["attempt_id"], "state": value["details"]["state"],
+                        "observed_at": time.monotonic(),
+                    })
+                callback_line(raw)
+
+            kwargs["on_stdout_line"] = observed
         if on_line is not None:
             callback = kwargs["on_stdout_line"]
             kwargs["on_stdout_line"] = lambda raw: on_line(raw, callback)
@@ -190,6 +210,88 @@ def child_script(monkeypatch, body, *, on_line=None):
 
     monkeypatch.setattr(adapter_module, "_private_child", injected)
     return original
+
+
+def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False):
+    # Parent notification does not hold the actual child at a numerical boundary.
+    # Gate this fixture's first checkpoint on the existing exact journal control;
+    # production publication, control polling and process exit stay authoritative.
+    body = """
+import time
+from dataclasses import asdict
+from spireagent.json_boundary import json_bytes
+from stpd.models.structured_engine import StructuredTrainingEngine
+original_emit = child.ChildReporter.emit
+original_advance = StructuredTrainingEngine.advance_chunk
+original_channel_emit = child.ChildChannel.emit
+first = None
+
+def record(phase, **details):
+    fence = first['fence']
+    path = fence.path.parent / ('fixture-checkpoint-' + fence.attempt_id + '.jsonl')
+    with path.open('ab') as stream:
+        stream.write(json_bytes({
+            'operation_id': fence.operation_id, 'attempt_id': fence.attempt_id,
+            'event_id': first['event_id'], 'checkpoint_id': first['checkpoint_id'],
+            'phase': phase, 'observed_at': time.monotonic(), **details,
+        }))
+
+def await_cancel():
+    deadline = time.monotonic() + 5
+    while first['fence'].requested_action() != 'cancel':
+        if time.monotonic() >= deadline:
+            raise AssertionError('fixture exact checkpoint cancel not observed')
+        time.sleep(0.005)
+    record('cancel_observed')
+
+def emit(self, event):
+    global first
+    identity = original_emit(self, event)
+    info = event.parameters.value()
+    if first is None and info['kind'] == 'checkpoint' and self.fence.operation()['mode'] == 'start':
+        current = self.fence.operation()
+        checkpoint_id = info['details']['checkpoint_id']
+        checkpoint = self.fence.store.get_manifest(checkpoint_id)
+        assert info['attempt'] == self.fence.attempt_id
+        assert event.parent('run') == current['run_id']
+        assert checkpoint.parameters.value()['attempt'] == self.fence.attempt_id
+        assert checkpoint.parent('run') == current['run_id']
+        assert checkpoint.parent('training_input') == current['input_id']
+        assert checkpoint.producer == event.producer
+        first = {'fence': self.fence, 'event_id': identity, 'checkpoint_id': checkpoint_id}
+        record('checkpoint_emitted', sequence=self.channel.sequence,
+               requested_action=current['requested_action'])
+        if not ALLOW_ADVANCE:
+            await_cancel()
+    return identity
+
+def advance(self):
+    if first is None:
+        raise AssertionError('fixture checkpoint must precede numerical advance')
+    before = first['fence'].requested_action()
+    progress = original_advance(self)
+    record('chunk_advanced', requested_action_before=before, progress=asdict(progress))
+    await_cancel()
+    return progress
+
+def channel_emit(self, kind, **details):
+    original_channel_emit(self, kind, **details)
+    if kind == 'terminal' and first is not None:
+        record('terminal_emitted', state=details['state'])
+
+child.ChildReporter.emit = emit
+child.ChildChannel.emit = channel_emit
+if ALLOW_ADVANCE:
+    StructuredTrainingEngine.advance_chunk = advance
+""".replace("ALLOW_ADVANCE", repr(allow_advance))
+    return child_script(monkeypatch, body, on_line=on_line, phases=phases)
+
+
+def cancellation_diagnostic(service, owner, operation, phases):
+    path = owner.path.parent / ("fixture-checkpoint-" + operation["attempt_id"] + ".jsonl")
+    records = [json.loads(line) for line in path.read_bytes().splitlines()] if path.exists() else []
+    return json.dumps({"operation": operation, "parent": phases, "child": records,
+                       "failure": service._failure_diagnostic}, sort_keys=True)
 
 
 def test_unknown_attempt_requires_reconcile_no_automatic_retry(tmp_path, monkeypatch):
@@ -275,24 +377,21 @@ child.run_child = hung
 
 def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatch):
     service, request, owner, store = ready(tmp_path, monkeypatch)
-    original = adapter_module._private_child
+    phases = {}
 
-    def cancelled(command, *args, **kwargs):
-        callback = kwargs["on_stdout_line"]
+    def message(raw, callback):
+        callback(raw)
+        value = json.loads(raw)
+        if (value["kind"] == "event" and store.get_manifest(
+                value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
+            service.cancel(value["operation_id"], value["attempt_id"])
+            phases["cancel_requested_at"] = service._cancel_requested_monotonic
 
-        def message(raw):
-            callback(raw)
-            value = json.loads(raw)
-            if (value["kind"] == "event" and store.get_manifest(
-                    value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
-                service.cancel(value["operation_id"], value["attempt_id"])
-
-        return original(command, *args, **{**kwargs, "on_stdout_line": message})
-
-    monkeypatch.setattr(adapter_module, "_private_child", cancelled)
+    checkpoint_child(monkeypatch, on_line=message, phases=phases)
     service.start(request)
     saved = settle(service)
-    assert saved["status"] == "cancelled" and saved.get("checkpoint_id"), saved
+    diagnostic = cancellation_diagnostic(service, owner, saved, phases)
+    assert saved["status"] == "cancelled" and saved.get("checkpoint_id"), diagnostic
     assert saved["domain_completion_state"] == "not_completed"
     assert saved["child_exit"]["forced"] is False
     cp = store.get_manifest(saved["checkpoint_id"])
@@ -305,6 +404,51 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
         service.resume(saved["operation_id"], saved["attempt_id"], wrong.artifact_id,
                        "2" * 32, request.limits)
     assert (owner.path.parent / OPERATION_FILE).read_bytes() == journal
+
+
+def test_checkpoint_notification_does_not_hold_child_before_parent_cancel(tmp_path, monkeypatch):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    phases, advanced = {}, []
+
+    def message(raw, callback):
+        callback(raw)
+        value = json.loads(raw)
+        if (value["kind"] != "event" or store.get_manifest(
+                value["details"]["event_id"]).parameters.value()["kind"] != "checkpoint"
+                or advanced):
+            return
+        path = owner.path.parent / ("fixture-checkpoint-" + value["attempt_id"] + ".jsonl")
+        deadline = time.monotonic() + 5
+        while not advanced:
+            if path.exists():
+                raw_records = path.read_bytes()
+                if raw_records.endswith(b"\n"):
+                    advanced.extend(record for line in raw_records.splitlines()
+                                    if (record := json.loads(line))["phase"] == "chunk_advanced")
+            if time.monotonic() >= deadline:
+                raise AssertionError("unbound child did not advance before parent cancel")
+            if not advanced:
+                threading.Event().wait(0.005)
+        record = advanced[0]
+        assert record["operation_id"] == value["operation_id"]
+        assert record["attempt_id"] == value["attempt_id"]
+        assert record["event_id"] == value["details"]["event_id"]
+        assert record["checkpoint_id"] == store.get_manifest(
+            record["event_id"]).parameters.value()["details"]["checkpoint_id"]
+        assert record["requested_action_before"] == "continue"
+        assert record["progress"]["boundary"] >= 1
+        service.cancel(value["operation_id"], value["attempt_id"])
+        phases["cancel_requested_at"] = service._cancel_requested_monotonic
+
+    checkpoint_child(monkeypatch, on_line=message, phases=phases, allow_advance=True)
+    service.start(request)
+    saved = settle(service)
+    diagnostic = cancellation_diagnostic(service, owner, saved, phases)
+    assert len(advanced) == 1, diagnostic
+    assert advanced[0]["observed_at"] < phases["cancel_requested_at"], diagnostic
+    assert saved["requested_action"] == "cancel", diagnostic
+    assert saved["selected_result"] is False and saved["worker_state"] == "terminal", diagnostic
+    assert saved["domain_completion_state"] != "completed" and "result_id" not in saved, diagnostic
 
 
 def test_typed_legacy_request_preserves_previous_v1_and_legacy_idempotency(tmp_path, monkeypatch):
