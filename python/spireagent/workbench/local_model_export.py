@@ -65,7 +65,7 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
 
 
 def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
-                 structured: bool = False, native: bool = False) -> Path:
+                 structured: bool = False, native: bool = False, public_m0: bool = False) -> Path:
     state = config.state_dir
     if not _ordinary(state, directory=True):
         raise BoundaryError("local_model_export", "unsafe_export_root")
@@ -79,12 +79,13 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
     if target.exists() or target.is_symlink():
         if not _ordinary(target, directory=True):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
-        names = (("model.json", "weights.tensor-tree") if structured or native else
+        names = (("model.json", "weights.safetensors", "state-tokenizer.json", "action-codec.json")
+                 if public_m0 else ("model.json", "weights.tensor-tree")
+                 if structured or native else
                  ("model.json", "weights.tensor-tree", "tokenizer.json") if memory
                  else ("model.json", "weights.safetensors", "tokenizer.json"))
-        if (memory or structured or native) and {path.name for path in target.iterdir()} != set(
-            names
-        ):
+        if (memory or structured or native or public_m0) and (
+                {path.name for path in target.iterdir()} != set(names)):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
         for name in names:
             if not _ordinary(target / name, directory=False):
@@ -394,7 +395,14 @@ class LocalModelExport:
             return result
         schema = info.get("schema")
         memory_recipe = None
-        if is_native_model_schema(schema):
+        if schema == "stpd/stage1a-light-action-m0-public-model-v1":
+            config = info.get("config", {})
+            if (not isinstance(config, dict)
+                    or config.get("recipe") != "stage1a.dsimple.light-action.m0.s.v1"
+                    or config.get("public_profile") not in {"public_compact", "public_lite"}):
+                return result
+            model_type, profile = "public_m0", "public-snapshot-m0-v1"
+        elif is_native_model_schema(schema):
             model_type, profile = "native", "native-logical-v1"
         elif is_structured_model_schema(schema):
             model_type, profile = "structured", "text-menu-m2-v2"
@@ -461,6 +469,22 @@ class LocalModelExport:
                             + receipt["tokenizer_size"]
                             or receipt["payload_bytes"] != value.get("payload_bytes")):
                         raise ValueError
+            if value.get("model_type") == "public_m0":
+                receipt = value.get("verified_receipt")
+                if receipt is not None:
+                    from spireagent.workbench.public_m0_export_support import (
+                        RECEIPT_SCHEMA as PUBLIC_RECEIPT,
+                    )
+
+                    if (value["status"] != "completed" or not isinstance(receipt, dict)
+                            or set(receipt) != {"schema", "model_id", "lineage_sha256",
+                                               "package_sha256", "payload_bytes"}
+                            or receipt.get("schema") != PUBLIC_RECEIPT
+                            or receipt.get("model_id") != value["model_id"]
+                            or receipt.get("payload_bytes") != value.get("payload_bytes")):
+                        raise ValueError
+                    digest(receipt["lineage_sha256"], "local_model_export.lineage")
+                    digest(receipt["package_sha256"], "local_model_export.package")
             digest(value["model_id"], "local_model_export.model_id")
             digest(value["operation_id"], "local_model_export.operation_id", length=32)
             if value["status"] == "completed" and (
@@ -478,6 +502,8 @@ class LocalModelExport:
                      ("status", "operation_id", "model_id", "model_type",
                       "payload_bytes", "error_code")
                      if key in value}
+        if value.get("model_type") == "public_m0" and value.get("verified_receipt") is not None:
+            operation["verified_receipt"] = value["verified_receipt"]
         if (operation["status"] == "pending"
                 and (self.thread is None or not self.thread.is_alive())):
             from spireagent.workbench.developer_server import instance_lock
@@ -526,6 +552,9 @@ class LocalModelExport:
             if not isinstance(root, Path) or operation["store_root"] != str(root):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = source.get_manifest(identity)
+            if (model.parameters.value().get("schema") ==
+                    "stpd/stage1a-light-action-m0-public-model-v1"):
+                return self.verified_public_m0_for_registration(identity)
             if model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1":
                 raise BoundaryError("local_model_export", "memory_registration_not_ready")
             destination = self.config.state_dir / EXPORT_ROOT / identity
@@ -537,6 +566,31 @@ class LocalModelExport:
                 return destination
             _eligible(model)
             _verify_export(source, model, destination)
+            return destination
+
+    def verified_public_m0_for_registration(self, model_id: object, *,
+                                            deadline: float | None = None) -> Path:
+        from spireagent.workbench.public_m0_export_support import lineage, package_receipt
+
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._read()
+            if (operation.get("status") != "completed"
+                    or operation.get("model_id") != identity
+                    or operation.get("model_type") != "public_m0"
+                    or operation.get("verified_receipt") is None):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            store = self._source(identity)
+            root = getattr(getattr(store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = store.get_manifest(identity)
+            binding = lineage(store, self._memory_owner(store), model)
+            if deadline is not None and monotonic() >= deadline:
+                raise BoundaryError("local_model_registration", "registration_timeout")
+            destination = self.config.state_dir / EXPORT_ROOT / identity
+            if package_receipt(model, destination, binding) != operation["verified_receipt"]:
+                raise BoundaryError("local_model_export", "export_identity_mismatch")
             return destination
 
     def verified_memory_for_registration(self, model_id: object, *,
@@ -694,7 +748,13 @@ class LocalModelExport:
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
             structured = is_structured_model_schema(model.parameters.value().get("schema"))
-            if not memory and not structured and not native:
+            public_m0 = (model.parameters.value().get("schema") ==
+                         "stpd/stage1a-light-action-m0-public-model-v1")
+            if public_m0:
+                from spireagent.workbench.public_m0_export_support import lineage
+
+                lineage(store, self._memory_owner(store), model)
+            if not memory and not structured and not native and not public_m0:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
             if lock_path.is_symlink() or (lock_path.exists()
@@ -709,11 +769,14 @@ class LocalModelExport:
                 raise
             try:
                 destination = _destination(self.config, identity, memory=memory,
-                                           structured=structured, native=native)
+                                           structured=structured, native=native,
+                                           public_m0=public_m0)
                 operation = {"schema": SCHEMA_V2 if memory else SCHEMA,
                              "status": "pending",
                              "operation_id": uuid.uuid4().hex, "model_id": identity,
                              "store_root": str(root)}
+                if public_m0:
+                    operation.update(model_type="public_m0")
                 if structured:
                     operation.update(model_type="structured")
                 if native:
@@ -789,7 +852,17 @@ class LocalModelExport:
             child_started = True
 
         try:
-            if is_native_model_schema(model.parameters.value().get("schema")):
+            if (model.parameters.value().get("schema") ==
+                    "stpd/stage1a-light-action-m0-public-model-v1"):
+                from spireagent.workbench.public_m0_export_support import lineage, package_receipt
+                from stpd.policy.token_decision import export_light_action_m0_model
+
+                binding = lineage(store, self._memory_owner(store), model, verify_payloads=True)
+                if not destination.exists():
+                    export_light_action_m0_model(store, model.artifact_id, destination)
+                public_receipt = package_receipt(model, destination, binding, verify_inference=True)
+                count = public_receipt["payload_bytes"]
+            elif is_native_model_schema(model.parameters.value().get("schema")):
                 count = _native_package(store, model, destination, materialize=True)
             elif is_structured_model_schema(model.parameters.value().get("schema")):
                 count = _structured_package(store, model, destination, materialize=True)
@@ -807,7 +880,10 @@ class LocalModelExport:
             verified = True
             with self.lock:
                 if run_id is None:
-                    self._finish(operation_id, status="completed", payload_bytes=count)
+                    self._finish(operation_id, status="completed", payload_bytes=count,
+                                 **({"verified_receipt": public_receipt}
+                                    if model.parameters.value().get("schema") ==
+                                    "stpd/stage1a-light-action-m0-public-model-v1" else {}))
                 else:
                     root = getattr(getattr(store, "blobs", None), "root", None)
                     assert isinstance(root, Path)
