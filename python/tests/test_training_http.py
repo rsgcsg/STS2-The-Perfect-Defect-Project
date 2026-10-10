@@ -61,6 +61,10 @@ def test_http_capabilities_exact_queries_body_and_configuration_guards(tmp_path,
         capabilities = call("capabilities")
         assert capabilities["schema"] == "spireagent/training-capabilities-v1"
         assert capabilities["automatic_retry"] is False
+        selected_recipe = next(item for item in capabilities["recipes"]
+                               if item["recipe_id"] == request.recipe_id)
+        assert selected_recipe["placement_ids"] == ["local-cpu"]
+        assert "amend_wall_budget" in selected_recipe["supported_actions"]
         assert call("status")["operation"]["status"] == "idle"
         for route in ["capabilities?extra=1", "status?extra=1",
                       "status?operation_id=" + "a" * 32 + "&operation_id=" + "b" * 32]:
