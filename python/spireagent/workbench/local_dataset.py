@@ -147,8 +147,31 @@ class LocalDatasetService:
         digest(value["id"], "local_dataset.id", length=32)
         digest(value["artifact_id"], "local_dataset.artifact_id")
         kind = value.get("kind", "canonical")
-        if kind not in {"canonical", "human_input", "ordered_source3", "native_agent_sampled"}:
+        if kind not in {"canonical", "human_input", "ordered_source3", "native_agent_sampled",
+                        "reward_m0_pair"}:
             raise ValueError
+        if kind == "reward_m0_pair":
+            from stpd.fullrun.reward_m0_source import historical_binding, selection
+            from stpd.reward_m0_spec import RewardM0Config, checked_pair_limits
+
+            if (value["purpose"] != "training" or value["paired_training"] is not None
+                    or value.get("_phase") not in {"preview", "publish"}
+                    or not isinstance(value.get("_owner"), list) or len(value["_owner"]) != 4
+                    or list(selection(value.get("occurrence_ids"))) != value["occurrence_ids"]):
+                raise ValueError
+            RewardM0Config.decode(value["_paired_config"])
+            checked_pair_limits(value["_paired_limits"])
+            historical_binding(value["_historical"])
+            if "_producer" in value:
+                Producer.decode(value["_producer"])
+            if value["_phase"] == "publish" or status in {"preview_ready", "completed"}:
+                digest(value["preview_id"], "local_dataset.preview_id", length=32)
+                digest(value["_logical_id"], "local_dataset.logical_id")
+                digest(value["_pair_source_id"], "local_dataset.pair_source_id")
+                Producer.decode(value["_producer"])
+            if status == "completed":
+                digest(value["result_artifact_id"], "local_dataset.result")
+            return
         if kind == "native_agent_sampled":
             from stpd.native_agent_sampled_source_spec import MAX_RAW_REFERENCES
 
@@ -312,7 +335,9 @@ class LocalDatasetService:
                 and self.operation.get("error_code") != "publication_recovery_required"
             )
         reservation = operation.get("use_reservation")
-        if (operation.get("kind") in {"ordered_source3", "native_agent_sampled"}
+        if (operation.get("kind") in {
+                        "ordered_source3", "native_agent_sampled", "reward_m0_pair",
+                }
                 and operation.get("status") == "completed"
                 and isinstance(reservation, dict)
                 and reservation.get("split") == "train"
@@ -324,7 +349,9 @@ class LocalDatasetService:
             operation["split_status"] = "reserved"
         recovery = False
         if (possible_recovery
-                and operation.get("kind") in {"ordered_source3", "native_agent_sampled"}):
+                and operation.get("kind") in {
+                        "ordered_source3", "native_agent_sampled", "reward_m0_pair",
+                }):
             # Exact immutable refs/producer permit explicit publication reconciliation.
             recovery = True
             possible_recovery = False
@@ -445,7 +472,8 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
-                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
+                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled",
+                                                 "reward_m0_pair"}:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -491,7 +519,9 @@ class LocalDatasetService:
                 raise BoundaryError("local_dataset", "operation_in_progress")
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}):
-                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
+                if self.operation.get("kind") in {
+                        "ordered_source3", "native_agent_sampled", "reward_m0_pair",
+                }:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     if db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -508,6 +538,147 @@ class LocalDatasetService:
             self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
             self.thread.start()
             return self.status()
+
+    def start_reward_m0_preview(
+        self,
+        cached_view_id: object,
+        occurrence_ids: object,
+        historical: object,
+        config: object,
+        limits: object,
+    ) -> dict[str, Any]:
+        from stpd.fullrun.reward_m0_source import historical_binding, selection
+        from stpd.reward_m0_spec import RewardM0Config, checked_pair_limits
+
+        view_id = digest(cached_view_id, "local_dataset.reward_m0_cached_view")
+        ids = list(selection(occurrence_ids))
+        if not isinstance(config, dict):
+            raise BoundaryError("local_dataset", "explicit_paired_config_required")
+        selected = RewardM0Config(**config).to_dict()
+        bound = historical_binding(historical)
+        if bound["cached_view_id"] != view_id:
+            raise BoundaryError("local_dataset", "historical_view_mismatch")
+        checked_limits = checked_pair_limits(limits)
+        if self.operation_invalid:
+            raise BoundaryError("local_dataset", "operation_file_invalid")
+        owner, store, _ = self._selected()
+        from .reward_m0_data import require_historical_training
+
+        # Existing current owner-held receipt gates access before a pending file.
+        require_historical_training(owner, store, bound)
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_dataset", "operation_in_progress")
+            if self.operation.get("_phase") == "publish" and self.operation.get("status") in {
+                "failed",
+                "interrupted",
+            }:
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+            identity = uuid.uuid4().hex
+            self.operation = {
+                "status": "pending",
+                "id": identity,
+                "_phase": "preview",
+                "kind": "reward_m0_pair",
+                "artifact_id": view_id,
+                "occurrence_ids": ids,
+                "purpose": "training",
+                "paired_training": None,
+                "_owner": list(owner.identity),
+                "_historical": bound,
+                "_paired_config": selected,
+                "_paired_limits": checked_limits,
+            }
+            self._save()
+            self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
+            self.thread.start()
+            return self.status()
+
+    @staticmethod
+    def _reward_m0_projection(owner: Any, store: Any, request: dict[str, Any]) -> tuple[Any, Any]:
+        from stpd.fullrun.reward_m0_source import (
+            VerifiedRewardM0Source,
+            project_reward_m0_pair,
+            reward_m0_source_manifest,
+        )
+        from stpd.reward_m0_spec import RewardM0Config
+
+        from .reward_m0_data import require_historical_training, require_selected_roster
+
+        summary = require_historical_training(owner, store, request["_historical"])
+        projected = project_reward_m0_pair(
+            store,
+            request["artifact_id"],
+            request["occurrence_ids"],
+            RewardM0Config.decode(request["_paired_config"]),
+            request["_paired_limits"],
+            request["_historical"],
+        )
+        candidate = reward_m0_source_manifest(projected, Producer.decode(request["_producer"]))
+        require_selected_roster(owner, VerifiedRewardM0Source(candidate, projected), summary)
+        return projected, candidate
+
+    @staticmethod
+    def _reward_m0_summary(projected: dict[str, Any]) -> dict[str, Any]:
+        from stpd.reward_m0_spec import RECIPE
+
+        return {
+            "sample_type": "reward_m0_pair",
+            "cohort": projected["cohort"],
+            "counts": projected["counts"],
+            "accepted_labels": len(projected["rows"]),
+            "exclusions": dict(Counter(row["reason"] for row in projected["exclusions"])),
+            "input_specs": projected["input_specs"],
+            "recommended_recipe_id": RECIPE,
+            "paired_configuration": projected["paired_config"],
+            "paired_limits": projected["paired_limits"],
+            "can_publish": bool(projected["rows"]),
+            "split_status": "not_reserved",
+            "actual_training_use": False,
+            "heldout_or_Gold": False,
+            "historical_external_exposure": "unknown",
+            "projection_cost": {
+                "cached_samples_bytes_verified": projected["cached_samples_bytes_verified"],
+                "full_corpus_reprojection": False,
+                "A_state_bytes": sum(
+                    len(row["A"]["state_text"].encode("utf-8")) for row in projected["rows"]
+                ),
+                "B_state_bytes": sum(
+                    len(row["B"]["state_text"].encode("utf-8")) for row in projected["rows"]
+                ),
+            },
+        }
+
+    def _publish_reward_m0(
+        self, owner: Any, store: Any, request: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        from stpd.fullrun.reward_m0_source import publish_reward_m0_source
+
+        from .reward_m0_data import reserve_reward_m0_source
+
+        projected, candidate = self._reward_m0_projection(owner, store, request)
+        if semantic_hash(projected) != request["_logical_id"] or (
+            candidate.artifact_id != request["_pair_source_id"]
+        ):
+            raise BoundaryError("local_dataset", "preview_changed")
+        if not projected["rows"]:
+            raise BoundaryError("local_dataset", "no_paired_eligible_TRAIN_N")
+        runs = {row["run_id"] for row in projected["rows"]}
+        # Conservative reservation precedes immutable derived source publication.
+        owner.ledger.claim(candidate.artifact_id, "training", runs)
+        manifest = publish_reward_m0_source(store, projected, candidate.producer)
+        owner.ledger.bind(manifest.artifact_id, manifest.artifact_id)
+        reservation = reserve_reward_m0_source(owner, store, manifest.artifact_id)
+        return manifest.artifact_id, {
+            "training_source_id": manifest.artifact_id,
+            "split_status": "reserved",
+            "actual_training_use": False,
+            "use_reservation": {
+                "artifact_id": manifest.artifact_id,
+                "split": "train",
+                **reservation,
+            },
+        }
 
     def start_native_agent_preview(self, artifact_ids: object) -> dict[str, Any]:
         from stpd.native_agent_sampled_source_spec import MAX_RAW_REFERENCES
@@ -558,7 +729,9 @@ class LocalDatasetService:
             if (self.operation.get("_phase") == "publish"
                     and self.operation.get("status") in {"failed", "interrupted"}
                     and self.operation.get("_producer")):
-                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
+                if self.operation.get("kind") in {
+                        "ordered_source3", "native_agent_sampled", "reward_m0_pair",
+                }:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 with owner.transaction() as db:
                     held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
@@ -828,7 +1001,16 @@ class LocalDatasetService:
             owner, store, _ = self._selected()
             if tuple(request["_owner"]) != owner.identity:
                 raise BoundaryError("local_dataset", "workspace_owner_changed")
-            if request.get("kind") == "native_agent_sampled":
+            if request.get("kind") == "reward_m0_pair":
+                producer = source_identity(ROOT)
+                self._record_producer(identity, producer)
+                request["_producer"] = producer.to_dict()
+                projected, candidate = self._reward_m0_projection(owner, store, request)
+                update = {**self._reward_m0_summary(projected), "status": "preview_ready",
+                          "preview_id": uuid.uuid4().hex,
+                          "_logical_id": semantic_hash(projected),
+                          "_pair_source_id": candidate.artifact_id}
+            elif request.get("kind") == "native_agent_sampled":
                 producer = source_identity(ROOT)
                 self._record_producer(identity, producer)
                 refs, result, logical_id = self._native_agent_preview(store, request, producer)
@@ -888,7 +1070,13 @@ class LocalDatasetService:
                     raise BoundaryError("local_dataset", "publication_recovery_required")
                 if self.operation.get("_phase") != "publish":
                     raise BoundaryError("local_dataset", "publication_recovery_required")
-                if self.operation.get("kind") in {"ordered_source3", "native_agent_sampled"}:
+                if self.operation.get("kind") == "reward_m0_pair":
+                    if (not self.operation.get("_pair_source_id")
+                            or not self.operation.get("_producer")):
+                        raise BoundaryError("local_dataset", "publication_recovery_required")
+                elif self.operation.get("kind") in {
+                        "ordered_source3", "native_agent_sampled", "reward_m0_pair",
+                }:
                     if (not self.operation.get("_admission_refs")
                             or not self.operation.get("_producer")):
                         raise BoundaryError("local_dataset", "publication_recovery_required")
@@ -1135,7 +1323,9 @@ class LocalDatasetService:
                 row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
                                  (identity,)).fetchone()
             result_support: dict[str, Any] = {}
-            if request.get("kind") == "native_agent_sampled":
+            if request.get("kind") == "reward_m0_pair":
+                result_id, result_support = self._publish_reward_m0(owner, store, request)
+            elif request.get("kind") == "native_agent_sampled":
                 result_id, result_support = self._publish_native_agent(
                     owner, store, request, identity)
             elif request.get("kind") == "ordered_source3":
