@@ -166,6 +166,47 @@ namespace STS2PlatformLiveUiTests
         }
 
         [Theory]
+        [InlineData(null, "sts2.policy-runtime/status-1", false)]
+        [InlineData("text-menu-v1", "sts2.policy-runtime/status-1", false)]
+        [InlineData("text-menu-v2", "sts2.policy-runtime/status-1", false)]
+        [InlineData("native-logical-v1", "sts2.policy-runtime/agent-session-status-1", true)]
+        public async Task ModelContextWireHasOnlyTheFourDeclaredFields(
+            string? profile, string schema, bool nativeAgent)
+        {
+            Reset(); var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
+            var ready = PlatformRecordingCommandsTests.Status(null, RecordingLifecycleState.Ready);
+            owner.Status = ready with { Lifecycle = ready.Lifecycle with { SessionId = null } };
+            var request = PlatformModelPreparationV2Tests.Request(profile, schema);
+            request["recording_session_id"] = null;
+            request["source_segment_id"] = null;
+            PlatformModelContext expected = PlatformModelPreparationV2Tests.Read(request).ModelContext;
+            Assert.Equal(nativeAgent, expected.NativeAgent);
+            await using var call = new Call("/v2/tasks/prepare-model", request.ToJsonString());
+            await Queued(); STS2Connector.ConnectorMod.Queue.Drain(1);
+            Assert.Equal(HttpStatusCode.OK, (await call.Response).StatusCode);
+            JsonElement body = await call.Body();
+            JsonElement context = body.GetProperty("model_context");
+            Assert.Equal(new[] { "input_profile", "recovery_epoch", "runtime_run_id", "runtime_status_schema" },
+                context.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+            Assert.False(context.TryGetProperty("native_agent", out _));
+            Assert.Equal(schema, context.GetProperty("runtime_status_schema").GetString());
+            Assert.Equal("run-1", context.GetProperty("runtime_run_id").GetString());
+            Assert.Equal(profile, context.GetProperty("input_profile").GetString());
+            Assert.Equal(19, context.GetProperty("recovery_epoch").GetInt64());
+            // Reuse the actual HTTP producer's nested context in the production
+            // strict request codec; no test-built replacement response DTO.
+            request["model_context"] = System.Text.Json.Nodes.JsonNode.Parse(context.GetRawText());
+            Assert.Equal(expected, PlatformModelPreparationV2Tests.Read(request).ModelContext);
+            string? fixtureDirectory = Environment.GetEnvironmentVariable("STS2_TEST_MODEL_CONTEXT_FIXTURE_DIR");
+            if (!string.IsNullOrEmpty(fixtureDirectory))
+            {
+                Directory.CreateDirectory(fixtureDirectory);
+                string fixtureName = (profile ?? "generic-snapshot") + ".json";
+                await File.WriteAllTextAsync(Path.Combine(fixtureDirectory, fixtureName), body.GetRawText());
+            }
+        }
+
+        [Theory]
         [InlineData("context")]
         [InlineData("cookie")]
         [InlineData("duplicate")]
