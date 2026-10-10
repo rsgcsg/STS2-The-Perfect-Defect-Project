@@ -443,6 +443,27 @@ bind decision metadata/scores, Receipt and successor but do not archive every
 pre-decision Snapshot/Read input. Research projections and evaluation protocols
 remain external consumers' responsibility.
 
+Generic Policy Runtime successor waiting supports private, opt-in failure
+diagnostics through `RuntimeOptions.successorWaitDiagnosticSink`. The CLI enables
+this sink only when `STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS=1`, writing one
+JSON line to its existing stderr stream (captured by the local Model service's
+private `runtime.log`). Accepted waits produce no line and consume no diagnostic
+record budget. These lines are operational diagnostics, outside sealed Agent-run
+Evidence and the public status/HTTP contracts.
+
+Each failed, cancelled or throwing wait reports the existing request/decision and
+basis Snapshot IDs, poll count, monotonic elapsed time and at most 64 retained
+poll rows. Rows contain only observed Snapshot ID/sequence/status, interaction
+kind/completeness, same-basis/settling flags and a closed outcome category.
+Missing whole bundles are labelled `no_whole_bundle`; arbitrary error messages,
+Snapshot content, action operands, referents and Reads are excluded. Oversized
+strings are omitted with an explicit flag. Old rows are dropped with explicit
+counts; each JSON record is at most 32 KiB. At most 16 failure records and one
+explicit cap marker are sent per Runtime instance. Sink errors disable only
+diagnostics. The default remains off; the existing 41 attempts, 250 ms interval,
+observations, control lifecycle, strict successor checks and unknown/taint
+semantics are unchanged. Diagnostics do not establish native causal settlement.
+
 ## Continuous-operation repair candidate
 
 The source candidate keeps Auto active after a correlated `not_delivered` receipt

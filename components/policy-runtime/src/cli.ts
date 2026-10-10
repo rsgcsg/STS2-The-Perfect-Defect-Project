@@ -12,6 +12,7 @@ import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { ManagedServicePolicyClient, type ManagedTarget } from "./managed.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
 import { PolicyRuntime } from "./runtime.js";
+import { successorWaitStderrSink } from "./successor-wait-diagnostics.js";
 import { startPolicyRuntimeHttpServer } from "./server.js";
 import { AGENT_MANIFEST_SCHEMA, validateAgentManifest, type AgentManifest } from "./agent-session-contracts.js";
 import { NdjsonAgentSessionPort } from "./agent-session-port.js";
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
       autoBudget: options.autoBudget,
       runId: evidence.runId,
       evidence,
+      successorWaitDiagnosticSink: successorWaitStderrSink(process.env, line => process.stderr.write(line)),
       ...(managedClient ? { managedBindingSha256: managedClient.bindingSha256 } : {}),
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 }
     });

@@ -6,7 +6,7 @@ import { request as httpRequest, type ClientRequest } from "node:http";
 import { decodePlayerControllerLeaseResponse, type PlayerEnvironmentBoundAction, type PlayerEnvironmentCapabilities, type PlayerEnvironmentReceipt, type PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "../src/admission.js";
 import { candidateOrderDigest } from "../src/digest.js";
-import { PolicyRuntime, admitWholeDecisionBundle } from "../src/runtime.js";
+import { PolicyRuntime, admitWholeDecisionBundle, type SuccessorWaitDiagnostic, type SuccessorWaitDiagnosticSink } from "../src/runtime.js";
 import { ConnectorPolicyClient } from "../src/connector.js";
 import { DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS, NdjsonPolicyPort } from "../src/policy-port.js";
 import { decisionActionId, decisionActions, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type ConnectorAdapterClient, type ConnectorPolicyRequirements, type DecisionBundle, type PolicyConnector, type PolicyManifest } from "../src/contracts.js";
@@ -26,6 +26,171 @@ const manifest = (): PolicyManifest & { requirements: ConnectorPolicyRequirement
   support: { game_versions: ["fixture-game"], game_commits: ["fixture-commit"], interaction_kinds: ["test"], action_verbs: ["end_turn"] },
   adapter_config: {},
   claims: { full_run: false, selector: false, catalog_filtered: false, creates_action_authority: false, creates_native_operands: false }
+});
+
+describe("private successor wait failure diagnostics", () => {
+  const policy = (input: { candidate_digest: string; candidate_count: number }) => ({
+    candidate_digest: input.candidate_digest, scores: Array(input.candidate_count).fill(1), selected_index: 0
+  });
+  function fixture(queue: DecisionBundle[], sink?: SuccessorWaitDiagnosticSink, maxAttempts = queue.length - 1) {
+    let clock = 0;
+    const connector = new FakeConnector(bundle(["a"])); connector.stale = false;
+    connector.observationQueue = queue;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "diagnostic-run", policy,
+      now: () => "2026-10-11T00:00:00.000Z", monotonicNow: () => clock,
+      autoBudget: { maxSubmissions: 100, maxPolicyCalls: 100 },
+      successorPoll: { maxAttempts, baseBackoffMs: 250 }, sleep: async ms => { clock += ms; },
+      successorWaitDiagnosticSink: sink });
+    return { connector, runtime };
+  }
+  function failure(records: SuccessorWaitDiagnostic[]) {
+    expect(records).toHaveLength(1);
+    const result = records[0]!;
+    if (result.diagnostic !== "successor_wait_failure") throw new Error("expected wait diagnostic");
+    return result;
+  }
+
+  it("records actual same-basis and settling polls without extra observations or replay", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const f = fixture([bundle(["a"]), bundle(["a"]), { observation: snapshot([], "settling-3", "settling", 3), reads: [] }], record => {
+      expect(f.runtime.status().controller).toBe("released"); records.push(record);
+    });
+    const result = await f.runtime.tick();
+    expect(result.type).toBe("unknown");
+    const record = failure(records);
+    expect(record).toMatchObject({ outcome: "exhausted", poll_count: 2, max_attempts: 2, interval_ms: 250,
+      basis_snapshot_id: "snapshot-1", basis_sequence: 1, elapsed_ms: 250, rows_total: 2, rows_dropped: 0, truncated: false });
+    expect(record.polls).toMatchObject([
+      { attempt: 1, elapsed_ms: 0, snapshot_id: "snapshot-1", sequence: 1, status: "interactive", category: "same_basis", same_basis: true, settling: false },
+      { attempt: 2, elapsed_ms: 250, snapshot_id: "settling-3", sequence: 3, status: "settling", category: "settling", same_basis: false, settling: true }
+    ]);
+    expect(result.type === "unknown" && result.decision?.decision_id).toBe(record.decision_id);
+    expect(result.type === "unknown" && "request_id" in result.receipt! && result.receipt.request_id).toBe(record.request_id);
+    expect(f.connector.observeCount).toBe(3);
+    expect(f.connector.submitCount).toBe(1);
+    expect(f.runtime.status()).toMatchObject({ tainted: true, taint_reason: "successor_not_stable", controller: "released" });
+    await f.runtime.tick(); expect(f.connector.submitCount).toBe(1); expect(records).toHaveLength(1);
+  });
+
+  it("reports no_whole_bundle without asserting a cause or retaining error text", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const f = fixture([bundle(["a"])], record => records.push(record), 2);
+    vi.spyOn(f.connector, "observeBundle").mockImplementationOnce(async () => bundle(["a"]))
+      .mockRejectedValue(Object.assign(new Error("secret-detailed-frame"), { code: "stale_state" }));
+    expect((await f.runtime.tick()).type).toBe("unknown");
+    expect(failure(records).polls.map(row => row.category)).toEqual(["no_whole_bundle", "no_whole_bundle"]);
+    expect(JSON.stringify(records)).not.toContain("secret-detailed-frame");
+    expect(f.connector.submitCount).toBe(1);
+  });
+
+  it("preserves the default 41 observations and 40 intervals on failure", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const connector = new FakeConnector(bundle(["a"])); connector.stale = false;
+    connector.observationQueue = [bundle(["a"]), ...Array.from({ length: 41 }, () => bundle(["a"]))];
+    let clock = 0;
+    const sleep = vi.fn(async (ms: number) => { clock += ms; });
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy, sleep,
+      monotonicNow: () => clock, successorWaitDiagnosticSink: record => records.push(record) });
+    expect((await runtime.tick()).type).toBe("unknown");
+    expect(failure(records)).toMatchObject({ outcome: "exhausted", poll_count: 41, max_attempts: 41, interval_ms: 250, elapsed_ms: 10_000 });
+    expect(sleep).toHaveBeenCalledTimes(40); expect(sleep.mock.calls.every(([ms]) => ms === 250)).toBe(true);
+    expect(connector.observeCount).toBe(42); expect(connector.submitCount).toBe(1);
+  });
+
+  it("preserves arbitrary acquisition errors while keeping their payload out of diagnostics", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const f = fixture([bundle(["a"])], record => records.push(record), 2);
+    vi.spyOn(f.connector, "observeBundle").mockImplementationOnce(async () => bundle(["a"]))
+      .mockRejectedValue(new Error("private-frame-or-server-message"));
+    const result = await f.runtime.tick(); expect(result.type).toBe("unknown");
+    expect(result.type === "unknown" && result.error).toBe("private-frame-or-server-message");
+    expect(failure(records)).toMatchObject({ outcome: "error", poll_count: 1,
+      polls: [{ category: "acquisition_error", snapshot_id: null }] });
+    expect(JSON.stringify(records)).not.toContain("private-frame-or-server-message");
+    expect(f.connector.submitCount).toBe(1); expect(f.runtime.status().controller).toBe("released");
+  });
+
+  it.each(["human", "stop"] as const)("records %s cancellation without an extra acquisition or taint", async recovery => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const connector = new FakeConnector(bundle(["a"])); connector.stale = false;
+    connector.observationQueue = [bundle(["a"]), { observation: snapshot([], "settling-2", "settling", 2), reads: [] }];
+    let recovered: Promise<unknown> | undefined;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", policy,
+      sleep: async () => { recovered = recovery === "human" ? runtime.setMode("human") : runtime.stop(); },
+      successorWaitDiagnosticSink: record => records.push(record) });
+    expect((await runtime.tick()).type).toBe("not_admitted"); await recovered;
+    expect(failure(records)).toMatchObject({ outcome: "cancelled", poll_count: 1, rows_total: 2 });
+    expect(failure(records).polls.at(-1)).toMatchObject({ attempt: 2, category: "cancelled", snapshot_id: null });
+    expect(connector.observeCount).toBe(2); expect(connector.submitCount).toBe(1);
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: false });
+  });
+
+  it.each(["profile", "identity", "sequence"] as const)("retains strict %s rejection and only a closed diagnostic category", async kind => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const next = snapshot([], "next-identity", "interactive", kind === "sequence" ? 1 : 2);
+    if (kind === "identity") next.session.runtime_instance_id = "different-runtime";
+    if (kind === "profile") Object.assign(next, { schema: "different-profile" });
+    const f = fixture([bundle(["a"]), { observation: next, reads: [] }], record => records.push(record));
+    expect((await f.runtime.tick()).type).toBe("unknown");
+    const category = { profile: "profile_drift", identity: "environment_identity_drift", sequence: "sequence_not_newer" }[kind];
+    expect(failure(records)).toMatchObject({ outcome: "error", poll_count: 1 });
+    expect(failure(records).polls[0]).toMatchObject({ category, snapshot_id: "next-identity" });
+    expect(f.runtime.status().taint_reason).toContain(`successor_${category}`);
+    expect(JSON.stringify(records)).not.toContain("different-runtime");
+  });
+
+  it("logs exhaustion after more than 64 accepted waits without spending failure budget", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const f = fixture([], record => records.push(record), 1);
+    for (let index = 0; index < 70; index += 1) expect((await f.runtime.tick()).type).toBe("delivered");
+    expect(records).toEqual([]);
+    const basis = f.connector.current;
+    f.connector.observationQueue = [basis, basis];
+    expect((await f.runtime.tick()).type).toBe("unknown");
+    expect(failure(records)).toMatchObject({ outcome: "exhausted", poll_count: 1 });
+    expect(f.connector.submitCount).toBe(71);
+  });
+
+  it("retains the final 64 rows and exact dropped/count information on longer waits", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const f = fixture([bundle(["a"]), ...Array.from({ length: 80 }, (_, index) => ({
+      observation: snapshot([], `settling-${index + 2}`, "settling", index + 2), reads: []
+    }))], record => records.push(record));
+    expect((await f.runtime.tick()).type).toBe("unknown");
+    expect(failure(records)).toMatchObject({ poll_count: 80, rows_total: 80, rows_dropped: 16, truncated: true });
+    expect(failure(records).polls).toHaveLength(64);
+    expect(failure(records).polls[0]!.attempt).toBe(17);
+    expect(failure(records).polls.at(-1)!.attempt).toBe(80);
+    expect(f.connector.observeCount).toBe(81); expect(f.connector.submitCount).toBe(1);
+  });
+
+  it("omits oversized IDs and content while preserving the decision and taint", async () => {
+    const records: SuccessorWaitDiagnostic[] = [];
+    const basis = bundle(["a"], "private".repeat(100));
+    const next = snapshot([], "\u0001".repeat(100), "settling", 2);
+    next.interaction.kind = "private-kind".repeat(100);
+    next.interaction.content.surface.secret = "private-entire-frame";
+    const f = fixture([basis, { observation: next, reads: [] }], record => records.push(record));
+    expect((await f.runtime.tick()).type).toBe("unknown");
+    const record = failure(records);
+    expect(record).toMatchObject({ basis_snapshot_id: null, fields_omitted: true });
+    expect(record.polls[0]).toMatchObject({ snapshot_id: null, interaction_kind: null, fields_omitted: true, category: "settling" });
+    expect(Buffer.byteLength(JSON.stringify(record)) + 1).toBeLessThanOrEqual(32 * 1024);
+    expect(JSON.stringify(record)).not.toContain("private-entire-frame");
+    expect(JSON.stringify(record)).not.toContain("private-kind");
+    expect(f.connector.submitCount).toBe(1);
+  });
+
+  it.each(["absent", "throwing"] as const)("preserves bounded wait behavior with an %s sink", async mode => {
+    const sink = vi.fn(() => { throw new Error("diagnostic-sink-failed"); });
+    const f = fixture([bundle(["a"]), bundle(["a"])], mode === "throwing" ? sink : undefined);
+    const result = await f.runtime.tick();
+    expect(result.type).toBe("unknown");
+    expect(f.runtime.status()).toMatchObject({ tainted: true, taint_reason: "successor_not_stable", controller: "released", mode: "human" });
+    expect(f.runtime.status().errors.join(" ")).not.toContain("diagnostic-sink-failed");
+    expect(f.connector.submitCount).toBe(1); expect(f.connector.observeCount).toBe(2);
+    await f.runtime.tick(); expect(sink).toHaveBeenCalledTimes(mode === "throwing" ? 1 : 0);
+  });
 });
 
 const action = (id: string): PlayerEnvironmentBoundAction => ({ bound_action_id: id, verb: "end_turn", interaction_id: "interaction", arguments: [], label: id });

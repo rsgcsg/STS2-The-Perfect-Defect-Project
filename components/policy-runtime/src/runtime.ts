@@ -11,6 +11,8 @@ import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 import type { PublicStatefulPolicy, PublicStatefulPolicyDecisionInput, PublicObservationCompletion } from "./contracts.js";
 import { PublicObservationTracker, validatePublicObservationCompletion } from "./public-observation.js";
+import { SuccessorWaitDiagnostics, type SuccessorWaitCategory, type SuccessorWaitDiagnosticSink } from "./successor-wait-diagnostics.js";
+export type { SuccessorWaitDiagnostic, SuccessorWaitDiagnosticSink } from "./successor-wait-diagnostics.js";
 
 export interface RuntimeOptions {
   manifest: PolicyManifest;
@@ -25,6 +27,8 @@ export interface RuntimeOptions {
   evidence?: AgentRunEvidence;
   staleRefresh?: { maxAttempts: number; baseBackoffMs: number };
   successorPoll?: { maxAttempts: number; baseBackoffMs: number };
+  /** Private, bounded failure diagnostics; never Agent-run Evidence or action input. */
+  successorWaitDiagnosticSink?: SuccessorWaitDiagnosticSink;
   policyTimeoutMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   /** Monotonic clock used for the finite Shadow/Auto authorization. */
@@ -115,6 +119,7 @@ export class PolicyRuntime {
   private readonly policyTimeoutMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly monotonicNow: () => number;
+  private readonly successorWaitDiagnostics?: SuccessorWaitDiagnostics;
   private readonly autoBudget: AutonomyBudgetConfig;
   private get autonomyBudgetState() { return this.owner.state; }
 
@@ -147,6 +152,7 @@ export class PolicyRuntime {
     }
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.monotonicNow = options.monotonicNow ?? (() => performance.now());
+    if (options.successorWaitDiagnosticSink) this.successorWaitDiagnostics = new SuccessorWaitDiagnostics(options.successorWaitDiagnosticSink, this.monotonicNow);
     this.owner = new RuntimeLifecycleOwner(options.autoBudget, this.monotonicNow, this.mode);
     this.autoBudget = this.owner.budget;
     const started = isAutonomyMode(this.mode);
@@ -327,6 +333,7 @@ export class PolicyRuntime {
       });
     } finally {
       this.tickActive = false;
+      this.successorWaitDiagnostics?.flush();
     }
   }
 
@@ -642,7 +649,7 @@ export class PolicyRuntime {
     this.consecutiveStaleSubmissions = 0;
     this.staleSubmissionCooldown = null;
     try {
-      const successor = await this.stableSuccessor(bundle.observation);
+      const successor = await this.stableSuccessor(bundle.observation, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
         if (await this.finishAutonomyBudgetHandoffIfRequested())
           return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
@@ -751,7 +758,7 @@ export class PolicyRuntime {
     if (!deliveryRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
     else this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
     try {
-      const successor = await this.stableSuccessor(previous);
+      const successor = await this.stableSuccessor(previous, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
         if (await this.finishAutonomyBudgetHandoffIfRequested()) return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
@@ -983,35 +990,62 @@ export class PolicyRuntime {
     await this.handoffAutonomyBudget();
     return true;
   }
-  private async stableSuccessor(previous: AnyDecisionBundle["observation"]): Promise<AnyDecisionBundle["observation"] | null> {
-    for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
-      if (this.mutationCancellationRequested()) return null;
-      // One observation per attempt: do not multiply nested retry budgets.
-      const observation = await this.withManagedObservationLease(this.recoveryEpoch,
-        () => refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
-          inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep }));
-      if (observation.cancelled) return null;
-      const next = observation.value;
-      if (next) {
-        const observed = next.observation;
-        if (observed.schema !== previous.schema) throw new Error("successor_profile_drift");
-        if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
-            || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
-          throw new Error("successor_environment_identity_drift");
+  private async stableSuccessor(previous: AnyDecisionBundle["observation"], requestId: string, decisionId: string): Promise<AnyDecisionBundle["observation"] | null> {
+    const diagnostic = this.successorWaitDiagnostics?.begin({ runId: this.runId, requestId, decisionId, previous,
+      maxAttempts: this.successorPoll.maxAttempts, intervalMs: this.successorPoll.baseBackoffMs });
+    let attempt = 0;
+    let observed: AnyDecisionBundle["observation"] | undefined;
+    let category: SuccessorWaitCategory = "acquisition_error";
+    let outcome: "accepted" | "exhausted" | "cancelled" | "error" = "exhausted";
+    try {
+      for (attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
+        observed = undefined;
+        category = "acquisition_error";
+        if (this.mutationCancellationRequested()) {
+          diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
-        if (observed.snapshot_id !== previous.snapshot_id && observed.sequence <= previous.sequence) {
-          throw new Error("successor_sequence_not_newer");
+        // One observation per attempt: do not multiply nested retry budgets.
+        const observation = await this.withManagedObservationLease(this.recoveryEpoch,
+          () => {
+            diagnostic?.pollStarted();
+            return refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
+              inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
+          });
+        if (observation.cancelled) {
+          diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
-        if (observed.snapshot_id !== previous.snapshot_id && observed.status !== "settling") {
-          this.lastSnapshotId = observed.snapshot_id;
-          this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
-          this.lastReads = next.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
-          return observed;
-        }
+        const next = observation.value;
+        if (next) {
+          observed = next.observation;
+          if (observed.schema !== previous.schema) { category = "profile_drift"; throw new Error("successor_profile_drift"); }
+          if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
+              || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
+            category = "environment_identity_drift"; throw new Error("successor_environment_identity_drift");
+          }
+          if (observed.snapshot_id !== previous.snapshot_id && observed.sequence <= previous.sequence) {
+            category = "sequence_not_newer"; throw new Error("successor_sequence_not_newer");
+          }
+          diagnostic?.row(attempt, observed.snapshot_id === previous.snapshot_id ? "same_basis"
+            : observed.status === "settling" ? "settling" : "accepted", observed, observed.snapshot_id === previous.snapshot_id);
+          if (observed.snapshot_id !== previous.snapshot_id && observed.status !== "settling") {
+            this.lastSnapshotId = observed.snapshot_id;
+            this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
+            this.lastReads = next.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
+            outcome = "accepted"; return observed;
+          }
+        } else diagnostic?.row(attempt, "no_whole_bundle");
+        observed = undefined;
+        category = "wait_error";
+        if (attempt < this.successorPoll.maxAttempts && this.successorPoll.baseBackoffMs > 0) await this.sleep(this.successorPoll.baseBackoffMs);
       }
-      if (attempt < this.successorPoll.maxAttempts && this.successorPoll.baseBackoffMs > 0) await this.sleep(this.successorPoll.baseBackoffMs);
+      return null;
+    } catch (error) {
+      diagnostic?.row(attempt, category, observed, observed?.snapshot_id === previous.snapshot_id);
+      outcome = "error";
+      throw error;
+    } finally {
+      if (outcome !== "accepted") diagnostic?.finish(outcome);
     }
-    return null;
   }
 
   private async withManagedObservationLease<T>(expectedRecoveryEpoch: number,
