@@ -110,6 +110,11 @@ def test_two():
             "collection": "raise RuntimeError('original collection failure')\n",
             "skip": ("import pytest\n@pytest.mark.skip(reason='original skip')\n"
                      "def test_c():\n    pass\n"),
+            "dirty": ("from pathlib import Path\ndef test_c():\n"
+                      "    Path('tests/test_c.py').write_text('# changed source', "
+                      "encoding='utf-8')\n"),
+            "writer": ("from pathlib import Path\ndef test_c():\n"
+                       "    Path('.local/pytest-shard.tmp').mkdir()\n"),
         }[failure]
     files["python/tools/pytest_shard.py"] = (ROOT / "python/tools/pytest_shard.py").read_text(
         encoding="utf-8"
@@ -217,7 +222,9 @@ console.log(JSON.stringify(verifyPytestShards(artifact,expected,{oses:[os]})));
     assert json.loads(result.stdout)["complete"] is True
 
 
-@pytest.mark.parametrize("failure", ["subtest", "teardown", "interrupt", "collection", "skip"])
+@pytest.mark.parametrize("failure", [
+    "subtest", "teardown", "interrupt", "collection", "skip", "dirty", "writer",
+])
 def test_real_negative_outcomes_remain_original(tmp_path: Path, failure: str) -> None:
     root = golden_repo(tmp_path / "source", failure)
     code, report = run_shard(root, 1)
@@ -225,8 +232,20 @@ def test_real_negative_outcomes_remain_original(tmp_path: Path, failure: str) ->
         assert code == 0
         assert any(item["status"] == "skipped" for item in report["executed"])
     else:
-        assert code != 0 and report["invocation"]["exit_code"] != 0
+        assert code != 0
+        if failure == "writer":
+            assert report["state"] == "running"
+            assert "ended_at" not in report["invocation"]
+            assert (root / "python/.local/pytest-shard.tmp").is_dir()
+            assert b"pytest-shard.tmp" in (root / "python/.local/original-stderr").read_bytes()
+            return
+        assert report["invocation"]["exit_code"] != 0
         if failure == "collection":
             assert report["collection_errors"]
+        elif failure == "dirty":
+            assert report["source_at_start"]["dirty"] is False
+            assert report["source_at_end"]["dirty"] is True
+            assert "source changed during pytest execution" in report["errors"]
+            assert all(item["status"] == "passed" for item in report["executed"])
         else:
             assert any(item["status"] in ("failed", "incomplete") for item in report["executed"])
