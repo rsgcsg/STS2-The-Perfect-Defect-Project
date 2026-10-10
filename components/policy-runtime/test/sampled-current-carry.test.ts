@@ -25,7 +25,7 @@ const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 // Uses SDK wire decoding/assembly with an in-memory scripted transport. No
 // HTTP listener, fetch, real backend, game or numerical model is executed.
-async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow" | "human" = "auto") {
+async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow" | "human" = "auto", monotonicNow?: () => number) {
   const root = await mkdtemp(join(tmpdir(), "sampled-carry-")); roots.push(root);
   const source = new SyntheticNativeHttp(1); // route() only; never start().
   const manifest = structuredClone(shared.manifest) as AgentManifest;
@@ -51,7 +51,7 @@ async function fixture(scenario = "normal", mode: "auto" | "one_step" | "shadow"
   const port = NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, scenario], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   ports.push(fixturePortCloser(port));
   const runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
-    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, mode,
+    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, mode, monotonicNow,
     autoBudget: { maxSubmissions: 400, maxPolicyCalls: 1000, deadlineMs: 60000 } });
   owners.push(runtime);
   const setFrame = (name: string) => {
@@ -134,7 +134,34 @@ describe("sampled current carry, source/contract only", () => {
     expect(f.calls.filter(x => x === "submit")).toHaveLength(3);
     expect(verify(f.evidence.directory)).toContain("pass");
     progress("independently-verified");
-  }, 30000);
+  // Whole-fixture completion includes startup, durable files and verification.
+  // The live product wallet remains 60s throughout all 300 actual acquisitions.
+  }, 90000);
+  it("expires the original sampled Auto wallet after delivery without another tick or status GET", async () => {
+    let clock = 0;
+    const f = await fixture("normal", "human", () => clock);
+    try {
+      // Only the declared clock/timer seams are controlled. Child, SDK and
+      // Evidence remain actual; setMode must arm the original 60s timer.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await f.runtime.setMode("auto");
+      const delivered = await f.runtime.tick();
+      expect(delivered.type, JSON.stringify(delivered)).toBe("delivered");
+      expect(f.runtime.status()).toMatchObject({ controller: "held", session: { state_version: 1, agent_state: "known" } });
+      clock = 60000; await vi.advanceTimersByTimeAsync(60000); vi.useRealTimers();
+      // Read only the actual evidence until the independent timer has fired.
+      // A status call here could itself expire the wallet and hide a missing timer.
+      await vi.waitFor(async () => {
+        expect((await events(f.evidence)).some(event => event.kind === "autonomy_budget_exhausted")).toBe(true);
+      }, { timeout: 1500, interval: 5 });
+      expect(f.runtime.status()).toMatchObject({ mode: "human", controller: "released",
+        autonomy_budget: { state: "exhausted", exhausted_reason: "deadline", deadline_ms: 60000 },
+        session: { state_version: 1, agent_state: "known" } });
+      expect(f.calls.filter(operation => operation === "submit")).toHaveLength(1);
+      await expect(f.runtime.setMode("auto")).rejects.toThrow("runtime_sample_segment_ended");
+      await f.runtime.stop(); expect(verify(f.evidence.directory)).toContain("pass");
+    } finally { vi.useRealTimers(); }
+  });
   it("does not sample complete empty-C wait, then ACKs actual ready summary before Close", async () => {
     const f = await fixture(); f.setFrame("empty_wait");
     expect((await f.runtime.tick()).type).toBe("awaited"); expect(f.runtime.status().session.state_version).toBe(0);

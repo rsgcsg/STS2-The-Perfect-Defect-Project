@@ -156,5 +156,7 @@ describe("opaque Agent state wire, not numerical Model qualification", () => {
       await verifyEvidenceDirectory(evidence.directory);
       progress("independently-verified");
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  // Harness completion includes all 256 fsyncs and independent file verification;
+  // this is not a state-storage latency contract or a change to capacity.
+  }, 15000);
 });

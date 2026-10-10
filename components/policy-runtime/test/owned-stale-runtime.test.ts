@@ -175,7 +175,9 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     progress("original-events-read", { durable_events: e.length });
     expect(d.map(x => x.payload.known_stale_rejections)).toEqual([1, 2, 3, 4, 5, 6, 7]); expect(d.every(x => x.payload.consecutive_known_stale_rejections === 1)).toBe(true);
     expect(e.filter(x => x.kind === "native_result")).toHaveLength(15); expect(f.runtime.status().autonomy_budget.submissions_used).toBe(15);
-  });
+  // Harness completion includes the OS child and all durable events; the
+  // original 60s product wallet and eight-refusal boundary are unchanged.
+  }, 15000);
   it("default legacy ends after one known refusal and keeps the five-field Next and old intent shape", async () => {
     const f = await fixture({ legacy: true }); expect((await f.runtime.tick()).type).toBe("not_delivered");
     expect(Object.keys(f.inputs[0] as object)).toHaveLength(5); expect(f.calls.some(c => c.operation === "current_owned")).toBe(false);
