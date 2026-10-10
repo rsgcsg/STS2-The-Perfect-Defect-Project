@@ -59,18 +59,27 @@ one frozen candidate. Independently review the actual source, fixtures, claims a
 checks before acceptance. Root owns the sole heavy local slot and shared BOM/version
 edits. Reviewers may inspect disjoint material, not run duplicate heavy suites.
 
-Complete the previously aborted local full root test on the frozen candidate,
-preserving every stage, skip, failure and exit. Publish one batched candidate to the
-existing draft PR for its required fresh Linux/Windows source CI; do not run that
-full CI concurrently with identical local full execution. Any game-bound C# change
-also needs exact-game/clean artifact identity before claiming a native fix.
+Freeze the independently reviewed candidate and complete its relevant local
+repository/source checks, changed producer-to-reader regressions, exact-game clean
+build and Host checks. Record any unchanged-component reuse with its actual
+source/contract/lock and executed evidence; do not relabel an old workspace result
+as a fresh full check. Publish one batched candidate for current full Linux/Windows
+source CI. Full dual-OS and portable remain mandatory before merge or portability
+and stronger promotion claims.
 
-After these prerequisite levels pass, one bounded fresh native verification may
+After the named local prerequisites pass, one bounded fresh native verification may
 exercise the repaired continuous Current/owned capture path through the owning
 Host/Game Mod tools. Freeze its target, budget, original-predecessor joins and
 distinct fresh-world/runtime IDs before starting. Reconcile the retained same-state
 UNKNOWN history; never resume/retry Native8. Installation, cold load and rollback
 are candidate-test prerequisites, not release promotion or research qualification.
+The local diagnostic may overlap remote CI on the same frozen candidate in
+isolated runners. Root must not rebuild local SDK/Runtime output, change source or
+start another local heavy writer while the native consumer uses those inputs.
+Replace the old blanket CI-success launch guard with an independently reviewed
+exact-candidate local prerequisite receipt; retain actual CI status separately.
+A newly verified failure in those local dependencies blocks launch or invokes the
+existing safe Stop. An unrelated CI failure still blocks merge and remains failed.
 
 Owner clarification on 2026-10-10: the round's final test is **one fresh real
 native test targeting 100 known deliveries**. Reaching 100 is not required for
@@ -128,8 +137,9 @@ reviews original source and full affected diff, owns shared identities and freez
 one repaired candidate. Preserve all required assertions or explicitly correct an
 invalid promise with independent reference/consumer evidence; never merely change
 a hash, extend a deadline, skip a failing case or add consumer legality. Existing
-full dual-OS aggregate, exact-game/build/install/load and rollback requirements
-remain. A failed prerequisite stays failed until its owning correction is verified.
+full dual-OS aggregate for merge and relevant exact-game/build/install/load and
+rollback requirements remain. A failed prerequisite stays failed until its owning
+correction is verified.
 
 Current evidence supports narrow owner/test-orchestration repairs, not replacing
 the overall architecture. Native8 establishes missing public card binding but
@@ -167,8 +177,42 @@ network refusals. Pytest now prints reached test names and uses its built-in
 extended deadline, weaker coverage or established hosted fix.
 
 Independently review the focused repair and assembled candidate, then complete
-its selected current gates. Broader speed/routing proposals do not waive this
-packet's required full dual-OS, exact-game/identity and native prerequisites.
+its selected current gates. The owner's later sequencing questions exposed that
+Root's earlier all-CI-before-native arrangement was stronger than the actual local
+diagnostic dependency. The reviewed TESTING scheduling policy and named local
+receipt now govern that launch; full dual-OS still governs merge and portability.
 Preparation failures do not consume the one real target-100 attempt, which stays
-unstarted until those prerequisites pass. The final report distinguishes tested
+unstarted until its actual local prerequisites pass. The final report distinguishes tested
 source, built/installed/loaded artifact and the actual native outcome.
+
+## Current repairs, cost and the wider endpoint
+
+Original cb60 CI38046676768 remains cancelled/failed: Windows recorded 15 failures,
+3377 ordinary passes, 70 subtests and 37 skips before interruption; eight later
+owners were blocked. The first-fact corrections are locale-dependent fixture
+pipes, the native Agent stdio owner, an unsupported SDK wire-count assumption and
+an unbound checkpoint-notification timing assumption. Their independent source
+reviews and focused results do not yet establish hosted portability or native
+success. Original logs, counts and unknown attribution remain unchanged.
+
+Hosted pytest now has a separately reviewed two-leaf-per-OS implementation with
+unchanged cases, nonpytest/owner gates and 55-minute per-leaf budget. The aggregate
+requires original complete collection, disjoint exhaustive selection and actual
+terminal execution/source proof. Its first real execution must measure completion
+and cost; historical partition estimates are not a speedup receipt.
+
+The [engineering feedback](../evidence/ENGINEERING_DEVELOPMENT_FEEDBACK_2026-10-10.md)
+records the lessons and their canonical owners. The wider selected endpoint in
+the [G2/V1 packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) is 100–300 admitted real
+choices, fixed-data new training/checkpoint/Model, export/register/load and a fresh
+learned Agent progressing to natural summary with visible identity and confirmed
+Stop. This diagnostic's delivery count does not automatically become N or that
+larger closure.
+
+Current Teacher code differs from its frozen producer relation. An append-only
+reviewed exact relation and original stopped-run admission/coverage are the next
+data dependencies; do not rewrite old tuples or pad counts with duplicated
+Source3/direct/historical/synthetic records. A Source-off archive may be explicitly
+admitted later only if its original evidence and matching accepted relation qualify.
+Keep the current diagnostic's one-attempt/stop boundary; subsequent collection,
+fit or learned game uses the wider task's separately explicit stage and budget.

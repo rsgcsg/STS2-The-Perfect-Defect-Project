@@ -174,6 +174,29 @@ recoverability. The exact distinction depends on the domain; require the source
 and consumers to preserve it before treating a convenient status label as a
 universal fact. Historical hashes and outcomes stay immutable.
 
+### Match investment to the delivery
+
+In the existing task/PR, state the contribution to the current delivery, the
+observable completion boundary, the cheapest faithful falsifying experiment and
+the relevant time/resource budget. A dependency follows the fact its consumer
+needs; a merge gate is not automatically a launch prerequisite for every isolated
+development diagnostic. TESTING owns execution and evidence requirements.
+
+After a failed experiment, name the new evidence before repeating an expensive
+gate. Discard falsified explanations. Repeated failure of the same guarantee,
+correct participants that cannot express the required behavior, recurring
+cross-owner reconstruction, growing case-specific exceptions, or measured
+compatibility/maintenance cost activate the existing L3 boundary review. Many
+unrelated failures or slow CI alone do not prove an architecture defect.
+
+Compare continued repair, contract revision, responsibility changes and an
+explicitly narrower/deferred scope by useful behavior, consumer compatibility,
+migration/rollback and recurring validation/operation cost. Separate necessary
+integrity and safety from convenient assumptions, including unnecessarily coupled
+identities or schedules. Do not preserve an abstraction solely because it exists,
+or redesign it without a real counterexample. A revised scope remains visibly
+incomplete against the original goal; it never turns unknown into success.
+
 ## 4. Causal change and abstraction admission
 
 Prefer the smallest **clean causal change**, not the smallest textual diff. A
