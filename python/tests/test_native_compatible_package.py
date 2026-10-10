@@ -159,6 +159,39 @@ def target_producer():
     return Producer(COMPATIBILITY_REPOSITORY, "b" * 40, TARGET_LOCK_SHA256)
 
 
+def test_actual_managed_workbench_migration_uses_writable_owner_and_preserves_readonly_inspection(
+    original, tmp_path, monkeypatch
+):
+    from spireagent.storage.store import copy_artifact
+    from spireagent.workbench import local_model_export as application
+    from spireagent.workbench.developer import ProjectConfig
+    from spireagent.workbench.local_dataset import LocalDatasetService
+    from spireagent.workbench.managed_local_workspace import create_managed_workspace
+
+    source, old, _, raw = original
+    state = tmp_path / "managed-state"
+    state.mkdir()
+    create_managed_workspace(state)
+    config = ProjectConfig(state, "", "", None, {})
+    _, target, _ = LocalDatasetService(config)._selected()
+    copy_artifact(source, target, old.artifact_id)
+    service = application.LocalModelExport(config)
+    monkeypatch.setattr(application, "source_identity", lambda root: target_producer())
+    reader = service._source(old.artifact_id)
+    assert reader.blobs.readonly
+    service.start(old.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
+    service.thread.join(timeout=10)
+    assert not service.thread.is_alive()
+    operation = service.status()["operation"]
+    assert operation["status"] == "completed", operation
+    derived = target.get_manifest(operation["derived_model_id"])
+    assert derived.parent("original_model") == old.artifact_id
+    assert reader.blobs.readonly
+    assert target.get_manifest(old.artifact_id).to_bytes() == old.to_bytes()
+    path = service.verified_for_registration(derived.artifact_id)
+    assert (path / owner.WEIGHTS_NAME).read_bytes() == raw
+
+
 def package_for(store, artifact):
     return decode_json(b"".join(store.read_payload(artifact.payload("package_manifest"))))
 

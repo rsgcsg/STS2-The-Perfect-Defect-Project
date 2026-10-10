@@ -46,6 +46,9 @@ def service(tmp_path, monkeypatch):
     )
     selected = owner.LocalModelExport(ProjectConfig(state, "", "", None, {}))
     monkeypatch.setattr(selected, "_workspace", lambda: SimpleNamespace(store=store))
+    # This unit fixture covers journal ordering only. The managed-workspace
+    # regression exercises the real marker-bound publication selector.
+    monkeypatch.setattr(selected, "_native_publication_store", lambda reader, original: store)
     monkeypatch.setattr(owner, "require_native_models", lambda *args: None)
     monkeypatch.setattr(owner, "source_identity", lambda root: target)
     module = ModuleType("stpd.policy.native_structured_export")

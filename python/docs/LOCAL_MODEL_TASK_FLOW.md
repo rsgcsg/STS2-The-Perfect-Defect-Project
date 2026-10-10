@@ -15,6 +15,11 @@ and verification path, preserving any previous completed original receipt.
 The existing clean-source identity owner captures the committed source/lock
 producer and revalidates it immediately before derived publication intent;
 dirty source or a changed producer fails before any derived publication.
+Workspace inspection and download caches remain read-only. Explicit compatible
+publication opens a writable store through the existing Dataset workspace owner,
+requiring the same marker-bound root and original Model bytes as the reader.
+Missing ownership, mismatched roots or read-only publication access rejects
+before derived intent; method names alone never establish write authority.
 An interruption after publication intent remains pending/unknown. A caller may
 explicitly reconcile the recorded derived ID if its CAS Manifest exists; it
 cannot automatically repeat the original migration or infer publication from
