@@ -177,12 +177,13 @@ zero consumption/submissions and Host exited0 unforced. The137-source→fit/expo
 registration/load→fresh learned-choice chain is verified at this narrow scope;
 no Commit, causal successor, natural summary, strategy quality or full G2 is implied.
 
-Public M2 `17eb…` old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
-including a complete31-candidate catalog and whole32 rejection before W write. Root
+Public M2 `17eb…` old/current `e302…`/`31cc…` fixed-sequence parity passed all scores,
+W, cache and reset, including a complete31-candidate catalog and whole32 rejection before W write. Root
 checked raw outputs for exact equality across five named cases;31 is not sequence length.
 Stage1 cache-lock-race correction `b57e4286` is independently accepted and normally
-merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 and an actual M2
-game run remain unimplemented/unproved.
+merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 was not integrated at that checkpoint; later source acceptance is recorded
+below. An actual M2 game run was unproved at that checkpoint; the later bounded canary
+is recorded below.
 
 ### Current rc28 source and consumer prerequisites
 
@@ -286,14 +287,135 @@ No Source3 recording, admission, training,
 Human origin, natural summary, quality or full G2/V1 is claimed. Known delivery is
 not execution/effect/Commit, and the failed/censored old attempts are unchanged.
 
-Next is faithful Public M2 Port4 restoration and evidence-led work on continuous
-native v2/learned use and the observed legacy loop, with separate new identities
-and reviewed prerequisites. Preserve source/generated output while each consumer
-runs and never automatically retry unknown delivery. Obtain fresh selected CI for
-the coherent reviewed source batch. Faithful restoration remains required;
-comparison use does not block independent ready work. Retain10k meaningful data,
-full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons and
-user approval. Each stage keeps its own exact evidence level.
+### Formal SDK and Public M2 source checkpoint
+
+The latest candidate at this update is Root `1a709a67`, following metadata/BOM
+`00ba9f38`; these source/install facts are separate from the original native runs.
+Mod rc40 compiled/installed bytes remain unchanged. Current hosted
+CI[38081058032](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38081058032)
+for topic `0a4129f4` is completed/failure: Linux1 and Windows1 failed, the other
+two leaves passed, and portable failed. Tested merge `c4b1bd0a` has that topic's
+same tree, not the new candidate. Four actual Python SDK consumers encountered
+the old formally locked Evidence rc27 reader, which lacks the new v2 contract;
+a manually installed newer wheel had not fixed the ordinary setup. The fifth
+shared Python failure was a SQLite fault fixture whose callback omitted the new
+Task keyword, so it raised the wrong TypeError before exercising the intended
+storage fault. Windows1 also hit the5s outer policy2 fixture bound; the checkpoint/
+Teacher-Close repairs themselves passed. Original failures and skipped/blocked
+stages remain, not a current green result.
+
+The reviewed correction fixes that first owning dependency: `39b241ec` pins formal
+Evidence Git `ba05adce73d067f4fb400fb2ac3af6a2b2279a80`, rc29. Original lockSHA
+`46eb838668b984bc4f0cab203a7b3c759115cf05fe2107b21a1730dd9808feea` is retained;
+new lockSHA `6a14b4e84cd6317f474c0d247a7a99138d21e8f300b8f3c42199db5e5f270cd3`
+changes only Evidence and the root exact requirement among109 package records,
+with other packages/markers/top fields unchanged. Ordinary locked setup succeeded;
+actual Git direct_url and28 installed Python files match that exact source.
+This is formal installed-reader evidence, not borrowed manual-wheel proof.
+The separately reviewed two-file fixture correction `c27902f5`, normally merged
+at `12178ee9`, restores SQLite fault injection and the15s outer integration
+allowance; original60s product deadline, stale/pressure/state assertions remain.
+Its focused local results do not prove the next Windows/whole CI result.
+
+Public M2 baseline/transport/capability and explicit Task source were independently
+accepted and normally integrated, including Task commit `1782204a` via `704c6cb6`.
+The baseline preserves generic Snapshot Port4, complete C and once-per-qualified-
+ordinal W/cache/reset semantics; control previous-action metadata is not a neural
+feature. Optional Task composition consumes a normal terminal observation once,
+then returns program-owned zero scores/None without another W update. The Task
+rule is ready-standard-summary; the bounded policy segment describes continuity,
+not proof of a completed standard game. Current locked Root checks passed
+240 tests/62 subtests and the shared installer/model group216/one skip; the earlier
+incorrect test-file collection invocation remains. Earlier rc29 Runtime408/three
+skips and Evidence369 retain their own executed head/scope.
+
+Actual original Model `17ebf91…` parity was rerun at `00ba9f38` against its immutable
+original payload: final output SHA
+`9c8610639a01783bb54b53d1af17f043bba450639d2ec25f6c60014dec62da21`
+is byte-identical to the historical/a405 output. The five named W0/cache/new-ordinal/
+new-segment/complete31-candidate cases and whole32 refusal before W write retain
+NN digest `8e27fba3…`, epoch1 and run_complete=false. This is actual numerical compatibility, not new training; the subsequent real
+Public M2 canary is a separate receipt below.
+
+Runtime rc29 was built from clean `00ba9f38`, archive
+`b91b75cb20a45a2f24eea71ca391c15a22c614bb7b2a0ac98bff1c1f168ff716`, content
+`859522011ed8f37e2a45592aa9e481ba730c3985c25465ba68b2f70d7e8c770c`, source
+`c27902f5`. The reviewed common-config pin is committed at `1a709a67`; the ordinary
+offline installer completed runtime_installed, activated=false/loaded=false in the
+existing private M0 state. Its first CLI invocation omitted the project and exited2
+before mutation; blank original and corrected terminal receipt both remain.
+No new native/loaded-game qualification follows from installation. No new Mod build
+is needed for these source/package changes because the compiled Mod bytes are unchanged.
+
+The formal lock upgrade also makes the original strict8eb package correctly reject
+current loading with `package_identity_mismatch`. Its earlier genuine fit/export/
+C13 choice and stop/reopen qualify only the original lock/source/package tuple.
+Original package/weights/history are unchanged. Root verified its actual original
+source and locked environment, tensor/recurrent baseline, but no migrated current
+package or current-lock parity has been accepted. Explicit compatibility migration
+is in progress: retain original Model/package parent and training producer, use a
+new export/runtime identity, and prove the closed Evidence-only dependency change
+plus numerical/input/state parity. Do not silently bypass old strict validation,
+rewrite the training lock, fit again for an identity repair or accept arbitrary drift.
+
+The closed compatibility source was independently accepted and normally merged at
+`e40…`, with56 integrated tests passing, but actual migration operation `f665…`
+interrupted after journalling derived intent `be827…`. At Root's read-only check,
+the new derived manifest/export were absent; original8eb/package/history remained
+unchanged and no automatic retry occurred. This does not prove the derived manifest
+was never published or turn intent into a derived artifact. Diagnosis traced
+`_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
+`hasattr(publish)` had not established write capability. The author is repairing the
+owning mutable-publication/managed-workspace seam and explicit original-operation
+reconciliation before another action. Current compatible-package publication and
+current-environment parity remain blocked, despite accepted source/tests.
+
+Paired Reward source correction `6df…` is independently accepted and normally
+merged at `134b0a4c`; current-lock integration passed78 tests in52.15s. The current
+locked ordinary synthetic N4/two-arm/two-step pause/resume fixture also passed8.79s;
+the earlier `dcd42982` unlocked fixture and failed/corrected run retain their scopes.
+No real S01 cohort freeze/use/fit, held-out comparison, deployable export or online
+Read adapter is claimed. Root's later local repository gate failed in the existing
+owned-process cancellation fixture with kill EPERM; bounded diagnosis is pending.
+Unchanged earlier code/pass does not erase this failed local gate or establish a
+game defect. Source/synthetic acceptance is not a real training comparison or full
+current gate.
+
+### Bounded original Public M2 native canary
+
+At frozen `1a709a67`, the common owner completed original17eb export operation
+`b0ab6c1b6205459dab90adaa4c10b53f`, packageSHA prefix `b8756a20…`, preserving
+epoch1/run_complete=false and original weights. No new fit occurred. The distinct
+registered selection `local-public-m2-c79e4f2fcfe347e2bf42d238bdf276a6` loaded through
+Runtime rc29/Mod rc40, then performed OneStep without Shadow or retry.
+First run `run-984f57ce-242a-4c4a-8769-d1427433b0f4` has one public observation,
+ordinal1 with empty previous-action control metadata, C1 map candidate and actual
+NN score `-0.19644924998283386`, selected index0/original handle, delivered Receipt.
+Independent installed-SDK/site-package verification and adapter attestation accept
+its ten-event typed evidence content ID prefix `fa0ac977…`. This is source-bound
+first-step scoring; the live W tensor is not recorded or independently observed.
+
+Stop released control, fresh Human-mode reopen created
+`run-d125b4cc-b79d-460b-9ee1-2687c42ab5af`, and a second Stop again released it;
+its one-event stopped evidence content ID prefix `200e67be…` has zero observations/
+submissions. Signed Host `617e5832ad634f26bd610aa67a7cc2d0` shutdown returned HTTP200,
+exit0/unforced; final Model is stopped/not loaded. The immediate Receipt successor
+was a settling map; later interactive combat/C6 was separately observed. Neither
+is causal S' or execution/effect/Commit proof. Review accepts this bounded original-
+model service/game restoration, not whole-game strategy, natural summary, Human,
+new learning or full G2/V1/current CI qualification.
+
+Next is separately reviewed Public M2 Auto preparation and a bounded autonomous
+attempt; it is private preparation, not yet started or a result. Preserve original
+partial identity and actual ordinal/history. Do not borrow M0 Shadow/reopen as M2
+W evidence. In parallel, finish explicit native8eb compatibility migration and Paired Reward
+proof repairs. Candidate artifact publication/export may precede the actual
+current-environment parity; accepted registration/gameplay use follows that proof,
+not merely publication. Real cohort work follows its own source/use acceptance. Obtain fresh selected CI for one coherent
+reviewed source batch. Preserve source/generated output under each consumer and
+never automatically retry unknown delivery. Faithful restoration and10k meaningful
+data, full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons
+and user approval remain required. Each stage keeps its exact evidence level.
 
 ## Historical baseline and authority
 
