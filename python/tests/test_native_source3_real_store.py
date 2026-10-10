@@ -6,12 +6,10 @@ final/report family, Evidence source fallback, game, data admission or training.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import importlib.metadata
 import json
 import socket
-import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -69,33 +67,9 @@ class RealStoreCollectionTests(unittest.TestCase):
         policy = self.request.policy()
         actual_descriptor = module.descriptor(execution_policy=policy)
         frozen_descriptor = json_bytes(actual_descriptor)
-        frozen_policy = json_bytes(policy)
-        descriptor_sha = hashlib.sha256(frozen_descriptor).hexdigest()
-        production_relation = module.closed_collection_producer(actual_descriptor, policy)
-        if list(sys.version_info[:3]) != [3, 11, 15]:
-            self.assertIsNone(production_relation)
-
-        # Explicit test-only exact SYN promotion seam, not a new production
-        # producer admission or a forged Python/lock/code-file provenance tuple.
-        relation = {
-            "schema": "spireagent/test-synthetic-contract-relation-1",
-            "id": "SYN_contract_only_" + descriptor_sha,
-            "production_admitted": False,
-        }
-
-        def exact_synthetic_relation(candidate, selected_policy):
-            if (
-                json_bytes(candidate) == frozen_descriptor
-                and json_bytes(selected_policy) == frozen_policy
-            ):
-                return copy.deepcopy(relation)
-            return None
-
-        altered = copy.deepcopy(actual_descriptor)
-        altered["runtime_provenance"]["python_version"] = [0, 0, 0]
-        self.assertIsNone(exact_synthetic_relation(altered, policy))
-        self.assertIsNone(exact_synthetic_relation(actual_descriptor, None))
-        self.mock(module, "closed_collection_producer", exact_synthetic_relation)
+        self.assertIsNone(module.closed_collection_producer(actual_descriptor, policy))
+        # Source-off uses actual actor identity and public terminal accounting;
+        # no synthetic research-admission relation substitutes for production.
 
         def preflight(config, request):
             request.validate()
@@ -110,7 +84,7 @@ class RealStoreCollectionTests(unittest.TestCase):
                 "fresh_episode_boundary": None,
                 "promotion_gate": {
                     "installed_terminal_summary_available": True,
-                    "closed_producer_relation": copy.deepcopy(relation),
+                    "closed_producer_relation": None,
                 },
             }
 
@@ -131,6 +105,11 @@ class RealStoreCollectionTests(unittest.TestCase):
         self.assertEqual(self.children[0].process.poll(), 0)
         report_path = self.request.output / "report.json"
         self.assertEqual(json.loads(report_path.read_bytes()), result)
+        self.assertEqual(
+            (self.request.output / "teacher-code-artifact.json").read_bytes(), frozen_descriptor
+        )
+        self.assertEqual(result["options"]["teacher_descriptor"], actual_descriptor)
+        self.assertIsNone(result["promotion_gate"]["closed_producer_relation"])
         proof = json.loads((self.request.output / "real-chain-producer-proof.json").read_bytes())
         diagnostic = self.failure_diagnostic(result, proof)
         self.assertEqual(proof["endpoint"], self.config.platform_url, diagnostic)

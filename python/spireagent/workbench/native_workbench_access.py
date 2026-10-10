@@ -78,7 +78,7 @@ def private_bytes(path: Path) -> bytes:
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_size > MAX_PRIVATE_BYTES
-        or (os.name != "nt" and (before.st_mode & 0o077 or before.st_uid != os.getuid()))
+        or (sys.platform != "win32" and (before.st_mode & 0o077 or before.st_uid != os.getuid()))
     ):
         raise fail("private_native_file_required")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))

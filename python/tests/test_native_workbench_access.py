@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -184,8 +185,13 @@ def test_private_reader_rejects_symlink_ancestors_duplicate_keys_and_size(tmp_pa
         with pytest.raises(ValueError, match="duplicate_json_key"):
             NativeBootstrap.read(root, app.config_path)
         (root / "native-access.json").chmod(0o644)
-        with pytest.raises(BoundaryError, match="private_native_file_required"):
-            private_bytes(root / "native-access.json")
+        if sys.platform == "win32":
+            # Windows has no POSIX uid/mode contract; the launcher selection
+            # itself remains unsupported there rather than inventing an ACL check.
+            assert private_bytes(root / "native-access.json") == b'{"schema":"a","schema":"b"}'
+        else:
+            with pytest.raises(BoundaryError, match="private_native_file_required"):
+                private_bytes(root / "native-access.json")
     finally:
         app.close()
 

@@ -6,7 +6,10 @@ import ast
 import copy
 import io
 import json
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -148,6 +151,42 @@ class TeacherAgentTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_actual_child_owns_strict_utf8_wire_despite_cp1252_stdio_locale(self):
+        identity = "\u00e9/e\u0301/\u4f60\u597d/\U0001f409"
+        message = {
+            "schema": module.SESSION_SCHEMA,
+            "message_type": "next",
+            "session_id": identity,
+            "recovery_epoch": 0,
+            "request_id": "locale-next",
+            "input": next_input(self.agent),
+        }
+        command = [sys.executable, "-m", "stpd.policy.native_teacher_agent",
+                   "--manifest", str(self.path)]
+        environment = {**os.environ, "PYTHONPATH": str(REPO / "python"),
+                       "PYTHONIOENCODING": "cp1252:strict"}
+        result = subprocess.run(
+            command,
+            input=json_bytes(message), capture_output=True, timeout=10,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b"")
+        self.assertNotIn(b"\r", result.stdout)
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([reply["message_type"] for reply in replies], ["ready", "query"])
+        self.assertEqual(replies[1]["session_id"], identity)
+        self.assertIn(identity.encode("utf-8"), result.stdout)
+        self.assertEqual(result.stdout, b"".join(json_bytes(reply) for reply in replies))
+        invalid = subprocess.run(
+            command,
+            input=b"\x90\n", capture_output=True, timeout=10,
+            env=environment,
+        )
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn(b"UnicodeDecodeError", invalid.stderr)
+        self.assertEqual(len(invalid.stdout.splitlines()), 1)
 
     def consume(self, value):
         before = next_input(self.agent)

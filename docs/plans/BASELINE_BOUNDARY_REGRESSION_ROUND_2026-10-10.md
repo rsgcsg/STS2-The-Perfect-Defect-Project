@@ -42,12 +42,15 @@ is authorized here; record its actual stages and terminal outcome independently.
 The portable full-chain fixture uses actual Python parent/OwnedPipeChild, Node
 collector, C# Store/Projector, HTTP SDK, Runtime/program Teacher and installed public
 Evidence API. Host/control/native action execution are explicitly synthetic.
-Production collection promotion additionally pins one exact interpreter/producer
-tuple. CI Python patch versions are not that tuple: its gate must not be relaxed or
-their provenance falsified. This fixture may inject a clearly synthetic promotion
-relation only for its frozen actual descriptor/code hash and unchanged policy;
-any mismatch returns no relation. That test prerequisite establishes no production
-admission, supported runtime range, real N, Human origin or research permission.
+Source3 recording and research promotion retain their exact frozen producer
+relation. CI interpreter versions or a repaired adapter are not that old tuple;
+neither its provenance nor admission is rewritten. The current Source-off short
+chain and real diagnostic require the exact preflight/current descriptor, written
+artifact, manifest/Runtime/source bindings and installed public terminal-counter
+verifier. They report no research relation or admission and do not inject a
+synthetic promotion seam. Source-on still rejects an unqualified producer before
+App/Host/output side effects. This separation establishes no real N, Human origin,
+supported producer range or research permission.
 
 ## Execution and completion boundary
 

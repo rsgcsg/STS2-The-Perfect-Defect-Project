@@ -167,9 +167,9 @@ class CarrierRecoveryTests(unittest.TestCase):
     def test_unicode_checksum_aliases_are_rejected(self) -> None:
         source = self._bundle()
         checksums = source / "checksums.sha256"
-        checksums.write_text(checksums.read_text()
+        checksums.write_text(checksums.read_text(encoding="utf-8")
                              + "a" * 64 + "  raw/e\u0301.json\n"
-                             + "a" * 64 + "  raw/\u00e9.json\n")
+                             + "a" * 64 + "  raw/\u00e9.json\n", encoding="utf-8")
         with self.assertRaisesRegex(recovery.CarrierRecoveryError, "duplicate_path_alias"):
             self._recover(source)
 

@@ -396,7 +396,9 @@ class CollectionTests(unittest.TestCase):
         if request.execution_policy is not None:
             prepared["promotion_gate"] = {
                 "installed_terminal_summary_available": True,
-                "closed_producer_relation": {"id": "synthetic_closed_relation"},
+                "closed_producer_relation": (
+                    {"id": "synthetic_closed_relation"} if request.record_source3 else None
+                ),
             }
         return prepared
 
@@ -458,6 +460,52 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(report["admission"], "not_run")
         self.assertTrue(all(value["schema"] == module.OWNED_PIPE_SCHEMA for value in self.messages))
 
+    def test_v3_source_off_diagnostic_retains_exact_actor_and_public_counter_proof(self):
+        summary, verified = self.owned_proof(), []
+        self.request = replace(self.request, record_source3=False)
+
+        def verifier(directory, expected, policy):
+            verified.append((directory, expected, policy))
+            return copy.deepcopy(summary)
+
+        with patch.object(module, "closed_collection_producer", side_effect=AssertionError(
+            "Source-off cannot obtain authority from a research-admission relation"
+        )):
+            report = self.run_collection(terminal_verifier=verifier)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(len(verified), 1)
+        self.assertEqual(report["terminal_summary"], summary)
+        self.assertEqual(report["promotion_gate"]["closed_producer_relation"], None)
+        self.assertEqual(report["options"]["teacher_descriptor"], module.descriptor(
+            execution_policy=self.request.policy()))
+        self.assertEqual(self.commands, [])
+        self.assertIsNone(report["source_start"])
+        self.assertIsNone(report["eligible_unique_N"])
+        self.assertEqual(report["admission"], "not_run")
+
+    def test_v3_preflight_actor_drift_is_rejected_with_and_without_source_before_side_effects(self):
+        self.owned_proof()
+        for record_source in (True, False):
+            self.request = replace(self.request, record_source3=record_source)
+
+            def changed_preflight(config, request):
+                prepared = self.preflight(config, request)
+                prepared["options"]["teacher_descriptor"]["adapter"]["code_sha256"] = "0" * 64
+                return prepared
+
+            with self.subTest(record_source=record_source), self.assertRaisesRegex(
+                BoundaryError, "collection_teacher_preflight_changed"
+            ):
+                module.collect_source3(
+                    self.config, self.root / "config.json", self.request,
+                    app_factory=self.application, child_factory=self.child,
+                    preflight=changed_preflight, cancel=self.cancel,
+                )
+            self.assertEqual(self.apps, [])
+            self.assertEqual(self.children, [])
+            self.assertEqual(self.commands, [])
+            self.assertFalse(self.request.output.exists())
+
     def test_v3_parent_rejects_a_child_counter_claim_that_disagrees_with_the_public_owner(self):
         summary = self.owned_proof()
         self.behavior["terminal_summary"].update(known_delivered=0, known_stale_rejections=1)
@@ -466,6 +514,18 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(report["error_code"], "terminal_counter_proof_disagrees")
         self.assertIsNone(report["terminal_result_count"])
         self.assertEqual(self.commands, ["start_new_session", "close"])
+
+    def test_v3_source_off_counter_mismatch_cannot_become_success_or_admitted_N(self):
+        summary = self.owned_proof()
+        self.request = replace(self.request, record_source3=False)
+        self.behavior["terminal_summary"].update(known_delivered=0, known_stale_rejections=1)
+        report = self.run_collection(terminal_verifier=lambda *args: summary)
+        self.assertNotEqual(report["status"], "completed")
+        self.assertEqual(report["error_code"], "terminal_counter_proof_disagrees")
+        self.assertIsNone(report["terminal_result_count"])
+        self.assertIsNone(report["eligible_unique_N"])
+        self.assertEqual(report["admission"], "not_run")
+        self.assertEqual(self.commands, [])
 
     def test_v3_missing_terminal_proof_retains_actual_cleanup_and_unavailable_counters(self):
         self.owned_proof()
@@ -486,9 +546,12 @@ class CollectionTests(unittest.TestCase):
     def test_v3_teacher_descriptor_or_artifact_drift_after_closed_gate_stops_before_App(self):
         summary = self.owned_proof()
         original_descriptor, original_writer = module.descriptor, module.write_artifact
-        for mode in ("descriptor", "artifact"):
-            self.request = replace(self.request, output=self.root / mode)
-            self.config = replace(self.config, state_dir=self.root / (mode + "-state"))
+        for record_source, mode in ((True, "descriptor"), (True, "artifact"),
+                                    (False, "descriptor"), (False, "artifact")):
+            variant = f"{record_source}-{mode}"
+            self.request = replace(self.request, output=self.root / variant,
+                                   record_source3=record_source)
+            self.config = replace(self.config, state_dir=self.root / (variant + "-state"))
             calls = 0
             apps_before, children_before, commands_before = (
                 len(self.apps), len(self.children), len(self.commands)
@@ -514,7 +577,7 @@ class CollectionTests(unittest.TestCase):
                 return result
 
             with (
-                self.subTest(mode=mode),
+                self.subTest(mode=mode, record_source=record_source),
                 patch.object(module, "descriptor", changing_descriptor),
                 patch.object(module, "write_artifact", changing_writer),
             ):
@@ -531,12 +594,14 @@ class CollectionTests(unittest.TestCase):
         self,
     ):
         self.request = replace(self.request, execution_policy=module.OWNED_EXECUTION_POLICY)
-        for installed, producer, code in (
-            (False, {"id": "synthetic"}, "installed_terminal_summary_unavailable"),
-            (True, None, "closed_collection_producer_unavailable"),
+        for record_source, installed, producer, code in (
+            (True, False, {"id": "synthetic"}, "installed_terminal_summary_unavailable"),
+            (False, False, None, "installed_terminal_summary_unavailable"),
+            (True, True, None, "closed_collection_producer_unavailable"),
         ):
+            self.request = replace(self.request, record_source3=record_source)
             with (
-                self.subTest(installed=installed),
+                self.subTest(installed=installed, record_source=record_source),
                 patch.object(
                     module, "installed_terminal_summary_available", lambda value=installed: value
                 ),

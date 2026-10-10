@@ -695,7 +695,7 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
             "installed_terminal_summary_available": installed_terminal_summary_available(),
             "closed_producer_relation": closed_collection_producer(
                 options["teacher_descriptor"], request.policy()
-            ),
+            ) if request.record_source3 else None,
         }
         result["target_known_deliveries"] = request.target_choices
         result["admitted_N_target_is_separate"] = True
@@ -1115,8 +1115,15 @@ def collect_source3(
             if not installed_terminal_summary_available():
                 raise fail("installed_terminal_summary_unavailable")
             candidate = descriptor(execution_policy=request.policy())
-            relation = closed_collection_producer(candidate, request.policy())
-            if relation is None:
+            if prepared.get("options", {}).get("teacher_descriptor") != candidate:
+                raise fail("collection_teacher_preflight_changed")
+            # Source-off exercises the exact declared actor and public delivery
+            # accounting. Research admission still requires its frozen relation.
+            relation = (
+                closed_collection_producer(candidate, request.policy())
+                if request.record_source3 else None
+            )
+            if request.record_source3 and relation is None:
                 raise fail("closed_collection_producer_unavailable")
             if prepared.get("promotion_gate") != {
                 "installed_terminal_summary_available": True,

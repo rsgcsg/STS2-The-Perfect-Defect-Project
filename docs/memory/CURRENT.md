@@ -46,7 +46,11 @@ and [task index](../plans/BASELINE_TASKS.zh-CN.md) retain the wider requirements
   exceptions; Linux 4 Python failures involving frozen Teacher runtime, initialized
   weights and cancellation checkpoints. Real test unstarted 0/100, no dispatch.
   Current source repairs must have their own checks; original logs remain failed.
-- Candidate rc36 was **built**, not installed/loaded. Actual installation remains
+- Candidate `e7bf667b`/rc37: local full/exact/Host 692 and Linux passed;
+  CI38029273439 failed Windows S0, Python typing, Evidence and Runtime, so portable
+  failed. Windows pytest never started. Current prerequisite repairs need fresh
+  review/gates; the real test remains unstarted. Rc36/rc37 were **built**, not loaded.
+  Actual installation remains
   rc34, DLL SHA prefix7c817a88, MVID9c4b89a5. Installed Runtime26/Evidence27 and
   lock46eb8386 remain separate pins. Re-resolve full identities before native work.
 
@@ -70,6 +74,11 @@ control; workers use isolated topics and receive independent review. Component
 source integrates with normal merges. Preserve private state/config/rollback.
 PR171 remains a draft until current review and required gates permit integration;
 no merge is implied by this engineering/native-test packet.
+
+The UTF-8 Teacher repair has a new code-artifact hash; frozen historical producer
+tuples and research admission remain unchanged. The explicit Source-off diagnostic
+requires exact actor/preflight/artifact and public counter proof, with no research
+relation/N admission. Source-on retains its strict closed-producer gate.
 
 ## Remaining Platform non-claims
 

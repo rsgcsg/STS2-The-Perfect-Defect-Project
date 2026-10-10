@@ -66,6 +66,15 @@ source; do not hide the failure by normalizing protocol bytes, raising deadlines
 reducing pressure/coverage, skipping cases or retrying an unknown native mutation.
 Process startup readiness and a request deadline are different observations.
 
+Distinguish the test runner's whole-fixture timeout from a product deadline or
+performance promise. Startup, durable fixture writes and independent final
+verification need their own bounded completion allowance. Correcting an
+unfounded runner cap requires phase measurements, an unchanged owner deadline
+and pressure/storage/durability assertions, plus a negative proving the original
+owner timer still fences work. Retain the old timeout and its unknown phases;
+label the correction as test strategy, not a performance repair or measured
+cross-platform guarantee. Never extend a product deadline to make a test pass.
+
 Before the final dispatch, mechanically check the assembled files and identity
 tuple, independently review the complete affected producer/caller/consumer diff,
 and freeze the exact candidate. Run its selected gates once, preserving failure,

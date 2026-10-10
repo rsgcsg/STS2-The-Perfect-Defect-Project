@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import io
 import sys
 import uuid
 from pathlib import Path
@@ -560,6 +561,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
+    if not isinstance(sys.stdin, io.TextIOWrapper) or not isinstance(sys.stdout, io.TextIOWrapper):
+        raise BoundaryError("native_teacher_agent", "native_stdio_required")
+    # AgentSession is a strict UTF-8 wire on every OS. Preserve input newlines
+    # and emit LF without the host locale or Windows newline translation.
+    sys.stdin.reconfigure(encoding="utf-8", errors="strict", newline="")
+    sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n")
     return serve(NativeTeacherAgent(args.manifest), sys.stdin, sys.stdout)
 
 

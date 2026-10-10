@@ -1307,9 +1307,27 @@ def test_owned_teacher_tuple_retains_exact_frozen_descriptor_and_sealed_original
     )}}
     assert sha(json_bytes(frozen)) == new["artifact_sha256"]
     current = descriptor(execution_policy=new["execution_policy"])
-    # A qualified historical tuple includes its exact Python patch version.
-    # Portable source checks compare current code, while retaining that old runtime.
-    assert {**current, "runtime_provenance": frozen["runtime_provenance"]} == frozen
+    # The UTF-8 adapter repair is a new code artifact. The old producer remains
+    # an immutable archival admission tuple, not an alias for current source.
+    assert current["agent_spec"] == frozen["agent_spec"]
+    assert current["input_spec"] == frozen["input_spec"]
+    assert current["input_spec_body"] == frozen["input_spec_body"]
+    assert current["adapter"]["code_sha256"] != frozen["adapter"]["code_sha256"]
+    repaired = "stpd/policy/native_teacher_agent.py"
+    old_files = {item["path"]: item for item in frozen["code_files"]}
+    current_files = {item["path"]: item for item in current["code_files"]}
+    assert set(old_files) == set(current_files)
+    for path, item in current_files.items():
+        raw = (ROOT / "python" / path).read_bytes()
+        assert item == {"path": path, "bytes": len(raw), "sha256": sha(raw)}
+        if path != repaired:
+            assert item == old_files[path]
+    assert current_files[repaired] != old_files[repaired]
+    from spireagent.workbench.native_source3_collection import closed_collection_producer
+
+    assert closed_collection_producer(current, new["execution_policy"]) is None
+    assert closed_collection_producer(frozen, new["execution_policy"]) == (
+        OWNED_STALE_TEACHER_RELATION_SPEC)
     assert current["runtime_provenance"]["python_version"] == list(sys.version_info[:3])
     assert frozen["runtime_provenance"]["python_version"] == [3, 11, 15]
     assert new["runtime_provenance"]["dependency_lock_sha256"] == (
