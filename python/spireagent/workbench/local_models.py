@@ -1008,6 +1008,8 @@ class LocalModelService:
                     "readiness": "check_required",
                     **({"task_spec": manifest.get("adapter_config", {}).get(
                             "public_m0", {}).get("task_spec"),
+                        "program_spec": manifest.get("adapter_config", {}).get(
+                            "public_m0", {}).get("program_spec"),
                         "agent_version": manifest.get("adapter", {}).get("version")}
                        if entry["adapter"] == PUBLIC_M0_ADAPTER else {}),
                     **({"task_spec": manifest.get("adapter_config", {}).get(

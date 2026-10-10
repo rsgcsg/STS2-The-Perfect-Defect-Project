@@ -19,14 +19,17 @@ from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
+from .policy.public_m0_agent_program import validate_program_spec
 from .policy.public_m0_task import validate_task_spec
 
 CONFIG_SCHEMA = "stpd/public-m0-policy-config-v1"
 TASK_CONFIG_SCHEMA = "stpd/public-m0-policy-config-v2"
+PROGRAM_CONFIG_SCHEMA = "stpd/public-m0-policy-config-v3"
 PROFILE = "public-snapshot-m0-v1"
 ADAPTER_ID = "stpd-public-m0-decision-adapter"
 ADAPTER_VERSION = "1.0.0"
 TASK_ADAPTER_VERSION = "1.1.0"
+PROGRAM_ADAPTER_VERSION = "1.2.0"
 CODE_SCOPE = "python-owner-source-and-lock-v1"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-1"
 SNAPSHOT_SCHEMA = "sts2.player-environment/snapshot-1"
@@ -218,6 +221,7 @@ def bind_public_m0_export(
     support: dict[str, Any], qwen_snapshot: Path | None = None,
     binding_root: Path | None = None, runtime_device: str = "cpu",
     task: dict[str, str] | None = None,
+    program: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind one verified public M0 export to exact generic Runtime capabilities."""
     root = root.resolve()
@@ -239,8 +243,11 @@ def bind_public_m0_export(
         raise BoundaryError("public_m0_policy", "invalid_binding_destination_or_facts")
     req, sup = _validate_requirements(requirements, support)
     task_spec = validate_task_spec(task)
-    config_schema = TASK_CONFIG_SCHEMA if task_spec is not None else CONFIG_SCHEMA
-    adapter_version = TASK_ADAPTER_VERSION if task_spec is not None else ADAPTER_VERSION
+    program_spec = validate_program_spec(program)
+    config_schema = (PROGRAM_CONFIG_SCHEMA if program_spec is not None else
+                     TASK_CONFIG_SCHEMA if task_spec is not None else CONFIG_SCHEMA)
+    adapter_version = (PROGRAM_ADAPTER_VERSION if program_spec is not None else
+                       TASK_ADAPTER_VERSION if task_spec is not None else ADAPTER_VERSION)
     artifact, config, info = _model_details(export_path)
     from .policy.token_decision import light_action_m0_runtime_config
 
@@ -267,7 +274,8 @@ def bind_public_m0_export(
         "qwen_snapshot": str(qwen_snapshot.resolve()) if qwen_snapshot else None,
         "renderer": renderer,
         "runtime_device": runtime_config.device,
-        **({"task_spec": task_spec} if task_spec is not None else {}),
+        **({"task_spec": task_spec} if task_spec is not None or program_spec is not None else {}),
+        **({"program_spec": program_spec} if program_spec is not None else {}),
     }
     adapter = {"id": ADAPTER_ID, "version": adapter_version,
                "protocol": PROTOCOL, "code_sha256": code_digest(root)}
@@ -291,7 +299,9 @@ def bind_public_m0_export(
             "model_schema": "stpd/stage1a-light-action-m0-public-model-v1",
             "export_schema": "stpd/stage1a-light-action-m0-public-export-v1",
             "renderer": renderer,
-            **({"task_spec": task_spec} if task_spec is not None else {}),
+            **({"task_spec": task_spec}
+               if task_spec is not None or program_spec is not None else {}),
+            **({"program_spec": program_spec} if program_spec is not None else {}),
         }},
         "claims": dict(CLAIMS),
     }
@@ -321,17 +331,25 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
         "qwen_snapshot", "renderer",
     }
     task_config = config.get("schema") == TASK_CONFIG_SCHEMA
-    if task_config:
+    program_config = config.get("schema") == PROGRAM_CONFIG_SCHEMA
+    if task_config or program_config:
         required_config_fields |= {"runtime_device", "task_spec"}
+    if program_config:
+        required_config_fields.add("program_spec")
     if set(config) not in (required_config_fields, required_config_fields | {"runtime_device"}):
         raise BoundaryError("public_m0.config", "missing_or_unknown_fields")
-    if config.get("schema") not in (CONFIG_SCHEMA, TASK_CONFIG_SCHEMA):
+    if config.get("schema") not in (CONFIG_SCHEMA, TASK_CONFIG_SCHEMA, PROGRAM_CONFIG_SCHEMA):
         raise BoundaryError("public_m0_policy", "unsupported_config")
     task_spec = validate_task_spec(config.get("task_spec"))
     if task_config and task_spec is None:
         raise BoundaryError("public_m0_policy", "unsupported_task_spec")
-    config_schema = TASK_CONFIG_SCHEMA if task_config else CONFIG_SCHEMA
-    adapter_version = TASK_ADAPTER_VERSION if task_config else ADAPTER_VERSION
+    program_spec = validate_program_spec(config.get("program_spec"))
+    if program_config and program_spec is None:
+        raise BoundaryError("public_m0_policy", "unsupported_program_spec")
+    config_schema = (PROGRAM_CONFIG_SCHEMA if program_config else
+                     TASK_CONFIG_SCHEMA if task_config else CONFIG_SCHEMA)
+    adapter_version = (PROGRAM_ADAPTER_VERSION if program_config else
+                       TASK_ADAPTER_VERSION if task_config else ADAPTER_VERSION)
     object_fields(manifest, {
         "schema", "manifest_id", "policy", "adapter", "artifact", "representation",
         "requirements", "support", "adapter_config", "claims",
@@ -348,8 +366,10 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     adapter_config = object_fields(manifest["adapter_config"], {"public_m0"},
                                    "public_m0.adapter_config")
     pin_fields = {"code_digest_scope", "config", "model_schema", "export_schema", "renderer"}
-    if task_config:
+    if task_config or program_config:
         pin_fields.add("task_spec")
+    if program_config:
+        pin_fields.add("program_spec")
     pin = object_fields(adapter_config["public_m0"], pin_fields,
                         "public_m0.adapter_config.public_m0")
     config_pin = object_fields(pin["config"], {"path", "sha256", "schema"},
@@ -377,6 +397,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
         or pin.get("export_schema") != "stpd/stage1a-light-action-m0-public-export-v1"
         or pin.get("renderer") != renderer
         or pin.get("task_spec") != task_spec
+        or pin.get("program_spec") != program_spec
         or manifest.get("adapter") != {
             "id": ADAPTER_ID, "version": adapter_version, "protocol": PROTOCOL,
             "code_sha256": code_digest(root),
