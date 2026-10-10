@@ -7,6 +7,43 @@ Full-reference below names an existing package/InputSpec, not a universal curren
 default. Sampled Current with segment carry is a separately identified candidate;
 neither changes old full-reference data, weights or exposure history.
 
+## Explicit Evidence-only compatibility package
+
+`native-evidence-rc27-to-rc29-v1` is one closed migration profile for trained
+sampled native packages exported by the recorded `9c1c14f4` producer. The original
+39-file inference identity and complete dependency lock are fixed in code. The
+export owner reads their hash inventory and lock bytes from that exact Git
+commit. A package carries the complete canonical inventory and old lock; its
+loader recomputes the fixed original identity and compares all current inference
+files except the two reviewed package/identity owners. Those exceptions permit
+this migration implementation, not changes to Agent behavior, math or rendering.
+Git provenance identifies the source to read; the recomputed byte identities
+establish the source match.
+
+The TOML comparison permits only the reviewed Evidence package version/source
+and the root project's Evidence Git requirement. All other packages, artifacts,
+markers, dependencies and top-level fields must match. Both Evidence records
+have no dependencies. The target still binds the complete current lock and
+inference closure; this is not a general dependency-subset identity.
+
+`stpd/native-compatible-package-v1` contains the original canonical package and
+Model manifest, the fixed proof and a separate current export producer. It copies
+the original weights, graph, InputSpec, AgentSpec, state format, source, training
+and qualification exactly, retaining the original training/export provenance.
+The new package ID and `stpd/native-compatible-model-v1` ArtifactID are distinct;
+the derived Model adds an immutable `original_model` parent and retains the
+original run/checkpoint/training-input parents. No fit or policy upgrade occurs.
+The ordinary two-file package inventory and shared safe weight loader remain.
+
+Original packages retain their strict exact-current validation and reject a
+different lock. Only the explicit compatibility schema validates the nested
+original metadata against the verified fixed recorded basis. Unknown migration
+profiles, changed original bytes, parent/provenance mismatches, changed numerical
+dependencies or non-owner source files fail closed. Source/proof tests are not
+numerical parity or installed qualification: the original and target locked
+environments separately compare weights, tensor inventories, full-C scores and
+recurrent state before this migration is used with a real Model.
+
 This guide owns the shared native structured projection/scorer and its synthetic
 source/conformance package contracts. [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
 owns real recording admission, views and trained Source3 lineage separately.
