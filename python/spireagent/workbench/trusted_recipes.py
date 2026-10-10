@@ -86,7 +86,8 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
         "placement_ids": ["local-cpu"],
         "dependencies_available": recipe_dependencies_available(recipe_id),
         "automatic_retry": False,
-        "supported_actions": ["cancel", "pause", "resume", "reconcile"] if structured else [],
+        "supported_actions": ["cancel", "pause", "resume", "reconcile", "amend_wall_budget"]
+        if structured else [],
         "result_type": "evaluated" if recipe_id == DEFAULT_RECIPE else "train_only",
         "config_defaults": {},
         "config_fields": {},

@@ -127,7 +127,7 @@ StructuredTrainingEngine.advance_chunk = spill_and_hang
     assert cancelled["child_exit"]["exit_code"] != 0
     assert cancelled["child_exit"]["attempt_id"] == first["attempt_id"]
     assert cancelled["checkpoint_id"]
-    assert cancelled["supported_actions"] == ["resume", "reconcile"]
+    assert cancelled["supported_actions"] == ["resume", "amend_wall_budget", "reconcile"]
     assert "result_id" not in cancelled and "model_id" not in cancelled
     path = owner.path.parent/OPERATION_FILE
     first_journal = json.loads(path.read_bytes())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,44 @@ from spireagent.json_boundary import BoundaryError, digest
 REQUEST_SCHEMA = "spireagent/training-request-v1"
 SNAPSHOT_SCHEMA = "spireagent/training-operation-snapshot-v1"
 LOCAL_PLACEMENT = "local-cpu"
+WALL_AMENDMENT_SCHEMA = "spireagent/training-wall-budget-amendment-v1"
+
+
+def effective_training_limits(operation: dict[str, Any]) -> dict[str, int]:
+    """Derive the cap from the original request and its validated amendment chain."""
+    limits = validate_limits(operation["request"]["limits"])
+    amendments = operation.get("budget_amendments", [])
+    if not isinstance(amendments, list) or len(amendments) > 32:
+        raise BoundaryError("local_training", "invalid_budget_amendments")
+    attempts = {operation["attempt_id"], *(item["attempt_id"]
+                                         for item in operation["attempts"])}
+    intents: set[str] = set()
+    elapsed, accepted = 0.0, 0.0
+    fields = {"schema", "intent_id", "operation_id", "attempt_id", "prior_wall_seconds",
+              "wall_seconds", "charged_elapsed_seconds", "accepted_at"}
+    for record in amendments:
+        if not isinstance(record, dict) or set(record) != fields or not limits:
+            raise BoundaryError("local_training", "invalid_budget_amendments")
+        intent = digest(record["intent_id"], "local_training.amendment_intent", length=32)
+        checked = validate_limits({"wall_seconds": record["wall_seconds"],
+                                   "scratch_bytes": limits["scratch_bytes"]})
+        charged, stamp = record["charged_elapsed_seconds"], record["accepted_at"]
+        if (record["schema"] != WALL_AMENDMENT_SCHEMA or intent in intents
+                or record["operation_id"] != operation["operation_id"]
+                or record["attempt_id"] not in attempts
+                or type(record["prior_wall_seconds"]) is not int
+                or record["prior_wall_seconds"] != limits["wall_seconds"]
+                or checked["wall_seconds"] <= limits["wall_seconds"]
+                or type(charged) not in {int, float} or not math.isfinite(charged)
+                or not elapsed <= charged <= operation["elapsed_seconds"]
+                or charged >= checked["wall_seconds"]
+                or type(stamp) not in {int, float} or not math.isfinite(stamp)
+                or stamp <= 0 or stamp < accepted):
+            raise BoundaryError("local_training", "invalid_budget_amendments")
+        limits = checked
+        intents.add(intent)
+        elapsed, accepted = charged, stamp
+    return limits
 
 
 def validate_limits(value: object) -> dict[str, int]:

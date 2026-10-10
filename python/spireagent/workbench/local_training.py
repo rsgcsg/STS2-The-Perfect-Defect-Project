@@ -8,6 +8,7 @@ the child finished. The OS lock spans the parent-owned child lifecycle.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess as subprocess
 import threading
@@ -15,6 +16,7 @@ import time
 import traceback
 import uuid
 from contextlib import AbstractContextManager, suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +48,9 @@ from spireagent.workbench.memory_recipe import (
 from spireagent.workbench.recipe_contracts import (
     LOCAL_PLACEMENT,
     SNAPSHOT_SCHEMA,
+    WALL_AMENDMENT_SCHEMA,
     TrainingRequest,
+    effective_training_limits,
     validate_limits,
 )
 from spireagent.workbench.research_process import private_child
@@ -217,7 +221,23 @@ class LocalTrainingService:
         keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
                 "recipe", "result_type", "evaluation_status", "schema",
                 "previous_completed", *IDS}
-        return {key: item for key, item in value.items() if key in keys}
+        public = {key: deepcopy(item) for key, item in value.items() if key in keys}
+        if value.get("budget_amendments"):
+            # The slot may be replaced by a new explicit experiment. Retain its
+            # audited authorization and exact attempts in the existing recursive
+            # completed-operation history, rather than losing the cap change.
+            for key in ("request", "attempt_id", "intent_id", "budget_amendments",
+                        "elapsed_seconds", "artifact_reserved_bytes", "child_exit",
+                        "attempt_producer"):
+                if key in value:
+                    public[key] = deepcopy(value[key])
+            attempt_keys = {"attempt_id", "intent_id", "status", "writer_terminal",
+                            "checkpoint_id", "terminal_proof"}
+            public["attempts"] = [{key: deepcopy(item) for key, item in attempt.items()
+                                   if key in attempt_keys} for attempt in value["attempts"]]
+            public["limits"] = dict(value["request"]["limits"])
+            public["effective_limits"] = effective_training_limits(value)
+        return public
 
     def status(self, operation_id: object | None = None) -> dict[str, Any]:
         try:
@@ -478,14 +498,19 @@ class LocalTrainingService:
         request = TrainingRequest.from_dict(value["request"])
         if (request.recipe_id != value["recipe"] or request.source_id != value["dataset_id"]
                 or request.config != validate_recipe_config(request.recipe_id, request.config)
-                or value.get("intent_id") != request.intent_id):
+                or (value.get("intent_id") != request.intent_id and not (
+                    value.get("budget_amendments")
+                    and any(isinstance(item, dict) and item.get("intent_id") == request.intent_id
+                            for item in value.get("attempts", []))))):
             raise ValueError("operation_request")
         digest(value["operation_id"], "local_training.operation", length=32)
         digest(value["attempt_id"], "local_training.attempt", length=32)
+        digest(value["intent_id"], "local_training.intent", length=32)
         if (type(value.get("writer_terminal")) is not bool
                 or value.get("requested_action") not in {"continue", "pause", "cancel"}
                 or not isinstance(value.get("attempts"), list)
                 or type(value.get("elapsed_seconds")) not in {float, int}
+                or not math.isfinite(value["elapsed_seconds"])
                 or value["elapsed_seconds"] < 0):
             raise ValueError("operation_attempt")
         for key in ("created_at", "attempt_started_at", "updated_at"):
@@ -506,14 +531,42 @@ class LocalTrainingService:
         if value["status"] == "completed" and not all(value.get(key) for key in
                                                        ("run_id", "result_id", "model_id")):
             raise ValueError("operation_completion")
+        effective_training_limits(value)
         return value
 
     def _snapshot(self, value: dict[str, Any]) -> dict[str, Any]:
         running = value["status"] == "pending"
         structured = value["recipe"] in STRUCTURED_RECIPES
+        limits = effective_training_limits(value)
+        charged = value["elapsed_seconds"]
+        if running and self._active_attempt == value["attempt_id"] and (
+                self._attempt_started_monotonic is not None):
+            charged += max(0.0, time.monotonic()-self._attempt_started_monotonic)
+        retained = 0
+        scratch_error = None
+        if structured and value.get("scratch_name"):
+            path, _ = self._paths(self._selected()[0])
+            try:
+                retained = retained_scratch_bytes(path, value, active_attempt=running)
+            except BoundaryError as error:
+                scratch_error = error.code
+        remaining = max(0.0, limits.get("wall_seconds", 0)-charged)
+        scratch_available = scratch_error is None and bool(limits) and max(
+            retained, value.get("artifact_reserved_bytes", 0)) < limits["scratch_bytes"]
+        budget_available = remaining > 0 and scratch_available
         actions = (["cancel", "pause"] if running else
                    ["resume"] if value["status"] in {"paused", "cancelled", "interrupted_unknown"}
                    and value.get("writer_terminal") and value.get("checkpoint_id") else [])
+        if "resume" in actions and not budget_available:
+            actions.remove("resume")
+        if (structured and not running and value["status"] in
+                {"paused", "cancelled", "interrupted_unknown"}
+                and value.get("writer_terminal") and value.get("run_id")
+                and value.get("checkpoint_id")
+                and value.get("worker_isolation") == "private_child-v1"
+                and scratch_available and limits["wall_seconds"] < 3600
+                and len(value.get("budget_amendments", [])) < 32):
+            actions.append("amend_wall_budget")
         if structured and value["status"] == "interrupted_unknown":
             actions = [*actions, "reconcile"]
         if not structured or (running and self._active_attempt != value["attempt_id"]):
@@ -527,6 +580,16 @@ class LocalTrainingService:
                      "placement_id": value["request"]["placement_id"],
                      "config": dict(value["request"]["config"]),
                      "limits": dict(value["request"]["limits"]),
+                     "effective_limits": limits,
+                     "budget_amendments": [dict(item) for item in
+                                           value.get("budget_amendments", [])],
+                     "budget_state": {"charged_wall_seconds": charged,
+                                      "remaining_wall_seconds": remaining,
+                                      "retained_scratch_bytes": retained,
+                                      "scratch_inventory_error": scratch_error,
+                                      "artifact_reserved_bytes": value.get(
+                                          "artifact_reserved_bytes", 0),
+                                      "resume_budget_available": budget_available},
                      "supported_actions": actions, "requested_action": value["requested_action"],
                      "input_refs": {"source_id": value["dataset_id"],
                                     "training_input_id": value.get("input_id")},
@@ -747,6 +810,71 @@ class LocalTrainingService:
                              intent_id=digest(intent_id, "local_training.intent_id", length=32),
                              limits=validate_limits(limits))
 
+    def amend_wall_budget(self, operation_id: object, expected_attempt_id: object,
+                          intent_id: object, wall_seconds: object) -> dict[str, Any]:
+        """Authorize a larger cumulative local CPU cap without dispatching work."""
+        intent = digest(intent_id, "local_training.intent_id", length=32)
+        cap = validate_limits({"wall_seconds": wall_seconds})["wall_seconds"]
+        owner, _, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        if lock_path.is_symlink():
+            raise BoundaryError("local_training", "operation_recovery_required")
+        try:
+            held = instance_lock(lock_path, create=False)
+            held.__enter__()
+        except BoundaryError as error:
+            raise BoundaryError("local_training", "writer_still_running") from error
+        try:
+            with self._lock:
+                value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+                if (not value["writer_terminal"] or value["status"] not in
+                        {"paused", "cancelled", "interrupted_unknown"}
+                        or not value.get("run_id") or not value.get("checkpoint_id")
+                        or value.get("worker_isolation") != "private_child-v1"):
+                    raise BoundaryError("local_training", "prior_writer_terminal_required")
+                try:
+                    child = instance_lock(self._child_path(path, value), create=False)
+                    child.__enter__()
+                except BoundaryError as error:
+                    raise BoundaryError("local_training", "orphan_child_still_running") from error
+                try:
+                    amendments = value.get("budget_amendments", [])
+                    for record in amendments:
+                        if record["intent_id"] == intent:
+                            if (record["attempt_id"] != expected_attempt_id or
+                                    record["wall_seconds"] != cap):
+                                raise BoundaryError("local_training", "intent_payload_mismatch")
+                            return self._snapshot(value)
+                    if intent in {value["intent_id"], value["request"]["intent_id"],
+                                  *(item["intent_id"] for item in value["attempts"])}:
+                        raise BoundaryError("local_training", "new_amendment_intent_required")
+                    effective = effective_training_limits(value)
+                    if cap <= effective["wall_seconds"]:
+                        raise BoundaryError("local_training", "wall_budget_increase_required")
+                    if len(amendments) >= 32:
+                        raise BoundaryError("local_training", "budget_amendment_limit")
+                    if (value["elapsed_seconds"] >= cap or
+                            value.get("artifact_reserved_bytes", 0) >= effective["scratch_bytes"]
+                            or retained_scratch_bytes(path, value) >= effective["scratch_bytes"]):
+                        raise BoundaryError("local_training", "cumulative_budget_exhausted")
+                    now = time.time()
+                    record = {"schema": WALL_AMENDMENT_SCHEMA, "intent_id": intent,
+                              "operation_id": value["operation_id"],
+                              "attempt_id": value["attempt_id"],
+                              "prior_wall_seconds": effective["wall_seconds"],
+                              "wall_seconds": cap,
+                              "charged_elapsed_seconds": value["elapsed_seconds"],
+                              "accepted_at": now}
+                    value["budget_amendments"] = [*amendments, record]
+                    value["updated_at"] = now
+                    self._validate_v3(value, owner.identity)
+                    write_replaceable_json(path, value)
+                    return self._snapshot(value)
+                finally:
+                    child.__exit__(None, None, None)
+        finally:
+            held.__exit__(None, None, None)
+
     def _recover(self, operation_id: object, expected_attempt_id: object, *, mode: str,
                  checkpoint_id: str | None = None, intent_id: str | None = None,
                  limits: dict[str, int] | None = None) -> dict[str, Any]:
@@ -780,15 +908,18 @@ class LocalTrainingService:
                         raise BoundaryError("local_training", "prior_writer_terminal_required")
                     if limits != value["request"]["limits"] or not limits:
                         raise BoundaryError("local_training", "cumulative_limits_must_be_preserved")
-                    if (value["elapsed_seconds"] >= limits["wall_seconds"] or
-                            value.get("artifact_reserved_bytes", 0) >= limits["scratch_bytes"] or
-                            retained_scratch_bytes(path, value) >= limits["scratch_bytes"]):
+                    effective = effective_training_limits(value)
+                    if (value["elapsed_seconds"] >= effective["wall_seconds"] or
+                            value.get("artifact_reserved_bytes", 0) >= effective["scratch_bytes"] or
+                            retained_scratch_bytes(path, value) >= effective["scratch_bytes"]):
                         raise BoundaryError("local_training", "cumulative_budget_exhausted")
                     from spireagent.workbench.recipes.structured import verify_resume_checkpoint
 
                     verify_resume_checkpoint(store, value, checkpoint_id)
                     if any(item.get("intent_id") == intent_id for item in value["attempts"]) or (
-                        value["intent_id"] == intent_id
+                        value["intent_id"] == intent_id or any(
+                            item["intent_id"] == intent_id for item in
+                            value.get("budget_amendments", []))
                     ):
                         raise BoundaryError("local_training", "new_resume_intent_required")
                 elif not value.get("run_id"):
@@ -845,7 +976,8 @@ class LocalTrainingService:
                 if mode == "resume":
                     value.update(selected_result=True, application_disposition="explicit_resume")
                     value["intent_id"] = intent_id
-                    value["request"]["intent_id"] = intent_id
+                    if not value.get("budget_amendments"):
+                        value["request"]["intent_id"] = intent_id
                     value["resume_checkpoint_id"] = checkpoint_id
                 write_replaceable_json(path, value)
                 self._launch_attempt(held, path, value, owner, store)

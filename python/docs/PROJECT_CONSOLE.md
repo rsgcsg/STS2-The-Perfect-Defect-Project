@@ -825,7 +825,39 @@ or filesystem hard allocation quota: a write can overshoot between checks, after
 which the parent kills the child, retains the files for audit, and blocks further
 resume. Logs and immutable checkpoints/results are retained outside scratch;
 there is no automatic cleanup of old or orphan attempt directories. Resume cannot
-increase or reset any original limit. Checkpoint cadence accepts 1–100 completed
+increase or reset any original limit. An explicit local CPU `amend_wall_budget`
+command may raise only the cumulative wall cap, up to the existing 3600-second
+maximum, after the same operation/attempt is terminal and both parent and child
+ownership locks are acquired. It appends an audited `spireagent/training-wall-budget-amendment-v1`
+record containing a unique intent, exact operation/attempt, prior/new cap, charged
+elapsed time and acceptance time. A duplicate identical intent is idempotent;
+stale attempts, live/orphan writers, decreases, scratch exhaustion and a cap
+already consumed by charged time reject before publication. The command starts
+no work and resets neither elapsed time nor artifact/scratch charges. Original
+request, source/use, numerical configuration, Run and checkpoints stay unchanged;
+the service derives `effective_limits` from the ordered amendment chain. Once
+amended, resume also keeps the original request intent in that request and records
+the new attempt intent separately. A later explicit experiment retains the amended
+completion's original request/limits, effective limits, charged elapsed/artifact
+bytes, amendment records and exact operation/attempt/input/run/checkpoint history
+in the existing recursive `previous_completed` metadata. Subsequent completed
+operations keep that chain, including operations without new amendments. This
+is durable local application-journal history; it does not rewrite immutable Run
+artifacts or claim older completions recorded fields that were absent. Its
+lifetime is the retained journal's lifetime; no automatic cleanup is added.
+Retained attempt entries project only IDs, status, writer-terminal and terminal-proof
+fields; they exclude worker diagnostics and arbitrary payloads. The existing
+32-attempt and 32-amendment bounds limit each added operation record. Legacy recipe
+transitions from v3 remain v3, preserving this history; old v1/v2 completions retain
+their historical projection and are not relabelled with missing budget evidence.
+No GPU, remote placement or fee authorization
+is implied. Operations without amendments retain their existing interpretation.
+Snapshots keep `limits` as the original request, expose `effective_limits`,
+`budget_amendments` and `budget_state` (charged/remaining wall time and retained
+scratch), and offer resume only with remaining wall/artifact/scratch budget.
+Amendment and checkpoint selection are separate explicit actions; resume still
+requires the original `limits` argument and uses the effective cumulative cap.
+Checkpoint cadence accepts 1–100 completed
 boundaries and defaults to 100.
 
 A cancel request that races completion retains artifacts for audit and does not
@@ -867,7 +899,12 @@ placement, resource limits and explicit completed-operation precondition. The ex
 bounded legacy `dataset_id`/`recipe` body remains compatible. `POST` to `pause`,
 `cancel` or `reconcile` requires exactly `operation_id` and `expected_attempt_id`.
 `resume` additionally requires the exact `checkpoint_id`, a new `intent_id`, and
-unchanged original `limits`. Every mutation uses the existing browser cookie,
+unchanged original `limits`. `POST /api/local-training/amend_wall_budget` requires
+exactly `operation_id`, `expected_attempt_id`, a unique `intent_id`, and an integer
+`wall_seconds` total cumulative cap (for example 600 total after an original 300).
+The matching library entry is `service.amend_wall_budget(operation_id,
+expected_attempt_id, intent_id, wall_seconds)`; inspect its snapshot before the
+separate `resume` call. Every mutation uses the existing browser cookie,
 Origin/CSRF checks and running configuration/instance guard. Remote compute is
 unavailable unless declared by an owning service; the current service advertises
 only local CPU.

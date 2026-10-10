@@ -80,6 +80,12 @@ from pathlib import Path
 service = LocalTrainingService(ProjectConfig(Path(sys.argv[1]), '', '', None, combination()))
 value = service.capabilities()
 assert any(item['recipe_id'] == 'structured-m2-cpu-v2' for item in value['recipes'])
+for item in value['recipes']:
+    if item['limits']:
+        assert item['placement_ids'] == ['local-cpu']
+        assert 'amend_wall_budget' in item['supported_actions']
+    else:
+        assert 'amend_wall_budget' not in item['supported_actions']
 assert 'torch' not in sys.modules
 assert not Path(sys.argv[1]).exists()
 """
