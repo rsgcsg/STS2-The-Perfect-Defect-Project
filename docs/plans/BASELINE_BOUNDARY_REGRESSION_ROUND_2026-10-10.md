@@ -53,9 +53,10 @@ owners, then consider cross-profile migration. Large M0 `d6f752…` has15,290 tr
 4,217 dev and76,450 updates plus export/CPU-load evidence; its original game Load
 was not completed. Public M2 `17ebf91…` is K8/d384 with998 labels/352 updates,
 actual epoch1 and `run_complete:false`; preserve that partial identity. Reuse weights,
-InputSpec/rendering, complete C and M2 segment/ordinal/reset semantics. Restoration
-is useful feedback and optional comparison input, not a prerequisite for ready native
-work, new training or G2's minimal common application journey.
+InputSpec/rendering, complete C and M2 segment/ordinal/reset semantics. Faithful restoration
+remains a retained delivery obligation; using the restored model as comparison input
+is not a prerequisite for ready native work, new training or G2's minimal common
+application journey.
 
 GitHub on2026-10-11 still lists28 open PRs. [PR171](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/171)
 is the active integration candidate. [PR172](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/172)

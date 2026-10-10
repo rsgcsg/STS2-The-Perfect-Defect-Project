@@ -76,8 +76,9 @@ rewrite old tuples or duplicate Source3/direct aliases to pad N. Original admitt
 sources may supplement the selected100–300; Teacher100 is not a universal prerequisite.
 
 Reuse current recipe/engine/export/Registry and common product/control/data/task owners.
-Old-model recovery is optional baseline feedback, not a blocker for ready native work,
-new learning or the minimal G2 application journey. Actual admitted data/use/contract
+Faithful old-model restoration remains a retained delivery obligation. Its use as
+comparison feedback is not a prerequisite for ready native work, new learning or
+the minimal G2 application journey. Actual admitted data/use/contract
 closure precedes a frozen new fit/checkpoint/Model, export/register/load and a learned
 fresh game toward natural summary, visible identity and confirmed Stop. The selected
 100–300 closes a small engineering chain; retained10k, mechanism/product coverage,
