@@ -143,6 +143,12 @@ def verify_pair_features(
         raise BoundaryError("reward_m0_inputs", "typed_pair_features_required")
     source = verify_reward_m0_source(store, feature.parent("source"))
     raw = b"".join(store.read_payload(feature.payload("state_tokenizer")))
+    fitted = fit_state_bpe(
+        samples_for(source, "A") + samples_for(source, "B"),
+        vocab_size=config.state_vocab_size,
+    )
+    if raw != fitted:
+        raise BoundaryError("reward_m0_inputs", "exact_paired_TRAIN_union_tokenizer_required")
     tokenizer, expected = _compile(source, raw, config)
     info = feature.parameters.value()
     if (

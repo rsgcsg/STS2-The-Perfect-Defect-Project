@@ -530,3 +530,54 @@ def test_original_missing_B_Read_excludes_same_occurrences_from_both_arms(pair_o
     assert {row["occurrence_id"] for row in result["rows"]}.isdisjoint(
         row["occurrence_id"] for row in result["exclusions"]
     )
+
+
+def test_republished_foreign_tokenizer_and_consistent_rows_cannot_claim_TRAIN_union(pair_originals):
+    from stpd.fullrun.features import ModelSample
+    from stpd.fullrun.light_action_inputs import _state_codec, fit_state_bpe
+    from stpd.fullrun.reward_m0_inputs import (
+        _compile,
+        publish_pair_features,
+        verify_pair_features,
+    )
+    from stpd.fullrun.reward_m0_source import (
+        publish_reward_m0_source,
+        verify_reward_m0_source,
+    )
+
+    store, _, _, _, _ = pair_originals
+    config = RewardM0Config(steps=2, state_vocab_size=512)
+    value = project(pair_originals, config)
+    source_manifest = publish_reward_m0_source(store, value, PRODUCER)
+    source = verify_reward_m0_source(store, source_manifest.artifact_id)
+    feature = publish_pair_features(store, source, config, PRODUCER)
+    verify_pair_features(store, feature.artifact_id, config)
+    # External synthetic corpus is deliberately disjoint from the authorized
+    # source. Rehash every derived field, so this reaches the fit-origin guard.
+    external = ModelSample(
+        "external",
+        "external-run",
+        "train",
+        "synthetic",
+        "synthetic",
+        "EXTERNAL_ONLY_WORDS " * 200,
+        ("external",),
+        ("external",),
+        0,
+    )
+    foreign = fit_state_bpe((external,), vocab_size=config.state_vocab_size)
+    assert foreign != b"".join(store.read_payload(feature.payload("state_tokenizer")))
+    tokenizer, compiled = _compile(source, foreign, config)
+    payload = store.put_payload("state_tokenizer", io.BytesIO(foreign), "application/json")
+    paired = store.put_payload("paired_rows", io.BytesIO(json_bytes(compiled)), "application/json")
+    info = feature.parameters.value()
+    info["state_codec"] = _state_codec(foreign, tokenizer, "s", config.max_state_tokens)
+    info["length_stats"] = compiled["length_stats"]
+    forged = replace(
+        feature,
+        payloads=(payload, feature.payload("action_codec"), paired),
+        parameters=FrozenObject.of(info),
+    )
+    store.publish(forged)
+    with pytest.raises(BoundaryError, match="exact_paired_TRAIN_union_tokenizer_required"):
+        verify_pair_features(store, forged.artifact_id, config)
