@@ -10,6 +10,7 @@ import hashlib
 import importlib.metadata
 import json
 import socket
+import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,7 @@ from metadata_import_guard import no_torch_imports as no_torch_imports
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.workbench import native_source3_collection as module
+from spireagent.workbench.developer import evidence_identity
 
 
 class DiagnosticChild(module.OwnedPipeChild):
@@ -83,9 +85,16 @@ class RealStoreCollectionTests(unittest.TestCase):
         import sts2_platform_evidence as evidence
 
         self.assertIn("site-packages", str(Path(evidence.__file__).resolve()))
+        lock = tomllib.loads((module.ROOT / "uv.lock").read_text())
+        locked = [package for package in lock["package"]
+                  if package["name"] == "rsgcsg-sts2-platform-evidence"]
+        self.assertEqual(len(locked), 1)
         self.assertEqual(
-            importlib.metadata.version("rsgcsg-sts2-platform-evidence"), "0.1.0rc27"
+            importlib.metadata.version("rsgcsg-sts2-platform-evidence"), locked[0]["version"]
         )
+        pin = self.config.combination["evidence_source_revision"]
+        self.assertTrue(locked[0]["source"]["git"].endswith("#" + pin))
+        self.assertEqual(evidence_identity(pin)["status"], "PASS")
         self.assertTrue(module.installed_terminal_summary_available())
         fixture = module.ROOT.parent / "tools/test/native-source3-real-store-fixture.mjs"
         self.assertTrue(fixture.is_file())
@@ -101,6 +110,7 @@ class RealStoreCollectionTests(unittest.TestCase):
             execution_policy=module.OWNED_EXECUTION_POLICY,
         )
         policy = self.request.policy()
+        self.assertTrue(module.installed_execution_policy_supported(policy))
         actual_descriptor = module.descriptor(execution_policy=policy)
         frozen_descriptor = json_bytes(actual_descriptor)
         self.assertIsNone(module.closed_collection_producer(actual_descriptor, policy))
