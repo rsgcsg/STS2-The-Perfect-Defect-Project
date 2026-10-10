@@ -1,5 +1,10 @@
 # Testing And Evidence
 
+This document owns test design, creation, maintenance, execution selection and
+evidence meanings. Governance owns failure classification and architectural
+decisions; the active task owns authorization, budgets and completion conditions.
+Use existing tests, commands and task/PR records, not another test manager or ledger.
+
 The root suite is the portable source and package gate. It does not require
 proprietary STS2 files and does not prove installation, loading, mutation, a
 journey, Human evidence, or qualification.
@@ -20,7 +25,74 @@ npm run project:closeout
 `project:check` is part of the root portable gate. `project:closeout` reports
 path-based review signals and never rewrites semantic truth.
 
-## Hosted CI contract
+## Test design and maintenance
+
+Choose a test from the decision its consumer needs to make:
+
+```text
+claim/risk -> owning fact -> faithful normal/negative checks
+  -> scoped evidence -> consumer decision
+```
+
+Name the observable guarantee, owner and real producer/caller/reader path in the
+existing task or PR. Define a successful example and the relevant duplicate,
+stale, cancel, partial, ambiguous, unknown or cleanup counterexample before coding.
+Choose the lowest layer that can falsify the guarantee, and state any stronger
+unproved claim. Assertions observe behavior, ordering, identity or durable results;
+they must not merely restate implementation structure or prose. A green lower
+layer never removes a higher gate required by the claim.
+
+### Add, change or retire coverage
+
+| Situation | Required treatment |
+| --- | --- |
+| Changed behavior, bug repair, public contract, new abstraction, unsafe refactor baseline or escaped CI/governance failure | Add or update the lowest-cost faithful regression in the same PR; contract changes cover real providers, consumers and rejection/migration paths. |
+| Production or Human incident | Preserve the failure, regress its family, repair its owning cause, and add a crossed-boundary regression where needed. Explain whether the check catches the original failure earlier. |
+| Exact existing coverage, prose clarification or dead-code removal with an already covered observable contract | Name the existing test/assertion and why it covers the risk; no separate test mirroring the edit is needed. |
+| Changed expectation, tolerance, fixture, timeout or skip | Explain the intended contract and evidence. A changed implementation or slow run alone does not justify weaker assertions or fewer cases. Preserve archival consumers when semantics change. |
+| Duplicate, obsolete or costly test proposed for deletion/replacement | Inspect actual callers, current and archival contracts and unique normal/error coverage. Name retained or replacement coverage in the PR; cost alone cannot delete a required signal. |
+| Suspected flake or environment failure | A confirmed flaky test is a defect. Preserve each attempt and diagnose separately from assertion failures. Do not label an unexplained result flaky or harmless; a green rerun does not erase the first failure or automatically permit merge. |
+| Quarantine | Require an owner, issue, replacement signal and removal deadline, with review of the lost coverage and merge requirements. No silent skip; this policy creates no automatic quarantine lane. |
+
+Maintain regressions with the owning behavior rather than accumulating literal
+incident snapshots. Repeated failures of the same assumption activate Governance's
+existing L3 contract/architecture review; unrelated symptoms do not prove an
+architecture defect. A test itself can encode a wrong assumption. Correct it from
+the actual contract/evidence and retain the observed mismatch, rather than changing
+production validation to accept an independently invented fixture.
+
+### Faithful fixtures and test shapes
+
+Critical lifecycle fixtures preserve realistic identity, ordering, duplicate,
+stale, cancel, unknown, persistence and final-auditor behavior. Declare mocked
+seams and claims they cannot prove. A stub, simplified flag or direct root
+injection can isolate a branch but cannot establish the production lifecycle it
+bypasses. Use production serializers or shared versioned contract fixtures at
+cross-owner seams, then exercise the real reader and verifier.
+
+Expensive immutable producer output may be built once and copied through the
+existing artifact transfer API into private stores per test. Preserve original
+bytes, identities and lineage; prove that damaging one copy leaves the baseline
+and another copy valid. Do not share writable databases, open handles, lifecycle
+state, controllers, process registries or mutable caches. Tests of construction,
+startup, migration or recovery still need a fresh instance when that is the risk.
+`python/tests/test_token_comparison.py` is an existing producer-to-comparator
+example with private copies and an isolation regression, not a claim about all
+fixture families or hosted performance.
+
+| Shape | Appropriate risk |
+| --- | --- |
+| Unit/static | deterministic calculations, parsers, codecs, schemas, bounds, identity mapping and local branches |
+| Component | collaborating classes and actual lifecycle/files/process cleanup inside one owner |
+| Contract/conformance | public providers, consumers and external adapters against the same versioned contract |
+| Short integration | a real A-to-B seam where independently green units may disagree |
+| Cross-layer causal | root/native identity through Commit, successor, persistence and the production final auditor |
+| Exact-game | compilation and conformance against the exact local STS2 |
+| Runtime/system | package, install, load, lifecycle, recovery and rollback |
+| Journey/E2E | a few critical workflows; presentation does not become semantic authority |
+| Performance/load/resilience/security | a risk owned by the change, with claim-adjacent baselines and metrics |
+
+## Local feedback and candidate checks
 
 ### Fast feedback without repeated assurance work
 
@@ -93,8 +165,43 @@ hosted runs that prove the same thing; retain the required local native/runtime
 checks. The [passive-wait checkpoint](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)
 changes how the engineer waits, not the execution or acceptance status of a job.
 
+### Measure cost and use safe concurrency
+
+Measure command and phase duration, including collection/setup, producer/build,
+assertions and teardown, before choosing a speed repair. Use existing workspace
+stage summaries, Python command timings and pytest/JUnit duration diagnostics;
+report exact source, OS/tool versions, warm/cold state and fixture size. Optimize
+the measured bottleneck without weakening normal/error assertions, pressure,
+lineage, lifecycle isolation or cleanup. Local timing does not predict hosted
+Linux or Windows performance. There is no universal test percentage or timeout.
+
+Fast targeted feedback and earlier boundary failures are engineering aspirations,
+not promised durations or implemented new CI lanes. Reduce duplicate setup and
+unchanged reruns first; broader sharding, new routing or gate movement needs its
+own reviewed policy/code change. Broad compatibility, flake/soak and trend checks
+may use existing scheduled/on-demand gates where applicable; required PR checks
+are not moved there by this recommendation.
+
+Cheap independent read-only checks may run concurrently after their prerequisites.
+Concurrent executions need disjoint writable worktrees, environments, temporary
+state, stores, processes and ports; reserve shared writers explicitly. Never
+rebuild/delete generated SDK or Runtime `dist` while a consumer reads it. The
+lead (Root) coordinates the sole heavy local/game/integration/BOM writer slot under
+[AI collaboration](AI_COLLABORATION.md#roles-and-actual-access); available workers
+do not imply available machine resources. While gates run, continue independent
+authorized review or work without mutating the frozen candidate or its inputs.
+A dependent consumer waits for the actual contract/build/evidence prerequisite,
+not a queued job, stale generated output or another branch's green status.
+
+## Hosted CI contract
+
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
-exact-game or runtime qualification environment.
+exact-game or runtime qualification environment. PR checks are deterministic,
+portable and diagnostically clear; path-conditional selection requires tests of
+the router itself. Proprietary exact-game, Human, production-secret, destructive
+production and raw-session operations stay outside public hosted CI. Release or
+manual qualification retains package/install/load/rollback, production-like E2E,
+load/resilience and Human gates when the claim requires them.
 
 The workflow always starts a `plan` job. The same local router is available as:
 
@@ -143,9 +250,18 @@ depending on a previous full component build.
 ### Execute by dependency and report every selected owner
 
 `tools/check-workspace.mjs` retains the existing full/Python component inventory.
-It runs repository/identity guards, then the shared SDK/Runtime build and the
-short S0 producer/consumer checks before the broad component/Python suites. A
-failed repository prerequisite blocks later stages. A failed generated-client
+The dependency order is:
+
+```text
+repository/identity guards -> Connector SDK build -> Policy Runtime build
+  -> actual short S0 normal/error consumer checks -> broader selected owners
+```
+
+Dependencies are success conditions, not merely execution order. The current
+runner executes stages sequentially; this DAG explains which consumers must wait
+and which independent results remain useful, without claiming parallel scheduling.
+It runs the short S0 producer/consumer checks before the broad component/Python
+suites. A failed repository prerequisite blocks later stages. A failed generated-client
 build blocks its S0, Runtime and Python consumers; unrelated owner
 checks still execute. An Annotator or S0 test failure no longer hides independent
 Evidence, Runtime or Python results. S0 and Python read that generation before
@@ -197,6 +313,12 @@ clean committed diff. `npm run check` always runs full.
 `portable` is the required aggregate: plan and all selected jobs must succeed;
 unselected jobs must be skipped. Failure/cancellation never becomes a PASS. A Python,
 docs or reuse result is labelled as such, not as a new full dual-OS execution.
+
+The local diagnostic scope may be smaller than merge or release scope. The current
+router, every selected leaf and `portable`, plus any stronger active-task
+prerequisite, remain binding until a separately reviewed policy/code change alters
+them. Testing/governance edits select full today. This document does not implement
+new shards, selectors or lanes, nor waive an existing full or dual-OS prerequisite.
 
 ### Integration receipts instead of repeated identical execution
 
