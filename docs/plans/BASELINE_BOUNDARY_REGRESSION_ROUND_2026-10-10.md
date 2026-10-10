@@ -450,7 +450,7 @@ runs/local incidents remain in their original scope. The official repository gat
 passed after scoped owned-process diagnosis/repair; original kill EPERM remains
 preserved and its exact cause is unproved.
 
-### Paired Reward: published Source and measured tokens, no new fit
+### Paired Reward: Source, tokens and actual A/B TRAIN fits
 
 One600s S01 d6 owner-receipt refresh completed exit0 after216.3546s/RSS951418880:
 current receipt prefix `43b5fa4e…`, original `ed188…` and current compatibility `181c…`
@@ -470,8 +470,8 @@ A max660/total13869 state tokens; B max2957/total72173; both max453/total32452 a
 bytes. Actual shared vocabulary1962 and tokenizer digest `28088c08…`/67341 bytes
 are recorded. Token compilation took3.9385s/macOS RSS634667008 and left its observed
 journal unchanged. The paired900s/1GiB binding is training wall/scratch, not a measured
-fit duration or RSS limit. No NN allocation/forward/update, new use/fit, Input/Run/
-Model publication or held-out/native strategy result follows. Detailed originals are
+fit duration or RSS limit. That preflight receipt itself contains no NN allocation/
+forward/update or Input/Run/Model publication; the later fits are recorded below. Detailed originals are
 private under the current-round `paired-reward` receipt route.
 
 First-fit preflight encountered the historical completed-v4 S01 slot, operation
@@ -480,11 +480,44 @@ First-fit preflight encountered the historical completed-v4 S01 slot, operation
 attempts, unchanged journal and no archive/owner mutation. The reviewed source
 bridge `8d7a377b`, integrated at `45be1b73`, permits an explicit common-owner successor
 only after immutable preservation of the exact completed history. Root integration
-tests passed. This is source/test acceptance: the genuine old slot remains unchanged,
-no archive/transition or new training start has occurred, and its old remote history
-is not relabelled as the new local fit.
+tests passed. The subsequent actual common-owner start archived all original70379
+bytes under immutable history digest `59d7dfda…` before A replaced the active slot.
+The original26 remote attempts retain their identities; their completed history is
+not relabelled as the new local fit. After B, the active operation is local-v3 B,
+whose predecessor chain preserves completed A and the original legacy history.
 
-### Optional M0 card-reward Agent: source accepted, comparison unlaunched
+Both actual local-CPU fits executed once at producer source
+`37d8114c2d6ae76caa1be87f240d98bc331c4a43`/formal lock `6a14b4e…`, separately from
+Source `626…` publication's dataset producer `dba23997`. Each completed40 optimizer
+updates on the same40 unique TRAIN rewards from three historical runs. A/B share
+scratch backbone shape, initial weights digest `b8dd512a…`, tokenizer `28088c08…`,
+seed1701, paired feature `9bff0647…` and order; their declared InputSpecs/data
+identities remain distinct.
+
+| Arm | Operation | Input | Run | Model | Charged wall | Reserved artifacts |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | `c3b8259e…` | `c7af1410…` | `ef3ed60f…` | `2d5be9f1…` | 49.0495s | 296389486 bytes |
+| B | `20149051…` | `6eb57396…` | `437ecd2a…` | `1e3b2d49…` | 65.6646s | 296389559 bytes |
+
+Both typed terminals report completed/verified/selected, TRAIN-only result,
+evaluation not run,40 updates and retained scratch0. Child exits are unforced0;
+separate Root executor receipts confirm exit0 and worker release. New Input/Run/
+Model/result/checkpoint artifacts are published under the owning store. These are
+actual fits and bounded publication receipts, not preview costs. Private originals
+are `paired-reward/fit-A1`, `fit-B1` and `root-pair-metadata-audit.json`; the latter
+reads saved metadata/metrics without NN replay or weight payloads. Independent
+receipt `reward-m0-pair-independent-audit-37d8114c.json` accepts this same bounded
+metadata/saved-metrics level; it adds no numerical replay or full-bundle reprojection.
+
+TRAIN internal diagnostics give A mean NLL0.925382/top1 20/40 and B0.842645/top1
+27/40, with uniform-candidate mean NLL0.990708. Both include six one-candidate rows; card selection alone is A3/11 and B6/11.
+The numerical difference is observed on this small training cohort, not an independent
+held-out result, causal deck-input benefit, model-quality qualification or proof of
+a native reward-loop fix. Neither new paired Model has been exported/registered/
+used in the actual game; separate online InputSpec/Read integration remains required.
+Aggregate provider spend remains USD0 within the one USD20 envelope.
+
+### Optional M0 card-reward Agent: incomplete native comparison
 
 The explicit optional stateless Agent program `a59981eb` atop `4d629135` is independently
 reviewed and integrated at `1e58fc17`; Root's related201 tests passed. It preserves the
@@ -494,17 +527,35 @@ chooses the NN-highest eligible card. Other decisions retain original argmax. Th
 malformed/unsettled visible-card boundary rejects before optional selection. This is
 a declared optional strategy experiment, not a changed model, new legality engine or
 proof that deck input caused the old loop. The private same-seed bounded Auto packet
-prefix `7da…` is independently accepted but unlaunched: no reward exit, actual progress
-or quality improvement has yet been observed.
+prefix `7da…` was independently accepted. The distinct same-seed native Auto executed
+at frozen `37d8114c`/consumer `bc2e3de00a92b44e710c384f1c3652c55e592af05299aeb7a11e2f399afb0955`,
+run `run-d5c29472-fd73-4d91-ade9-85daa8fc168e`, Host `c91686bc32f04344aa6add04db7bb766`.
+Root executor5389 ended exit1/released. The original `failure.json` remains incomplete/
+`cleanup_or_evidence_unconfirmed`: the private offline audit raised `KeyError: attribution`
+while joining evidence. A later pure audit must retain that original failure and is
+not a new game, native retry or retroactive successful driver result.
+
+Before Stop, Runtime recorded110562ms,122 policy calls and122 submission attempts,
+then Human/released with final `not_delivered/stale_snapshot`; no summary was reached.
+Its mode-change reason and the underlying stale-snapshot cause require exact source/
+event review; no runtime diagnosis is inferred here. Separately, actual Stop reports
+stopped/not loaded/Human/released, no taint/errors; typed sealed verification passes.
+Typed evaluation content `fdd16860…` records398 events,122 decisions/receipts,
+94 delivered and28 not-delivered receipts. Signed Host shutdown returned HTTP200,
+exit0 unforced. Thus cleanup and typed content are verified even though the private
+end-to-end audit driver failed. Sealed reward progress and independent cause audit
+remain pending; no accepted reward-loop fix, natural summary or quality result follows.
+Private originals remain under `m0-card-reward-program/native-auto-pilot1`.
 
 Next is evidence-led strategy/input evaluation for the original partial M2 and the
 prior M0 loop, preserving original identity/history and using separate future attempts.
 Natural early loss remains a strategy failure; source/data acceptance does not satisfy
-basic ability. Apply the explicit historical bridge through its common owner before
-any paired use/fit, with measured cohort/cost limits and original history intact.
-Preflight compatible derived native registration/game use after accepted parity, and
-evaluate the optional M0 Agent in the separate same-seed Auto after coherent source/
-SDK/Runtime/profile freeze. Obtain fresh selected CI for the reviewed source batch.
+basic ability. Preserve the published A/B TRAIN artifacts and complete independent
+held-out/native evaluation before any input-benefit claim. Preflight compatible
+derived native registration/game use after accepted parity, and audit the optional
+M0 Agent from the original same-seed Auto sealed evidence/cause audit, preserving
+its incomplete driver receipt separately. Freeze source/SDK/Runtime/profile for any
+future distinct consumer; never replay this attempt to repair evidence. Obtain fresh selected CI for the reviewed source batch.
 No automatic unknown retry. Faithful restoration and10k meaningful data, full SC/SX/
 product scope,30 attempts, recovery/performance, quality comparisons and user approval
 remain required. Each stage keeps its exact evidence level.

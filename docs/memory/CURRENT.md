@@ -52,11 +52,14 @@ Its original package/load evidence remains valid in the original environment.
 Explicit compatible-package reconciliation, a distinct derived export and old/current
 locked numerical parity are complete; original package/history remain unchanged.
 Current derived registration/game use is still pending. Paired Reward Source is
-published/reserved, and the same40-TRAIN cohort has measured token budgets. No new
-use/fit or Input/Run/Model publication occurred. First-fit preflight found a closed
-legacy completed-v4 slot; its reviewed history bridge is integrated, but the genuine
-old slot remains unchanged and no new fit has started. The optional M0 card-reward
-Agent program is source/test accepted; its same-seed Auto is prepared and unlaunched.
+published/reserved, and actual local A/B fits each completed40 updates on the same
+40-TRAIN reward cohort from three runs. Input/Run/Model artifacts are published;
+TRAIN-only diagnostics do not establish held-out or causal input benefit. The common
+owner archived the exact completed legacy-v4 bytes before A; the current v3 slot is
+B with its A-to-legacy predecessor chain intact. The optional M0 card-reward Agent
+program is source/test accepted. Its separate same-seed Auto ended without summary
+after a stale-snapshot refusal; Stop/Host cleanup are verified, while the original
+private audit failed and sealed progress/cause review remain pending.
 Later official repository checks passed; the original
 process-cancellation failure and unproved cause remain preserved. Keep original
 history and strict validation intact.
@@ -70,10 +73,11 @@ Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
 retried automatically and every new canary has a distinct explicit identity.
 
 Preflight actual registration/game use of the compatible derived package; export/
-parity are not strategy qualification. Apply the reviewed explicit legacy-history
-transition through the common owner before any new paired use/fit; published Source
-and token measurements are not training. Evaluate the optional M0 program in its
-separate same-seed bounded Auto after source freeze. Revalidate owning gates and
+parity are not strategy qualification. Review the paired TRAIN results within their
+small-cohort scope and plan independent held-out/native evaluation before claiming
+input benefit. Audit the optional M0 program only from its sealed same-seed Auto
+outcome and preserve its failed audit receipt separately from any later read-only
+review. Revalidate owning gates and
 fresh full dual-OS/portable CI; source, data, runtime and quality remain
 separate and only the user approves complete G2/V1.
 
