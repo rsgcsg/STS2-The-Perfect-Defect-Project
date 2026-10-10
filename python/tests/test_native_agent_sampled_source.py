@@ -1541,8 +1541,14 @@ def test_map_ready_teacher_frozen_original_tuple_replays_with_sparse_N(
 ):
     from stpd.native_agent_sampled_source_spec import (
         MAP_READY_TEACHER_PRODUCER as definition,
-        MAP_READY_TEACHER_RELATION_SPEC as relation,
+    )
+    from stpd.native_agent_sampled_source_spec import (
         MAP_READY_TEACHER_PROJECTION_SPEC as projection,
+    )
+    from stpd.native_agent_sampled_source_spec import (
+        MAP_READY_TEACHER_RELATION_SPEC as relation,
+    )
+    from stpd.native_agent_sampled_source_spec import (
         OWNED_STALE_TEACHER_RELATION_SPEC,
         TEACHER_COHORT,
         checked_specs,
