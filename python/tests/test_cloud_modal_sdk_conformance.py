@@ -1,4 +1,4 @@
-"""Current adapter against the locked public SDK; only client/wire I/O is replaced."""
+"""Locked public SDK conformance with guarded I/O and explicit clock schedules."""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ import os
 import socket
 import subprocess
 import sys
+from functools import wraps
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import modal
 import pytest
 from google.protobuf.empty_pb2 import Empty
+from modal import _functions
 from modal._serialization import deserialize_data_format, serialize_data_format
 from modal._utils.async_utils import synchronizer
 from modal.client import _Client
@@ -36,6 +38,8 @@ class Wire:
         self.lookups = []
         self.submissions = []
         self.polls = []
+        self.gets = []
+        self.poll_clock = None
         self.cancellations = []
         self.submit_error = None
         self.cancel_error = None
@@ -78,6 +82,8 @@ class Wire:
         assert request.function_call_id == self.call_id
         assert request.timeout == 0 and request.start_idx == request.end_idx == 0
         assert request.clear_on_success is False
+        if self.poll_clock is not None:
+            self.poll_clock.after_reply()
         if self.execution_timeout:
             result = api.GenericResult(
                 status=api.GenericResult.GENERIC_STATUS_TIMEOUT, exception="remote deadline",
@@ -125,8 +131,49 @@ def sdk_wire(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
+    original_get = vars(modal.FunctionCall)["get"]
+
+    @wraps(modal.FunctionCall.get)
+    def observed_get(call, timeout=None, *, index=0):
+        # from_id is lazy; do not inspect object_id before the real get hydrates.
+        wire.gets.append((call, timeout, index))
+        return original_get.__get__(call, modal.FunctionCall)(timeout=timeout, index=index)
+
+    monkeypatch.setattr(modal.FunctionCall, "get", observed_get)
     yield ModalProvider(selected, sdk=modal), wire
     opened.assert_not_awaited()
+
+
+class CoarseWallClock:
+    """Bounded transport schedule: three replies in one 1/64-second clock tick."""
+
+    def __init__(self):
+        self.now = 1_700_000_000.0
+        self.replies = 0
+
+    def time(self):
+        return self.now
+
+    def after_reply(self):
+        self.replies += 1
+        assert self.replies <= 9, "coarse-clock transport reply budget exhausted"
+        if self.replies % 3 == 0:
+            self.now += 1 / 64
+
+
+@pytest.fixture(params=["system", "coarse"])
+def poll_clock(sdk_wire, monkeypatch, request):
+    if request.param == "system":
+        return None
+    _, wire = sdk_wire
+    clock = CoarseWallClock()
+    # SDK 1.5.5 uses time.time(), not the dispatcher's loop clock, and exits an
+    # empty get(timeout=0) only after elapsed time is strictly positive. Replace
+    # its module reference only; asyncio, synchronicity and global clocks remain
+    # real. This schedule simulates equal wall-clock readings, not Windows itself.
+    monkeypatch.setattr(_functions, "time", clock)
+    wire.poll_clock = clock
+    return clock
 
 
 def request():
@@ -175,7 +222,7 @@ def test_real_sdk_submit_transport_unknown_invokes_once_without_retry(sdk_wire):
     assert not wire.polls and not wire.cancellations
 
 
-def test_locked_sdk_pending_poll_raises_builtin_timeout_at_the_wire_boundary(sdk_wire):
+def test_locked_sdk_pending_poll_raises_builtin_timeout_at_the_wire_boundary(sdk_wire, poll_clock):
     provider, wire = sdk_wire
     handle = provider.submit(request())
     call = modal.FunctionCall.from_id(handle.call_id)
@@ -183,18 +230,24 @@ def test_locked_sdk_pending_poll_raises_builtin_timeout_at_the_wire_boundary(sdk
         call.get(timeout=0)
     assert type(error.value) is TimeoutError
     assert not isinstance(error.value, modal.exception.TimeoutError)
-    assert len(wire.polls) == len(wire.submissions) == 1
+    assert wire.gets == [(call, 0, 0)] and call.object_id == handle.call_id
+    assert len(wire.lookups) == len(wire.submissions) == 1
+    assert wire.polls and not wire.cancellations
+    if poll_clock is not None:
+        assert len(wire.polls) == poll_clock.replies == 3
+        assert {item.requested_at for item in wire.polls} == {poll_clock.now - 1 / 64}
 
 
 @pytest.mark.parametrize("execution_timeout", [False, True])
 def test_real_sdk_empty_poll_and_remote_execution_timeout_remain_distinct(
-    sdk_wire, execution_timeout,
+    sdk_wire, execution_timeout, poll_clock,
 ):
     provider, wire = sdk_wire
     handle = provider.submit(request())
     saved = handle.to_dict()
     wire.execution_timeout = execution_timeout
-    for _ in range(2):
+    for index in range(2):
+        first_poll = len(wire.polls)
         if execution_timeout:
             with pytest.raises(BoundaryError) as error:
                 provider.poll(handle)
@@ -202,8 +255,32 @@ def test_real_sdk_empty_poll_and_remote_execution_timeout_remain_distinct(
         else:
             assert provider.poll(handle) is None
         assert handle.to_dict() == saved
-    assert len(wire.lookups) == len(wire.submissions) == 1
-    assert len(wire.polls) == 2 and not wire.cancellations
+        # Observe the application boundary independently of the SDK's internal
+        # read-only polling. One public get binds to the original call per poll;
+        # repeated wire reads never imply another FunctionMap or cancellation.
+        assert len(wire.gets) == index + 1
+        call, timeout, output_index = wire.gets[-1]
+        assert (call.object_id, timeout, output_index) == (saved["call_id"], 0, 0)
+        assert len(wire.lookups) == len(wire.submissions) == 1
+        assert not wire.cancellations and len(wire.polls) > first_poll
+        if execution_timeout:
+            assert len(wire.polls) == first_poll + 1
+        elif poll_clock is not None:
+            assert len(wire.polls) == first_poll + 3
+            assert {item.requested_at for item in wire.polls[first_poll:]} == {
+                poll_clock.now - 1 / 64,
+            }
+    if not execution_timeout:
+        # Empty reads do not consume the result: reconcile the same original
+        # saved call when the wire later publishes its actual serialized receipt.
+        first_poll = len(wire.polls)
+        expected = completed(wire, handle.request)
+        assert provider.poll(provider.restore_handle(saved)) == expected
+        assert len(wire.polls) == first_poll + 1 and len(wire.gets) == 3
+        call, timeout, output_index = wire.gets[-1]
+        assert (call.object_id, timeout, output_index) == (saved["call_id"], 0, 0)
+        assert handle.to_dict() == saved
+        assert len(wire.lookups) == len(wire.submissions) == 1 and not wire.cancellations
 
 
 def test_real_sdk_cancel_ack_does_not_create_a_terminal_receipt_or_new_call(sdk_wire):
