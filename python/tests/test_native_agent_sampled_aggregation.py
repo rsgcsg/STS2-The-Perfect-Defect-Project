@@ -263,3 +263,36 @@ def test_frozen_aggregate_definitions_bind_compatible_public_semantics_and_exact
         assert definition["consumption_mode"] == "once_per_occurrence"
         assert definition["input_spec_body"]["I"] is False
         assert definition["input_spec_body"]["F"] is False
+
+
+def test_common_application_import_preview_publish_reserves_without_actual_use(tmp_path, originals):
+    from test_native_agent_product_data import settled, setup
+
+    from spireagent.workbench.local_recording_import import native_agent_import_choices
+    from stpd.native_agent_sampled_source_spec import OWNED_STALE_TEACHER_RELATION_SPEC
+
+    importer, datasets, store, owner = setup(tmp_path / "product")
+    choices = native_agent_import_choices()
+    assert choices["default_relation_id"] == OWNED_STALE_TEACHER_RELATION_SPEC["id"]
+    ids = []
+    for helper in originals:
+        importer.start_native_agent_run(
+            str(helper.directory), FIXTURE_COHORT, AGGREGATE_TEACHER_RELATION_SPEC["id"]
+        )
+        imported = settled(importer)
+        assert imported["status"] == "completed", imported
+        ids.append(imported["artifact_id"])
+    datasets.start_native_agent_preview(ids)
+    preview = settled(datasets)
+    assert preview["status"] == "preview_ready" and preview["accepted_labels"] == 3
+    assert preview["producer_student_relation"] == AGGREGATE_TEACHER_RELATION_SPEC
+    datasets.start_publish(preview["preview_id"])
+    published = settled(datasets)
+    assert published["status"] == "completed" and published["split_status"] == "reserved"
+    assert published["actual_training_use"] is False
+    verified = source.verify_native_agent_sampled_partition(store, published["training_source_id"])
+    assert len(verified.dataset.runs) == 3
+    assert owner.ledger.dataset(verified.manifest.artifact_id) == ("training", set(verified.runs))
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM local_source_pending").fetchone() == (0,)

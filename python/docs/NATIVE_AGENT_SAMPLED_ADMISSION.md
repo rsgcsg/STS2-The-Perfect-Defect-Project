@@ -50,3 +50,12 @@ keys; explicit training-use recording remains a later action. Prepare and fit
 through the existing native sampled source and recipe contracts after source
 review, exact dataset selection and authorized use. This contract does not
 start collection, train, register a model or upload originals.
+
+Frozen descriptor literals currently grow with each reviewed Teacher artifact.
+This is a concrete maintenance cost of exact historical identity admission.
+A future representation change is justified when repeated producer promotions
+make reviewing or locating these immutable tuples materially error-prone. It
+must retain every old tuple hash and exact descriptor replay, separate source
+identity from a reviewed semantic compatibility class, and regress both
+historical rejection and compatible admission before replacing these literals.
+The present slice does not open arbitrary versions or an executable registry.
