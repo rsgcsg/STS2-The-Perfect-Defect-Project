@@ -28,15 +28,15 @@
     },
     "evidence": {
       "version": "0.1.0-rc.27",
-      "source_revision": "cd319ba9146eddb39bb09439fc9b2e366061360e",
-      "component_tree_revision": "193a71fbe5cbc1a55545920002ac1e5ff59c1a70",
-      "component_source_digest_sha256": "5191112ee97a8e3d8b029de6b02c1ad59b126b620ab30971bc03d17bb73b9625"
+      "source_revision": "8d7232d07e6fc922f52ae76c5cbaaa5795713cd2",
+      "component_tree_revision": "89b0a2d01cf6f8f5a167c8ab3c39f97b8a477939",
+      "component_source_digest_sha256": "0349e730fafc036aab07716ea420e4aa1aaa10989465a3ca34bd948a5a8e9a74"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.26",
-      "source_revision": "edffe1c56eb7c0f90b19fe09f059377963cfb299",
-      "component_tree_revision": "24dfb77f7eec0ffe99526b3cd79f57d2c31cca8e",
-      "component_source_digest_sha256": "7f96dfaab55490af0f3fe8f350c196db1732817b5d990d0376fcf1e217f17414"
+      "version": "0.1.0-rc.27",
+      "source_revision": "2475a0c8bd6f42281d1b4d09f5c76a425749f86b",
+      "component_tree_revision": "f7926ab56d4c0644c91cbc052a5dd2311cfb64ad",
+      "component_source_digest_sha256": "d7b675cd6b548ed83e935abf9be8a425f2862ece8b22d1553a475945361f0bd3"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -269,9 +269,9 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "edffe1c56eb7c0f90b19fe09f059377963cfb299",
-      "current_component_source_digest_sha256": "7f96dfaab55490af0f3fe8f350c196db1732817b5d990d0376fcf1e217f17414",
-      "current_component_version": "0.1.0-rc.26",
+      "current_component_source_revision": "2475a0c8bd6f42281d1b4d09f5c76a425749f86b",
+      "current_component_source_digest_sha256": "d7b675cd6b548ed83e935abf9be8a425f2862ece8b22d1553a475945361f0bd3",
+      "current_component_version": "0.1.0-rc.27",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
