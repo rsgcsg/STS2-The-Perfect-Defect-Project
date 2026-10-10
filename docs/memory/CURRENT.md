@@ -46,11 +46,13 @@ choice/delivery/Stop/reopen canary. No live W tensor was witnessed, and no whole
 strategy or current hosted CI pass follows.
 
 The old native learned package now correctly rejects the changed formal lock.
-Its original package/load evidence remains valid in the original environment;
-an explicit compatible package with separate provenance and numerical proof is
-being prepared. Do not weaken old validation or rewrite its training history.
-Paired Reward backend review/corrections and synthetic receipts do not constitute
-an actual cohort, training comparison or deployed online feature.
+Its original package/load evidence remains valid in the original environment.
+Compatible source is accepted/integrated, but actual publication interrupted at a
+readonly inspection-store boundary. New derived manifest/export are absent at the
+check; preserve the original operation and reconcile explicitly before another action.
+Paired Reward source/current-lock synthetic checks are integrated, with no real
+cohort/fit or online feature. A local process-cancellation gate failed and is under
+diagnosis. Keep original history and strict validation intact.
 
 ## Next actual dependencies
 

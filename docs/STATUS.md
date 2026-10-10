@@ -18,7 +18,9 @@ count/cleanup, and current formal SDK/Runtime installation plus Public M2 numeri
 parity and a bounded real one-choice/Stop/reopen canary. The packet distinguishes
 original native identities from changed lock/package provenance. Public M2 autonomous
 whole-game use and native-package migration are pending;
-Paired Reward has synthetic/source evidence only. Latest hosted CI remains failed.
+Compatible source is integrated but actual migration is blocked at publication;
+Paired Reward source is integrated with synthetic/local evidence, no real cohort/fit.
+Latest hosted CI remains failed.
 No natural-game/strategy/Human/scientific or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
 

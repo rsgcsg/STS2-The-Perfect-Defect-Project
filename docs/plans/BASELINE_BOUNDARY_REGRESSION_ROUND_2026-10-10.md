@@ -358,14 +358,28 @@ new export/runtime identity, and prove the closed Evidence-only dependency chang
 plus numerical/input/state parity. Do not silently bypass old strict validation,
 rewrite the training lock, fit again for an identity repair or accept arbitrary drift.
 
-Paired Reward M0 candidate `dcd42982` has source and bounded synthetic-engineering
-receipts only; it is not integrated or a real-cohort experiment. Backend review
-identified cross-arm proof binding, symmetric budget and resume-producer checks
-that are being corrected. The existing tiny two-arm optimization/checkpoint/resume
-fixture used an explicitly unlocked earlier environment; the first fixture failure
-and corrected run retain their scopes. No real S01 cohort freeze/use/fit, held-out
-comparison, deployable export or online Read adapter is claimed; current formal
-lock/fingerprints require their own acceptance before actual work.
+The closed compatibility source was independently accepted and normally merged at
+`e40…`, with56 integrated tests passing, but actual migration operation `f665…`
+interrupted after journalling derived intent `be827…`. At Root's read-only check,
+the new derived manifest/export were absent; original8eb/package/history remained
+unchanged and no automatic retry occurred. This does not assert that the original
+Model was never published or turn intent into a derived artifact. Diagnosis traced
+`_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
+`hasattr(publish)` had not established write capability. The author is repairing the
+owning mutable-publication/managed-workspace seam and explicit original-operation
+reconciliation before another action. Current compatible-package publication and
+current-environment parity remain blocked, despite accepted source/tests.
+
+Paired Reward source correction `6df…` is independently accepted and normally
+merged at `134b0a4c`; current-lock integration passed78 tests in52.15s. The current
+locked ordinary synthetic N4/two-arm/two-step pause/resume fixture also passed8.79s;
+the earlier `dcd42982` unlocked fixture and failed/corrected run retain their scopes.
+No real S01 cohort freeze/use/fit, held-out comparison, deployable export or online
+Read adapter is claimed. Root's later local repository gate failed in the existing
+owned-process cancellation fixture with kill EPERM; bounded diagnosis is pending.
+Unchanged earlier code/pass does not erase this failed local gate or establish a
+game defect. Source/synthetic acceptance is not a real training comparison or full
+current gate.
 
 ### Bounded original Public M2 native canary
 
