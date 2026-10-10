@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import math
 import sys
 from pathlib import Path
@@ -124,6 +125,10 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--binding-root", type=Path)
     args = parser.parse_args()
+    if not isinstance(sys.stdin, io.TextIOWrapper) or not isinstance(sys.stdout, io.TextIOWrapper):
+        raise BoundaryError("public_m0_policy", "public_stdio_required")
+    sys.stdin.reconfigure(encoding="utf-8", errors="strict", newline="")
+    sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n")
     import torch
 
     torch.set_num_threads(2)

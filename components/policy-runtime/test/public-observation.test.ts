@@ -27,6 +27,29 @@ const choice = (current: PublicStatefulPolicyDecisionInput, selected = 1) => ({
 });
 
 describe("bounded public observation Port4", () => {
+  it.each([[2, 3], [2, 4], [3, 2], [3, 4], [4, 2], [4, 3]])(
+    "rejects selected port%s / declared protocol%s before offer, pipe write or Model work",
+    async (selected, declared) => {
+      const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, exitCode: null, kill: vi.fn(() => true) });
+      const port = new NdjsonPolicyPort(child as unknown as ConstructorParameters<typeof NdjsonPolicyPort>[0]);
+      const written = vi.fn(); stdin.on("data", written);
+      const offered = vi.fn(), abort = new AbortController();
+      const current = input();
+      current.manifest.adapter.protocol = `sts2.policy-runtime/decision-only-ndjson-${declared}` as PolicyManifest["adapter"]["protocol"];
+      stdout.write(JSON.stringify({ schema: `sts2.policy-runtime/policy-port-${declared}`,
+        message_type: "ready", adapter: current.manifest.adapter }) + "\n");
+      await port.ready();
+      const publicInput = new PublicObservationTracker().prepare(current);
+      const legacyInput = { ...current, continuity_token: "token" };
+      const pending = selected === 2 ? port.decideV2(legacyInput, abort.signal, offered)
+        : selected === 3 ? port.decideV3(legacyInput, abort.signal, offered)
+        : port.decideV4(publicInput, abort.signal, offered);
+      await expect(pending).rejects.toThrow(/selected schema\/manifest protocol mismatch/);
+      expect(offered).not.toHaveBeenCalled(); expect(written).not.toHaveBeenCalled();
+      port.close();
+    });
+
   it("requires the explicit generic Snapshot profile and keeps all old ports closed", () => {
     expect(validatePolicyManifest(manifest())).toEqual(manifest());
     for (const alter of [

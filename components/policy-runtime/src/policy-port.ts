@@ -101,14 +101,19 @@ export class NdjsonPolicyPort {
   }
 
   decideV4(input: PublicStatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void): Promise<PublicStatefulAdapterDecision> {
-    if (input.decision.manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-4")
-      return Promise.reject(new Error("public observation port requires protocol4"));
     return this.decideStateful(input, signal, onOffer, POLICY_PORT_V4_SCHEMA) as Promise<PublicStatefulAdapterDecision>;
   }
 
   private decideStateful(input: StatefulPortInput, signal: AbortSignal, onOffer: () => void, schema: StatefulPortSchema): Promise<StatefulAdapterDecision> {
     if (this.closed) return Promise.reject(new Error("policy child port is closed"));
     if (signal.aborted) return Promise.reject(new Error("policy decision cancelled"));
+    const decision = "decision" in input ? input.decision : input;
+    const protocol = schema === POLICY_PORT_V2_SCHEMA ? "sts2.policy-runtime/decision-only-ndjson-2"
+      : schema === POLICY_PORT_V3_SCHEMA ? "sts2.policy-runtime/decision-only-ndjson-3"
+      : "sts2.policy-runtime/decision-only-ndjson-4";
+    if (decision.manifest.adapter.protocol !== protocol
+        || (schema === POLICY_PORT_V4_SCHEMA) !== ("decision" in input))
+      return Promise.reject(new Error("policy port selected schema/manifest protocol mismatch"));
     const requestId = randomUUID();
     const request = { schema, message_type: "decide", request_id: requestId,
       ...("decision" in input ? input : { input }) };

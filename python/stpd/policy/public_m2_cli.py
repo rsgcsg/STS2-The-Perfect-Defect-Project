@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 from pathlib import Path
@@ -42,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
             validate_package(args.destination, load_weights=True)
             print(json.dumps(receipt(args.destination)))
             return 0
+        if (not isinstance(sys.stdin, io.TextIOWrapper)
+                or not isinstance(sys.stdout, io.TextIOWrapper)):
+            raise BoundaryError("public_m2_consumer", "public_stdio_required")
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict", newline="")
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n")
         from stpd.public_m2_policy_installation import validate
 
         from .public_m2_export import FILES, validate_package
