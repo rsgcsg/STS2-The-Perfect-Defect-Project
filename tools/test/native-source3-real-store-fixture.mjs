@@ -26,7 +26,7 @@ const referent = (id, role, properties = null) => ({ referent_id: id, role, kind
   state: { visible: true, enabled: true, selected: false, focused: false, observation_basis: "SYN_public_fixture" },
   properties_schema: null, properties });
 const leaf = (verb, subject = null) => ({ verb, label: verb, subject_referent_id: subject,
-  arguments: [], effect_domain: "native", binding_key: "SYN_binding:" + verb });
+  arguments: [], effect_domain: "native" });
 function publicFrame(index, incomplete = false) {
   const map = index === 1;
   return { stream_generation: stream, session: { runtime_instance_id: runtimeId, environment_fingerprint: environmentId },
@@ -39,7 +39,7 @@ function publicFrame(index, incomplete = false) {
         : { kind: "run_deck" }, context: { kind: "SYN_public_context" } } },
     referents: map ? [referent("map-point", "map_point")]
       : [referent("public-card", "card", { definition_id: "SYN_DEFEND", cost: index === 2 ? "1" : "2", description: "SYN displayed card" })],
-    information_policy: { id: "player_visible_v1", scope: "current_page", hidden_state_exposed: false, unknown_field_behavior: "explicit" },
+    information_policy: clone(wire.observation.information_policy),
     leaves: map ? [leaf("open_run_deck"), leaf("activate", "map-point")]
       : [leaf("inspect_deck_card", "public-card"), leaf("return_native_information")],
     source_completeness: { status: incomplete ? "partial" : "complete", missing: incomplete ? ["SYN_required_public_fact"] : [] } };

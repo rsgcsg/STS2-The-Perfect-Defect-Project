@@ -29,6 +29,22 @@ class RealStoreCollectionTests(unittest.TestCase):
     mock = collection_fixtures.CollectionTests.mock
     application = collection_fixtures.CollectionTests.application
 
+    @staticmethod
+    def failure_diagnostic(result, proof):
+        """Bound actual failures/phases; never dump the full generated report."""
+        errors = result.get("runtime_status", {}).get("errors", [])
+        phases = proof.get("diagnostics", {}).get("events", [])
+        return json.dumps({
+            "status": str(result.get("status"))[:64],
+            "error_code": str(result.get("error_code"))[:256],
+            "runtime_errors": [str(error)[:512] for error in errors[:3]],
+            "producer_phases": [
+                {"phase": str(event.get("phase"))[:64],
+                 "operation": str(event.get("operation"))[:64]}
+                for event in phases[-6:]
+            ],
+        }, ensure_ascii=True)[:2400]
+
     def run_real_chain(self, scenario: str):
         import sts2_platform_evidence as evidence
 
@@ -116,18 +132,19 @@ class RealStoreCollectionTests(unittest.TestCase):
         report_path = self.request.output / "report.json"
         self.assertEqual(json.loads(report_path.read_bytes()), result)
         proof = json.loads((self.request.output / "real-chain-producer-proof.json").read_bytes())
-        self.assertEqual(proof["endpoint"], self.config.platform_url)
+        diagnostic = self.failure_diagnostic(result, proof)
+        self.assertEqual(proof["endpoint"], self.config.platform_url, diagnostic)
         self.assertEqual(proof["stats"], {
             "charged_bytes": 0, "charged_buffers": 0, "handles": 0,
             "live_captures": 0, "now": 0,
-        })
-        self.assertEqual(proof["producer_exit"], {"code": 0, "signal": None})
-        self.assertGreater(proof["diagnostics"]["backend_pid"], 0)
-        self.assertEqual(proof["diagnostics"]["pending_operations"], [])
-        self.assertEqual(result["child"]["exit_code"], 0)
-        self.assertTrue(result["child"]["reader_terminal"])
-        self.assertTrue(result["child"]["diagnostics_terminal"])
-        self.assertEqual(result["child_final"]["cleanup_errors"], [])
+        }, diagnostic)
+        self.assertEqual(proof["producer_exit"], {"code": 0, "signal": None}, diagnostic)
+        self.assertGreater(proof["diagnostics"]["backend_pid"], 0, diagnostic)
+        self.assertEqual(proof["diagnostics"]["pending_operations"], [], diagnostic)
+        self.assertEqual(result["child"]["exit_code"], 0, diagnostic)
+        self.assertTrue(result["child"]["reader_terminal"], diagnostic)
+        self.assertTrue(result["child"]["diagnostics_terminal"], diagnostic)
+        self.assertEqual(result["child_final"]["cleanup_errors"], [], diagnostic)
         self.assertEqual(result["admission"], "not_run")
         self.assertIsNone(result["eligible_unique_N"])
         self.assertIsNone(result["source_start"])
@@ -145,13 +162,13 @@ class RealStoreCollectionTests(unittest.TestCase):
             })
         directory = Path(result["direct_evidence"]["directory"])
         checked = evidence.verify_agent_session_run_evidence(directory)
-        self.assertTrue(checked.passed, checked.findings)
+        self.assertTrue(checked.passed, f"{diagnostic}; findings={str(checked.findings)[:1024]}")
         summary = checked.require_value().terminal_summary
-        self.assertEqual(result["terminal_summary"], summary)
-        self.assertEqual(result["child_final"]["terminal_summary"], summary)
-        self.assertEqual(result["child_final_full"]["terminal_summary"], summary)
-        self.assertEqual(result["quiesced"]["counts"], result["child_final"]["counts"])
-        self.assertEqual(result["budget_submissions_used"], result["submissions"])
+        self.assertEqual(result["terminal_summary"], summary, diagnostic)
+        self.assertEqual(result["child_final"]["terminal_summary"], summary, diagnostic)
+        self.assertEqual(result["child_final_full"]["terminal_summary"], summary, diagnostic)
+        self.assertEqual(result["quiesced"]["counts"], result["child_final"]["counts"], diagnostic)
+        self.assertEqual(result["budget_submissions_used"], result["submissions"], diagnostic)
         events = [
             json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()
         ]
@@ -178,43 +195,46 @@ class RealStoreCollectionTests(unittest.TestCase):
 
     def test_real_parent_closes_delivered_and_stale_complete_originals(self):
         result, proof = self.run_real_chain("SYN_REAL_CHAIN_COMPLETE")
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["terminal_summary"]["terminal_result_count"], 3)
-        self.assertEqual(result["terminal_summary"]["known_delivered"], 2)
-        self.assertEqual(result["terminal_summary"]["known_stale_rejections"], 1)
-        self.assertEqual(len(proof["submits"]), 3)
+        diagnostic = self.failure_diagnostic(result, proof)
+        self.assertEqual(result["status"], "completed", diagnostic)
+        self.assertEqual(result["terminal_summary"]["terminal_result_count"], 3, diagnostic)
+        self.assertEqual(result["terminal_summary"]["known_delivered"], 2, diagnostic)
+        self.assertEqual(result["terminal_summary"]["known_stale_rejections"], 1, diagnostic)
+        self.assertEqual(len(proof["submits"]), 3, diagnostic)
 
     def test_real_current_gap_unknown_original_is_readonly_fresh_verifiable(self):
         result, proof = self.run_real_chain("SYN_REAL_CHAIN_CURRENT_GAP")
-        self.assertEqual(result["status"], "unknown")
-        self.assertEqual(result["terminal_summary"]["terminal_result_count"], 2)
-        self.assertEqual(result["terminal_summary"]["known_delivered"], 1)
-        self.assertEqual(result["terminal_summary"]["known_stale_rejections"], 1)
-        self.assertEqual(len(proof["submits"]), 2)
-        self.assertEqual(proof["currents"][-1]["status"], "source_capture_incomplete")
-        diagnostic = json.loads(
+        diagnostic = self.failure_diagnostic(result, proof)
+        self.assertEqual(result["status"], "unknown", diagnostic)
+        self.assertEqual(result["terminal_summary"]["terminal_result_count"], 2, diagnostic)
+        self.assertEqual(result["terminal_summary"]["known_delivered"], 1, diagnostic)
+        self.assertEqual(result["terminal_summary"]["known_stale_rejections"], 1, diagnostic)
+        self.assertEqual(len(proof["submits"]), 2, diagnostic)
+        self.assertEqual(proof["currents"][-1]["status"], "source_capture_incomplete", diagnostic)
+        failure_reply = json.loads(
             (self.request.output / "native-current-failure-reply.json").read_bytes()
         )
-        self.assertEqual(diagnostic["original_sdk_reply"]["raw"], proof["currents"][-1])
+        self.assertEqual(failure_reply["original_sdk_reply"]["raw"], proof["currents"][-1], diagnostic)
         marker, report, request = self.fresh_request(result)
         before = {p: p.read_bytes() for p in (marker, report)}
         boundary = module.verified_fresh_predecessor(marker, request)
-        self.assertFalse(boundary["can_resume_prior"])
-        self.assertFalse(boundary["can_retry_prior"])
-        self.assertFalse(boundary["prior_record_source3"])
-        self.assertEqual({p: p.read_bytes() for p in before}, before)
-        self.assertFalse(request.output.exists())
-        self.assertEqual(len(self.children), 1)
+        self.assertFalse(boundary["can_resume_prior"], diagnostic)
+        self.assertFalse(boundary["can_retry_prior"], diagnostic)
+        self.assertFalse(boundary["prior_record_source3"], diagnostic)
+        self.assertEqual({p: p.read_bytes() for p in before}, before, diagnostic)
+        self.assertFalse(request.output.exists(), diagnostic)
+        self.assertEqual(len(self.children), 1, diagnostic)
 
     def test_real_native_unknown_cannot_admit_fresh_episode(self):
         result, proof = self.run_real_chain("SYN_REAL_CHAIN_NATIVE_UNKNOWN")
-        self.assertEqual(result["status"], "unknown")
-        self.assertTrue(result["runtime_status"]["tainted"])
-        self.assertEqual(len(proof["submits"]), 2)
+        diagnostic = self.failure_diagnostic(result, proof)
+        self.assertEqual(result["status"], "unknown", diagnostic)
+        self.assertTrue(result["runtime_status"]["tainted"], diagnostic)
+        self.assertEqual(len(proof["submits"]), 2, diagnostic)
         marker, report, request = self.fresh_request(result)
         before = {p: p.read_bytes() for p in (marker, report)}
-        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_native_outcome_unresolved"):
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_native_outcome_unresolved", msg=diagnostic):
             module.verified_fresh_predecessor(marker, request)
-        self.assertEqual({p: p.read_bytes() for p in before}, before)
-        self.assertFalse(request.output.exists())
-        self.assertEqual(len(self.children), 1)
+        self.assertEqual({p: p.read_bytes() for p in before}, before, diagnostic)
+        self.assertFalse(request.output.exists(), diagnostic)
+        self.assertEqual(len(self.children), 1, diagnostic)
