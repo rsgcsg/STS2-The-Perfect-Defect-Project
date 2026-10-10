@@ -32,7 +32,7 @@ class RealStoreCollectionTests(unittest.TestCase):
     @staticmethod
     def failure_diagnostic(result, proof):
         """Bound actual failures/phases; never dump the full generated report."""
-        errors = result.get("runtime_status", {}).get("errors", [])
+        errors = (result.get("runtime_status") or {}).get("errors", [])
         phases = proof.get("diagnostics", {}).get("events", [])
         return json.dumps({
             "status": str(result.get("status"))[:64],
