@@ -65,10 +65,13 @@ rewrite or native coordinate/index mutation occurs. The complete Agent's final
 chooser is explicitly declared; the choice is not presented as the original
 model's unrestricted argmax.
 
-Legitimate zero-selectable-card/alternatives-only pages use the explicitly
-declared unchanged neural argmax. An inconsistent nonempty selectable claim is
-an error, not zero eligibility. This rule therefore does not promise to remove
-every possible reward loop or preserve the strategy value of skipping poor cards.
+Legitimate alternatives-only pages with `cards: []` and no selectable card IDs
+use the explicitly declared unchanged neural argmax. Nonempty public cards with
+no selectable card IDs contradict stage `ready`: the native reader classifies
+that page as `settling`, even when alternatives are enabled. This claim and any
+inconsistent nonempty selectable claim reject the whole decision before neural
+scoring. This rule therefore does not promise to remove every possible reward
+loop or preserve the strategy value of skipping poor cards.
 All other interactions use unchanged neural argmax. Ready-summary Task
 abstention remains unchanged, including its declared program-zero placeholders;
 these terminal placeholders are not neural scores.

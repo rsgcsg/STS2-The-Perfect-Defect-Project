@@ -63,6 +63,8 @@ def current_card_candidates(snapshot: dict[str, Any]) -> tuple[int, ...]:
     if (not isinstance(cards, list) or not isinstance(selectable, list)
             or not isinstance(alternatives, list)):
         invalid()
+    if cards and not selectable:
+        invalid()
     if any(not isinstance(card, dict) or not isinstance(card.get("entity_id"), str)
            or not card["entity_id"] for card in cards):
         invalid()

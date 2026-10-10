@@ -192,6 +192,22 @@ def test_legitimate_alternatives_only_uses_declared_unchanged_neural_argmax(prog
     assert len(adapter.scorer.calls) == 1
 
 
+def test_visible_cards_without_current_selectability_reject_before_neural_fallback():
+    observed = card_reward_snapshot()
+    observed["interaction"]["content"]["surface"]["selectable_card_entity_ids"] = []
+    actions = [
+        action for action in observed["bound_actions"]["actions"] if action["verb"] != "select"
+    ]
+    observed["bound_actions"].update(actions=actions, materialized_count=2, total_count=2)
+    adapter, request = scored_pair(observed)
+    with pytest.raises(BoundaryError, match="unqualified_card_reward_program_input"):
+        adapter.decide(request)
+    assert not adapter.scorer.calls
+    baseline, baseline_request = scored_pair(observed, program=False)
+    assert baseline.decide(baseline_request)["selected_index"] == 0
+    assert len(baseline.scorer.calls) == 1
+
+
 def test_baseline_with_same_input_still_selects_neural_skip_and_other_decisions_are_identical():
     for observed in (card_reward_snapshot(), snapshot(), summary_snapshot(stage="intro")):
         baseline, old_request = scored_pair(observed, program=False)
