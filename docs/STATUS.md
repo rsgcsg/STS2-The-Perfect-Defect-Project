@@ -16,9 +16,10 @@ Reached levels include bounded M0 restoration/loop-censored Auto, the original-t
 learned choice, native diagnostic count/cleanup and formal SDK/Runtime installation.
 Public M2 now has an independently accepted mechanical Auto path to natural loss
 summary, with strategy failed in that attempt and basic reasonable-gameplay unmet.
-Detailed identities/choices and old tuple/lock limits remain in the packet. Current
-compatible-package reconciliation/parity and actual paired-cohort work are pending;
-source/synthetic acceptance is not qualification. Fresh CI is running, not green.
+Detailed identities/choices and old tuple/lock limits remain in the packet. Explicit
+compatible export/current-lock numerical parity are accepted; registration/game use
+is pending. Actual TRAIN previews are measured, with paired Source/token/use/fit
+still unperformed; source/preview acceptance is not qualification. Fresh CI is running, not green.
 No Human/scientific, basic-strategy or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
 

@@ -351,11 +351,11 @@ The formal lock upgrade also makes the original strict8eb package correctly reje
 current loading with `package_identity_mismatch`. Its earlier genuine fit/export/
 C13 choice and stop/reopen qualify only the original lock/source/package tuple.
 Original package/weights/history are unchanged. Root verified its actual original
-source and locked environment, tensor/recurrent baseline, but no migrated current
-package or current-lock parity has been accepted. Explicit compatibility migration
-is in progress: retain original Model/package parent and training producer, use a
-new export/runtime identity, and prove the closed Evidence-only dependency change
-plus numerical/input/state parity. Do not silently bypass old strict validation,
+source and locked environment/tensor baseline at that checkpoint; the later current
+compatible package and numerical parity are recorded below. The explicit migration
+contract preserves the original Model/package parent and training producer, uses a
+new export/runtime identity, and requires proof of the closed Evidence-only dependency
+change plus numerical/input/state parity. Do not silently bypass old strict validation,
 rewrite the training lock, fit again for an identity repair or accept arbitrary drift.
 
 The closed compatibility source was independently accepted and normally merged at
@@ -367,16 +367,26 @@ was never published or turn intent into a derived artifact. Diagnosis traced
 `_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
 `hasattr(publish)` had not established write capability. The owning mutable-
 publication/managed-workspace repair `bbf…` was accepted and normally merged at
-`08feb107`;23 integrated tests passed in1.88s. Explicit original-operation
-reconciliation, actual compatible-package publication and current-environment
-parity still remain pending; source acceptance does not complete that operation.
+`08feb107`;23 integrated tests passed in1.88s. The later accepted recovery source
+`106…` was normally merged at `dba23997`, with30 integrated tests passing in2.48s.
+Root's explicit sidecar reconciliation receipt `1ee5…` preserves original f665 raw
+journal `42e…` and its unknown/interrupted scope; it does not retroactively complete
+or rewrite that attempt. One new explicit operation `5081…` at current dba/new6a
+completed derived Model `fa524…` and compatible export; original8eb Model/package/
+weights/completed receipt remain unchanged. This was one start, not automatic retry.
+The same numerical script in original46 and current6a locked environments matched
+all43 tensors, three synthetic full-C2 recurrent forwards and memory/reset values;
+independent after-run review accepted that closed numerical/provenance scope.
+No new fit, registration or current fa524 game use is claimed. Candidate artifact
+publication and actual inference parity do not confer strategy/native qualification.
 
 Paired Reward source correction `6df…` is independently accepted and normally
 merged at `134b0a4c`; current-lock integration passed78 tests in52.15s. The current
 locked ordinary synthetic N4/two-arm/two-step pause/resume fixture also passed8.79s;
 the earlier `dcd42982` unlocked fixture and failed/corrected run retain their scopes.
-No real S01 cohort freeze/use/fit, held-out comparison, deployable export or online
-Read adapter is claimed. Root's later local repository gate failed in the existing
+Those source/synthetic receipts did not publish/freeze a real paired Source or fit;
+the subsequent actual TRAIN previews are recorded below. No held-out comparison,
+deployable export or online Read adapter is claimed. Root's later local repository gate failed in the existing
 owned-process cancellation fixture with kill EPERM; bounded diagnosis is pending.
 Unchanged earlier code/pass does not erase this failed local gate or establish a
 game defect. Source/synthetic acceptance is not a real training comparison or full
@@ -435,17 +445,22 @@ was in progress when read, not green. Older failed runs/local incidents remain i
 their original scope. One600s S01 d6 owner-receipt refresh completed exit0 after
 216.3546s/RSS951418880: current receipt prefix `43b5fa4e…`, original `ed188…` and
 current compatibility `181c…` remain separate. This verifies existing lineage/use,
-not new training or use. Current alias preview at source `1e834617` is an unfinished
-private preview, not training or Source publication. The later official repository
-gate passed after scoped owned-process diagnosis/repair; original kill EPERM remains
-preserved and its exact cause is unproved.
+not new training or use. Actual common preview at source `1e834617` completed with
+Root executor exit0: the alias subset accepted2/excluded0 in1.5849s; the shared
+40-TRAIN cohort accepted40/excluded0 in3.6816s, macOS RSS629096448 and rendered
+A62154/B295031 bytes. These are preview/projection costs, not token compilation or
+training budgets. No frozen/published paired Source, new training use, Input/Run/
+Model publication, fit or tokens have occurred at this checkpoint. The later
+fresh dba preview is preparation for the actual data experiment, not a future result.
+The official repository gate passed after scoped owned-process diagnosis/repair;
+original kill EPERM remains preserved and its exact cause is unproved.
 
 Next is evidence-led strategy/input evaluation for the original partial M2 and the
 prior M0 loop, with distinct future attempts and proper cohort/cost preflight. The
 small restored-model path is mechanically usable but is not a basic-strategy pass.
 Preserve original identity/history; no automatic unknown retry. In parallel, finish
-explicit native8eb operation reconciliation/compatibility migration and Paired Reward
-cohort/cost preflight. Candidate artifact publication/export may precede actual
+accepted-current compatible native registration/game preflight and Paired Reward
+Source/token/cost preflight. Candidate artifact publication/export may precede actual
 current-environment parity; accepted registration/gameplay use follows that proof,
 not merely publication. Real cohort work follows its source/use acceptance. Obtain
 fresh selected CI for one coherent

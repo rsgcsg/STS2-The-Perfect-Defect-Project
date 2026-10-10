@@ -48,11 +48,11 @@ is unmet. No live W witness or full G2/V1 pass follows; fresh CI is still runnin
 
 The old native learned package now correctly rejects the changed formal lock.
 Its original package/load evidence remains valid in the original environment.
-Compatible source and its writable-owner repair are integrated, but original
-interrupted publication still needs explicit reconciliation/current parity. Preserve
-its actual check/unknown history before another action.
-Paired Reward source/current-lock synthetic checks are integrated, with no real
-cohort/fit or online feature. Later official repository checks passed; the original
+Explicit compatible-package reconciliation, a distinct derived export and old/current
+locked numerical parity are complete; original package/history remain unchanged.
+Current derived registration/game use is still pending. Paired Reward has measured
+actual TRAIN previews, but no frozen/published Source, token compilation, use/fit
+or online feature. Later official repository checks passed; the original
 process-cancellation failure and unproved cause remain preserved. Keep original
 history and strict validation intact.
 
@@ -64,10 +64,10 @@ preserve partial Model/history and separate future attempts from these originals
 Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
 retried automatically and every new canary has a distinct explicit identity.
 
-Finish explicit native-package reconciliation/export and original/current locked
-parity before registration or gameplay promotion; candidate CAS export enables
-measurement and is not qualification. Freeze/preflight the actual paired cohort/cost;
-a pending alias preview is neither Source publication nor fit. Revalidate owning
+Preflight actual registration/game use of the compatible derived package; export/
+parity are not strategy qualification. Complete common publication/token/cost
+preflight for the measured paired cohort before any real fit; preview is not Source
+publication or training. Revalidate owning
 gates and fresh full dual-OS/portable CI; source, data, runtime and quality remain
 separate and only the user approves complete G2/V1.
 
