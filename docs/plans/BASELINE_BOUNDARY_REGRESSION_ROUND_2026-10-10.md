@@ -3,7 +3,7 @@
 This packet records the owner's new request on 2026-10-10: repair the escaped
 game/SDK/Runtime/collector test seams and assembled-document mistake, make recurrence
 harder, finish this test, then stop and report. The later capacity clarification
-permits a justified increase if necessary; the present 5,183-byte CURRENT fits its
+permits a justified increase if necessary; baseline39's 5,183-byte CURRENT fits its
 8 KiB route budget, so the cap is retained pending actual content need.
 
 ## Baseline and authority
