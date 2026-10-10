@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using STS2HumanAnnotator.Core;
 
 namespace STS2PlatformLiveUi;
@@ -18,6 +19,7 @@ public sealed record PlatformModelContext(string RuntimeStatusSchema, string Run
             || (RuntimeStatusSchema == "sts2.policy-runtime/status-1" && InputProfile is not (null or "text-menu-v1" or "text-menu-v2")))
             throw new ArgumentException("invalid_model_context");
     }
+    [JsonIgnore]
     public bool NativeAgent => RuntimeStatusSchema == "sts2.policy-runtime/agent-session-status-1" && InputProfile == "native-logical-v1";
 }
 public sealed record PlatformModelPreparationRequestV2(string Schema, string RuntimeInstanceId, string? RecordingSessionId,
