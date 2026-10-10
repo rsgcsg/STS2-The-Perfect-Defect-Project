@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import * as sdk from "../../components/connector/sdk/typescript/dist/index.js";
 import * as runtimeApi from "../../components/policy-runtime/dist/index.js";
 import { createCollectionLifetime, createPipePeer, OWNED_EXECUTION_POLICY, OWNED_PIPE_SCHEMA,
-  PIPE_SCHEMA, runNativeSource3 }
+  CONTINUOUS_EXECUTION_POLICY, CONTINUOUS_PIPE_SCHEMA, PIPE_SCHEMA, runNativeSource3, teacherManifest }
   from "../native-source3-collector.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -57,7 +57,8 @@ function frames() {
 }
 
 async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = false, stopAfterAwait = false, nativeRejectedAt = null, target = 6, hugeStartup = false, largeStatus = false, privateWriteFailure = false, currentFailureAt = null, currentDiagnosticWriteFailure = false,
-  ownedPolicy = false, staleAt = [], maxSubmissions = null, summaryFailure = false } = {}) {
+  ownedPolicy = false, continuousPolicy = false, staleAt = [], maxSubmissions = null, summaryFailure = false } = {}) {
+  const selectedPolicy = continuousPolicy ? CONTINUOUS_EXECUTION_POLICY : OWNED_EXECUTION_POLICY;
   const temporary = await mkdtemp(path.join(os.tmpdir(), "source3-runtime-teacher-"));
   // The production request owns an ordinary canonical directory. The helper
   // correctly rejects /var symlink aliases; normalize only this opt-in fixture.
@@ -67,7 +68,7 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
     + (ownedPolicy ? "policy=json.loads(sys.argv[2]); print(json.dumps({'teacher_descriptor':descriptor(execution_policy=policy),'teacher_artifact':write_artifact(p,execution_policy=policy),'python_executable':sys.executable}))"
       : "print(json.dumps({'teacher_descriptor':descriptor(),'teacher_artifact':write_artifact(p),'python_executable':sys.executable}))");
   const prepared = spawnSync(python, ["-c", factory, path.join(output, "teacher-code-artifact.json"),
-    JSON.stringify(ownedPolicy ? OWNED_EXECUTION_POLICY : null)],
+    JSON.stringify(ownedPolicy ? selectedPolicy : null)],
     { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
   assert.equal(prepared.status, 0, prepared.stderr);
   if (privateWriteFailure) await import("node:fs/promises").then(m => m.writeFile(path.join(output, "collector-final-full.json"), "preserved_existing_private_file"));
@@ -280,7 +281,9 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
     max_submissions: maxSubmissions ?? Math.max(target, 6),
     deadline_ms: 30_000, max_input_bytes: 8 * 1024 * 1024, max_diagnostic_bytes: 1024 * 1024,
     experimental_build_acknowledged: false, experimental_connector_acknowledged: false,
-    record_source3: !sourceOff, ...actor, ...(ownedPolicy ? { execution_policy: OWNED_EXECUTION_POLICY } : {}) };
+    record_source3: !sourceOff, ...actor, ...(ownedPolicy ? { execution_policy: selectedPolicy } : {}),
+    ...(continuousPolicy ? { termination_target: { kind: "bounded_known_delivered_choices",
+      known_delivered_choices: target, natural_summary_required: false } } : {}) };
   const input = new PassThrough(), outgoing = new PassThrough(), lifetime = createCollectionLifetime();
   const childPeer = createPipePeer(input, outgoing, sdk.parseNativeLogicalJson, lifetime);
   const parent = createPipePeer(outgoing, input, sdk.parseNativeLogicalJson, createCollectionLifetime());
@@ -288,7 +291,7 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
     for (;;) {
       const value = await parent.receive({ timeoutMs: 10_000 }); seen.pipe.push(value);
       if (value.type === "closed") return value;
-      const common = { schema: ownedPolicy ? OWNED_PIPE_SCHEMA : PIPE_SCHEMA,
+      const common = { schema: continuousPolicy ? CONTINUOUS_PIPE_SCHEMA : ownedPolicy ? OWNED_PIPE_SCHEMA : PIPE_SCHEMA,
         operation_id: operation, message_id: value.message_id };
       if (value.type === "ready") await parent.send({ ...common, type: "source_ready",
         source_recording: sourceOff ? "not_requested" : "known_recording", source_context: sourceOff ? null : {
@@ -485,6 +488,59 @@ test("known pending original Result is handed off without automatic read or resu
 
 // Synthetic transport composition through the actual SDK/Runtime/stdio and
 // public typed Evidence helper. These are not live-game or capacity qualifications.
+test("collector builder binds real Python v1/v2 descriptors and rejects cross-version compositions", async t => {
+  const output = await realpath(await mkdtemp(path.join(os.tmpdir(), "collector-policy-composition-")));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  for (const [index, policy] of [OWNED_EXECUTION_POLICY, CONTINUOUS_EXECUTION_POLICY].entries()) {
+    const factory = "import json,sys;from pathlib import Path;from stpd.policy.native_teacher_agent import descriptor,write_artifact;"
+      + "p=json.loads(sys.argv[2]);print(json.dumps(dict(teacher_descriptor=descriptor(execution_policy=p),teacher_artifact=write_artifact(Path(sys.argv[1]),execution_policy=p))))";
+    const prepared = spawnSync(python, ["-c", factory, path.join(output, `code-${index}.json`), JSON.stringify(policy)],
+      { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const actual = JSON.parse(prepared.stdout), options = { output, max_input_bytes: 8 * 1024 * 1024,
+      execution_policy: policy, ...actual };
+    const deps = { ...sdk, ...runtimeApi };
+    const capabilities = clone(wire.capabilities);
+    capabilities.host = { ...capabilities.host, host_kind: "test", version: "fixture-version",
+      implementation: { source_revision: "fixture-source", module_version_id: "fixture-module",
+        artifact_sha256: "f".repeat(64) } };
+    capabilities.game = { ...capabilities.game, version: "fixture-game-version", commit: "fixture-game-commit",
+      modset: { ...capabilities.game.modset, fingerprint: "b".repeat(64) } };
+    const manifest = teacherManifest(options, capabilities, deps);
+    assert.deepEqual(manifest.execution_policy, policy);
+    assert.equal(manifest.adapter.version, index === 0 ? "1.6.0" : "1.7.0");
+    assert.deepEqual(runtimeApi.validateAgentManifest(manifest), manifest);
+    for (const mutate of [
+      d => { d.agent_spec.teacher.version = index === 0 ? "1.0.11" : "1.0.10"; },
+      d => { d.adapter.version = index === 0 ? "1.7.0" : "1.6.0"; },
+      d => { d.agent_spec.execution_policy = index === 0 ? CONTINUOUS_EXECUTION_POLICY : OWNED_EXECUTION_POLICY; },
+    ]) {
+      const changed = clone(actual.teacher_descriptor); mutate(changed);
+      assert.throws(() => teacherManifest({ ...options, teacher_descriptor: changed }, capabilities, deps),
+        /teacher_execution_policy_mismatch/u);
+    }
+    if (index === 1) {
+      const changed = clone(actual.teacher_descriptor); changed.agent_spec.version = "1.6.0";
+      assert.throws(() => teacherManifest({ ...options, teacher_descriptor: changed }, capabilities, deps),
+        /teacher_execution_policy_mismatch/u);
+    }
+  }
+});
+
+test("explicit continuous strict collector v4 composes the actual Teacher and Runtime through the production builder", async t => {
+  const { final, seen, events } = await collect(t, { ownedPolicy: true, continuousPolicy: true,
+    sourceOff: true, staleAt: [1], target: 2, maxSubmissions: 3 });
+  assert.equal(final.schema, CONTINUOUS_PIPE_SCHEMA);
+  assert.deepEqual(final.execution_policy, CONTINUOUS_EXECUTION_POLICY);
+  assert.deepEqual(final.cleanup_errors, []);
+  assert.equal(seen.submits.length, 3);
+  assert.equal(final.terminal_summary.known_delivered, 2);
+  assert.equal(final.terminal_summary.known_stale_rejections, 1);
+  assert.deepEqual(final.termination_target, { kind: "bounded_known_delivered_choices",
+    known_delivered_choices: 2, natural_summary_required: false });
+  assert.equal(events.filter(value => value.kind === "native_stale_decision_deferred").length, 1);
+});
+
 test("declared stale refusal makes a fresh changed decision while the last-attempt budget stop stays original", async t => {
   const { final, seen, events } = await collect(t, { ownedPolicy: true, staleAt: [1], target: 2, maxSubmissions: 3 });
   assert.equal(final.reason, "submission_attempt_limit", JSON.stringify(final));

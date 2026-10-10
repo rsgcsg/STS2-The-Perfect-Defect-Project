@@ -379,7 +379,7 @@ async function compiledIdentity(directory) {
   return digest.digest("hex");
 }
 
-function teacherManifest(options, capabilities, deps) {
+export function teacherManifest(options, capabilities, deps) {
   const descriptor = options.teacher_descriptor;
   exact(descriptor, ["schema", "agent_spec", "input_spec_body", "input_spec", "adapter", "code_files", "runtime_provenance"]);
   if (descriptor.schema !== "stpd/native-program-teacher-artifact-v1"
@@ -387,9 +387,13 @@ function teacherManifest(options, capabilities, deps) {
       || descriptor.agent_spec.model_bindings?.length !== 0)
     throw new Error("explicit_program_teacher_required");
   if (options.execution_policy) {
+    const versions = continuous(options)
+      ? { teacher: "1.0.11", adapter: "1.7.0" }
+      : { teacher: "1.0.10", adapter: "1.6.0" };
     if (!object(descriptor.agent_spec.execution_policy)
         || deps.canonicalJson(descriptor.agent_spec.execution_policy) !== deps.canonicalJson(options.execution_policy)
-        || descriptor.agent_spec.teacher?.version !== "1.0.10" || descriptor.adapter.version !== "1.6.0")
+        || descriptor.agent_spec.teacher?.version !== versions.teacher || descriptor.adapter.version !== versions.adapter
+        || continuous(options) && descriptor.agent_spec.version !== versions.adapter)
       throw new Error("teacher_execution_policy_mismatch");
   } else if (Object.hasOwn(descriptor.agent_spec, "execution_policy"))
     throw new Error("undeclared_teacher_execution_policy");
