@@ -58,3 +58,31 @@ Run producer; a later writer cannot publish under the older producer's identity.
 Completed artifact validation binds Input/arm/source/InputSpec/creator/metrics and
 the expected seeded data identity, then checks the checkpoint tensor inventory
 against the existing M0 factory on `meta` and exact final Model weights.
+
+## Existing completed remote history and a new local experiment
+
+A configured store may retain an original `stpd/local-training-operation-v4`
+Public M0 operation. The current local owner reads only a bounded, completed,
+locally accepted chain whose submitted attempts all record terminal stops with
+zero active tasks and containers. Unsupported, paused, pending, cancelled,
+failed or unknown v4 slots stay fenced. Those receipts are historical metadata;
+the reader performs no live provider query, remote dispatch or recovery.
+
+A new typed local experiment must explicitly name that completed operation in
+`after_completed_operation_id`. This narrow legacy transition permits a new
+source ID after its usual independent recipe/source admission. The ordinary v3
+same-source predecessor rule is unchanged. Under the existing owner OS lock,
+the transition verifies original completion manifests and small recorded control
+receipts, then archives every original journal byte in the existing immutable
+`local-training/remote-operation-history/<sha256>` namespace before writing a new
+pending slot. The new v3 `previous_completed` history retains a typed raw archive
+reference, SHA, size, original schema and original Model/result IDs; later
+completed experiments retain that pointer too. An uncertain archive or slot
+replacement blocks launch rather than clearing the slot or retrying.
+
+Request and result references can point to chunk indexes. Their declared hashes
+identify the logical payload, not the small index file bytes. This compatibility
+gate verifies their bounded descriptor grammar and recorded bindings without
+hydrating requests, result chunks, weights or checkpoint tensors. It introduces
+no new data permission, fit use, cloud backend or qualification claim. New local
+training owns its own operation, resource budget and completion evidence.
