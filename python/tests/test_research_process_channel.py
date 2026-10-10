@@ -70,7 +70,8 @@ try:
     assert peer.stderr.read() == b""
     expected = json_bytes({"schema": SESSION_SCHEMA, "message_type": "consume",
         "session_id": {"test_native_structured_model.py": "session",
-                       "test_native_training_source_v2_application.py": "common-source-ordinary-stdio",
+                       "test_native_training_source_v2_application.py":
+                           "common-source-ordinary-stdio",
                        "test_sampled_carry_package_integration.py": "fresh-stdio"}[path.name],
         "recovery_epoch": 0, "request_id": "unicode-wire", "input": message_value})
     assert output == expected, (output, expected)
@@ -95,7 +96,7 @@ finally:
 
 
 @pytest.mark.parametrize("payload", [b"one\ntwo\n", b"one\r\ntwo\r\n",
-                                   "你好\ré\n🐉\r\n".encode("utf-8")])
+                                   "你好\ré\n🐉\r\n".encode()])
 def test_bounded_channel_streams_lines_and_retains_actual_exit(tmp_path: Path, payload: bytes):
     lines, exits = [], []
     code, captured = private_child(
