@@ -9,6 +9,7 @@ import {
   agentBudgetFindings,
   agentReferenceFindings,
   documentedCommandFindings,
+  collectProjectSystemFindings,
   formatContext,
   formatCloseout,
   markdownLinkFindings,
@@ -406,6 +407,8 @@ test("closeout rejects the assembled CURRENT before candidate checks and preserv
     const file = path.join(root, "docs/memory/CURRENT.md");
     write(root, "docs/memory/CURRENT.md", assembled);
     assert.ok(Buffer.byteLength(assembled) > 8192);
+    assert.ok(collectProjectSystemFindings(root).some(item => item.code === "current-context-oversized"),
+      "the mandatory repository guard must reject the same assembled file without depending on manual closeout");
     assert.throws(() => formatCloseout(root), /current-context-oversized.*8192/su);
     assert.deepEqual(fs.readFileSync(file), Buffer.from(assembled));
   } finally {

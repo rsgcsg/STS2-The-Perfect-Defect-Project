@@ -453,7 +453,8 @@ export function collectProjectSystemFindings(workspaceRoot = root) {
     ...documentedCommandFindings(workspaceRoot),
     ...skillFindings(workspaceRoot),
     ...agentBudgetFindings(workspaceRoot),
-    ...projectIntegrityFindings(workspaceRoot)
+    ...projectIntegrityFindings(workspaceRoot),
+    ...currentContextFindings(workspaceRoot)
   ];
 }
 
