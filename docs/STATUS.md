@@ -6,39 +6,19 @@ CURRENT owns the active task and next step, and the execution matrix owns progre
 
 ## G2/V1 supervisor checkpoint, observed 2026-10-11
 
-The [active packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md) and
-[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) contain the current
-native/fit identities at `9c1c14f4` and separately identified later source/installer
-updates, counts and remaining gates. Original private
-receipts are routed through the lead's existing
-`.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md`; they are not public uploads.
+The [active boundary packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
+is the sole detailed current-round receipt/identity/count entry, including the
+installed diagnostic candidate and its exact build/load/runtime scope. The
+[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
+obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
 
-- Native1 rc38 reached62 known/70 submissions/8 stale; native2 rc39 reached50/58/8.
-  Both released control and stopped the Host under the same limit; Teacher SIGKILL
-  remains a separate fact. All 16 diagnostic refusals identify
-  public-facts changes; rc39 records bounded card/discard/orb/enemy-HP paths.
-  Original strict v1 validation is unchanged; progress-aware STRICT v2 is preferred
-  and in implementation, intent DEFER. No safe-intent,100-delivery or natural-summary proof.
-- Installed rc39 SHA63230ad9/MVID880bad57, compiled19bac/build-workspaceb82,
-  has exact build and configured bridge35 evidence; the original unconfigured
-  compilation failure remains. This is bounded native evidence, not Human/full product qualification.
-- Source469 has three reviewed earlier segments:137 N/342 context/451 offers,
-  84 distinct state/C/chosen combinations and53 repeated rows. This is declared
-  Agent-teacher/student re-expression, without independent held-out/Human/quality proof.
-- Explicit owner budget amendment/resume preserved original300s timeout and132-update
-  checkpoint, then completed168 updates/cumulative404.100506s under effective600s.
-  New Model8eb1/export completed and final weights changed; no learned new-game use yet.
-- d6 M0 parity passed one fixed sample and current-owner export836a completed;
-  current rc27 pin f44200a6/archive85c902/content87f512 is privately installed through
-  the common owner, not activated/loaded; live registration/game load remain next.
-  Public M2 17eb fixed-sequence scores/W/cache/reset parity passed, including31-candidate
-  full scores/32 rejected before W write. Cache-race fix b57e4286 is accepted/merged
-  at0a07e1cd with288 integrated tests passed; Port4 remains unintegrated.
-- CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
-  for `d0e671f2` failed all four OS leaves and portable. Windows Python shard passes
-  and process-fixture success do not erase other owner failures. Reviewed Windows
-  fixture264af6 is normally merged at06eb7f0; fresh CI remains pending. No overall green,
-  complete G2/V1, whole-game/quality,10k or publication acceptance is added.
+Reached levels are bounded native diagnostic/cleanup, declared-teacher data
+admission/use, real small training/recovery/Model/export, and old-consumer parity/
+installation preparation. M0 canary is in progress without an accepted terminal
+registration/model-in-game result. New learned-game use, Port4, fresh successful
+CI aggregate, complete G2/V1, Human and strategy/scientific quality remain unproved.
+Source/test integration and exact installed/runtime observations keep separate scope.
+Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09
 

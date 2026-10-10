@@ -6,42 +6,20 @@
 
 ## 当前实施轮：2026-10-11
 
-用户要求立即执行实际修改与验证，快速核实 refs/PR/任务/阻塞后启动安全并行工作，
-按既有独立审查和集成规则收敛成果。Root 继续担任 supervisor，拥有共享 refs/BOM 和
-唯一重本地/native 槽；实际 writer 为 `governance_convergence_impl`（E0）、
-`native_rejection_diagnostics_impl`（E1）、`public_m0_restoration_impl`（E3/E6）、
-`native_data_admission_impl`（E2/E4），均位于 `/root/` 下。独立审查另行完成。
-原生/训练 checkpoint 为 `9c1c14f4`，后续源码/安装修复分列；原 `fa789104` base 与所有失败保留。
-本地组件源修复按独立审查正常集成，不因此成为整体 G2/V1 或科学资格。
-原始 receipt 路由是 lead 工作树的既有私有
-`.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md`，不是公开产物或新真值表。
+本表拥有原任务、依赖和完整验收义务；本轮具体 source/artifact/run/model 身份、
+计数、原始回执、失败与限制只在[活动 boundary packet](BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
+维护。CURRENT 路由当前任务，STATUS 给日期/证据层级摘要，不再复制本轮结果矩阵。
 
-| 本轮实际完成 | 限定证据与未完成项 |
-| --- | --- |
-| Native1 rc38 | `d0e671f2`，run `run-1f4ccfbc-2df9-4924-b6f6-9116117f75e5`；62/70/8，清理与停止确认；仍非100或自然 summary。 |
-| Native2 rc39 | `9c1c14f4`，run `run-b8c75627-7643-4ebf-8dc3-2c8e40ffd8f9`；50/58/8，真实 displayed-card/discard/orb/enemy-HP 变化；strict unchanged，不证明旧 intent 安全。 |
-| 精确安装与桥 | rc39 SHA63230ad9/MVID880bad57，compiled19bac/build-workspaceb82；配置后的 bridge35 通过，原缺环境编译失败保留。 |
-| Source/use/覆盖 | `469ba748…` 发布三段旧38/39/60原件的137 N、342 context/451 offers；84 distinct state/C/chosen、53 repeat rows，无独立 held-out/Human/质量声明；新62/50未自动追加。 |
-| 真实训练/checkpoint/Model/export | 原300.022s失败与132-update checkpoint保留；append-only明确600s cumulative cap，不改原300s请求；resume完成168 updates/404.100506s，Model `8eb1b166…`及导出完成，实际weights有变化。 |
-| learning smoke | 3 epochs/411 label uses；train loss2.8026577→0.4583665、teacher-choice accuracy8.759%→91.241%，无dev/test、尚无新游戏使用，不证明策略强。 |
-| 大 d6 M0 消费者 | 单固定样本旧/新parity通过；当前owning export `836a2e58…`完成。当前rc27 pin `f44200a6`（archive85c902/content87f512）已由共同owner安装到私有M0状态，未激活/load；下一步live capability register/load，原UNKNOWN不重放。 |
-| Public M2 | `17eb…`旧/新 `e302…`/`31cc…`固定序列scores/W/cache/reset parity通过；包含完整31候选评分与32候选在W写入前拒绝，31不是步数。`b57e4286` cache-race修复已独立接受并正常合并为 `0a07e1cd`，288整合测试通过。原partial保留，Port4未集成，无新游戏投递声明。 |
+已达到的限定阶段是：原生诊断与控制/Host 清理、声明 Teacher 来源的准入/use、
+真实小训练/checkpoint 恢复/new Model/export，以及旧公共模型的 fixed-input parity
+和共同安装准备。M0 实机 canary 正在运行，登记和 Model 实际加载/执行终态尚未接受；
+新 learned Model 的 fresh-game 旅程、M2 Port4 和完整产品/质量资格仍开放。
+严格复验保留；首选 progress-aware STRICT v2 正在实施，intent DEFER，非已验证运行。
+当前 CI 源修复已有独立接受，fresh selected full dual-OS/portable 仍待，不称整体绿色。
 
-CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
-针对`d0e671f2`四个OS leaf与portable全失败。Linux旧Teacher literal有source修复`f0bee50b`；
-Windows另有真实Teacher Close fixture timeout。其Python shards分别1757通过/35skip及
-1746通过/16skip，`2ce690a` process fixture在Windows通过；不升为leaf/aggregate通过。
-Windows fixture `264af6`已独立接受并正常合并为 `06eb7f0`，fresh CI待执行；旧CI38055431750、60/68/8及所有失败/UNKNOWN原件不改。
-
-下一步实际d6登记/加载/Shadow/OneStep/Stop/reopen，以及新learned Model的准入、加载、
-可见身份、fresh-game至natural summary目标与Stop；共享产品/control/data/task owner复用。
-首选显式progress-aware STRICT v2，唯一writer `/root/native_rejection_diagnostics_impl` 正在实施；intent DEFER，原v1诊断不变。设计选择不等于实现或运行已验证。
-10k、全场景/产品、30 attempts、恢复/性能与策略质量义务保留；小fit不是完整门。
-
-本轮 GPU 合计上限 USD20，已知支出 USD0，尚无提交的 provider job；不是每 worker
-USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 job/费用和共享余量。
-已授权必要隔离/native 操作继续；生产部署、main/release、破坏性权限未扩大。
-完整 G2/V1 最终批准仍属于用户，本文更新不是通过记录。
+Root 继续 supervisor、共享 refs/BOM 和唯一重本地/native 槽，各 writer 独立工作与复审；
+当前授权和共享 GPU 余量按活动包核对，不因任务/恢复重复发放。完整 G2/V1 只由用户
+最终批准。已完成阶段不删除10k、全场景/产品、30 attempts、恢复/性能与策略质量义务。
 
 ## 1. 完成与审批规则
 
@@ -61,15 +39,15 @@ USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 jo
 
 | 原任务子包 | 第一错误事实／交付 | 依赖、writer 与当前状态 |
 | --- | --- | --- |
-| P0–P5/G1 对账 | 原需求未完整映射，旧状态仍称未启动；分清抽象/协议/实例 | 当前唯一规范 v1.3 与完整分母已形成；新发现继续修正设计，非最终冻结 |
+| P0–P5/G1 对账 | 原需求未完整映射，旧状态仍称未启动；分清抽象/协议/实例 | 当前唯一规范与完整分母已形成；新发现继续修正设计，非最终冻结 |
 | E0.1 | 旧 PR/组件的唯一增量、复用/改造/保留/替代依据；治理与测试经济性 | lead 更新文档职责/入口/状态对账与新成员路径；最低成本机械防漂移和独立复核进行中 |
 | E1.1 | native selector enabled 与额外 raw-min/manual veto 冲突 | 忠实性修复已集成并测试；各原生机制的完整实机资格仍待验 |
 | E1.2 | 完整 native logical relation、读取/分页/Resolve、事件、终局 | SDK/生命周期/公开状态及资料修复已集成；L34 新事件 profile、特殊机制和全范围闭合仍在实施 |
 | E2.1 | 原生 UI 来源与 Human 来源混同；观察/输入/持久化未统一 | Source3 顺序与物理/协议生产者已集成；真实 Agent 协议小录制独立通过，真正 Human 小录制尚待 |
 | E2.2 | 原件→投影/历史/目标/use，无动作/缺口/假设资格 | 顺序训练桥、真实准入/use 与小训练通过；分片索引包源码审查通过，整合与容量实测尚待 |
 | E3.1 | 普通奖励 teacher 与公开 verb 不匹配；runner 丢 Host close 回执 | 旧实例修复与原范围证据保留；新默认连续任务及各类结果/退出仍需实际验收 |
-| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | 原 full-reference 端口与冷会话单步/Stop 有限定证据；新默认 current-decision sampled carry 已集成并通过分层源码测试，`e7dfd694` 正式合成包/真实子进程组合已独立通过；后续sampled Teacher原件137N已准入并训练/导出，learned sampled新游戏及完整产品状态恢复仍待 |
-| E4.1 | 结构训练仅 final checkpoint、无 exact resume | 真实300s中断→132-update checkpoint→显式600s累计预算恢复→168 updates/Model/export已完成；完整恢复/故障矩阵另验 |
+| E3.2 | 通用端口无 no-action consume/Act/Await，Agent 状态恢复不全 | 原 full-reference 端口与冷会话单步/Stop 有限定证据；新默认 current-decision sampled carry 已集成并通过分层源码测试，`e7dfd694` 正式合成包/真实子进程组合已独立通过；后续sampled Teacher原件已准入并训练/导出，具体回执见活动包；learned sampled新游戏及完整产品状态恢复仍待 |
+| E4.1 | 结构训练仅 final checkpoint、无 exact resume | 真实中断→durable checkpoint→显式累计预算恢复→Model/export已完成，具体原请求/回执见活动包；完整恢复/故障矩阵另验 |
 | E4.2/E6.1 | 新模型不在普通 prepare/train/export/register/load 用例 | 实际应用训练/导出/注册/加载、既有模型单步运行已形成限定闭环；完整 GUI/异常/重复使用旅程尚待 |
 | E4.3 | 原 Stage1a 约 10k 合格交互训练尝试、K/Reset、backbone、N/Z/O 有界比较 | 按数据/目标资格和累计预算安排实际执行；Gate/R 条件触发，缺项未完成 |
 | E5.1 | 本地/远端 intent/attempt/cancel/reconcile、权限/用途/派生传播 | 复用既有 owner；指定资源实际链与故障矩阵待完成 |
@@ -79,7 +57,7 @@ USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 jo
 | V1.3 | 资源、200/500 功能、10000 压力、30 attempt 稳定性 | pilot 固定测法/资源，再冻结候选与批次，保留全部结果 |
 | V1.4 | 冷工程师复现、跨层复核和最终材料 | required 格完成后独立审查，最终交用户批准 |
 
-共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续；当前 GPU 资源与历史费用按上面的本轮授权分别核对，不按 worker 或旧段落重新发放。
+共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续；当前 GPU 资源与历史费用按活动包的本轮授权分别核对，不按 worker 或旧段落重新发放。
 
 本次[真实学习与投递报告](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md)
 区分两次 Model 运行：首次 Shadow 已评分但接管后状态不确定，整次仍失败；第二次明确的新冷会话完成一次原始投递和停止，未证明 effect/Commit/后继。两者不拼接成同 W 连续旅程，也不将下面任一全范围格自动标为通过。
@@ -89,12 +67,12 @@ USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 jo
 | 交付／现有任务 | writer／消费入口 | 状态与下一门 |
 | --- | --- | --- |
 | 文档/管理对齐 E0.1 | lead；规范、CURRENT、入门路由及既有 project-system 工具 | 治理/profile/Agent/adapter/driver/迁移与历史路由已审查集成；本次更新实际运行/数据/学习与未完成门，不为文档部署游戏/Hub |
-| 已构建 E6 候选 | lead 独占安装/游戏；当前 Game Mod rc39 | compiled19bac/build-workspaceb82，SHA63230ad9/MVID880bad57已精确安装并执行新native诊断；配置后bridge35通过。旧rc31/rc37/rc38回执与回退保留；认证界面/全产品/健康仍按完整门验收 |
+| 已构建 E6 候选 | lead 独占安装/游戏；身份见活动包 | 当前候选有精确安装/原生诊断与配置后bridge证据；原安装/失败/回退保持原scope，认证界面/全产品/健康仍按完整门验收 |
 | Source3 保存后用于训练 E2.2/E6 | 独立 `codex/e6-source3-product-data` writer；既有 import/verify/admission/use owner | `441c5d14` 已审查并正常合并为 `5033ff20`；产品采样默认/历史说明 `cf068899` 已独立通过。旧工具无 Source3 能力时明确不可用；锁定 Evidence `a42bf1e4` 已收敛并实际安装核验 |
 | native Model 普通复用 E4.2/E6 | 独立 `codex/e6-native-model-workflow` writer；既有 export/registration/model owner | `ac4daa82` 已审查并正常合并；能力来自服务，现成模型不重复安装/登记，准备默认保持 Human；实际认证 GUI 复用另验 |
 | 决策采样与段内 learned carry E3.2/E2.2/E4 | 共享合同与分离 Runtime/数据 owner，lead 集成 | 运行时 `6730a466`、数据 `a12e9c20`、Python 修复 `76e7bcd5` 已独立通过并集成至 `659490a9`；`e7dfd694` 新锁下真实构造器/stdio/Runtime 合成包已独立通过；旧数据/包不改义 |
-| 早期真实采集 E2.1/E4（历史） | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | `ffb9649f` 已集成共享地图等待并通过 Full9；四次分别达 1/4/6/6 次已知投递。第四轮八个 ACKed context、三个地图 Await 后 Current incomplete，input operation 保持 unknown，非未知 native delivery；Source6/19/零缺口与清理通过。独立新诊断捕获 creature_subject 缺失，不回填第四轮原因。该早期报告自身未达到100–300准入N；本轮后来固定Source137已达小批范围，投递与覆盖仍分开 |
-| 直接 Agent 数据 E2.2/E4 | typed Evidence→固定 producer/student 投影→既有 curation/use/recipe | 当前Source469三旧段137N准入/发布/use与真实168-update恢复训练/Model8eb1/export已完成；342context/451offers、53repeat/84distinct保留。旧tuple和六N原scope不改，新learned注册/load/freshgame待；不冒充Source3/Human/独立质量评价 |
+| 早期真实采集 E2.1/E4（历史） | genuine Application + Host；显式 STPD teacher 复用既有 Agent Runtime | `ffb9649f` 已集成共享地图等待并通过 Full9；四次分别达 1/4/6/6 次已知投递。第四轮八个 ACKed context、三个地图 Await 后 Current incomplete，input operation 保持 unknown，非未知 native delivery；Source6/19/零缺口与清理通过。独立新诊断捕获 creature_subject 缺失，不回填第四轮原因。该早期报告自身未达到100–300准入N；本轮后来的小批准入见活动包，投递与覆盖仍分开 |
+| 直接 Agent 数据 E2.2/E4 | typed Evidence→固定 producer/student 投影→既有 curation/use/recipe | 当前固定来源准入/发布/use与真实恢复训练/new Model/export已完成，详细计数/重叠/身份见活动包。旧tuple与原件scope不改，新learned注册/load/freshgame待；不冒充Source3/Human/独立质量评价 |
 | 一次建议、明确重启与保存体验 E6/E3 | 沿既有应用 owner，按前述包依赖安排 | 下一设计包；一次预览不能靠连续 Shadow 后 sleep/中断模拟；记忆不明时明确新段，不能伪称恢复 |
 
 采样版的首个小批训练不以完整事件 profile、全部特殊机制、opaque 恢复或最终压力批次为前置。

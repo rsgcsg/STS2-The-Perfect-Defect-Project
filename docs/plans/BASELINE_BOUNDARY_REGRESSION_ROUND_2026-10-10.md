@@ -8,6 +8,12 @@ permits a justified increase if necessary; baseline39's 5,183-byte CURRENT fits 
 
 ## Current supervisor round, 2026-10-11
 
+This is the sole detailed current-round summary of identities, counts, original
+receipts, failures and limits. CURRENT routes active work; the G2/V1 matrix owns
+retained tasks/acceptance and STATUS is a short dated evidence-level index. They
+link here rather than copy each mutable result. Original machine/runtime records
+remain authoritative; earlier scoped results and Git history are preserved.
+
 The owner now explicitly requests immediate implementation and validation, safe
 parallel work after reconciling repo/refs/PRs/running operations, and convergence
 under existing independent review/integration rules. This is active authorization,
@@ -15,6 +21,14 @@ not another planning-only round. Earlier one-attempt restrictions below were
 already superseded by the resumed authorization; original attempts remain immutable.
 The [G2/V1 execution packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider
 learning/product endpoint and final user approval.
+
+Round authors are `/root/governance_convergence_impl` (E0),
+`/root/native_rejection_diagnostics_impl` (E1/STRICT v2),
+`/root/public_m0_restoration_impl` (E3/E6 public consumers) and
+`/root/native_data_admission_impl` (E2/E4 admission). They use disjoint explicitly
+dependent worktrees; their current packet/base and actual operation state are
+reconciled at the private checkpoint. Root owns shared refs/BOM and native resources;
+author and Root changes receive separate review.
 
 Native/fit source checkpoint is `9c1c14f4`; later source/installer corrections
 below retain separate identities. Root integrates independently reviewed owner
@@ -117,8 +131,10 @@ original model payload and lineage/current-use verification. A wrapper's top-lev
 status check returned exit2; the actual nested operation receipt is completed,
 not a reason to re-export/retrain. Current rc27 pin `f44200a6` is now prepared
 and installed through the common owner into private M0 state: archive85c902/content87f512,
-not activated/loaded. Next is live capability registration and game load; the original
-registration UNKNOWN remains historical and is not replayed. Public M2 `17eb…`
+the installer receipt reports not activated/loaded. Root's live M0 canary is now
+in progress; no terminal registration or model-in-game result has been accepted.
+Reconcile that original operation before another submission. The earlier registration
+UNKNOWN remains historical and is not replayed. Public M2 `17eb…`
 old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
 including a complete31-candidate catalog and whole32 rejection before W write. Root
 checked raw outputs for exact equality across five named cases;31 is not sequence length.
