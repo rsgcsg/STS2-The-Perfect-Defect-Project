@@ -33,47 +33,48 @@ production deployment, main/release and destructive authority did not expand.
 
 ## Current phase
 
-Bounded native diagnostics and safe Host/controller cleanup are recorded. Their
-refusals reflect real public changes; strict native validation remains intact. The
-simpler explicit progress-aware STRICT v2 is in implementation, with intent DEFER;
-neither that design nor a component test is a new continuous-game receipt.
+The owning preparation wire repair has been reviewed, exact-built and installed.
+Old Public M0 now has a bounded actual Load/Shadow/OneStep/Stop/reopen path. The
+new learned Model completed an acknowledged consume, full-catalog choice, known
+delivery and stop/reopen in a fresh game. Original preparation unknowns remain.
 
-The fixed declared-teacher source is admitted and has completed real CPU learning,
-checkpoint recovery, a new Model and export. This teacher-only smoke has overlapping
-situations and no independent held-out/quality claim. Original timeout/checkpoint/
-cumulative-budget amendment remain; no failed attempt or elapsed charge is overwritten.
+The fixed Teacher source, CPU training/recovery/Model/export and fresh learned
+choice form a verified small chain, with overlapping training situations, no
+independent held-out/quality test and unknown execution/effect/cancel. This does
+not establish continuous basic game capability.
 
-Faithful old-model restoration remains required delivery. Public M0 has fixed-input
-parity, current-owner export and the current Runtime installed through the common
-owner. Actual M0 registration and Human-mode load completed; native prepare-wire
-became unknown before policy action. Cleanup is recorded and the owning HTTP
-regression/repair is in progress; no model-action or whole-game result is accepted.
-Public M2 fixed-sequence scores/W/cache/reset parity and
-its source cache correction are recorded; Port4 and actual M2 game use remain open.
-Current CI has reviewed source corrections but no fresh successful aggregate.
+Explicit progress-aware STRICT v2 and the M0 ready-summary Task are integrated with
+the reviewed current Runtime/Evidence. Original v1 contracts, learned package/load
+and compiled Mod evidence retain their scope. Relevant corrected local prerequisites
+are recorded; the first failed invocations are preserved. M0's actual Auto pilot
+observed first-combat rewards, then repeated reward entry/return without progress
+and was supervisor-stopped with clean control/Host shutdown. This is a loop-censored
+outcome, not natural summary or strategy quality. Its legacy compact input/scoring
+pathology is under evidence-led analysis, not proof that the NN or load path failed.
+A separate native v2 engineering pilot is running; its outcome is pending in the
+packet. Current full CI/G2/V1 are not passed. Public M2 parity/cache work is preserved;
+faithful Port4 restoration and actual M2 game use remain open.
 
 ## Next actual dependencies
 
-Preserve the new prepare-wire unknown and the separate historical registration
-UNKNOWN; the earlier operation is not replayed or deemed reconciled. Verify the
-owning HTTP regression/fix and original disposition before explicitly preparing a
-distinct new canary; no automatic unknown retry. Complete Shadow/OneStep/Stop/reopen
-through common owners, then load the new learned Model into a fresh game with visible
-identity, natural-summary target and Stop. Failed/censored outcomes stay explicit.
+Use the retained Auto loop evidence to guide the owning legacy representation/
+interaction work; preserve its actual Stop tail and separate new attempts from the
+original. Continue faithful Public M2 Port4 restoration and the declared native
+v2/learned continuous-game path through common owners, with independent review and
+exact prerequisites. Keep source/SDK/Runtime/profile frozen while consumers run;
+unknown requests are never automatically retried.
 
-Complete independent review and relevant tests for STRICT v2, M2 consumer work and
-current fixture fixes, then the selected full dual-OS/portable gate on one frozen
-candidate. Relevant local prerequisites govern bounded diagnostics; full CI still
-governs merge/portability/promotion. Model recovery or comparison feedback does not
-block independent ready native/new-learning work or the minimal G2 application path.
+The hosted checkpoint-fixture correction has focused local acceptance; finish its
+reviewed integration and obtain fresh selected full dual-OS/portable CI for the
+coherent candidate. Local source/test, installed/runtime and gameplay/quality claims
+remain separate. Full CI still governs merge/portability/promotion; bounded native
+launch requires relevant reviewed local gates and an explicit task envelope.
 
 ## Remaining Platform non-claims
 
-Retain the10k meaningful-data objective, complete SC/SX/product coverage,30 attempts,
-recovery/performance, whole-game and quality comparisons, and final user approval.
-No small-loop stage closes the complete G2/V1 chain. Environment execution, admitted
-data/coverage, learned autonomous use and decision quality are separate. Human and
-scientific qualification remain separate; sampled Current is not lossless history.
+Retain10k meaningful data, complete SC/SX/product coverage,30 attempts, recovery/
+performance, whole-game/quality comparisons and user approval. Small-loop evidence
+never closes full G2/V1 or grants Human/scientific/strategy qualification. Execution,
+data, learned use and quality are separate; sampled Current is not lossless history.
 The [specification](../BASELINE_V1_SPEC.zh-CN.md) and [TESTING](../TESTING.md) retain
-requirements and evidence rules; original task IDs, receipts and compatibility
-identities remain preserved.
+requirements/evidence rules; original IDs, receipts and compatibility are preserved.
