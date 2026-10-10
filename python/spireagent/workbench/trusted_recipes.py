@@ -113,10 +113,16 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
                 "numerical_devices": ["cpu", "mps"], "remote_execution": False,
                 "dependencies_available": recipe_dependencies_available(recipe_id),
                 "automatic_retry": False,
-                "supported_actions": ["cancel", "pause", "resume", "reconcile"],
+                "supported_actions": ["cancel", "pause", "resume", "reconcile", "amend_wall_budget"],
                 "result_type": "train_only", "evaluation_scope": "TRAIN_internal_diagnostic",
                 "source_schema": SOURCE_SCHEMA, "input_specs": INPUT_SPECS,
                 "config_defaults": RewardM0Config().to_dict(),
+                "config_fields": {},
+                "limits": {
+                    "wall_seconds": {"minimum": 1, "maximum": 3600},
+                    "scratch_bytes": {"minimum": 16 * 1024**2, "maximum": 1024**3,
+                                      "default": 512 * 1024**2},
+                },
                 "paired_configuration": "source_frozen_config_must_match_except_arm",
                 "worker_isolation": "private_child-v1", "cumulative_limits": True,
                 "max_total_attempts": MAX_TOTAL_ATTEMPTS}
