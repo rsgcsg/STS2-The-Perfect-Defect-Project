@@ -547,9 +547,21 @@ test("missing finalized counter proof does not delay owner cleanup or fabricate 
 test("public port closes an actual Teacher blocked in declared pre-acquisition cadence", { timeout: 15000 }, async t => {
   const output = await mkdtemp(path.join(os.tmpdir(), "teacher-paced-stop-"));
   let port, child, closed;
+  let phase = "preparation", stderr = "";
+  const wait = async (nextPhase, promise) => {
+    phase = nextPhase;
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(JSON.stringify({ phase,
+          child_pid: child?.pid ?? null, stderr: stderr.slice(-4096),
+          reason: "fixture_phase_not_observed" }))), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
   t.after(async () => {
     if (port) port.close(); else child?.kill("SIGKILL");
-    if (closed) await closed;
+    if (closed) await wait("cleanup_child_exit", closed);
     await rm(output, { recursive: true, force: true });
   });
   // Reuse the production-shaped Python protocol vector. Only its clock/sleeper
@@ -566,35 +578,56 @@ m={"schema":"sts2.policy-runtime/agent-manifest-1","artifact":a,"adapter":d["ada
             "state_recovery":{"mode":"none","max_state_bytes":0,"model_bindings":[]}},
    "limits":{"max_message_bytes":MAX_MESSAGE_BYTES}}
 (p/"manifest.json").write_text(json.dumps(m),encoding="utf-8")
-print(json.dumps({"manifest":m,"current":current(1)}))
+print(json.dumps({"manifest":m,"current":current(1),
+                 "interpreter":sys._base_executable,"import_path":sys.path}))
 `, output], { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
   assert.equal(preparation.status, 0, preparation.stderr);
   const prepared = JSON.parse(preparation.stdout);
   const fixedClockChild = String.raw`
-import sys,time
+import os,sys,time,json
 from pathlib import Path
+sys.path[:]=json.loads(sys.argv[2])
 from stpd.policy import native_teacher_agent as agent
+# Exercise the original Windows counterexample on every OS. Fixture diagnostics
+# use binary LF framing; the Teacher's production stdout protocol stays intact.
+sys.stderr.reconfigure(newline="\r\n")
+sys.stderr.write("TEXT-STDERR\n"); sys.stderr.flush()
+sys.stderr.buffer.write(("STARTED pid=%d\n" % os.getpid()).encode("ascii"))
+sys.stderr.buffer.flush()
 sleep=time.sleep
 agent.time.monotonic=lambda: 10.0
 def paced(seconds):
-    sys.stderr.write("PACED\n"); sys.stderr.flush()
+    sys.stderr.buffer.write(("PACED pid=%d\n" % os.getpid()).encode("ascii"))
+    sys.stderr.buffer.flush()
     sleep(60)
 agent.time.sleep=paced
 sys.argv=[sys.argv[0],"--manifest",sys.argv[1]]
 agent.main()
 `;
-  child = spawn(python, ["-c", fixedClockChild, path.join(output, "manifest.json")],
+  // Windows venv python.exe can be a redirector. Bind the public port to the
+  // actual interpreter, retaining the selected environment's exact import paths.
+  assert.ok(path.isAbsolute(prepared.interpreter));
+  child = spawn(prepared.interpreter, ["-c", fixedClockChild, path.join(output, "manifest.json"),
+    JSON.stringify(prepared.import_path)],
     { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python"), PYTHONIOENCODING: "utf-8" },
       stdio: ["pipe", "pipe", "pipe"] });
   closed = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
-  let stderr = "";
-  const paced = new Promise(resolve => child.stderr.on("data", bytes => {
-    stderr += bytes.toString("utf8"); if (stderr.includes("PACED\n")) resolve();
-  }));
+  let startedResolve, pacedResolve;
+  const started = new Promise(resolve => { startedResolve = resolve; });
+  const paced = new Promise(resolve => { pacedResolve = resolve; });
+  child.stderr.on("data", bytes => {
+    stderr = (stderr + bytes.toString("utf8")).slice(-8192);
+    const start = /STARTED pid=([1-9][0-9]*)\n/u.exec(stderr);
+    const pace = /PACED pid=([1-9][0-9]*)\n/u.exec(stderr);
+    if (start) startedResolve(Number(start[1]));
+    if (pace) pacedResolve(Number(pace[1]));
+  });
   const shared = JSON.parse(await readFile(path.join(ROOT,
     "components/policy-runtime/contracts/fixtures/agent-session-v1.json"), "utf8"));
   port = new runtimeApi.NdjsonAgentSessionPort(child, prepared.manifest.adapter, shared.manifest.limits);
-  await port.ready();
+  assert.equal(await wait("actual_interpreter_started", started), child.pid);
+  assert.ok(stderr.includes("TEXT-STDERR\r\n"));
+  await wait("agent_ready", port.ready());
   let queries = 0, consumptions = 0;
   const handlers = {
     query: async () => { queries++; return prepared.current; },
@@ -609,17 +642,18 @@ agent.main()
   const context = { session_id: "paced-session", recovery_epoch: 0 };
   const initial = { continuity_token: "continuity", consumption_id: null, state_version: 0,
     basis_acquisition_id: null, received_cursor: "cursor-known" };
-  const first = await port.next(context, initial, handlers, new AbortController().signal, () => {});
+  const first = await wait("first_decision", port.next(context, initial, handlers,
+    new AbortController().signal, () => {}));
   assert.equal(first.directive.type, "act");
   const next = port.next(context, { ...initial, consumption_id: first.consumption_id,
     state_version: first.state_version, basis_acquisition_id: first.directive.basis_acquisition_id },
     handlers, new AbortController().signal, () => {});
   const rejected = assert.rejects(next, /agent_port_closed|agent_child_closed/u);
-  await paced;
+  assert.equal(await wait("declared_pre_acquisition_cadence", paced), child.pid);
   assert.equal(queries, 1); assert.equal(consumptions, 1);
   port.close();
-  await rejected;
-  const exit = await closed;
+  await wait("pending_next_rejected", rejected);
+  const exit = await wait("stopped_actual_interpreter", closed);
   assert.ok(exit.signal !== null || exit.code !== null);
   assert.notDeepEqual(exit, { code: 0, signal: null });
   assert.equal(queries, 1); assert.equal(consumptions, 1);
