@@ -1467,19 +1467,29 @@ def test_malformed_relation_containers_fail_at_research_boundary(cohort, relatio
         checked_relation(relation, cohort)
 
 
+@pytest.mark.parametrize("python_version", [None, (3, 11, 17)])
 def test_current_runtime_teacher_tuple_is_only_admitted_by_exact_private_fixture_relation(
-    tmp_path, owned_stale_original, monkeypatch,
+    tmp_path, owned_stale_original, monkeypatch, python_version,
 ):
     from stpd import native_agent_sampled_source_spec as spec
     from stpd.canonical import semantic_hash
-    from stpd.policy.native_teacher_agent import descriptor
+    from types import SimpleNamespace
 
-    current = descriptor(execution_policy=spec.OWNED_STALE_TEACHER_PRODUCER["execution_policy"])
+    from stpd.policy import native_teacher_agent
+
+    if python_version is not None:
+        monkeypatch.setattr(native_teacher_agent, "sys", SimpleNamespace(
+            implementation=sys.implementation, version_info=python_version))
+    current = native_teacher_agent.descriptor(
+        execution_policy=spec.OWNED_STALE_TEACHER_PRODUCER["execution_policy"])
+    assert current["runtime_provenance"]["python_version"] == list(
+        python_version or sys.version_info[:3])
     definition = copy.deepcopy(spec.OWNED_STALE_TEACHER_PRODUCER)
     definition.update({key: copy.deepcopy(value) for key, value in current.items()
                        if key != "schema"})
     definition["artifact_sha256"] = sha(json_bytes(current))
-    definition["artifact_id"] = "synthetic-current-runtime-teacher-" + definition["artifact_sha256"][:16]
+    definition["artifact_id"] = ("synthetic-current-runtime-teacher-" +
+                                 definition["artifact_sha256"][:16])
     helper, _, _, _ = owned_stale_original
     declared_owned_teacher_fixture(helper, definition)
     store, _ = setup_store(tmp_path)

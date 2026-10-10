@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import platform
+import sys
 from dataclasses import replace
 
 import pytest
+import safetensors
 import torch
 from test_native_structured_model import ack, offer, snapshot, state_metadata
 from test_native_structured_model import agent_files as agent_files
@@ -16,6 +19,7 @@ from test_native_structured_model import (
 from test_native_structured_training import data, origin
 from test_structured_resume import Authority, PauseControl, equal_tree, finish
 from test_structured_resume import dataset as legacy_data
+from torch import nn
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
@@ -36,9 +40,12 @@ from stpd.policy.native_agent import NativeStructuredAgent, bind_native_agent
 from stpd.policy.native_structured_export import (
     GRAPH_STATE_FORMAT,
     GRAPH_TRAINED_PACKAGE_SCHEMA,
+    PROJECTION,
+    WEIGHT_SCHEMA,
     encode_native_weights,
     export_native_model,
     load_native_package,
+    native_graph,
     require_native_model_package,
 )
 from stpd.policy.structured_export import export_structured_package
@@ -61,13 +68,72 @@ def two_threads():
     torch.set_num_threads(previous)
 
 
+def _frozen_legacy_initializer(*, seed):
+    """Original K1 initialization sequence, independent of the current constructor.
+
+    Copied from pre-control commit b7a77a963fd6dd57d9a65d6e7ac87d7d80b63451,
+    structured_m2.py blob a9a563664c2f553b9f6a092a67d5cd607b153dcd. The
+    historical dimensions (258/32/64/96, nine types, four relations) are literals
+    so changing current graph constants cannot silently change this reference.
+    This freezes the graph/order, not a cross-platform PyTorch RNG algorithm.
+    """
+    model = nn.Module()
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        model.text = nn.Module()
+        model.text.embedding = nn.Embedding(258, 32)
+        model.text.conv = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        model.text.projection = nn.Linear(64, 96)
+        model.types = nn.Embedding(9, 96)
+        model.numeric = nn.Linear(3, 96, bias=False)
+        model.node_norm = nn.LayerNorm(96)
+        model.entity_fields = nn.Linear(96, 96)
+        model.relations = nn.ModuleList(nn.Linear(96, 96, bias=False) for _ in range(4))
+        model.relation_norm = nn.LayerNorm(96)
+        model.write_query = nn.Parameter(torch.randn(1, 96) * 0.02)
+        model.old_query = nn.Linear(96, 96)
+        model.write_key = nn.Linear(96, 96)
+        model.write_value = nn.Linear(96, 96)
+        model.write_norm = nn.LayerNorm(96)
+        model.gate = nn.Linear(192, 96)
+        model.role_projection = nn.Linear(192, 96)
+        model.empty_role = nn.Parameter(torch.randn(96) * 0.02)
+        model.candidate_norm = nn.LayerNorm(96)
+        model.read_query = nn.Linear(96, 96)
+        model.read_key = nn.Linear(96, 96)
+        model.read_value = nn.Linear(96, 96)
+        model.head = nn.Sequential(nn.Linear(192, 96), nn.GELU(), nn.Linear(96, 1))
+    return model
+
+
 def test_default_weight_bytes_and_common_parameter_initialization_remain_exact():
-    model = StructuredM2(seed=0)
-    assert len(model.state_dict()) == 43
-    assert hashlib.sha256(encode_native_weights(model)).hexdigest() == (
-        "18b863a7ec88ff5de0a35bd657ee9936d5a809a4bc29945d1cfc2abf9e7fe9b2"
-    )
     rng = torch.get_rng_state().clone()
+    legacy = _frozen_legacy_initializer(seed=0)
+    model = StructuredM2(seed=0)
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert len(model.state_dict()) == 43
+    assert list(model.state_dict()) == list(legacy.state_dict())
+    for key, tensor in legacy.state_dict().items():
+        assert torch.equal(model.state_dict()[key], tensor), key
+    raw = encode_native_weights(model)
+    expected = encode_checkpoint({"schema": WEIGHT_SCHEMA, "graph": native_graph(None),
+        "projection": PROJECTION, "seed": 0, "state_dict": dict(legacy.state_dict())})
+    assert raw == expected
+    assert encode_native_weights(StructuredM2(seed=0)) == raw
+    for key, tensor in decode_checkpoint(raw)["state_dict"].items():
+        assert torch.equal(tensor, legacy.state_dict()[key]), key
+    # Historical bytes were qualified on this software/CPU-capability tuple.
+    # PyTorch does not promise bitwise RNG equality across platforms/releases:
+    # v2.13.0 DistributionTemplates.h selects scalar vs AVX2 Box-Muller math.
+    qualified_runtime = ("darwin", "15.7.4", "arm64", (3, 11, 15),
+                         "2.13.0", "DEFAULT", "0.8.0")
+    runtime = (sys.platform, platform.mac_ver()[0], platform.machine(),
+               tuple(sys.version_info[:3]), torch.__version__,
+               torch.backends.cpu.get_cpu_capability(), safetensors.__version__)
+    if runtime == qualified_runtime:
+        assert hashlib.sha256(raw).hexdigest() == (
+            "18b863a7ec88ff5de0a35bd657ee9936d5a809a4bc29945d1cfc2abf9e7fe9b2"
+        )
     for preset in PRESETS:
         controlled = StructuredM2(seed=0, model_control=preset)
         assert torch.equal(torch.get_rng_state(), rng)
