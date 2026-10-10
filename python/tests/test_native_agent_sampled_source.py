@@ -1471,10 +1471,10 @@ def test_malformed_relation_containers_fail_at_research_boundary(cohort, relatio
 def test_current_runtime_teacher_tuple_is_only_admitted_by_exact_private_fixture_relation(
     tmp_path, owned_stale_original, monkeypatch, python_version,
 ):
-    from stpd import native_agent_sampled_source_spec as spec
-    from stpd.canonical import semantic_hash
     from types import SimpleNamespace
 
+    from stpd import native_agent_sampled_source_spec as spec
+    from stpd.canonical import semantic_hash
     from stpd.policy import native_teacher_agent
 
     if python_version is not None:

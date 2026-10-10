@@ -719,6 +719,8 @@ class LocalTrainingService:
                          value["requested_action"] == "cancel")
             if cancelled:
                 value.update(selected_result=False, application_disposition="cancel_requested")
+                # Cancel intent does not prove safe child/domain completion;
+                # unknown execution must retain its reconciliation status.
                 if value["status"] in {"completed", "cancelled"}:
                     value["status"] = "cancelled"
                 if domain_status == "completed":

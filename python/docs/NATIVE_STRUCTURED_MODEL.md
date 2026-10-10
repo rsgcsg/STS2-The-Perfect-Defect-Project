@@ -216,7 +216,16 @@ shapes, initialization, arithmetic and default package/state field meanings.
 The explicit K1 carry control has its own identity despite equal arithmetic.
 K8 adds seven learned write queries through a separate deterministic RNG fork;
 all common encoder/writer/scorer parameters and the first query initialize
-identically. Its N read attends over the eight memory slots. Parameter count
+identically within the same numerical runtime. Exact initialization regression
+compares every tensor and encoded weight byte against the independent pre-control
+constructor at commit `b7a77a963fd6dd57d9a65d6e7ac87d7d80b63451`; it runs on
+every platform. A seeded constructor does not promise identical fresh bytes
+across hardware/software: [PyTorch's reproducibility contract](https://github.com/pytorch/pytorch/blob/v2.13.0/docs/source/notes/randomness.md)
+retains that limit, and its [CPU normal initialization](https://github.com/pytorch/pytorch/blob/v2.13.0/aten/src/ATen/native/cpu/DistributionTemplates.h)
+selects scalar or AVX2 mathematical kernels. The original `18b863a7…` byte receipt
+remains checked only on its recorded exact runtime tuple. Immutable package
+hashes, loading and checkpoint identity checks retain their exact requirements.
+Its N read attends over the eight memory slots. Parameter count
 and tensor shape differ; this is not an equal-parameter comparison.
 
 The reset control runs inside the existing writer only on `advance`. A repeated
