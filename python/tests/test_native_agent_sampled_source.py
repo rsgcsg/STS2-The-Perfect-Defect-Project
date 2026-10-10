@@ -1307,22 +1307,13 @@ def test_owned_teacher_tuple_retains_exact_frozen_descriptor_and_sealed_original
     )}}
     assert sha(json_bytes(frozen)) == new["artifact_sha256"]
     current = descriptor(execution_policy=new["execution_policy"])
-    # The UTF-8 adapter repair is a new code artifact. The old producer remains
-    # an immutable archival admission tuple, not an alias for current source.
-    assert current["agent_spec"] == frozen["agent_spec"]
-    assert current["input_spec"] == frozen["input_spec"]
-    assert current["input_spec_body"] == frozen["input_spec_body"]
+    # Later Teacher policies and cadence are new artifacts. This historical
+    # definition remains readable with its exact original script and lock.
+    assert current != frozen
     assert current["adapter"]["code_sha256"] != frozen["adapter"]["code_sha256"]
-    repaired = "stpd/policy/native_teacher_agent.py"
-    old_files = {item["path"]: item for item in frozen["code_files"]}
-    current_files = {item["path"]: item for item in current["code_files"]}
-    assert set(old_files) == set(current_files)
-    for path, item in current_files.items():
-        raw = (ROOT / "python" / path).read_bytes()
-        assert item == {"path": path, "bytes": len(raw), "sha256": sha(raw)}
-        if path != repaired:
-            assert item == old_files[path]
-    assert current_files[repaired] != old_files[repaired]
+    for item in current["code_files"]:
+        raw = (ROOT / "python" / item["path"]).read_bytes()
+        assert item == {"path": item["path"], "bytes": len(raw), "sha256": sha(raw)}
     from spireagent.workbench.native_source3_collection import closed_collection_producer
 
     assert closed_collection_producer(current, new["execution_policy"]) is None
@@ -1543,3 +1534,79 @@ def test_current_runtime_teacher_tuple_is_only_admitted_by_exact_private_fixture
     monkeypatch.setattr(spec, "_closed_relations", lambda: tuples)
     with pytest.raises(BoundaryError, match="unsupported_producer_student_relation"):
         spec.checked_relation(relation, FIXTURE_COHORT)
+
+
+def test_map_ready_teacher_frozen_original_tuple_replays_with_sparse_N(
+    tmp_path, owned_stale_original,
+):
+    from stpd.native_agent_sampled_source_spec import (
+        MAP_READY_TEACHER_PRODUCER as definition,
+        MAP_READY_TEACHER_RELATION_SPEC as relation,
+        MAP_READY_TEACHER_PROJECTION_SPEC as projection,
+        OWNED_STALE_TEACHER_RELATION_SPEC,
+        TEACHER_COHORT,
+        checked_specs,
+        relation_body,
+    )
+
+    frozen = {"schema": definition["artifact_schema"], **{key: definition[key] for key in (
+        "agent_spec", "input_spec_body", "input_spec", "adapter", "code_files",
+        "runtime_provenance",
+    )}}
+    assert sha(json_bytes(frozen)) == definition["artifact_sha256"]
+    assert definition["agent_spec"]["teacher"]["version"] == "1.0.10"
+    assert definition["adapter"]["version"] == "1.6.0"
+    assert definition["execution_policy"] == definition["agent_spec"]["execution_policy"]
+    assert definition["agent_spec"]["acquisition_cadence"]["minimum_interval_ms"] == 250
+    assert relation_body(relation, TEACHER_COHORT)["producer_definition"] == definition
+    checked_specs(projection, sources.relation_specs(relation, TEACHER_COHORT)[1],
+                  relation, TEACHER_COHORT)
+    helper, _, _, _ = owned_stale_original
+    declared_owned_teacher_fixture(helper, definition)
+    original_bytes = {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+    store, _ = setup_store(tmp_path)
+    with pytest.raises(BoundaryError, match="fixed_teacher_producer_identity"):
+        sources.publish_native_agent_sampled_raw(
+            store, helper.directory, IMPORTER, cohort=TEACHER_COHORT,
+            relation=OWNED_STALE_TEACHER_RELATION_SPEC,
+        )
+    raw = sources.publish_native_agent_sampled_raw(
+        store, helper.directory, IMPORTER, cohort=TEACHER_COHORT, relation=relation,
+    )
+    ref = sources.publish_native_agent_sampled_admission(store, raw.artifact_id, PROJECTOR)
+    partition = sources.publish_native_agent_sampled_partition(store, (ref,), "train", PROJECTOR)
+    verified = sources.verify_native_agent_sampled_partition(store, partition.manifest.artifact_id)
+    assert [row["N_eligible"] for row in verified.index] == [False, False, True]
+    assert verified.dataset.runs[0].steps[0].reset_before
+    assert verified.dataset.input_spec.value() == INPUT_SPEC
+    assert original_bytes == {path.name: path.read_bytes() for path in helper.directory.iterdir()}
+
+
+@pytest.mark.parametrize("mutation", ["policy", "artifact", "adapter"])
+def test_map_ready_relation_rejects_valid_but_different_original_producer(
+    tmp_path, owned_stale_original, mutation,
+):
+    from stpd.native_agent_sampled_source_spec import (
+        MAP_READY_TEACHER_PRODUCER,
+        MAP_READY_TEACHER_RELATION_SPEC,
+        TEACHER_COHORT,
+    )
+    definition = copy.deepcopy(MAP_READY_TEACHER_PRODUCER)
+    if mutation == "policy":
+        definition["execution_policy"]["max_known_stale_rejections"] -= 1
+    elif mutation == "artifact":
+        definition["artifact_sha256"] = "f" * 64
+    else:
+        definition["adapter"]["code_sha256"] = "f" * 64
+    helper, _, _, _ = owned_stale_original
+    declared_owned_teacher_fixture(helper, definition)
+    store, _ = setup_store(tmp_path)
+    with pytest.raises(BoundaryError, match=(
+        "producer_execution_policy_relation" if mutation == "policy"
+        else "fixed_teacher_producer_identity"
+    )):
+        sources.publish_native_agent_sampled_raw(
+            store, helper.directory, IMPORTER, cohort=TEACHER_COHORT,
+            relation=MAP_READY_TEACHER_RELATION_SPEC,
+        )
+    assert not store.manifest_ids()
