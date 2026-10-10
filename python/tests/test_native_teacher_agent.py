@@ -263,6 +263,35 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertEqual(decision.directive, "await")
         self.assertIsNone(decision.action_id)
 
+    def test_reward_mount_Await_is_ACK_bound_and_ready_selection_uses_new_basis(self):
+        self.agent.teacher.browse = False
+        actions = [action("inspect", "inspect_card", "card"), action("skip", "skip")]
+        surface = {"kind": "card_reward_selection", "cards": [{"entity_id": "card"}],
+                   "selectable_card_entity_ids": []}
+        mounting = current(1, "card_reward_selection", actions, surface,
+                           refs=[("card", "current_option")])
+        mounting["value"]["observation"]["interaction"].update(
+            stage="settling",
+            content_schema="sts2.player-environment/surface/card_reward_selection-1",
+        )
+        result = self.consume(mounting)
+        self.assertEqual(result["directive"]["type"], "await")
+        self.assertEqual(self.agent.teacher.decisions, 0)
+        self.assertEqual(self.agent.acquisition_id, "acquisition-1")
+        self.assertEqual(result["consumption_id"], self.agent.consumption_id)
+        ready = current(2, "card_reward_selection", [action("select", "select", "card")],
+                        {**surface, "selectable_card_entity_ids": ["card"]},
+                        refs=[("card", "current_option")])
+        ready["value"]["observation"]["interaction"].update(
+            stage="ready",
+            content_schema="sts2.player-environment/surface/card_reward_selection-1",
+        )
+        result = self.consume(ready)
+        self.assertEqual(result["directive"]["type"], "act")
+        self.assertEqual(result["directive"]["selection"]["action_id"], "select")
+        self.assertEqual(result["directive"]["basis_acquisition_id"], "acquisition-2")
+        self.assertEqual(self.agent.teacher.decisions, 1)
+
     def test_empty_current_is_readiness_only_and_unsupported_is_honest_Close(self):
         original = next_input(self.agent)
         kind, output = self.agent.propose_current(current(1, actions=[]), original)
@@ -382,10 +411,10 @@ class OwnedStaleTeacherTests(TeacherAgentTests):
         legacy = module.descriptor()
         proposed = module.descriptor(execution_policy=self.policy)
         self.assertEqual(legacy["agent_spec"], module.AGENT_SPEC)
-        self.assertEqual(legacy["adapter"]["version"], "1.1.0")
+        self.assertEqual(legacy["adapter"]["version"], "1.3.0")
         self.assertNotIn("execution_policy", legacy["agent_spec"])
-        self.assertEqual(proposed["agent_spec"]["teacher"]["version"], "1.0.6")
-        self.assertEqual(proposed["adapter"]["version"], "1.2.0")
+        self.assertEqual(proposed["agent_spec"]["teacher"]["version"], "1.0.8")
+        self.assertEqual(proposed["adapter"]["version"], "1.4.0")
         self.assertEqual(proposed["input_spec_body"], legacy["input_spec_body"])
         missing = next_input(self.agent)
         del missing["operational_outcome"]

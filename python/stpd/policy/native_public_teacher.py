@@ -15,8 +15,8 @@ from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_task import observe_ready_summary, public_map_travel_pending
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.5"
-OWNED_STALE_TEACHER_VERSION = "1.0.6"
+TEACHER_VERSION = "1.0.7"
+OWNED_STALE_TEACHER_VERSION = "1.0.8"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -144,6 +144,15 @@ class NativePublicTeacher:
             if isinstance(ref, dict) and isinstance(ref.get("referent_id"), str)
         }
         kind, stage = page.get("kind"), page.get("stage")
+
+        # Public information/Skip leaves can make the whole input interactive
+        # before reward card holders finish mounting. The entered page owns
+        # its readiness; absence of Select alone never establishes this wait.
+        if (kind == "card_reward_selection" and stage == "settling"
+                and page.get("content_schema")
+                == "sts2.player-environment/surface/card_reward_selection-1"
+                and surface.get("kind") == "card_reward_selection"):
+            return self._await("await_public_card_reward_ready")
 
         # Shared declared Agent timing; independent information leaves stay in C.
         if public_map_travel_pending(observation):

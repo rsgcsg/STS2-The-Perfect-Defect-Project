@@ -318,6 +318,48 @@ def test_card_reward_typed_selection_and_missing_alternative_semantics_stop():
     assert teacher.decide(view, actions).reason == "card_reward_alternative_effect_not_public"
 
 
+@pytest.mark.parametrize("status", ["interactive", "observed"])
+def test_reward_mount_waits_despite_available_information_and_skip(status):
+    actions = [action("inspect", "inspect_card", "card"), action("skip", "skip")]
+    surface = {"kind": "card_reward_selection", "cards": [{"entity_id": "card"}],
+               "selectable_card_entity_ids": []}
+    view = observation(actions, "card_reward_selection", "settling", surface,
+                       [("card", "current_option")],
+                       "sts2.player-environment/surface/card_reward_selection-1")
+    view["status"] = status
+    original = copy.deepcopy((view, actions))
+    teacher = NativePublicTeacher(browse=False)
+    before = teacher.state()
+    choice = teacher.decide(view, actions)
+    assert choice.directive == "await" and choice.action_id is None
+    assert choice.reason == "await_public_card_reward_ready"
+    assert teacher.state() == before and (view, actions) == original
+    # A new ready input, not a clock or the earlier delivery, enables selection.
+    actions = [action("select", "select", "card")]
+    surface["selectable_card_entity_ids"] = ["card"]
+    view = observation(actions, "card_reward_selection", "ready", surface,
+                       [("card", "current_option")],
+                       "sts2.player-environment/surface/card_reward_selection-1")
+    assert teacher.decide(view, actions).action_id == "select"
+
+
+@pytest.mark.parametrize("change", ["schema", "surface", "kind", "stage"])
+def test_reward_mount_wait_does_not_infer_unpublished_progress(change):
+    actions = [action("skip", "skip")]
+    view = observation(actions, "card_reward_selection", "settling",
+                       {"kind": "card_reward_selection", "cards": [],
+                        "selectable_card_entity_ids": []},
+                       schema="sts2.player-environment/surface/card_reward_selection-1")
+    page = view["interaction"]
+    if change == "schema":
+        page["content_schema"] = "unknown"
+    elif change == "surface":
+        page["content"]["surface"]["kind"] = "unknown"
+    else:
+        page[change] = "unknown"
+    assert NativePublicTeacher(browse=False).decide(view, actions).directive == "close"
+
+
 @pytest.mark.parametrize("mutation", ["partial", "digest", "hidden"])
 def test_missing_complete_or_public_basis_rejected(mutation):
     actions = [action("end", "end_turn")]
@@ -416,7 +458,8 @@ def test_shared_timing_versions_only_agent_navigation_not_input_or_original_task
     assert TEACHER_INPUT["sha256"] == (
         "d31163fbfe29bfec0be0c8c92ae5b13e4266fbe8915ff4c1762686e8cf7a6eb4")
     student = sampled_agent_spec(NativeGraphControl())
-    assert student["version"] == AGENT_SPEC["version"] == "1.1.0"
+    assert student["version"] == "1.1.0"
+    assert AGENT_SPEC["version"] == "1.3.0"
     assert student["timing_policy"] == AGENT_SPEC["timing_policy"] == (
         public_map_travel_timing_spec())
     old, timed = ready_summary_task_spec(), map_timed_ready_summary_task_spec()

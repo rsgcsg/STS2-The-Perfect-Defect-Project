@@ -10,11 +10,11 @@ original records override this file.
 ## Active goal, authority and dependencies
 
 The [active boundary packet](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md)
-records current authorization: repair/verify prerequisites, then ONE Source-off
-real native diagnostic targeting100 known deliveries; preparation/CI failures do
-not consume it. Max200 original submissions, known-stale8 total/3 consecutive,
-15 minutes. Completion or an actual problem ends it safely with a report; no
-second diagnostic or automatic repair/restart after that outcome.
+now records the owner's resumed authorization: continue diagnosed repairs and
+fresh native attempts toward100 known deliveries, then the selected learning
+closure. This supersedes the earlier one-attempt stop restriction. Each attempt
+retains max200 original submissions, known-stale8 total/3 consecutive and15 minutes.
+Unknown delivery is never retried; original attempts remain immutable.
 
 The owner's later questions exposed Root's overly serial all-CI-before-native
 arrangement. Relevant independently reviewed local source/short-seam/exact-game
@@ -31,8 +31,8 @@ export/register/load -> this learned Agent progressing a fresh game to natural
 summary, visible exact model identity and confirmed Stop -> review/integration.
 This immediate diagnostic does not silently become N or that larger closure.
 Later collection/fit/learned-game stages retain their explicit authority/budget;
-this packet includes no new fit/Model, paid cloud, Human recording, release/main
-promotion or historical cleanup. Aggregate cloud budget remainsUSD20, spendUSD0.
+the wider packet governs fit/Model and learned-game execution. No new paid cloud,
+Human recording, release/main promotion or historical cleanup is added. Aggregate cloud budget remainsUSD20, spendUSD0.
 Full G2/V1 is unapproved; only the user approves it. See the
 [baseline specification](../BASELINE_V1_SPEC.zh-CN.md) and
 [task index](../plans/BASELINE_TASKS.zh-CN.md).
@@ -58,20 +58,18 @@ Full G2/V1 is unapproved; only the user approves it. See the
   complete collection, disjoint selection, actual terminal execution and all
   owner stages are checked before full receipt. First assembled hosted run,
   completion within55 minutes and speedup remain unverified.
-- Installation is stillrc34, DLLSHA prefix7c817a88/MVID9c4b89a5. Rc37 was built
-  for prior candidates, not installed/loaded. Installed Runtime26/Evidence27 and
-  lock46eb8386 are separate pins. Re-resolve full bytes/identities before native.
-  New exact candidate/local prerequisite receipt and native outcome are pending;
-  actual new diagnostic remains unstarted0/100.
+- Actual0ed61be1 rc37 install/cold load passed; DLLSHA prefix8704c992/MVID7720b613.
+  The Source-off native attempt reached38 known deliveries/44 submissions/six stale
+  rejections, then Teacher Close. Controller released and Host exited normally.
+  Reward cards were public, but page stage was settling with no selectable cards;
+  global interactive reflected remaining information/Skip leaves. Teacher readiness
+  repair is underway. CI38055431750 runs independently; its outcome is not inferred.
 
 ## Next actions and main-line blocker
 
-Finish assembled source/governance/private-wrapper review; freeze the candidate;
-run named relevant local gates/build/Host and verify actual source/artifact results.
-Publish one current full CI run; owning doctor/install/cold-load and the one real
-attempt can proceed after local prerequisites, with independent original-result
-verification and actual process/control cleanup. No old green status is reused
-as current workspace or runtime evidence.
+Verify the Teacher's explicit reward-page Await with negative and ACK-bound
+regressions, review source and unchanged installed dependencies, then exercise a
+fresh immutable native attempt. Full hosted evidence still governs integration.
 
 Current Teacher differs from frozen producer1.0.6. Source-off bypasses that data
 admission gate, not native bindings. The next learning dependency is an append-only

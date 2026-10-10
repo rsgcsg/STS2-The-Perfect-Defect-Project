@@ -154,3 +154,15 @@ python -m pytest -q python/tests/test_native_public_teacher.py \
 
 These tests use synthetic public fixtures and owned temporary files/processes.
 They do not qualify an installed game, actual data, learning or complete G2/V1.
+
+## Reward-page readiness (Teacher 1.0.7 / owned-stale 1.0.8)
+
+The entered card-reward page can explicitly report `stage=settling` while the
+whole observation is interactive because information or Skip actions exist.
+For the exact public card-reward surface schema/kind, the Teacher now Awaits
+that page's published settling state. A fresh acknowledged ready input enables
+selection from its original catalog. Missing Select without that published
+progress remains fail-closed. No clock, delivery, guessed effect or fabricated
+native readiness is used. Agent versions 1.3.0/1.4.0 declare this timing change;
+InputSpec and the learned Agent remain unchanged. Historical producer relations
+remain frozen and do not qualify these new code bytes for training.

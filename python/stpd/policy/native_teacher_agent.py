@@ -42,8 +42,8 @@ SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ARTIFACT_SCHEMA = "stpd/native-program-teacher-artifact-v1"
 AGENT_ID = "stpd-native-public-program-teacher"
-AGENT_VERSION = "1.1.0"
-OWNED_STALE_AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
+OWNED_STALE_AGENT_VERSION = "1.4.0"
 RECHECK_TIMEOUT_MS = 250
 MAX_MESSAGE_BYTES = 96 * 1024 * 1024
 CODE_FILES = (
@@ -101,7 +101,8 @@ AGENT_SPEC = {
     "model_bindings": [],
     "scores": None,
     "choice": "explicit_public_teacher_original_complete_C_member",
-    "timing": "explicit_Await_public_map_travel_or_expected_public_owner_or_focus_pending",
+    "timing": ("explicit_Await_public_map_travel_or_card_reward_settling_"
+               "or_expected_public_owner_or_focus_pending"),
     "timing_policy": public_map_travel_timing_spec(),
     "task_spec": map_timed_ready_summary_task_spec(),
     "recheck_timeout_ms": RECHECK_TIMEOUT_MS,

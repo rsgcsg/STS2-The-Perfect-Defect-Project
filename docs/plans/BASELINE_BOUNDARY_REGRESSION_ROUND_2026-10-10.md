@@ -216,3 +216,33 @@ Source3/direct/historical/synthetic records. A Source-off archive may be explici
 admitted later only if its original evidence and matching accepted relation qualify.
 Keep the current diagnostic's one-attempt/stop boundary; subsequent collection,
 fit or learned game uses the wider task's separately explicit stage and budget.
+
+## Resumed owner authorization after the first real attempt
+
+The owner explicitly resumed on 2026-10-10 and authorized repairs and distinct
+fresh attempts until the target100 and the subsequent selected learning closure
+can progress. This supersedes this packet's earlier one-attempt/no-restart stop
+restriction; it does not change any historical attempt or permit retrying an
+unknown delivery. Each new attempt retains the100-known/200-original/8-total-
+3-consecutive-known-stale/15-minute limits, immutable output and owner cleanup.
+Root diagnoses actual failures before another fresh attempt; no blind retry loop.
+The wider G2/V1 packet remains the owner of admission, fixed-data fit/model and
+learned-game requirements, cumulative resources and final user approval.
+
+The0ed61be1 attempt reached38 known deliveries from44 submissions (six explicit
+stale rejections), then closed on `card_reward_alternative_effect_not_public`.
+The original input instead shows card_reward_selection/settling with three public
+cards and no selectable card IDs, while information/Skip leaves keep the global
+status interactive. The first incorrect fact is the Teacher's interpretation of
+that page's readiness. Preserve the failed trace and released controller/normal
+Host exit; known delivery does not establish execution, effects or admitted N.
+
+The G1 strategy repair makes the exact public card-reward schema/kind/settling
+state an explicit bounded Await. Ready/no-Select still fails closed. Existing
+Agent ACK/complete-catalog laws and Runtime deadline/Stop apply. Pure negative
+vectors, exact ACK-to-directive tests, original-input replay and the existing
+collector/SDK short seam precede a fresh native attempt. Teacher Python code and the collector
+version-pair binding change: verify unchanged Mod/SDK/Runtime/Host inputs and reuse their exact
+prior evidence; no unrelated rebuild or reinstall. Remote CI remains separate
+source/test evidence and governs merge. Changed Teacher versions and code closure
+require their own append-only producer relation before research admission.
