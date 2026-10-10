@@ -39,6 +39,16 @@ is authorized here; record its actual stages and terminal outcome independently.
   including negative/unknown/close cases. Do not add another legality engine,
   readiness authority, recovery ledger or broad hypothetical test framework.
 
+The portable full-chain fixture uses actual Python parent/OwnedPipeChild, Node
+collector, C# Store/Projector, HTTP SDK, Runtime/program Teacher and installed public
+Evidence API. Host/control/native action execution are explicitly synthetic.
+Production collection promotion additionally pins one exact interpreter/producer
+tuple. CI Python patch versions are not that tuple: its gate must not be relaxed or
+their provenance falsified. This fixture may inject a clearly synthetic promotion
+relation only for its frozen actual descriptor/code hash and unchanged policy;
+any mismatch returns no relation. That test prerequisite establishes no production
+admission, supported runtime range, real N, Human origin or research permission.
+
 ## Execution and completion boundary
 
 Use minimal failing regressions for diagnosis and focused checks while preparing
