@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v2";
 export const OWNED_PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v3";
+export const CONTINUOUS_PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v4";
 // This application exposes one explicit policy selection. Runtime validates its
 // public contract; selection never follows a refusal, restart, or child field.
 export const OWNED_EXECUTION_POLICY = Object.freeze({
@@ -16,7 +17,14 @@ export const OWNED_EXECUTION_POLICY = Object.freeze({
   known_stale: "fresh_changed_current_v1", operational_outcome: "known_not_started_v1",
   max_known_stale_rejections: 8, max_consecutive_known_stale_rejections: 3,
 });
-const pipeSchema = options => Object.hasOwn(options, "execution_policy") ? OWNED_PIPE_SCHEMA : PIPE_SCHEMA;
+export const CONTINUOUS_EXECUTION_POLICY = Object.freeze({
+  schema: "sts2.policy-runtime/agent-execution-policy-2", current_mode: "reader_owned_v1",
+  known_stale: "fresh_changed_current_v1", operational_outcome: "known_not_started_v1",
+  max_consecutive_known_stale_rejections: 3,
+});
+const continuous = options => options.execution_policy?.schema === CONTINUOUS_EXECUTION_POLICY.schema;
+const pipeSchema = options => continuous(options) ? CONTINUOUS_PIPE_SCHEMA
+  : Object.hasOwn(options, "execution_policy") ? OWNED_PIPE_SCHEMA : PIPE_SCHEMA;
 export const MAX_PIPE_BYTES = 96 * 1024 * 1024;
 const MAX_CONTROL_BYTES = 16 * 1024;
 const hash = value => createHash("sha256").update(value).digest("hex");
@@ -44,14 +52,23 @@ const failureDetail = (error, depth = 0) => {
 
 export function validateOptions(value) {
   const opted = object(value) && Object.hasOwn(value, "execution_policy");
+  const v2 = opted && continuous(value);
   exact(value, ["installation", "host_local_root", "output", "endpoint", "seed", "template_id",
     "target_choices", "max_submissions", "deadline_ms", "max_input_bytes", "max_diagnostic_bytes",
     "experimental_build_acknowledged", "experimental_connector_acknowledged", "record_source3",
-    "python_executable", "teacher_artifact", "teacher_descriptor", ...(opted ? ["execution_policy"] : [])]);
+    "python_executable", "teacher_artifact", "teacher_descriptor", ...(opted ? ["execution_policy"] : []),
+    ...(v2 ? ["termination_target"] : [])]);
   if (opted) {
-    exact(value.execution_policy, Object.keys(OWNED_EXECUTION_POLICY));
-    if (Object.keys(OWNED_EXECUTION_POLICY).some(key => value.execution_policy[key] !== OWNED_EXECUTION_POLICY[key]))
+    const selected = v2 ? CONTINUOUS_EXECUTION_POLICY : OWNED_EXECUTION_POLICY;
+    exact(value.execution_policy, Object.keys(selected));
+    if (Object.keys(selected).some(key => value.execution_policy[key] !== selected[key]))
       throw new Error("unsupported_collection_execution_policy");
+  }
+  if (v2) {
+    exact(value.termination_target, ["kind", "known_delivered_choices", "natural_summary_required"]);
+    if (value.termination_target.kind !== "bounded_known_delivered_choices"
+      || value.termination_target.known_delivered_choices !== value.target_choices
+      || value.termination_target.natural_summary_required !== false) throw new Error("unsupported_collection_termination_target");
   }
   for (const key of ["installation", "host_local_root", "output"])
     if (typeof value[key] !== "string" || !path.isAbsolute(value[key])) throw new Error("absolute_path_required");
@@ -112,7 +129,7 @@ export function createPipePeer(input, output, parseJson, lifetime) {
     }
     if (value.type === "stop") {
       exact(value, ["schema", "type", "operation_id", "reason"]);
-      if (![PIPE_SCHEMA, OWNED_PIPE_SCHEMA].includes(value.schema) || !id(value.operation_id)
+      if (![PIPE_SCHEMA, OWNED_PIPE_SCHEMA, CONTINUOUS_PIPE_SCHEMA].includes(value.schema) || !id(value.operation_id)
           || typeof value.reason !== "string") throw new Error("invalid_stop_message");
       lifetime.stop("parent_stop");
       return;
@@ -680,8 +697,10 @@ export async function runNativeSource3(options, operationId, peer, dependencies,
     && finalStatus?.autonomy_budget?.submissions_used > counts.result_messages
     ? "not_exposed_by_public_status_see_original_immutable_evidence" : null;
   const counterProof = options.execution_policy ? { execution_policy: options.execution_policy,
-    terminal_summary: terminalSummary, counter_proof_error: counterProofError } : {};
-  const complete = { schema: options.execution_policy ? "spireagent/native-source3-collector-final-full-v3"
+    terminal_summary: terminalSummary, counter_proof_error: counterProofError,
+    ...(continuous(options) ? { termination_target: options.termination_target } : {}) } : {};
+  const complete = { schema: continuous(options) ? "spireagent/native-source3-collector-final-full-v4"
+    : options.execution_policy ? "spireagent/native-source3-collector-final-full-v3"
     : "spireagent/native-source3-collector-final-full-v2", operation_id: operationId, ...counterProof,
     reason, counts, runtime_status: finalStatus, direct_evidence: directEvidence, teacher_exit: teacherExit,
     source_closed: sourceClosed, record_source3: options.record_source3, control_release: controlRelease,

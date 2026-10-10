@@ -19,13 +19,15 @@ from typing import Any, TextIO
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from stpd.fullrun.native_structured_inputs import PROFILE, SCOPE
 from stpd.fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
-from stpd.policy.native_operational_outcome import (
+from stpd.policy.native_operational_outcome import emitted_intention
+from stpd.policy.native_operational_outcome_v2 import (
+    CONTINUOUS_STRICT_POLICY_SCHEMA,
     checked_execution_policy,
     checked_next_input,
-    emitted_intention,
     manifest_execution_policy,
 )
 from stpd.policy.native_public_teacher import (
+    CONTINUOUS_STRICT_TEACHER_VERSION,
     OWNED_STALE_TEACHER_VERSION,
     TEACHER_ID,
     TEACHER_VERSION,
@@ -45,6 +47,7 @@ ARTIFACT_SCHEMA = "stpd/native-program-teacher-artifact-v1"
 AGENT_ID = "stpd-native-public-program-teacher"
 AGENT_VERSION = "1.5.0"
 OWNED_STALE_AGENT_VERSION = "1.6.0"
+CONTINUOUS_STRICT_AGENT_VERSION = "1.7.0"
 RECHECK_TIMEOUT_MS = 250
 ACT_QUERY_INTERVAL_MS = 250
 MAX_MESSAGE_BYTES = 96 * 1024 * 1024
@@ -70,6 +73,7 @@ CODE_FILES = (
     "stpd/policy/native_public_teacher.py",
     "stpd/policy/native_teacher_agent.py",
     "stpd/policy/native_operational_outcome.py",
+    "stpd/policy/native_operational_outcome_v2.py",
     "stpd/policy/native_task.py",
 )
 INPUT_BODY = {
@@ -143,10 +147,17 @@ def code_identity() -> tuple[str, list[dict[str, Any]]]:
 def teacher_agent_spec(*, execution_policy: dict[str, Any] | None = None) -> dict[str, Any]:
     spec = copy.deepcopy(AGENT_SPEC)
     if execution_policy is not None:
+        policy = checked_execution_policy(execution_policy)
+        continuous = policy["schema"] == CONTINUOUS_STRICT_POLICY_SCHEMA
         spec.update(
-            version=OWNED_STALE_AGENT_VERSION,
-            teacher={"id": TEACHER_ID, "version": OWNED_STALE_TEACHER_VERSION},
-            execution_policy=checked_execution_policy(execution_policy),
+            version=CONTINUOUS_STRICT_AGENT_VERSION if continuous else OWNED_STALE_AGENT_VERSION,
+            teacher={
+                "id": TEACHER_ID,
+                "version": (
+                    CONTINUOUS_STRICT_TEACHER_VERSION if continuous else OWNED_STALE_TEACHER_VERSION
+                ),
+            },
+            execution_policy=policy,
             operational_outcome="validate_last_emitted_intention_then_stage_narrow_correction",
             intention_correction="changed_native_unit_and_exact_new_ConsumeACK_only",
         )
@@ -220,9 +231,7 @@ class NativeTeacherAgent:
         ):
             raise BoundaryError("native_teacher_agent", "real_code_artifact_manifest_binding")
         self.manifest = manifest
-        self.teacher = NativePublicTeacher(version=(
-            OWNED_STALE_TEACHER_VERSION if self.execution_policy is not None else TEACHER_VERSION
-        ))
+        self.teacher = NativePublicTeacher(version=expected["agent_spec"]["teacher"]["version"])
         self.unit: NativeUnit | None = None
         self.continuity: str | None = None
         self.consumption_id: str | None = None

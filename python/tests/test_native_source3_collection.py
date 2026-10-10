@@ -273,11 +273,13 @@ class CollectionTests(unittest.TestCase):
                     )
                     if wire["terminal_summary"] is None:
                         wire["cleanup_errors"].append("terminal_counter_proof_unavailable")
+                if test.request.execution_policy == module.CONTINUOUS_EXECUTION_POLICY:
+                    wire["termination_target"] = copy.deepcopy(
+                        test.behavior.get("termination_target", test.request.termination_target())
+                    )
                 complete = {
                     **wire,
-                    "schema": "spireagent/native-source3-collector-final-full-v3"
-                    if test.request.execution_policy is not None
-                    else "spireagent/native-source3-collector-final-full-v2",
+                    "schema": test.request.full_final_schema,
                     "runtime_status": self.runtime,
                 }
                 raw = json.dumps(complete).encode()
@@ -400,6 +402,8 @@ class CollectionTests(unittest.TestCase):
                     {"id": "synthetic_closed_relation"} if request.record_source3 else None
                 ),
             }
+            if request.execution_policy == module.CONTINUOUS_EXECUTION_POLICY:
+                prepared["promotion_gate"]["installed_execution_policy_supported"] = True
         return prepared
 
     def run_collection(self, *, terminal_verifier=module.verify_terminal_summary):
@@ -459,6 +463,77 @@ class CollectionTests(unittest.TestCase):
         self.assertIsNone(report["eligible_unique_N"])
         self.assertEqual(report["admission"], "not_run")
         self.assertTrue(all(value["schema"] == module.OWNED_PIPE_SCHEMA for value in self.messages))
+
+    def test_v4_explicit_policy_and_bounded_target_join_original_parent_child_and_verifier(self):
+        summary, calls = self.owned_proof(), []
+        self.request = replace(
+            self.request, execution_policy=module.CONTINUOUS_EXECUTION_POLICY, record_source3=False
+        )
+
+        def verifier(directory, expected, policy):
+            calls.append((directory, expected, policy))
+            self.assertEqual(policy, self.request.policy())
+            return copy.deepcopy(summary)
+
+        report = self.run_collection(terminal_verifier=verifier)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["schema"], module.CONTINUOUS_REPORT_SCHEMA)
+        self.assertEqual(
+            report["options"]["execution_policy"]["schema"],
+            "sts2.policy-runtime/agent-execution-policy-2",
+        )
+        for value in (
+            report, report["options"], report["child_final"], report["child_final_full"]
+        ):
+            self.assertEqual(value["termination_target"], self.request.termination_target())
+        self.assertEqual(
+            report["child_final_full"]["schema"],
+            "spireagent/native-source3-collector-final-full-v4",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(report["eligible_unique_N"])
+        self.assertTrue(
+            all(value["schema"] == module.CONTINUOUS_PIPE_SCHEMA for value in self.messages)
+        )
+        self.assertEqual(self.commands, [])
+
+    def test_v4_old_evidence_blocks_before_host_or_operation(self):
+        self.owned_proof()
+        self.request = replace(
+            self.request, execution_policy=module.CONTINUOUS_EXECUTION_POLICY, record_source3=False
+        )
+
+        class OldEvidence:
+            terminal_summary = property(lambda self: None)
+
+        for support in (None, ("sts2.policy-runtime/agent-execution-policy-1",)):
+            owner = SimpleNamespace(AgentSessionRunEvidence=OldEvidence)
+            if support is not None:
+                owner.SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS = support
+            with (
+                self.subTest(support=support),
+                patch.dict(sys.modules, {"sts2_platform_evidence": owner}),
+                self.assertRaisesRegex(BoundaryError, "installed_execution_policy_unsupported"),
+            ):
+                self.run_collection()
+            self.assertEqual(self.apps, [])
+            self.assertEqual(self.children, [])
+            self.assertEqual(self.commands, [])
+            self.assertFalse((self.request.output / "request.json").exists())
+            self.assertFalse((self.config.state_dir / module.MARKER_FILE).exists())
+
+    def test_v4_child_cannot_relabel_the_bounded_pilot_as_natural_summary(self):
+        summary = self.owned_proof()
+        self.request = replace(
+            self.request, execution_policy=module.CONTINUOUS_EXECUTION_POLICY, record_source3=False
+        )
+        self.behavior["termination_target"] = self.request.termination_target() | {
+            "natural_summary_required": True
+        }
+        report = self.run_collection(terminal_verifier=lambda *args: copy.deepcopy(summary))
+        self.assertEqual(report["status"], "unknown")
+        self.assertEqual(report["termination_target"], self.request.termination_target())
+        self.assertIn("unsupported_collection_termination_target", str(report))
 
     def test_v3_source_off_diagnostic_retains_exact_actor_and_public_counter_proof(self):
         summary, verified = self.owned_proof(), []
@@ -1899,7 +1974,9 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
         CollectionTests.setUp(self)
         self.owned_index = 0
 
-    def prepare_owned(self, total=9, stale=(), duplicate=False, delivery="delivered"):
+    def prepare_owned(
+        self, total=9, stale=(), duplicate=False, delivery="delivered", continuous=False
+    ):
         import sts2_platform_evidence as evidence
 
         self.assertIn("site-packages", str(Path(evidence.__file__).resolve()))
@@ -1912,6 +1989,9 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
         fixture = helpers.OwnedStaleEvidenceFixture()
         self.addCleanup(fixture.close)
         self.fixture = fixture
+        if continuous:
+            from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
+            fixture.f.agent["execution_policy"] = progress_aware_strict_policy()
         for index in range(total):
             if index:
                 fixture.sample()
@@ -1987,7 +2067,10 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
         counts = {"result_messages": total, "known_delivered_choices": summary["known_delivered"]}
         teacher = {"pid": 123, "actual_exit": True, "code": None, "signal": "SIGKILL"}
         full = {
-            "schema": "spireagent/native-source3-collector-final-full-v3",
+            "schema": (
+                "spireagent/native-source3-collector-final-full-v4" if continuous
+                else "spireagent/native-source3-collector-final-full-v3"
+            ),
             "operation_id": "a" * 32,
             "counts": counts,
             "runtime_status": public,
@@ -2008,7 +2091,7 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
         }
         final = {
             **copy.deepcopy(full),
-            "schema": module.OWNED_PIPE_SCHEMA,
+            "schema": module.CONTINUOUS_PIPE_SCHEMA if continuous else module.OWNED_PIPE_SCHEMA,
             "type": "closed",
             "host_exit": {"code": 0, "signal": None, "forced": False},
             "control_release": {
@@ -2017,7 +2100,7 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
             "cleanup_errors": [],
         }
         quiesced = {
-            "schema": module.OWNED_PIPE_SCHEMA,
+            "schema": module.CONTINUOUS_PIPE_SCHEMA if continuous else module.OWNED_PIPE_SCHEMA,
             "type": "quiesced",
             "operation_id": "a" * 32,
             "record_source3": False,
@@ -2029,8 +2112,19 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
             "record_source3": False, "execution_policy": policy, "max_submissions": 200,
             "teacher_descriptor": {"agent_spec": {"execution_policy": policy}},
         }
+        target = {
+            "kind": "bounded_known_delivered_choices", "known_delivered_choices": 100,
+            "natural_summary_required": False,
+        }
+        if continuous:
+            full["termination_target"] = copy.deepcopy(target)
+            final["termination_target"] = copy.deepcopy(target)
+            options.update(target_choices=100, termination_target=copy.deepcopy(target))
         self.prior = {
-            "schema": module.OWNED_REPORT_SCHEMA, "status": "unknown", "operation_id": "a" * 32,
+            "schema": (
+                module.CONTINUOUS_REPORT_SCHEMA if continuous else module.OWNED_REPORT_SCHEMA
+            ),
+            "status": "unknown", "operation_id": "a" * 32,
             "actor_id": "source3-teacher-" + "a" * 32,
             "source": {"source_revision": "b" * 40}, "child_path": "/fixed/collector.mjs",
             "child_sha256": "c" * 64, "options": options, "execution_policy": policy,
@@ -2057,6 +2151,8 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
                       "reader_terminal": True, "diagnostics_terminal": True},
             "direct_evidence": direct_ref,
         }
+        if continuous:
+            self.prior["termination_target"] = copy.deepcopy(target)
         self.report_path = self.prior_output / "report.json"
         self.marker = self.config.state_dir / module.MARKER_FILE
         self.request = replace(self.request, predecessor_report_path=self.report_path)
@@ -2078,6 +2174,8 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
             )},
             "status": "pending", "source_start": None, "source_close": None, "source_closed": None,
         }
+        if self.prior["schema"] == module.CONTINUOUS_REPORT_SCHEMA:
+            original["termination_target"] = copy.deepcopy(self.prior["termination_target"])
         atomic_json(self.prior_output / "request.json", original)
         atomic_json(self.report_path, self.prior)
         report_sha = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
@@ -2096,6 +2194,34 @@ class OwnedFreshEpisodeTests(unittest.TestCase):
         self.assertFalse(boundary["prior_record_source3"])
         self.assertEqual({path: path.read_bytes() for path in before}, before)
         self.assertEqual(self.apps, [])
+
+    def test_v4_archive_verifies_more_than_eight_total_and_never_rewrites_originals(self):
+        self.prepare_owned(total=18, stale=tuple(range(0, 18, 2)), continuous=True)
+        self.assertEqual(self.direct.terminal_summary["known_stale_rejections"], 9)
+        before = {
+            path: path.read_bytes()
+            for path in (self.report_path, self.marker, self.prior_output / "request.json")
+        }
+        self.assertIsNotNone(module.verified_fresh_predecessor(self.marker, self.request))
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(self.apps, [])
+        self.assertEqual(self.children, [])
+
+    def test_v4_archive_rejects_mixed_v1_family_and_natural_summary_relabel(self):
+        self.prepare_owned(total=4, stale=(0,), continuous=True)
+        original = copy.deepcopy(self.prior)
+        for change in (
+            lambda p: p["child_final"].update(schema=module.OWNED_PIPE_SCHEMA),
+            lambda p: p["child_final_full"]["termination_target"].update(
+                natural_summary_required=True
+            ),
+            lambda p: p["options"]["execution_policy"].update(max_known_stale_rejections=8),
+        ):
+            self.prior = copy.deepcopy(original)
+            change(self.prior)
+            self.save_owned()
+            with self.assertRaises(BoundaryError):
+                module.verified_fresh_predecessor(self.marker, self.request)
         self.assertEqual(self.children, [])
 
     def test_owned_101_originals_99_deliveries_two_stale_and_duplicate_use_owner_counts(self):

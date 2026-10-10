@@ -17,6 +17,7 @@ from stpd.policy.native_task import observe_ready_summary, public_map_travel_pen
 TEACHER_ID = "native-public-demonstration-v1"
 TEACHER_VERSION = "1.0.9"
 OWNED_STALE_TEACHER_VERSION = "1.0.10"
+CONTINUOUS_STRICT_TEACHER_VERSION = "1.0.11"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",

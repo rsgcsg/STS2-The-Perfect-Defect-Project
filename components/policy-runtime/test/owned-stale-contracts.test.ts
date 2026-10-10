@@ -8,6 +8,7 @@ import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8"));
+const continuous = JSON.parse(readFileSync(new URL("../contracts/fixtures/continuous-strict-v2.json", import.meta.url), "utf8"));
 function port(policy?: Readonly<AgentExecutionPolicy>) {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
   return new NdjsonAgentSessionPort(child as unknown as ConstructorParameters<typeof NdjsonAgentSessionPort>[0],
@@ -50,7 +51,7 @@ describe("owned Current and stale decision closed admission contract", () => {
     const mutable = structuredClone(shared.execution_policy), p = port(mutable);
     try {
       mutable.max_known_stale_rejections = 1;
-      expect(p.executionPolicy?.max_known_stale_rejections).toBe(8); expect(Object.isFrozen(p.executionPolicy)).toBe(true);
+      expect(p.executionPolicy).toMatchObject({ max_known_stale_rejections: 8 }); expect(Object.isFrozen(p.executionPolicy)).toBe(true);
       expect(sameAgentExecutionPolicy(p.executionPolicy, shared.execution_policy)).toBe(true);
       expect(sameAgentExecutionPolicy(undefined, p.executionPolicy)).toBe(false);
       expect(typeof Object.getOwnPropertyDescriptor(NdjsonAgentSessionPort.prototype, "executionPolicy")?.get).toBe("function");
@@ -67,5 +68,29 @@ describe("owned Current and stale decision closed admission contract", () => {
         runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) } })).rejects.toThrow("agent_execution_policy_mismatch");
       expect(ready).not.toHaveBeenCalled(); expect(native).not.toHaveBeenCalled();
     } finally { p.close(); }
+  });
+});
+
+describe("explicit continuous strict policy2 admission", () => {
+  it("accepts only its five-field policy and preserves the exact original Next/outcome grammar", () => {
+    const policy = validateAgentExecutionPolicy(continuous.execution_policy);
+    expect(policy).toEqual(continuous.execution_policy);
+    expect(policy).not.toHaveProperty("max_known_stale_rejections");
+    expect(validateAgentManifest({ ...shared.manifest, execution_policy: policy }).execution_policy).toEqual(policy);
+    expect(validateAgentNextInput(shared.opted_next_after_stale, policy)).toEqual(shared.opted_next_after_stale);
+    expect(sameAgentExecutionPolicy(policy, shared.execution_policy)).toBe(false);
+    const p = port(policy);
+    try { expect(p.executionPolicy).toEqual(policy); expect(Object.isFrozen(p.executionPolicy)).toBe(true); }
+    finally { p.close(); }
+  });
+  it("rejects a lifetime ceiling, altered streak and unsupported mode instead of interpreting them as policy1", () => {
+    for (const extra of continuous.forbidden_policy_fields)
+      expect(() => validateAgentExecutionPolicy({ ...continuous.execution_policy, [extra]: 8 })).toThrow();
+    for (const streak of [0, 1, 2, 4, true, 3.5])
+      expect(() => validateAgentExecutionPolicy({ ...continuous.execution_policy, max_consecutive_known_stale_rejections: streak })).toThrow();
+    expect(() => validateAgentExecutionPolicy({ ...continuous.execution_policy, known_stale: "retry" })).toThrow();
+    expect(() => validateAgentNextInput(shared.legacy_next, continuous.execution_policy)).toThrow();
+    expect(validateAgentManifest(shared.legacy_manifest).execution_policy).toBeUndefined();
+    expect(validateAgentExecutionPolicy(shared.execution_policy)).toEqual(shared.execution_policy);
   });
 });

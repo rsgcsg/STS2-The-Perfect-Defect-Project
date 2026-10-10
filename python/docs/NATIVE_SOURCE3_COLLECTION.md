@@ -27,6 +27,28 @@ The pilot admits at most 100 submissions and 1200 policy calls within 15 minutes
 All module/executable choices are fixed by the trusted application; manifests and
 teacher replies never select an arbitrary module, shell or native operand.
 
+The separately selected `--execution-policy progress-aware-strict-v2` uses
+`sts2.policy-runtime/agent-execution-policy-2`: reader-owned Current, the same
+strict Connector revalidation and exact changed-input/ConsumeACK/new-Next
+continuation, with consecutive3 and the existing finite Runtime submission,
+policy-call and absolute-deadline budgets. Total known stale refusals remain
+monotonic evidence and have no additional lifetime8 cutoff in this policy.
+The existing `owned-current-known-stale-v1` flag and its8/3 behavior are unchanged;
+no flag still selects legacy behavior. A refusal never switches the selection.
+
+Policy2 writes new collector pipe/report/full-final-v4 records, exact policy
+identity and an explicit `bounded_known_delivered_choices` termination target.
+The pilot may select up to100 known deliveries and200 original submissions
+within15 minutes; stopping at the target is an engineering check, not natural
+summary or full task completion. Teacher composition/Input identity, actual
+terminal reason, all original results and typed counter reconstruction remain
+explicit. Old producer records, Model packages, data relations and training
+recipes are not converted or admitted by selecting the new execution policy.
+Policy2 preflight additionally requires the installed typed Evidence package's
+`SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` tuple to advertise schema2. An older
+terminal-summary API with absent/schema1-only support blocks before Host or
+operation dispatch; there is no source-tree verifier fallback.
+
 An `unknown` or pending predecessor blocks the default command. A distinct fresh
 episode after unresolved **input consumption** always requires three explicit options:
 `--predecessor-report-path`, `--predecessor-report-sha256`,

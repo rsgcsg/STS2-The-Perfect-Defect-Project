@@ -668,7 +668,7 @@ late Stop/deadline refusals count. Delivered resets consecutive only; total neve
 resets. Other dispositions do not increment/reset stale counts. Existing terminal
 reconciliation shares this dedup/classifier, never a Human continuation.
 
-Only an otherwise authorized Auto owner strictly below both ceilings may emit
+Under execution policy1, only an otherwise authorized Auto owner strictly below both ceilings may emit
 `native_stale_decision_deferred`, whose payload has exactly normal context plus
 `request_id`, `basis_acquisition_id`, `consumption_id`, `state_version`,
 `known_stale_rejections`, `consecutive_known_stale_rejections`. These counts equal
@@ -688,13 +688,81 @@ still include that original refusal. Consumers must not infer termination from
 stale counters/result or fabricate a runtime_handoff fallback when an opted-in
 owner reason is missing.
 
-For ceilings8/3: below-limit stale takes total2/streak0→3/1 and may defer;
+For policy1 ceilings8/3: below-limit stale takes total2/streak0→3/1 and may defer;
 unchanged Awaits leave3/1; changed-unit independent delivered resets3/0. A third
 consecutive stale takes2/2→3/3, counts and stops without deferral. Total7/0→8/1
 likewise counts/stops. A result after Human/Stop/deadline still counts, cannot
 defer/reacquire/reset, and keeps the actual stop reason.
 
-### Evidence and migration limits
+### Explicit continuous strict execution policy2
+
+An independently selected continuous strict policy addresses a progressing run
+whose isolated known refusals accumulate across many successful deliveries.
+It preserves Connector's strict whole-observation revalidation and the original
+fresh-decision mechanism; it creates no native intent authority or retry path.
+Its closed policy is:
+
+```json
+{"execution_policy":{"schema":"sts2.policy-runtime/agent-execution-policy-2",
+ "current_mode":"reader_owned_v1","known_stale":"fresh_changed_current_v1",
+ "operational_outcome":"known_not_started_v1",
+ "max_consecutive_known_stale_rejections":3}}
+```
+
+[continuous-strict-v2.json](../contracts/fixtures/continuous-strict-v2.json)
+contains its shared source-test vectors. Policy2 does not measure game progress.
+
+The five fields are required and no total-limit field is permitted. Consecutive
+is exactly3. Policy1 keeps its existing six-field grammar, numeric bounds,
+threshold behavior, default collector8/3 selection and historical records.
+Absence still selects legacy behavior. A caller must select policy2 before
+initialization; a refusal, status result or child cannot upgrade the policy.
+Runtime and port require the same explicit policy identity.
+
+Both policies require the existing finite Runtime authorization wallet:
+positive integer submission/policy-call limits and an absolute monotonic
+deadline. Existing finite defaults remain available. Policy2 adds no timer,
+watchdog, progress inference or renewed wallet. Every original known-not-started
+refusal counts monotonically, including late Stop/deadline results. Delivery
+resets only the consecutive counter. Policy2 omits the lifetime refusal cutoff;
+three consecutive refusals, any ordinary budget loss or any existing owner fence
+still prevents another decision/submission.
+
+Every continuation retains exact original dispatch/result attribution, a truly
+changed qualified NativeUnit, advanced exact ConsumeACK and completed Next in
+the same accepted W/prefix. Unchanged observations only Await. Original request,
+action, basis, scores and state are never replayed or reset to avoid a ceiling.
+Unknown/partial delivery, pending results, Stop/Human/epoch/control loss and
+source/state/evidence failures retain the existing fail-closed paths. Typed
+Evidence accepts either declared policy and reconstructs counters independently;
+policy1 deferral remains below both ceilings, policy2 below the consecutive
+ceiling with recorded active finite authorization. Evidence retains its existing
+limit: recorded state does not independently prove live expiry or remaining
+budget at the input boundary.
+
+The program collector's explicit `progress-aware-strict-v2` selection emits new
+pipe/report/full-final-v4 records joined to this exact policy. Its existing
+100-choice/200-submission/15-minute pilot limits are a bounded engineering target,
+reported as `bounded_known_delivered_choices`; reaching it does not establish
+natural summary, task completion or a continuous learned game. Natural-summary
+TaskSpecs and actual Model/Input/Agent composition qualification remain separate.
+Old pipe/report/full-final-v3 records retain policy1 and their original8/3 proof.
+New Teacher composition identity does not migrate old Model packages, historical
+producer relations, data admission or numerical training contracts.
+Python policy2 glue lives in the additive `native_operational_outcome_v2.py`,
+included in the new Teacher artifact closure. The learned v1 parser and its
+closed inference code inventory remain byte-exact; old packages must still pass
+their original code/lock/weight validation. V2 reuses the original manifest/Next/
+result grammar through a disposable validation-only v1 policy sentinel. That
+checker enforces validity/presence, not stale counters. The declared v2 manifest,
+full outcomes and state are never rewritten, and Runtime/Evidence alone enforce
+the actually selected policy. No global monkeypatch or code-hash waiver exists.
+The installed Evidence package must explicitly advertise schema2 in its public
+`SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` tuple before a policy2 collector can
+launch the Host. Missing declaration or schema1-only support fails preflight;
+terminal-summary API presence never substitutes for the actual parser contract.
+
+### Policy1 Evidence and migration limits
 
 The Evidence owner must explicitly support conditional closed manifest/Next/
 submission/pending/deferred shapes; old shapes/producer tuples remain accepted

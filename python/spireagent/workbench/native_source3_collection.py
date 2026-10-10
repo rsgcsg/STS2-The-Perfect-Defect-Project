@@ -39,6 +39,9 @@ REPORT_SCHEMA = "spireagent/native-source3-collection-v2"
 OWNED_PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v3"
 OWNED_REPORT_SCHEMA = "spireagent/native-source3-collection-v3"
 OWNED_EXECUTION_POLICY = "owned-current-known-stale-v1"
+CONTINUOUS_PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v4"
+CONTINUOUS_REPORT_SCHEMA = "spireagent/native-source3-collection-v4"
+CONTINUOUS_EXECUTION_POLICY = "progress-aware-strict-v2"
 MARKER_FILE = "native-source3-collection-operation.json"
 MAX_PIPE_BYTES = 96 * 1024 * 1024
 MAX_CONTROL_BYTES = 16 * 1024
@@ -47,6 +50,20 @@ FRESH_SCHEMA = "spireagent/native-source3-fresh-episode-boundary-1"
 
 def fail(code: str) -> BoundaryError:
     return BoundaryError("source3_collection", code)
+
+
+def _checked_termination_target(value: object, choices: object) -> dict[str, Any]:
+    target = object_fields(
+        value, {"kind", "known_delivered_choices", "natural_summary_required"},
+        "source3_termination_target",
+    )
+    if (type(choices) is not int or not 1 <= choices <= 100
+            or target["kind"] != "bounded_known_delivered_choices"
+            or type(target["known_delivered_choices"]) is not int
+            or target["known_delivered_choices"] != choices
+            or target["natural_summary_required"] is not False):
+        raise fail("unsupported_collection_termination_target")
+    return target
 
 
 @dataclass(frozen=True)
@@ -74,15 +91,40 @@ class CollectionRequest:
 
     @property
     def pipe_schema(self) -> str:
+        if self.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            return CONTINUOUS_PIPE_SCHEMA
         return OWNED_PIPE_SCHEMA if self.execution_policy is not None else PIPE_SCHEMA
 
     @property
     def report_schema(self) -> str:
+        if self.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            return CONTINUOUS_REPORT_SCHEMA
         return OWNED_REPORT_SCHEMA if self.execution_policy is not None else REPORT_SCHEMA
+
+    @property
+    def full_final_schema(self) -> str:
+        if self.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            return "spireagent/native-source3-collector-final-full-v4"
+        return (
+            "spireagent/native-source3-collector-final-full-v3"
+            if self.execution_policy is not None
+            else "spireagent/native-source3-collector-final-full-v2"
+        )
+
+    def termination_target(self) -> dict[str, Any]:
+        return {
+            "kind": "bounded_known_delivered_choices",
+            "known_delivered_choices": self.target_choices,
+            "natural_summary_required": False,
+        }
 
     def policy(self) -> dict[str, Any] | None:
         if self.execution_policy is None:
             return None
+        if self.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
+
+            return progress_aware_strict_policy()
         if self.execution_policy != OWNED_EXECUTION_POLICY:
             raise fail("unsupported_collection_execution_policy")
         from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
@@ -90,7 +132,7 @@ class CollectionRequest:
         return owned_current_known_stale_policy()
 
     def validate(self) -> None:
-        if self.execution_policy not in {None, OWNED_EXECUTION_POLICY}:
+        if self.execution_policy not in {None, OWNED_EXECUTION_POLICY, CONTINUOUS_EXECUTION_POLICY}:
             raise fail("unsupported_collection_execution_policy")
         fresh = (
             self.predecessor_report_path,
@@ -175,6 +217,8 @@ class CollectionRequest:
         }
         if self.execution_policy is not None:
             options["execution_policy"] = self.policy()
+        if self.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            options["termination_target"] = self.termination_target()
         return options
 
 
@@ -184,7 +228,10 @@ def require_resolved_predecessor(marker: Path) -> None:
         if (
             not isinstance(prior, dict)
             or prior.get("schema")
-            not in {REPORT_SCHEMA, OWNED_REPORT_SCHEMA, "spireagent/native-source3-collection-v1"}
+            not in {
+                REPORT_SCHEMA, OWNED_REPORT_SCHEMA, CONTINUOUS_REPORT_SCHEMA,
+                "spireagent/native-source3-collection-v1",
+            }
             or prior.get("status") not in {"completed", "partial", "failed"}
         ):
             raise fail("original_collection_outcome_unresolved")
@@ -242,32 +289,40 @@ def verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dict
 
 
 def _owned_fresh_records(report: dict[str, Any], path: Path) -> dict[str, Any]:
-    """Bind existing v3 producer records, never add fields or reinterpret native outcomes."""
+    """Bind the declared v3/v4 producer family without rewriting original records."""
     from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+    from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
 
-    policy = owned_current_known_stale_policy()
+    continuous = report.get("schema") == CONTINUOUS_REPORT_SCHEMA
+    policy = progress_aware_strict_policy() if continuous else owned_current_known_stale_policy()
+    report_schema = CONTINUOUS_REPORT_SCHEMA if continuous else OWNED_REPORT_SCHEMA
+    pipe_schema = CONTINUOUS_PIPE_SCHEMA if continuous else OWNED_PIPE_SCHEMA
+    full_schema = (
+        "spireagent/native-source3-collector-final-full-v4"
+        if continuous else "spireagent/native-source3-collector-final-full-v3"
+    )
     original = _object(_ordinary(path.parent / "request.json"))
     quiesced = _object(_ordinary(path.parent / "quiesced.json"))
     final, full = report["child_final"], report["child_final_full"]
     if (
-        original.get("schema") != OWNED_REPORT_SCHEMA
+        original.get("schema") != report_schema
         or original.get("status") != "pending"
         or original.get("operation_id") != report["operation_id"]
         or any(original.get(key) != report.get(key) for key in (
             "actor_id", "source", "child_path", "child_sha256", "options", "record_source3"
         ))
         or quiesced != report.get("quiesced")
-        or quiesced.get("schema") != OWNED_PIPE_SCHEMA
+        or quiesced.get("schema") != pipe_schema
         or quiesced.get("type") != "quiesced"
         or quiesced.get("operation_id") != report["operation_id"]
         or quiesced.get("record_source3") is not report.get("record_source3")
         or quiesced.get("counts") != final.get("counts")
         or quiesced.get("direct_evidence") != report.get("direct_evidence")
         or quiesced.get("runtime_status") != report.get("runtime_status")
-        or final.get("schema") != OWNED_PIPE_SCHEMA
+        or final.get("schema") != pipe_schema
         or final.get("type") != "closed"
         or final.get("operation_id") != report["operation_id"]
-        or full.get("schema") != "spireagent/native-source3-collector-final-full-v3"
+        or full.get("schema") != full_schema
         or any(
             record.get("execution_policy") != policy for record in (report, original, final, full)
         )
@@ -282,6 +337,15 @@ def _owned_fresh_records(report: dict[str, Any], path: Path) -> dict[str, Any]:
         )
     ):
         raise fail("fresh_predecessor_owned_records_mismatch")
+    if continuous:
+        target = _checked_termination_target(
+            report.get("termination_target"), report.get("options", {}).get("target_choices")
+        )
+        for record in (original, final, full, original["options"]):
+            if _checked_termination_target(
+                record.get("termination_target"), target["known_delivered_choices"]
+            ) != target:
+                raise fail("fresh_predecessor_termination_target_mismatch")
     return policy
 
 
@@ -298,9 +362,14 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
     raw_report = _ordinary(path)
     report_sha = hashlib.sha256(raw_report).hexdigest()
     report = _object(raw_report)
-    owned = report.get("schema") == OWNED_REPORT_SCHEMA
-    report_schema = OWNED_REPORT_SCHEMA if owned else REPORT_SCHEMA
-    pipe_schema = OWNED_PIPE_SCHEMA if owned else PIPE_SCHEMA
+    continuous = report.get("schema") == CONTINUOUS_REPORT_SCHEMA
+    owned = continuous or report.get("schema") == OWNED_REPORT_SCHEMA
+    report_schema = (
+        CONTINUOUS_REPORT_SCHEMA if continuous else OWNED_REPORT_SCHEMA if owned else REPORT_SCHEMA
+    )
+    pipe_schema = (
+        CONTINUOUS_PIPE_SCHEMA if continuous else OWNED_PIPE_SCHEMA if owned else PIPE_SCHEMA
+    )
     if (
         prior.get("schema") != report_schema
         or prior.get("status") != "unknown"
@@ -322,7 +391,8 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
     assert isinstance(public, dict) and isinstance(summary, dict)
     assert isinstance(final, dict) and isinstance(full, dict)
     full_schema = (
-        "spireagent/native-source3-collector-final-full-v3"
+        "spireagent/native-source3-collector-final-full-v4" if continuous
+        else "spireagent/native-source3-collector-final-full-v3"
         if owned else "spireagent/native-source3-collector-final-full-v2"
     )
     if (
@@ -697,8 +767,14 @@ def metadata_preflight(config: ProjectConfig, request: CollectionRequest) -> dic
                 options["teacher_descriptor"], request.policy()
             ) if request.record_source3 else None,
         }
+        if request.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+            result["promotion_gate"]["installed_execution_policy_supported"] = (
+                installed_execution_policy_supported(request.policy())
+            )
         result["target_known_deliveries"] = request.target_choices
         result["admitted_N_target_is_separate"] = True
+    if request.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+        result["termination_target"] = request.termination_target()
     return result
 
 
@@ -760,6 +836,17 @@ def installed_terminal_summary_available() -> bool:
     import sts2_platform_evidence as owner
 
     return isinstance(getattr(owner.AgentSessionRunEvidence, "terminal_summary", None), property)
+
+
+def installed_execution_policy_supported(policy: dict[str, Any] | None) -> bool:
+    """Read the installed typed parser declaration; absence is never support."""
+    import sts2_platform_evidence as owner
+
+    supported = getattr(owner, "SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS", None)
+    return (
+        isinstance(supported, tuple) and isinstance(policy, dict)
+        and policy.get("schema") in supported
+    )
 
 
 def terminal_summary_fields(value: Any, run_id: str) -> dict[str, Any]:
@@ -1114,6 +1201,9 @@ def collect_source3(
         if request.execution_policy is not None:
             if not installed_terminal_summary_available():
                 raise fail("installed_terminal_summary_unavailable")
+            if (request.execution_policy == CONTINUOUS_EXECUTION_POLICY
+                    and not installed_execution_policy_supported(request.policy())):
+                raise fail("installed_execution_policy_unsupported")
             candidate = descriptor(execution_policy=request.policy())
             if prepared.get("options", {}).get("teacher_descriptor") != candidate:
                 raise fail("collection_teacher_preflight_changed")
@@ -1125,10 +1215,13 @@ def collect_source3(
             )
             if request.record_source3 and relation is None:
                 raise fail("closed_collection_producer_unavailable")
-            if prepared.get("promotion_gate") != {
+            gate = {
                 "installed_terminal_summary_available": True,
                 "closed_producer_relation": relation,
-            }:
+            }
+            if request.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+                gate["installed_execution_policy_supported"] = True
+            if prepared.get("promotion_gate") != gate:
                 raise fail("collection_promotion_preflight_changed")
         with instance_lock(config.state_dir / "instance.lock"):
             cancel.check()
@@ -1212,6 +1305,8 @@ def collect_source3(
                     budget_submissions_used=0,
                     termination_reason=None,
                 )
+            if request.execution_policy == CONTINUOUS_EXECUTION_POLICY:
+                report["termination_target"] = request.termination_target()
             app = child = original = owned_artifact = None
             runtime: str | None = None
             close_sent = source_closed = False
@@ -1383,6 +1478,10 @@ def collect_source3(
                         {"execution_policy", "terminal_summary", "counter_proof_error"}
                         if request.execution_policy is not None
                         else set()
+                    )
+                    | (
+                        {"termination_target"}
+                        if request.execution_policy == CONTINUOUS_EXECUTION_POLICY else set()
                     ),
                     "source3_pipe.closed_v2",
                 )
@@ -1446,6 +1545,13 @@ def collect_source3(
                 if request.execution_policy is not None:
                     if message["execution_policy"] != request.policy():
                         raise fail("terminal_execution_policy_mismatch")
+                    if (
+                        request.execution_policy == CONTINUOUS_EXECUTION_POLICY
+                        and _checked_termination_target(
+                            message["termination_target"], request.target_choices
+                        ) != request.termination_target()
+                    ):
+                        raise fail("terminal_termination_target_mismatch")
                     report["termination_reason"] = message["reason"]
                     report["budget_submissions_used"] = report["submissions"]
                     report["counter_proof_error"] = message["counter_proof_error"]
@@ -1517,11 +1623,7 @@ def collect_source3(
                         if (
                             not isinstance(full, dict)
                             or full.get("schema")
-                            != (
-                                "spireagent/native-source3-collector-final-full-v3"
-                                if request.execution_policy is not None
-                                else "spireagent/native-source3-collector-final-full-v2"
-                            )
+                            != request.full_final_schema
                             or full.get("operation_id") != operation
                             or any(
                                 full.get(key) != message[key]
@@ -1538,6 +1640,11 @@ def collect_source3(
                                 + (
                                     ("execution_policy", "terminal_summary", "counter_proof_error")
                                     if request.execution_policy is not None
+                                    else ()
+                                )
+                                + (
+                                    ("termination_target",)
+                                    if request.execution_policy == CONTINUOUS_EXECUTION_POLICY
                                     else ()
                                 )
                             )
