@@ -69,6 +69,16 @@ distinct fresh-world/runtime IDs before starting. Reconcile the retained same-st
 UNKNOWN history; never resume/retry Native8. Installation, cold load and rollback
 are candidate-test prerequisites, not release promotion or research qualification.
 
+Owner clarification on 2026-10-10: the round's final test is **one fresh real
+native test targeting 100 known deliveries**. Reaching 100 is not required for
+permission to stop: any renewed problem ends that attempt safely and is reported
+with the actual count and original reason. There is no second native attempt or
+automatic repair/restart after its outcome. The existing 100-assembly synthetic
+Store pressure suite cannot substitute for this real-game test. Freeze at most
+200 original submissions, the existing 8/3 known-stale policy and a 15-minute
+deadline before dispatch. Failed prerequisites leave the real test unstarted;
+they do not authorize bypassing a required source/identity/runtime gate.
+
 Stop after this verification's success, failure or unresolved outcome and return a
 plain-language report. An unexplained final-gate failure leaves later levels
 unexecuted. Do not launch a second native attempt, actual fit/new Model/visible-model
