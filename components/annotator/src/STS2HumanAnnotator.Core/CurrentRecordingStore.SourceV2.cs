@@ -60,15 +60,21 @@ public sealed partial class RecordingSessionStore
     {
         lock (_gate)
         {
-            if (_closed) return;
+            if (_disposed) return;
+            _disposed = true;
             var source = SourceV2; source.Ledger.MarkFailure(code);
             try { source.WriteFailure(); source.WriteCoverage(); }
             finally
             {
-                foreach (var stream in _decisionFiles.Values) stream.Dispose();
-                _invalidations.Dispose(); _journal.Dispose(); _semanticBoundaryTrace.Dispose(); _canonicalTransitions.Dispose();
-                _nativeSemanticDiscriminator.Dispose(); _humanTextInputs?.Dispose(); source.Dispose(); _ownerLease?.Dispose();
-                _closed = true; _appendHealth = "failed"; _decisions = _decisions with { AccountingComplete = false };
+                try
+                {
+                    RecordingResourceCleanup.DisposeAll(EvidenceStreams().Concat(
+                        new IDisposable?[] { source, _ownerLease }));
+                }
+                finally
+                {
+                    _closed = true; _appendHealth = "failed"; _decisions = _decisions with { AccountingComplete = false };
+                }
             }
         }
     }

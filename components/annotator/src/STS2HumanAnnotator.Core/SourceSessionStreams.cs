@@ -40,6 +40,8 @@ internal sealed class SourceSessionStreams : IDisposable
     private long gapCount;
     private bool failed;
     private bool disposed;
+    private bool closePrepared;
+    private bool streamsSealed;
     private string? error;
 
     internal SourceSessionStreams(string directory, CurrentRecordingManifest manifest,
@@ -334,11 +336,21 @@ internal sealed class SourceSessionStreams : IDisposable
             Complete(scope, new(scope.PreCapture == null ? "capture_missing" : "unmapped", 0, null,
                 "source_session_close", "unknown", "session_closed_before_input_completion"));
         foreach (FileStream stream in streams.Values) stream.Flush(true);
+        closePrepared = true;
+    }
+
+    internal void SealStreams()
+    {
+        Healthy();
+        if (!closePrepared) throw new InvalidOperationException("source_close_preparation_required");
+        Dispose();
+        streamsSealed = true;
     }
 
     internal void WriteCloseReceipt()
     {
-        Healthy();
+        if (!streamsSealed) throw new InvalidOperationException("source_streams_not_sealed");
+        if (failed) throw new IOException(error ?? "source_accounting_failed");
         var hashes = streams.Keys.ToDictionary(file => file,
             file => SourceSessionContract.Sha256(File.ReadAllBytes(Path.Combine(directory, file))), StringComparer.Ordinal);
         var receipt = new
@@ -481,7 +493,7 @@ internal sealed class SourceSessionStreams : IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        foreach (FileStream stream in streams.Values) stream.Dispose();
         disposed = true;
+        RecordingResourceCleanup.DisposeAll(streams.Values);
     }
 }

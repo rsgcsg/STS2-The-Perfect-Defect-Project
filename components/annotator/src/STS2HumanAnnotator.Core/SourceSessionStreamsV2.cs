@@ -21,6 +21,7 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     private IReadOnlyList<SourceFinalDrainV2>? finalDrains;
     private long payloadBytes;
     private bool disposed;
+    private bool streamsSealed;
 
     internal SourceSessionStreamsV2(string directory, CurrentRecordingManifest manifest, SourceCaptureProfileV2 profile,
         SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
@@ -251,9 +252,17 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         finalDrains = Ledger.FinalDrains(completed);
         foreach (var stream in streams.Values) stream.Flush(true);
     }
+    internal void SealStreams()
+    {
+        RequirePreparedClose();
+        Dispose();
+        streamsSealed = true;
+    }
     internal void WriteCloseReceipt()
     {
-        Healthy(); if (closeBoundary == null || finalDrains == null) throw new InvalidOperationException("source_final_drains_required");
+        if (!streamsSealed) throw new InvalidOperationException("source_streams_not_sealed");
+        if (!Status.AccountingComplete) throw new InvalidOperationException(Status.Error ?? "source_accounting_failed");
+        if (closeBoundary == null || finalDrains == null) throw new InvalidOperationException("source_final_drains_required");
         var hashes = streams.Keys.ToDictionary(file => file, file => SourceSessionContract.Sha256(File.ReadAllBytes(Path.Combine(directory, file))), StringComparer.Ordinal);
         var status = Status;
         var receipt = new
@@ -357,5 +366,9 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     private static void WriteNew(string path, byte[] bytes)
     { using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read); stream.Write(bytes); stream.Flush(true); }
     public void Dispose()
-    { if (disposed) return; foreach (var stream in streams.Values) stream.Dispose(); disposed = true; }
+    {
+        if (disposed) return;
+        disposed = true;
+        RecordingResourceCleanup.DisposeAll(streams.Values);
+    }
 }

@@ -19,7 +19,7 @@ public sealed class SourceSessionTests
     private static readonly SourcePublicAction Action = new("action-fixture", "native_input", "focus_target",
         "Focus 中文 🧪", "creature-fixture", Array.Empty<SourceActionArgument>(), "native");
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         internal Fixture(SourceSessionLimits? limits = null, string? requestedRoot = null)
         {
