@@ -41,6 +41,39 @@ against the final assembled documentation. It reuses the existing CURRENT safety
 physical UTF-8 capacity rule, prints the actual size/limit, and rejects violations.
 An individually small added paragraph is not evidence that the whole handoff fits.
 
+### Small producer-to-reader checks before final dispatch
+
+For a cross-owner incident, first establish one short normal/error path through
+the actual producer and consumer. Generate critical DTOs and records with the
+production serializer/owner or a shared versioned contract fixture. Feed those
+original bytes to the real SDK, application reader and final verifier as needed;
+do not independently handwrite the supposedly matching final/report family.
+Declare every mocked seam and its unproved claim. A synthetic Host or promotion
+fixture does not establish game legality, native origin or production admission.
+
+Keep these decisions in the existing task packet: first incorrect fact/owner,
+exact dependencies, the risky claim and counterexample, the test's real/mocked
+seams, and its completion boundary. Source review and the short boundary check
+precede a frozen full candidate. Independently green leaf tests alone do not
+establish their joined contract. No additional manager, ledger or test framework
+is required for this procedure.
+
+On failure, retain the original outcome and useful bounded diagnostics: source,
+stage/operation/iteration, producer readiness, actual child exit, original error
+and reader disposition. A test must show why it failed before removing temporary
+state. Repair an observed cause, then repeat affected checks for the changed
+source; do not hide the failure by normalizing protocol bytes, raising deadlines,
+reducing pressure/coverage, skipping cases or retrying an unknown native mutation.
+Process startup readiness and a request deadline are different observations.
+
+Before the final dispatch, mechanically check the assembled files and identity
+tuple, independently review the complete affected producer/caller/consumer diff,
+and freeze the exact candidate. Run its selected gates once, preserving failure,
+cancellation and skips. A new required repair invalidates the affected verdict;
+follow the owner's declared stop boundary rather than silently starting another
+complete experiment. TESTING's existing receipt reuse and evidence ladder remain
+the owners of any later integration or stronger claim.
+
 Parallelize independent cheap checks when useful. Avoid duplicate heavy local and
 hosted runs that prove the same thing; retain the required local native/runtime
 checks. The [passive-wait checkpoint](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)
