@@ -19,7 +19,7 @@ public sealed class NativeLogicalBridgeTests
         internal TextMenuFrame Frame;
         internal int Captures, Dispatches;
         internal NativeInputResult Outcome = NativeInputResult.Delivered("legacy_acceptance");
-        internal Action? OnDispatch, OnPrepared;
+        internal Action? OnDispatch, OnPrepared, OnCapture;
         internal readonly MutationControllerCoordinator Controller;
         internal readonly MutationClientRegistrationResult Client;
         internal readonly MutationLease Lease;
@@ -27,7 +27,8 @@ public sealed class NativeLogicalBridgeTests
         internal readonly MainThreadWorkQueue Queue = new();
         internal readonly RequestNamespace Requests;
         internal readonly NativeLogicalService Owner;
-        internal Fixture(Func<long>? monotonicClock = null, int clientIdleMs = 30 * 60 * 1000)
+        internal Fixture(Func<long>? monotonicClock = null, int clientIdleMs = 30 * 60 * 1000,
+            NativeLogicalRevalidationDiagnostics? diagnostics = null)
         {
             Controller = new("runtime", monotonicClock: monotonicClock,
                 clientIdleTtlMs: clientIdleMs, enableDeadlineTimer: false);
@@ -38,8 +39,8 @@ public sealed class NativeLogicalBridgeTests
             Requests = new("runtime", Controller.ValidateActiveControl, Controller.TryAdmitRequest, Controller.TryBegin,
                 enableTimer: false);
             Controller.ClientClosed += Requests.ClientClosed;
-            Owner = new(() => { Captures++; return Frame; }, () => "run", Requests,
-                (work, cancellation) => Queue.Enqueue(() => { var value = work(); OnPrepared?.Invoke(); return value; }, cancellation), () => true, clientActive: Controller.IsActiveClient);
+            Owner = new(() => { Captures++; OnCapture?.Invoke(); return Frame; }, () => "run", Requests,
+                (work, cancellation) => Queue.Enqueue(() => { var value = work(); OnPrepared?.Invoke(); return value; }, cancellation), () => true, clientActive: Controller.IsActiveClient, revalidationDiagnostics: diagnostics);
             Owner.Initialize();
         }
         internal NativeLogicalCurrentReply Current()
@@ -86,6 +87,57 @@ public sealed class NativeLogicalBridgeTests
         { Content = new(new JsonObject { ["kind"] = "held", ["preview"] = "changed" }, new JsonObject()) } } };
         Assert.Null(fixture.Owner.Revalidate(first.Capture.SnapshotId, action.ActionId));
         Assert.Equal(0, fixture.Dispatches);
+    }
+    [Theory]
+    [InlineData("snapshot", "snapshot_mismatch", "stale_snapshot_or_binding")]
+    [InlineData("action", "action_unknown", "stale_snapshot_or_binding")]
+    [InlineData("facts", "public_facts_changed", "stale_snapshot_or_binding")]
+    [InlineData("partial", "public_facts_changed", "stale_snapshot_or_binding")]
+    [InlineData("capture_exception", "revalidation_exception", "native_revalidation_failed")]
+    public void OriginalRejectionLogsExactGateWithOneCaptureAndUnchangedTerminal(string mode, string gate, string reason)
+    {
+        var lines = new List<string>();
+        using var fixture = new Fixture(diagnostics: new(true, lines.Add));
+        var current = fixture.Current();
+        var action = Assert.Single(fixture.Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
+        var request = new PlayerEnvironmentActionRequest("diagnostic-original", current.Capture.SnapshotId, action.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile);
+        if (mode == "snapshot") request = request with { ExpectedSnapshotId = "old-snapshot" };
+        if (mode == "action") request = request with { BoundActionId = "unknown-action" };
+        if (mode == "facts") fixture.Frame = fixture.Frame with { Page = fixture.Frame.Page with
+            { Interaction = fixture.Frame.Page.Interaction with { Prompt = "new public prompt" } } };
+        if (mode == "partial") fixture.Frame = fixture.Frame with { Page = fixture.Frame.Page with
+            { Completeness = fixture.Frame.Page.Completeness with { Status = "partial", Missing = new[] { "missing-public-field" } } } };
+        if (mode == "capture_exception") fixture.OnCapture = () => throw new InvalidOperationException("private exception canary");
+        int captures = fixture.Captures;
+        var first = fixture.Submit(request);
+        Assert.Equal("not_started", first.Delivery); Assert.Equal(reason, first.Reason); Assert.Null(first.Action);
+        Assert.Equal(0, fixture.Dispatches); Assert.Equal(captures + 1, fixture.Captures);
+        RequestTestDriver.AssertWireEqual(first, fixture.Submit(request));
+        Assert.Equal(captures + 1, fixture.Captures);
+        using var doc = System.Text.Json.JsonDocument.Parse(Assert.Single(lines)); var row = doc.RootElement;
+        Assert.Equal(gate, row.GetProperty("rejection_gate").GetString());
+        Assert.Equal(request.RequestId, row.GetProperty("request_id").GetString());
+        Assert.Equal(request.ExpectedSnapshotId, row.GetProperty("expected_snapshot_id").GetString());
+        Assert.Equal(request.BoundActionId, row.GetProperty("action_id").GetString());
+        Assert.DoesNotContain("private exception", lines[0]);
+        if (mode == "partial") Assert.Contains("source_completeness",
+            row.GetProperty("changed_fact_groups").EnumerateArray().Select(x => x.GetString()));
+    }
+    [Fact]
+    public void DiagnosticSinkFailureCannotChangeRejectionOrLaterDispatch()
+    {
+        int logs = 0;
+        using var fixture = new Fixture(diagnostics: new(true, _ => { logs++; throw new IOException("log unavailable"); }));
+        var current = fixture.Current();
+        var action = Assert.Single(fixture.Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
+        var rejected = fixture.Submit(new("rejected", "old-snapshot", action.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile));
+        Assert.Equal("stale_snapshot_or_binding", rejected.Reason); Assert.Equal("not_started", rejected.Delivery);
+        Assert.Equal(0, fixture.Dispatches); Assert.Equal(1, logs);
+        var delivered = fixture.Submit(new("fresh", current.Capture.SnapshotId, action.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile));
+        Assert.Equal("delivered", delivered.Delivery); Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, logs);
     }
     [Fact]
     public void LaterSourceCallbackCannotEncodeAheadOfAnOlderCapturedCurrent()

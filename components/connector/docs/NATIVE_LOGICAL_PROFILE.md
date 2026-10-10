@@ -26,6 +26,42 @@ controller, request fingerprint namespace and execute-time checks remain shared.
 Refactor a shared admission/delivery primitive if required rather than copying
 slightly different authorization/unknown behavior into another executor.
 
+## Private revalidation diagnostics
+
+For an explicitly diagnosed native attempt, launch the selected game process with
+`STS2_CONNECTOR_NATIVE_REVALIDATION_DIAGNOSTICS=1`. Connector writes JSON after
+`[STS2 Connector] native-revalidation ` in the existing Godot game log/stdout;
+retain that original log alongside the attempt report and exact loaded identity.
+The process-private schema is `sts2.connector/native-revalidation-diagnostic-1`.
+It is absent from REST, SDK, Source, Model inputs and public Result schemas.
+
+The original request's existing single revalidation capture supplies a closed
+`rejection_gate`: `snapshot_mismatch`, `basis_missing`, `public_facts_changed`,
+`source_incomplete`, `action_unknown`, `native_leaf_missing` or
+`revalidation_exception`. Priority stays snapshot, basis, strict whole public
+facts, completeness, action membership, then exact native leaf; thrown
+revalidation still maps to the existing `native_revalidation_failed` result.
+A completeness change normally fails the earlier whole-facts comparison and
+appears as `public_facts_changed` with `source_completeness` in
+`changed_fact_groups`. Groups use the same strict comparator as acceptance and
+report every changed category, including derivative `binding_revision` separately
+from owner/focus, interaction, persistent state, referents, leaves or capabilities.
+Groups identify differences, not their cause, timing or native effect.
+
+Each rejection includes sequence and opaque original `request_id`,
+`expected_snapshot_id`, `action_id` and the already projected snapshot identifier.
+An identifier over256 UTF-8 bytes is omitted (null) and `attribution_omitted` is
+true; it is never shortened into a misleading identity. No public fact values,
+private native keys/objects, exception text, credentials or hidden state are
+logged. At most200 rejection rows are emitted per process, followed on the next
+rejection by one `budget_exhausted` marker. Disabled logging or a sink/comparison
+failure cannot change acceptance, the original terminal result or native dispatch.
+Original idempotent replay creates no second capture or diagnostic row.
+
+This is a bounded operational aid, not action authority, durable Source accounting,
+execution/Commit/effect evidence, complete native coverage or performance
+qualification. It does not change retry policy, stale caps or cadence.
+
 ## Wire objects
 
 All JSON uses snake_case. Profile-specific schemas are versioned under
