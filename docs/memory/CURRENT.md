@@ -33,43 +33,42 @@ production deployment, main/release and destructive authority did not expand.
 
 ## Current phase
 
-The owning preparation wire repair has been reviewed, exact-built and installed.
-Old Public M0 now has a bounded actual Load/Shadow/OneStep/Stop/reopen path. The
-new learned Model completed an acknowledged consume, full-catalog choice, known
-delivery and stop/reopen in a fresh game. Original preparation unknowns remain.
+The prior M0 service/game restoration and learned Model's fresh one-choice chain
+remain verified only at their original tuples. M0 Auto was censored in a reward
+re-entry loop; the separate native v2 pilot closed at an unsupported Teacher owner
+below its target. Mechanical continuation/count/cleanup acceptance is not natural
+summary or quality. No old unknown or censored attempt is rewritten.
 
-The fixed Teacher source, CPU training/recovery/Model/export and fresh learned
-choice form a verified small chain, with overlapping training situations, no
-independent held-out/quality test and unknown execution/effect/cancel. This does
-not establish continuous basic game capability.
+Formal dependency setup now installs the exact current Evidence SDK rather than
+relying on a manual wheel. Reviewed SDK/fixture corrections, Public M2 Port4 baseline/
+Task source, numerical parity and local integration are recorded in the packet.
+The current Runtime package is installed but unloaded through the common owner;
+compiled Mod evidence is unchanged. No actual Public M2 game result exists yet,
+and the latest hosted CI is still failed, not proof of the new candidate.
 
-Explicit progress-aware STRICT v2 and the M0 ready-summary Task are integrated with
-the reviewed current Runtime/Evidence. Original v1 contracts, learned package/load
-and compiled Mod evidence retain their scope. Relevant corrected local prerequisites
-are recorded; the first failed invocations are preserved. M0's actual Auto pilot
-observed first-combat rewards, then repeated reward entry/return without progress
-and was supervisor-stopped with clean control/Host shutdown. This is a loop-censored
-outcome, not natural summary or strategy quality. Identical legacy inputs/fixed
-preferences are observed; absent Reads/projection loss is not proved causal, nor
-is NN/load failure. The separate native v2 delivery pilot stopped safely at an
-explicit unsupported event owner below its target; independent after-run review
-accepts only its mechanical continuation/count/cleanup evidence. Current full CI/G2/V1 are not passed. Public M2 parity/cache work remains;
-faithful Port4 restoration and actual M2 game use are next.
+The old native learned package now correctly rejects the changed formal lock.
+Its original package/load evidence remains valid in the original environment;
+an explicit compatible package with separate provenance and numerical proof is
+being prepared. Do not weaken old validation or rewrite its training history.
+Paired Reward backend review/corrections and synthetic receipts do not constitute
+an actual cohort, training comparison or deployed online feature.
 
 ## Next actual dependencies
 
-Use the retained Auto loop evidence to guide the owning legacy representation/
-interaction work; preserve its actual Stop tail and separate new attempts from the
-original. Continue faithful Public M2 Port4 restoration and the declared native
-v2/learned continuous-game path through common owners, with independent review and
-exact prerequisites. Keep source/SDK/Runtime/profile frozen while consumers run;
-unknown requests are never automatically retried.
+Finish the reviewed Public M2 private export/caller preparation, then execute its
+own common-owner registration/load/OneStep/Stop/reopen path and bounded game task.
+Preserve partial Model/state/history identity; M0 Shadow is not M2 memory proof.
+Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
+retried automatically and every new canary has a distinct explicit identity.
 
-The hosted checkpoint-fixture correction has focused local acceptance; finish its
-reviewed integration and obtain fresh selected full dual-OS/portable CI for the
-coherent candidate. Local source/test, installed/runtime and gameplay/quality claims
-remain separate. Full CI still governs merge/portability/promotion; bounded native
-launch requires relevant reviewed local gates and an explicit task envelope.
+In parallel, finish the explicit native-package migration and compare original/
+current locked inference before registration or gameplay promotion. Candidate CAS
+publication/export enables that comparison and is not qualification. Repair Paired
+Reward proof/limits before freezing a real cohort. Revalidate actual installed-reader and source gates,
+then run fresh selected full dual-OS/portable CI for the coherent reviewed candidate.
+Old local/hosted successes do not pass a changed lock or new source. Local source/test,
+installed/runtime, data/learning and gameplay/quality claims remain separate;
+full G2/V1 still requires the complete obligations and user approval.
 
 ## Remaining Platform non-claims
 

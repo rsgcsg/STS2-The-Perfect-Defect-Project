@@ -12,12 +12,13 @@ installed diagnostic candidate and its exact build/load/runtime scope. The
 [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
 obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
 
-Reached levels are bounded native diagnostic/cleanup, declared-teacher data
-admission/use, real small training/recovery/Model/export, and old-consumer parity/
-installation preparation. M0 canary is in progress without an accepted terminal
-registration/model-in-game result. New learned-game use, Port4, fresh successful
-CI aggregate, complete G2/V1, Human and strategy/scientific quality remain unproved.
-Source/test integration and exact installed/runtime observations keep separate scope.
+Reached levels include bounded M0 restoration/Auto with a supervisor-censored
+reward loop, a learned fresh-choice chain at its original tuple, native diagnostic
+count/cleanup, and current formal SDK/Runtime installation plus Public M2 source/
+numerical parity. The packet distinguishes original native identities from changed
+lock/package provenance. Actual M2 gameplay and native-package migration are pending;
+Paired Reward has synthetic/source evidence only. Latest hosted CI remains failed.
+No natural-game/strategy/Human/scientific or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09
