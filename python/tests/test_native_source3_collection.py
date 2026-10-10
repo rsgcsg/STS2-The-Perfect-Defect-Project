@@ -913,17 +913,17 @@ finally:
         names = {"SUPPORTED_ACTION_VERBS", "SUPPORTED_INTERACTION_KINDS"}
         owner_source = module.ROOT / "stpd/policy/native_agent.py"
         owner_bytes = owner_source.read_bytes()
-        self.assertEqual(
-            hashlib.sha256(owner_bytes).hexdigest(),
-            "059977971ff0c264ab5067f203d540ab38bbcf2e3328f50b121a4ee27fbad796",
-        )
         static_exports = {}
         for statement in ast.parse(owner_bytes).body:
             if isinstance(statement, ast.Assign):
                 for target in statement.targets:
                     if isinstance(target, ast.Name) and target.id in names:
+                        self.assertNotIn(target.id, static_exports)
                         static_exports[target.id] = ast.literal_eval(statement.value)
-        self.assertEqual(set(static_exports), names)
+        self.assertEqual(static_exports, {
+            "SUPPORTED_ACTION_VERBS": ("*",),
+            "SUPPORTED_INTERACTION_KINDS": ("*",),
+        })
         self.enterContext(
             patch.dict(sys.modules, {"stpd.policy.native_agent": SimpleNamespace(**static_exports)})
         )
