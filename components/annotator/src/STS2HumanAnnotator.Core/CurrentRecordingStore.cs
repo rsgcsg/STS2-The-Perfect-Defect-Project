@@ -49,6 +49,7 @@ public sealed partial class RecordingSessionStore : IDisposable
     private string _diskHealth = "healthy";
     private string? _lastError;
     private bool _closed;
+    private bool _disposed;
     private readonly HumanCaptureProfile? _humanCaptureProfile;
     private readonly SourceSessionStreams? _sourceSession;
     private readonly SourceSessionStreamsV2? _sourceSessionV2;
@@ -589,7 +590,7 @@ public sealed partial class RecordingSessionStore : IDisposable
     {
         lock (_gate)
         {
-            if (_closed) throw new ObjectDisposedException(nameof(RecordingSessionStore));
+            if (_disposed) throw new ObjectDisposedException(nameof(RecordingSessionStore));
             if (_humanTextInputAppendFailed)
                 throw new InvalidDataException("Human text input stream already failed this session.");
             try
@@ -685,8 +686,12 @@ public sealed partial class RecordingSessionStore : IDisposable
     {
         lock (_gate)
         {
-            if (_closed)
+            if (_disposed)
                 return;
+            // Freeze appends under the same gate before preparation or any durable close work.
+            // Closed remains a separate success fact if preparation, hashing or publication fails.
+            _disposed = true;
+            Exception? closeFailure = null;
             try
             {
                 _sourceSession?.PrepareClose();
@@ -708,21 +713,13 @@ public sealed partial class RecordingSessionStore : IDisposable
                     JsonSerializer.Serialize(
                         _performance.Snapshot(Manifest.SessionId),
                         EvidenceJson.IndentedOptions));
-                foreach (FileStream stream in _decisionFiles.Values)
-                    stream.Dispose();
-                _invalidations.Dispose();
-                _journal.Dispose();
-                _semanticBoundaryTrace.Dispose();
-                _canonicalTransitions.Dispose();
-                _nativeSemanticDiscriminator.Dispose();
-                _humanTextInputs?.Dispose();
+                RecordingResourceCleanup.DisposeAll(EvidenceStreams());
+                _sourceSession?.SealStreams();
+                _sourceSessionV2?.SealStreams();
                 _sourceSession?.WriteCloseReceipt();
-                _sourceSession?.Dispose();
                 _sourceSessionV2?.WriteCloseReceipt();
-                _sourceSessionV2?.Dispose();
                 if (_humanTextInputAppendFailed)
                 {
-                    _ownerLease?.Dispose();
                     throw new InvalidDataException("Human text input stream failed; session cannot close cleanly.");
                 }
                 if (Manifest.CloseSchemaVersion == 1)
@@ -743,15 +740,48 @@ public sealed partial class RecordingSessionStore : IDisposable
                 }
                 _closed = true;
                 _appendHealth = "closed";
-                _ownerLease?.Dispose();
             }
             catch (Exception exception)
             {
-                MarkWriteFailureUnsafe(exception);
-                _decisions = _decisions with { AccountingComplete = false };
+                closeFailure = exception;
+                MarkCloseFailure(exception);
                 throw;
             }
+            finally
+            {
+                try
+                {
+                    RecordingResourceCleanup.DisposeAll(EvidenceStreams().Concat(
+                        new IDisposable?[] { _sourceSession, _sourceSessionV2, _ownerLease }));
+                }
+                catch (Exception exception)
+                {
+                    Exception failure = closeFailure == null ? exception : new AggregateException(closeFailure, exception);
+                    MarkCloseFailure(failure);
+                    if (closeFailure == null) throw;
+                    throw new AggregateException(closeFailure, exception);
+                }
+            }
         }
+    }
+
+    private IEnumerable<IDisposable?> EvidenceStreams() => _decisionFiles.Values.Cast<IDisposable?>().Concat(
+        new IDisposable?[] { _invalidations, _journal, _semanticBoundaryTrace, _canonicalTransitions,
+            _nativeSemanticDiscriminator, _humanTextInputs });
+
+    private void MarkCloseFailure(Exception exception)
+    {
+        _closed = false;
+        MarkWriteFailureUnsafe(exception);
+        _decisions = _decisions with { AccountingComplete = false };
+        _sourceSession?.MarkFailure("source_close_failed");
+        _sourceSessionV2?.Ledger.MarkFailure("source_close_failed");
+        try
+        {
+            _sourceSessionV2?.WriteFailure();
+            WriteCoverage();
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { }
     }
 
     private void RecordReadUnsafe(string kind, bool materialized)
@@ -767,7 +797,7 @@ public sealed partial class RecordingSessionStore : IDisposable
     {
         lock (_gate)
         {
-            if (_closed)
+            if (_disposed)
                 throw new ObjectDisposedException(nameof(RecordingSessionStore));
         }
     }
@@ -776,7 +806,7 @@ public sealed partial class RecordingSessionStore : IDisposable
     {
         lock (_gate)
         {
-            if (_closed)
+            if (_disposed)
                 throw new ObjectDisposedException(nameof(RecordingSessionStore));
             try
             {

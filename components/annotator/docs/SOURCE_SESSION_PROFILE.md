@@ -105,8 +105,12 @@ Capacity failure appends a reserved bounded gap/accounting row when possible.
 Disk/append uncertainty marks source accounting failed and prevents a successful
 close receipt or bundle; no subsequent current read backfills the lost position.
 Pause and Close drain already admitted input scopes explicitly; unfinished scopes
-close as unknown, preserving their original pre-capture/declaration. Close flushes
-all source streams and includes exact counts/hashes in its source close receipt.
+close as unknown, preserving their original pre-capture/declaration. Under the store
+gate, Close freezes appends, finishes this accounting, durably flushes and closes
+every source append handle, then hashes the immutable stream bytes and publishes
+the source close receipt. The owner lease remains held through receipt publication.
+A failed preparation, flush, hash or publication releases all handles and the lease,
+retains failed accounting without Closed, and rejects further appends or Close retries.
 
 ## Passive composition and export API
 

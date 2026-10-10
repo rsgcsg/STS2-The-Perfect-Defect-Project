@@ -198,7 +198,13 @@ Close atomically disables new admissions and seals the current actual reserved
 position, then drains all current/retiring seals and admitted tokens off-thread.
 Original native encoder deadline (2 seconds by default) accounts missing projections;
 unfinished input tokens become unknown. No native thread waits for encoding/disk.
-Close remains Pending until exact barriers and durable streams finish.
+Close remains Pending until exact barriers and durable streams finish. After the
+original final drains are proved, the store gate freezes appends, durably flushes
+and closes every append handle, and only then hashes the immutable streams and
+publishes the receipt while retaining its owner lease. Source3 uses this same
+finalization order. A failed preparation, flush, hash or publication releases all
+handles and the lease, retains failed accounting without Closed, and rejects later
+appends or Close retries.
 A completed watermark read and an earlier replay batch cannot retire an epoch:
 only successful Hub release after its atomic original seal and durable-ack check
 marks that epoch final. The exact not-drained result retains the same pending
