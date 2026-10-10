@@ -70,6 +70,30 @@ and private-profile digest are provenance supplied by the trusted local
 application, not independent re-attestation of installed bytes or private
 profile contents by Evidence.
 
+The Public M2 restoration source adds the explicit generic-Snapshot Port4
+Manifest/attestation and `public_decision_input` reader to the same Agent-run
+verifier. It requires complete original ordered C, a matching Snapshot/control/
+completion and an immediately following decision. Bounded policy segments start
+empty at ordinal1, advance only with qualified newer observations, retain identical
+scores for a repeated ordinal/body, and cannot reuse retired identities. Optional
+previous-action control must match one unused delivered Receipt and recorded
+observed successor in that same segment. No event may resume that path after an
+unknown disposition or Stop.
+
+Public `SUPPORTED_POLICY_DECISION_PROTOCOLS` is the immutable tuple of implemented
+decision readers v1–v4. Public M2 registration, readiness and loading require the
+installed SDK to advertise Port4 explicitly; an old or absent capability blocks
+before Model use. The application neither guesses from a package version nor
+falls back to a repository reader. Exact installed package promotion is separate
+from this source declaration.
+
+Port4 declares `bounded_policy_segment`; it supplies no single-game identity and
+does not relabel public Snapshot1 as native-logical input. These checks verify
+recorded Runtime associations and cached output consistency, not physical neural
+memory writes, native legality, Human origin, research admission or quality. Its
+matching installed verifier remains a separate promotion requirement. Existing
+v1–v3 and Agent-session verification stay unchanged.
+
 Evidence `0.1.0-rc.24` verifies Policy Runtime adapter protocols v1, v2 and v3
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
 port requires a declared text-menu representation, just as v2 does. This verifier

@@ -121,6 +121,42 @@ interactions. A failed event write triggers the existing fail-closed handoff.
 
 ## Stateful observation port (opt-in)
 
+The separate `sts2.policy-runtime/decision-only-ndjson-4` profile consumes only
+generic `sts2.player-environment/snapshot-1` with zero Reads and an explicit
+`adapter_config.public_stateful_profile` of
+`sts2.policy-runtime/public-observation-stateful-v1`. It uses the same Runtime,
+NDJSON child transport, controller, finite authorization, Stop and submission
+owners. It does not convert a public Snapshot into text-menu or native-logical
+input, and the complete ordered Connector catalog remains unchanged.
+
+Port4 sends the ordinary five-field decision input under `decision`, with a
+separate `control`: `continuity_token`, `episode_scope`, `episode_id`,
+`segment_id`, `observation_ordinal` and nullable `previous_action`. Snapshot1
+has no atomic game continuity identity, so this implementation explicitly uses
+`bounded_policy_segment`. An accepted new Snapshot watermark advances the
+ordinal once; an unchanged full body/catalog at the same watermark retains it,
+excluding only `observed_at`. Changed same-watermark content or a regressing
+sequence fails closed. Human, a mode change, Stop, budget handoff and an offered
+request without trustworthy completion end that segment. New segments start at
+ordinal1 with fresh identities and empty history; these identities do not prove
+one native game episode.
+
+The output still contains only the original candidate digest, full-length scores
+and optional selected index. Completion echoes the token, episode/segment,
+ordinal, Snapshot ID/sequence and nullable `previous_action_request_id`. The
+existing transport checks exact request/schema/completion and cancellation
+before accepting scores. An optional previous action is control only: it joins
+one durably written delivered Receipt and the Runtime's qualified observed
+successor. It is consumed once at offer and never becomes an inferred Model
+action/feedback channel or causal Human evidence.
+
+Port4 requires the existing Evidence writer. It records `public_decision_input`
+with the exact Snapshot, active mode, control and validated completion immediately
+before the ordinary decision. The matching typed Evidence reader verifies full
+catalog/order, segment/ordinal/cache consistency and known history joins; old
+v1–v3 and Agent-session readers retain their semantics. Source support does not
+update an installed package or qualify a model, native journey or strategy.
+
 A Manifest may select `sts2.policy-runtime/decision-only-ndjson-2` with an
 explicit `text-menu-snapshot-1` or `text-menu-snapshot-2` representation and
 zero Reads. In that mode Runtime obtains one atomic Connector

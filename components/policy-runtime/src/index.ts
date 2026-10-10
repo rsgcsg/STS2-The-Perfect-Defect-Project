@@ -4,6 +4,7 @@ export * from "./connector.js";
 export * from "./digest.js";
 export * from "./evidence.js";
 export * from "./policy-port.js";
+export * from "./public-observation.js";
 export * from "./runtime.js";
 export * from "./server.js";
 export * from "./agent-session-contracts.js";
