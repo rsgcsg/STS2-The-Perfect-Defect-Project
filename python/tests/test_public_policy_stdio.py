@@ -110,7 +110,10 @@ def run_pipe(family, encoding, payload, tmp_path):
         env=environment,
         timeout=15,
     )
-    assert result.stderr.startswith(("initial_stdio=" + encoding + " utf8_mode=0\n").encode())
+    # This fixture diagnostic uses the initial host TextIOWrapper's newline;
+    # production protocol stdout is independently required to contain LF only.
+    initial_diagnostic = "initial_stdio=" + encoding + " utf8_mode=0" + os.linesep
+    assert result.stderr.startswith(initial_diagnostic.encode())
     (tmp_path / "input.bin").write_bytes(payload)
     (tmp_path / "output.bin").write_bytes(result.stdout)
     (tmp_path / "diagnostic.bin").write_bytes(result.stderr)
