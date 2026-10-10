@@ -136,7 +136,7 @@ def lineage(store: Any, owner: Any, model: Manifest, *, verify_payloads: bool = 
         metrics_payload = report.payload("metrics")
         if metrics_payload.size > 64 * 1024 * 1024:
             raise ValueError
-        owner.require_training_datasets(
+        owner.verified_training_receipt(
             store, tuple(binding["dataset_ids"]), binding["training_operation_id"]
         )
         if verify_payloads:
