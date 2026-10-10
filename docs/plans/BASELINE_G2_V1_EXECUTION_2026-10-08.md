@@ -11,7 +11,7 @@
 唯一重本地/native 槽；实际 writer 为 `governance_convergence_impl`（E0）、
 `native_rejection_diagnostics_impl`（E1）、`public_m0_restoration_impl`（E3/E6）、
 `native_data_admission_impl`（E2/E4），均位于 `/root/` 下。独立审查另行完成。
-当前 source checkpoint 为 `9c1c14f4`；原 `fa789104` base 与所有失败保留。
+原生/训练 checkpoint 为 `9c1c14f4`，后续源码/安装修复分列；原 `fa789104` base 与所有失败保留。
 本地组件源修复按独立审查正常集成，不因此成为整体 G2/V1 或科学资格。
 原始 receipt 路由是 lead 工作树的既有私有
 `.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md`，不是公开产物或新真值表。
@@ -24,18 +24,18 @@
 | Source/use/覆盖 | `469ba748…` 发布三段旧38/39/60原件的137 N、342 context/451 offers；84 distinct state/C/chosen、53 repeat rows，无独立 held-out/Human/质量声明；新62/50未自动追加。 |
 | 真实训练/checkpoint/Model/export | 原300.022s失败与132-update checkpoint保留；append-only明确600s cumulative cap，不改原300s请求；resume完成168 updates/404.100506s，Model `8eb1b166…`及导出完成，实际weights有变化。 |
 | learning smoke | 3 epochs/411 label uses；train loss2.8026577→0.4583665、teacher-choice accuracy8.759%→91.241%，无dev/test、尚无新游戏使用，不证明策略强。 |
-| 大 d6 M0 消费者 | 单固定样本旧/新parity通过；当前owning export `836a2e58…`完成。旧default Runtime rc26 pin仍阻塞新register/load，Root准备rc27；原UNKNOWN不重放。 |
-| Public M2 | stage1 source `31cc…`审查中；原partial与输入/状态身份保留，Port4未集成，无新游戏投递声明。 |
+| 大 d6 M0 消费者 | 单固定样本旧/新parity通过；当前owning export `836a2e58…`完成。当前rc27 pin `f44200a6`（archive85c902/content87f512）已由共同owner安装到私有M0状态，未激活/load；下一步live capability register/load，原UNKNOWN不重放。 |
+| Public M2 | `17eb…`旧/新 `e302…`/`31cc…`31-step全scores/W/cache/reset parity已通过并核原输出；cache-lock-race修复 `b57e4286`审查中。原partial保留，Port4未集成，无新游戏投递声明。 |
 
 CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
 针对`d0e671f2`四个OS leaf与portable全失败。Linux旧Teacher literal有source修复`f0bee50b`；
 Windows另有真实Teacher Close fixture timeout。其Python shards分别1757通过/35skip及
 1746通过/16skip，`2ce690a` process fixture在Windows通过；不升为leaf/aggregate通过。
-新fixture修复进行中。旧CI38055431750、60/68/8及所有失败/UNKNOWN原件不改。
+Windows fixture `264af6`已独立接受并正常合并为 `06eb7f0`，fresh CI待执行；旧CI38055431750、60/68/8及所有失败/UNKNOWN原件不改。
 
 下一步实际d6登记/加载/Shadow/OneStep/Stop/reopen，以及新learned Model的准入、加载、
 可见身份、fresh-game至natural summary目标与Stop；共享产品/control/data/task owner复用。
-根据拒绝原件比较简单strict/progress-aware Agent与conditional intent设计，后者未选定实施。
+首选显式progress-aware STRICT v2，唯一writer `/root/native_rejection_diagnostics_impl` 正在实施；intent DEFER，原v1诊断不变。设计选择不等于实现或运行已验证。
 10k、全场景/产品、30 attempts、恢复/性能与策略质量义务保留；小fit不是完整门。
 
 本轮 GPU 合计上限 USD20，已知支出 USD0，尚无提交的 provider job；不是每 worker

@@ -16,8 +16,9 @@ already superseded by the resumed authorization; original attempts remain immuta
 The [G2/V1 execution packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider
 learning/product endpoint and final user approval.
 
-Current source checkpoint is `9c1c14f4`; Root integrated independently reviewed
-owner fixes normally, retaining separate source/test and actual runtime receipts.
+Native/fit source checkpoint is `9c1c14f4`; later source/installer corrections
+below retain separate identities. Root integrates independently reviewed owner
+fixes normally, without merging source/test and actual runtime evidence.
 The lead's existing private checkpoint
 `.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md` routes original logs, terminal
 records, admission and model manifests; it is not a public artifact or a new ledger.
@@ -41,10 +42,11 @@ original missing-environment compile errors are retained. Separate installed,
 loaded and runtime observations qualify only that bounded diagnostic.
 
 Strict whole-basis/exact native validation, stale8/3, max200 submissions and900s
-remain. Public changes do not prove an older intent remained safe. Root is comparing
-an explicitly conditional intent design with simpler strict/progress-aware Agent
-behavior; no new intent contract or executor is selected by this handoff. Native8
-UNKNOWN is never resumed/retried. Shared refs/BOM/native slot stay Root-owned;
+remain in the original v1 diagnostics. Public changes do not prove an older intent
+remained safe. Root now prefers explicit progress-aware STRICT v2 first; the sole
+Runtime/Evidence writer `/root/native_rejection_diagnostics_impl` implements it on
+`codex/continuous-strict-policy`, dependent base `9c1c14f4`. Intent is DEFER; this
+design choice is not implemented/runtime proof. Native8 UNKNOWN is never resumed/retried. Shared refs/BOM/native slot stay Root-owned;
 independent review applies to authors and Root alike. Relevant local prerequisites
 may enable bounded native work alongside isolated CI; selected full dual-OS/portable
 still governs merge/promotion.
@@ -65,7 +67,7 @@ that checkpoint with a distinct intent. It completed168 updates/cumulative404.10
 Model `8eb1b166fa7960a969f2e36305a4d296fa0a546fa0e99b745ff701d1bc29d389` and export.
 Independent original-manifest/tensor audit matches Source/use/Run/checkpoint/package,
 and confirms final weights differ from the132-update checkpoint. Three epochs/411
-label uses reduced train loss2.8026577→0.4583665 and teacher-choice accuracy
+label uses reduced train loss2.8026577→0.4583665 and raised teacher-choice accuracy
 8.759%→91.241% (multi-C91.045%). This is learning-smoke fit, with no dev/test or
 strategy-quality claim. The learned Model has not yet been used in a new game.
 
@@ -74,8 +76,9 @@ at `d0e671f2` is completed/failure across all four leaves and portable. Linux's
 Teacher-version literal has source correction `f0bee50b`; Windows additionally
 failed an actual Teacher Close fixture. Its top-level Python shards passed1757/
 35 skips and1746/16 skips; `2ce690a` process fixture passed in Windows. Neither
-component result makes the leaf or aggregate green. New fixture correction remains
-active; no successful current dual-OS receipt exists. CI38055431750 and earlier
+component result makes the leaf or aggregate green. Windows fixture correction
+`264af6` is independently accepted and normally merged as `06eb7f0`; fresh CI
+is pending and no successful current dual-OS receipt exists. CI38055431750 and earlier
 failures/cancellations retain their exact original scope.
 
 One aggregate USD20 GPU envelope still covers all workers in this round; observed
@@ -112,14 +115,17 @@ Current d6 old/current parity is verified on one fixed sample. Full current-owne
 export operation `836a2e58a29c475faacba6ad2400ef34` completed with byte-identical
 original model payload and lineage/current-use verification. A wrapper's top-level
 status check returned exit2; the actual nested operation receipt is completed,
-not a reason to re-export/retrain. Registration/load now waits on the old default
-rc26 Runtime pin; Root is preparing current rc27 binding. The original registration
-UNKNOWN remains historical and is not replayed. Public M2 stage1 `31cc…` is source
-under review, not Port4 integration or an actual M2 game run.
+not a reason to re-export/retrain. Current rc27 pin `f44200a6` is now prepared
+and installed through the common owner into private M0 state: archive85c902/content87f512,
+not activated/loaded. Next is live capability registration and game load; the original
+registration UNKNOWN remains historical and is not replayed. Public M2 `17eb…`
+old/current `e302…`/`31cc…`31-step sequence parity passed all scores, W, cache and reset,
+with Root checking raw outputs for exact equality. Stage1 cache-lock-race correction
+`b57e4286` is under review; Port4 and an actual M2 game run remain unimplemented/unproved.
 
 Next priorities are actual d6 register/load and safe mode/Stop/reopen, the learned
-Model's admission/register/load/fresh-game journey, evidence-led strict/intent policy
-comparison and owning CI fixture repair. Faithful restoration remains required;
+Model's admission/register/load/fresh-game journey, explicit progress-aware STRICT v2
+implementation/verification with intent DEFER, and fresh CI for reviewed fixture fixes. Faithful restoration remains required;
 comparison use does not block ready independent work. The137-N fit/export is now
 complete at its declared small scope; other G2/V1 stages remain open. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
 fit are engineering feedback, not strategy quality. Outcome measures remain environment

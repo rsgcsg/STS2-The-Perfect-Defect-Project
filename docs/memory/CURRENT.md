@@ -3,7 +3,8 @@
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; lead worktree
 `SpireAgent-g1-s0-integration`, topic `codex/g2-v1-core-integration`, draft PR171.
 The app-default STS2-AI-PLATFORM checkout is historical, a different repository.
-This handoff is grounded at `9c1c14f447f7f6dd03c50f78ed8380da74e6a82f`.
+Native/fit evidence retains `9c1c14f447f7f6dd03c50f78ed8380da74e6a82f`;
+later source/installer updates below have their own identities.
 Resolve live GitHub refs, original operations and component/BOM/install/runtime
 identities before work; current source/runtime records override this file.
 Private receipts route through the lead's existing checkpoint
@@ -17,13 +18,11 @@ The owner on2026-10-11 authorized actual implementation/validation and safe para
 work under independent review/integration rules. Root owns supervisor decisions,
 shared refs/BOM/identity and the sole heavy local/native slot. E1 diagnostics,
 E2 admission, E3/E6 public consumers and E0 governance have disjoint dependent
-writers; author changes receive separate review. User norms/Skills are maintained
-guidance: adjust demonstrated mismatches with judgment, not a mandatory rewrite list.
+writers; author changes receive separate review. Use norms/Skills with judgment; revise real mismatches, not a mandatory checklist.
 
 One aggregate USD20 GPU envelope covers this round; observed spendUSD0 and no
-submitted provider job. Completed CPU training is not paid GPU execution. No worker,
-new task or resume resets the allowance. Earlier packet spend0 and historical d6 M0
-metered USD3.34482950 retain their original scopes; final billing is not refreshed.
+submitted provider job. Completed CPU training is not paid GPU execution. No worker/task/resume resets the allowance. Earlier spend0 and historical d6 M0
+USD3.34482950 retain their scopes; final billing is not refreshed.
 Existing scoped isolation/native preparation continues; production deployment,
 main/release and destructive authority did not expand. Full G2/V1 remains unapproved;
 only the user can approve it. Local diagnostic and merge/promotion gates stay distinct.
@@ -42,9 +41,10 @@ only the user can approve it. Local diagnostic and merge/promotion gates stay di
 - All 16 new rejections identify `public_facts_changed`. rc39 adds bounded public
   paths: displayed cards/membership, discard counts, orb length/membership and
   enemy HP. Real public changes are observed; this does not prove the old intent
-  stayed safe/legal. Strict whole-basis, exact operands, stale8/3 and900s remain.
-  Intent semantics is a conditional design comparison, not a selected implementation
-  or mandate; also assess simpler strict/progress-aware Agent behavior.
+  stayed safe/legal. Original v1 diagnostics retain strict whole-basis, exact
+  operands, stale8/3 and900s. Explicit progress-aware STRICT v2 is now preferred
+  first and in implementation by `/root/native_rejection_diagnostics_impl`;
+  intent is DEFER. Neither v2 implementation/runtime proof nor a new executor is claimed.
 - Installed rc39 DLLSHA `63230ad9…`, MVID `880bad57-2db7-4a73-9632-8439c3b10502`,
   compiled source `19bac9ba`, build workspace `b82a7b6e`. Exact build passed;
   configured native bridge35 passed. Original missing-environment compile failure
@@ -69,15 +69,18 @@ only the user can approve it. Local diagnostic and merge/promotion gates stay di
   gameplay coverage. Full current-owner export operation `836a2e58…` completed
   with original weights/payload and lineage verification; the wrapper's old
   top-level-status exit2 is not export failure. New register/load remains pending
-  the old default rc26 Runtime pin; Root is preparing current rc27 binding.
-  Original registration UNKNOWN is preserved, not replayed. Public M2 stage1
-  source `31cc…` is under review; Port4 is not integrated and no new M2 game run is claimed.
+  live capability registration. Current rc27 pin `f44200a6`, archive85c902/content87f512,
+  is installed through the common owner into private M0 state; not activated/loaded.
+  Original registration UNKNOWN is preserved, not replayed. Public M2 `17eb…`
+  old/current31-step parity passed all scores/W/cache/reset; stage1 cache-lock-race
+  correction `b57e4286` is under review. Port4/new M2 game use remain unproved.
 - CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
   at `d0e671f2` ended failure:all four OS leaves and portable failed.
   Linux's stale Teacher literal has source fix `f0bee50b`; Windows additionally
   reached an actual Teacher Close fixture timeout. Its two top-level Python shards
   passed1757/35 skipped and1746/16 skipped; process fixture `2ce690a` passed there.
-  Those results do not make an OS leaf/aggregate green. New fixture repair is active;
+  Those results do not make an OS leaf/aggregate green. Windows fixture `264af6`
+  is independently accepted and normally merged as `06eb7f0`; fresh CI is pending;
   prior CI38055431750 and other failures/cancellations retain original outcomes.
 
 ## Next delivery and non-claims
@@ -89,10 +92,9 @@ no source/dist mutation while it runs. Independently review the M2 source before
 Port4 extension or game use. Faithful old-model restoration is retained delivery;
 comparison feedback does not block ready native work/new learning/minimal G2.
 
-Use actual rejection evidence to compare strict policy progress with an explicitly
-versioned intent design, avoiding a speculative executor rewrite. Correct current CI
-fixtures from their owning facts and obtain the selected full dual-OS/portable result
-before merge/promotion. Preserve failed/unknown original attempts; no automatic retry.
+Finish and independently validate explicit progress-aware STRICT v2; defer intent
+while retaining original v1 diagnostics. Obtain fresh selected full dual-OS/portable
+checks for the repaired current source before merge/promotion. Preserve failed/unknown original attempts; no automatic retry.
 The137-N fit/export now closes those small stages, not the complete G2 chain.
 Retained10k meaningful data, whole-game/quality comparisons, complete SC/SX/product
 coverage,30 attempts, recovery/performance and user approval remain outstanding.
