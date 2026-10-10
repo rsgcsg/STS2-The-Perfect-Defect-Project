@@ -32,7 +32,11 @@ from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields
 from spireagent.package_identity import PackageIdentityError
 from spireagent.policies import SUPPORTED_ADAPTERS, policy_support
-from spireagent.policy_files import _inside, _object_file
+from spireagent.policy_files import (
+    _inside,
+    _object_file,
+    require_policy_decision_evidence_protocol,
+)
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, endpoint
 from spireagent.workbench.hub_client import HubClient, NoRedirect
 from spireagent.workbench.kit_runtime import (
@@ -757,9 +761,10 @@ class LocalModelService:
         native = candidate.get("schema") == "sts2.policy-runtime/agent-manifest-1"
         if (candidate.get("adapter", {}).get("protocol")
                 == "sts2.policy-runtime/decision-only-ndjson-4"):
-            from stpd.public_m2_policy_installation import require_evidence
-
-            require_evidence()
+            require_policy_decision_evidence_protocol(
+                "sts2.policy-runtime/decision-only-ndjson-4",
+                stage="public_m2_policy", code="public_m2_evidence_contract_unavailable",
+            )
         script = (
             "import {readFile} from 'node:fs/promises';"
             "const runtime=await import(process.argv[1]);"

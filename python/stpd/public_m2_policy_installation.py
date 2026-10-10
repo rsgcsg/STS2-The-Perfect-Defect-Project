@@ -8,7 +8,11 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
-from spireagent.policy_files import _inside, _object_file
+from spireagent.policy_files import (
+    _inside,
+    _object_file,
+    require_policy_decision_evidence_protocol,
+)
 
 from .policy.public_m2_export import EXPORT_SCHEMA, validate_package
 from .policy.public_m2_task import validate_task_spec
@@ -101,16 +105,9 @@ ADAPTER_SOURCE_CLOSURE = (
 
 def require_evidence() -> None:
     """Use the installed reader's explicit capability, never a repository fallback."""
-    try:
-        import sts2_platform_evidence
-    except ImportError as error:
-        raise BoundaryError(
-            "public_m2_policy", "public_m2_evidence_contract_unavailable"
-        ) from error
-
-    protocols = getattr(sts2_platform_evidence, "SUPPORTED_POLICY_DECISION_PROTOCOLS", None)
-    if not isinstance(protocols, tuple) or PROTOCOL not in protocols:
-        raise BoundaryError("public_m2_policy", "public_m2_evidence_contract_unavailable")
+    require_policy_decision_evidence_protocol(
+        PROTOCOL, stage="public_m2_policy", code="public_m2_evidence_contract_unavailable",
+    )
 
 
 def code_digest(root: Path) -> str:
