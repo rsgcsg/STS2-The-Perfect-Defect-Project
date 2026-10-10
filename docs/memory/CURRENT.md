@@ -26,12 +26,10 @@ packet. Preserve frozen source, SDK/Runtime and profile while consumers use them
 integrate only after consumer exit. Norms/Skills guide judgment; revise real mismatches,
 not a mandatory checklist.
 
-This round retains one aggregate USD20 GPU envelope, observed spendUSD0 and no
-submitted provider job. Completed CPU training is not paid GPU execution. Do not
-reset allowance by worker/task/resume or erase historical costs; verify actual
-jobs/fees and shared remaining resources before submission. Existing scoped native
-preparation continues; production deployment, main/release and destructive authority
-did not expand. Lower evidence never grants an additional operational permission.
+This round has one aggregate USD20 GPU envelope, observed spendUSD0 and no provider
+job. Verify actual spend/shared remainder before submission; no per-worker/task/resume
+reset or historical-cost rewrite. Existing scoped native preparation continues;
+production deployment, main/release and destructive authority did not expand.
 
 ## Current phase
 
@@ -47,19 +45,21 @@ cumulative-budget amendment remain; no failed attempt or elapsed charge is overw
 
 Faithful old-model restoration remains required delivery. Public M0 has fixed-input
 parity, current-owner export and the current Runtime installed through the common
-owner. Root's M0 canary is in progress; no terminal registration or model-in-game
-result is accepted yet. Public M2 fixed-sequence scores/W/cache/reset parity and
+owner. Actual M0 registration and Human-mode load completed; native prepare-wire
+became unknown before policy action. Cleanup is recorded and the owning HTTP
+regression/repair is in progress; no model-action or whole-game result is accepted.
+Public M2 fixed-sequence scores/W/cache/reset parity and
 its source cache correction are recorded; Port4 and actual M2 game use remain open.
 Current CI has reviewed source corrections but no fresh successful aggregate.
-All detailed identities, units, counts and original receipts live in the packet.
 
 ## Next actual dependencies
 
-Reconcile the running M0 operation and original registration UNKNOWN before another
-submission; never replay an uncertain request. Finish actual registration/load,
-Shadow/OneStep, Stop and reopen through the common owners. Then admit/load the new
-learned Model and exercise a distinct fresh game with visible model identity,
-natural-summary target and confirmed Stop. Failed or censored outcomes stay explicit.
+Preserve the new prepare-wire unknown and the separate historical registration
+UNKNOWN; the earlier operation is not replayed or deemed reconciled. Verify the
+owning HTTP regression/fix and original disposition before explicitly preparing a
+distinct new canary; no automatic unknown retry. Complete Shadow/OneStep/Stop/reopen
+through common owners, then load the new learned Model into a fresh game with visible
+identity, natural-summary target and Stop. Failed/censored outcomes stay explicit.
 
 Complete independent review and relevant tests for STRICT v2, M2 consumer work and
 current fixture fixes, then the selected full dual-OS/portable gate on one frozen

@@ -131,10 +131,24 @@ original model payload and lineage/current-use verification. A wrapper's top-lev
 status check returned exit2; the actual nested operation receipt is completed,
 not a reason to re-export/retrain. Current rc27 pin `f44200a6` is now prepared
 and installed through the common owner into private M0 state: archive85c902/content87f512,
-the installer receipt reports not activated/loaded. Root's live M0 canary is now
-in progress; no terminal registration or model-in-game result has been accepted.
-Reconcile that original operation before another submission. The earlier registration
-UNKNOWN remains historical and is not replayed. Public M2 `17eb…`
+the installer receipt reports not activated/loaded. A distinct real M0 canary at
+`0a07e1cd` then registered selection `local-public-m0-b1354f478e194fa69c4d5ed3866fa75e`
+and completed load in Human mode. Its Shadow operation
+`ade8290a352944d1861f19a54ee6244e` ended `unknown` with
+`native_task_command_unknown`/`model_shadow_unknown`, zero policy calls/submissions
+and null last decision/Receipt. Preserve that original operation; it is not a
+completed gameplay result or a retry of the much older registration UNKNOWN.
+Close left the Model stopped, controller released and loaded=false; Host exited0
+without forced termination. Registration/load are reached levels, not model-action,
+Shadow success, natural-summary or quality evidence.
+
+Source investigation found the current PlatformModelContext producer's extra
+`NativeAgent` JSON field conflicts with the strict Python four-field shape.
+The original raw HTTP reply was not captured, so this source mismatch is a repair
+hypothesis rather than proof of that canary's exact reply. The actual HTTP
+regression/owning fix is in progress. Preserve both unknown operations, verify the
+repair and original disposition, then explicitly launch a distinct new canary;
+never automatically replay the unknown Shadow command. Public M2 `17eb…`
 old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
 including a complete31-candidate catalog and whole32 rejection before W write. Root
 checked raw outputs for exact equality across five named cases;31 is not sequence length.
@@ -142,9 +156,11 @@ Stage1 cache-lock-race correction `b57e4286` is independently accepted and norma
 merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 and an actual M2
 game run remain unimplemented/unproved.
 
-Next priorities are actual d6 register/load and safe mode/Stop/reopen, the learned
-Model's admission/register/load/fresh-game journey, explicit progress-aware STRICT v2
-implementation/verification with intent DEFER, and fresh CI for reviewed fixture fixes. Faithful restoration remains required;
+Next priorities are the d6 prepare-wire producer/consumer repair and a distinctly
+identified new canary after verification, then actual Shadow/OneStep/Stop/reopen;
+the learned Model's admission/register/load/fresh-game journey, explicit progress-aware
+STRICT v2 implementation/verification with intent DEFER, and fresh CI for reviewed
+fixture fixes. Faithful restoration remains required;
 comparison use does not block ready independent work. The137-N fit/export is now
 complete at its declared small scope; other G2/V1 stages remain open. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
 fit are engineering feedback, not strategy quality. Outcome measures remain environment
