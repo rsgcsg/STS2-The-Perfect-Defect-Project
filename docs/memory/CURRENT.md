@@ -41,35 +41,35 @@ summary or quality. No old unknown or censored attempt is rewritten.
 
 Formal setup installs the current Evidence SDK; source/fixture fixes, Public M2
 Port4/Task and parity gates are recorded in the packet. Current Runtime installation
-and unchanged Mod bytes now support original partial M2's real export/load/C1 neural
-choice/delivery/Stop/reopen canary. No live W tensor was witnessed, and no whole-game,
-strategy or current hosted CI pass follows.
+and unchanged Mod bytes support original partial M2's restored canary and Auto path.
+Auto reached a natural loss summary mechanically, but chose End Turn throughout
+combat with play candidates offered: strategy failed this attempt and basic ability
+is unmet. No live W witness or full G2/V1 pass follows; fresh CI is still running.
 
 The old native learned package now correctly rejects the changed formal lock.
 Its original package/load evidence remains valid in the original environment.
-Compatible source is accepted/integrated, but actual publication interrupted at a
-readonly inspection-store boundary. New derived manifest/export are absent at the
-check; preserve the original operation and reconcile explicitly before another action.
+Compatible source and its writable-owner repair are integrated, but original
+interrupted publication still needs explicit reconciliation/current parity. Preserve
+its actual check/unknown history before another action.
 Paired Reward source/current-lock synthetic checks are integrated, with no real
-cohort/fit or online feature. A local process-cancellation gate failed and is under
-diagnosis. Keep original history and strict validation intact.
+cohort/fit or online feature. Later official repository checks passed; the original
+process-cancellation failure and unproved cause remain preserved. Keep original
+history and strict validation intact.
 
 ## Next actual dependencies
 
-Review the separately prepared Public M2 Auto caller and execution envelope, then
-exercise a distinct bounded game task; preparation is not started/completed evidence.
-Preserve partial Model/state/history identity; M0 Shadow is not M2 memory proof.
+Use the completed M2 attempt's original choices/input history for evidence-led
+strategy diagnosis and bounded evaluation. Natural death is not basic ability;
+preserve partial Model/history and separate future attempts from these originals.
 Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
 retried automatically and every new canary has a distinct explicit identity.
 
-In parallel, finish the explicit native-package migration and compare original/
-current locked inference before registration or gameplay promotion. Candidate CAS
-publication/export enables that comparison and is not qualification. Freeze and
-preflight the actual paired cohort/cost before real training. Revalidate actual installed-reader and source gates,
-then run fresh selected full dual-OS/portable CI for the coherent reviewed candidate.
-Old local/hosted successes do not pass a changed lock or new source. Local source/test,
-installed/runtime, data/learning and gameplay/quality claims remain separate;
-full G2/V1 still requires the complete obligations and user approval.
+Finish explicit native-package reconciliation/export and original/current locked
+parity before registration or gameplay promotion; candidate CAS export enables
+measurement and is not qualification. Freeze/preflight the actual paired cohort/cost;
+a pending alias preview is neither Source publication nor fit. Revalidate owning
+gates and fresh full dual-OS/portable CI; source, data, runtime and quality remain
+separate and only the user approves complete G2/V1.
 
 ## Remaining Platform non-claims
 

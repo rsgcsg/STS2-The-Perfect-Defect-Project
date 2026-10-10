@@ -365,10 +365,11 @@ the new derived manifest/export were absent; original8eb/package/history remaine
 unchanged and no automatic retry occurred. This does not prove the derived manifest
 was never published or turn intent into a derived artifact. Diagnosis traced
 `_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
-`hasattr(publish)` had not established write capability. The author is repairing the
-owning mutable-publication/managed-workspace seam and explicit original-operation
-reconciliation before another action. Current compatible-package publication and
-current-environment parity remain blocked, despite accepted source/tests.
+`hasattr(publish)` had not established write capability. The owning mutable-
+publication/managed-workspace repair `bbf…` was accepted and normally merged at
+`08feb107`;23 integrated tests passed in1.88s. Explicit original-operation
+reconciliation, actual compatible-package publication and current-environment
+parity still remain pending; source acceptance does not complete that operation.
 
 Paired Reward source correction `6df…` is independently accepted and normally
 merged at `134b0a4c`; current-lock integration passed78 tests in52.15s. The current
@@ -405,13 +406,49 @@ is causal S' or execution/effect/Commit proof. Review accepts this bounded origi
 model service/game restoration, not whole-game strategy, natural summary, Human,
 new learning or full G2/V1/current CI qualification.
 
-Next is separately reviewed Public M2 Auto preparation and a bounded autonomous
-attempt; it is private preparation, not yet started or a result. Preserve original
-partial identity and actual ordinal/history. Do not borrow M0 Shadow/reopen as M2
-W evidence. In parallel, finish explicit native8eb compatibility migration and Paired Reward
-proof repairs. Candidate artifact publication/export may precede the actual
+### Public M2 Auto: mechanical natural loss, failed strategy in this attempt
+
+The distinct Auto run `run-42e58849-a8fb-454e-891e-e887fcef9f6c` executed at frozen
+`6529d48a2e11e053d3ff4993b3acf238825fe0ab`, consumer code prefix `068aee2b…`,
+through Runtime/Evidence rc29 and Mod rc40 with the original partial17eb Model.
+Independent after-run audit accepts exact recorded binding/completion/cleanup:
+56 events,13 public observations/ordinals1–13 in one bounded segment and12 delivered
+attempts. One map choice, ten combat End Turn choices and one game-over Continue
+were delivered. Each combat observation offered five play candidates plus End Turn;
+End Turn was the strict score maximum every time despite changing candidate order,
+and no card was played. This is the actual NN policy choice, not an index-binding
+or scripted fallback claim.
+
+At ordinal13 the ready loss-summary Task predicate alone qualified, returned program
+zero scores/null selection and handed back control; no terminal Model delivery was
+invented. Public outcome was floor1 loss/score10, elapsed65997ms, no censor or exhausted
+budget. Typed content ID prefix `b8382da3…` has no unknown receipts/taint; Stop released
+control, Model stopped/not loaded, and signed Host `209f9d5da2e5402389299b6dbdf58a28`
+shutdown returned HTTP200/exit0 unforced. No live W tensor witness, causal S' proof,
+new fit, Human or overall G2/V1 qualification follows. Mechanical natural-summary
+completion passed; strategy failed in this recorded attempt. Natural early death
+does not satisfy the user's basic reasonable-gameplay/whole-game-ability goal.
+
+PR171 now publishes topic `6529d48a`; fresh
+CI[38087991428](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38087991428)
+was in progress when read, not green. Older failed runs/local incidents remain in
+their original scope. One600s S01 d6 owner-receipt refresh completed exit0 after
+216.3546s/RSS951418880: current receipt prefix `43b5fa4e…`, original `ed188…` and
+current compatibility `181c…` remain separate. This verifies existing lineage/use,
+not new training or use. Current alias preview at source `1e834617` is an unfinished
+private preview, not training or Source publication. The later official repository
+gate passed after scoped owned-process diagnosis/repair; original kill EPERM remains
+preserved and its exact cause is unproved.
+
+Next is evidence-led strategy/input evaluation for the original partial M2 and the
+prior M0 loop, with distinct future attempts and proper cohort/cost preflight. The
+small restored-model path is mechanically usable but is not a basic-strategy pass.
+Preserve original identity/history; no automatic unknown retry. In parallel, finish
+explicit native8eb operation reconciliation/compatibility migration and Paired Reward
+cohort/cost preflight. Candidate artifact publication/export may precede actual
 current-environment parity; accepted registration/gameplay use follows that proof,
-not merely publication. Real cohort work follows its own source/use acceptance. Obtain fresh selected CI for one coherent
+not merely publication. Real cohort work follows its source/use acceptance. Obtain
+fresh selected CI for one coherent
 reviewed source batch. Preserve source/generated output under each consumer and
 never automatically retry unknown delivery. Faithful restoration and10k meaningful
 data, full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons
