@@ -32,6 +32,15 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT as ROOT
 from spireagent.workbench.developer import ProjectConfig
 from spireagent.workbench.instance_lock import instance_lock
+from spireagent.workbench.legacy_completed_training import (
+    SCHEMA as LEGACY_COMPLETED_SCHEMA,
+)
+from spireagent.workbench.legacy_completed_training import (
+    archive_completed,
+    decode_completed,
+    public_completed,
+    validate_history,
+)
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_model_dependencies import require_recipe_dependencies
@@ -144,8 +153,11 @@ class LocalTrainingService:
         try:
             if path.is_symlink():
                 raise ValueError
-            value = json.loads(read_replaceable_bytes(path))
+            raw = read_replaceable_bytes(path)
+            value = json.loads(raw)
             schema = value.get("schema") if isinstance(value, dict) else None
+            if schema == LEGACY_COMPLETED_SCHEMA:
+                return decode_completed(raw, identity)
             if schema == SCHEMA_V3:
                 return LocalTrainingService._validate_v3(value, identity)
             if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
@@ -219,6 +231,8 @@ class LocalTrainingService:
 
     @staticmethod
     def _public(value: dict[str, Any]) -> dict[str, Any]:
+        if value.get("schema") == LEGACY_COMPLETED_SCHEMA:
+            return public_completed(value)
         keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
                 "recipe", "result_type", "evaluation_status", "schema",
                 "previous_completed", *IDS}
@@ -368,6 +382,8 @@ class LocalTrainingService:
             raise
         try:
             previous = self._read(path, owner.identity)
+            if previous.get("schema") == LEGACY_COMPLETED_SCHEMA:
+                raise BoundaryError("local_training", "explicit_local_successor_required")
             if _request is not None and previous.get("intent_id") == _request.intent_id:
                 if previous.get("request") != _request.to_dict():
                     raise BoundaryError("local_training", "intent_payload_mismatch")
@@ -535,6 +551,7 @@ class LocalTrainingService:
                                                        ("run_id", "result_id", "model_id")):
             raise ValueError("operation_completion")
         effective_training_limits(value)
+        validate_history(value.get("previous_completed"))
         return value
 
     def _snapshot(self, value: dict[str, Any]) -> dict[str, Any]:
@@ -689,9 +706,13 @@ class LocalTrainingService:
             ):
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
             after = request.after_completed_operation_id
+            historical = previous.get("schema") == LEGACY_COMPLETED_SCHEMA
+            if historical and after != previous["operation_id"]:
+                raise BoundaryError("local_training", "explicit_historical_successor_required")
             if after is not None and (previous["status"] != "completed" or
                                       previous["operation_id"] != after or
-                                      previous["dataset_id"] != request.source_id):
+                                      (not historical and
+                                       previous["dataset_id"] != request.source_id)):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
             if (previous["status"] == "completed" and previous["dataset_id"] == request.source_id
                     and after is None):
@@ -702,6 +723,13 @@ class LocalTrainingService:
             from spireagent.workbench.trusted_recipes import recipe_adapter
 
             recipe_adapter(request.recipe_id).preflight_request(store, owner, request)
+            if historical:
+                # Historical provider receipts are provenance, not the new
+                # recipe's admission. Preserve every original byte before the
+                # existing owner replaces its current slot under this OS lock.
+                raw = read_replaceable_bytes(path)
+                pointer = archive_completed(store, raw, previous)
+                previous = {**previous, "_historical_operation": pointer}
             operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
             self._prepare_child_ownership(path, operation)
             write_replaceable_json(path, operation)
