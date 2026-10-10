@@ -132,7 +132,9 @@ def run_shard(root: Path, index: int) -> tuple[int, dict]:
     environment.pop("PYTEST_PLUGINS", None)
     environment.update({"PYTHONPATH": str(root / "python"), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
                         "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "123",
-                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "fixture", "CHECK_SCOPE": "full",
+                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": {
+                            "Linux": "linux-portability", "Windows": "windows-portability",
+                        }.get(platform.system(), "fixture"), "CHECK_SCOPE": "full",
                         "RUNNER_OS": platform.system(),
                         "GITHUB_SHA": git(root, "rev-parse", "HEAD")})
     command = [sys.executable, "-m", "pytest", "-q", "-p", "tools.pytest_shard",
