@@ -49,11 +49,12 @@ and compiled Mod evidence retain their scope. Relevant corrected local prerequis
 are recorded; the first failed invocations are preserved. M0's actual Auto pilot
 observed first-combat rewards, then repeated reward entry/return without progress
 and was supervisor-stopped with clean control/Host shutdown. This is a loop-censored
-outcome, not natural summary or strategy quality. Its legacy compact input/scoring
-pathology is under evidence-led analysis, not proof that the NN or load path failed.
-A separate native v2 engineering pilot is running; its outcome is pending in the
-packet. Current full CI/G2/V1 are not passed. Public M2 parity/cache work is preserved;
-faithful Port4 restoration and actual M2 game use remain open.
+outcome, not natural summary or strategy quality. Identical legacy inputs/fixed
+preferences are observed; absent Reads/projection loss is not proved causal, nor
+is NN/load failure. The separate native v2 delivery pilot stopped safely at an
+explicit unsupported event owner below its target; independent after-run review
+is pending. Current full CI/G2/V1 are not passed. Public M2 parity/cache work remains;
+faithful Port4 restoration and actual M2 game use are next.
 
 ## Next actual dependencies
 

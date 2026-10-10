@@ -255,18 +255,34 @@ loop; the ready-summary Task rule itself was not exercised.
 Read-only gameplay diagnosis found identical compact inputs on recurring visits:
 outer838 bytes/SHA prefix7c…, inner2844 bytes/SHA prefixf4…, with fixed scores
 preferring Claim over Continue and Skip over the three cards. The renderer/action
-codec match the historical d6 path; the finding concerns loss in that declared
-legacy representation/interaction contract, not a proved new regression, NN/load
-failure or successful strategy. Exact original inputs/scores remain in private
-receipts. Do not rewrite weights, source, data or the failed/censored attempt to
-make a whole-game claim.
+codec match the historical d6 path. The current evidence shows coupled learned
+preferences on identical inputs under that fixed contract; it does not prove absent
+Reads/projection loss caused this Defect loop, a new regression, NN/load failure
+or successful strategy. Detailed training-row/context investigation remains private;
+no label-error or player-psychology claim follows. Do not rewrite weights, source,
+data or the failed/censored attempt to make a whole-game claim.
 
-A separate Source3-off native v2 delivery-engineering pilot is now running at frozen
-`57a2…`, actual Root executor33476, accepted preflight and target100/max200 submissions/
-15-minute envelope. It is not training, Human recording or a natural-summary attempt;
-no terminal result has been supplied for this update. Root holds integration until
-that consumer exits. Record its exact original terminal identity/outcome separately,
-never promote preparation or this M0 result into v2 success.
+### Native v2 delivery-engineering pilot: explicit unsupported owner
+
+The separate Source3-off pilot completed at frozen
+`57a2aa0e7b7e74b042baba9bff7c25b352b23b68`, run
+`run-824b42d2-d618-49f8-9803-1f6d38b19c1b`, under accepted preflight and the
+explicit target100/max200 submissions/15-minute envelope. It reports `partial`,
+`unsupported_public_owner`:91 original attempts =79 known deliveries +12 known-stale
+refusals, terminal consecutive-stale count0 and269 policy calls. Target100 was not
+achieved; budget was not exhausted. The last original public input is
+`event_option`/`BYRDONIS_NEST`, ready/complete with C12; the unlearned Teacher
+explicitly closed for its unsupported owner. This identifies a consumer strategy
+boundary, not a proved missing Connector action or changed native legality.
+
+Public terminal-count proof content ID
+`20eca7011464c8f0393bc00a376b01d3d69dbdb01528975aad5316947f5fbafb` binds original
+dispatch/results. Runtime stopped/released/no pending/no taint and cleanup_errors=[];
+Host `73ea74c006224c898f34f6ef5a943957` and CLI exited0 unforced. Teacher's own
+confirmed exit is SIGKILL/code null, not a graceful0; it remains a separate fact.
+After-run independent review is pending. No Source3 recording, admission, training,
+Human origin, natural summary, quality or full G2/V1 is claimed. Known delivery is
+not execution/effect/Commit, and the failed/censored old attempts are unchanged.
 
 Next is faithful Public M2 Port4 restoration and evidence-led work on continuous
 native v2/learned use and the observed legacy loop, with separate new identities
