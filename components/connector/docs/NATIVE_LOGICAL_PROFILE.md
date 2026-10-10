@@ -48,6 +48,28 @@ report every changed category, including derivative `binding_revision` separatel
 from owner/focus, interaction, persistent state, referents, leaves or capabilities.
 Groups identify differences, not their cause, timing or native effect.
 
+`revalidation_detail` refines the same frozen pair into closed `changed_members`
+and `changed_paths`. Interaction ID/kind/stage/prompt/schema, surface and context
+are distinct. Referent membership/order, labels, role/kind, state and properties
+are distinct; actual displayed-card surface paths and referents with the native
+rendered-card schema have separate groups. A path such as
+`interaction.surface.actual_displayed_cards[*].displayed_description` identifies
+a rendered field, while `interaction.context.player.energy` identifies a context
+field. Neither says that the change is transient, strategically irrelevant or
+that the original native intent is still valid. Logical and rendered values may
+both change; the original whole-facts rejection remains authoritative.
+
+Only fixed public-schema field tokens appear in paths. Array positions aggregate
+as `[*]`; unknown object keys become the literal `<other_field>`, never an entity
+alias or an arbitrary key. No JSON values or referent IDs are included. Details
+visit at most4096 node pairs/field scans, depth8,32 unique paths of at most128
+UTF-8 bytes and256 referents per frame. Limits produce `truncated=true` and
+closed `truncation_reasons`; omitted changes remain unknown. Membership and order
+are not guessed from a truncated referent prefix. Detail is null when no frozen
+pair exists, including capture exceptions. Each rejection record is capped at
+16KiB; a record-size fallback omits paths and reports `record_byte_limit`.
+An incomplete detail cannot establish that all changes were display-only.
+
 Each rejection includes sequence and opaque original `request_id`,
 `expected_snapshot_id`, `action_id` and the already projected snapshot identifier.
 An identifier over256 UTF-8 bytes is omitted (null) and `attribution_omitted` is
