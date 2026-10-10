@@ -6,7 +6,78 @@ harder, finish this test, then stop and report. The later capacity clarification
 permits a justified increase if necessary; baseline39's 5,183-byte CURRENT fits its
 8 KiB route budget, so the cap is retained pending actual content need.
 
-## Baseline and authority
+## Current supervisor round, 2026-10-11
+
+The owner now explicitly requests immediate implementation and validation, safe
+parallel work after reconciling repo/refs/PRs/running operations, and convergence
+under existing independent review/integration rules. This is active authorization,
+not another planning-only round. Earlier one-attempt restrictions below were
+already superseded by the resumed authorization; original attempts remain immutable.
+The [G2/V1 execution packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider
+learning/product endpoint and final user approval.
+
+Latest original native attempt: `fa789104`, run
+`run-6e3e0913-3737-4e79-9e5d-7f2af8e4f6cc`, 60 known deliveries/68 submissions/
+8 known stale (maximum streak1), stopped by `known_stale_rejection_limit`.
+Source3 was off, direct Agent evidence exists, admission was not run and N is
+unknown. Controller release/stopped/no pending/no taint and normal Host/CLI exit
+are recorded; Teacher SIGKILL is a separate fact. These are neither60 Commits nor
+natural summary. The rejecting frame/predicate still needs owning diagnostics.
+Preserve strict whole-basis, 8/3 and immutable unknown history pending an explicit
+reviewed contract change. No automatic retry of unknown delivery is authorized.
+CI[38055431750](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38055431750)
+at `0ed61be1` is completed/failure, not pending or a portability receipt.
+
+Root's shared candidate advanced from `fa789104` to `1c021bdd` by normal integration
+of independently reviewed test-only `2ce690a`; focused12 passed locally in8.87s.
+That does not establish a Windows fix. New worker bases remain explicitly dependent
+and disjoint. Actual workers `/root/native_rejection_diagnostics_impl`,
+`/root/public_m0_restoration_impl`, `/root/native_data_admission_impl` and
+`/root/governance_convergence_impl` own E1, E3/E6, E2/E4 and E0 respectively.
+Root owns shared refs/BOM and the native slot; author changes require separate review.
+Relevant local prerequisites may enable bounded diagnosis alongside isolated CI,
+with selected full dual-OS/portable still binding for merge/promotion.
+
+The owner authorizes one aggregate USD20 GPU envelope for this round. Known round
+spend is0 and no provider job has been submitted at this checkpoint; workers share
+that envelope. The earlier packet's spend0 and the much older d6 M0 original
+metered USD3.34482950 remain separate historical facts; no final bill refresh is
+claimed. A new task, resume or worker does not reset the allowance. Existing scoped
+native preparation remains authorized; production deployment, main/release and
+destructive actions are not expanded.
+
+### Useful legacy assets and finite PR entry points
+
+Restore a faithful old consumer through the existing application/control/data/task
+owners, then consider cross-profile migration. Large M0 `d6f752…` has15,290 train,
+4,217 dev and76,450 updates plus export/CPU-load evidence; its original game Load
+was not completed. Public M2 `17ebf91…` is K8/d384 with998 labels/352 updates,
+actual epoch1 and `run_complete:false`; preserve that partial identity. Reuse weights,
+InputSpec/rendering, complete C and M2 segment/ordinal/reset semantics. Faithful restoration
+remains a retained delivery obligation; using the restored model as comparison input
+is not a prerequisite for ready native work, new training or G2's minimal common
+application journey.
+
+GitHub on2026-10-11 still lists28 open PRs. [PR171](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/171)
+is the active integration candidate. [PR172](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/172)
+is separately reviewed Skill source, not global installation/runtime qualification.
+For consumer recovery, inspect [PR162](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/162)
+and [PR164](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/164), then their
+actual prerequisites (registration/service/device changes in158/160 and earlier stack).
+Disposition now is preserve and review dependency/unique diff for bounded adoption;
+not bulk merge, close, delete or infer integrated capability from ancestry counts.
+Campaign PR150/157/161/163 are later scoped inputs, not automatic job resumption.
+Workshop PR24/25/26/30/45 remain outside this round's publication authority.
+Use these existing PRs as entry points rather than another compatibility registry.
+
+Priority is rejection evidence/owning repair, faithful d6 consumer closure, exact
+original-data admission/coverage and permanent governance convergence in parallel.
+Then use actually accepted data and existing recipe/engine for the authorized learning
+closure. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
+fit are engineering feedback, not strategy quality. Outcome measures remain environment
+execution, admitted data, learned use and decision quality separately.
+
+## Historical baseline and authority
 
 Continue the existing unmerged lead topic `codex/g2-v1-core-integration` in
 `SpireAgent-g1-s0-integration`, baseline `39f9e4deb97b99b65daddcc456652bd94db8a10c`.

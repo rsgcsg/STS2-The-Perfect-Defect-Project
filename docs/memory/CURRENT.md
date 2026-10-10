@@ -1,102 +1,97 @@
-# Current project context — repair, one diagnostic and the first learning closure
+# Current project context — supervisor implementation and usable Agent delivery
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; lead worktree
-`SpireAgent-g1-s0-integration`, topic `codex/g2-v1-core-integration`.
+`SpireAgent-g1-s0-integration`, topic `codex/g2-v1-core-integration`, draft PR171.
 The app-default STS2-AI-PLATFORM checkout is historical, a different repository.
-Resolve live GitHub refs, source/component/BOM and actual installed/runtime identities;
-a branch head is not a running artifact. Current source/runtime evidence and
-original records override this file.
+Current dependent base is `fa78910455924cbed3472ff94dbb570dd6d68a41`; Root's
+reviewed test-only integration advanced to `1c021bddaedbf51b82a234113e04ad5edb2db281`.
+Resolve live GitHub refs, actual latest operations and component/BOM/install/runtime
+identities before work; original source/runtime records override this file.
 
-## Active goal, authority and dependencies
+## Active authority and parallel work
 
-The [active boundary packet](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md)
-now records the owner's resumed authorization: continue diagnosed repairs and
-fresh native attempts toward100 known deliveries, then the selected learning
-closure. This supersedes the earlier one-attempt stop restriction. Each attempt
-retains max200 original submissions, known-stale8 total/3 consecutive and15 minutes.
-Unknown delivery is never retried; original attempts remain immutable.
+The owner on2026-10-11 explicitly requests immediate actual modification and
+validation, necessary task decomposition, safe parallel work and convergence
+under existing review/integration rules. The [active boundary packet](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md)
+records the authorization and finite legacy PR entry points; the
+[G2/V1 packet](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider endpoint.
+Root supervises architecture/evidence/integration, sole local heavy/native slot,
+shared refs/BOM and final candidate identity. Actual independent writers are
+`/root/native_rejection_diagnostics_impl` (E1),
+`/root/public_m0_restoration_impl` (E3/E6),
+`/root/native_data_admission_impl` (E2/E4) and
+`/root/governance_convergence_impl` (E0). Each has a disjoint dependent worktree;
+independent review is separate, including Root's own changes.
 
-The owner's later questions exposed Root's overly serial all-CI-before-native
-arrangement. Relevant independently reviewed local source/short-seam/exact-game
-build/Host/artifact/install/cold-load/rollback/UNKNOWN/stop evidence now enables
-that diagnostic alongside isolated remote CI on the same frozen candidate.
-Selected full dual-OS/portable still governs merge and portability/promotion;
-failed relevant local dependencies never pass. Root alone owns local heavy/native
-work, identities and shared refs; no local dist rebuild/source mutation while
-runtime consumers use them. New private prerequisite guards need review before use.
+This round has one aggregate USD20 GPU authorization, known spendUSD0 and no
+submitted provider job at this checkpoint. It is not USD20 per worker, task or
+resume. Earlier packet spend0 and older d6 M0 metered USD3.34482950 remain in
+their original scopes; historical actual spend is not erased and final billing
+has not been refreshed. Verify current jobs/fees/shared remaining budget before
+submission. Existing necessary isolated native/build/install authority continues;
+production deployment, main/release and destructive authority did not expand.
+Full G2/V1 approval belongs only to the user and remains pending.
 
-The wider selected endpoint remains the [G2/V1 slice](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
-100–300 admitted real choices -> fixed-data genuine new fit/checkpoint/Model ->
-export/register/load -> this learned Agent progressing a fresh game to natural
-summary, visible exact model identity and confirmed Stop -> review/integration.
-This immediate diagnostic does not silently become N or that larger closure.
-Later collection/fit/learned-game stages retain their explicit authority/budget;
-the wider packet governs fit/Model and learned-game execution. No new paid cloud,
-Human recording, release/main promotion or historical cleanup is added. Aggregate cloud budget remainsUSD20, spendUSD0.
-Full G2/V1 is unapproved; only the user approves it. See the
-[baseline specification](../BASELINE_V1_SPEC.zh-CN.md) and
-[task index](../plans/BASELINE_TASKS.zh-CN.md).
+## Actual evidence, failures and useful assets
 
-## Reached evidence and preserved failures
+- Latest native `fa789104`, run `run-6e3e0913-3737-4e79-9e5d-7f2af8e4f6cc`:
+  60 known deliveries/68 original submissions/8 stale, maximum streak1,
+  `known_stale_rejection_limit`. Source3 off; direct Agent-run exists;
+  `admission:not_run`, N unknown. Runtime released/stopped/no pending/no taint;
+  Host/CLI normal exit and Teacher SIGKILL are distinct. Delivery is not Commit,
+  effect or natural summary. Exact rejecting predicate still needs diagnostics.
+- Earlier38/44/6 and39/46/7 attempts retain their Teacher reward/map failure and
+  cleanup records. Native8 UNKNOWN/report/marker and prior Stop2 stay immutable;
+  never resume or retry an unknown delivery. Original limits remain100 known,
+  200 submissions, stale8 total/3 consecutive and15 minutes per fresh attempt.
+- CI38055431750 for `0ed61be1` is completed/failure. Earlier5259/e7bf/f0ff/f435
+  and cb60 required CI failures/cancellations remain failed. Partition scheduling
+  does not prove completion or speedup; all selected owners/terminal coverage matter.
+- Independently reviewed Windows test-only `2ce690a` integrated normally at
+  `1c021bdd`; focused12 passed locally in8.87s. This is source/test, not a new
+  Windows terminal result. Existing relevant local source/short-seam/exact-build/
+  Host/artifact/install/load/rollback/Stop prerequisites can enable bounded native
+  diagnosis alongside isolated remote CI; full selected dual-OS/portable still
+  governs merge/portability/promotion. No mutable dist rebuild while consumers use it.
+- Installed rc37 remains built at `0ed61be1`, DLLSHA prefix8704c992/MVID7720b613.
+  New source heads do not automatically update or qualify it.
+- Large Public M0 `d6f752…`:15,290 train/4,217 dev/76,450 updates, export and CPU
+  load verified; original game Load incomplete. Restore original weights/input/
+  complete C through common application/Runtime owners; do not retrain for a load fault.
+  Public M2 `17ebf91…`:998 labels/352 updates, K8/d384, epoch1 partial,
+  `run_complete:false`; preserve original history/reset and partial identity.
+  Old consumers in draft PR162/164 are recovery inputs, not current integrated capability.
+- Old8N/three updates and S0's32 deliveries/11 plays retain their small-loop scope.
+  Historical14 bundles/6,398 canonical facts are not automatically new native N
+  or a clean held-out pool, nor added to M0's19,507 choices without lineage/dedupe.
 
-- Native8: nine known deliveries then Current409 public card-subject binding;
-  input consumption stayed unknown. Original state, UNKNOWN marker/report and
-  prior Stop2 evidence remain immutable. Known delivery is not effect/Commit.
-- Earlier candidates5259/e7bf/f0ff/f435 passed their stated local source/build
-  scopes but failed/cancelled required CI; no new diagnostic began. Details and
-  exact source/CI IDs remain in the active packet and
-  [engineering feedback](../evidence/ENGINEERING_DEVELOPMENT_FEEDBACK_2026-10-10.md).
-- cb60 CI38046676768: Linux12 owners passed; Windows15 failures,3377 ordinary
-  passes,70 subtests,37 skips and interruption; eight later owners blocked;
-  portable failed. Last reached workbench case does not prove a stall. Its raw
-  archive/log/XML and independent review remain cancelled/failed.
-- Binary fixture transport, native Agent strict UTF-8 stdio, locked SDK poll
-  semantics and checkpoint fixture synchronization have independent source
-  reviews/focused local checks. Historical Windows causes and current hosted
-  success are not inferred from those results.
-- Hosted two-leaf-per-OS pytest partition source is independently reviewed;
-  complete collection, disjoint selection, actual terminal execution and all
-  owner stages are checked before full receipt. First assembled hosted run,
-  completion within55 minutes and speedup remain unverified.
-- Actual0ed61be1 rc37 install/cold load passed; DLLSHA prefix8704c992/MVID7720b613.
-  The Source-off native attempt reached38 known deliveries/44 submissions/six stale
-  rejections, then Teacher Close. Controller released and Host exited normally.
-  Reward cards were public, but page stage was settling with no selectable cards;
-  global interactive reflected remaining information/Skip leaves. Teacher reward readiness
-  repair edf79d7a reached39/46/seven stale in its distinct fresh attempt; reward
-  Wait/Select passed, then enabled map with no current routes closed. Cleanup
-  confirmed; Teacher child SIGKILL is distinct from normal Host exit. The next
-  Teacher policy Awaits that exact empty enabled map without asserting progress.
-  CI38055431750 targets0ed independently; its outcome is not inferred.
+## Priorities and required next evidence
 
-## Next actions and main-line blocker
+Advance rejection diagnostics, faithful d6 consumer restoration, exact original-data
+admission/coverage and canonical governance updates in parallel. Strict whole-basis
+and stale8/3 remain until an explicit reviewed contract change; collect first incorrect
+fact rather than guessing from later Current. Source-off bypasses Source3 admission,
+not native bindings. New exact producer/Student relations are append-only; never
+rewrite old tuples or duplicate Source3/direct aliases to pad N. Original admitted
+sources may supplement the selected100–300; Teacher100 is not a universal prerequisite.
 
-Verify the Teacher's enabled-empty-map Await with negative and ACK-bound
-regressions and declared250ms Act-to-fresh-Current cadence. Original13 stale
-refusals show meaningful public state changes; no weakened native validation or
-8/3 cap change. Verify paced-child Stop, review source/unchanged installed
-dependencies, then exercise a fresh immutable native attempt. Full hosted evidence still governs integration.
-
-Current Teacher differs from frozen producer1.0.6. Source-off bypasses that data
-admission gate, not native bindings. The next learning dependency is an append-only
-reviewed exact relation followed by original stopped-run admission/N/coverage.
-Do not rewrite old tuples, pool incompatible runtimes or duplicate Source3/direct
-aliases to pad counts. A qualifying original Source-off archive may later be
-explicitly admitted under its matching accepted relation; no automatic admission.
-Settle producer/code closure before freezing new data/fit/export. Existing common
-recipe/model application paths are reused, not replaced by another trainer.
+Reuse current recipe/engine/export/Registry and common product/control/data/task owners.
+Faithful old-model restoration remains a retained delivery obligation. Its use as
+comparison feedback is not a prerequisite for ready native work, new learning or
+the minimal G2 application journey. Actual admitted data/use/contract
+closure precedes a frozen new fit/checkpoint/Model, export/register/load and a learned
+fresh game toward natural summary, visible identity and confirmed Stop. The selected
+100–300 closes a small engineering chain; retained10k, mechanism/product coverage,
+30 attempts and quality/comparison obligations still need evidence.
 
 ## Remaining Platform non-claims
 
-[TESTING](../TESTING.md) owns test creation/maintenance/retirement, faithful
-fixtures, measured cost and claim-dependent parallelism. [Governance](../ENGINEERING_GOVERNANCE.md)
-owns first-fact classification, cost/contribution and L3 contract/architecture
-review. Generic rules are source changes, not proof of current execution.
-Separate Skill PR172 passed its own source/dual-OS gate; it is neither globally
-installed nor runtime qualification. PR171 remains draft; no merge is implied.
-
-The selected100–300 admittedN, genuine new Model and continuous learned game
-remain incomplete. Old8N/three updates retain their scope. Sampled Current does
-not prove lossless history. Legal actions, fit loss and loaded weights alone do
-not establish strategy quality, exhaustive mechanisms, Human or scientific
-qualification. Preserve every actual stage, identity, counter and failure.
+[Specification](../BASELINE_V1_SPEC.zh-CN.md) distinguishes environment profile,
+Agent behavior, representation adapter, Runtime driver and training projection.
+[TESTING](../TESTING.md) owns checks/evidence; [Governance](../ENGINEERING_GOVERNANCE.md)
+owns causal repair and migration; [task index](../plans/BASELINE_TASKS.zh-CN.md)
+retains original IDs. Skill PR172 is scoped source guidance, not global install or
+runtime proof. No historical PR cleanup, new framework or real Human capture is implied.
+Environment execution, data/coverage, learned autonomous use and decision quality
+are separate measures. Sampled Current is not lossless history; legal actions, loss
+or loaded weights do not prove strategy quality, Human or scientific qualification.

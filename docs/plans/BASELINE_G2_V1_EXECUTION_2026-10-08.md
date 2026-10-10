@@ -1,8 +1,34 @@
 # 完整 G2／V1 执行与验收矩阵
 
-日期：2026-10-08，进度更新至 2026-10-09。起点 `develop@4256f952e6db3983b259f805121571c8d71a7f6c`；主 writer 分支 `codex/g2-v1-core-integration`，已包含 `develop@4e16e54e`。**实施与验证进行中，G2/V1 未获用户批准。** 本包包括原定门之前的全部必需工作，不用 S0 代替完整范围。
+日期：2026-10-08，进度更新至 2026-10-11。起点 `develop@4256f952e6db3983b259f805121571c8d71a7f6c`；主 writer 分支 `codex/g2-v1-core-integration`，已包含 `develop@4e16e54e`。**实施与验证进行中，G2/V1 未获用户批准。** 本包包括原定门之前的全部必需工作，不用 S0 代替完整范围。
 
 [唯一规范](../BASELINE_V1_SPEC.zh-CN.md)拥有技术选择；[任务表](BASELINE_TASKS.zh-CN.md)拥有 19 个编号/依赖；本文件管理执行与验收位置。实际 source/runtime/data 原件才是证据，独立审查见[本轮审计](../evidence/BASELINE_G2_V1_AUDIT_2026-10-08.md)。
+
+## 当前实施轮：2026-10-11
+
+用户要求立即执行实际修改与验证，快速核实 refs/PR/任务/阻塞后启动安全并行工作，
+按既有独立审查和集成规则收敛成果。Root 继续担任 supervisor，拥有共享 refs/BOM 和
+唯一重本地/native 槽；实际 writer 为 `governance_convergence_impl`（E0）、
+`native_rejection_diagnostics_impl`（E1）、`public_m0_restoration_impl`（E3/E6）、
+`native_data_admission_impl`（E2/E4），均位于 `/root/` 下。独立审查另行完成。
+当前 dependent base 为 `fa789104`；Root 集成本地已审 test-only 修复后为 `1c021bdd`，
+focused12 通过只属本地 source/test，不是 Windows 终态。最终 head 以实际 refs 为准。
+
+优先取得真实 stale 拒绝类别与匹配证据，恢复 d6 M0 的既有 export→共同应用/Runtime
+路径，核准 Source-off 原件可否进入现有训练投影，并将本轮规则落实到既有规范。
+三个 owning correction 可并行；旧模型未就绪不阻塞已就绪的 native 或新学习。
+实际数据/用途/合同就绪后复用现有 recipe/engine 完成已授权小闭环；约 10k 与原 V1
+场景/性能/30 attempts 义务保留，100–300 不是策略能力的数据充分性结论。
+
+最近 `fa789104` 原生结果为60 known/68 submissions/8 stale，Source-off，
+`admission:not_run`，N 未知；已释放 controller，Host 正常退出，Teacher SIGKILL 另记。
+CI[38055431750](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38055431750)
+针对 `0ed61be1` 已 completed/failure，不能借给新候选。各原件、未知和失败保留。
+
+本轮 GPU 合计上限 USD20，已知支出 USD0，尚无提交的 provider job；不是每 worker
+USD20，也不抹掉历史 d6 原回执 USD3.34482950。新支出先核实际 job/费用和共享余量。
+已授权必要隔离/native 操作继续；生产部署、main/release、破坏性权限未扩大。
+完整 G2/V1 最终批准仍属于用户，本文更新不是通过记录。
 
 ## 1. 完成与审批规则
 
@@ -40,7 +66,7 @@
 | V1.3 | 资源、200/500 功能、10000 压力、30 attempt 稳定性 | pilot 固定测法/资源，再冻结候选与批次，保留全部结果 |
 | V1.4 | 冷工程师复现、跨层复核和最终材料 | required 格完成后独立审查，最终交用户批准 |
 
-共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续，付费累计上限 20 USD；当前累计 0，无新付费任务。
+共享合同先审；独立 owning correction 可先做。一个安装/控制 owner，一个重本地 build/train 槽；writer 不改他人的工作树，lead 自己的改动同样独立审查。已有必要操作授权继续；当前 GPU 资源与历史费用按上面的本轮授权分别核对，不按 worker 或旧段落重新发放。
 
 本次[真实学习与投递报告](../evidence/BASELINE_NATIVE_LEARNING_DELIVERY_2026-10-09.md)
 区分两次 Model 运行：首次 Shadow 已评分但接管后状态不确定，整次仍失败；第二次明确的新冷会话完成一次原始投递和停止，未证明 effect/Commit/后继。两者不拼接成同 W 连续旅程，也不将下面任一全范围格自动标为通过。

@@ -25,8 +25,9 @@ Source3 exact-delivered N is not a legacy causal transition. Do not require or
 invent Commit/successor to relabel these input-choice examples; Z/O and Human
 claims need their own evidence. Legacy [Full-Run research](FULLRUN_RESEARCH.md)
 and [training](FULLRUN_TRAINING.md) remain valid for the schemas they specify.
-The next sampled-carry design is selected in the root spec but is not implemented
-by relabelling the existing publication-memory recipe or its old model packages.
+The sampled-carry candidate has separately reviewed source and bounded learning
+receipts in the root execution packet. It does not relabel existing publication-memory
+recipes or old model packages, or establish complete native/gameplay qualification.
 
 ## Entry and engineering
 
@@ -152,6 +153,6 @@ records the predecessor incident separately from later candidate qualification.
 
 - [S01 operator workflow](research/S01_WORKFLOW.md): fixed allocation, portable encoding, resume, export and archival.
 
-- [1a/1b approved execution plan](research/STAGE1A.zh-CN.md): four local configurations, actual game entry, later 10k/Modal training.
+- [Historical 1a/1b execution plan](research/STAGE1A.zh-CN.md): retained four-configuration scope and later-10k design; current E4/V1 authorization is in the root execution packet.
 - [1a local token workflow](research/STAGE1A_WORKFLOW.md): shared inputs, bounded training, checkpoint resume and standalone export/scoring.
 - [Stage 1a token input and query execution ADR](../../docs/adr/0012-stage1a-token-input-and-query-execution.md): train-only tokenization, shared input lineage and frozen-prefix execution.

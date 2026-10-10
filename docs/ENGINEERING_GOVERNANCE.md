@@ -401,6 +401,22 @@ Govern changes and claims, not people:
 
 Postmortems are blameless and ask which system condition allowed the error.
 
+### Preserve one product while migrating consumers
+
+Replace legacy consumers incrementally through their existing public owner APIs.
+For each useful increment, identify the current caller, retained input/action/history
+semantics, destination adapter/driver, parity normal/negative cases and rollback.
+First restore faithful use of an existing artifact; cross-profile redesign and new
+training are separate increments. Do not rewrite historical identity or hide changed
+information/timing/selection behind an adapter. One control/Stop owner, application
+service, task owner and data-use authority remain throughout coexistence.
+
+Review the dependency chain and unique diff of an old PR before adopting it. An open
+branch is available source, not integrated capability; bulk-merging the whole stack
+or rebuilding it from zero both need evidence. Retire an old entry only after its
+actual callers and archival contracts have a tested replacement. This is a migration
+method, not a mandate for new services or a single wire for every model.
+
 ## 14. Health signals and definition of done
 
 CI green is necessary, not sufficient. Review trends in PR lead time/stale age,
@@ -408,7 +424,14 @@ latest-head CI duration/flake, post-merge breakage/revert rate, escaped
 cross-layer defects, repeated failure families, stale-evidence misuse, Human
 gates discovering automatable defects, Skill false triggers/overlap, and any
 `unknown` promoted to success. Metrics improve the system; they do not rank
-people.
+people. Measure delivered capability alongside engineering speed: can the intended
+consumer select/load/use/stop/reopen the artifact, does the real task progress, which
+mechanisms remain unsupported, and what recurring manual work remains? Keep environment
+execution, admitted data/coverage, learned autonomous use and decision quality separate.
+PR/test/worker counts are activity, not substitutes for these outcomes. Natural summary
+is a liveness result; decision quality still needs declared comparisons and failure
+analysis. Review/CI/local-runtime time and repeated prerequisite cost locate bottlenecks
+without imposing a universal duration or lowering required gates.
 
 Before recommending merge, confirm exact repo/base/latest head and overlap,
 change class and owning fact, no duplicate authority or hidden retry/backfill,
