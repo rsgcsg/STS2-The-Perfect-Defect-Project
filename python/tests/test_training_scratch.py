@@ -117,8 +117,18 @@ StructuredTrainingEngine.advance_chunk = spill_and_hang
         time.sleep(.02)
     service.cancel(first["operation_id"], first["attempt_id"])
     cancelled = settle(service)
-    assert cancelled["status"] == "cancelled" and cancelled["checkpoint_id"]
+    assert cancelled["status"] == "interrupted_unknown", cancelled
+    assert cancelled["domain_completion_state"] == "unknown"
+    assert cancelled["requested_action"] == "cancel"
+    assert cancelled["application_disposition"] == "cancel_requested"
+    assert cancelled["selected_result"] is False
+    assert cancelled["error"]["code"] == "private_child_stop_requested"
     assert cancelled["child_exit"]["forced"] and cancelled["worker_state"] == "terminal"
+    assert cancelled["child_exit"]["exit_code"] != 0
+    assert cancelled["child_exit"]["attempt_id"] == first["attempt_id"]
+    assert cancelled["checkpoint_id"]
+    assert cancelled["supported_actions"] == ["resume", "reconcile"]
+    assert "result_id" not in cancelled and "model_id" not in cancelled
     path = owner.path.parent/OPERATION_FILE
     first_journal = json.loads(path.read_bytes())
     retained = path.parent/first_journal["scratch_name"]/"spill"
@@ -157,7 +167,18 @@ child.run_child = hung
     operation = service.start(request)["operation"]
     service.cancel(operation["operation_id"], operation["attempt_id"])
     cancelled = settle(service)
-    assert cancelled["status"] == "cancelled" and cancelled["worker_state"] == "terminal"
+    assert cancelled["status"] == "interrupted_unknown", cancelled
+    assert cancelled["domain_completion_state"] == "unknown"
+    assert cancelled["requested_action"] == "cancel"
+    assert cancelled["application_disposition"] == "cancel_requested"
+    assert cancelled["selected_result"] is False
+    assert cancelled["error"]["code"] == "private_child_stop_requested"
+    assert cancelled["worker_state"] == "terminal"
+    assert cancelled["child_exit"]["forced"] is True
+    assert cancelled["child_exit"]["exit_code"] != 0
+    assert cancelled["child_exit"]["attempt_id"] == operation["attempt_id"]
+    assert cancelled["supported_actions"] == ["reconcile"]
+    assert not any(key in cancelled for key in ("checkpoint_id", "result_id", "model_id"))
     path = owner.path.parent/OPERATION_FILE
     journal = json.loads(path.read_bytes())
     scratch = path.parent/journal["scratch_name"]
