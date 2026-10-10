@@ -1397,6 +1397,8 @@ class FreshEpisodeTests(unittest.TestCase):
         raw = (self.prior_output / "collector-final-full.json").read_bytes()
         final = {
             **full,
+            "schema": module.PIPE_SCHEMA,
+            "type": "closed",
             "control_release": {
                 "confirmed": True,
                 "runtime_instance_id": env["runtime_instance_id"],
@@ -1800,3 +1802,284 @@ class FreshEpisodeTests(unittest.TestCase):
         with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_source_closure_required"):
             module.verified_fresh_predecessor(self.marker, self.request)
         self.assertEqual(self.apps, [])
+
+    def test_legacy_mixed_child_or_full_family_is_rejected(self):
+        self.prepare_source_off_prior()
+        original = copy.deepcopy(self.prior)
+        for part, schema in (
+            ("child_final", module.OWNED_PIPE_SCHEMA),
+            ("child_final_full", "spireagent/native-source3-collector-final-full-v3"),
+        ):
+            with self.subTest(part=part):
+                self.prior = copy.deepcopy(original)
+                self.prior[part]["schema"] = schema
+                atomic_json(
+                    self.prior_output / "collector-final-full.json", self.prior["child_final_full"]
+                )
+                raw = (self.prior_output / "collector-final-full.json").read_bytes()
+                self.prior["child_final"]["full_record_ref"].update(
+                    bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()
+                )
+                self.reseal_report()
+                with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_family_mismatch"):
+                    module.verified_fresh_predecessor(self.marker, self.request)
+
+
+class OwnedFreshEpisodeTests(unittest.TestCase):
+    """Synthetic originals verified by the actual installed I27 owner, never source fallback."""
+
+    tearDown = CollectionTests.tearDown
+
+    def setUp(self):
+        CollectionTests.setUp(self)
+        self.owned_index = 0
+
+    def prepare_owned(self, total=9, stale=(), duplicate=False, delivery="delivered"):
+        import sts2_platform_evidence as evidence
+
+        self.assertIn("site-packages", str(Path(evidence.__file__).resolve()))
+        owner_tests = module.ROOT.parent / "components/evidence/tests"
+        sys.path.insert(0, str(owner_tests))
+        try:
+            helpers = importlib.import_module("test_sampled_agent_session_run_evidence")
+        finally:
+            sys.path.remove(str(owner_tests))
+        fixture = helpers.OwnedStaleEvidenceFixture()
+        self.addCleanup(fixture.close)
+        self.fixture = fixture
+        for index in range(total):
+            if index:
+                fixture.sample()
+            result = fixture.terminal(
+                fixture.submission(),
+                delivery="not_started" if index in stale else delivery,
+                defer=index in stale,
+            )
+            if result["delivery"] == "delivered":
+                result.update(execution="unknown", effect="unknown", cancel="unknown")
+        if duplicate:
+            fixture.f.add("native_result", result=copy.deepcopy(result))
+        if not fixture.f.run["tainted"]:
+            fixture.f.add(
+                "agent_sample_next_requested",
+                request_id="parent-unfinished",
+                input={
+                    "continuity_token": "segment-1",
+                    "consumption_id": fixture.consumption,
+                    "state_version": fixture.version,
+                    "basis_acquisition_id": fixture.basis,
+                    "received_cursor": fixture.f.events[0]["payload"]["subscription"][
+                        "starting_cursor"
+                    ],
+                    "operational_outcome": None,
+                },
+            )
+        fixture.f.add(
+            "fail_closed", reason="query_current_source_capture_incomplete", agent_state="uncertain"
+        )
+        fixture.f.budget.update(max_submissions=200, submissions_used=total)
+        fixture.stop()
+        fixture.f.events[-1]["payload"]["agent_state"] = "uncertain"
+        fixture.f.write()
+        self.owned_index += 1
+        self.prior_output = self.root / ("prior-" + str(self.owned_index))
+        direct_path = self.prior_output / "agent-runs" / fixture.f.run["run_id"]
+        shutil.copytree(fixture.directory, direct_path)
+        checked = evidence.verify_agent_session_run_evidence(direct_path)
+        self.assertTrue(checked.passed, checked.findings)
+        self.direct = checked.require_value()
+        summary = self.direct.terminal_summary
+        policy = copy.deepcopy(self.direct.agent_manifest["execution_policy"])
+        environment = copy.deepcopy(fixture.f.events[0]["payload"]["environment"])
+        public = {
+            "schema": "sts2.policy-runtime/agent-session-status-1",
+            "run_id": self.direct.run_id,
+            "lifecycle": "stopped",
+            "mode": "human",
+            "controller": "released",
+            "tainted": fixture.f.run["tainted"],
+            "pending_request": None,
+            "environment": environment,
+            "session": {
+                "agent_state": "uncertain",
+                "continuity_token": "segment-1",
+                "stream_generation": "old-stream",
+            },
+            "runtime": {
+                "version": fixture.f.run["runtime_version"],
+                "code_sha256": fixture.f.run["runtime_code_sha256"],
+            },
+            "agent": {"adapter": fixture.f.agent["adapter"]},
+            "agent_manifest_sha256": self.direct.manifest["agent_manifest_sha256"],
+            "autonomy_budget": {"submissions_used": total, "max_submissions": 200},
+        }
+        direct_ref = {
+            "directory": str(direct_path),
+            "run_id": self.direct.run_id,
+            "manifest_id": fixture.f.run["manifest_id"],
+            "artifact_sha256": fixture.f.run["agent_artifact_sha256"],
+        }
+        counts = {"result_messages": total, "known_delivered_choices": summary["known_delivered"]}
+        teacher = {"pid": 123, "actual_exit": True, "code": None, "signal": "SIGKILL"}
+        full = {
+            "schema": "spireagent/native-source3-collector-final-full-v3",
+            "operation_id": "a" * 32,
+            "counts": counts,
+            "runtime_status": public,
+            "teacher_exit": teacher,
+            "source_closed": True,
+            "record_source3": False,
+            "control_release": {
+                "observation": {"runtime_instance_id": environment["runtime_instance_id"]}
+            },
+            "host_exit": {
+                "code": 0, "signal": None, "forced": False,
+                "host_shutdown": {"status": "requested", "http_status": 200},
+            },
+            "execution_policy": policy,
+            "terminal_summary": summary,
+            "counter_proof_error": None,
+            "direct_evidence": direct_ref,
+        }
+        final = {
+            **copy.deepcopy(full),
+            "schema": module.OWNED_PIPE_SCHEMA,
+            "type": "closed",
+            "host_exit": {"code": 0, "signal": None, "forced": False},
+            "control_release": {
+                "confirmed": True, "runtime_instance_id": environment["runtime_instance_id"]
+            },
+            "cleanup_errors": [],
+        }
+        quiesced = {
+            "schema": module.OWNED_PIPE_SCHEMA,
+            "type": "quiesced",
+            "operation_id": "a" * 32,
+            "record_source3": False,
+            "counts": counts,
+            "direct_evidence": direct_ref,
+            "runtime_status": public,
+        }
+        options = {
+            "record_source3": False, "execution_policy": policy, "max_submissions": 200,
+            "teacher_descriptor": {"agent_spec": {"execution_policy": policy}},
+        }
+        self.prior = {
+            "schema": module.OWNED_REPORT_SCHEMA, "status": "unknown", "operation_id": "a" * 32,
+            "actor_id": "source3-teacher-" + "a" * 32,
+            "source": {"source_revision": "b" * 40}, "child_path": "/fixed/collector.mjs",
+            "child_sha256": "c" * 64, "options": options, "execution_policy": policy,
+            "runtime_status": public,
+            "runtime_summary": {
+                "agent_state": "uncertain", "tainted": public["tainted"],
+                "pending_request": None, "controller": "released",
+            },
+            "child_final": final, "child_final_full": full, "quiesced": quiesced,
+            "submissions": total, "actual_choices": total,
+            "known_delivered_choices": summary["known_delivered"],
+            "budget_submissions_used": total,
+            "terminal_result_count": summary["terminal_result_count"],
+            "known_delivered_terminal_count": summary["known_delivered"],
+            "known_stale_rejections": summary["known_stale_rejections"],
+            "consecutive_known_stale_rejections": summary["consecutive_known_stale_rejections"],
+            "terminal_summary": summary, "counter_proof_error": None,
+            "teacher_exit": teacher, "record_source3": False,
+            "source_start": None, "source_close": None, "source_closed": None,
+            "close_sent": False, "source_final_status": None,
+            "runtime_quiescence": "observed_exact_Node_quiesced",
+            "unknown_request_id_projection": None,
+            "child": {"exit_code": 0, "forced_by_parent": False,
+                      "reader_terminal": True, "diagnostics_terminal": True},
+            "direct_evidence": direct_ref,
+        }
+        self.report_path = self.prior_output / "report.json"
+        self.marker = self.config.state_dir / module.MARKER_FILE
+        self.request = replace(self.request, predecessor_report_path=self.report_path)
+        self.save_owned()
+
+    def save_owned(self):
+        full = self.prior["child_final_full"]
+        atomic_json(self.prior_output / "collector-final-full.json", full)
+        raw = (self.prior_output / "collector-final-full.json").read_bytes()
+        self.prior["child_final"]["full_record_ref"] = {
+            "path": "collector-final-full.json", "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest()
+        }
+        atomic_json(self.prior_output / "quiesced.json", self.prior["quiesced"])
+        original = {
+            **{key: self.prior[key] for key in (
+                "schema", "operation_id", "actor_id", "source", "child_path", "child_sha256",
+                "options", "execution_policy", "record_source3",
+            )},
+            "status": "pending", "source_start": None, "source_close": None, "source_closed": None,
+        }
+        atomic_json(self.prior_output / "request.json", original)
+        atomic_json(self.report_path, self.prior)
+        report_sha = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
+        atomic_json(self.marker, {"schema": self.prior["schema"], "status": "unknown",
+                                 "operation_id": "a" * 32, "output": str(self.prior_output),
+                                 "report_sha256": report_sha})
+        self.request = replace(self.request, predecessor_report_sha256=report_sha,
+                               predecessor_marker_sha256=hashlib.sha256(self.marker.read_bytes()).hexdigest())
+
+    def test_owned_native8_shaped_closed_input_gap_keeps_original_unknown_bytes(self):
+        self.prepare_owned()
+        before = {path: path.read_bytes() for path in (self.report_path, self.marker)}
+        boundary = module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertFalse(boundary["can_resume_prior"])
+        self.assertFalse(boundary["can_retry_prior"])
+        self.assertFalse(boundary["prior_record_source3"])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertEqual(self.apps, [])
+        self.assertEqual(self.children, [])
+
+    def test_owned_101_originals_99_deliveries_two_stale_and_duplicate_use_owner_counts(self):
+        self.prepare_owned(total=101, stale=(0, 50), duplicate=True)
+        self.assertEqual(self.direct.terminal_summary["terminal_result_count"], 101)
+        self.assertEqual(self.direct.terminal_summary["known_delivered"], 99)
+        self.assertIsNotNone(module.verified_fresh_predecessor(self.marker, self.request))
+
+    def test_owned_forged_operational_result_count_cannot_disagree_with_public_terminals(self):
+        self.prepare_owned()
+        self.prior["actual_choices"] = 8
+        for record in (
+            self.prior["child_final"], self.prior["child_final_full"], self.prior["quiesced"]
+        ):
+            record["counts"]["result_messages"] = 8
+        self.save_owned()
+        with self.assertRaisesRegex(BoundaryError, "fresh_predecessor_owned_terminal_mismatch"):
+            module.verified_fresh_predecessor(self.marker, self.request)
+
+    def test_owned_mixed_policy_schema_counter_and_direct_joins_are_rejected(self):
+        self.prepare_owned()
+        original = copy.deepcopy(self.prior)
+        mutations = [
+            lambda p: p.update(execution_policy=None),
+            lambda p: p["execution_policy"].update(extra=True),
+            lambda p: p["child_final"].update(schema=module.PIPE_SCHEMA),
+            lambda p: p["child_final_full"].update(
+                schema="spireagent/native-source3-collector-final-full-v2"
+            ),
+            lambda p: p["quiesced"].update(schema=module.PIPE_SCHEMA),
+            lambda p: p["quiesced"]["direct_evidence"].update(run_id="foreign"),
+            lambda p: p["child_final"]["terminal_summary"].update(known_delivered=8),
+            lambda p: p["terminal_summary"].update(content_id="0" * 64),
+            lambda p: p.update(counter_proof_error="missing"),
+            lambda p: p["runtime_status"].update(pending_request={"request_id": "pending"}),
+            lambda p: p["runtime_status"].update(tainted=True),
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.prior = copy.deepcopy(original)
+                mutation(self.prior)
+                self.save_owned()
+                with self.assertRaises(BoundaryError):
+                    module.verified_fresh_predecessor(self.marker, self.request)
+        self.assertEqual(self.apps, [])
+
+    def test_owned_unknown_or_partial_native_delivery_never_admits_fresh_episode(self):
+        for delivery in ("unknown", "partially_delivered"):
+            with self.subTest(delivery=delivery):
+                self.prepare_owned(total=1, delivery=delivery)
+                with self.assertRaises(BoundaryError):
+                    module.verified_fresh_predecessor(self.marker, self.request)
