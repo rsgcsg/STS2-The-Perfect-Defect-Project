@@ -39,6 +39,7 @@ CODE_FILES = (
     "stpd/workers/reward_m0_run.py",
     "stpd/workers/token_ranking.py",
     "stpd/fullrun/light_action_inputs.py",
+    "stpd/fullrun/token_format.py",
     "stpd/fullrun/public_inputs.py",
     "stpd/fullrun/public_compaction.py",
     "stpd/fullrun/semantic_projection.py",
@@ -48,7 +49,13 @@ CODE_FILES = (
     "stpd/models/stage1a.py",
     "stpd/models/token_core.py",
     "stpd/models/light_action_encoder.py",
+    "stpd/models/losses.py",
+    "stpd/models/packed_actions.py",
     "stpd/workers/checkpoint_codec.py",
+    "stpd/canonical.py",
+    "spireagent/encoding.py",
+    "spireagent/json_boundary.py",
+    "spireagent/artifact_contracts.py",
 )
 
 
@@ -471,6 +478,22 @@ def verify_reward_m0_completed(
     for payload in (*model.payloads, *result.payloads, *checkpoint.payloads):
         for _ in store.read_payload(payload):
             pass
+    # The ordinary Model must contain the exact final checkpoint parameters,
+    # not just self-consistent manifest hashes or a matching step counter.
+    from safetensors.torch import save
+
+    from .checkpoint_codec import decode_checkpoint
+
+    state = decode_checkpoint(b"".join(store.read_payload(checkpoint.payload("checkpoint"))))
+    if (
+        state.get("step") != config.steps
+        or state.get("data_identity") != checkpoint.parameters.value()["data_identity"]
+        or save(state["model"]) != b"".join(store.read_payload(model.payload("weights")))
+        or model.parameters.value()["initial_weights_sha256"]
+        != (checkpoint.parameters.value()["initial_weights_sha256"])
+        or model.parameters.value()["paired_plan"] != checkpoint.parameters.value()["paired_plan"]
+    ):
+        raise BoundaryError("reward_m0_run", "completed_checkpoint_weights_mismatch")
     event_step = max(
         (event.parameters.value().get("step", 0) for event in reporter.events(run_id)), default=0
     )
