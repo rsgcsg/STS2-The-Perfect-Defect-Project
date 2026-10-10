@@ -53,11 +53,13 @@ async function compiledRuntimeIdentity() {
 }
 
 let transport;
+let phase = "awaiting_parent_init", scenario;
 try {
   const init = await peer.receive();
   assert.deepEqual(Object.keys(init).sort(), ["operation_id", "options", "schema", "type"]);
   assert.equal(init.schema, OWNED_PIPE_SCHEMA); assert.equal(init.type, "init");
-  const options = init.options, scenario = options.seed;
+  const options = init.options;
+  scenario = options.seed;
   assert.ok(["SYN_REAL_CHAIN_COMPLETE", "SYN_REAL_CHAIN_CURRENT_GAP", "SYN_REAL_CHAIN_NATIVE_UNKNOWN"].includes(scenario));
   assert.equal(options.record_source3, false);
   const endpoint = new URL(options.endpoint);
@@ -123,6 +125,7 @@ try {
     if (method === "detach") return clone(wire.detach);
     assert.fail("unexpected SYN control route " + route);
   };
+  phase = "opening_real_store_transport";
   transport = await openRealStoreTransport({ port: Number(endpoint.port), fallback });
   assert.equal(transport.endpoint, options.endpoint); // No endpoint alias or SDK redirect.
   transport.beforeRequest(async operation => {
@@ -141,14 +144,19 @@ try {
   });
   const handoff = () => ({ schema: "sts2.host-runtime/reference-controller-handoff-1", runtime_instance_id: runtimeId,
     controller: null, basis: "fresh_control_observation_after_close" });
+  phase = "reading_compiled_runtime_identity";
   const deps = { ...sdk, ...runtimeApi, runtimeIdentity: await compiledRuntimeIdentity(),
     verifyTerminalSummary: verifiedTerminalSummary, resolveInstallation: value => value,
     async startEpisode() { return { identity: { endpoint: options.endpoint, host: { runtime_instance_id: runtimeId } },
       async releaseController() { assert.equal(lease ?? null, null); return handoff(); },
       async close() { return { code: 0, signal: null, forced: false, scope: "SYN_Host_no_game" }; } }; } };
+  phase = "running_real_collection";
   await runNativeSource3(options, init.operation_id, peer, deps, lifetime);
+  phase = "checking_terminal_store_stats";
   const stats = await transport.stats(), diagnostics = transport.diagnostics(), producerMethods = clone(transport.requests);
+  phase = "closing_real_store_transport";
   const producerExit = await transport.close(); transport = undefined;
+  phase = "writing_real_chain_proof";
   await writeFile(path.join(options.output, "real-chain-producer-proof.json"), JSON.stringify({
     schema: "spireagent/test-real-chain-proof-1", scenario, scope: "SYN_public_frames_Host_control_native_results_no_game",
     actual: ["C#_Store_Projector", "loopback_HTTP", "public_SDK", "Runtime", "OS_program_Teacher", "Node_collector", "Python_parent", "public_I27_helper"],
@@ -157,6 +165,18 @@ try {
     diagnostics, currents, catalogs, submits, admission: "not_run", learned: false }) + "\n", { flag: "wx" });
   process.stdin.destroy();
 } catch (error) {
-  await transport?.close().catch(() => {});
-  process.stderr.write(String(error.stack ?? error) + "\n"); process.exitCode = 1; process.stdin.destroy();
+  // Snapshot the failing phase and actual pending producer operations before
+  // cleanup changes them. The Python test retains these original stderr bytes.
+  const observed = transport?.diagnostics() ?? null;
+  const diagnostics = observed && { ...observed, events: observed.events.slice(-12) };
+  process.stderr.write(JSON.stringify({ schema: "spireagent/test-real-chain-failure-1",
+    phase, scenario: scenario ?? null, original_error: String(error.stack ?? error),
+    diagnostics }) + "\n");
+  let producerExit = null, cleanupError = null;
+  try { producerExit = await transport?.close() ?? null; }
+  catch (cleanup) { cleanupError = String(cleanup.stack ?? cleanup); }
+  if (transport) process.stderr.write(JSON.stringify({
+    schema: "spireagent/test-real-chain-cleanup-1", producer_exit: producerExit,
+    cleanup_error: cleanupError }) + "\n");
+  process.exitCode = 1; process.stdin.destroy();
 }
