@@ -401,9 +401,11 @@ try {
   const staleInputs = [];
   const staleStart = menuV2Requests.length;
   const contextStart = menuV2ContextReads;
+  let staleClock = 0;
   const staleRuntime = new PolicyRuntime({ manifest: menuV2Manifest, connector: textConnector,
     mode: "auto", runId: v2StaleEvidence.runId, evidence: v2StaleEvidence,
     runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: "d".repeat(64) },
+    monotonicNow: () => staleClock,
     statefulPolicy: input => {
       staleInputs.push(input);
       return { output: { candidate_digest: input.candidate_digest,
@@ -414,6 +416,11 @@ try {
   assert.equal((await staleRuntime.tick()).type, "text_not_applied");
   assert.equal(staleRuntime.status().mode, "auto");
   assert.equal(controlHeld, false, "stale retry must release the controller");
+  staleClock = 249;
+  assert.equal((await staleRuntime.tick()).reason, "stale_submission_cooldown");
+  assert.equal(staleInputs.length, 1);
+  assert.equal(menuV2ContextReads, contextStart + 1);
+  staleClock = 250;
   assert.equal((await staleRuntime.tick()).type, "navigated");
   assert.equal(staleInputs.length, 2);
   assert.equal(staleInputs[1].bundle.observation.snapshot_id, "v2-stale-fresh");
