@@ -17,8 +17,17 @@ const owners = [
   ["game-mod", "apps/game-mod", "check"],
 ];
 
-export function workspaceStages(scope) {
+export function pytestPartition(value) {
+  if (value === undefined) return null;
+  if (!/^[12]\/2$/.test(value)) throw new Error("invalid_pytest_shard");
+  return {index: Number(value[0]), count: 2, complete: false,
+    manifest: "python/.local/pytest-shard.json"};
+}
+
+export function workspaceStages(scope, {pytestShard} = {}) {
   if (!["full", "python", "components"].includes(scope)) throw new Error("unknown_workspace_scope");
+  const partition = pytestPartition(pytestShard);
+  if (partition && scope === "components") throw new Error("pytest_shard_requires_python_scope");
   const guards = scope === "components" ? [] : ["repository"];
   const stages = scope === "components" ? [] : [
     { id: "repository", args: ["run", "check:repository"], requires: [] },
@@ -31,7 +40,8 @@ export function workspaceStages(scope) {
   // shared dist directories. No consumer can borrow an earlier successful build
   // after a later check has removed or partly replaced its output.
   if (scope !== "components") stages.push({
-    id: "python", args: ["run", "check:python"], requires: ["shared-client-build"],
+    id: "python", args: ["run", "check:python", ...(partition ? ["--", "--pytest-shard", pytestShard] : [])],
+    requires: ["shared-client-build"],
   });
   if (scope !== "python") {
     for (const [id, owner, script] of owners) stages.push({
@@ -135,8 +145,8 @@ export function sourceAccepted(before, after, scope) {
     (scope === "components" || (!before.dirty && !after.dirty));
 }
 
-async function main(scope) {
-  const stages = workspaceStages(scope);
+async function main(scope, pytestShard) {
+  const stages = workspaceStages(scope, {pytestShard});
   const before = sourceIdentity();
   const directory = path.join(root, ".local", "checks");
   fs.mkdirSync(directory, { recursive: true });
@@ -146,6 +156,7 @@ async function main(scope) {
   const onInt = () => interrupt("SIGINT"), onTerm = () => interrupt("SIGTERM");
   process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
   const report = { schema: "spireagent/portable-stage-results-1", scope,
+    pytest_partition: pytestPartition(pytestShard),
     started_at: new Date().toISOString(), platform: process.platform, architecture: process.arch,
     node: process.version, source_at_start: before, results: [], verdict: "running",
     non_claims: ["installed", "loaded", "native", "Human", "learning", "qualification"] };
@@ -170,10 +181,11 @@ async function main(scope) {
     report.verdict = outcome.passed && report.source_accepted ? "passed" : "failed";
     report.interrupted_signal = interrupted ?? null;
     report.ended_at = new Date().toISOString(); save();
-    process.stdout.write(JSON.stringify({ stage: "workspace_summary", verdict: report.verdict, output }) + "\n");
+    process.stdout.write(JSON.stringify({ stage: "workspace_summary", verdict: report.verdict,
+      pytest_partition: report.pytest_partition, output }) + "\n");
     if (process.env.GITHUB_STEP_SUMMARY) {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-        `\nPortable ${scope}, checkout ${before.head}: **${report.verdict}**\n\n` +
+        `\nPortable ${scope}${report.pytest_partition ? ` (partial pytest shard ${pytestShard})` : ""}, checkout ${before.head}: **${report.verdict}**\n\n` +
         "| Gate | Result | Seconds |\n|---|---|---|\n" +
         report.results.map(item => `| ${item.id} | ${item.status}${item.blocked_by ? ": " + item.blocked_by.join(", ") : ""} | ${item.seconds ?? ""} |`).join("\n") + "\n");
     }
@@ -183,4 +195,10 @@ async function main(scope) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main(process.argv[2] ?? "full");
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const [scope = "full", ...args] = process.argv.slice(2);
+  if (args.length && (args.length !== 2 || args[0] !== "--pytest-shard")) {
+    throw new Error("unknown_workspace_arguments");
+  }
+  await main(scope, args[1]);
+}

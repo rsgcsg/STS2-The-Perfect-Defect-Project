@@ -59,7 +59,7 @@ export function ciWorkflowErrors(rawSource) {
 
   if (linux) {
     requireMatch(errors, "Linux portability must use ubuntu-latest", linux, /runs-on:\s*ubuntu-latest/u);
-    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute\s*$/mu);
+    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/2\s*$/mu);
     requireMatch(errors, "Linux portability must run git diff --check", linux, /run:\s*git diff --check\s*$/mu);
     requireMatch(errors, "Linux checkout must fetch full history", linux, /fetch-depth:\s*0/u);
     requireMatch(errors, "Linux checkout must not persist credentials", linux, /persist-credentials:\s*false/u);
@@ -72,11 +72,18 @@ export function ciWorkflowErrors(rawSource) {
       /run:\s*uv sync --project python --locked --all-extras\s*$/mu);
     requireMatch(errors, `${label} must install Python consumer packages`, lane,
       /run:\s*npm ci --prefix python\s*$/mu);
+    requireMatch(errors, `${label} must retain two isolated pytest shards`, lane,
+      /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2\]/u);
+    requireMatch(errors, `${label} must retain its 55-minute budget`, lane, /timeout-minutes: 55/u);
+    if (!lane.includes("name: pytest-${{ runner.os }}-shard-${{ matrix.shard }}-${{ github.run_attempt }}") ||
+        !lane.includes("python/.local/pytest-shard.json") || !lane.includes(".local/checks/workspace-*.json")) {
+      errors.push(`${label} must retain uniquely named original shard diagnostics`);
+    }
   }
 
   if (windows) {
     requireMatch(errors, "Windows portability must use windows-latest", windows, /runs-on:\s*windows-latest/u);
-    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute\s*$/mu);
+    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/2\s*$/mu);
     requireMatch(errors, "Windows portability must run git diff --check", windows, /run:\s*git diff --check\s*$/mu);
     requireMatch(errors, "Windows checkout must fetch full history", windows, /fetch-depth:\s*0/u);
     requireMatch(errors, "Windows checkout must not persist credentials", windows, /persist-credentials:\s*false/u);
@@ -94,7 +101,17 @@ export function ciWorkflowErrors(rawSource) {
     for (const name of ["CHECK_SCOPE", "CHECK_PROOF", "PLAN_RESULT", "DOCS_RESULT", "LINUX_RESULT", "WINDOWS_RESULT"]) {
       if (!portable.includes(`${name}:`)) errors.push(`portable missing ${name}`);
     }
+    if (!portable.includes("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093") ||
+        !portable.includes("pattern: pytest-*-shard-*-${{ github.run_attempt }}") ||
+        !portable.includes("path: .local/ci/pytest-shards") || !portable.includes("merge-multiple: false") ||
+        portable.includes("run-id:") || portable.includes("repository:")) {
+      errors.push("portable must download separate original current-run shard artifacts");
+    }
+    if (portable.indexOf("actions/download-artifact@") > portable.indexOf("run: node tools/check-plan.mjs aggregate")) {
+      errors.push("portable must download shards before sealing its receipt");
+    }
   }
+  if (source.includes("PYTEST_ADDOPTS")) errors.push("CI must not inherit pytest shard selection into child tests");
 
   for (const line of source.split("\n")) {
     const match = line.match(/^\s*- uses:\s*([^\s#]+)@([^\s#]+)/u);

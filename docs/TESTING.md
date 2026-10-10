@@ -176,7 +176,8 @@ lineage, lifecycle isolation or cleanup. Local timing does not predict hosted
 Linux or Windows performance. There is no universal test percentage or timeout.
 
 Fast targeted feedback and earlier boundary failures are engineering aspirations,
-not promised durations or implemented new CI lanes. Reduce duplicate setup and
+not promised durations. Hosted pytest partitioning below is the selected scheduling
+policy; other new lanes still need their own review. Reduce duplicate setup and
 unchanged reruns first; broader sharding, new routing or gate movement needs its
 own reviewed policy/code change. Broad compatibility, flake/soak and trend checks
 may use existing scheduled/on-demand gates where applicable; required PR checks
@@ -192,6 +193,16 @@ do not imply available machine resources. While gates run, continue independent
 authorized review or work without mutating the frozen candidate or its inputs.
 A dependent consumer waits for the actual contract/build/evidence prerequisite,
 not a queued job, stale generated output or another branch's green status.
+
+A bounded local runtime diagnostic may overlap isolated remote CI on the same
+frozen candidate once its relevant source review, short-seam checks, local exact
+build/artifact, install/load, rollback and stop prerequisites pass. Match this
+ordering to the diagnostic's claim and authorization; it is not a blanket waiver
+of a task or owner dependency. Do not bypass a failed relevant gate or unknown,
+or rebuild local generated output while the runtime consumes it. Selected full
+dual-OS portable checks remain required for merge, portability and stronger
+promotion. This scheduling rule grants no additional native attempt, Human
+recording, training, spending or deployment authority.
 
 ## Hosted CI contract
 
@@ -317,8 +328,43 @@ docs or reuse result is labelled as such, not as a new full dual-OS execution.
 The local diagnostic scope may be smaller than merge or release scope. The current
 router, every selected leaf and `portable`, plus any stronger active-task
 prerequisite, remain binding until a separately reviewed policy/code change alters
-them. Testing/governance edits select full today. This document does not implement
-new shards, selectors or lanes, nor waive an existing full or dual-OS prerequisite.
+them. Testing/governance edits select full today. Hosted partitioning preserves
+that full or Python inventory and both OS requirements; it does not waive them.
+
+### Hosted pytest partition and complete execution proof
+
+Full and Python scopes use two isolated runner leaves per OS, with matrix
+`fail-fast: false` and the existing 55-minute limit per leaf. Each leaf repeats
+its selected repository guards, fresh SDK/Runtime build, full S0 checks, Python
+nonpytest commands and component-owner inventory. Only the top-level Python
+pytest invocation is partitioned. Local `npm run check` and Python `check`
+defaults remain complete and unpartitioned.
+
+Each top-level invocation explicitly loads `tools.pytest_shard` with shard
+index/count and a manifest path. It collects the unchanged default testpaths,
+normalizes relative POSIX node IDs/files, sorts unique files and assigns whole
+files by rank modulo two. Parameters, classes and module fixtures stay together;
+new files join automatically. No manually curated test list, `PYTEST_ADDOPTS`,
+automatic inherited environment plugin or conftest filters nested pytest.
+The Modal fresh child and other nested invocations keep their full case sets.
+
+Unique OS/shard/attempt artifacts retain the original complete collection,
+selection, actual setup/call/teardown and subtest outcomes, terminal execution,
+source identities and workspace results. Before sealing a fresh receipt,
+`portable` downloads the four current-run artifact directories separately and
+verifies clean exact head/tree/workflow/selector, run/attempt/scope/OS, identical
+same-OS collection, disjoint/exhaustive deterministic selections, and terminal
+executed IDs matching every selected item. Existing test-level skips remain
+explicit; a missing, duplicate, empty, wholly skipped, failed, cancelled,
+uncompleted or foreign-source leaf cannot pass. All selected owner stages must
+also pass. The small existing execution receipt adds only coverage digests/counts;
+original manifests remain diagnostics. Receipt eligibility, freshness, source
+binding, required OS groups and higher evidence gates remain unchanged.
+
+This changes scheduling, not coverage or deadlines. Historical timing estimates
+are predictions: duplicated session fixtures, collection, setup and other gates
+can change the result. Measure real leaf/aggregate duration and runner cost before
+claiming a speedup or that the candidate fits its budget.
 
 ### Integration receipts instead of repeated identical execution
 

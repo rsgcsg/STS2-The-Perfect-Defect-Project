@@ -3,9 +3,25 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
-import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages } from "./check-workspace.mjs";
+import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages, pytestPartition } from "./check-workspace.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
+
+test("explicit pytest partitions preserve every stage and npm argument boundary; defaults remain full", () => {
+  for (const scope of ["full", "python"]) for (const pytestShard of ["1/2", "2/2"]) {
+    const original = workspaceStages(scope), partitioned = workspaceStages(scope, {pytestShard});
+    assert.deepEqual(partitioned.map(stage => stage.id), original.map(stage => stage.id));
+    for (const [index, stage] of partitioned.entries()) {
+      assert.deepEqual(stage.requires, original[index].requires);
+      assert.deepEqual(stage.args, stage.id === "python"
+        ? ["run", "check:python", "--", "--pytest-shard", pytestShard] : original[index].args);
+    }
+    assert.equal(pytestPartition(pytestShard).complete, false);
+  }
+  assert.equal(pytestPartition(undefined), null);
+  for (const value of ["", "0/2", "3/2", "1/1", "1/3", "all"]) assert.throws(() => pytestPartition(value));
+  assert.throws(() => workspaceStages("components", {pytestShard: "1/2"}));
+});
 
 test("full and Python gates keep their required inventory; short real-consumer checks precede broad tests", () => {
   const full = workspaceStages("full"), python = workspaceStages("python");

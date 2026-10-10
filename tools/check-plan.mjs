@@ -5,6 +5,8 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { eligibleEvent, findReceipt } from "./check-receipt.mjs";
+import {pytestPartition} from "./check-workspace.mjs";
+import {currentShardIdentity, verifyPytestShards} from "./verify-pytest-shards.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 // Explicit prose surfaces only. Governance, contracts, component docs and
@@ -108,9 +110,12 @@ export function scopeCommands(scope) {
   if (scope === "full") return ["check"];
   throw new Error("unknown_check_scope");
 }
-function execute(scope) {
+function execute(scope, pytestShard) {
+  const partition = pytestPartition(pytestShard);
+  if (partition && !["full", "python"].includes(scope)) throw new Error("pytest_shard_requires_python_scope");
   for (const command of scopeCommands(scope)) {
-    const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", command],
+    const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm",
+      ["run", command, ...(partition ? ["--", "--pytest-shard", pytestShard] : [])],
       {cwd: root, stdio: "inherit", shell: process.platform === "win32"});
     if (result.status !== 0) { process.exitCode = result.status ?? 1; return; }
   }
@@ -122,6 +127,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const results = {plan: e.PLAN_RESULT, docs: e.DOCS_RESULT, linux: e.LINUX_RESULT, windows: e.WINDOWS_RESULT};
     if (!aggregatePassed(e.CHECK_SCOPE, results)) process.exitCode = 1;
     else {
+      const coverage = ["full", "python"].includes(e.CHECK_SCOPE) ? verifyPytestShards(
+        path.join(root, ".local", "ci", "pytest-shards"), currentShardIdentity(root, e)) : null;
       const git = (...args) => execFileSync("git", args, {cwd: root, encoding: "utf8"}).trim();
       if (e.GITHUB_STEP_SUMMARY) fs.appendFileSync(e.GITHUB_STEP_SUMMARY,
         `Passed scope: **${e.CHECK_SCOPE}**. Current checkout ${git("rev-parse", "HEAD")}. ${e.CHECK_PROOF || "Fresh execution"}\n`);
@@ -132,11 +139,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           run_id: e.GITHUB_RUN_ID, run_attempt: e.GITHUB_RUN_ATTEMPT, scope: e.CHECK_SCOPE,
           checkout: git("rev-parse", "HEAD"), tree: git("rev-parse", "HEAD^{tree}"),
           workflow: git("rev-parse", "HEAD:.github/workflows/ci.yml"), results,
+          pytest_coverage: coverage,
         }, null, 2) + "\n");
       }
     }
   } else if (args[0] === "execute") {
-    execute(process.env.CHECK_SCOPE);
+    if (args.length !== 1 && (args.length !== 3 || args[1] !== "--pytest-shard")) throw new Error("unknown_execute_arguments");
+    execute(process.env.CHECK_SCOPE, args[2]);
   } else {
     const baseIndex = args.indexOf("--base");
     const headIndex = args.indexOf("--head");

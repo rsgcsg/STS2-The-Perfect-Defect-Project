@@ -21,7 +21,7 @@
   "scripts": {
     "identity": "node tools/component-identity.mjs",
     "check:governance": "node --test tools/check-governance.test.mjs && node tools/check-governance.mjs",
-    "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs && node tools/check-ci-contract.mjs",
+    "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs tools/verify-pytest-shards.test.mjs && node tools/check-ci-contract.mjs",
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
     "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
