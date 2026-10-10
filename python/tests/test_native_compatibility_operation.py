@@ -47,11 +47,7 @@ def service(tmp_path, monkeypatch):
     selected = owner.LocalModelExport(ProjectConfig(state, "", "", None, {}))
     monkeypatch.setattr(selected, "_workspace", lambda: SimpleNamespace(store=store))
     monkeypatch.setattr(owner, "require_native_models", lambda *args: None)
-    monkeypatch.setattr(
-        owner,
-        "tool_identity",
-        lambda: {"source_revision": target.source_revision, "uv_lock_sha256": TARGET_LOCK_SHA256},
-    )
+    monkeypatch.setattr(owner, "source_identity", lambda root: target)
     module = ModuleType("stpd.policy.native_structured_export")
     monkeypatch.setitem(sys.modules, module.__name__, module)
     return selected, original, derived, records, module
@@ -157,3 +153,46 @@ def test_prepublication_failure_is_known_and_unknown_profile_does_not_journal(se
     assert result["status"] == "failed" and result["error_code"] == "prepublication_failed"
     assert result["original_model_id"] == original.artifact_id
     assert "derived_model_id" not in result
+
+
+def test_dirty_source_is_rejected_before_any_migration_intent_or_publication(service, monkeypatch):
+    selected, original, derived, records, module = service
+
+    def dirty(root):
+        raise BoundaryError("source", "clean_checkout_required")
+
+    monkeypatch.setattr(owner, "source_identity", dirty)
+    module.publish_native_compatible_model = lambda *args, **kwargs: pytest.fail("published")
+    with pytest.raises(BoundaryError, match="clean_checkout_required"):
+        selected.start(original.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
+    assert not selected._path().exists()
+    assert derived.artifact_id not in records
+
+
+@pytest.mark.parametrize("drift", ["head", "dirty"])
+def test_threaded_source_drift_is_rejected_before_derived_publication_intent(
+    service, monkeypatch, drift
+):
+    selected, original, derived, records, _ = service
+    calls = []
+
+    def changed_source(root):
+        calls.append(root)
+        if len(calls) == 1:
+            return derived.producer
+        if drift == "dirty":
+            raise BoundaryError("source", "clean_checkout_required")
+        return Producer(COMPATIBILITY_REPOSITORY, "c" * 40, TARGET_LOCK_SHA256)
+
+    monkeypatch.setattr(owner, "source_identity", changed_source)
+    install_publisher(*service)
+    selected.start(original.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
+    result = settled(selected)
+    assert len(calls) == 2
+    assert result["status"] == "failed"
+    assert result["error_code"] == (
+        "clean_checkout_required" if drift == "dirty" else "compatibility_source_changed"
+    )
+    assert result["model_id"] == result["original_model_id"] == original.artifact_id
+    assert "derived_model_id" not in result
+    assert derived.artifact_id not in records

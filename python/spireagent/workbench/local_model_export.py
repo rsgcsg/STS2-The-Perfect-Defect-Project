@@ -24,8 +24,9 @@ from typing import Any
 from spireagent.artifact_contracts import Manifest, Payload, Producer
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.package_identity import file_sha256
+from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
-from spireagent.workbench.developer import ProjectConfig, atomic_json, tool_identity
+from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.local_model_dependencies import (
     require_local_models,
     require_native_models,
@@ -867,14 +868,7 @@ class LocalModelExport:
                         or not hasattr(store, "publish") or not hasattr(store, "put_payload")):
                     raise BoundaryError("local_model_export",
                                         "local_sampled_model_required_for_compatibility")
-                from spireagent.source import REPOSITORY
-
-                current_source = tool_identity()
-                producer = Producer(
-                    REPOSITORY,
-                    digest(current_source["source_revision"],
-                           "local_model_export.source", length=40),
-                    digest(current_source["uv_lock_sha256"], "local_model_export.lock"))
+                producer = source_identity(ROOT)
                 compatibility = {"profile": compatibility_profile, "original_model_id": identity,
                                  "export_producer": producer.to_dict()}
             public_schema = model.parameters.value().get("schema") in {
@@ -1069,6 +1063,8 @@ class LocalModelExport:
                 from stpd.policy.native_structured_export import publish_native_compatible_model
 
                 def before_publish(derived: Manifest) -> None:
+                    if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
+                        raise BoundaryError("local_model_export", "compatibility_source_changed")
                     with self.lock:
                         self._finish(operation_id, model_id=derived.artifact_id,
                                      derived_model_id=derived.artifact_id)
