@@ -21,11 +21,12 @@ from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
-from spireagent.artifact_contracts import Manifest, Payload
+from spireagent.artifact_contracts import Manifest, Payload, Producer
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.package_identity import file_sha256
+from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
-from spireagent.workbench.developer import ProjectConfig, atomic_json
+from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.local_model_dependencies import (
     require_local_models,
     require_native_models,
@@ -38,7 +39,11 @@ from spireagent.workbench.memory_recipe import (
     recorded_memory_recipe,
 )
 from spireagent.workbench.research_process import private_child
-from stpd.native_code_scope import is_native_model_schema
+from stpd.native_code_scope import (
+    COMMON_MODEL_SCHEMA,
+    COMPATIBILITY_PROFILE,
+    is_native_model_schema,
+)
 from stpd.structured_code_scope import (
     is_structured_model_schema,
     require_structured_model_package,
@@ -504,6 +509,21 @@ class LocalModelExport:
                 from spireagent.workbench.public_m2_export_support import checked_operation
 
                 checked_operation(value)
+            if "native_compatibility" in value:
+                compatibility = value["native_compatibility"]
+                if (value.get("model_type") != "native" or not isinstance(compatibility, dict)
+                        or set(compatibility) != {"profile", "original_model_id", "export_producer"}
+                        or compatibility["profile"] != COMPATIBILITY_PROFILE):
+                    raise ValueError
+                original = digest(compatibility["original_model_id"],
+                                  "local_model_export.original_model")
+                Producer.decode(compatibility["export_producer"])
+                derived = value.get("derived_model_id")
+                if derived is not None:
+                    digest(derived, "local_model_export.derived_model")
+                if (value["model_id"] != (derived if derived is not None else original)
+                        or (value["status"] == "completed" and derived is None)):
+                    raise ValueError
             digest(value["model_id"], "local_model_export.model_id")
             digest(value["operation_id"], "local_model_export.operation_id", length=32)
             if value["status"] == "completed" and (
@@ -553,6 +573,11 @@ class LocalModelExport:
                      ("status", "operation_id", "model_id", "model_type",
                       "payload_bytes", "error_code")
                      if key in value}
+        if "native_compatibility" in value:
+            operation["original_model_id"] = value["native_compatibility"]["original_model_id"]
+            operation["compatibility_profile"] = value["native_compatibility"]["profile"]
+            if "derived_model_id" in value:
+                operation["derived_model_id"] = value["derived_model_id"]
         if (value.get("model_type") in {"public_m0", "public_m2"}
                 and value.get("verified_receipt") is not None):
             operation["verified_receipt"] = value["verified_receipt"]
@@ -585,7 +610,10 @@ class LocalModelExport:
             value = self._model_operation(identity) if identity is not None else self._read()
             result = self._public(value)
             try:
-                selected = (self._source(value["model_id"])
+                source_id = (value["native_compatibility"]["original_model_id"]
+                             if value.get("status") == "pending" and "native_compatibility" in value
+                             else value.get("model_id", ""))
+                selected = (self._source(source_id)
                             if value.get("model_type") in {"structured", "native"}
                             else self._workspace().store)
                 root = getattr(getattr(selected, "blobs", None), "root", None)
@@ -810,10 +838,13 @@ class LocalModelExport:
         if completed.get("status") == "completed":
             self._archive_completed(completed)
 
-    def start(self, model_id: object) -> dict[str, Any]:
+    def start(self, model_id: object, *,
+              compatibility_profile: str | None = None) -> dict[str, Any]:
         from spireagent.workbench.developer_server import instance_lock
 
         identity = digest(model_id, "local_model_export.model_id")
+        if compatibility_profile is not None and compatibility_profile != COMPATIBILITY_PROFILE:
+            raise BoundaryError("local_model_export", "unsupported_native_compatibility_profile")
         with self.lock:
             previous = self._read()
             if (previous["status"] == "pending" and self.thread is not None
@@ -831,6 +862,15 @@ class LocalModelExport:
                     and previous["store_root"] != str(root)):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = store.get_manifest(identity)
+            compatibility = None
+            if compatibility_profile is not None:
+                if (model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA
+                        or not hasattr(store, "publish") or not hasattr(store, "put_payload")):
+                    raise BoundaryError("local_model_export",
+                                        "local_sampled_model_required_for_compatibility")
+                producer = source_identity(ROOT)
+                compatibility = {"profile": compatibility_profile, "original_model_id": identity,
+                                 "export_producer": producer.to_dict()}
             public_schema = model.parameters.value().get("schema") in {
                 "stpd/stage1a-light-action-m0-public-model-v1", "stpd/public-m2-model-v1",
             }
@@ -934,6 +974,14 @@ class LocalModelExport:
                     operation.update(model_type="structured")
                 if native:
                     operation.update(model_type="native")
+                if compatibility is not None:
+                    operation["native_compatibility"] = compatibility
+                elif current.get("status") == "pending" and "native_compatibility" in current:
+                    # An explicit start of the recorded derived ID reconciles its
+                    # known CAS bytes; it does not replay original publication.
+                    operation["operation_id"] = current["operation_id"]
+                    operation["native_compatibility"] = current["native_compatibility"]
+                    operation["derived_model_id"] = current["derived_model_id"]
                 if memory:
                     assert run_id is not None
                     operation.update(model_type="memory", run_id=run_id)
@@ -1005,6 +1053,29 @@ class LocalModelExport:
             child_started = True
 
         try:
+            with self.lock:
+                operation = self._read()
+                if (operation.get("operation_id") != operation_id
+                        or operation.get("status") != "pending"):
+                    raise BoundaryError("local_model_export", "operation_superseded")
+                compatibility = operation.get("native_compatibility")
+            if compatibility is not None and "derived_model_id" not in operation:
+                from stpd.policy.native_structured_export import publish_native_compatible_model
+
+                def before_publish(derived: Manifest) -> None:
+                    if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
+                        raise BoundaryError("local_model_export", "compatibility_source_changed")
+                    with self.lock:
+                        self._finish(operation_id, model_id=derived.artifact_id,
+                                     derived_model_id=derived.artifact_id)
+                    # From this durable intent onwards publication may have
+                    # happened. Failure remains pending/unknown, never replayed.
+                    mark_started()
+
+                model = publish_native_compatible_model(store, model.artifact_id,
+                    producer=Producer.decode(compatibility["export_producer"]),
+                    profile=compatibility["profile"], before_publish=before_publish)
+                destination = _destination(self.config, model.artifact_id, native=True)
             if model.parameters.value().get("schema") == "stpd/public-m2-model-v1":
                 from spireagent.workbench.public_m2_export_support import require_lineage
                 from stpd.policy.public_m2_export import receipt as public_m2_receipt

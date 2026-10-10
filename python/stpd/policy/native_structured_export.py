@@ -3,20 +3,38 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from spireagent.artifact_contracts import Manifest, Payload, Producer
-from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
+from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
+from spireagent.json_boundary import (
+    BoundaryError,
+    FrozenObject,
+    decode_json,
+    digest,
+    json_bytes,
+    object_fields,
+)
 
 from ..canonical import semantic_hash
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROJECTION
 from ..models.structured_m2 import StructuredM2
 from ..models.structured_weights import encode_structured_weights, load_structured_weights
-from ..native_code_scope import GRAPH_MODEL_SCHEMA, native_code_identity, native_code_sha256
+from ..native_code_scope import (
+    COMPATIBILITY_PROFILE,
+    COMPATIBLE_MODEL_SCHEMA,
+    GRAPH_MODEL_SCHEMA,
+    checked_native_compatibility_proof,
+    compatibility_original_identity,
+    native_code_identity,
+    native_code_sha256,
+    native_compatibility_proof,
+)
 from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
 from ..native_code_scope import is_native_model_schema as is_native_model_schema
 from ..native_graph_spec import NativeGraphControl, checked_control, optional_control
@@ -65,6 +83,7 @@ GRAPH_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v3"
 GRAPH_TRAINED_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v4"
 GRAPH_WEIGHT_SCHEMA = "stpd/native-structured-m2-weights-v2"
 GRAPH_STATE_FORMAT = "stpd/native-structured-m2-state-v2"
+COMPATIBLE_PACKAGE_SCHEMA = "stpd/native-compatible-package-v1"
 AGENT_SPEC = {
     "id": "stpd-native-full-reference-m2-agent",
     "version": "1.0.0",
@@ -116,6 +135,8 @@ def native_architecture(model_control: NativeGraphControl | None) -> str:
 
 
 def package_control(value: dict[str, Any]) -> NativeGraphControl | None:
+    if value["schema"] == COMPATIBLE_PACKAGE_SCHEMA:
+        return package_control(value["compatibility"]["original_package"])
     if value["schema"] in (
         GRAPH_PACKAGE_SCHEMA,
         GRAPH_TRAINED_PACKAGE_SCHEMA,
@@ -412,6 +433,21 @@ def _export_package(
 
 
 def _native_manifest(encoded: bytes) -> dict[str, Any]:
+    # Public old-package loading always uses the actual current identity.
+    if not 0 < len(encoded) <= MAX_MANIFEST_BYTES:
+        raise BoundaryError("native_package", "manifest_size_limit")
+    decoded = decode_json(encoded)
+    if isinstance(decoded, dict) and decoded.get("schema") == COMPATIBLE_PACKAGE_SCHEMA:
+        return _compatible_manifest(encoded)
+    return _checked_native_manifest(encoded)
+
+
+def _checked_native_manifest(encoded: bytes, *,
+                             recorded_basis: dict[str, str] | None = None) -> dict[str, Any]:
+    # The only recorded basis is code-owned and admitted by the compatibility
+    # proof before this private shared metadata checker is called.
+    if recorded_basis is not None and recorded_basis != compatibility_original_identity():
+        raise BoundaryError("native_package", "unsupported_recorded_basis")
     if not 0 < len(encoded) <= MAX_MANIFEST_BYTES:
         raise BoundaryError("native_package", "manifest_size_limit")
     fields = {
@@ -436,6 +472,8 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
     decoded = decode_json(encoded)
     ordered = isinstance(decoded, dict) and decoded.get("schema") == ORDERED_PACKAGE_SCHEMA
     common = isinstance(decoded, dict) and decoded.get("schema") == COMMON_PACKAGE_SCHEMA
+    if recorded_basis is not None and not common:
+        raise BoundaryError("native_package", "recorded_sampled_trained_family_required")
     trained = isinstance(decoded, dict) and decoded.get("schema") in (
         TRAINED_PACKAGE_SCHEMA,
         GRAPH_TRAINED_PACKAGE_SCHEMA,
@@ -474,6 +512,8 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
             _ordered_view(ordered_source) if ordered_source is not None else DEFAULT_VIEW)
     policy = (sampled_agent_execution_policy(value["agent_spec"], control)
               if view == SAMPLED_VIEW and control is not None else None)
+    identity = (recorded_basis if recorded_basis is not None else
+                native_code_identity(ROOT, graph=control is not None))
     if (
         encoded != json_bytes(value)
         or value["schema"]
@@ -501,8 +541,8 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
             STATE_FORMAT if control is None else GRAPH_STATE_FORMAT)
         or type(value["seed"]) is not int
         or value["seed"] != 0
-        or value["code_identity"] != native_code_identity(ROOT, graph=control is not None)
-        or value["adapter_code_sha256"] != native_code_sha256(ROOT, graph=control is not None)
+        or value["code_identity"] != identity
+        or value["adapter_code_sha256"] != semantic_hash(identity)
         or value["runtime"] != inference_runtime(str(torch.__version__))
         or value["qualification"]
         != (
@@ -560,6 +600,61 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
     return value
 
 
+def _compatible_manifest(encoded: bytes) -> dict[str, Any]:
+    if not 0 < len(encoded) <= MAX_MANIFEST_BYTES:
+        raise BoundaryError("native_package", "manifest_size_limit")
+    decoded = decode_json(encoded)
+    if not isinstance(decoded, dict):
+        raise BoundaryError("native_compatibility", "package_object_required")
+    compatibility = object_fields(
+        decoded.get("compatibility"),
+        {"profile", "original_model", "original_package", "proof"},
+        "native_compatibility",
+    )
+    if compatibility["profile"] != COMPATIBILITY_PROFILE:
+        raise BoundaryError("native_compatibility", "unsupported_profile")
+    proof = checked_native_compatibility_proof(compatibility["proof"])
+    original = _checked_native_manifest(
+        json_bytes(compatibility["original_package"]),
+        recorded_basis=compatibility_original_identity(),
+    )
+    if original["producer"] != proof["original_export_producer"]:
+        raise BoundaryError("native_compatibility", "original_export_producer_mismatch")
+    original_model = Manifest.from_bytes(json_bytes(compatibility["original_model"]))
+    _require_native_model_package_checked(original_model, original)
+    expected_fields = set(original) | {"compatibility"}
+    value = object_fields(decoded, expected_fields, "native_compatibility.package")
+    origin = Producer.decode(value["producer"])
+    identity = native_code_identity(ROOT, graph=True)
+    platform = object_fields(
+        value["export_runtime"],
+        {"python", "system", "machine"},
+        "native_compatibility.export_runtime",
+    )
+    if (
+        origin.repository != original_model.producer.repository
+        or origin.uv_lock_sha256 != identity["dependency_lock_sha256"]
+        or any(not isinstance(part, str) or not part for part in platform.values())
+    ):
+        raise BoundaryError("native_compatibility", "current_export_producer_mismatch")
+    body = {
+        **original,
+        "schema": COMPATIBLE_PACKAGE_SCHEMA,
+        "code_identity": identity,
+        "adapter_code_sha256": semantic_hash(identity),
+        "producer": origin.to_dict(),
+        "export_runtime": platform,
+        "compatibility": compatibility,
+    }
+    body.pop("model_id")
+    expected = {**body, "model_id": semantic_hash(body)}
+    if encoded != json_bytes(value) or value != expected:
+        raise BoundaryError(
+            "native_compatibility", "package_identity_or_original_semantics_mismatch"
+        )
+    return value
+
+
 def load_native_package(
     directory: Path, *, expected_manifest_sha256: str | None = None
 ) -> tuple[
@@ -599,6 +694,29 @@ def load_native_package(
 
 def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, Any]:
     digest(attempt, "native_model.attempt", length=32)
+    package = _native_manifest(json_bytes(package))
+    return _native_model_parameters_checked(package, attempt)
+
+
+def _native_model_parameters_checked(package: dict[str, Any], attempt: str) -> dict[str, Any]:
+    if package.get("schema") == COMPATIBLE_PACKAGE_SCHEMA:
+        original = Manifest.from_bytes(json_bytes(package["compatibility"]["original_model"]))
+        return {
+            "schema": COMPATIBLE_MODEL_SCHEMA,
+            "model_id": package["model_id"],
+            "original_model_id": original.artifact_id,
+            "original_package_id": package["compatibility"]["original_package"]["model_id"],
+            "compatibility_profile": COMPATIBILITY_PROFILE,
+            "graph_id": package["graph"]["id"],
+            "input_spec": package["input_spec"],
+            "agent_spec": package["agent_spec"],
+            "state_format_version": package["state_format_version"],
+            "code_identity": package["code_identity"],
+            "source": package["source"],
+            "qualification": package["qualification"],
+            "attempt": attempt,
+            "provenance": package["provenance"],
+        }
     if package.get("schema") not in (
         TRAINED_PACKAGE_SCHEMA,
         GRAPH_TRAINED_PACKAGE_SCHEMA,
@@ -606,11 +724,11 @@ def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, 
         COMMON_PACKAGE_SCHEMA,
     ):
         raise BoundaryError("native_model", "trained_package_required")
-    package = _native_manifest(json_bytes(package))
     return {
         "schema": (
-            COMMON_MODEL_SCHEMA if package["schema"] == COMMON_PACKAGE_SCHEMA else
-            ORDERED_MODEL_SCHEMA
+            COMMON_MODEL_SCHEMA
+            if package["schema"] == COMMON_PACKAGE_SCHEMA
+            else ORDERED_MODEL_SCHEMA
             if package["schema"] == ORDERED_PACKAGE_SCHEMA
             else MODEL_SCHEMA
             if package_control(package) is None
@@ -631,22 +749,54 @@ def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, 
 
 def require_native_model_package(model: Manifest, package: dict[str, Any]) -> None:
     """Validate an authorized model's own bytes and lineage IDs, without opening parents."""
+    package = _native_manifest(json_bytes(package))
+    _require_native_model_package_checked(model, package)
+
+
+def _require_native_model_package_checked(model: Manifest, package: dict[str, Any]) -> None:
     info = model.parameters.value()
+    compatible = package.get("schema") == COMPATIBLE_PACKAGE_SCHEMA
     if (
         model.kind != "model"
         or not is_native_model_schema(info.get("schema"))
-        or {parent.role for parent in model.parents} != {"run", "checkpoint", "training_input"}
+        or {parent.role for parent in model.parents}
+        != (
+            {"run", "checkpoint", "training_input", "original_model"}
+            if compatible
+            else {"run", "checkpoint", "training_input"}
+        )
         or {payload.role for payload in model.payloads} != {"package_manifest", "weights"}
         or package.get("schema")
-        not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA,
-                ORDERED_PACKAGE_SCHEMA, COMMON_PACKAGE_SCHEMA)
+        not in (
+            TRAINED_PACKAGE_SCHEMA,
+            GRAPH_TRAINED_PACKAGE_SCHEMA,
+            ORDERED_PACKAGE_SCHEMA,
+            COMMON_PACKAGE_SCHEMA,
+            COMPATIBLE_PACKAGE_SCHEMA,
+        )
     ):
         raise BoundaryError("native_model", "model_inventory_or_schema")
     attempt = digest(info.get("attempt"), "native_model.attempt", length=32)
-    expected = native_model_parameters(package, attempt)
+    expected = _native_model_parameters_checked(package, attempt)
+    origin = (
+        Manifest.from_bytes(json_bytes(package["compatibility"]["original_model"]))
+        if compatible
+        else None
+    )
     if (
         info != expected
-        or model.producer.to_dict() != package["provenance"]["export_producer"]
+        or model.producer.to_dict()
+        != (package["producer"] if compatible else package["provenance"]["export_producer"])
+        or (
+            origin is not None
+            and (
+                model.parent("original_model") != origin.artifact_id
+                or any(
+                    model.parent(role) != origin.parent(role)
+                    for role in ("run", "checkpoint", "training_input")
+                )
+            )
+        )
         or any(
             model.parent(role) != package["provenance"][role + "_id"]
             for role in ("run", "checkpoint", "training_input")
@@ -676,6 +826,99 @@ def _payload_bytes(store: ArtifactStore, payload: Payload, maximum: int) -> byte
     if len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256:
         raise BoundaryError("native_model", "payload_integrity")
     return bytes(raw)
+
+
+def publish_native_compatible_model(
+    store: ArtifactStore,
+    original_model_id: str,
+    *,
+    producer: Producer,
+    profile: str,
+    before_publish: Callable[[Manifest], None] | None = None,
+) -> Manifest:
+    """Explicit immutable derivative; no fit, original mutation or auto upgrade."""
+    if profile != COMPATIBILITY_PROFILE:
+        raise BoundaryError("native_compatibility", "unsupported_profile")
+    original_model = store.get_manifest(original_model_id)
+    if (
+        original_model.artifact_id != original_model_id
+        or original_model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA
+    ):
+        raise BoundaryError("native_compatibility", "original_sampled_trained_model_required")
+    proof = native_compatibility_proof(original_model.producer)
+    raw_original = _payload_bytes(
+        store, original_model.payload("package_manifest"), MAX_MANIFEST_BYTES
+    )
+    original = _checked_native_manifest(
+        raw_original, recorded_basis=compatibility_original_identity()
+    )
+    _require_native_model_package_checked(original_model, original)
+    if original["producer"] != proof["original_export_producer"]:
+        raise BoundaryError("native_compatibility", "original_export_producer_mismatch")
+    raw_weights = _payload_bytes(store, original_model.payload("weights"), MAX_WEIGHTS_BYTES)
+    if (
+        len(raw_weights) != original["weights"]["bytes"]
+        or hashlib.sha256(raw_weights).hexdigest() != original["weights"]["sha256"]
+    ):
+        raise BoundaryError("native_compatibility", "original_weights_mismatch")
+    identity = native_code_identity(ROOT, graph=True)
+    if (
+        not isinstance(producer, Producer)
+        or producer.repository != original_model.producer.repository
+        or producer.uv_lock_sha256 != identity["dependency_lock_sha256"]
+    ):
+        raise BoundaryError("native_compatibility", "current_export_producer_mismatch")
+    compatibility = {
+        "profile": profile,
+        "original_model": decode_json(original_model.to_bytes()),
+        "original_package": original,
+        "proof": proof,
+    }
+    body = {
+        **original,
+        "schema": COMPATIBLE_PACKAGE_SCHEMA,
+        "code_identity": identity,
+        "adapter_code_sha256": semantic_hash(identity),
+        "producer": producer.to_dict(),
+        "export_runtime": exporter_runtime(),
+        "compatibility": compatibility,
+    }
+    body.pop("model_id")
+    package = {**body, "model_id": semantic_hash(body)}
+    encoded = json_bytes(package)
+    package = _compatible_manifest(encoded)
+    # The shared safe decoder checks exact finite tensor inventory/graph before
+    # any derived payload publication. Functional old/new parity is a later gate.
+    control = package_control(package)
+    loaded = load_structured_weights(
+        raw_weights,
+        schema=GRAPH_WEIGHT_SCHEMA,
+        graph=native_graph(control),
+        projection=PROJECTION,
+        seed=package["seed"],
+        model_control=control,
+    )
+    del loaded
+    metadata = Payload(
+        "package_manifest", hashlib.sha256(encoded).hexdigest(), len(encoded), "application/json"
+    )
+    model = Manifest(
+        kind="model",
+        producer=producer,
+        parents=(*original_model.parents, Parent("original_model", original_model_id)),
+        payloads=(metadata, original_model.payload("weights")),
+        parameters=FrozenObject.of(
+            _native_model_parameters_checked(package, original_model.parameters.value()["attempt"])
+        ),
+    )
+    _require_native_model_package_checked(model, package)
+    if before_publish is not None:
+        before_publish(model)
+    if store.put_payload("package_manifest", io.BytesIO(encoded), "application/json") != metadata:
+        raise BoundaryError("native_compatibility", "derived_payload_publication_identity")
+    if store.publish(model) != model.artifact_id:
+        raise BoundaryError("native_compatibility", "derived_publication_identity")
+    return model
 
 
 def export_native_model(store: ArtifactStore, model_id: str, destination: Path) -> dict[str, Any]:

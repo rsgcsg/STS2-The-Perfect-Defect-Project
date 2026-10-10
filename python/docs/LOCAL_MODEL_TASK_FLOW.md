@@ -6,6 +6,22 @@ This is the owning orchestration guide for `workbench.local_models`,
 remain authoritative. This flow does not make arbitrary downloaded checkpoints
 executable and does not qualify Human data or model game performance.
 
+The existing `LocalModelExport.start` owner accepts the explicit closed
+`compatibility_profile="native-evidence-rc27-to-rc29-v1"` for a supported original
+sampled native Model. Ordinary calls keep strict original export behavior. The
+same export operation records original and derived IDs, and journals the derived
+identity before immutable publication. It then uses the ordinary native export
+and verification path, preserving any previous completed original receipt.
+The existing clean-source identity owner captures the committed source/lock
+producer and revalidates it immediately before derived publication intent;
+dirty source or a changed producer fails before any derived publication.
+An interruption after publication intent remains pending/unknown. A caller may
+explicitly reconcile the recorded derived ID if its CAS Manifest exists; it
+cannot automatically repeat the original migration or infer publication from
+current files. This owner-call path adds no service, registry, trainer or UI
+operation. Candidate publication is distinct from the original/target numerical
+parity and native qualification gates in the native Model guide.
+
 ## Prepare and load
 
 An operator can explicitly change one private text Runtime profile while the
