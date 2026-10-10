@@ -221,95 +221,26 @@ effect to prove an earlier action.
 
 ## 6. Testing strategy
 
-Use the cheapest test that can falsify the risky claim, then escalate only when
-the claim requires stronger evidence:
+[Testing and Evidence](TESTING.md#test-design-and-maintenance) owns test creation,
+maintenance, fixture fidelity, test shapes, local feedback, required execution
+and evidence meanings. Follow its claim/risk -> owning fact -> faithful normal/
+negative checks -> evidence -> consumer decision sequence. Use the cheapest test
+that can falsify the risky claim, then escalate when the claim requires stronger
+evidence; green lower-layer checks do not qualify a higher-layer claim.
 
-```text
-source/static -> unit -> component -> contract/integration
-  -> cross-layer causal -> exact build -> runtime -> Human
-```
+Governance owns [failure classification](#classify-failures-before-choosing-a-repair)
+and the L1/L3 response: preserve escaped failures, repair their owning cause and
+improve the discovery path. Repeated failures of one assumption require the
+existing contract/architecture review. Several unrelated failures do not justify
+a general rewrite. Passing a new regression alone does not prove its fixture
+faithful or close stated native, service or scientific unknowns.
 
-### When a new test is required
-
-Add or update a test in the same PR when production behavior changes, a bug is
-fixed, a refactor lacks a safe baseline, a public contract changes, a new
-abstraction is introduced, or a CI/governance failure escaped.
-
-For a production or Human incident:
-
-```text
-preserve the failure
-  -> add the lowest-cost faithful regression
-  -> fix the owning cause
-  -> add a boundary/cross-layer regression when the incident crossed layers
-```
-
-The regression should catch the failure family earlier, not only one literal
-incident. A separate test is normally unnecessary for prose-only clarification,
-dead-code removal whose observable contract is already covered, or a change
-with exact existing coverage; the PR names that coverage.
-
-### Test shapes
-
-- **Unit**: deterministic calculations, parsers, validation, codecs, identity
-  mapping, and local branches.
-- **Component**: several classes inside one owner.
-- **Contract/conformance**: public providers, consumers, and external adapters
-  against the same contract.
-- **Integration**: an A-to-B boundary where independently green units may
-  disagree.
-- **Cross-layer causal**: Human/root occurrence through native identity, Commit,
-  successor, persistence, and the production final auditor.
-- **Exact-game**: compilation and conformance against the exact local STS2.
-- **Runtime/system**: package, install, load, lifecycle, recovery, and rollback.
-- **Journey/E2E**: a few critical workflows; presentation never becomes
-  semantic authority.
-- **Performance/load/resilience/security**: only when the change or claim owns
-  that risk, with claim-adjacent baselines and metrics.
-
-Critical lifecycle fixtures use realistic identities, ordering, duplicate,
-stale, cancel, unknown, and final-auditor behavior. Simplified flags or direct
-root injection cannot prove a production lifecycle they bypass.
-
-### Prevent expensive discovery of cheap failures
-
-For each changed guarantee, name the lowest faithful check, the stronger evidence
-still needed, and the cost/stop boundary before execution. A green lower layer
-never removes the need for the higher layer that owns the claim. Use an actual
-producer/consumer short path early for crossed seams; faithful happy paths and
-stale/cancel/partial/unknown/cleanup counterexamples matter more than test count.
-Do not make every local repair depend on a new whole-system design exercise.
-
-Fail prerequisites early. After valid prerequisites, collect results from
-independent selected owners so the first failure does not hide later defects.
-Mark unavailable dependent stages blocked with their failed prerequisite; do not
-run them against stale generated output or report them skipped/passed. Cancellation
-ends execution. Any failed, cancelled or blocked required stage fails the overall
-gate. TESTING owns the exact executable inventory and source binding.
-
-Escaped defects must change the discovery path: add the cheapest faithful family
-regression, strengthen the crossed seam only where missing, and update its owning
-rule when the assumption was wrong. Repeated failures of the same assumption
-activate the existing L3 contract/architecture review; several unrelated defects
-do not automatically activate a general rewrite. Review whether the new check
-would have caught the preserved failure earlier and whether it still leaves a
-stated native, service or scientific unknown. Passing the newly added test alone
-does not answer those questions.
-
-### Where tests run
-
-Every PR runs deterministic, portable, fast, diagnostically clear tests.
-Path-conditional jobs are allowed only when routing itself is tested. Broad but
-expensive deterministic suites, compatibility, flake detection, soak, and trend
-measurement run scheduled or on demand. Proprietary exact-game, Human,
-production-secret, destructive production, and raw-session work stays outside
-public hosted CI. Release/manual gates own package/install/load/rollback,
-production-like E2E, load/resilience, and Human qualification as claimed.
-
-A flaky test is a defect. A diagnostic rerun may locate it, but a second green
-result does not automatically satisfy merge. Quarantine requires an owner,
-issue, replacement signal, and removal deadline. See [Testing and
-Evidence](TESTING.md) for the executable matrix.
+TESTING's [dependency/result rules](TESTING.md#execute-by-dependency-and-report-every-selected-owner)
+and [hosted contract](TESTING.md#hosted-ci-contract) govern selected gates.
+Required failure, cancellation or blocked dependency fails the gate. Recommendations
+for faster feedback or scheduled diagnostics cannot remove the current router's
+selected checks or a stronger active-task prerequisite. A routing/gate change needs
+its own reviewed policy/code change; ordinary prose edits do not create new lanes.
 
 ## 7. Evidence discipline
 
