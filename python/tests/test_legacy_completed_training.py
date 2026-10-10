@@ -695,3 +695,39 @@ def test_archive_failure_prevents_pending_replacement_or_child_preparation(
         service.start(request)
     assert f.path.read_bytes() == f.raw and not f.blobs.keys(HISTORY_PREFIX)
     assert not list(f.path.parent.glob("*.child.lock")) and service._thread is None
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("previous_remote_failure", {}, "unsupported_historical_remote_recovery_metadata"),
+        ("previous_remote_failure", None, "unsupported_historical_remote_recovery_metadata"),
+        ("remote_retry_permission", True, "historical_completed_fields_invalid"),
+        ("stopped_at_unix_ns", False, "historical_stop_time_invalid"),
+        ("stopped_at_unix_ns", 0, "historical_stop_time_invalid"),
+        ("stopped_at_unix_ns", "100", "historical_stop_time_invalid"),
+        ("stopped_at_unix_ns", float("inf"), "historical_stop_time_invalid"),
+    ],
+)
+def test_closed_top_fields_do_not_weaken_original_history_checks(closed_legacy, field, value, code):
+    f = closed_legacy
+    modified = copy.deepcopy(f.journal)
+    modified[field] = value
+    # Use the pure dictionary gate so the finite-number rule itself is covered.
+    from spireagent.workbench.legacy_completed_training import validate_completed
+
+    with pytest.raises(BoundaryError, match=code):
+        validate_completed(modified, f.owner.identity)
+    assert f.path.read_bytes() == f.raw and not f.blobs.keys(HISTORY_PREFIX)
+
+
+def test_optional_stopped_timestamp_is_preserved_without_normalization(closed_legacy):
+    f = closed_legacy
+    for stamp in (None, 1000):
+        modified = {**f.journal, "stopped_at_unix_ns": stamp}
+        raw = json.dumps(modified, indent=4).encode()
+        assert decode_completed(raw, f.owner.identity) == modified
+    modified = {**f.journal, "created_at_unix_ns": 100, "stopped_at_unix_ns": 99}
+    with pytest.raises(BoundaryError, match="historical_stop_time_invalid"):
+        decode_completed(json_bytes(modified), f.owner.identity)
+    assert f.path.read_bytes() == f.raw

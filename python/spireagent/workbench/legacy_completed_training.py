@@ -27,6 +27,24 @@ MAX_JOURNAL_BYTES = 1024 * 1024
 MAX_ATTEMPTS = 256
 MAX_CONTROL_BYTES = 128 * 1024
 IDS = ("input_id", "run_id", "checkpoint_id", "model_id", "result_id", "evaluation_id")
+COMPLETED_FIELDS = {
+    "_owner",
+    "schema",
+    "status",
+    "stage",
+    "operation_id",
+    "dataset_id",
+    "recipe",
+    "input_profile",
+    "result_type",
+    "evaluation_status",
+    "checkpoint_step",
+    "remote",
+    "created_at_unix_ns",
+    "completed_at_unix_ns",
+    "total_wall_seconds",
+    *IDS,
+}
 ATTEMPT_FIELDS = {
     "attempt_id",
     "request_sha256",
@@ -93,6 +111,14 @@ def _reference(value: dict[str, Any], stem: str, prefix: str, *, optional: bool 
 def validate_completed(value: dict[str, Any], owner: tuple[str, ...]) -> dict[str, Any]:
     """Pure validation, retaining the original dictionary and historical schema."""
     _require(
+        "previous_remote_failure" not in value, "unsupported_historical_remote_recovery_metadata"
+    )
+    _require(
+        set(value) >= COMPLETED_FIELDS
+        and not set(value) - COMPLETED_FIELDS - {"previous_completed", "stopped_at_unix_ns"},
+        "historical_completed_fields_invalid",
+    )
+    _require(
         value.get("schema") == SCHEMA
         and value.get("_owner") == list(owner)
         and value.get("status") == "completed"
@@ -113,6 +139,12 @@ def validate_completed(value: dict[str, Any], owner: tuple[str, ...]) -> dict[st
         and value["completed_at_unix_ns"] >= value["created_at_unix_ns"]
         and _seconds(value.get("total_wall_seconds")),
         "historical_completion_time_invalid",
+    )
+    stopped_at = value.get("stopped_at_unix_ns")
+    _require(
+        stopped_at is None
+        or (_timestamp(stopped_at) and stopped_at >= value["created_at_unix_ns"]),
+        "historical_stop_time_invalid",
     )
     remote = value.get("remote")
     _require(
