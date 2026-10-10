@@ -115,6 +115,14 @@ belong in Governance/TESTING/Workflow rather than a new parallel authority or
 case-specific checklist. Routine prerequisite repair does not reset historical
 failures or authorize another native attempt, training, release or paid job.
 
+The `f0ff0b0a` prerequisite CI preserves another first-fact correction: an OS name
+does not determine a child exit tuple. Test receipts must match the original
+child/PID/close event, while unconfirmed exits and single termination offers keep
+their meaning. Shared UTF-8 fixture readers retain Unicode bytes under an adverse
+locale. Fresh CLI compilation uses the existing setup allowance, with phase
+diagnostics; application/startup deadlines and original pressure limits do not
+increase. The old Windows timeout's exact phase remains unknown.
+
 Root coordinates disjoint topic work based on the dependent exact 5259 candidate,
 reviews original source and full affected diff, owns shared identities and freezes
 one repaired candidate. Preserve all required assertions or explicitly correct an

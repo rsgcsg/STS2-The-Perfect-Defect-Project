@@ -232,6 +232,20 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
   };
   function Environment(base, timeout) { return new sdk.PlayerEnvironmentRestClient(base, timeout, fetchFixture); }
   const deps = { ...sdk, ...runtimeApi, PlayerEnvironmentRestClient: Environment,
+    NdjsonAgentSessionPort: class extends runtimeApi.NdjsonAgentSessionPort {
+      constructor(child, ...args) {
+        seen.teacherLaunches = (seen.teacherLaunches ?? 0) + 1;
+        seen.teacherPid = child.pid;
+        // Observe the original child independently of the collector's receipt.
+        // Runtime/OS combinations need not encode forced exits the same way.
+        seen.rawTeacherClose = new Promise(resolve => child.once("close", (code, signal) =>
+          resolve({ pid: child.pid, code, signal })));
+        seen.teacherKillOffers = [];
+        const kill = child.kill.bind(child);
+        child.kill = signal => { seen.teacherKillOffers.push(signal); return kill(signal); };
+        super(child, ...args);
+      }
+    },
     verifyTerminalSummary: async ({ directory, expected, execution_policy }) => {
       seen.order.push("TerminalProof");
       if (summaryFailure) throw new Error("synthetic_finalized_proof_unavailable");
@@ -323,10 +337,10 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
   assert.ok(final.teacher_exit.pid > 0);
   assert.equal(final.teacher_exit.actual_exit, true);
   assert.equal(final.teacher_exit.owner, "public_NdjsonAgentSessionPort");
-  // The public port owns SIGKILL. Windows reports its forced termination as
-  // exit code 1 without a POSIX signal; preserve that actual close tuple.
-  assert.deepEqual({ code: final.teacher_exit.code, signal: final.teacher_exit.signal },
-    process.platform === "win32" ? { code: 1, signal: null } : { code: null, signal: "SIGKILL" });
+  assert.equal(seen.teacherLaunches, 1);
+  assert.deepEqual(seen.teacherKillOffers, ["SIGKILL"]);
+  assert.deepEqual({ pid: final.teacher_exit.pid, code: final.teacher_exit.code,
+    signal: final.teacher_exit.signal }, await seen.rawTeacherClose);
   if (full) assert.deepEqual(full.teacher_exit, final.teacher_exit);
   const events = (await readFile(path.join(final.direct_evidence.directory, "events.jsonl"), "utf8"))
     .trim().split("\n").filter(Boolean).map(JSON.parse);

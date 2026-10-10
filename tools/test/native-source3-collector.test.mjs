@@ -44,12 +44,10 @@ test("metadata helper timeout observes its original close or records an unconfir
     const root = await mkdtemp(path.join(os.tmpdir(), "source3-helper-lifecycle-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const program = path.join(root, "helper.mjs");
-    for (const { mode, delay, expectedCode, expectedSignal } of [
-      { mode: "observed-code", delay: 0, expectedCode: 7, expectedSignal: null },
-      { mode: "observed-signal", delay: null,
-        expectedCode: process.platform === "win32" ? 1 : null,
-        expectedSignal: process.platform === "win32" ? null : "SIGTERM" },
-      { mode: "unconfirmed", delay: 300, expectedCode: 7, expectedSignal: null },
+    for (const { mode, delay } of [
+      { mode: "observed-code", delay: 0 },
+      { mode: "observed-signal", delay: null },
+      { mode: "unconfirmed", delay: 300 },
     ]) {
       await t.test(mode, async () => {
         await writeFile(program, "process.stdin.resume(); setInterval(() => {}, 1000);\n"
@@ -87,15 +85,16 @@ test("metadata helper timeout observes its original close or records an unconfir
           .then(() => assert.fail("a timed out helper cannot provide a counter proof"), value => value);
         try {
           assert.equal(error.message, mode === "unconfirmed" ? "helper_exit_unconfirmed" : "terminal_summary_helper_timeout");
+          const observed = mode === "unconfirmed" ? { code: null, signal: null } : await exited;
           assert.deepEqual(error.helper_exit, { pid: child.pid,
-            code: mode === "unconfirmed" ? null : expectedCode,
-            signal: mode === "unconfirmed" ? null : expectedSignal,
+            ...observed,
             actual_exit: mode !== "unconfirmed" });
           assert.deepEqual(offers, ["SIGTERM"]);
           assert.equal(launches, 1);
         } finally {
           // The delayed fixture exits by its own timer; no test SIGKILL or second offer.
-          assert.deepEqual(await exited, { code: expectedCode, signal: expectedSignal });
+          const actual = await exited;
+          if (delay !== null) assert.deepEqual(actual, { code: 7, signal: null });
         }
       });
     }

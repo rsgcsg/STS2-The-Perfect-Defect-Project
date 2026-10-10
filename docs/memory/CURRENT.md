@@ -50,6 +50,13 @@ and [task index](../plans/BASELINE_TASKS.zh-CN.md) retain the wider requirements
   CI38029273439 failed Windows S0, Python typing, Evidence and Runtime, so portable
   failed. Windows pytest never started. Current prerequisite repairs need fresh
   review/gates; the real test remains unstarted. Rc36/rc37 were **built**, not loaded.
+- Candidate `f0ff0b0a`: local full/exact/Host 692 and Linux passed;
+  CI38034416328 failed Windows exit-tuple assumptions, UTF-8 fixture loading
+  (12 collection errors) and the CLI whole-test five-second cap. Test-only
+  repairs bind actual child close events, make shared readers explicitly UTF-8
+  and separate fresh compilation from the application clock. Fresh review/gates
+  remain required; no native attempt or new installation occurred.
+  Rc36/rc37 remain built-only.
   Actual installation remains
   rc34, DLL SHA prefix7c817a88, MVID9c4b89a5. Installed Runtime26/Evidence27 and
   lock46eb8386 remain separate pins. Re-resolve full identities before native work.

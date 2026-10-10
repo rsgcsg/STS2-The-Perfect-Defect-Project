@@ -65,6 +65,11 @@ state. Repair an observed cause, then repeat affected checks for the changed
 source; do not hide the failure by normalizing protocol bytes, raising deadlines,
 reducing pressure/coverage, skipping cases or retrying an unknown native mutation.
 Process startup readiness and a request deadline are different observations.
+An OS name or a termination offer does not establish an exit tuple: compare the
+receipt with an independent observation of the original child/PID/close event;
+an unconfirmed exit stays unconfirmed. Text fixtures and source readers use their
+declared encoding explicitly, and shared readers are exercised with non-ASCII
+content before broad tests rather than relying on the developer's locale.
 
 Distinguish the test runner's whole-fixture timeout from a product deadline or
 performance promise. Startup, durable fixture writes and independent final

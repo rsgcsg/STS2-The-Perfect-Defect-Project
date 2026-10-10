@@ -35,10 +35,11 @@ from stpd.policy.native_public_teacher import NativePublicTeacher
 REPO = Path(__file__).resolve().parents[2]
 NORM = json.loads(
     (REPO / "components/policy-runtime/contracts/fixtures/owned-current-known-stale-v1.json")
-    .read_text()
+    .read_text(encoding="utf-8")
 )
 WIRE = json.loads(
-    (REPO / "components/connector/contracts/fixtures/native-logical-v1.json").read_text()
+    (REPO / "components/connector/contracts/fixtures/native-logical-v1.json")
+    .read_text(encoding="utf-8")
 )["wire_samples"]
 
 
@@ -335,9 +336,10 @@ class TeacherAgentTests(unittest.TestCase):
             module.NativeTeacherAgent(self.path)
             helper = closure / "stpd/fullrun/native_structured_inputs.py"
             helper.write_text(
-                helper.read_text().replace(
+                helper.read_text(encoding="utf-8").replace(
                     '"includes_hidden_information"', '"changed_privacy_field"'
-                )
+                ),
+                encoding="utf-8",
             )
             with self.assertRaisesRegex(BoundaryError, "real_code_artifact_manifest_binding"):
                 module.NativeTeacherAgent(self.path)
@@ -726,7 +728,9 @@ class PureOperationalContractTests(unittest.TestCase):
     def test_sampled_package_spec_builder_requires_explicit_policy_and_sampled_view(self):
         from stpd.native_graph_spec import optional_control
         from stpd.ordered_source_spec import DEFAULT_VIEW, SAMPLED_VIEW
-        tree = ast.parse((REPO / "python/stpd/policy/native_structured_export.py").read_text())
+        tree = ast.parse(
+            (REPO / "python/stpd/policy/native_structured_export.py").read_text(encoding="utf-8")
+        )
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                         and n.name == "ordered_native_agent_spec")
         namespace = {
@@ -750,7 +754,7 @@ class PureOperationalContractTests(unittest.TestCase):
         # Compile the actual production parser method only. The wrapper module
         # imports Torch; neither a fake numerical module nor model constructor is used.
         path = REPO / "python/stpd/policy/native_agent.py"
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
                    and n.name == "NativeStructuredAgent")
         method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)

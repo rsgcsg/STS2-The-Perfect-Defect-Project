@@ -43,7 +43,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT.parent / "components/connector/contracts/fixtures/native-logical-v1.json"
-WIRE = json.loads(FIXTURES.read_text())
+WIRE = json.loads(FIXTURES.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
