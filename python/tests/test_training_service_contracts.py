@@ -290,8 +290,15 @@ if ALLOW_ADVANCE:
 def cancellation_diagnostic(service, owner, operation, phases):
     path = owner.path.parent / ("fixture-checkpoint-" + operation["attempt_id"] + ".jsonl")
     records = [json.loads(line) for line in path.read_bytes().splitlines()] if path.exists() else []
-    return json.dumps({"operation": operation, "parent": phases, "child": records,
-                       "failure": service._failure_diagnostic}, sort_keys=True)
+    raw = json_bytes({"operation": operation, "parent": phases, "child": records,
+                      "failure": service._failure_diagnostic})
+    assert len(raw) <= 65536, "bounded fixture cancellation diagnostic required"
+    destination = owner.path.parent / (
+        "fixture-cancel-diagnostic-" + operation["attempt_id"] + ".json")
+    with destination.open("xb") as stream:
+        stream.write(raw)
+    print("fixture_cancel_diagnostic=" + str(destination))
+    return raw.decode("utf-8")
 
 
 def test_unknown_attempt_requires_reconcile_no_automatic_retry(tmp_path, monkeypatch):
