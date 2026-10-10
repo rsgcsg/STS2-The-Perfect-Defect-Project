@@ -439,35 +439,75 @@ new fit, Human or overall G2/V1 qualification follows. Mechanical natural-summar
 completion passed; strategy failed in this recorded attempt. Natural early death
 does not satisfy the user's basic reasonable-gameplay/whole-game-ability goal.
 
-PR171 now publishes topic `6529d48a`; fresh
-CI[38087991428](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38087991428)
-was in progress when read, not green. Older failed runs/local incidents remain in
-their original scope. One600s S01 d6 owner-receipt refresh completed exit0 after
-216.3546s/RSS951418880: current receipt prefix `43b5fa4e…`, original `ed188…` and
-current compatibility `181c…` remain separate. This verifies existing lineage/use,
-not new training or use. Actual common preview at source `1e834617` completed with
-Root executor exit0: the alias subset accepted2/excluded0 in1.5849s; the shared
-40-TRAIN cohort accepted40/excluded0 in3.6816s, macOS RSS629096448 and rendered
-A62154/B295031 bytes. These are preview/projection costs, not token compilation or
-training budgets. No frozen/published paired Source, new training use, Input/Run/
-Model publication, fit or tokens have occurred at this checkpoint. The later
-fresh dba preview is preparation for the actual data experiment, not a future result.
-The official repository gate passed after scoped owned-process diagnosis/repair;
-original kill EPERM remains preserved and its exact cause is unproved.
+PR171 published topic `6529d48a` for
+CI[38087991428](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38087991428).
+All four OS/portable leaves subsequently failed; no green receipt follows. Reviewed
+source repairs `3988f52f`/`8d233dca` were integrated at `0db3f2b5`: the default Evidence
+pin now matches the formal SDK while historical Teacher identities remain exact,
+and installed protocol capability checking stays model-neutral. Root's targeted
+integration checks passed in7.59s; fresh hosted CI remains pending. Older failed
+runs/local incidents remain in their original scope. The official repository gate
+passed after scoped owned-process diagnosis/repair; original kill EPERM remains
+preserved and its exact cause is unproved.
+
+### Paired Reward: published Source and measured tokens, no new fit
+
+One600s S01 d6 owner-receipt refresh completed exit0 after216.3546s/RSS951418880:
+current receipt prefix `43b5fa4e…`, original `ed188…` and current compatibility `181c…`
+remain separate. This verifies existing lineage, not new training/use. Actual common
+preview at source `1e834617` completed with Root executor exit0: alias subset
+accepted2/excluded0 in1.5849s; shared40-TRAIN cohort accepted40/excluded0 in3.6816s,
+macOS RSS629096448 and rendered A62154/B295031 bytes. These original preview costs
+remain projection receipts.
+
+The later actual frozen `dba239970eac8b8142c452de7991e36c93e8323c` common-owner gate
+published/reserved Source `626cec7af5b2b1601603dbb0e4d45e748de818caab2e6d388c3008b423599088`
+with source bytes digest prefix `527c8db0…` and logical projection `693c48a5…`.
+The publication receipt `source-published.json` records worker release,13.4697s and
+macOS RSS649609216; this is actual Source publication/reservation. Its companion
+`tokens-measured.json` measures the same40 unique TRAIN occurrences, excluded0:
+A max660/total13869 state tokens; B max2957/total72173; both max453/total32452 action
+bytes. Actual shared vocabulary1962 and tokenizer digest `28088c08…`/67341 bytes
+are recorded. Token compilation took3.9385s/macOS RSS634667008 and left its observed
+journal unchanged. The paired900s/1GiB binding is training wall/scratch, not a measured
+fit duration or RSS limit. No NN allocation/forward/update, new use/fit, Input/Run/
+Model publication or held-out/native strategy result follows. Detailed originals are
+private under the current-round `paired-reward` receipt route.
+
+First-fit preflight encountered the historical completed-v4 S01 slot, operation
+`1d484…`. Read-only metadata verification retained its70379 bytes and digest
+`59d7dfda0ba64b9eba5f1b310fab6e3492f701b4100a7ddfd657e96b26578458`,26 historical
+attempts, unchanged journal and no archive/owner mutation. The reviewed source
+bridge `8d7a377b`, integrated at `45be1b73`, permits an explicit common-owner successor
+only after immutable preservation of the exact completed history. Root integration
+tests passed. This is source/test acceptance: the genuine old slot remains unchanged,
+no archive/transition or new training start has occurred, and its old remote history
+is not relabelled as the new local fit.
+
+### Optional M0 card-reward Agent: source accepted, comparison unlaunched
+
+The explicit optional stateless Agent program `a59981eb` atop `4d629135` is independently
+reviewed and integrated at `1e58fc17`; Root's related201 tests passed. It preserves the
+original NN scores, full legal C/order/digest and all baseline/task behavior; when the
+current ordinary card reward has an unambiguous selectable card, only final selection
+chooses the NN-highest eligible card. Other decisions retain original argmax. The
+malformed/unsettled visible-card boundary rejects before optional selection. This is
+a declared optional strategy experiment, not a changed model, new legality engine or
+proof that deck input caused the old loop. The private same-seed bounded Auto packet
+prefix `7da…` is independently accepted but unlaunched: no reward exit, actual progress
+or quality improvement has yet been observed.
 
 Next is evidence-led strategy/input evaluation for the original partial M2 and the
-prior M0 loop, with distinct future attempts and proper cohort/cost preflight. The
-small restored-model path is mechanically usable but is not a basic-strategy pass.
-Preserve original identity/history; no automatic unknown retry. In parallel, finish
-accepted-current compatible native registration/game preflight and Paired Reward
-Source/token/cost preflight. Candidate artifact publication/export may precede actual
-current-environment parity; accepted registration/gameplay use follows that proof,
-not merely publication. Real cohort work follows its source/use acceptance. Obtain
-fresh selected CI for one coherent
-reviewed source batch. Preserve source/generated output under each consumer and
-never automatically retry unknown delivery. Faithful restoration and10k meaningful
-data, full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons
-and user approval remain required. Each stage keeps its exact evidence level.
+prior M0 loop, preserving original identity/history and using separate future attempts.
+Natural early loss remains a strategy failure; source/data acceptance does not satisfy
+basic ability. Apply the explicit historical bridge through its common owner before
+any paired use/fit, with measured cohort/cost limits and original history intact.
+Preflight compatible derived native registration/game use after accepted parity, and
+evaluate the optional M0 Agent in the separate same-seed Auto after coherent source/
+SDK/Runtime/profile freeze. Obtain fresh selected CI for the reviewed source batch.
+No automatic unknown retry. Faithful restoration and10k meaningful data, full SC/SX/
+product scope,30 attempts, recovery/performance, quality comparisons and user approval
+remain required. Each stage keeps its exact evidence level.
 
 ## Historical baseline and authority
 

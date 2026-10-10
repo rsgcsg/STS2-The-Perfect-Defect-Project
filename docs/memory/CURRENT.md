@@ -44,15 +44,20 @@ Port4/Task and parity gates are recorded in the packet. Current Runtime installa
 and unchanged Mod bytes support original partial M2's restored canary and Auto path.
 Auto reached a natural loss summary mechanically, but chose End Turn throughout
 combat with play candidates offered: strategy failed this attempt and basic ability
-is unmet. No live W witness or full G2/V1 pass follows; fresh CI is still running.
+is unmet. No live W witness or full G2/V1 pass follows. All four leaves of the
+recorded CI attempt failed; reviewed source repairs await fresh CI.
 
 The old native learned package now correctly rejects the changed formal lock.
 Its original package/load evidence remains valid in the original environment.
 Explicit compatible-package reconciliation, a distinct derived export and old/current
 locked numerical parity are complete; original package/history remain unchanged.
-Current derived registration/game use is still pending. Paired Reward has measured
-actual TRAIN previews, but no frozen/published Source, token compilation, use/fit
-or online feature. Later official repository checks passed; the original
+Current derived registration/game use is still pending. Paired Reward Source is
+published/reserved, and the same40-TRAIN cohort has measured token budgets. No new
+use/fit or Input/Run/Model publication occurred. First-fit preflight found a closed
+legacy completed-v4 slot; its reviewed history bridge is integrated, but the genuine
+old slot remains unchanged and no new fit has started. The optional M0 card-reward
+Agent program is source/test accepted; its same-seed Auto is prepared and unlaunched.
+Later official repository checks passed; the original
 process-cancellation failure and unproved cause remain preserved. Keep original
 history and strict validation intact.
 
@@ -65,10 +70,11 @@ Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
 retried automatically and every new canary has a distinct explicit identity.
 
 Preflight actual registration/game use of the compatible derived package; export/
-parity are not strategy qualification. Complete common publication/token/cost
-preflight for the measured paired cohort before any real fit; preview is not Source
-publication or training. Revalidate owning
-gates and fresh full dual-OS/portable CI; source, data, runtime and quality remain
+parity are not strategy qualification. Apply the reviewed explicit legacy-history
+transition through the common owner before any new paired use/fit; published Source
+and token measurements are not training. Evaluate the optional M0 program in its
+separate same-seed bounded Auto after source freeze. Revalidate owning gates and
+fresh full dual-OS/portable CI; source, data, runtime and quality remain
 separate and only the user approves complete G2/V1.
 
 ## Remaining Platform non-claims

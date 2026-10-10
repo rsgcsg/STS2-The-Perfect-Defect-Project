@@ -18,8 +18,12 @@ Public M2 now has an independently accepted mechanical Auto path to natural loss
 summary, with strategy failed in that attempt and basic reasonable-gameplay unmet.
 Detailed identities/choices and old tuple/lock limits remain in the packet. Explicit
 compatible export/current-lock numerical parity are accepted; registration/game use
-is pending. Actual TRAIN previews are measured, with paired Source/token/use/fit
-still unperformed; source/preview acceptance is not qualification. Fresh CI is running, not green.
+is pending. Paired Source publication/reservation and40-TRAIN token measurements
+are complete; new use/fit is unstarted after a legacy completed-slot preflight block.
+The reviewed history bridge is integrated without changing that original slot.
+Optional M0 card-reward Agent source/tests are accepted, with same-seed Auto prepared
+and unlaunched. The recorded CI attempt failed all four leaves; reviewed source
+repairs await fresh CI. These source/data receipts are not strategy qualification.
 No Human/scientific, basic-strategy or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
 
