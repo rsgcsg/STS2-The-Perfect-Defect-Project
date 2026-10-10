@@ -84,8 +84,8 @@ native joins and adds explicit bounded Await for a pending public owner/focus.
 A Return delivery does not prove owner arrival. If Inspect still exposes only
 Return while closing, the Agent Awaits; it never repeats that action to pad N.
 A native map with explicit public `traveling=true` also Awaits even when its
-complete catalog retains information actions. Missing route actions without that
-progress fact remain fail-closed. Unsupported public owners close with an honest reason.
+complete catalog retains information actions. An exact public enabled map with an empty route list may also trigger the
+Teacher waiting policy described below; missing or malformed facts remain fail-closed. Unsupported public owners close with an honest reason.
 
 Each Next obtains complete fresh Current and complete ordered C through Runtime
 and the public SDK. Attachment is scoped with empty eager event fields and the
@@ -166,3 +166,30 @@ progress remains fail-closed. No clock, delivery, guessed effect or fabricated
 native readiness is used. Agent versions 1.3.0/1.4.0 declare this timing change;
 InputSpec and the learned Agent remain unchanged. Historical producer relations
 remain frozen and do not qualify these new code bytes for training.
+
+## Enabled map with no current route (Teacher 1.0.9 / owned-stale 1.0.10)
+
+A complete `native_map` / `native_information_page` with exact map-navigation
+schema and surface may remain interactive through independent information leaves
+while no route is currently offered. With `travel_enabled=true`, `traveling=false`,
+`drawing_mode=none` and `next_options=[]`, this Teacher explicitly chooses Await.
+That is a bounded strategy decision to seek another public input, not an assertion
+of native progress, future readiness, effect completion or legality. Runtime's
+unchanged deadline/policy-call budget bounds the wait. Nonempty route lists still
+need exact visible public bindings; disabled, absent, malformed, annotation or
+other-owner inputs do not become a waiting fallback. Agent1.5.0/1.6.0 declares
+this policy; the shared learned-Agent timing and InputSpec remain unchanged.
+
+This is the reviewed correction to repeated confusion between a globally usable
+input and a strategy's next desired operation. Existing complete public fields
+suffice, so no new environment readiness authority or native contract is added.
+
+The same new Agent pair declares a250ms minimum interval from a successfully
+flushed Act reply to its next fresh Current acquisition. This process-local
+monotonic cadence reduces speculative sampling pressure; it does not prove an
+effect settled or a child is ready. There is no delay between an acquired basis
+and its Act. First Current is unpaced, elapsed intervals add no delay, and no
+consumption/Teacher state advances while pacing. Runtime still owns deadline,
+Stop and unknown fencing; a paced child remains terminable by its public port.
+All subsequent Current/catalog/ACK/native checks and8/3 refusal limits remain.
+This is a prospective timing experiment, not a claim of reduced stale results.

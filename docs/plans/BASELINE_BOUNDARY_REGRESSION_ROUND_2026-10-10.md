@@ -246,3 +246,27 @@ version-pair binding change: verify unchanged Mod/SDK/Runtime/Host inputs and re
 prior evidence; no unrelated rebuild or reinstall. Remote CI remains separate
 source/test evidence and governs merge. Changed Teacher versions and code closure
 require their own append-only producer relation before research admission.
+
+The distinct edf79d7a attempt then reached39 known deliveries/46 submissions/seven
+known stale rejections. Reward settling -> ready -> original Select succeeded.
+It stopped at an exact complete native_map with travel_enabled=true, traveling=false,
+drawing_mode=none and next_options=[], plus16 independent information/Back leaves.
+Review retained the native contract: its complete empty-map composition already
+permits this state. The Teacher may explicitly Await another offer under those
+exact public conditions; this strategy asserts neither progress nor eventual
+readiness. Disabled/missing/malformed/annotation/nonempty-unbound inputs still
+close. Keep shared student timing unchanged and version the Teacher/adapter pair.
+Original Runtime released/stopped/no pending/no taint, Host/CLI0/unforced and
+Teacher SIGKILL remain separate original facts. Audit all seven stale results
+before deciding whether any further timing or budget change is justified.
+
+The read-only stale audit found meaningful public HP/energy/block/discard/orb or
+owner changes across every one of the13 refusals in the two attempts. The actual
+rejecting frame is not retained, so the precise predicate remains inferred.
+Keep whole-basis native revalidation and8/3 limits. The next Teacher's declared
+250ms Act-flush-to-new-Current cadence tests whether less speculative acquisition
+reduces this churn. Never delay an already acquired action basis. First query is
+unpaced; elapsed intervals add no delay; clocks establish no native settlement.
+A controlled-clock actual Python child plus the public Runtime port checks Stop
+while the child is in its pacing sleep. Current/ACK, stale and UNKNOWN seams
+remain real; the stopped-child clock is synthetic and proves no game timing.

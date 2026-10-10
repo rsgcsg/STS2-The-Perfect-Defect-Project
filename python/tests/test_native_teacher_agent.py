@@ -189,6 +189,37 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertIn(b"UnicodeDecodeError", invalid.stderr)
         self.assertEqual(len(invalid.stdout.splitlines()), 1)
 
+    def test_declared_cadence_delays_new_acquisition_not_an_existing_basis(self):
+        with patch.object(module.time, "monotonic", return_value=10.0), \
+                patch.object(module.time, "sleep") as sleep:
+            self.agent.pace_current_query()
+            sleep.assert_not_called()
+            result = self.consume(current(1))
+            self.assertEqual(result["directive"]["type"], "act")
+            self.agent.note_act_emitted()
+            sleep.assert_not_called()  # Capture/ACK -> Act is never delayed.
+        before = (self.agent.state_version, self.agent.consumption_id,
+                  self.agent.acquisition_id, self.agent.teacher.state())
+        with patch.object(module.time, "monotonic", return_value=10.1), \
+                patch.object(module.time, "sleep") as sleep:
+            self.agent.pace_current_query()
+            self.assertAlmostEqual(sleep.call_args.args[0], 0.15)
+            self.agent.pace_current_query()  # One cadence per emitted Act.
+            self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(before, (self.agent.state_version, self.agent.consumption_id,
+                                 self.agent.acquisition_id, self.agent.teacher.state()))
+        self.assertEqual(module.AGENT_SPEC["acquisition_cadence"]["minimum_interval_ms"], 250)
+        self.assertFalse(module.AGENT_SPEC["acquisition_cadence"]["proves_native_settlement"])
+
+    def test_elapsed_act_interval_does_not_add_another_delay(self):
+        with patch.object(module.time, "monotonic", return_value=10.0):
+            self.consume(current(1))
+            self.agent.note_act_emitted()
+        with patch.object(module.time, "monotonic", return_value=11.0), \
+                patch.object(module.time, "sleep") as sleep:
+            self.agent.pace_current_query()
+            sleep.assert_not_called()
+
     def consume(self, value):
         before = next_input(self.agent)
         self.agent.begin_next(before)
@@ -291,6 +322,31 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertEqual(result["directive"]["selection"]["action_id"], "select")
         self.assertEqual(result["directive"]["basis_acquisition_id"], "acquisition-2")
         self.assertEqual(self.agent.teacher.decisions, 1)
+
+    def test_enabled_empty_map_Await_and_new_route_keep_exact_ACK_basis(self):
+        self.agent.teacher.browse = False
+        surface = {"kind": "map_navigation", "travel_enabled": True, "traveling": False,
+                   "drawing_mode": "none", "next_options": []}
+        pending = current(1, "native_map", [action("back", "return_native_map")], surface)
+        pending["value"]["observation"]["interaction"].update(
+            stage="native_information_page",
+            content_schema="sts2.player-environment/surface/map_navigation-1",
+        )
+        result = self.consume(pending)
+        self.assertEqual(result["directive"]["type"], "await")
+        self.assertEqual(self.agent.teacher.decisions, 0)
+        self.assertEqual(result["consumption_id"], self.agent.consumption_id)
+        ready = current(2, "native_map", [action("travel", "activate", "monster")],
+                        {**surface, "next_options": [
+                            {"entity_id": "monster", "point_type": "monster"}]},
+                        refs=[("monster", "map_point")])
+        ready["value"]["observation"]["interaction"].update(
+            stage="native_information_page",
+            content_schema="sts2.player-environment/surface/map_navigation-1",
+        )
+        result = self.consume(ready)
+        self.assertEqual(result["directive"]["selection"]["action_id"], "travel")
+        self.assertEqual(result["directive"]["basis_acquisition_id"], "acquisition-2")
 
     def test_empty_current_is_readiness_only_and_unsupported_is_honest_Close(self):
         original = next_input(self.agent)
@@ -411,10 +467,10 @@ class OwnedStaleTeacherTests(TeacherAgentTests):
         legacy = module.descriptor()
         proposed = module.descriptor(execution_policy=self.policy)
         self.assertEqual(legacy["agent_spec"], module.AGENT_SPEC)
-        self.assertEqual(legacy["adapter"]["version"], "1.3.0")
+        self.assertEqual(legacy["adapter"]["version"], "1.5.0")
         self.assertNotIn("execution_policy", legacy["agent_spec"])
-        self.assertEqual(proposed["agent_spec"]["teacher"]["version"], "1.0.8")
-        self.assertEqual(proposed["adapter"]["version"], "1.4.0")
+        self.assertEqual(proposed["agent_spec"]["teacher"]["version"], "1.0.10")
+        self.assertEqual(proposed["adapter"]["version"], "1.6.0")
         self.assertEqual(proposed["input_spec_body"], legacy["input_spec_body"])
         missing = next_input(self.agent)
         del missing["operational_outcome"]

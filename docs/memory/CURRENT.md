@@ -62,14 +62,20 @@ Full G2/V1 is unapproved; only the user approves it. See the
   The Source-off native attempt reached38 known deliveries/44 submissions/six stale
   rejections, then Teacher Close. Controller released and Host exited normally.
   Reward cards were public, but page stage was settling with no selectable cards;
-  global interactive reflected remaining information/Skip leaves. Teacher readiness
-  repair is underway. CI38055431750 runs independently; its outcome is not inferred.
+  global interactive reflected remaining information/Skip leaves. Teacher reward readiness
+  repair edf79d7a reached39/46/seven stale in its distinct fresh attempt; reward
+  Wait/Select passed, then enabled map with no current routes closed. Cleanup
+  confirmed; Teacher child SIGKILL is distinct from normal Host exit. The next
+  Teacher policy Awaits that exact empty enabled map without asserting progress.
+  CI38055431750 targets0ed independently; its outcome is not inferred.
 
 ## Next actions and main-line blocker
 
-Verify the Teacher's explicit reward-page Await with negative and ACK-bound
-regressions, review source and unchanged installed dependencies, then exercise a
-fresh immutable native attempt. Full hosted evidence still governs integration.
+Verify the Teacher's enabled-empty-map Await with negative and ACK-bound
+regressions and declared250ms Act-to-fresh-Current cadence. Original13 stale
+refusals show meaningful public state changes; no weakened native validation or
+8/3 cap change. Verify paced-child Stop, review source/unchanged installed
+dependencies, then exercise a fresh immutable native attempt. Full hosted evidence still governs integration.
 
 Current Teacher differs from frozen producer1.0.6. Source-off bypasses that data
 admission gate, not native bindings. The next learning dependency is an append-only

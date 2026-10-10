@@ -459,7 +459,7 @@ def test_shared_timing_versions_only_agent_navigation_not_input_or_original_task
         "d31163fbfe29bfec0be0c8c92ae5b13e4266fbe8915ff4c1762686e8cf7a6eb4")
     student = sampled_agent_spec(NativeGraphControl())
     assert student["version"] == "1.1.0"
-    assert AGENT_SPEC["version"] == "1.3.0"
+    assert AGENT_SPEC["version"] == "1.5.0"
     assert student["timing_policy"] == AGENT_SPEC["timing_policy"] == (
         public_map_travel_timing_spec())
     old, timed = ready_summary_task_spec(), map_timed_ready_summary_task_spec()
@@ -474,4 +474,47 @@ def test_disabled_map_routes_without_explicit_travel_fact_are_not_blind_pending(
     view = observation(
         actions, surface={"kind": "map_navigation", "travel_enabled": False, "next_options": []}
     )
+    assert NativePublicTeacher(browse=False).decide(view, actions).directive == "close"
+
+
+
+def test_enabled_map_with_empty_routes_chooses_bounded_wait_then_original_route():
+    actions = [action("info", "open_run_deck"), action("back", "return_native_map")]
+    surface = {"kind": "map_navigation", "travel_enabled": True, "traveling": False,
+               "drawing_mode": "none", "next_options": []}
+    view = observation(actions, "native_map", "native_information_page", surface,
+                       schema="sts2.player-environment/surface/map_navigation-1")
+    original = copy.deepcopy((view, actions))
+    teacher = NativePublicTeacher(browse=False)
+    prior = teacher.state()
+    choice = teacher.decide(view, actions)
+    assert choice.directive == "await" and choice.reason == "await_public_map_route"
+    assert choice.action_id is None and teacher.state() == prior
+    assert (view, actions) == original
+    # Catalog emptiness is an Agent waiting policy, never a manufactured route.
+    actions = [action("route", "activate", "monster"), *actions]
+    surface["next_options"] = [{"entity_id": "monster", "point_type": "monster"}]
+    view = observation(actions, "native_map", "native_information_page", surface,
+                       [("monster", "map_point")],
+                       "sts2.player-environment/surface/map_navigation-1")
+    assert teacher.decide(view, actions).action_id == "route"
+
+
+@pytest.mark.parametrize("change", ["disabled", "annotation", "schema", "stage", "missing"])
+def test_map_route_wait_requires_exact_public_enabled_empty_map(change):
+    actions = [action("info", "open_run_deck")]
+    surface = {"kind": "map_navigation", "travel_enabled": True, "traveling": False,
+               "drawing_mode": "none", "next_options": []}
+    view = observation(actions, "native_map", "native_information_page", surface,
+                       schema="sts2.player-environment/surface/map_navigation-1")
+    if change == "disabled":
+        surface["travel_enabled"] = False
+    elif change == "annotation":
+        surface["drawing_mode"] = "drawing"
+    elif change == "missing":
+        del surface["next_options"]
+    elif change == "schema":
+        view["interaction"]["content_schema"] = "unknown"
+    else:
+        view["interaction"]["stage"] = "unknown"
     assert NativePublicTeacher(browse=False).decide(view, actions).directive == "close"

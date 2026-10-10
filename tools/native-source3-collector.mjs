@@ -372,7 +372,7 @@ function teacherManifest(options, capabilities, deps) {
   if (options.execution_policy) {
     if (!object(descriptor.agent_spec.execution_policy)
         || deps.canonicalJson(descriptor.agent_spec.execution_policy) !== deps.canonicalJson(options.execution_policy)
-        || descriptor.agent_spec.teacher?.version !== "1.0.8" || descriptor.adapter.version !== "1.4.0")
+        || descriptor.agent_spec.teacher?.version !== "1.0.10" || descriptor.adapter.version !== "1.6.0")
       throw new Error("teacher_execution_policy_mismatch");
   } else if (Object.hasOwn(descriptor.agent_spec, "execution_policy"))
     throw new Error("undeclared_teacher_execution_policy");

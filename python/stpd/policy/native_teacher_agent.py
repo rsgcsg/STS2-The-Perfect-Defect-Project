@@ -11,6 +11,7 @@ import copy
 import hashlib
 import io
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, TextIO
@@ -42,9 +43,10 @@ SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ARTIFACT_SCHEMA = "stpd/native-program-teacher-artifact-v1"
 AGENT_ID = "stpd-native-public-program-teacher"
-AGENT_VERSION = "1.3.0"
-OWNED_STALE_AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.5.0"
+OWNED_STALE_AGENT_VERSION = "1.6.0"
 RECHECK_TIMEOUT_MS = 250
+ACT_QUERY_INTERVAL_MS = 250
 MAX_MESSAGE_BYTES = 96 * 1024 * 1024
 CODE_FILES = (
     "spireagent/__init__.py",
@@ -101,11 +103,20 @@ AGENT_SPEC = {
     "model_bindings": [],
     "scores": None,
     "choice": "explicit_public_teacher_original_complete_C_member",
-    "timing": ("explicit_Await_public_map_travel_or_card_reward_settling_"
+    "timing": ("explicit_Await_public_map_travel_or_enabled_empty_route_"
+               "or_card_reward_settling_"
                "or_expected_public_owner_or_focus_pending"),
     "timing_policy": public_map_travel_timing_spec(),
     "task_spec": map_timed_ready_summary_task_spec(),
     "recheck_timeout_ms": RECHECK_TIMEOUT_MS,
+    "acquisition_cadence": {
+        "minimum_interval_ms": ACT_QUERY_INTERVAL_MS,
+        "anchor": "Act_reply_successfully_flushed",
+        "boundary": "before_next_fresh_Current_query_never_after_acquisition",
+        "clock": "process_local_monotonic_no_recovery",
+        "proves_native_settlement": False,
+        "learned": False,
+    },
     "arrival": "fresh_qualified_public_observation_not_delivery_timer_or_Close_proof",
     "unsupported": "Close_with_original_reason",
     "unknown_delivery": "Runtime_handoff_never_resubmit",
@@ -223,6 +234,20 @@ class NativeTeacherAgent:
         self.last_outcome: dict[str, Any] | None = None
         self.pending_outcome: dict[str, Any] | None = None
         self.acknowledged_intention: dict[str, Any] | None = None
+        self._next_query_not_before: float | None = None
+
+    def note_act_emitted(self) -> None:
+        # Only the actual successful wire flush calls this; delivery is unknown here.
+        self._next_query_not_before = time.monotonic() + ACT_QUERY_INTERVAL_MS / 1000
+
+    def pace_current_query(self) -> None:
+        # Scheduling only: neither Teacher state nor an acquired basis is advanced.
+        # Runtime can terminate this process during the bounded sleep on Stop.
+        if self._next_query_not_before is not None:
+            remaining = self._next_query_not_before - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            self._next_query_not_before = None
 
     def begin_next(self, value: dict[str, Any]) -> None:
         value, outcome = checked_next_input(
@@ -445,6 +470,9 @@ def serve(agent: NativeTeacherAgent, source: TextIO, sink: TextIO) -> int:
     def emit(value: dict[str, Any]) -> None:
         sink.write(json_bytes(value).decode())
         sink.flush()
+        if (value.get("message_type") == "directive"
+                and value.get("output", {}).get("directive", {}).get("type") == "act"):
+            agent.note_act_emitted()
 
     emit({"schema": SESSION_SCHEMA, "message_type": "ready", "adapter": agent.manifest["adapter"]})
     session: tuple[str, int] | None = None
@@ -542,6 +570,7 @@ def serve(agent: NativeTeacherAgent, source: TextIO, sink: TextIO) -> int:
         session = context
         agent.begin_next(value["input"])
         pending_next = (common, copy.deepcopy(value["input"]))
+        agent.pace_current_query()
         pending_query = "child-query-" + uuid.uuid4().hex
         emit(
             {

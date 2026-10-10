@@ -1,7 +1,7 @@
 /** Real public SDK + generic Runtime + actual program Agent stdio, synthetic wire only. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -541,4 +541,86 @@ test("missing finalized counter proof does not delay owner cleanup or fabricate 
   assert.equal(final.terminal_summary, null);
   assert.equal(final.counter_proof_error, "synthetic_finalized_proof_unavailable");
   assert.ok(final.cleanup_errors.includes("terminal_counter_proof_unavailable"));
+});
+
+
+test("public port closes an actual Teacher blocked in declared pre-acquisition cadence", { timeout: 15000 }, async t => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "teacher-paced-stop-"));
+  let port, child, closed;
+  t.after(async () => {
+    if (port) port.close(); else child?.kill("SIGKILL");
+    if (closed) await closed;
+    await rm(output, { recursive: true, force: true });
+  });
+  // Reuse the production-shaped Python protocol vector. Only its clock/sleeper
+  // is controlled, so the test stops at the actual pacing boundary without a race.
+  const preparation = spawnSync(python, ["-c", `
+import json,sys
+from pathlib import Path
+from stpd.policy.native_teacher_agent import descriptor,write_artifact,INPUT_SPEC,MAX_MESSAGE_BYTES
+sys.path.insert(0,str(Path.cwd()/"python/tests"))
+from test_native_teacher_agent import current
+p=Path(sys.argv[1]); a=write_artifact(p/"code.json"); d=descriptor()
+m={"schema":"sts2.policy-runtime/agent-manifest-1","artifact":a,"adapter":d["adapter"],
+   "input":{"input_spec":INPUT_SPEC,"history_mode":"sampled_current",
+            "state_recovery":{"mode":"none","max_state_bytes":0,"model_bindings":[]}},
+   "limits":{"max_message_bytes":MAX_MESSAGE_BYTES}}
+(p/"manifest.json").write_text(json.dumps(m),encoding="utf-8")
+print(json.dumps({"manifest":m,"current":current(1)}))
+`, output], { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
+  assert.equal(preparation.status, 0, preparation.stderr);
+  const prepared = JSON.parse(preparation.stdout);
+  const fixedClockChild = String.raw`
+import sys,time
+from pathlib import Path
+from stpd.policy import native_teacher_agent as agent
+sleep=time.sleep
+agent.time.monotonic=lambda: 10.0
+def paced(seconds):
+    sys.stderr.write("PACED\n"); sys.stderr.flush()
+    sleep(60)
+agent.time.sleep=paced
+sys.argv=[sys.argv[0],"--manifest",sys.argv[1]]
+agent.main()
+`;
+  child = spawn(python, ["-c", fixedClockChild, path.join(output, "manifest.json")],
+    { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python"), PYTHONIOENCODING: "utf-8" },
+      stdio: ["pipe", "pipe", "pipe"] });
+  closed = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
+  let stderr = "";
+  const paced = new Promise(resolve => child.stderr.on("data", bytes => {
+    stderr += bytes.toString("utf8"); if (stderr.includes("PACED\n")) resolve();
+  }));
+  const shared = JSON.parse(await readFile(path.join(ROOT,
+    "components/policy-runtime/contracts/fixtures/agent-session-v1.json"), "utf8"));
+  port = new runtimeApi.NdjsonAgentSessionPort(child, prepared.manifest.adapter, shared.manifest.limits);
+  await port.ready();
+  let queries = 0, consumptions = 0;
+  const handlers = {
+    query: async () => { queries++; return prepared.current; },
+    consumed: report => { consumptions++; return {
+      consumption_id: report.consumption_id, acquisition_id: report.acquisition_id,
+      state_version: report.state_version, advanced: report.advanced,
+      prefix: { continuity_token: report.continuity_token, history_mode: "sampled_current",
+        consumption_mode: "once_per_occurrence", consumed_publication_index: null,
+        received_cursor: "cursor-known", omissions: { missing_scopes: [], gap: null, received_unconsumed_count: 0 } },
+    }; },
+  };
+  const context = { session_id: "paced-session", recovery_epoch: 0 };
+  const initial = { continuity_token: "continuity", consumption_id: null, state_version: 0,
+    basis_acquisition_id: null, received_cursor: "cursor-known" };
+  const first = await port.next(context, initial, handlers, new AbortController().signal, () => {});
+  assert.equal(first.directive.type, "act");
+  const next = port.next(context, { ...initial, consumption_id: first.consumption_id,
+    state_version: first.state_version, basis_acquisition_id: first.directive.basis_acquisition_id },
+    handlers, new AbortController().signal, () => {});
+  const rejected = assert.rejects(next, /agent_port_closed|agent_child_closed/u);
+  await paced;
+  assert.equal(queries, 1); assert.equal(consumptions, 1);
+  port.close();
+  await rejected;
+  const exit = await closed;
+  assert.ok(exit.signal !== null || exit.code !== null);
+  assert.notDeepEqual(exit, { code: 0, signal: null });
+  assert.equal(queries, 1); assert.equal(consumptions, 1);
 });

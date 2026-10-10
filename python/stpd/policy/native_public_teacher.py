@@ -15,8 +15,8 @@ from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.policy.native_task import observe_ready_summary, public_map_travel_pending
 
 TEACHER_ID = "native-public-demonstration-v1"
-TEACHER_VERSION = "1.0.7"
-OWNED_STALE_TEACHER_VERSION = "1.0.8"
+TEACHER_VERSION = "1.0.9"
+OWNED_STALE_TEACHER_VERSION = "1.0.10"
 MAX_BROWSE_CHOICES = 12
 RETURNS = {
     "run_deck": "return_native_information",
@@ -157,6 +157,18 @@ class NativePublicTeacher:
         # Shared declared Agent timing; independent information leaves stay in C.
         if public_map_travel_pending(observation):
             return self._await("await_public_map_travel")
+
+        # Choosing to await another offer makes no assertion of native progress.
+        # A complete information map can have no currently deliverable route.
+        if (kind == "native_map" and stage == "native_information_page"
+                and page.get("content_schema")
+                == "sts2.player-environment/surface/map_navigation-1"
+                and surface.get("kind") == "map_navigation"
+                and surface.get("travel_enabled") is True
+                and surface.get("traveling") is False
+                and surface.get("drawing_mode") == "none"
+                and surface.get("next_options") == []):
+            return self._await("await_public_map_route")
 
         def find(verb: str, subject: str | None = None) -> dict[str, Any] | None:
             return next(
