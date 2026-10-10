@@ -8,6 +8,12 @@ permits a justified increase if necessary; baseline39's 5,183-byte CURRENT fits 
 
 ## Current supervisor round, 2026-10-11
 
+This is the sole detailed current-round summary of identities, counts, original
+receipts, failures and limits. CURRENT routes active work; the G2/V1 matrix owns
+retained tasks/acceptance and STATUS is a short dated evidence-level index. They
+link here rather than copy each mutable result. Original machine/runtime records
+remain authoritative; earlier scoped results and Git history are preserved.
+
 The owner now explicitly requests immediate implementation and validation, safe
 parallel work after reconciling repo/refs/PRs/running operations, and convergence
 under existing independent review/integration rules. This is active authorization,
@@ -16,35 +22,84 @@ already superseded by the resumed authorization; original attempts remain immuta
 The [G2/V1 execution packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider
 learning/product endpoint and final user approval.
 
-Latest original native attempt: `fa789104`, run
-`run-6e3e0913-3737-4e79-9e5d-7f2af8e4f6cc`, 60 known deliveries/68 submissions/
-8 known stale (maximum streak1), stopped by `known_stale_rejection_limit`.
-Source3 was off, direct Agent evidence exists, admission was not run and N is
-unknown. Controller release/stopped/no pending/no taint and normal Host/CLI exit
-are recorded; Teacher SIGKILL is a separate fact. These are neither60 Commits nor
-natural summary. The rejecting frame/predicate still needs owning diagnostics.
-Preserve strict whole-basis, 8/3 and immutable unknown history pending an explicit
-reviewed contract change. No automatic retry of unknown delivery is authorized.
-CI[38055431750](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38055431750)
-at `0ed61be1` is completed/failure, not pending or a portability receipt.
+Round authors are `/root/governance_convergence_impl` (E0),
+`/root/native_rejection_diagnostics_impl` (E1/STRICT v2),
+`/root/public_m0_restoration_impl` (E3/E6 public consumers) and
+`/root/native_data_admission_impl` (E2/E4 admission). They use disjoint explicitly
+dependent worktrees; their current packet/base and actual operation state are
+reconciled at the private checkpoint. Root owns shared refs/BOM and native resources;
+author and Root changes receive separate review.
 
-Root's shared candidate advanced from `fa789104` to `1c021bdd` by normal integration
-of independently reviewed test-only `2ce690a`; focused12 passed locally in8.87s.
-That does not establish a Windows fix. New worker bases remain explicitly dependent
-and disjoint. Actual workers `/root/native_rejection_diagnostics_impl`,
-`/root/public_m0_restoration_impl`, `/root/native_data_admission_impl` and
-`/root/governance_convergence_impl` own E1, E3/E6, E2/E4 and E0 respectively.
-Root owns shared refs/BOM and the native slot; author changes require separate review.
-Relevant local prerequisites may enable bounded diagnosis alongside isolated CI,
-with selected full dual-OS/portable still binding for merge/promotion.
+Native/fit source checkpoint is `9c1c14f4`; later source/installer corrections
+below retain separate identities. Root integrates independently reviewed owner
+fixes normally, without merging source/test and actual runtime evidence.
+The lead's existing private checkpoint
+`.local/g2-v1/supervisor-round-2026-10-11/ACTIVE.md` routes original logs, terminal
+records, admission and model manifests; it is not a public artifact or a new ledger.
 
-The owner authorizes one aggregate USD20 GPU envelope for this round. Known round
-spend is0 and no provider job has been submitted at this checkpoint; workers share
-that envelope. The earlier packet's spend0 and the much older d6 M0 original
-metered USD3.34482950 remain separate historical facts; no final bill refresh is
-claimed. A new task, resume or worker does not reset the allowance. Existing scoped
-native preparation remains authorized; production deployment, main/release and
-destructive actions are not expanded.
+| Actual native attempt | Original result and scope |
+| --- | --- |
+| Native1 `d0e671f2`, rc38, `run-1f4ccfbc-2df9-4924-b6f6-9116117f75e5` |62 known/70 submissions/8 stale; all8 diagnostics identify public_facts_changed in binding/interaction/referents. |
+| Native2 `9c1c14f4`, rc39, `run-b8c75627-7643-4ebf-8dc3-2c8e40ffd8f9` |50/58/8; bounded paths additionally show actual displayed-card/membership, discard-count, orb-length/membership and enemy-HP changes. |
+
+Both stop at the unchanged known-stale limit, with released/stopped/no pending/no
+taint and normal Host/CLI exit; Teacher SIGKILL is a separate observation. Source3
+is off; original direct evidence and `admission:not_run` remain immutable. The
+new attempts do not automatically enter training or prove native Commit/effect,
+100 deliveries or natural summary. The earlier60/68/8 report also stays unchanged;
+its later explicit admission is a separate operation below.
+
+Installed rc39 is DLLSHA `63230ad9da9c268199decd554a0542beda892b31e680a77e561e81563a43bdf2`,
+MVID `880bad57-2db7-4a73-9632-8439c3b10502`, compiled source `19bac9ba`,
+build workspace `b82a7b6e`. Exact build and configured native bridge35 passed;
+original missing-environment compile errors are retained. Separate installed,
+loaded and runtime observations qualify only that bounded diagnostic.
+
+Strict whole-basis/exact native validation, stale8/3, max200 submissions and900s
+remain in the original v1 diagnostics. Public changes do not prove an older intent
+remained safe. Root now prefers explicit progress-aware STRICT v2 first; the sole
+Runtime/Evidence writer `/root/native_rejection_diagnostics_impl` implements it on
+`codex/continuous-strict-policy`, dependent base `9c1c14f4`. Intent is DEFER; this
+design choice is not implemented/runtime proof. Native8 UNKNOWN is never resumed/retried. Shared refs/BOM/native slot stay Root-owned;
+independent review applies to authors and Root alike. Relevant local prerequisites
+may enable bounded native work alongside isolated CI; selected full dual-OS/portable
+still governs merge/promotion.
+
+Source `469ba748807a630f23cc2ee58e142d481e4159a5514aafd6141de1e862f2da95`
+was actually published through the existing admission/use owner: three earlier
+38/39/60 segments,137 N,342 context/451 offers,109 readiness exclusions and134
+multi-candidate N. Coverage retains84 distinct projected state/C/chosen combinations
+and53 repeated rows. Typed admission is declared Agent-teacher student re-expression;
+it does not prove native/Human origin, independent games, held-out/Gold, ready summary
+or quality. New62/50 attempts are not silently pooled into this fixed Source.
+
+Actual training operation `47538f4d7313418686dd8e41e3c924bb` originally timed out at
+300.022s; preserve its interrupted/unknown receipt and durable132-update checkpoint.
+The reviewed append-only owner API explicitly amended cumulative wall cap to600s,
+kept the original300s request/scratch limits and charged elapsed time, then resumed
+that checkpoint with a distinct intent. It completed168 updates/cumulative404.100506s,
+Model `8eb1b166fa7960a969f2e36305a4d296fa0a546fa0e99b745ff701d1bc29d389` and export.
+Independent original-manifest/tensor audit matches Source/use/Run/checkpoint/package,
+and confirms final weights differ from the132-update checkpoint. Three epochs/411
+label uses reduced train loss2.8026577→0.4583665 and raised teacher-choice accuracy
+8.759%→91.241% (multi-C91.045%). This is learning-smoke fit, with no dev/test or
+strategy-quality claim. The learned Model has not yet been used in a new game.
+
+CI[38068197693](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38068197693)
+at `d0e671f2` is completed/failure across all four leaves and portable. Linux's
+Teacher-version literal has source correction `f0bee50b`; Windows additionally
+failed an actual Teacher Close fixture. Its top-level Python shards passed1757/
+35 skips and1746/16 skips; `2ce690a` process fixture passed in Windows. Neither
+component result makes the leaf or aggregate green. Windows fixture correction
+`264af6` is independently accepted and normally merged as `06eb7f0`; fresh CI
+is pending and no successful current dual-OS receipt exists. CI38055431750 and earlier
+failures/cancellations retain their exact original scope.
+
+One aggregate USD20 GPU envelope still covers all workers in this round; observed
+spend0/no provider submissions. Actual CPU training consumes no new paid GPU allowance.
+Earlier packet spend0 and historical d6 metered USD3.34482950 stay separate; no
+historical cost or elapsed time is reset. Scoped native preparation continues;
+production deployment, main/release and destructive permissions are not expanded.
 
 ### Useful legacy assets and finite PR entry points
 
@@ -70,10 +125,44 @@ Campaign PR150/157/161/163 are later scoped inputs, not automatic job resumption
 Workshop PR24/25/26/30/45 remain outside this round's publication authority.
 Use these existing PRs as entry points rather than another compatibility registry.
 
-Priority is rejection evidence/owning repair, faithful d6 consumer closure, exact
-original-data admission/coverage and permanent governance convergence in parallel.
-Then use actually accepted data and existing recipe/engine for the authorized learning
-closure. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
+Current d6 old/current parity is verified on one fixed sample. Full current-owner
+export operation `836a2e58a29c475faacba6ad2400ef34` completed with byte-identical
+original model payload and lineage/current-use verification. A wrapper's top-level
+status check returned exit2; the actual nested operation receipt is completed,
+not a reason to re-export/retrain. Current rc27 pin `f44200a6` is now prepared
+and installed through the common owner into private M0 state: archive85c902/content87f512,
+the installer receipt reports not activated/loaded. A distinct real M0 canary at
+`0a07e1cd` then registered selection `local-public-m0-b1354f478e194fa69c4d5ed3866fa75e`
+and completed load in Human mode. Its Shadow operation
+`ade8290a352944d1861f19a54ee6244e` ended `unknown` with
+`native_task_command_unknown`/`model_shadow_unknown`, zero policy calls/submissions
+and null last decision/Receipt. Preserve that original operation; it is not a
+completed gameplay result or a retry of the much older registration UNKNOWN.
+Close left the Model stopped, controller released and loaded=false; Host exited0
+without forced termination. Registration/load are reached levels, not model-action,
+Shadow success, natural-summary or quality evidence.
+
+Source investigation found the current PlatformModelContext producer's extra
+`NativeAgent` JSON field conflicts with the strict Python four-field shape.
+The original raw HTTP reply was not captured, so this source mismatch is a repair
+hypothesis rather than proof of that canary's exact reply. The actual HTTP
+regression/owning fix is in progress. Preserve both unknown operations, verify the
+repair and original disposition, then explicitly launch a distinct new canary;
+never automatically replay the unknown Shadow command. Public M2 `17eb…`
+old/current `e302…`/`31cc…` fixed-sequence parity passed all scores, W, cache and reset,
+including a complete31-candidate catalog and whole32 rejection before W write. Root
+checked raw outputs for exact equality across five named cases;31 is not sequence length.
+Stage1 cache-lock-race correction `b57e4286` is independently accepted and normally
+merged at `0a07e1cd`; integrated288 tests passed in38.03s. Port4 and an actual M2
+game run remain unimplemented/unproved.
+
+Next priorities are the d6 prepare-wire producer/consumer repair and a distinctly
+identified new canary after verification, then actual Shadow/OneStep/Stop/reopen;
+the learned Model's admission/register/load/fresh-game journey, explicit progress-aware
+STRICT v2 implementation/verification with intent DEFER, and fresh CI for reviewed
+fixture fixes. Faithful restoration remains required;
+comparison use does not block ready independent work. The137-N fit/export is now
+complete at its declared small scope; other G2/V1 stages remain open. Preserve 10k meaningful-data and full V1 obligations; delivery100 and small
 fit are engineering feedback, not strategy quality. Outcome measures remain environment
 execution, admitted data, learned use and decision quality separately.
 

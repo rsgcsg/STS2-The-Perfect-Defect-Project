@@ -4,7 +4,23 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
-## G2/V1 candidate, observed 2026-10-09
+## G2/V1 supervisor checkpoint, observed 2026-10-11
+
+The [active boundary packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
+is the sole detailed current-round receipt/identity/count entry, including the
+installed diagnostic candidate and its exact build/load/runtime scope. The
+[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
+obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
+
+Reached levels are bounded native diagnostic/cleanup, declared-teacher data
+admission/use, real small training/recovery/Model/export, and old-consumer parity/
+installation preparation. M0 canary is in progress without an accepted terminal
+registration/model-in-game result. New learned-game use, Port4, fresh successful
+CI aggregate, complete G2/V1, Human and strategy/scientific quality remain unproved.
+Source/test integration and exact installed/runtime observations keep separate scope.
+Historical observations below retain their original identities and limits.
+
+## Earlier G2/V1 candidate, observed 2026-10-09
 
 - [Current specification](BASELINE_V1_SPEC.zh-CN.md) and
   [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): implementation
