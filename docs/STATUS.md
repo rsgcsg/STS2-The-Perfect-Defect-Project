@@ -12,16 +12,19 @@ installed diagnostic candidate and its exact build/load/runtime scope. The
 [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
 obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
 
-Reached levels include bounded M0 restoration/Auto with a supervisor-censored
-reward loop, a learned fresh-choice chain at its original tuple, native diagnostic
-count/cleanup, and current formal SDK/Runtime installation plus Public M2 numerical
-parity and a bounded real one-choice/Stop/reopen canary. The packet distinguishes
-original native identities from changed lock/package provenance. Public M2 autonomous
-whole-game use and native-package migration are pending;
-Compatible source is integrated but actual migration is blocked at publication;
-Paired Reward source is integrated with synthetic/local evidence, no real cohort/fit.
-Latest hosted CI remains failed.
-No natural-game/strategy/Human/scientific or full G2/V1 acceptance is added.
+Reached levels include bounded M0 restoration/loop-censored Auto, the original-tuple
+learned choice, native diagnostic count/cleanup and formal SDK/Runtime installation.
+Public M2 now has an independently accepted mechanical Auto path to natural loss
+summary, with strategy failed in that attempt and basic reasonable-gameplay unmet.
+Detailed identities/choices and old tuple/lock limits remain in the packet. Explicit
+compatible export/current-lock numerical parity are accepted; registration/game use
+is pending. Paired Source publication/reservation and40-TRAIN token measurements
+are complete; new use/fit is unstarted after a legacy completed-slot preflight block.
+The reviewed history bridge is integrated without changing that original slot.
+Optional M0 card-reward Agent source/tests are accepted, with same-seed Auto prepared
+and unlaunched. The recorded CI attempt failed all four leaves; reviewed source
+repairs await fresh CI. These source/data receipts are not strategy qualification.
+No Human/scientific, basic-strategy or full G2/V1 acceptance is added.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09

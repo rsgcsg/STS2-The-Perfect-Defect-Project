@@ -351,11 +351,11 @@ The formal lock upgrade also makes the original strict8eb package correctly reje
 current loading with `package_identity_mismatch`. Its earlier genuine fit/export/
 C13 choice and stop/reopen qualify only the original lock/source/package tuple.
 Original package/weights/history are unchanged. Root verified its actual original
-source and locked environment, tensor/recurrent baseline, but no migrated current
-package or current-lock parity has been accepted. Explicit compatibility migration
-is in progress: retain original Model/package parent and training producer, use a
-new export/runtime identity, and prove the closed Evidence-only dependency change
-plus numerical/input/state parity. Do not silently bypass old strict validation,
+source and locked environment/tensor baseline at that checkpoint; the later current
+compatible package and numerical parity are recorded below. The explicit migration
+contract preserves the original Model/package parent and training producer, uses a
+new export/runtime identity, and requires proof of the closed Evidence-only dependency
+change plus numerical/input/state parity. Do not silently bypass old strict validation,
 rewrite the training lock, fit again for an identity repair or accept arbitrary drift.
 
 The closed compatibility source was independently accepted and normally merged at
@@ -365,17 +365,28 @@ the new derived manifest/export were absent; original8eb/package/history remaine
 unchanged and no automatic retry occurred. This does not prove the derived manifest
 was never published or turn intent into a derived artifact. Diagnosis traced
 `_source()` through `inspect_managed_workspace` to a readonly LocalBlobStore;
-`hasattr(publish)` had not established write capability. The author is repairing the
-owning mutable-publication/managed-workspace seam and explicit original-operation
-reconciliation before another action. Current compatible-package publication and
-current-environment parity remain blocked, despite accepted source/tests.
+`hasattr(publish)` had not established write capability. The owning mutable-
+publication/managed-workspace repair `bbf…` was accepted and normally merged at
+`08feb107`;23 integrated tests passed in1.88s. The later accepted recovery source
+`106…` was normally merged at `dba23997`, with30 integrated tests passing in2.48s.
+Root's explicit sidecar reconciliation receipt `1ee5…` preserves original f665 raw
+journal `42e…` and its unknown/interrupted scope; it does not retroactively complete
+or rewrite that attempt. One new explicit operation `5081…` at current dba/new6a
+completed derived Model `fa524…` and compatible export; original8eb Model/package/
+weights/completed receipt remain unchanged. This was one start, not automatic retry.
+The same numerical script in original46 and current6a locked environments matched
+all43 tensors, three synthetic full-C2 recurrent forwards and memory/reset values;
+independent after-run review accepted that closed numerical/provenance scope.
+No new fit, registration or current fa524 game use is claimed. Candidate artifact
+publication and actual inference parity do not confer strategy/native qualification.
 
 Paired Reward source correction `6df…` is independently accepted and normally
 merged at `134b0a4c`; current-lock integration passed78 tests in52.15s. The current
 locked ordinary synthetic N4/two-arm/two-step pause/resume fixture also passed8.79s;
 the earlier `dcd42982` unlocked fixture and failed/corrected run retain their scopes.
-No real S01 cohort freeze/use/fit, held-out comparison, deployable export or online
-Read adapter is claimed. Root's later local repository gate failed in the existing
+Those source/synthetic receipts did not publish/freeze a real paired Source or fit;
+the subsequent actual TRAIN previews are recorded below. No held-out comparison,
+deployable export or online Read adapter is claimed. Root's later local repository gate failed in the existing
 owned-process cancellation fixture with kill EPERM; bounded diagnosis is pending.
 Unchanged earlier code/pass does not erase this failed local gate or establish a
 game defect. Source/synthetic acceptance is not a real training comparison or full
@@ -405,17 +416,98 @@ is causal S' or execution/effect/Commit proof. Review accepts this bounded origi
 model service/game restoration, not whole-game strategy, natural summary, Human,
 new learning or full G2/V1/current CI qualification.
 
-Next is separately reviewed Public M2 Auto preparation and a bounded autonomous
-attempt; it is private preparation, not yet started or a result. Preserve original
-partial identity and actual ordinal/history. Do not borrow M0 Shadow/reopen as M2
-W evidence. In parallel, finish explicit native8eb compatibility migration and Paired Reward
-proof repairs. Candidate artifact publication/export may precede the actual
-current-environment parity; accepted registration/gameplay use follows that proof,
-not merely publication. Real cohort work follows its own source/use acceptance. Obtain fresh selected CI for one coherent
-reviewed source batch. Preserve source/generated output under each consumer and
-never automatically retry unknown delivery. Faithful restoration and10k meaningful
-data, full SC/SX/product scope,30 attempts, recovery/performance, quality comparisons
-and user approval remain required. Each stage keeps its exact evidence level.
+### Public M2 Auto: mechanical natural loss, failed strategy in this attempt
+
+The distinct Auto run `run-42e58849-a8fb-454e-891e-e887fcef9f6c` executed at frozen
+`6529d48a2e11e053d3ff4993b3acf238825fe0ab`, consumer code prefix `068aee2b…`,
+through Runtime/Evidence rc29 and Mod rc40 with the original partial17eb Model.
+Independent after-run audit accepts exact recorded binding/completion/cleanup:
+56 events,13 public observations/ordinals1–13 in one bounded segment and12 delivered
+attempts. One map choice, ten combat End Turn choices and one game-over Continue
+were delivered. Each combat observation offered five play candidates plus End Turn;
+End Turn was the strict score maximum every time despite changing candidate order,
+and no card was played. This is the actual NN policy choice, not an index-binding
+or scripted fallback claim.
+
+At ordinal13 the ready loss-summary Task predicate alone qualified, returned program
+zero scores/null selection and handed back control; no terminal Model delivery was
+invented. Public outcome was floor1 loss/score10, elapsed65997ms, no censor or exhausted
+budget. Typed content ID prefix `b8382da3…` has no unknown receipts/taint; Stop released
+control, Model stopped/not loaded, and signed Host `209f9d5da2e5402389299b6dbdf58a28`
+shutdown returned HTTP200/exit0 unforced. No live W tensor witness, causal S' proof,
+new fit, Human or overall G2/V1 qualification follows. Mechanical natural-summary
+completion passed; strategy failed in this recorded attempt. Natural early death
+does not satisfy the user's basic reasonable-gameplay/whole-game-ability goal.
+
+PR171 published topic `6529d48a` for
+CI[38087991428](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38087991428).
+All four OS/portable leaves subsequently failed; no green receipt follows. Reviewed
+source repairs `3988f52f`/`8d233dca` were integrated at `0db3f2b5`: the default Evidence
+pin now matches the formal SDK while historical Teacher identities remain exact,
+and installed protocol capability checking stays model-neutral. Root's targeted
+integration checks passed in7.59s; fresh hosted CI remains pending. Older failed
+runs/local incidents remain in their original scope. The official repository gate
+passed after scoped owned-process diagnosis/repair; original kill EPERM remains
+preserved and its exact cause is unproved.
+
+### Paired Reward: published Source and measured tokens, no new fit
+
+One600s S01 d6 owner-receipt refresh completed exit0 after216.3546s/RSS951418880:
+current receipt prefix `43b5fa4e…`, original `ed188…` and current compatibility `181c…`
+remain separate. This verifies existing lineage, not new training/use. Actual common
+preview at source `1e834617` completed with Root executor exit0: alias subset
+accepted2/excluded0 in1.5849s; shared40-TRAIN cohort accepted40/excluded0 in3.6816s,
+macOS RSS629096448 and rendered A62154/B295031 bytes. These original preview costs
+remain projection receipts.
+
+The later actual frozen `dba239970eac8b8142c452de7991e36c93e8323c` common-owner gate
+published/reserved Source `626cec7af5b2b1601603dbb0e4d45e748de818caab2e6d388c3008b423599088`
+with source bytes digest prefix `527c8db0…` and logical projection `693c48a5…`.
+The publication receipt `source-published.json` records worker release,13.4697s and
+macOS RSS649609216; this is actual Source publication/reservation. Its companion
+`tokens-measured.json` measures the same40 unique TRAIN occurrences, excluded0:
+A max660/total13869 state tokens; B max2957/total72173; both max453/total32452 action
+bytes. Actual shared vocabulary1962 and tokenizer digest `28088c08…`/67341 bytes
+are recorded. Token compilation took3.9385s/macOS RSS634667008 and left its observed
+journal unchanged. The paired900s/1GiB binding is training wall/scratch, not a measured
+fit duration or RSS limit. No NN allocation/forward/update, new use/fit, Input/Run/
+Model publication or held-out/native strategy result follows. Detailed originals are
+private under the current-round `paired-reward` receipt route.
+
+First-fit preflight encountered the historical completed-v4 S01 slot, operation
+`1d484…`. Read-only metadata verification retained its70379 bytes and digest
+`59d7dfda0ba64b9eba5f1b310fab6e3492f701b4100a7ddfd657e96b26578458`,26 historical
+attempts, unchanged journal and no archive/owner mutation. The reviewed source
+bridge `8d7a377b`, integrated at `45be1b73`, permits an explicit common-owner successor
+only after immutable preservation of the exact completed history. Root integration
+tests passed. This is source/test acceptance: the genuine old slot remains unchanged,
+no archive/transition or new training start has occurred, and its old remote history
+is not relabelled as the new local fit.
+
+### Optional M0 card-reward Agent: source accepted, comparison unlaunched
+
+The explicit optional stateless Agent program `a59981eb` atop `4d629135` is independently
+reviewed and integrated at `1e58fc17`; Root's related201 tests passed. It preserves the
+original NN scores, full legal C/order/digest and all baseline/task behavior; when the
+current ordinary card reward has an unambiguous selectable card, only final selection
+chooses the NN-highest eligible card. Other decisions retain original argmax. The
+malformed/unsettled visible-card boundary rejects before optional selection. This is
+a declared optional strategy experiment, not a changed model, new legality engine or
+proof that deck input caused the old loop. The private same-seed bounded Auto packet
+prefix `7da…` is independently accepted but unlaunched: no reward exit, actual progress
+or quality improvement has yet been observed.
+
+Next is evidence-led strategy/input evaluation for the original partial M2 and the
+prior M0 loop, preserving original identity/history and using separate future attempts.
+Natural early loss remains a strategy failure; source/data acceptance does not satisfy
+basic ability. Apply the explicit historical bridge through its common owner before
+any paired use/fit, with measured cohort/cost limits and original history intact.
+Preflight compatible derived native registration/game use after accepted parity, and
+evaluate the optional M0 Agent in the separate same-seed Auto after coherent source/
+SDK/Runtime/profile freeze. Obtain fresh selected CI for the reviewed source batch.
+No automatic unknown retry. Faithful restoration and10k meaningful data, full SC/SX/
+product scope,30 attempts, recovery/performance, quality comparisons and user approval
+remain required. Each stage keeps its exact evidence level.
 
 ## Historical baseline and authority
 
