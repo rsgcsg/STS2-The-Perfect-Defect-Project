@@ -85,6 +85,7 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/policy/public_m2_port.py",
     "stpd/policy/public_m2_task.py",
     "stpd/policy/public_m0_task.py",
+    "stpd/policy/public_m0_agent_program.py",
     "stpd/policy/s1.py",
     "stpd/public_m0_policy_installation.py",
     "stpd/public_m2_policy_installation.py",

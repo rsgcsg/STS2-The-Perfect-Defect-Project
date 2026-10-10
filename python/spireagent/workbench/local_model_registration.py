@@ -714,26 +714,34 @@ class LocalModelRegistration:
         return None, stale
 
     def status(self, model_id: object, *, environment_kind: str = "native",
-               task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
+               task: object = _DEFAULT_PUBLIC_TASK,
+               program: object = None) -> dict[str, Any]:
         _target_kind(environment_kind)
-        result = self._status(model_id, environment_kind=environment_kind, task=task)
+        result = self._status(model_id, environment_kind=environment_kind, task=task,
+                              **({"program": program} if program is not None else {}))
         if environment_kind == "managed":
             result["environment_kind"] = environment_kind
         return result
 
     def _status(self, model_id: object, *, environment_kind: str,
-                task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
+                task: object = _DEFAULT_PUBLIC_TASK,
+                program: object = None) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
         observed = self._export_status(identity)
         operation = observed["operation"]
+        if program is not None and operation.get("model_type") != "public_m0":
+            raise BoundaryError("local_model_registration", "program_requires_public_m0")
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
             return self._status_public_m2(identity, observed, environment_kind,
                                          task=_public_m2_task(task))
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._status_native(identity, observed, environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m0":
+            from stpd.policy.public_m0_agent_program import validate_program_spec
+
             return self._status_public_m0(identity, observed, environment_kind,
-                                          task=_public_m0_task(task))
+                                          task=_public_m0_task(task),
+                                          program=validate_program_spec(program))
         memory = (operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
         structured = operation.get("model_type") == "structured"
@@ -911,10 +919,12 @@ class LocalModelRegistration:
                                 "m2_runtime_contract_unavailable") from error
 
     def register(self, model_id: object, *, environment_kind: str = "native",
-                 task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
+                 task: object = _DEFAULT_PUBLIC_TASK,
+                 program: object = None) -> dict[str, Any]:
         _target_kind(environment_kind)
         try:
-            result = self._register(model_id, environment_kind=environment_kind, task=task)
+            result = self._register(model_id, environment_kind=environment_kind, task=task,
+                                    **({"program": program} if program is not None else {}))
         except sqlite3.DatabaseError as error:
             # Verification can use private, disk-backed decision rows before any
             # registration is published. A storage fault must finish the POST as
@@ -925,13 +935,16 @@ class LocalModelRegistration:
         return result
 
     def _register(self, model_id: object, *, environment_kind: str,
-                  task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
+                  task: object = _DEFAULT_PUBLIC_TASK,
+                  program: object = None) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
 
         deadline = monotonic() + REGISTRATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self._export_status(identity)
         operation = observed["operation"]
+        if program is not None and operation.get("model_type") != "public_m0":
+            raise BoundaryError("local_model_registration", "program_requires_public_m0")
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
             return self._register_public_m2(identity, environment_kind=environment_kind,
                                            task=_public_m2_task(task))
@@ -939,8 +952,11 @@ class LocalModelRegistration:
             return self._register_native(identity, environment_kind=environment_kind,
                                          deadline=deadline)
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m0":
+            from stpd.policy.public_m0_agent_program import validate_program_spec
+
             return self._register_public_m0(identity, environment_kind=environment_kind,
-                                            task=_public_m0_task(task))
+                                            task=_public_m0_task(task),
+                                            program=validate_program_spec(program))
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
@@ -1349,7 +1365,8 @@ class LocalModelRegistration:
     def _matching_public_m0(self, identity: str, export: Path, *,
                             requirements: dict | None = None,
                             support: dict | None = None,
-                            task: dict[str, str] | None = None) -> tuple[str | None, bool]:
+                            task: dict[str, str] | None = None,
+                            program: dict[str, str] | None = None) -> tuple[str | None, bool]:
         from stpd.public_m0_policy_installation import validate
 
         stale = False
@@ -1364,7 +1381,7 @@ class LocalModelRegistration:
                 continue
             # A different declared task is a different Agent composition, not
             # a stale binding to rewrite or a legacy selection to adopt.
-            if config.get("task_spec") != task:
+            if config.get("task_spec") != task or config.get("program_spec") != program:
                 continue
             try:
                 _, manifest = validate(self.models.root, config_path, manifest_path,
@@ -1381,7 +1398,8 @@ class LocalModelRegistration:
 
     def _status_public_m0(self, identity: str, observed: dict,
                           environment_kind: str, *,
-                          task: dict[str, str] | None) -> dict[str, Any]:
+                          task: dict[str, str] | None,
+                          program: dict[str, str] | None = None) -> dict[str, Any]:
         if environment_kind != "native":
             return _public(identity, "unavailable", profile=PUBLIC_M0_PROFILE,
                            reason_code="public_snapshot_managed_environment_not_supported")
@@ -1391,7 +1409,7 @@ class LocalModelRegistration:
                            reason_code="verified_export_required")
         try:
             export = self.config.state_dir / "model-exports" / identity
-            found, stale = self._matching_public_m0(identity, export, task=task)
+            found, stale = self._matching_public_m0(identity, export, task=task, program=program)
             return _public(identity, "registered" if found else "not_registered",
                            selection_id=found, profile=PUBLIC_M0_PROFILE,
                            reason_code="source_binding_changed" if stale and not found else None)
@@ -1400,7 +1418,8 @@ class LocalModelRegistration:
                            reason_code="registration_metadata_invalid")
 
     def _register_public_m0(self, identity: str, *, environment_kind: str,
-                            task: dict[str, str] | None) -> dict[str, Any]:
+                            task: dict[str, str] | None,
+                            program: dict[str, str] | None = None) -> dict[str, Any]:
         from stpd.public_m0_policy_installation import bind_public_m0_export
 
         if environment_kind != "native":
@@ -1433,7 +1452,7 @@ class LocalModelRegistration:
             _remaining(deadline)
             found, _ = self._matching_public_m0(identity, export,
                                                 requirements=requirements, support=support,
-                                                task=task)
+                                                task=task, program=program)
             if found is not None:
                 return _public(identity, "registered", selection_id=found,
                                profile=PUBLIC_M0_PROFILE)
@@ -1448,18 +1467,22 @@ class LocalModelRegistration:
             target.mkdir(mode=0o700)
             config_path, manifest_path = target / "config.json", target / "manifest.json"
             try:
-                policy = {"id": selection, "version": "1.1.0" if task else "1.0.0",
+                policy = {"id": selection, "version": "1.2.0" if program else
+                          "1.1.0" if task else "1.0.0",
                           "provider": "stpd",
-                          "architecture": "stage1a.dsimple.light-action.m0.s.v1"}
+                          "architecture": ("stpd.public-m0.complete-agent.card-reward-take.v1"
+                                           if program else "stage1a.dsimple.light-action.m0.s.v1")}
                 bind_public_m0_export(self.models.root, export, config_path, manifest_path,
                                       manifest_id=selection, policy=policy,
                                       requirements=requirements, support=support,
-                                      binding_root=private, task=task)
+                                      binding_root=private, task=task, program=program)
                 self.models._public_manifest_contract(manifest_path)
                 entries = self._entries()
                 task_label = " 至结算页 " if task else " 无任务基线 "
+                program_label = " 选牌奖励程序" if program else ""
                 entry = {"id": selection,
-                         "label": "本机公开快照 D-Simple M0" + task_label + identity[:8],
+                         "label": ("本机公开快照 D-Simple M0" + program_label
+                                   + task_label + identity[:8]),
                          "adapter": PUBLIC_M0_ADAPTER, "runtime_profile": PUBLIC_M0_PROFILE,
                          "manifest": manifest_path.relative_to(private).as_posix(),
                          "config": config_path.relative_to(private).as_posix()}

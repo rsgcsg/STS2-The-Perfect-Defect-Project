@@ -15,6 +15,7 @@ from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..fullrun.public_inputs import project_public_snapshot
 from ..public_m0_policy_installation import SNAPSHOT_SCHEMA, validate
+from .public_m0_agent_program import current_card_candidates, validate_program_spec
 from .public_m0_task import ready_summary
 from .token_decision import LightActionM0DecisionScorer, check_light_action_m0_model
 from .token_port import serve
@@ -92,15 +93,19 @@ class PublicM0PolicyAdapter:
         if (interaction_kind not in support["interaction_kinds"]
                 or any(verb not in support["action_verbs"] for verb in verbs)):
             raise BoundaryError("public_m0_policy", "unsupported_whole_decision")
-        if self.config.get("task_spec") is not None:
+        program = validate_program_spec(self.config.get("program_spec"))
+        candidates: tuple[int, ...] = ()
+        if self.config.get("task_spec") is not None or program is not None:
             # Completion may abstain only after the same whole-input integrity
             # and public representation checks neural scoring would require.
             project_public_snapshot(snapshot, compact=self.manifest["representation"]["id"]
                                     == "public_compact")
-            if ready_summary(snapshot):
+            if self.config.get("task_spec") is not None and ready_summary(snapshot):
                 # Declared program abstention placeholders, not NN scores.
                 return {"candidate_digest": candidate_digest, "scores": [0.0] * len(keys),
                         "selected_index": None}
+            if program is not None:
+                candidates = current_card_candidates(snapshot)
         scores = self.scorer.score_snapshot(snapshot)
         if (
             not isinstance(scores, dict) or list(scores) != keys or not scores
@@ -112,7 +117,7 @@ class PublicM0PolicyAdapter:
         return {
             "candidate_digest": candidate_digest,
             "scores": values,
-            "selected_index": max(range(len(values)), key=values.__getitem__),
+            "selected_index": max(candidates or range(len(values)), key=values.__getitem__),
         }
 
     def close(self) -> None:
