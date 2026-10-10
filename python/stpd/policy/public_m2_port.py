@@ -29,12 +29,26 @@ from ..workers.public_m2_engine import (
     PublicM2EngineConfig,
     load_public_m2_weights,
 )
+from .public_m2_task import task_complete, validate_task_spec
 
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-4"
 RUNTIME_PROFILE = "sts2.policy-runtime/public-observation-stateful-v1"
 SNAPSHOT_SCHEMA = "sts2.player-environment/snapshot-1"
 MAX_LINE_BYTES = 20 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+
+
+def _task_spec(manifest: dict[str, Any]) -> dict[str, str] | None:
+    settings = manifest["adapter_config"].get("public_m2_installation", {})
+    if not isinstance(settings, dict):
+        raise BoundaryError("public_m2_policy", "unsupported_task_spec")
+    task = validate_task_spec(settings.get("task_spec"))
+    version = manifest["adapter"].get("version")
+    if ("task_spec" in settings and task is None
+            or task is not None and version != "1.1.0"
+            or task is None and version == "1.1.0"):
+        raise BoundaryError("public_m2_policy", "unsupported_task_spec")
+    return task
 
 
 class _Scorer(Protocol):
@@ -76,6 +90,7 @@ def _manifest_profile(manifest: dict[str, Any], config: PublicM2EngineConfig, *,
         valid = False
     if not valid:
         raise BoundaryError("public_m2_policy", "observation_only_manifest_required")
+    _task_spec(manifest)
 
 
 def _sha256(value: object) -> bool:
@@ -128,6 +143,7 @@ class PublicM2PolicyAdapter:
         self.tokenizer = tokenizer
         self.config = config
         self.manifest = copy.deepcopy(manifest)
+        self.task_spec = _task_spec(self.manifest)
         self.closed = False
         self._active: tuple[str, str, str, str, str] | None = None
         self._closed_tokens: set[str] = set()
@@ -203,6 +219,9 @@ class PublicM2PolicyAdapter:
                 or any(action["verb"] not in support["action_verbs"]
                        for action in snapshot["bound_actions"]["actions"])):
             raise BoundaryError("public_m2_policy", "unsupported_whole_decision")
+        # Full public projection/catalog/support admission precedes the task
+        # predicate. A malformed claimed summary cannot become a neural fallback.
+        terminal = self.task_spec is not None and task_complete(snapshot)
         # observed_at is a poll timestamp, not a new model observation. Every
         # other Snapshot field, including the full ordered catalog, is bound.
         observation_digest = semantic_hash({key: item for key, item in snapshot.items()
@@ -273,8 +292,13 @@ class PublicM2PolicyAdapter:
             # Only a fresh adapter instance may continue; never auto-retry.
             self.closed = True
             raise
-        output = {"candidate_digest": public.candidate_digest, "scores": values,
-                  "selected_index": max(range(len(values)), key=values.__getitem__)}
+        # A qualified terminal observation still consumes the ordinary once-only
+        # M2 step and updated W. These zero scores are declared program abstention,
+        # not neural values; repeat ordinals return this same cached output.
+        output = ({"candidate_digest": public.candidate_digest, "scores": [0.0] * len(keys),
+                   "selected_index": None} if terminal else
+                  {"candidate_digest": public.candidate_digest, "scores": values,
+                   "selected_index": max(range(len(values)), key=values.__getitem__)})
         if self._active is not None and namespace != self._active:
             self._closed_tokens.add(self._active[1])
         self._active = namespace

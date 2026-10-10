@@ -82,13 +82,20 @@ PROFILE = "text-menu-v1"
 M2_PROFILE = "text-menu-m2-v1"
 V2_M2_PROFILE = "text-menu-m2-v2"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
-_DEFAULT_PUBLIC_M0_TASK = object()
+_DEFAULT_PUBLIC_TASK = object()
 
 
 def _public_m0_task(value: object) -> dict[str, str] | None:
     from stpd.policy.public_m0_task import ready_summary_task_spec, validate_task_spec
 
-    return (ready_summary_task_spec() if value is _DEFAULT_PUBLIC_M0_TASK
+    return (ready_summary_task_spec() if value is _DEFAULT_PUBLIC_TASK
+            else validate_task_spec(value))
+
+
+def _public_m2_task(value: object) -> dict[str, str] | None:
+    from stpd.policy.public_m2_task import ready_summary_task_spec, validate_task_spec
+
+    return (ready_summary_task_spec() if value is _DEFAULT_PUBLIC_TASK
             else validate_task_spec(value))
 
 
@@ -707,7 +714,7 @@ class LocalModelRegistration:
         return None, stale
 
     def status(self, model_id: object, *, environment_kind: str = "native",
-               task: object = _DEFAULT_PUBLIC_M0_TASK) -> dict[str, Any]:
+               task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
         _target_kind(environment_kind)
         result = self._status(model_id, environment_kind=environment_kind, task=task)
         if environment_kind == "managed":
@@ -715,12 +722,13 @@ class LocalModelRegistration:
         return result
 
     def _status(self, model_id: object, *, environment_kind: str,
-                task: object = _DEFAULT_PUBLIC_M0_TASK) -> dict[str, Any]:
+                task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
         observed = self._export_status(identity)
         operation = observed["operation"]
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
-            return self._status_public_m2(identity, observed, environment_kind)
+            return self._status_public_m2(identity, observed, environment_kind,
+                                         task=_public_m2_task(task))
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._status_native(identity, observed, environment_kind)
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m0":
@@ -903,7 +911,7 @@ class LocalModelRegistration:
                                 "m2_runtime_contract_unavailable") from error
 
     def register(self, model_id: object, *, environment_kind: str = "native",
-                 task: object = _DEFAULT_PUBLIC_M0_TASK) -> dict[str, Any]:
+                 task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
         _target_kind(environment_kind)
         try:
             result = self._register(model_id, environment_kind=environment_kind, task=task)
@@ -917,7 +925,7 @@ class LocalModelRegistration:
         return result
 
     def _register(self, model_id: object, *, environment_kind: str,
-                  task: object = _DEFAULT_PUBLIC_M0_TASK) -> dict[str, Any]:
+                  task: object = _DEFAULT_PUBLIC_TASK) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
 
         deadline = monotonic() + REGISTRATION_SECONDS
@@ -925,7 +933,8 @@ class LocalModelRegistration:
         observed = self._export_status(identity)
         operation = observed["operation"]
         if operation.get("model_id") == identity and operation.get("model_type") == "public_m2":
-            return self._register_public_m2(identity, environment_kind=environment_kind)
+            return self._register_public_m2(identity, environment_kind=environment_kind,
+                                           task=_public_m2_task(task))
         if operation.get("model_id") == identity and operation.get("model_type") == "native":
             return self._register_native(identity, environment_kind=environment_kind,
                                          deadline=deadline)
@@ -1211,7 +1220,8 @@ class LocalModelRegistration:
         return node_modules, sdk
 
     def _matching_public_m2(self, identity: str, export: Path, *,
-                            requirements: dict | None = None, support: dict | None = None
+                            requirements: dict | None = None, support: dict | None = None,
+                            task: dict[str, str] | None = None,
                             ) -> tuple[str | None, bool]:
         from stpd.public_m2_policy_installation import validate
 
@@ -1224,6 +1234,10 @@ class LocalModelRegistration:
             config = _object_file(config_path)
             if (config.get("model_id") != identity
                     or config.get("export_path") != str(export.resolve())):
+                continue
+            # TaskNone and the summary task are distinct Agent compositions.
+            # Neither rewrites nor adopts the other's existing selection.
+            if config.get("task_spec") != task:
                 continue
             try:
                 _, manifest = validate(self.models.root, config_path, manifest_path,
@@ -1239,7 +1253,7 @@ class LocalModelRegistration:
         return None, stale
 
     def _status_public_m2(self, identity: str, observed: dict[str, Any],
-                          environment_kind: str) -> dict[str, Any]:
+                          environment_kind: str, *, task: dict[str, str] | None) -> dict[str, Any]:
         if environment_kind != "native":
             return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
                            reason_code="public_snapshot_managed_environment_not_supported")
@@ -1254,7 +1268,7 @@ class LocalModelRegistration:
         try:
             self._public_m2_runtime(deadline=monotonic() + REGISTRATION_SECONDS)
             export = self.config.state_dir / "model-exports" / identity
-            found, stale = self._matching_public_m2(identity, export)
+            found, stale = self._matching_public_m2(identity, export, task=task)
             return _public(identity, "registered" if found else "not_registered",
                            selection_id=found, profile=PUBLIC_M2_PROFILE,
                            reason_code="source_binding_changed" if stale and not found else None)
@@ -1262,7 +1276,8 @@ class LocalModelRegistration:
             return _public(identity, "unavailable", profile=PUBLIC_M2_PROFILE,
                            reason_code=getattr(error, "code", "registration_metadata_invalid"))
 
-    def _register_public_m2(self, identity: str, *, environment_kind: str) -> dict[str, Any]:
+    def _register_public_m2(self, identity: str, *, environment_kind: str,
+                            task: dict[str, str] | None) -> dict[str, Any]:
         from stpd.public_m2_policy_installation import bind_public_m2_export, require_evidence
 
         if environment_kind != "native":
@@ -1291,7 +1306,7 @@ class LocalModelRegistration:
         with instance_lock(lock_path):
             _remaining(deadline)
             found, _ = self._matching_public_m2(identity, export,
-                                              requirements=requirements, support=support)
+                                              requirements=requirements, support=support, task=task)
             if found is not None:
                 return _public(identity, "registered", selection_id=found,
                                profile=PUBLIC_M2_PROFILE)
@@ -1308,12 +1323,14 @@ class LocalModelRegistration:
             try:
                 bind_public_m2_export(
                     self.models.root, export, config_path, manifest_path, manifest_id=selection,
-                    policy={"id": selection, "version": "1.0.0", "provider": "stpd",
+                    policy={"id": selection, "version": "1.1.0" if task else "1.0.0",
+                            "provider": "stpd",
                             "architecture": "stpd.public-observation.light-action.m2.v1"},
-                    requirements=requirements, support=support, binding_root=private,
+                    requirements=requirements, support=support, binding_root=private, task=task,
                 )
                 self.models._public_manifest_contract(manifest_path)
-                entry = {"id": selection, "label": "本机公开快照 M2 " + identity[:8],
+                task_label = " 至结算页 " if task else " 无任务基线 "
+                entry = {"id": selection, "label": "本机公开快照 M2" + task_label + identity[:8],
                          "adapter": PUBLIC_M2_ADAPTER, "runtime_profile": PUBLIC_M2_PROFILE,
                          "manifest": manifest_path.relative_to(private).as_posix(),
                          "config": config_path.relative_to(private).as_posix()}

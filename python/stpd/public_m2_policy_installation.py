@@ -11,6 +11,7 @@ from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
 from .policy.public_m2_export import EXPORT_SCHEMA, validate_package
+from .policy.public_m2_task import validate_task_spec
 from .public_m0_policy_installation import (
     CLAIMS,
     SNAPSHOT_SCHEMA,
@@ -19,9 +20,11 @@ from .public_m0_policy_installation import (
 )
 
 CONFIG_SCHEMA = "stpd/public-m2-policy-config-v1"
+TASK_CONFIG_SCHEMA = "stpd/public-m2-policy-config-v2"
 PROFILE = "public-snapshot-m2-v1"
 ADAPTER_ID = "stpd-public-m2-decision-adapter"
 ADAPTER_VERSION = "1.0.0"
+TASK_ADAPTER_VERSION = "1.1.0"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-4"
 MODEL_SCHEMA = "stpd/public-m2-model-v1"
 CODE_SCOPE = "public-m2-runtime-import-closure-v1"
@@ -76,6 +79,7 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/policy/public_m2_cli.py",
     "stpd/policy/public_m2_export.py",
     "stpd/policy/public_m2_port.py",
+    "stpd/policy/public_m2_task.py",
     "stpd/policy/public_m0_task.py",
     "stpd/policy/s1.py",
     "stpd/public_m0_policy_installation.py",
@@ -108,6 +112,7 @@ def require_evidence() -> None:
     if not isinstance(protocols, tuple) or PROTOCOL not in protocols:
         raise BoundaryError("public_m2_policy", "public_m2_evidence_contract_unavailable")
 
+
 def code_digest(root: Path) -> str:
     # The pin excludes Workbench and Hub application lifecycle. Shared archive
     # transport helpers imported by the public renderer remain explicit inputs.
@@ -135,6 +140,7 @@ def bind_public_m2_export(
     root: Path, export_path: Path, config_path: Path, manifest_path: Path, *,
     manifest_id: str, policy: dict[str, Any], requirements: dict[str, Any],
     support: dict[str, Any], binding_root: Path | None = None,
+    task: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     root, export_path = root.resolve(), export_path.resolve()
     binding_root = (binding_root or root).resolve()
@@ -148,17 +154,21 @@ def bind_public_m2_export(
     if any(not isinstance(v, str) or not v for v in policy.values()):
         raise BoundaryError("public_m2_policy", "invalid_policy")
     req, sup = _validate_requirements(requirements, support)
+    task_spec = validate_task_spec(task)
+    config_schema = TASK_CONFIG_SCHEMA if task_spec is not None else CONFIG_SCHEMA
+    adapter_version = TASK_ADAPTER_VERSION if task_spec is not None else ADAPTER_VERSION
     model, config, _lineage = validate_package(export_path)
     from .fullrun.public_inputs import COMPACT_IDENTITY
     from .policy.public_m2_port import RUNTIME_PROFILE
 
-    value = {"schema": CONFIG_SCHEMA, "export_path": str(export_path),
+    value = {"schema": config_schema, "export_path": str(export_path),
              "export_manifest_sha256": file_sha256(export_path / "model.json"),
-             "model_id": model.artifact_id, "runtime_device": "cpu"}
+             "model_id": model.artifact_id, "runtime_device": "cpu",
+             **({"task_spec": task_spec} if task_spec is not None else {})}
     manifest = {
         "schema": "sts2.policy-runtime/policy-manifest-1", "manifest_id": manifest_id,
         "policy": policy,
-        "adapter": {"id": ADAPTER_ID, "version": ADAPTER_VERSION, "protocol": PROTOCOL,
+        "adapter": {"id": ADAPTER_ID, "version": adapter_version, "protocol": PROTOCOL,
                     "code_sha256": code_digest(root)},
         "artifact": {"id": model.artifact_id,
                      "path": _manifest_artifact_path(export_path / "model.json",
@@ -173,9 +183,10 @@ def bind_public_m2_export(
                 "code_digest_scope": CODE_SCOPE,
                 "config": {"path": config_path.relative_to(binding_root).as_posix(),
                            "sha256": hashlib.sha256(json_bytes(value)).hexdigest(),
-                           "schema": CONFIG_SCHEMA},
+                           "schema": config_schema},
                 "model_schema": MODEL_SCHEMA, "export_schema": EXPORT_SCHEMA,
                 "producer": model.producer.to_dict(),
+                **({"task_spec": task_spec} if task_spec is not None else {}),
             },
         }, "claims": dict(CLAIMS),
     }
@@ -200,13 +211,20 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     manifest_path = _inside(binding_root,
                             manifest_path.resolve().relative_to(binding_root).as_posix())
     config, manifest = _object_file(config_path), _object_file(manifest_path)
+    task_config = config.get("schema") == TASK_CONFIG_SCHEMA
     object_fields(config, {"schema", "export_path", "export_manifest_sha256", "model_id",
-                           "runtime_device"}, "public_m2.config")
+                           "runtime_device"} | ({"task_spec"} if task_config else set()),
+                  "public_m2.config")
+    task_spec = validate_task_spec(config.get("task_spec"))
+    if task_config and task_spec is None:
+        raise BoundaryError("public_m2_policy", "unsupported_task_spec")
+    config_schema = TASK_CONFIG_SCHEMA if task_config else CONFIG_SCHEMA
+    adapter_version = TASK_ADAPTER_VERSION if task_config else ADAPTER_VERSION
     object_fields(manifest, {"schema", "manifest_id", "policy", "adapter", "artifact",
                              "representation", "requirements", "support", "adapter_config",
                              "claims"}, "public_m2.manifest")
     export = Path(config["export_path"])
-    if not export.is_absolute() or config["schema"] != CONFIG_SCHEMA:
+    if not export.is_absolute() or config["schema"] not in (CONFIG_SCHEMA, TASK_CONFIG_SCHEMA):
         raise BoundaryError("public_m2_policy", "unsupported_config")
     model, model_config, _lineage = validate_package(export, check_payloads=verify_payloads)
     from .fullrun.public_inputs import COMPACT_IDENTITY
@@ -217,9 +235,10 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
         "public_m2_installation": {
             "code_digest_scope": CODE_SCOPE,
             "config": {"path": config_path.relative_to(binding_root).as_posix(),
-                       "sha256": file_sha256(config_path), "schema": CONFIG_SCHEMA},
+                       "sha256": file_sha256(config_path), "schema": config_schema},
             "model_schema": MODEL_SCHEMA, "export_schema": EXPORT_SCHEMA,
             "producer": model.producer.to_dict(),
+            **({"task_spec": task_spec} if task_spec is not None else {}),
         },
     }
     object_fields(manifest["policy"], {"id", "version", "provider", "architecture"},
@@ -227,7 +246,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     if (manifest["schema"] != "sts2.policy-runtime/policy-manifest-1"
             or not isinstance(manifest["manifest_id"], str) or not manifest["manifest_id"]
             or any(not isinstance(v, str) or not v for v in manifest["policy"].values())
-            or manifest["adapter"] != {"id": ADAPTER_ID, "version": ADAPTER_VERSION,
+            or manifest["adapter"] != {"id": ADAPTER_ID, "version": adapter_version,
                                         "protocol": PROTOCOL, "code_sha256": code_digest(root)}
             or manifest["adapter_config"] != expected
             or manifest["representation"] != {"id": COMPACT_IDENTITY["profile"],

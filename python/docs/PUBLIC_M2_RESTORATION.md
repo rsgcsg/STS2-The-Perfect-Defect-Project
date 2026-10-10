@@ -52,6 +52,28 @@ inference. Node Runtime support alone cannot make its post-Stop record readable.
 No version guess or source-reader fallback replaces the installed capability;
 the historical locked Corpus dependency and exact SDK promotion stay separate.
 
+New registrations default to the separately versioned ready standard summary
+task. Config-v2 and adapter1.1.0 mirror an exact
+`stpd/public-m2-task-spec-v1` descriptor in the config and
+`adapter_config.public_m2_installation.task_spec`; `terminal_observation` is
+`normal-step-once-v1` and `abstention_scores` is `program-zero-v1`. Explicit
+`task=None` keeps the config-v1/adapter1.0.0 baseline. Matching, visible labels
+and catalog task/version fields distinguish these Agent compositions, so no
+legacy selection or original model is rewritten or adopted.
+
+The task explicitly shares the reviewed public GameOver ready-summary predicate
+with M0, while owning its own descriptor and terminal-consumption rule. Complete
+public Snapshot/C/digest/count/support and the ordinary codec/budget checks must
+all pass. A standard win or loss ready summary consumes one normal M2 neural step
+and W update, then returns the original full candidate digest, one program zero
+per original candidate and `selected_index:null`. Repeated same-ordinal requests
+return that consistent cached abstention without another W update. These program
+zeros are not neural scores. Intro and animation do not complete the task;
+malformed claimed summaries fail before a model write. Nonterminal scoring and
+TaskNone retain the original neural path. The existing Runtime `policy_abstained`
+handoff releases control to Human; the task adds no Continue, menu action,
+retry, or autonomous loop.
+
 Runtime owns bounded policy segment/token/episode-control identifiers and
 observation ordinals. It observes the real complete Snapshot1/Read-free bundle,
 retains its complete ordered C, and advances an ordinal once per qualified new
