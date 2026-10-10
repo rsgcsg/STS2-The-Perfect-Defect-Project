@@ -535,7 +535,8 @@ def verify_reward_m0_completed(
     result_id = result.artifact_id
     model = store.get_manifest(result.parent("model"))
     checkpoint = store.get_manifest(result.parent("checkpoint"))
-    training = store.get_manifest(run.parent("training_input"))
+    inputs = load_reward_m0_inputs(store, run.parent("training_input"), config)
+    training = inputs.manifest
     feature = store.get_manifest(training.parent("paired_features"))
     model_info = model.parameters.value()
     checkpoint_info = checkpoint.parameters.value()
@@ -591,6 +592,10 @@ def verify_reward_m0_completed(
         or checkpoint.parameters.value().get("optimizer_updates") != config.steps
     ):
         raise BoundaryError("reward_m0_run", "completed_model_lineage_mismatch")
+    for role in ("state_tokenizer", "action_codec"):
+        declared = [payload for payload in model.payloads if payload.role == role]
+        if declared != [training.payload(role)]:
+            raise BoundaryError("reward_m0_run", "completed_admitted_codec_payload_mismatch")
     metrics = decode_json(b"".join(store.read_payload(result.payload("metrics"))))
     if (
         not isinstance(metrics, dict)

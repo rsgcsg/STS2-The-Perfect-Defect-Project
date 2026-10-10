@@ -93,7 +93,7 @@ def completion_metadata(store, source, config, run, *, data_identity_arm=None):
             Parent("source", source.manifest.artifact_id),
             Parent("checkpoint", cp.artifact_id),
         ),
-        (weights,),
+        (weights, training.payload("state_tokenizer"), training.payload("action_codec")),
         FrozenObject.of(
             {
                 "schema": MODEL_SCHEMA,
@@ -152,6 +152,98 @@ def completion_metadata(store, source, config, run, *, data_identity_arm=None):
     )
     store.publish(result)
     return cp, model, result
+
+
+@pytest.mark.parametrize("role", ["state_tokenizer", "action_codec"])
+@pytest.mark.parametrize("substitution", ["foreign_bytes", "media_type", "size", "missing"])
+def test_rehashed_completed_model_cannot_substitute_admitted_codecs(
+    metadata_pair, role, substitution, no_torch_imports
+):
+    store, source, config, (run, _) = metadata_pair
+    cp, model, result = completion_metadata(store, source, config, run)
+    original = model.payload(role)
+    replacement = (
+        store.put_payload(role, io.BytesIO(b"x" * original.size), "application/json")
+        if substitution == "foreign_bytes"
+        else replace(original, media_type="application/octet-stream")
+        if substitution == "media_type"
+        else store.put_payload(
+            role,
+            io.BytesIO(b"".join(store.read_payload(original)) + b" "),
+            original.media_type,
+        )
+    )
+    model = replace(
+        model,
+        payloads=tuple(
+            replacement if payload.role == role else payload
+            for payload in model.payloads
+            if substitution != "missing" or payload.role != role
+        ),
+    )
+    store.publish(model)
+    result = replace(
+        result,
+        parents=tuple(
+            Parent(parent.role, model.artifact_id) if parent.role == "model" else parent
+            for parent in result.parents
+        ),
+    )
+    store.publish(result)
+    events = tuple(
+        Manifest(
+            "run_event",
+            run.producer,
+            (Parent("run", run.artifact_id),),
+            parameters=FrozenObject.of(
+                {
+                    "schema": "stpd/run-event-v1",
+                    "attempt": result.parameters.value()["attempt"],
+                    "kind": kind,
+                    "details": details,
+                }
+            ),
+        )
+        for kind, details in (
+            ("checkpoint", {"checkpoint_id": cp.artifact_id}),
+            ("completed", {"result_id": result.artifact_id, "model_id": model.artifact_id}),
+        )
+    )
+    for event in events:
+        store.publish(event)
+    reporter = SimpleNamespace(completed=lambda _run: result, events=lambda _run: events)
+    with pytest.raises(BoundaryError, match="completed_admitted_codec_payload_mismatch"):
+        verify_reward_m0_completed(store, reporter, run.artifact_id, "f" * 32)
+    assert not no_torch_imports.attempts
+
+
+@pytest.mark.parametrize("field", ["format", "graph", "max_state_tokens", "payloads"])
+def test_completed_replays_canonical_typed_input_before_torch(metadata_pair, field):
+    store, source, config, (run, _) = metadata_pair
+    training = store.get_manifest(run.parent("training_input"))
+    if field == "payloads":
+        foreign = store.put_payload(
+            "state_tokenizer", io.BytesIO(b"foreign-but-hash-valid-tokenizer"), "application/json"
+        )
+        training = replace(
+            training,
+            payloads=tuple(
+                foreign if payload.role == "state_tokenizer" else payload
+                for payload in training.payloads
+            ),
+        )
+    else:
+        info = training.parameters.value()
+        info[field] = 1 if field == "max_state_tokens" else "foreign-typed-declaration"
+        training = replace(training, parameters=FrozenObject.of(info))
+    store.publish(training)
+    run = replace(run, parents=(Parent("training_input", training.artifact_id),))
+    store.publish(run)
+    _, _, result = completion_metadata(store, source, config, run)
+    with pytest.raises(BoundaryError, match="input_arm_source_binding_mismatch"):
+        verify_reward_m0_completed(
+            store, SimpleNamespace(completed=lambda _run: result), run.artifact_id, "f" * 32
+        )
 
 
 def test_rehashed_cross_arm_chain_cannot_relabel_B_as_A(metadata_pair):
