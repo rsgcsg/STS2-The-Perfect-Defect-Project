@@ -14,7 +14,12 @@ private originals without presenting workstation paths as public artifacts.
 
 ## Objective and authority
 
-The active supervisor mandate is actual basic game capability: reasonable choices,
+Finish this coherent round's closeout/delivery/report, then continue the newly
+requested topmost architecture audit with external references and capability work.
+The latest continuation supersedes the earlier stop endpoint; it does not expand
+or retry this round's completed native attempts.
+
+The underlying supervisor mandate is actual basic game capability: reasonable choices,
 continuous task progress and natural summary, while existing data/models remain
 reusable. Legal delivery, train fit or budget stop cannot substitute. The owner
 authorized implementation/validation and safe parallel work under independent
@@ -31,55 +36,62 @@ job. Verify actual spend/shared remainder before submission; no per-worker/task/
 reset or historical-cost rewrite. Existing scoped native preparation continues;
 production deployment, main/release and destructive authority did not expand.
 
-## Current phase
+## Completed evidence in this round
 
-The prior M0 service/game restoration and learned Model's fresh one-choice chain
-remain verified only at their original tuples. M0 Auto was censored in a reward
-re-entry loop; the separate native v2 pilot closed at an unsupported Teacher owner
-below its target. Mechanical continuation/count/cleanup acceptance is not natural
-summary or quality. No old unknown or censored attempt is rewritten.
+Formal Evidence setup, Public M0/M2 restoration, explicit Task/program composition
+and parity gates are recorded in the packet. Original partial M2 Auto mechanically
+reached a floor1 loss summary but selected End Turn in all ten combat observations
+with playable candidates. Strategy failed that attempt; basic ability is unmet.
+Old unknown/censored attempts and their original evidence remain unchanged.
 
-Formal setup installs the current Evidence SDK; source/fixture fixes, Public M2
-Port4/Task and parity gates are recorded in the packet. Current Runtime installation
-and unchanged Mod bytes support original partial M2's restored canary and Auto path.
-Auto reached a natural loss summary mechanically, but chose End Turn throughout
-combat with play candidates offered: strategy failed this attempt and basic ability
-is unmet. No live W witness or full G2/V1 pass follows. All four leaves of the
-recorded CI attempt failed; reviewed source repairs await fresh CI.
+Explicit compatible-package reconciliation, a distinct derived export and locked
+old/current numerical parity are complete. Current derived registration/game use
+remains unperformed. Paired Reward Source/token preflight and local A/B fits each
+completed40 updates on the same40 TRAIN rewards from three runs. Published Input/
+Run/Model artifacts and the B-to-A-to-archived-legacy history are retained. TRAIN-only
+metrics do not establish held-out or causal input benefit or native strategy quality.
 
-The old native learned package now correctly rejects the changed formal lock.
-Its original package/load evidence remains valid in the original environment.
-Explicit compatible-package reconciliation, a distinct derived export and old/current
-locked numerical parity are complete; original package/history remain unchanged.
-Current derived registration/game use is still pending. Paired Reward Source is
-published/reserved, and actual local A/B fits each completed40 updates on the same
-40-TRAIN reward cohort from three runs. Input/Run/Model artifacts are published;
-TRAIN-only diagnostics do not establish held-out or causal input benefit. The common
-owner archived the exact completed legacy-v4 bytes before A; the current v3 slot is
-B with its A-to-legacy predecessor chain intact. The optional M0 card-reward Agent
-program is source/test accepted. Its separate same-seed Auto ended without summary
-after a stale-snapshot refusal; Stop/Host cleanup are verified, while the original
-private audit failed and sealed progress/cause review remain pending.
-Later official repository checks passed; the original
-process-cancellation failure and unproved cause remain preserved. Keep original
-history and strict validation intact.
+Optional M0 Auto1 ended without summary after stale delivery refusal. Its original
+private audit failed and remains incomplete; actual Stop/Host cleanup and typed seal
+are verified. The separate corrected offline audit now verifies three declared
+card takes replacing raw Skip, with later map/room progress. Unknown frame joins
+remain unknown. This is bounded recorded progress, not natural summary or a general
+reward-loop/strategy pass. The original13 pinned files and sealed bytes are preserved.
 
-## Next actual dependencies
+The read-only legacy data inventory finds1537 TRAIN and8 DEV Defect decisions.
+Sequence-only segments do not qualify M2 history; gaps, exact recorded current-game/
+A0 identity and useful independent whole-game evaluation remain unresolved. No new
+Source/fit or partition reassignment follows from that inventory. All four leaves of
+the recorded CI attempt failed; reviewed repairs require fresh selected CI.
 
-Use the completed M2 attempt's original choices/input history for evidence-led
-strategy diagnosis and bounded evaluation. Natural death is not basic ability;
-preserve partial Model/history and separate future attempts from these originals.
-Keep source/SDK/Runtime/profile frozen while consumers run; unknown is never
-retried automatically and every new canary has a distinct explicit identity.
+## Current closeout and next phase
 
-Preflight actual registration/game use of the compatible derived package; export/
-parity are not strategy qualification. Review the paired TRAIN results within their
-small-cohort scope and plan independent held-out/native evaluation before claiming
-input benefit. Audit the optional M0 program only from its sealed same-seed Auto
-outcome and preserve its failed audit receipt separately from any later read-only
-review. Revalidate owning gates and
-fresh full dual-OS/portable CI; source, data, runtime and quality remain
-separate and only the user approves complete G2/V1.
+Runtime rc30 source/component/package/identity/BOM and independent package/pin
+review are accepted; exact installation and the one separate M0 Auto2 were executed.
+Auto2 has typed sealed evidence and bounded reward progress, but ended incomplete/
+`successor_not_stable` after a delivered End Turn, with taint and no summary.
+Stop/Human release/not-loaded and unforced signed Host shutdown are verified;
+cleanup does not erase taint. Independent after-run review accepts the valid sealed,
+tainted failure. No further
+native attempt is part of this closeout, and Auto1 is not rewritten.
+
+Finish selected source/CI checks, canonical docs and PR/delivery/report with exact
+levels. Fresh selected CI remains pending and PR171 stays draft. The packet owns
+candidate/attempt identities and the public/native protocol mapping; shared upper
+controls retain distinct execution branches. No further training/provider work
+was started; aggregate spend remains USD0 within the cumulative USD20 envelope.
+
+The next phase is active: synthesize the read-only topmost architecture and legacy
+protocol audits with primary external references, then continue capability work.
+Investigate the common outcome/successor boundary from original Auto2 evidence and
+source before choosing any repair. Preserve source freezes for future consumers,
+unknown/no-retry rules and distinct attempt identities. Pending diagnosis is not a
+fix or a new-game authorization inside this packet.
+
+Independent held-out/native strategy evaluation, adequate Defect whole-game data,
+exact current-game/A0 and M2 history qualification, and derived native registration/
+game use remain open. Existing TRAIN fit, bounded progress and mechanical loss
+summary do not satisfy basic reasonable gameplay. Full G2/V1 needs user approval.
 
 ## Remaining Platform non-claims
 

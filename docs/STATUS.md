@@ -12,22 +12,25 @@ installed diagnostic candidate and its exact build/load/runtime scope. The
 [execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
 obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
 
-Reached levels include bounded M0 restoration/loop-censored Auto, the original-tuple
-learned choice, native diagnostic count/cleanup and formal SDK/Runtime installation.
-Public M2 now has an independently accepted mechanical Auto path to natural loss
-summary, with strategy failed in that attempt and basic reasonable-gameplay unmet.
-Detailed identities/choices and old tuple/lock limits remain in the packet. Explicit
-compatible export/current-lock numerical parity are accepted; registration/game use
-is pending. Paired Source/token preflight and actual A/B local40-update fits are
-complete; the published artifacts and diagnostics cover only40 TRAIN rewards from
-three runs. The common owner archived exact legacy history before A, and current B
-retains its A-to-legacy chain. Optional M0 card-reward Agent source/tests are accepted;
-its same-seed Auto ended without summary after a stale-snapshot refusal. Cleanup is
-verified; the original private audit failed and sealed progress/cause review remain
-pending.
-The recorded CI attempt failed all four leaves; reviewed source
-repairs await fresh CI. These source/data receipts are not strategy qualification.
-No Human/scientific, basic-strategy or full G2/V1 acceptance is added.
+Completed receipts include formal SDK/consumer restoration, compatible export and
+locked numerical parity, plus actual paired A/B40-update TRAIN fits with published
+artifacts and preserved legacy history. Current derived native registration/game
+use remains unperformed. M2's natural loss summary is mechanically accepted with
+strategy failed in that attempt. Optional M0 Auto1 remains incomplete/no summary;
+its separate corrected offline audit now accepts declared card takes and bounded
+later progress, with original failure/bytes unchanged and unknown joins retained.
+
+The legacy data inventory is metadata/sequence feasibility only and supplies no
+adequate independent Defect whole-game evaluation or qualified current-game/A0 M2
+history. Runtime rc30 source/package/identity and independent review plus exact
+installation are accepted. Its separate M0 Auto2 made bounded reward progress but
+ended incomplete/tainted at `successor_not_stable`, without summary. Typed seal and
+Stop/signed Host cleanup and independent after-run review accept a valid sealed,
+tainted failure. All four recorded CI leaves failed;
+reviewed repairs require fresh selected CI. No Human/scientific, basic-strategy or
+full G2/V1 acceptance follows. Aggregate provider spend is USD0. The current scope
+finishes coherent delivery/report, then continues the newly requested architecture/
+external-reference audit and capability work. It adds no native replay to this packet.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09

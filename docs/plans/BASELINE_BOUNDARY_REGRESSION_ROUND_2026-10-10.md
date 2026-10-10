@@ -14,11 +14,14 @@ retained tasks/acceptance and STATUS is a short dated evidence-level index. They
 link here rather than copy each mutable result. Original machine/runtime records
 remain authoritative; earlier scoped results and Git history are preserved.
 
-The owner now explicitly requests immediate implementation and validation, safe
-parallel work after reconciling repo/refs/PRs/running operations, and convergence
-under existing independent review/integration rules. This is active authorization,
-not another planning-only round. Earlier one-attempt restrictions below were
-already superseded by the resumed authorization; original attempts remain immutable.
+The owner authorized implementation/validation and safe parallel work after
+reconciling repo/refs/PRs/operations under independent review/integration rules. The
+latest endpoint finishes this coherent round's closeout/delivery/report, then
+continues the newly requested topmost architecture/external-reference audit and
+capability work. That continuation supersedes the earlier stop endpoint and adds
+no retry or expanded attempt to this packet. Earlier one-attempt restrictions were
+superseded by resumed authorization, while original attempts remain immutable.
+This round's final native allowance was one distinct Auto2 after exact rc30 gates.
 The [G2/V1 execution packet](BASELINE_G2_V1_EXECUTION_2026-10-08.md) owns the wider
 learning/product endpoint and final user approval.
 
@@ -532,33 +535,181 @@ at frozen `37d8114c`/consumer `bc2e3de00a92b44e710c384f1c3652c55e592af05299aeb7a
 run `run-d5c29472-fd73-4d91-ade9-85daa8fc168e`, Host `c91686bc32f04344aa6add04db7bb766`.
 Root executor5389 ended exit1/released. The original `failure.json` remains incomplete/
 `cleanup_or_evidence_unconfirmed`: the private offline audit raised `KeyError: attribution`
-while joining evidence. A later pure audit must retain that original failure and is
-not a new game, native retry or retroactive successful driver result.
+while joining evidence. The corrected separate pure audit below retains that
+original failure; it is neither a new game nor a retroactive successful driver result.
 
 Before Stop, Runtime recorded110562ms,122 policy calls and122 submission attempts,
 then Human/released with final `not_delivered/stale_snapshot`; no summary was reached.
-Its mode-change reason and the underlying stale-snapshot cause require exact source/
-event review; no runtime diagnosis is inferred here. Separately, actual Stop reports
+Its original terminal remains a known stale-snapshot refusal; later Runtime source
+analysis and any candidate verification retain separate scope below. Separately, actual Stop reports
 stopped/not loaded/Human/released, no taint/errors; typed sealed verification passes.
 Typed evaluation content `fdd16860…` records398 events,122 decisions/receipts,
 94 delivered and28 not-delivered receipts. Signed Host shutdown returned HTTP200,
 exit0 unforced. Thus cleanup and typed content are verified even though the private
-end-to-end audit driver failed. Sealed reward progress and independent cause audit
-remain pending; no accepted reward-loop fix, natural summary or quality result follows.
+end-to-end audit driver failed. The following separate audit qualifies recorded
+reward progress; no natural summary or overall strategy result follows.
 Private originals remain under `m0-card-reward-program/native-auto-pilot1`.
 
-Next is evidence-led strategy/input evaluation for the original partial M2 and the
-prior M0 loop, preserving original identity/history and using separate future attempts.
-Natural early loss remains a strategy failure; source/data acceptance does not satisfy
-basic ability. Preserve the published A/B TRAIN artifacts and complete independent
-held-out/native evaluation before any input-benefit claim. Preflight compatible
-derived native registration/game use after accepted parity, and audit the optional
-M0 Agent from the original same-seed Auto sealed evidence/cause audit, preserving
-its incomplete driver receipt separately. Freeze source/SDK/Runtime/profile for any
-future distinct consumer; never replay this attempt to repair evidence. Obtain fresh selected CI for the reviewed source batch.
-No automatic unknown retry. Faithful restoration and10k meaningful data, full SC/SX/
-product scope,30 attempts, recovery/performance, quality comparisons and user approval
-remain required. Each stage keeps its exact evidence level.
+### Auto1 corrected offline audit: bounded reward progress, original run incomplete
+
+At separate audit source `435f6510635c653026672624a39c2384106bd92b`, the independently
+accepted pure driver `074e1350…` reads Auto1's original sealed records and writes a
+fresh report outside the original attempt. It handles optional/nullable receipt
+attribution, verifies Host binding when present and retains strict prior unique
+public-fact/full-C/digest/count/choice joins. Missing/conflicting facts stay unknown;
+no P1 consumed-input backfill or NN score recomputation occurs.
+
+The actual `offline-audit1/offline-after-run-report.json`, digest
+`8794ca448fad53fb702c87ce25876af336f34ee7ef84a9a05020c7ba7638851a`, is
+`offline_audit_pass_original_native_run_incomplete`. Independent review
+`m0-offline-after-run-independent-review.json` accepts the same report/typed seal:
+111 exact joins,11 unknown frame joins, three declared reward-choice checks and
+three delivered card takes that replace recorded raw NN Skip argmax. Later sealed
+event order records five delivered map decisions, three distinct later combat rooms
+and two event rooms. This verifies bounded progress beyond the earlier first-reward
+re-entry pattern in this attempt. It does not prove causal settlement, actual P1
+consumption, a general loop fix or whole-game quality.
+
+Original13 pinned file hashes and sealed inventory match before/after. The original
+native producer remains `37d8114c`, original driver `7da5d610…`, failure digest
+`0baeec22…` and incomplete classification unchanged. Audit-time source `435f6510`
+never replaces that provenance. Auto1 did not qualify the ready-summary Task and
+still ended with action-not-delivered/Human handoff and Stop; no native retry,
+resume, new training or rewritten successful driver result is added.
+
+### Defect data feasibility: preserved counts, insufficient whole-game evaluation
+
+The copied read-only `d6-character-sequence-feasibility-v2.json`, digest
+`351f247944b89368118cb68a2934818c4ebd11f9f14783c59a30e58314a17332`, inventories
+existing immutable public-view chunks and allocation/curation metadata. View `92c8b564…`
+and original allocation `11e3cf5d…` remain preserved. No original archive is opened/
+decompressed, no source reprojection/NN/use/fit/publication occurs, and metadata
+query stat remains stable. This is decision availability and sequence feasibility.
+
+Actual Defect TRAIN has1537 decisions in13 source/session groups; DEV has8 in two
+groups. TRAIN sequence-only partition gives45 potential segments,32 gap breaks,
+43 segments of at least2 decisions and max152. Sequence adjacency is not qualified
+Public M2 history: exact proved successor-to-next-pre-frame, Commit/proof, actor/
+recording segment/reset/exposure and start/end continuity still need the existing
+data owner's evidence. No gap is bridged or old identity/character boundary erased.
+
+DEV comprises only seven play choices and one End Turn in acts2/3; no act1/reward/
+shop/map/potion/selector evaluation is available there. Original DEV is within a
+training-purpose allocation with historical exposure/physical-game independence
+unresolved, not independent held-out. TRAIN lacks combat-hand-selector examples;
+some nested/act-change families are sparse. Recorded current-game/Mod compatibility
+and A0 are unproved. Therefore these counts replace proposed3000/500 targets as the
+actual available partition, but do not constitute adequate Defect whole-game strategy
+evaluation, full SC/SX coverage or a qualified new M2 Source. No reallocation,
+new Source, fit, GPU job or research expansion is authorized in this closeout.
+
+### Current consumer/protocol mapping
+
+Restoration keeps the original public Models, weights, input rendering/codec and
+numerical scorer, while current common owners repair export, registration,
+capability/transport bindings and lifecycle delivery. It does not convert an old
+Model into the native protocol or train new weights. Explicit ready-summary Tasks
+and the optional M0 reward program compose declared Agent behavior around the scorer.
+
+| Consumer | Current input and policy wire | Shared controls and distinct execution |
+| --- | --- | --- |
+| Public M0 | Snapshot1; decision-only NDJSON1 | Common application/registration/storage/Runtime; generic finite BoundAction branch. Optional reward program changes declared final choice, not weights. |
+| Public M2 | Snapshot1 with `reads=[]`; NDJSON4 | Same common controls and generic branch; its own segment/ordinal/completion contract retains original memory semantics. |
+| New native Model/Agent | `native-logical-v1` and Agent-session NDJSON1 | Same upper application/registration/storage/Runtime owners; native observation/catalog and Agent-session execution branch, with its own input/continuity/evidence contracts. |
+
+The canonical [M2 restoration](../../python/docs/PUBLIC_M2_RESTORATION.md),
+[M0 Agent composition](../../python/docs/PUBLIC_M0_COMPLETE_AGENT.md) and
+[native structured Model](../../python/docs/NATIVE_STRUCTURED_MODEL.md) own these
+contracts. Shared upper control does not merge generic/native input or action
+branches, create legality, or imply that all GUI surfaces and model journeys are
+qualified. Actual installed/runtime/gameplay receipts remain selection-specific.
+
+### Runtime rc30 and final Auto2: exact installed candidate, incomplete attempt
+
+Root source `b7274c87524804f0092c2ef44dd541e158e538d6` integrates accepted backpressure
+source `bc0990…`, rc30 version update `390b…`, exact identity/BOM `5b59…` and package
+pin `b727…`. Component checks passed416 with3 skips; Root identity/BOM/package checks
+and independent version/package/pin engineering review passed. The250/500ms known
+non-delivery backpressure retains full catalog/execute-time validation and original
+unknown/no-retry semantics; source/package acceptance alone is not runtime success.
+
+The existing common owner actually installed rc30. Receipt
+`m0-restoration/runtime-install-rc30.json` records this exact tuple, loaded/activated
+false at installation time; later Auto2 activation has its own original receipts.
+
+| Runtime identity field | Installed value |
+| --- | --- |
+| package / version | `@rsgcsg/sts2-policy-runtime` / `0.1.0-rc.30` |
+| source revision | `390b662f574267329e795d56aa2b4194ef22749d` |
+| component tree revision | `5330112880018528b63d771988afa118820d4d0a` |
+| release asset SHA256 | `434c481fd0801cb38199597b21b8623009e81b332c36ef260099547468ac12b4` |
+| package content SHA256 | `08fefb768f589b2dcda0dda743e5f7acd9af763d1ecb06dd4dedbad5c4289e8a` |
+| runtime code SHA256 | `4aad233964c18b43a53751b7751182835f2bb353dc20eaf48587db83e7948ad7` |
+
+The single actual Auto2 attempt `m0-card-reward-program-auto2-rc30` ran at frozen
+`b7274c87`/unchanged public consumer `bc2e3de…`, original d6 Model/optional Agent,
+run `run-561eacb1-7ad1-496f-b74a-86d50e649b9a`, Host `7c1e6e60eb0e4d7a8445c7f93e8d7b95`.
+An earlier CLI expected-head typo was source-identity rejected before any owner/
+service/native activation or output attempt; its preflight log is preserved. The
+correct actual argv initiated one native attempt, not replay of unknown delivery.
+Private originals are `m0-card-reward-program-auto2/native-auto-pilot2`.
+
+Auto2 recorded126205ms,110 calls/submission attempts,91 delivered and19 known stale
+not-delivered receipts. Three declared reward card deliveries replaced recorded raw
+NN Skip, with progress beyond the first reward, five later delivered map decisions
+and three later combat/two event rooms. These are bounded operational joins, not
+causal settlement or whole-game quality. The final recorded End Turn was delivered,
+then Runtime tainted/handoff at `successor_not_stable`; no ready summary qualified.
+Original `failure.json` is incomplete/`runtime_failure_or_unknown`, no censor or
+budget exhaustion, caller retries0 and Shadow calls0. This is a new terminal boundary,
+not a natural-summary pass or proof that backpressure fixed overall gameplay.
+
+Typed sealed verification passes: content
+`e26fff6cd3f77d2e01644ee998ed410f6ec9bb392cf5b68c73d2a32140fe3848`, events digest
+`28cf706366088c1d3a828ca32986219608218f88f3ca817a527dde444cfa1f6b`,354 events,
+79 strict prior public-fact joins and31 unknown frame joins. Missing prior P1 facts
+stay unknown; no actual-consumed-input record or NN recomputation is invented.
+Stop is stopped/Human/released/not loaded, preserving `successor_not_stable` taint/
+error. Cleanup errors are empty; signed Host returns HTTP200 and exit0 unforced.
+Root executor30402 confirms exit1/terminal, heavy slot released and no game processes.
+Independent after-run review accepts the exact tuple/counts/joins/reward choices,
+cleanup and preserved Auto1 originals as a valid sealed, tainted failure. It verifies
+14 first known-stale refusals at334–420ms and five second refusals at591–657ms;
+these timing observations do not prove native settlement or underlying cause.
+Final delivered End Turn receipt351 is followed by release352/taint353 after10.832s,
+then Stop354. The41 successor-poll contents are not durable evidence and are not
+reconstructed. Typed content/cleanup do not make the incomplete attempt successful. No further native run is in this
+packet. Auto1's original failure and its separately accepted offline audit remain
+unchanged. No further training/provider job was started; spend remains USD0 in the
+one cumulative USD20 envelope.
+
+### Coherent closeout and active next phase
+
+Complete the selected source/local/hosted checks, exact identity/BOM/rollback and
+independent review, canonical docs and draft PR171 delivery/report. CI380879 remains
+failed in all four leaves; fresh selected CI must retain exact source/observed status
+and is pending. Source integration cannot promote these receipts to Human, natural
+summary, basic strategy or full G2/V1 acceptance. The final Auto2 attempt is closed;
+continue preserving its failure/unknowns and consumer source provenance.
+
+The latest user explicitly requests continuation after this closeout. The next phase
+is the full topmost architecture audit and external-reference comparison, followed
+by capability work. Read-only legacy-protocol mapping and top-level architecture
+reports are available for lead synthesis. The canonical
+[architecture audit](../evidence/PROJECT_ARCHITECTURE_AUDIT_2026-10-11.md) owns the
+source-at-`b7274c87` findings and primary external-reference comparison. Its
+independent source review is accepted and the report is committed at `5712043f`. Its source-audit level is separate from Auto2's
+runtime outcome. Existing contracts own shared control/Model/data/protocol layers;
+audit findings do not create another platform or claim completed architectural unity. The common outcome/next-successor
+boundary now needs source-and-original-evidence diagnosis before any chosen repair;
+read-only investigation is active. This packet authorizes no further native replay.
+
+Remaining capability/qualification obligations stay explicit: meaningful independent
+held-out/native strategy evaluation; exact Defect current-game/A0 and M2 continuity;
+adequate whole-game data; derived native registration/game use;10k meaningful data;
+full SC/SX/product scope;30 attempts; recovery/performance and quality comparison;
+final user G2/V1 approval. Restoration, paired TRAIN fits and bounded M0 reward
+progress are completed evidence above, not completion of those obligations.
 
 ## Historical baseline and authority
 
