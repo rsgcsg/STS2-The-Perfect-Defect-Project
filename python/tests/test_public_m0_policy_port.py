@@ -135,6 +135,7 @@ def pair(*, observed=None, profile="public_lite"):
     adapter.manifest, adapter.scorer, adapter.closed = (
         manifest, FakeScorer(compact=profile == "public_compact"), False,
     )
+    adapter.config = {}
     observed = copy.deepcopy(observed) if observed is not None else snapshot()
     for action in observed["bound_actions"]["actions"]:
         action["label"] = "same visible label"
