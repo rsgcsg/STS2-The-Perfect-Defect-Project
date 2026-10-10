@@ -241,6 +241,50 @@ def verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dict
         raise fail("fresh_predecessor_invalid") from None
 
 
+def _owned_fresh_records(report: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Bind existing v3 producer records, never add fields or reinterpret native outcomes."""
+    from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+
+    policy = owned_current_known_stale_policy()
+    original = _object(_ordinary(path.parent / "request.json"))
+    quiesced = _object(_ordinary(path.parent / "quiesced.json"))
+    final, full = report["child_final"], report["child_final_full"]
+    if (
+        original.get("schema") != OWNED_REPORT_SCHEMA
+        or original.get("status") != "pending"
+        or original.get("operation_id") != report["operation_id"]
+        or any(original.get(key) != report.get(key) for key in (
+            "actor_id", "source", "child_path", "child_sha256", "options", "record_source3"
+        ))
+        or quiesced != report.get("quiesced")
+        or quiesced.get("schema") != OWNED_PIPE_SCHEMA
+        or quiesced.get("type") != "quiesced"
+        or quiesced.get("operation_id") != report["operation_id"]
+        or quiesced.get("record_source3") is not report.get("record_source3")
+        or quiesced.get("counts") != final.get("counts")
+        or quiesced.get("direct_evidence") != report.get("direct_evidence")
+        or quiesced.get("runtime_status") != report.get("runtime_status")
+        or final.get("schema") != OWNED_PIPE_SCHEMA
+        or final.get("type") != "closed"
+        or final.get("operation_id") != report["operation_id"]
+        or full.get("schema") != "spireagent/native-source3-collector-final-full-v3"
+        or any(
+            record.get("execution_policy") != policy for record in (report, original, final, full)
+        )
+        or original.get("options", {}).get("execution_policy") != policy
+        or original.get("options", {}).get("teacher_descriptor", {}).get("agent_spec", {}).get(
+            "execution_policy"
+        ) != policy
+        or any(record.get("counter_proof_error") is not None for record in (report, final, full))
+        or any(
+            record.get("direct_evidence") != report.get("direct_evidence")
+            for record in (final, full)
+        )
+    ):
+        raise fail("fresh_predecessor_owned_records_mismatch")
+    return policy
+
+
 def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dict[str, Any] | None:
     if request.predecessor_report_path is None:
         require_resolved_predecessor(marker)
@@ -254,10 +298,13 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
     raw_report = _ordinary(path)
     report_sha = hashlib.sha256(raw_report).hexdigest()
     report = _object(raw_report)
+    owned = report.get("schema") == OWNED_REPORT_SCHEMA
+    report_schema = OWNED_REPORT_SCHEMA if owned else REPORT_SCHEMA
+    pipe_schema = OWNED_PIPE_SCHEMA if owned else PIPE_SCHEMA
     if (
-        prior.get("schema") != REPORT_SCHEMA
+        prior.get("schema") != report_schema
         or prior.get("status") != "unknown"
-        or report.get("schema") != REPORT_SCHEMA
+        or report.get("schema") != report_schema
         or report.get("status") != "unknown"
         or prior.get("operation_id") != report.get("operation_id")
         or not isinstance(report.get("operation_id"), str)
@@ -274,6 +321,18 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
         raise fail("fresh_predecessor_cleanup_unconfirmed")
     assert isinstance(public, dict) and isinstance(summary, dict)
     assert isinstance(final, dict) and isinstance(full, dict)
+    full_schema = (
+        "spireagent/native-source3-collector-final-full-v3"
+        if owned else "spireagent/native-source3-collector-final-full-v2"
+    )
+    if (
+        final.get("schema") != pipe_schema
+        or final.get("type") != "closed"
+        or final.get("operation_id") != report["operation_id"]
+        or full.get("schema") != full_schema
+    ):
+        raise fail("fresh_predecessor_family_mismatch")
+    policy = _owned_fresh_records(report, path) if owned else None
     old_runtime = public.get("environment", {}).get("runtime_instance_id")
     if (
         not isinstance(old_runtime, str)
@@ -293,7 +352,19 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
     ):
         raise fail("fresh_predecessor_native_outcome_unresolved")
     counts = [report.get(k) for k in ("submissions", "actual_choices", "known_delivered_choices")]
-    if (
+    if owned:
+        maximum = report["options"].get("max_submissions")
+        if (
+            type(maximum) is not int or not 1 <= maximum <= 200
+            or any(type(v) is not int or not 0 <= v <= maximum for v in counts)
+            or public.get("autonomy_budget", {}).get("max_submissions") != maximum
+            or public.get("autonomy_budget", {}).get("submissions_used") != counts[0]
+            or report.get("budget_submissions_used") != counts[0]
+            or final.get("counts")
+            != {"result_messages": counts[1], "known_delivered_choices": counts[2]}
+        ):
+            raise fail("fresh_predecessor_native_outcome_unresolved")
+    elif (
         any(type(v) is not int or not 0 <= v <= 100 for v in counts)
         or len(set(counts)) != 1
         or public.get("autonomy_budget", {}).get("submissions_used") != counts[0]
@@ -387,6 +458,25 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
         or direct.manifest["tainted"] is not False
     ):
         raise fail("fresh_predecessor_direct_verification_failed")
+    if owned:
+        terminal = terminal_summary_fields(direct.terminal_summary, direct.run_id)
+        if (
+            direct.agent_manifest.get("execution_policy") != policy
+            or terminal["content_id"] != direct.content_id
+            or terminal["original_submission_count"] != terminal["terminal_result_count"]
+            or terminal["terminal_result_count"]
+            != terminal["known_delivered"] + terminal["known_stale_rejections"]
+            or terminal["terminal_result_count"] > report["options"]["max_submissions"]
+            or counts[1] != terminal["terminal_result_count"]
+            or any(record.get("terminal_summary") != terminal for record in (report, final, full))
+            or report.get("terminal_result_count") != terminal["terminal_result_count"]
+            or report.get("known_delivered_terminal_count") != terminal["known_delivered"]
+            or report.get("known_stale_rejections") != terminal["known_stale_rejections"]
+            or report.get("consecutive_known_stale_rejections")
+            != terminal["consecutive_known_stale_rejections"]
+            or counts[2] != terminal["known_delivered"]
+        ):
+            raise fail("fresh_predecessor_owned_terminal_mismatch")
     # Join already-verified immutable owner evidence; do not reproduce its ledger.
     event_bytes = _ordinary(direct_path / "events.jsonl", 16 * 1024**2)
     event_seal = next(f for f in direct.evidence_manifest["files"] if f["path"] == "events.jsonl")
@@ -412,8 +502,10 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
                 "modset_fingerprint",
             )
         )
-        or len(results) != counts[0]
-        or any(r["delivery"] != "delivered" for r in results)
+        or (
+            not owned
+            and (len(results) != counts[0] or any(r["delivery"] != "delivered" for r in results))
+        )
     ):
         raise fail("fresh_predecessor_direct_identity_required")
     boundary = {
@@ -446,7 +538,7 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
                 k not in report
                 for k in ("source_start", "source_close", "source_closed", "close_sent")
             )
-            or original_request.get("schema") != REPORT_SCHEMA
+            or original_request.get("schema") != report_schema
             or original_request.get("status") != "pending"
             or original_request.get("operation_id") != report["operation_id"]
             or original_request.get("actor_id") != report.get("actor_id")
@@ -469,7 +561,7 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
             or full.get("record_source3") is not False
             or final.get("source_closed") is not True
             or quiesced != report.get("quiesced")
-            or quiesced.get("schema") != PIPE_SCHEMA
+            or quiesced.get("schema") != pipe_schema
             or quiesced.get("type") != "quiesced"
             or quiesced.get("operation_id") != report["operation_id"]
             or quiesced.get("record_source3") is not False
