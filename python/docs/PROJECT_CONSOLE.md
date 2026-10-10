@@ -837,7 +837,15 @@ no work and resets neither elapsed time nor artifact/scratch charges. Original
 request, source/use, numerical configuration, Run and checkpoints stay unchanged;
 the service derives `effective_limits` from the ordered amendment chain. Once
 amended, resume also keeps the original request intent in that request and records
-the new attempt intent separately. No GPU, remote placement or fee authorization
+the new attempt intent separately. A later explicit experiment retains the amended
+completion's original request/limits, effective limits, charged elapsed/artifact
+bytes, amendment records and exact operation/attempt/input/run/checkpoint history
+in the existing recursive `previous_completed` metadata. Subsequent completed
+operations keep that chain, including operations without new amendments. This
+is durable local application-journal history; it does not rewrite immutable Run
+artifacts or claim older completions recorded fields that were absent. Its
+lifetime is the retained journal's lifetime; no automatic cleanup is added.
+No GPU, remote placement or fee authorization
 is implied. Operations without amendments retain their existing interpretation.
 Snapshots keep `limits` as the original request, expose `effective_limits`,
 `budget_amendments` and `budget_state` (charged/remaining wall time and retained

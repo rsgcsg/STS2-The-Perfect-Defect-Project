@@ -15,6 +15,7 @@ import threading
 import time
 import traceback
 import uuid
+from copy import deepcopy
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any
@@ -220,7 +221,19 @@ class LocalTrainingService:
         keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
                 "recipe", "result_type", "evaluation_status", "schema",
                 "previous_completed", *IDS}
-        return {key: item for key, item in value.items() if key in keys}
+        public = {key: deepcopy(item) for key, item in value.items() if key in keys}
+        if value.get("budget_amendments"):
+            # The slot may be replaced by a new explicit experiment. Retain its
+            # audited authorization and exact attempts in the existing recursive
+            # completed-operation history, rather than losing the cap change.
+            for key in ("request", "attempt_id", "intent_id", "attempts", "budget_amendments",
+                        "elapsed_seconds", "artifact_reserved_bytes", "child_exit",
+                        "attempt_producer"):
+                if key in value:
+                    public[key] = deepcopy(value[key])
+            public["limits"] = dict(value["request"]["limits"])
+            public["effective_limits"] = effective_training_limits(value)
+        return public
 
     def status(self, operation_id: object | None = None) -> dict[str, Any]:
         try:

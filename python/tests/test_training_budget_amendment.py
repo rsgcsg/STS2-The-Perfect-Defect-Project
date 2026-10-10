@@ -133,3 +133,32 @@ def test_old_operation_and_tampered_amendment_chain_fail_closed(tmp_path, monkey
     assert service.status()["availability"] == "recovery_required"
     with pytest.raises(BoundaryError, match="operation_recovery_required"):
         amend(service, value, cap=700, intent="f" * 32)
+
+
+def test_next_explicit_operations_retain_amended_completed_history(tmp_path, monkeypatch):
+    service, request, owner, _store, value, path = stopped(tmp_path, monkeypatch)
+    amend(service, value)
+    completed = service._read(path, owner.identity)
+    completed.update(status="completed", result_id="2" * 64, model_id="3" * 64)
+    write_replaceable_json(path, completed)
+    next_request = replace(request, intent_id="4" * 32,
+                           after_completed_operation_id=completed["operation_id"])
+    next_operation = service._new_operation(next_request, owner, "5" * 32, previous=completed)
+    history = next_operation["previous_completed"]
+    assert history["request"] == request.to_dict()
+    assert history["limits"] == request.limits
+    assert history["effective_limits"] == {**request.limits, "wall_seconds": 600}
+    for key in ("operation_id", "attempt_id", "checkpoint_id", "input_id", "run_id",
+                "attempts", "budget_amendments", "elapsed_seconds", "artifact_reserved_bytes"):
+        assert history[key] == completed[key]
+    # An ordinary next completion retains the earlier authorization chain.
+    next_operation.update(status="completed", run_id="6" * 64,
+                          checkpoint_id="7" * 64, result_id="8" * 64, model_id="9" * 64)
+    third = service._new_operation(replace(next_request, intent_id="a" * 32), owner,
+                                   "b" * 32, previous=next_operation)
+    retained = third["previous_completed"]["previous_completed"]
+    assert retained == history
+    # Public/history copies cannot mutate accepted records in another snapshot.
+    retained["budget_amendments"][0]["wall_seconds"] = 1
+    assert history["budget_amendments"][0]["wall_seconds"] == 600
+    assert service._read(path, owner.identity)["budget_amendments"][0]["wall_seconds"] == 600
