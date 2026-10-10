@@ -20,6 +20,27 @@ publication opens a writable store through the existing Dataset workspace owner,
 requiring the same marker-bound root and original Model bytes as the reader.
 Missing ownership, mismatched roots or read-only publication access rejects
 before derived intent; method names alone never establish write authority.
+
+An operator can call `reconcile_native_compatibility(operation_id,
+original_model_id=..., derived_model_id=...)` against the existing export lock.
+It preserves the active interrupted journal bytes and writes one immutable
+receipt under `model-export-reconciliations`. That receipt binds the exact old
+journal bytes/hash, IDs, profile, store root, old producer, current reconciliation
+producer and observation time. If already present, the same receipt and original
+observation are revalidated and reused. A present derived Manifest is verified
+and exported through the ordinary native path, with no republishing; an
+incompatible current loader leaves the interruption fenced.
+
+An absent Manifest is recorded only as `manifest_absent_at_reconciliation`.
+It does not prove that no publication or orphan payload ever existed, and no
+payload is removed. The old outcome remains interrupted. A separately explicit
+`start(original_id, compatibility_profile=..., prior_native_reconciliation=
+receipt_sha256)` may start a new migration only when the original current journal,
+receipt, workspace and IDs still match and the new clean producer differs from
+the old one. Its new operation and derived IDs must differ, and the new journal
+retains the prior receipt link. A Manifest appearing after the observation blocks
+this path until its own bytes are reconciled. No other pending operation or model
+family inherits this exception; startup and status never retry a migration.
 An interruption after publication intent remains pending/unknown. A caller may
 explicitly reconcile the recorded derived ID if its CAS Manifest exists; it
 cannot automatically repeat the original migration or infer publication from

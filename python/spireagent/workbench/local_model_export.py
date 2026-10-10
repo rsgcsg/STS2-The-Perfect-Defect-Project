@@ -16,13 +16,14 @@ import tempfile
 import threading
 import uuid
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
 from spireagent.artifact_contracts import Manifest, Payload, Producer
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
@@ -57,6 +58,9 @@ LOCK_FILE = ".local-model-export.lock"
 EXPORT_ROOT = "model-exports"
 COMPLETED_ROOT = "model-export-receipts"
 SUPPORT_SCHEMA = "stpd/local-model-export-support-v1"
+RECONCILIATION_SCHEMA = "stpd/native-compatible-export-reconciliation-v1"
+RECONCILIATION_ROOT = "model-export-reconciliations"
+RECONCILIATION_BYTES = 128 * 1024
 
 
 def _ordinary(path: Path, *, directory: bool) -> bool:
@@ -552,6 +556,19 @@ class LocalModelExport:
                 if (value["model_id"] != (derived if derived is not None else original)
                         or (value["status"] == "completed" and derived is None)):
                     raise ValueError
+            if "prior_native_reconciliation" in value:
+                prior = object_fields(value["prior_native_reconciliation"], {
+                    "operation_id", "receipt_sha256", "original_model_id", "derived_model_id"},
+                    "local_model_export.prior_reconciliation")
+                if ("native_compatibility" not in value
+                        or prior["operation_id"] == value["operation_id"]
+                        or prior["original_model_id"] !=
+                        value["native_compatibility"]["original_model_id"]
+                        or prior["derived_model_id"] == value.get("derived_model_id")):
+                    raise ValueError
+                digest(prior["operation_id"], "local_model_export.prior_operation", length=32)
+                for key in ("receipt_sha256", "original_model_id", "derived_model_id"):
+                    digest(prior[key], "local_model_export.prior_reconciliation." + key)
             digest(value["model_id"], "local_model_export.model_id")
             digest(value["operation_id"], "local_model_export.operation_id", length=32)
             if value["status"] == "completed" and (
@@ -596,6 +613,213 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "operation_recovery_required")
         atomic_json(target, value)
 
+    def _native_reconciliation(self, operation_id: str) -> dict[str, Any] | None:
+        """Validate an immutable owner observation, never alter its old journal."""
+        digest(operation_id, "local_model_export.operation_id", length=32)
+        root = self.config.state_dir / RECONCILIATION_ROOT
+        if not root.exists() and not root.is_symlink():
+            return None
+        path = root / (operation_id + ".json")
+        if not _ordinary(root, directory=True):
+            raise BoundaryError("local_model_export", "reconciliation_receipt_invalid")
+        if not path.exists() and not path.is_symlink():
+            return None
+        if not _ordinary(path, directory=False) or path.stat().st_size > RECONCILIATION_BYTES:
+            raise BoundaryError("local_model_export", "reconciliation_receipt_invalid")
+        raw = path.read_bytes()
+        receipt = object_fields(
+            decode_json(raw),
+            {
+                "schema",
+                "operation_id",
+                "original_model_id",
+                "derived_model_id",
+                "profile",
+                "store_root",
+                "original_export_producer",
+                "reconciliation_producer",
+                "observed_at",
+                "outcome",
+                "original_journal_utf8",
+                "original_journal_sha256",
+                "derived_manifest_sha256",
+            },
+            "local_model_export.reconciliation",
+        )
+        if (
+            raw != json_bytes(receipt)
+            or receipt["schema"] != RECONCILIATION_SCHEMA
+            or receipt["operation_id"] != operation_id
+            or receipt["profile"] != COMPATIBILITY_PROFILE
+            or receipt["outcome"]
+            not in {"manifest_absent_at_reconciliation",
+                    "manifest_present_verified_at_reconciliation"}
+            or not isinstance(receipt["observed_at"], str)
+            or not isinstance(receipt["original_journal_utf8"], str)
+        ):
+            raise BoundaryError("local_model_export", "reconciliation_receipt_invalid")
+        journal_raw = receipt["original_journal_utf8"].encode("utf-8")
+        digest(receipt["original_journal_sha256"], "local_model_export.journal_sha256")
+        if (
+            len(journal_raw) > 64 * 1024
+            or hashlib.sha256(journal_raw).hexdigest() != receipt["original_journal_sha256"]
+        ):
+            raise BoundaryError("local_model_export", "reconciliation_journal_mismatch")
+        journal = decode_json(journal_raw)
+        if (not isinstance(journal, dict)
+                or not isinstance(journal.get("native_compatibility"), dict)):
+            raise BoundaryError("local_model_export", "reconciliation_journal_mismatch")
+        compatibility = journal["native_compatibility"]
+        if (
+            journal.get("schema") != SCHEMA
+            or journal.get("status") != "pending"
+            or journal.get("model_type") != "native"
+            or journal.get("operation_id") != operation_id
+            or journal.get("model_id") != receipt["derived_model_id"]
+            or journal.get("derived_model_id") != receipt["derived_model_id"]
+            or journal.get("store_root") != receipt["store_root"]
+            or compatibility.get("profile") != receipt["profile"]
+            or compatibility.get("original_model_id") != receipt["original_model_id"]
+            or compatibility.get("export_producer") != receipt["original_export_producer"]
+        ):
+            raise BoundaryError("local_model_export", "reconciliation_journal_mismatch")
+        Producer.decode(receipt["original_export_producer"])
+        Producer.decode(receipt["reconciliation_producer"])
+        for field in ("original_model_id", "derived_model_id"):
+            digest(receipt[field], "local_model_export." + field)
+        if receipt["outcome"] == "manifest_absent_at_reconciliation":
+            if receipt["derived_manifest_sha256"] is not None:
+                raise BoundaryError("local_model_export", "reconciliation_receipt_invalid")
+        else:
+            digest(receipt["derived_manifest_sha256"], "local_model_export.derived_manifest")
+        return {**receipt, "receipt_sha256": hashlib.sha256(raw).hexdigest()}
+
+    def reconcile_native_compatibility(
+        self, operation_id: object, *, original_model_id: object, derived_model_id: object
+    ) -> dict[str, Any]:
+        """Explicit local CAS observation; absence never means never published."""
+        from spireagent.storage.blobs import StoreError
+        from spireagent.storage.local import LocalBlobStore
+        from spireagent.storage.store import ManifestArtifactStore
+        from spireagent.workbench.developer_server import instance_lock
+
+        requested = digest(operation_id, "local_model_export.operation_id", length=32)
+        original_id = digest(original_model_id, "local_model_export.original_model_id")
+        derived_id = digest(derived_model_id, "local_model_export.derived_model_id")
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_model_export", "export_in_progress")
+            with instance_lock(self.config.state_dir / LOCK_FILE, create=False):
+                journal = self._read()
+                compatibility = journal.get("native_compatibility")
+                if (
+                    journal.get("status") != "pending"
+                    or journal.get("operation_id") != requested
+                    or journal.get("model_id") != derived_id
+                    or journal.get("derived_model_id") != derived_id
+                    or not isinstance(compatibility, dict)
+                    or compatibility["original_model_id"] != original_id
+                ):
+                    raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
+                original_raw = self._path().read_bytes()
+                reader = self._source(original_id)
+                if (
+                    not isinstance(reader, ManifestArtifactStore)
+                    or not isinstance(reader.blobs, LocalBlobStore)
+                    or not reader.blobs.readonly
+                    or str(reader.blobs.root) != journal["store_root"]
+                ):
+                    raise BoundaryError("local_model_export", "reconciliation_workspace_mismatch")
+                prior = self._native_reconciliation(requested)
+                if prior is not None:
+                    if prior["original_journal_sha256"] != hashlib.sha256(original_raw).hexdigest():
+                        raise BoundaryError("local_model_export", "reconciliation_journal_mismatch")
+                    return prior
+                original = reader.get_manifest(original_id)
+                if original.artifact_id != original_id:
+                    raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
+                try:
+                    derived = reader.get_manifest(derived_id)
+                except StoreError as error:
+                    if error.code != "object_not_found":
+                        raise
+                    outcome, manifest_sha = "manifest_absent_at_reconciliation", None
+                else:
+                    if (
+                        derived.parent("original_model") != original_id
+                        or derived.producer.to_dict() != compatibility["export_producer"]
+                    ):
+                        raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
+                    destination = _destination(self.config, derived_id, native=True)
+                    _native_package(reader, derived, destination, materialize=True)
+                    outcome = "manifest_present_verified_at_reconciliation"
+                    manifest_sha = hashlib.sha256(derived.to_bytes()).hexdigest()
+                receipt = {
+                    "schema": RECONCILIATION_SCHEMA,
+                    "operation_id": requested,
+                    "original_model_id": original_id,
+                    "derived_model_id": derived_id,
+                    "profile": compatibility["profile"],
+                    "store_root": journal["store_root"],
+                    "original_export_producer": compatibility["export_producer"],
+                    "reconciliation_producer": source_identity(ROOT).to_dict(),
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "outcome": outcome,
+                    "original_journal_utf8": original_raw.decode("utf-8"),
+                    "original_journal_sha256": hashlib.sha256(original_raw).hexdigest(),
+                    "derived_manifest_sha256": manifest_sha,
+                }
+                encoded = json_bytes(receipt)
+                if len(encoded) > RECONCILIATION_BYTES:
+                    raise BoundaryError("local_model_export", "reconciliation_receipt_size")
+                root = self.config.state_dir / RECONCILIATION_ROOT
+                if root.exists() or root.is_symlink():
+                    if not _ordinary(root, directory=True):
+                        raise BoundaryError("local_model_export", "reconciliation_receipt_invalid")
+                else:
+                    root.mkdir(mode=0o700)
+                LocalBlobStore(root, create=False).put_if_absent(requested + ".json", encoded)
+                checked = self._native_reconciliation(requested)
+                assert checked is not None
+                return checked
+
+    def _checked_absent_reconciliation(
+        self, journal: dict[str, Any], original_id: str, requested_receipt: str
+    ) -> dict[str, Any]:
+        compatibility = journal.get("native_compatibility")
+        if (
+            journal.get("status") != "pending"
+            or journal.get("model_type") != "native"
+            or not isinstance(compatibility, dict)
+            or compatibility.get("original_model_id") != original_id
+        ):
+            raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
+        receipt = self._native_reconciliation(journal["operation_id"])
+        if (
+            receipt is None
+            or receipt["receipt_sha256"] != requested_receipt
+            or receipt["outcome"] != "manifest_absent_at_reconciliation"
+            or receipt["original_model_id"] != original_id
+            or receipt["derived_model_id"] != journal.get("derived_model_id")
+            or receipt["original_journal_sha256"]
+            != hashlib.sha256(self._path().read_bytes()).hexdigest()
+        ):
+            raise BoundaryError("local_model_export", "reconciliation_receipt_mismatch")
+        reader = self._source(original_id)
+        if str(getattr(getattr(reader, "blobs", None), "root", None)) != receipt["store_root"]:
+            raise BoundaryError("local_model_export", "reconciliation_workspace_mismatch")
+        # Do not replay the old ID if it appeared after the recorded observation.
+        from spireagent.storage.blobs import StoreError
+
+        try:
+            reader.get_manifest(receipt["derived_model_id"])
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise
+        else:
+            raise BoundaryError("local_model_export", "prior_derived_manifest_now_present")
+        return receipt
+
     def _public(self, value: dict[str, Any]) -> dict[str, Any]:
         operation = {key: value[key] for key in
                      ("status", "operation_id", "model_id", "model_type",
@@ -606,6 +830,12 @@ class LocalModelExport:
             operation["compatibility_profile"] = value["native_compatibility"]["profile"]
             if "derived_model_id" in value:
                 operation["derived_model_id"] = value["derived_model_id"]
+            receipt = self._native_reconciliation(value["operation_id"])
+            if receipt is not None:
+                operation["reconciliation"] = {key: receipt[key] for key in (
+                    "receipt_sha256", "outcome", "observed_at", "original_journal_sha256")}
+        if "prior_native_reconciliation" in value:
+            operation["prior_native_reconciliation"] = value["prior_native_reconciliation"]
         if (value.get("model_type") in {"public_m0", "public_m2"}
                 and value.get("verified_receipt") is not None):
             operation["verified_receipt"] = value["verified_receipt"]
@@ -866,21 +1096,30 @@ class LocalModelExport:
         if completed.get("status") == "completed":
             self._archive_completed(completed)
 
-    def start(self, model_id: object, *,
-              compatibility_profile: str | None = None) -> dict[str, Any]:
+    def start(self, model_id: object, *, compatibility_profile: str | None = None,
+              prior_native_reconciliation: str | None = None) -> dict[str, Any]:
         from spireagent.workbench.developer_server import instance_lock
 
         identity = digest(model_id, "local_model_export.model_id")
         if compatibility_profile is not None and compatibility_profile != COMPATIBILITY_PROFILE:
             raise BoundaryError("local_model_export", "unsupported_native_compatibility_profile")
+        if prior_native_reconciliation is not None:
+            digest(prior_native_reconciliation, "local_model_export.reconciliation_receipt")
+            if compatibility_profile != COMPATIBILITY_PROFILE:
+                raise BoundaryError("local_model_export",
+                                    "explicit_new_compatibility_intent_required")
         with self.lock:
             previous = self._read()
+            prior_receipt = (self._checked_absent_reconciliation(previous, identity,
+                              prior_native_reconciliation)
+                             if prior_native_reconciliation is not None else None)
             if (previous["status"] == "pending" and self.thread is not None
                     and self.thread.is_alive()):
                 if previous["model_id"] == identity:
                     return self._public(previous)
                 raise BoundaryError("local_model_export", "export_in_progress")
-            if previous["status"] == "pending" and previous["model_id"] != identity:
+            if (previous["status"] == "pending" and previous["model_id"] != identity
+                    and prior_receipt is None):
                 raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
             store = self._source(identity)
             root = getattr(getattr(store, "blobs", None), "root", None)
@@ -897,6 +1136,9 @@ class LocalModelExport:
                                         "local_sampled_model_required_for_compatibility")
                 store = self._native_publication_store(store, model)
                 producer = source_identity(ROOT)
+                if (prior_receipt is not None
+                        and producer.to_dict() == prior_receipt["original_export_producer"]):
+                    raise BoundaryError("local_model_export", "new_compatibility_producer_required")
                 compatibility = {"profile": compatibility_profile, "original_model_id": identity,
                                  "export_producer": producer.to_dict()}
             public_schema = model.parameters.value().get("schema") in {
@@ -980,8 +1222,11 @@ class LocalModelExport:
                         previous.get("status") != "pending"
                         or current.get("operation_id") != previous.get("operation_id")
                         or current.get("model_id") != identity
-                        or current.get("store_root") != str(root)):
+                        or current.get("store_root") != str(root)) and prior_receipt is None:
                     raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
+                if prior_receipt is not None:
+                    self._checked_absent_reconciliation(current, identity,
+                                                       prior_receipt["receipt_sha256"])
                 destination = _destination(self.config, identity, memory=memory,
                                            structured=structured, native=native,
                                            public_m0=public_m0, public_m2=public_m2)
@@ -1004,6 +1249,15 @@ class LocalModelExport:
                     operation.update(model_type="native")
                 if compatibility is not None:
                     operation["native_compatibility"] = compatibility
+                    if prior_receipt is not None:
+                        if operation["operation_id"] == prior_receipt["operation_id"]:
+                            raise BoundaryError("local_model_export",
+                                                "new_compatibility_operation_required")
+                        operation["prior_native_reconciliation"] = {
+                            "operation_id": prior_receipt["operation_id"],
+                            "receipt_sha256": prior_receipt["receipt_sha256"],
+                            "original_model_id": prior_receipt["original_model_id"],
+                            "derived_model_id": prior_receipt["derived_model_id"]}
                 elif current.get("status") == "pending" and "native_compatibility" in current:
                     # An explicit start of the recorded derived ID reconciles its
                     # known CAS bytes; it does not replay original publication.
@@ -1098,6 +1352,10 @@ class LocalModelExport:
                     if selected.blobs.root.resolve() != store.blobs.root.resolve():
                         raise BoundaryError("local_model_export", "workspace_changed")
                     with self.lock:
+                        prior = self._read().get("prior_native_reconciliation")
+                        if prior is not None and derived.artifact_id == prior["derived_model_id"]:
+                            raise BoundaryError("local_model_export",
+                                                "prior_derived_id_replay_forbidden")
                         self._finish(operation_id, model_id=derived.artifact_id,
                                      derived_model_id=derived.artifact_id)
                     # From this durable intent onwards publication may have
