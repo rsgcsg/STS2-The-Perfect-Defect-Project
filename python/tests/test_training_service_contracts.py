@@ -83,11 +83,11 @@ assert any(item['recipe_id'] == 'structured-m2-cpu-v2' for item in value['recipe
 for item in value['recipes']:
     if item['limits']:
         assert item['placement_ids'] == ['local-cpu']
-            if item['recipe_id'] == 'reward-m0-legacycompact-deck-pair-v1':
-                assert item['wall_budget_amendment'] is False
-                assert 'amend_wall_budget' not in item['supported_actions']
-            else:
-                assert 'amend_wall_budget' in item['supported_actions']
+        if item['recipe_id'] == 'reward-m0-legacycompact-deck-pair-v1':
+            assert item['wall_budget_amendment'] is False
+            assert 'amend_wall_budget' not in item['supported_actions']
+        else:
+            assert 'amend_wall_budget' in item['supported_actions']
     else:
         assert 'amend_wall_budget' not in item['supported_actions']
 assert 'torch' not in sys.modules
