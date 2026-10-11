@@ -347,16 +347,16 @@ def closed_legacy(tmp_path):
         },
     }
     journal["remote"]["target"]["app_id"] = "stpd-m0-update-" + attempts[0]["attempt_id"]
-    raw = json.dumps(journal, indent=2) + "\n"
+    raw = (json.dumps(journal, indent=2) + "\n").encode("utf-8")
     path = owner.path.parent / "local-training-operation.json"
-    path.write_text(raw)
+    path.write_bytes(raw)
     cfg = ProjectConfig(tmp_path / "state", "", "", None, combination())
     return SimpleNamespace(
         store=store,
         blobs=blobs,
         owner=owner,
         journal=journal,
-        raw=raw.encode(),
+        raw=raw,
         path=path,
         config=cfg,
     )
@@ -428,13 +428,19 @@ def test_closed_reader_rejects_uncertain_or_rebound_history(closed_legacy, field
     assert f.path.read_bytes() == f.raw
 
 
-def test_archive_preserves_all_raw_bytes_and_is_immutable(closed_legacy):
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_archive_preserves_all_raw_bytes_and_is_immutable(closed_legacy, newline):
     f = closed_legacy
-    pointer = archive_completed(f.store, f.raw, f.journal)
-    assert pointer["archive_ref"] == HISTORY_PREFIX + hashlib.sha256(f.raw).hexdigest()
-    assert f.blobs.get(pointer["archive_ref"]) == f.raw
-    assert f.raw != json_bytes(f.journal) and f.path.read_bytes() == f.raw
-    assert archive_completed(f.store, f.raw, f.journal) == pointer
+    raw = f.raw.replace(b"\n", newline)
+    f.path.write_bytes(raw)
+    assert LocalTrainingService._read(f.path, f.owner.identity) == f.journal
+    pointer = archive_completed(f.store, raw, f.journal)
+    assert pointer["archive_ref"] == HISTORY_PREFIX + hashlib.sha256(raw).hexdigest()
+    assert pointer["archive_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert pointer["archive_size"] == len(raw)
+    assert f.blobs.get(pointer["archive_ref"]) == raw
+    assert raw != json_bytes(f.journal) and f.path.read_bytes() == raw
+    assert archive_completed(f.store, raw, f.journal) == pointer
     assert len(json.loads(f.blobs.get(pointer["archive_ref"]))["remote"]["attempts"]) == 26
 
 
