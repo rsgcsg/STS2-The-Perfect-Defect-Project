@@ -840,3 +840,66 @@ def test_native_application_resolves_only_exact_original_composition(
     assert new["agent_task_outcome"]["terminal_observation"]["result"] == "loss"
     assert new["evaluation_id"] != original_id
     assert len(list((service.directory / "evaluations").glob("*.json"))) == 2
+
+
+@pytest.mark.parametrize("result", ["win", "loss"])
+@pytest.mark.parametrize("variant", ["matching", "opposite", "prefix", "ordinary", "missing-ACK"])
+def test_teacher_requires_original_program_exact_ack_and_matching_close(
+    native_source, result, variant
+):
+    from sts2_platform_evidence import verify_agent_session_run_evidence
+
+    from stpd.policy.native_teacher_agent import descriptor
+
+    holder, canonical, _ = native_source
+    teacher = descriptor()
+    f = holder.f
+    f.agent["adapter"] = teacher["adapter"]
+    f.agent["agent"].update({key: teacher["agent_spec"][key] for key in ("id", "version")})
+    f.agent["input"]["input_spec"] = teacher["input_spec"]
+    f.run.update(agent_id=teacher["agent_spec"]["id"],
+                 agent_version=teacher["agent_spec"]["version"])
+    f.startup["adapter"] = teacher["adapter"]
+    f = native_summary(holder, canonical, result=result)
+    reason = "natural_ready_summary_" + result
+    if variant == "opposite":
+        reason = "natural_ready_summary_" + ("loss" if result == "win" else "win")
+    elif variant == "prefix":
+        reason += "_forged"
+    elif variant == "ordinary":
+        reason = "operator_requested_stop"
+    for event in f.events:
+        if event["kind"] in {"agent_sample_next_completed", "agent_directive"}:
+            event["payload"]["output"]["directive"]["reason"] = reason
+    if variant == "missing-ACK":
+        f.events = [e for e in f.events if e["kind"] != "agent_sample_consume_ack_offered"]
+    raw = json.dumps(teacher).encode()
+    f.agent["artifact"]["sha256"] = hashlib.sha256(raw).hexdigest()
+    f.run["agent_artifact_sha256"] = f.agent["artifact"]["sha256"]
+    f.startup["agent_artifact_sha256"] = f.agent["artifact"]["sha256"]
+    f.write()
+    verified = verify_agent_session_run_evidence(f.directory, f.startup)
+    if variant == "missing-ACK":
+        assert verified.status == "fail"
+        assert [finding.code for finding in verified.findings] == ["native_session_sample_next_ack"]
+        failed = project(verified, native=True, native_package=raw)
+        assert failed["task_completion"]["status"] == "unknown"
+        return
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=True, native_package=raw)
+    assert outcome["agent_composition"]["models"] == []
+    assert outcome["agent_composition"]["model"] is None
+    assert outcome["agent_composition"]["program"] == teacher["agent_spec"]
+    assert outcome["task_completion"]["status"] == (
+        "completed" if variant == "matching" else "unproved"
+    )
+    if variant == "matching":
+        witness = outcome["task_completion"]["witness"]
+        assert (witness["consume_event_sequence"] < witness["acknowledgement_event_sequence"]
+                < witness["directive_event_sequence"])
+        assert outcome["terminal_observation"]["result"] == result
+        missing_request = project(verified, native=True, native_package=raw,
+                                  application_request_status="unknown")
+        assert missing_request["task_completion"]["status"] == "unknown"
+        assert missing_request["terminal_observation"]["result"] == result
+        assert missing_request["operation_end"]["status"] == "censored"

@@ -96,3 +96,42 @@ Portable tests do not qualify a game, original model quality, Human or training.
 Versions/BOM/pins are lead-owned closeout. The current conservative M0 code digest
 may change with application source; old selections remain original and current
 registrations rebind strictly rather than weakening the digest.
+
+## Concrete application interfaces
+
+`LocalModelService.composition(selection_id)` resolves the effective original;
+`agent_request(selection_id, operation, run_profile)` returns a detached effective
+request. `run_agent(request)` validates it again before existing admission and
+executes `start`, `prepare-and-load` or `prepare-and-takeover` through their
+existing owners. Trusted native callers may pass the same native context and
+authorizer callbacks as before; their references enter request metadata. The
+HTTP payload cannot provide these callbacks or obtain authority by inventing
+context fields. Ordinary browser/control-client guards are unchanged.
+
+The existing Application exposes `POST /api/local-models/run-agent` for that
+exact request, and its normal local registration owner exposes two closed
+convenience routes. `register-teacher` accepts `variant` (`baseline`, `owned`,
+`continuous`, default `continuous`). `register-composition` accepts a model ID,
+optional existing environment kind, and explicit `task_option` (`default`,
+`none`, `ready-standard-summary`) plus `program_option` (`none`,
+`card-reward-take`). Public M0/M2 owning TaskSpec factories resolve these names;
+the card chooser is Public M0-only. Original model registration routes preserve
+their existing defaults. Choices produce a new real registered composition or
+reuse an exact match; they do not update old manifests or load a game.
+
+Request files under the existing service's `requests/` directory contain an
+operation ID and fixed effective input. Session state separately stores the
+request reference with the accepted startup's exact run ID. A later failed
+operation using the same manifest cannot relabel that startup or its evaluation.
+Application results report `agent_execution.status` as `bound`, `unknown` or
+`legacy_unknown`; legacy requests are never invented. Teacher application Task
+completion also requires the original request association; missing association
+keeps an independently proved terminal observation while completion is unknown.
+Standalone typed-evidence projection can still report its original Task witness
+without claiming an application request association.
+
+The shared Teacher manifest factory lives in
+`stpd.policy.native_teacher_manifest`; the collector uses its bounded pure JSON
+bridge and keeps its existing Host/control/data loop. The factory's fields are
+construction declarations, not a second wire validator. Runtime remains the
+required wire admission authority.
