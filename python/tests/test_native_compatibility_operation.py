@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from spireagent.artifact_contracts import Manifest, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.workbench import local_model_export as owner
 from spireagent.workbench.developer import ProjectConfig, atomic_json
@@ -39,6 +39,7 @@ def service(tmp_path, monkeypatch):
     derived = Manifest(
         "model",
         target,
+        (Parent("original_model", original.artifact_id),),
         parameters=FrozenObject.of(
             {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": COMPATIBILITY_PROFILE}
         ),
@@ -190,6 +191,142 @@ def test_selected_legacy_profile_cannot_publish_borrowed_operational_derivative(
     result = settled(selected)
     assert result["status"] == "failed" and result["error_code"] == "compatibility_profile_mismatch"
     assert "derived_model_id" not in result
+
+
+@pytest.mark.parametrize(
+    "selected_profile", [COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE]
+)
+def test_named_pending_foreign_profile_cannot_rewrite_unknown_intent_or_materialize(
+    service, monkeypatch, selected_profile
+):
+    selected, original, derived, records, module = service
+    other = (
+        OPERATIONAL_COMPATIBILITY_PROFILE
+        if selected_profile == COMPATIBILITY_PROFILE
+        else COMPATIBILITY_PROFILE
+    )
+    foreign = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": other}
+        ),
+    )
+    records[foreign.artifact_id] = foreign
+    journal = {
+        "schema": owner.SCHEMA,
+        "status": "pending",
+        "model_type": "native",
+        "operation_id": "a" * 32,
+        "model_id": foreign.artifact_id,
+        "derived_model_id": foreign.artifact_id,
+        "store_root": str(selected._workspace().store.blobs.root),
+        "native_compatibility": {
+            "profile": selected_profile,
+            "original_model_id": original.artifact_id,
+            "export_producer": foreign.producer.to_dict(),
+        },
+    }
+    atomic_json(selected._path(), journal)
+    before = selected._path().read_bytes()
+    monkeypatch.setattr(
+        owner, "_native_package", lambda *args, **kwargs: pytest.fail("materialized")
+    )
+    module.publish_native_compatible_model = lambda *args, **kwargs: pytest.fail("republished")
+    with pytest.raises(BoundaryError, match="compatibility_profile_mismatch"):
+        selected.start(foreign.artifact_id)
+    assert selected._path().read_bytes() == before
+    assert selected._read()["status"] == "pending" and selected.thread is None
+    assert selected._model_operation(foreign.artifact_id)["status"] != "completed"
+
+
+@pytest.mark.parametrize(
+    "selected_profile", [COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE]
+)
+def test_resumed_run_defense_keeps_original_unknown_journal_on_mismatched_binding(
+    service, monkeypatch, selected_profile
+):
+    selected, original, derived, _, module = service
+    other = (
+        OPERATIONAL_COMPATIBILITY_PROFILE
+        if selected_profile == COMPATIBILITY_PROFILE
+        else COMPATIBILITY_PROFILE
+    )
+    foreign = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": other}
+        ),
+    )
+    journal = {
+        "schema": owner.SCHEMA,
+        "status": "pending",
+        "model_type": "native",
+        "operation_id": "a" * 32,
+        "model_id": foreign.artifact_id,
+        "derived_model_id": foreign.artifact_id,
+        "store_root": str(selected._workspace().store.blobs.root),
+        "native_compatibility": {
+            "profile": selected_profile,
+            "original_model_id": original.artifact_id,
+            "export_producer": foreign.producer.to_dict(),
+        },
+    }
+    atomic_json(selected._path(), journal)
+    before = selected._path().read_bytes()
+    exited = []
+    held = SimpleNamespace(__exit__=lambda *args: exited.append(True))
+    monkeypatch.setattr(
+        owner, "_native_package", lambda *args, **kwargs: pytest.fail("materialized")
+    )
+    module.publish_native_compatible_model = lambda *args, **kwargs: pytest.fail("republished")
+    selected._run(
+        held,
+        journal["operation_id"],
+        selected._workspace().store,
+        foreign,
+        selected.config.state_dir / "never-materialized",
+        None,
+    )
+    assert selected._path().read_bytes() == before and selected._read()["status"] == "pending"
+    assert exited == [True]
+
+
+def test_locked_pending_profile_recheck_preserves_other_writer_unknown_journal(
+    service, monkeypatch
+):
+    selected, original, derived, records, module = service
+    records[derived.artifact_id] = derived
+    journal = {
+        "schema": owner.SCHEMA,
+        "status": "pending",
+        "model_type": "native",
+        "operation_id": "a" * 32,
+        "model_id": derived.artifact_id,
+        "derived_model_id": derived.artifact_id,
+        "store_root": str(selected._workspace().store.blobs.root),
+        "native_compatibility": {
+            "profile": COMPATIBILITY_PROFILE,
+            "original_model_id": original.artifact_id,
+            "export_producer": derived.producer.to_dict(),
+        },
+    }
+    atomic_json(selected._path(), journal)
+    changed = []
+
+    def concurrent_writer(*args):
+        journal["native_compatibility"]["profile"] = OPERATIONAL_COMPATIBILITY_PROFILE
+        atomic_json(selected._path(), journal)
+        changed.append(selected._path().read_bytes())
+
+    monkeypatch.setattr(owner, "require_native_models", concurrent_writer)
+    monkeypatch.setattr(
+        owner, "_native_package", lambda *args, **kwargs: pytest.fail("materialized")
+    )
+    module.publish_native_compatible_model = lambda *args, **kwargs: pytest.fail("republished")
+    with pytest.raises(BoundaryError, match="compatibility_profile_mismatch"):
+        selected.start(derived.artifact_id)
+    assert changed and selected._path().read_bytes() == changed[0]
+    assert selected._read()["status"] == "pending" and selected.thread is None
 
 
 def test_same_operation_retains_both_ids_and_original_completed_receipt(service, monkeypatch):
