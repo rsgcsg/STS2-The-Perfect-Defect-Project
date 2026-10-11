@@ -83,6 +83,7 @@ def native_caps():
 def native_app(tmp_path, monkeypatch, native_endpoint, native_caps):
     state = tmp_path / "state"
     state.mkdir()
+    (state / "native-host").mkdir()
     config = ProjectConfig(state, "", native_endpoint, None, combination())
     path = tmp_path / "project.json"
     atomic_json(path, config.to_dict())
@@ -409,3 +410,155 @@ def test_unknown_handoff_quarantines_original_and_never_admits_actor(native_app)
     assert record["phase"] == "unknown" and record["admission_context"] is None
     with pytest.raises(BoundaryError, match="resource_not_ready"):
         app.local_environment.native_episode_context(record["environment_ref"])
+
+
+def test_external_native_state_absence_or_symlink_rejects_before_driver(native_app, monkeypatch):
+    import subprocess
+
+    app, _profile, _fixture, log = native_app
+    root = app.config.state_dir / "native-host"
+    root.rmdir()
+    calls = []
+    monkeypatch.setattr(
+        app.local_environment,
+        "native_client_factory",
+        lambda *_a, **_kw: calls.append("constructed"),
+    )
+    with pytest.raises(BoundaryError, match="native_profile_required_or_invalid"):
+        app.prepare_native_episode(prepare_body())
+    # The existing Node directory-junction convention needs no Windows
+    # symlink privilege; Node is already required by this public pipe fixture.
+    subprocess.run(
+        [
+            "node",
+            "--eval",
+            "require('node:fs').symlinkSync(process.argv[1],process.argv[2],"
+            "process.platform==='win32'?'junction':'dir')",
+            str(app.config.state_dir),
+            str(root),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=5,
+    )
+    try:
+        with pytest.raises(BoundaryError, match="native_profile_required_or_invalid"):
+            app.prepare_native_episode(prepare_body())
+    finally:
+        if sys.platform == "win32":
+            root.rmdir()
+        else:
+            root.unlink()
+        root.mkdir()
+    assert calls == [] and not log.exists()
+
+
+@pytest.mark.parametrize("fault", ["missing", "wrong-root"])
+def test_external_state_ready_proof_is_required_before_reset(native_app, fault):
+    app, _profile, fixture, log = native_app
+    value = json.loads(fixture.read_bytes())
+    if fault == "missing":
+        value["missingStateCapability"] = True
+    else:
+        value["stateRootReadback"] = {
+            "schema": "sts2.host-runtime/reference-state-root-1",
+            "mode": "external",
+            "local_root": str(app.config.state_dir),
+            "evidence_root": str(app.config.state_dir / "evidence"),
+        }
+    atomic_json(fixture, value)
+    app.prepare_native_episode(prepare_body())
+    app.local_environment.native_worker.join(timeout=8)
+    assert not app.local_environment.native_worker.is_alive()
+    state = app.native_episode_status()
+    assert state["phase"] == "failed", state
+    assert state["error_code"] == "native_external_state_unproven"
+    assert state["world_mutation_offered"] is False
+    assert "reset_started" not in [
+        json.loads(line)["event"] for line in log.read_bytes().splitlines()
+    ]
+
+
+def test_two_serial_owned_preparations_use_real_external_template_and_preserve_package(native_app):
+    import subprocess
+
+    from spireagent.package_identity import validate_installed_package
+
+    app, profile, fixture, log = native_app
+    root = app.config.state_dir / "native-host"
+    game_identity = {
+        "platform": "win32",
+        "architecture": "x64",
+        "release": {
+            "version": "fixture-game",
+            "commit": "fixture-commit",
+            "main_assembly_hash": 123,
+        },
+        "executable": {"sha256": "a" * 64},
+        "runtime_main_assembly_hash": 123,
+        "sts2_assembly": {"sha256": "e" * 64},
+        "godotsharp_assembly": {"sha256": "f" * 64},
+    }
+    # The real existing template producer creates its exact directory/manifest;
+    # only native World execution is synthetic in the public pipe fixture.
+    script = """
+import fs from 'node:fs'; import path from 'node:path';
+const {isolatedProfileLaunch}=await import(process.argv[1]);
+const {captureProfileTemplate}=await import(process.argv[2]);
+const root=process.argv[3], game=JSON.parse(process.argv[4]);
+const original=isolatedProfileLaunch(root,'template-source','win32');
+const file=path.join(original.expected_user_data_root,'default/1/settings.save');
+fs.mkdirSync(path.dirname(file),{recursive:true});
+fs.writeFileSync(file,JSON.stringify({schema_version:8,synthetic:true}));
+console.log(JSON.stringify(captureProfileTemplate({localRoot:root,profileId:'template-source',
+  templateId:'defect-a0-s0',gameIdentity:game})));
+"""
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            script,
+            (HOST / "src/profile-isolation.mjs").as_uri(),
+            (HOST / "src/profile-template.mjs").as_uri(),
+            str(root),
+            json.dumps(game_identity),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    captured = json.loads(result.stdout)
+    value = json.loads(fixture.read_bytes())
+    value["templateIdentity"] = game_identity
+    atomic_json(fixture, value)
+    package = Path(profile["host_package_directory"])
+    before = directory_sha256(package)
+    generations = []
+    for intent in ("a" * 32, "b" * 32):
+        ready = prepared(app, prepare_body(intent=intent))
+        binding = ready["admission_context"]["binding"]
+        generations.append(binding["profile"]["generation_id"])
+        assert binding["profile"]["template_payload_sha256"] == captured["payload_sha256"]
+        assert ready["host_state_root"]["local_root"] == str(root)
+        result = app.finish_native_episode(ready["environment_ref"])
+        assert result["phase"] == "closed", result
+        validate_installed_package(
+            package, profile["host_package_pin"], required_paths=("tools/reference-pe-driver.mjs",)
+        )
+        assert directory_sha256(package) == before
+    assert generations[0] != generations[1]
+    states = [
+        json.loads(line)
+        for line in log.read_bytes().splitlines()
+        if json.loads(line)["event"] == "external_state"
+    ]
+    assert len(states) == 2
+    for state in states:
+        assert state["localRoot"] == str(root)
+        assert state["evidenceRoot"] == str(root / "evidence")
+        assert Path(state["profile"]["profile_root"]).is_relative_to(root / "profiles")
+    assert (root / "profile-templates/defect-a0-s0/template.json").is_file()
+    assert (root / "evidence/fixture-episodes.jsonl").is_file()
+    assert not (package / ".local").exists()

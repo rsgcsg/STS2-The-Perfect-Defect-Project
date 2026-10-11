@@ -996,6 +996,7 @@ class LocalEnvironmentService:
                     or not _ordinary(location, directory=True)
                 ):
                     raise ValueError
+            self._native_state_root(value)
             if value["template_id"] != "defect-a0-s0":
                 raise ValueError
             from .native_tasks import NativeTasks
@@ -1033,6 +1034,19 @@ class LocalEnvironmentService:
         if self.native_configuration_id is None or self.native_application_instance_id is None:
             raise BoundaryError("native_episode", "application_owner_required")
         return self.native_configuration_id()
+
+    def _native_state_root(self, profile: dict[str, Any]) -> Path:
+        """Operator-staged state belongs to the Application, not the package."""
+        root = self.config.state_dir / "native-host"
+        package = Path(profile["host_package_directory"])
+        if (
+            root.resolve() != root
+            or not _ordinary(root, directory=True)
+            or root.is_relative_to(package)
+            or package.is_relative_to(root)
+        ):
+            raise BoundaryError("native_episode", "external_host_state_required_or_invalid")
+        return root
 
     @staticmethod
     def _native_capabilities(endpoint: str) -> dict[str, Any]:
@@ -1227,6 +1241,7 @@ class LocalEnvironmentService:
                 if self._read_native_profile()[1] != record["profile_sha256"]:
                     raise BoundaryError("native_episode", "configuration_changed")
                 endpoint = profile["endpoint"]
+                state_root = self._native_state_root(profile)
                 command = [
                     "node",
                     str(Path(profile["host_package_directory"]) / "tools/reference-pe-driver.mjs"),
@@ -1234,6 +1249,8 @@ class LocalEnvironmentService:
                     profile["game_directory"],
                     "--template",
                     profile["template_id"],
+                    "--local-root",
+                    str(state_root),
                     "--endpoint",
                     endpoint,
                     "--native-speed",
@@ -1275,9 +1292,17 @@ class LocalEnvironmentService:
                     raise BoundaryError(
                         "native_episode", "native_bootstrap_handoff_capability_required"
                     )
+                if client.ready.get("state_root") != {
+                    "schema": "sts2.host-runtime/reference-state-root-1",
+                    "mode": "external",
+                    "local_root": str(state_root),
+                    "evidence_root": str(state_root / "evidence"),
+                }:
+                    raise BoundaryError("native_episode", "native_external_state_unproven")
                 offered = True
                 with self.native_lock:
                     self._require_native_prepare(ref)
+                    self.native_record["host_state_root"] = dict(client.ready["state_root"])
                     self.native_record["world_mutation_offered"] = True
                     self._save_native()
                 client.reset(body["seed"])

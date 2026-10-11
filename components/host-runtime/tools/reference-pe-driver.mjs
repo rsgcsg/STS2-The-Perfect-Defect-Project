@@ -1,13 +1,88 @@
 #!/usr/bin/env node
 import readline from "node:readline";
 import path from "node:path";
+import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { discoverGameDirectory, resolveInstallation } from "../src/game-installation.mjs";
 import { readProjectIdentity } from "../src/project-identity.mjs";
 import { ShippedPlayerEnvironmentSession } from "../src/shipped-player-environment.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const LOCAL = path.join(ROOT, ".local");
+
+function ordinaryDirectory(directory) {
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(directory) !== directory) {
+    throw new Error("Reference state root must be an ordinary canonical directory.");
+  }
+}
+
+export function resolveReferenceStateRoot(args, { packageRoot = ROOT } = {}) {
+  const indices = args.flatMap((value, index) => value === "--local-root" ? [index] : []);
+  if (indices.length > 1) throw new Error("Reference state root must be supplied once.");
+  let localRoot;
+  let mode;
+  if (indices.length === 0) {
+    if (readProjectIdentity(packageRoot).distribution_kind !== "git_checkout") {
+      throw new Error("Installed reference drivers require an external --local-root.");
+    }
+    localRoot = path.join(packageRoot, ".local");
+    mode = "legacy_source_checkout";
+    if (lstatSync(localRoot, { throwIfNoEntry: false })) ordinaryDirectory(localRoot);
+  } else {
+    localRoot = args[indices[0] + 1];
+    if (typeof localRoot !== "string" || !path.isAbsolute(localRoot)
+        || path.resolve(localRoot) !== localRoot || localRoot === path.parse(localRoot).root) {
+      throw new Error("Reference state root must be an explicit canonical absolute path.");
+    }
+    ordinaryDirectory(packageRoot);
+    ordinaryDirectory(localRoot);
+    const inside = (parent, child) => {
+      const relative = path.relative(parent, child);
+      return relative === "" || (!relative.startsWith(`..${path.sep}`)
+        && relative !== ".." && !path.isAbsolute(relative));
+    };
+    if (inside(packageRoot, localRoot) || inside(localRoot, packageRoot)) {
+      throw new Error("Reference state root must be disjoint from the immutable package.");
+    }
+    accessSync(localRoot, constants.W_OK);
+    mode = "external";
+  }
+  for (const child of ["profile-templates", "profiles", "evidence"]) {
+    const directory = path.join(localRoot, child);
+    if (lstatSync(directory, { throwIfNoEntry: false })) ordinaryDirectory(directory);
+  }
+  const evidenceRoot = path.join(localRoot, "evidence");
+  return { localRoot, evidenceRoot, stateRootReadback: {
+    schema: "sts2.host-runtime/reference-state-root-1", mode,
+    local_root: localRoot, evidence_root: evidenceRoot
+  } };
+}
+
+export function referenceDriverOptions(args, { packageRoot = ROOT } = {}) {
+  const state = resolveReferenceStateRoot(args, { packageRoot });
+  const gameDirectory = option(args, "--game-dir") ?? discoverGameDirectory();
+  const expectedTupleJson = option(args, "--expected-installed-tuple", null);
+  if (expectedTupleJson != null && expectedTupleJson.length > 4096) {
+    throw new Error("Expected native tuple exceeds its bound.");
+  }
+  if (gameDirectory == null) throw new Error("Could not locate STS2; set --game-dir or STS2_GAME_DIR.");
+  return { stateRootReadback: state.stateRootReadback, sessionOptions: {
+    installation: resolveInstallation(gameDirectory),
+    localRoot: state.localRoot,
+    evidenceRoot: state.evidenceRoot,
+    templateId: option(args, "--template", "vanilla-clean"),
+    characterId: option(args, "--character", null),
+    ascension: Number(option(args, "--ascension", "0")),
+    nativeSpeed: option(args, "--native-speed", null),
+    displayMode: option(args, "--display-mode", "headless"),
+    expectedInstalledTuple: expectedTupleJson == null ? null : JSON.parse(expectedTupleJson),
+    endpoint: option(args, "--endpoint"),
+    timeoutMs: Number(option(args, "--timeout-ms", "90000")),
+    requestTimeoutMs: Number(option(args, "--request-timeout-ms", "30000")),
+    experimentalBuildAcknowledged: args.includes("--experimental-build"),
+    experimentalConnectorAcknowledged: args.includes("--experimental-connector")
+  } };
+}
 
 function option(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -108,32 +183,15 @@ export function serveReferenceDriver(session, { inputStream = process.stdin,
 
 async function main() {
   const args = process.argv.slice(2);
-  const gameDirectory = option(args, "--game-dir", discoverGameDirectory());
-  const expectedTupleJson = option(args, "--expected-installed-tuple", null);
-  if (expectedTupleJson != null && expectedTupleJson.length > 4096) throw new Error("Expected native tuple exceeds its bound.");
-  if (gameDirectory == null) throw new Error("Could not locate STS2; set --game-dir or STS2_GAME_DIR.");
-  const session = new ShippedPlayerEnvironmentSession({
-    installation: resolveInstallation(gameDirectory),
-    localRoot: LOCAL,
-    evidenceRoot: path.join(LOCAL, "evidence"),
-    templateId: option(args, "--template", "vanilla-clean"),
-    characterId: option(args, "--character", null),
-    ascension: Number(option(args, "--ascension", "0")),
-    nativeSpeed: option(args, "--native-speed", null),
-    displayMode: option(args, "--display-mode", "headless"),
-    expectedInstalledTuple: expectedTupleJson == null ? null : JSON.parse(expectedTupleJson),
-    endpoint: option(args, "--endpoint"),
-    timeoutMs: Number(option(args, "--timeout-ms", "90000")),
-    requestTimeoutMs: Number(option(args, "--request-timeout-ms", "30000")),
-    experimentalBuildAcknowledged: args.includes("--experimental-build"),
-    experimentalConnectorAcknowledged: args.includes("--experimental-connector")
-  });
+  const configuration = referenceDriverOptions(args);
+  const session = new ShippedPlayerEnvironmentSession(configuration.sessionOptions);
   write({
     type: "ready",
     protocol: "sts2.headless/reference-player-environment-driver-1",
     headless: readProjectIdentity(ROOT),
     host_kind: "shipped_reference",
-    bootstrap_handoff: "sts2.host-runtime/reference-bootstrap-handoff-1"
+    bootstrap_handoff: "sts2.host-runtime/reference-bootstrap-handoff-1",
+    state_root: configuration.stateRootReadback
   });
   await serveReferenceDriver(session);
 }
