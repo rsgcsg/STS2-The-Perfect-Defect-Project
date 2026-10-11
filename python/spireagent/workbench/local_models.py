@@ -2180,6 +2180,14 @@ class LocalModelService:
             return
         directory = self.directory / "agent-runs" / startup["run_id"]
         result = verify_agent_run_evidence(directory, startup)
+        frozen_events = None
+        if result.value is not None:
+            frozen_events = (directory / "events.jsonl").read_bytes()
+            entry = next(item for item in result.value.evidence_manifest["files"]
+                         if item["path"] == "events.jsonl")
+            if (len(frozen_events) != entry["bytes"]
+                    or hashlib.sha256(frozen_events).hexdigest() != entry["sha256"]):
+                raise BoundaryError("local_model", "finalized_stop_evidence_changed")
         report = {
             "schema": "stpd/local-runtime-evaluation-handoff-v1",
             "selection_id": self.state["selection_id"],
@@ -2198,7 +2206,8 @@ class LocalModelService:
             "budget_summary": None,
             "budget_end_reason": None,
             "terminal_screen_observation": None,
-            "agent_task_outcome": project(result, native=False, text_terminal=_terminal_screen),
+            "agent_task_outcome": project(result, native=False, text_terminal=_terminal_screen,
+                                          frozen_events=frozen_events),
         }
         if result.value is not None:
             report.update(
@@ -2216,74 +2225,74 @@ class LocalModelService:
             last_terminal_sequence: int | None = None
             # Only read events after the owning verifier accepted exact bytes and
             # their relationship to this model/runtime. Counts are operational.
-            with (directory / "events.jsonl").open(encoding="utf-8") as events:
-                for line in events:
-                    event = json.loads(line)
-                    counts[event["kind"]] += 1
-                    payload = event["payload"]
-                    snapshot = None
-                    if event["kind"] in {"text_decision_input", "text_observation_not_admitted"}:
-                        snapshot = payload.get("snapshot")
-                    elif event["kind"] == "text_observed_successor":
-                        snapshot = payload.get("successor")
-                    elif event["kind"] == "menu_navigation":
-                        result = payload.get("result")
-                        if isinstance(result, dict):
-                            snapshot = result.get("successor")
-                    terminal = _terminal_screen(snapshot)
-                    if terminal is not None:
-                        terminal_results.add(terminal)
-                        terminal_count += 1
-                        sequence = event.get("sequence")
-                        if type(sequence) is int and sequence > 0:
-                            if first_terminal_sequence is None:
-                                first_terminal_sequence = sequence
-                            last_terminal_sequence = sequence
-                    if (event["kind"] == "text_menu_dispatch_attempt"
-                            and payload.get("effect_domain") in {"native_input", "text_menu"}):
-                        native_submissions = (native_submissions or 0) + (
-                            payload["effect_domain"] == "native_input"
-                        )
-                    if event["kind"] in {"menu_navigation", "text_native_delivery",
-                                         "text_native_unknown", "text_menu_not_applied"}:
-                        outcome = payload.get("result")
-                        action = outcome.get("action") if isinstance(outcome, dict) else None
-                        verb = action.get("verb") if isinstance(action, dict) else None
-                        if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
-                            verbs[verb] += 1
-                    if event["kind"] == "receipt":
-                        receipt = payload.get("receipt")
-                        action = receipt.get("action") if isinstance(receipt, dict) else None
-                        verb = action.get("verb") if isinstance(action, dict) else None
-                        if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
-                            verbs[verb] += 1
-                    if event["kind"] in {"stopped", "mode_changed", "one_step_completed",
-                                         "autonomy_budget_exhausted"}:
-                        candidate = _recorded_budget(payload.get(
-                            "budget" if event["kind"] == "autonomy_budget_exhausted"
-                            else "autonomy_budget"
-                        ))
-                        if candidate is not None:
-                            budget_summary = candidate
-                            budget_end_reason = candidate["exhausted_reason"]
-                    if event["kind"] == "receipt":
-                        receipt = payload.get("receipt")
-                        delivery = receipt.get("delivery") if isinstance(receipt, dict) else None
-                        if isinstance(delivery, str) and delivery in {
-                            "delivered", "not_delivered", "unknown",
-                        }:
-                            deliveries[delivery] += 1
-                    elif event["kind"] in {
-                        "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
+            assert frozen_events is not None
+            for line in frozen_events.splitlines():
+                event = json.loads(line)
+                counts[event["kind"]] += 1
+                payload = event["payload"]
+                snapshot = None
+                if event["kind"] in {"text_decision_input", "text_observation_not_admitted"}:
+                    snapshot = payload.get("snapshot")
+                elif event["kind"] == "text_observed_successor":
+                    snapshot = payload.get("successor")
+                elif event["kind"] == "menu_navigation":
+                    result = payload.get("result")
+                    if isinstance(result, dict):
+                        snapshot = result.get("successor")
+                terminal = _terminal_screen(snapshot)
+                if terminal is not None:
+                    terminal_results.add(terminal)
+                    terminal_count += 1
+                    sequence = event.get("sequence")
+                    if type(sequence) is int and sequence > 0:
+                        if first_terminal_sequence is None:
+                            first_terminal_sequence = sequence
+                        last_terminal_sequence = sequence
+                if (event["kind"] == "text_menu_dispatch_attempt"
+                        and payload.get("effect_domain") in {"native_input", "text_menu"}):
+                    native_submissions = (native_submissions or 0) + (
+                        payload["effect_domain"] == "native_input"
+                    )
+                if event["kind"] in {"menu_navigation", "text_native_delivery",
+                                     "text_native_unknown", "text_menu_not_applied"}:
+                    outcome = payload.get("result")
+                    action = outcome.get("action") if isinstance(outcome, dict) else None
+                    verb = action.get("verb") if isinstance(action, dict) else None
+                    if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
+                        verbs[verb] += 1
+                if event["kind"] == "receipt":
+                    receipt = payload.get("receipt")
+                    action = receipt.get("action") if isinstance(receipt, dict) else None
+                    verb = action.get("verb") if isinstance(action, dict) else None
+                    if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
+                        verbs[verb] += 1
+                if event["kind"] in {"stopped", "mode_changed", "one_step_completed",
+                                     "autonomy_budget_exhausted"}:
+                    candidate = _recorded_budget(payload.get(
+                        "budget" if event["kind"] == "autonomy_budget_exhausted"
+                        else "autonomy_budget"
+                    ))
+                    if candidate is not None:
+                        budget_summary = candidate
+                        budget_end_reason = candidate["exhausted_reason"]
+                if event["kind"] == "receipt":
+                    receipt = payload.get("receipt")
+                    delivery = receipt.get("delivery") if isinstance(receipt, dict) else None
+                    if isinstance(delivery, str) and delivery in {
+                        "delivered", "not_delivered", "unknown",
                     }:
-                        outcome = payload.get("result")
-                        # Navigation has no native delivery. Rejected/mismatched
-                        # replies are diagnostics, not a correlated outcome.
-                        if (isinstance(outcome, dict)
-                                and outcome.get("effect_domain") == "native_input"
-                                and isinstance(delivery := outcome.get("native_delivery"), str)
-                                and delivery in {"delivered", "not_delivered", "unknown"}):
-                            deliveries[delivery] += 1
+                        deliveries[delivery] += 1
+                elif event["kind"] in {
+                    "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
+                }:
+                    outcome = payload.get("result")
+                    # Navigation has no native delivery. Rejected/mismatched
+                    # replies are diagnostics, not a correlated outcome.
+                    if (isinstance(outcome, dict)
+                            and outcome.get("effect_domain") == "native_input"
+                            and isinstance(delivery := outcome.get("native_delivery"), str)
+                            and delivery in {"delivered", "not_delivered", "unknown"}):
+                        deliveries[delivery] += 1
             report.update(
                 event_counts=dict(counts), delivery_counts=dict(deliveries),
                 recorded_action_verbs=dict(verbs) if verbs else None,

@@ -401,3 +401,8 @@ operation failure and retains its reason. This does not settle native delivery,
 the successor, or uncertain cleanup. Taint/pending/unknown control without a
 corresponding failure event remains unknown. Recorded stopped-budget facts are
 retained in the independent operation axis.
+Task/package/body projection errors leave recorded operation facts available
+when the original events still match the accepted inventory. Changed events
+cannot support any axis. The generic handoff freezes and hash-checks one events
+byte sequence for both the common DTO and existing scalar counters/observations,
+so reopening a changed file cannot mix foreign facts with the old evidence ID.

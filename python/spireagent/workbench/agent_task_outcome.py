@@ -78,8 +78,14 @@ def _verified_bytes(value: Any, name: str, maximum: int) -> bytes:
     return raw
 
 
-def verified_events(value: Any) -> Iterator[dict[str, Any]]:
-    raw = _verified_bytes(value, "events.jsonl", MAX_EVENTS_BYTES)
+def verified_events(value: Any, frozen: bytes | None = None) -> Iterator[dict[str, Any]]:
+    raw = _verified_bytes(value, "events.jsonl", MAX_EVENTS_BYTES) if frozen is None else frozen
+    if frozen is not None:
+        reference = _file_reference(value, "events.jsonl")
+        if len(raw) > MAX_EVENTS_BYTES:
+            raise BoundaryError("agent_task_outcome", "projection_file_unavailable_or_over_limit")
+        if len(raw) != reference["bytes"] or hashlib.sha256(raw).hexdigest() != reference["sha256"]:
+            raise BoundaryError("agent_task_outcome", "verified_file_changed")
     for line in raw.splitlines():
         yield json.loads(line)
 
@@ -212,6 +218,8 @@ def _operation_end(outcome: AgentTaskOutcome, value: Any, events: list[dict[str,
     failures = [event for event in events if event["kind"] in {"fail_closed", "runtime_tainted"}]
     stopped = next((event for event in reversed(events) if event["kind"] == "stopped"), None)
     payload = stopped["payload"] if stopped else {}
+    budget = payload.get("autonomy_budget")
+    budget = budget if isinstance(budget, dict) else None
     end = outcome["operation_end"]
     end.update(
         {
@@ -219,7 +227,7 @@ def _operation_end(outcome: AgentTaskOutcome, value: Any, events: list[dict[str,
             "controller": payload.get("controller"),
             "tainted": value.manifest.get("tainted"),
             "recorded_reason": payload.get("reason"),
-            "budget": payload.get("autonomy_budget"),
+            "budget": budget,
         }
     )
     if failures:
@@ -244,7 +252,7 @@ def _operation_end(outcome: AgentTaskOutcome, value: Any, events: list[dict[str,
         end.update(
             {"status": "unknown", "reason_codes": ["recorded_execution_or_cleanup_uncertain"]}
         )
-    elif payload.get("autonomy_budget", {}).get("exhausted_reason") is not None:
+    elif budget is not None and budget.get("exhausted_reason") is not None:
         end.update({"status": "censored", "reason_codes": ["recorded_budget_end"]})
     elif outcome["task_completion"]["status"] == "completed":
         end.update({"status": "task_ended", "reason_codes": ["declared_task_end_recorded"]})
@@ -532,21 +540,24 @@ def project(
     native_package: bytes | None = None,
     package_reason: str | None = None,
     text_terminal: Callable[[Any], str | None] = lambda _value: None,
+    frozen_events: bytes | None = None,
 ) -> AgentTaskOutcome:
     outcome = _empty(result.status)
     if result.status != "pass" or result.value is None:
         return outcome
     value = result.value
     outcome["evidence"]["content_id"] = value.content_id
+    events = None
     try:
-        events = list(verified_events(value))
+        events = list(verified_events(value, frozen_events))
+        outcome["evidence"]["events"] = _file_reference(value, "events.jsonl")
+        # Operation facts depend on these accepted events, not on a later
+        # Task/package/body projection. Recompute after a successful completion.
+        _operation_end(outcome, value, events)
         manifest = (
             dict(value.agent_manifest)
             if native
             else json.loads(_verified_bytes(value, "policy-manifest.json", MAX_METADATA_BYTES))
-        )
-        outcome["evidence"].update(
-            {"content_id": value.content_id, "events": _file_reference(value, "events.jsonl")}
         )
         composition = _composition(manifest, native)
         composition["manifest_sha256"] = value.manifest[
@@ -556,23 +567,30 @@ def project(
         if native:
             package = None
             if native_package is not None:
-                if len(native_package) > MAX_METADATA_BYTES:
-                    raise BoundaryError(
-                        "agent_task_outcome", "original_package_metadata_over_limit"
+                try:
+                    if len(native_package) > MAX_METADATA_BYTES:
+                        raise BoundaryError(
+                            "agent_task_outcome", "original_package_metadata_over_limit"
+                        )
+                    candidate = json.loads(native_package)
+                    if (
+                        hashlib.sha256(native_package).hexdigest() != manifest["artifact"]["sha256"]
+                        or not isinstance(candidate, dict)
+                        or candidate.get("model_id") != manifest["artifact"]["id"]
+                        or candidate.get("input_spec") != manifest["input"]["input_spec"]
+                        or candidate.get("agent_spec", {}).get("id") != manifest["agent"]["id"]
+                        or candidate.get("agent_spec", {}).get("version")
+                        != manifest["agent"]["version"]
+                    ):
+                        package_reason = "original_composition_binding_changed"
+                    else:
+                        package = candidate
+                except (ValueError, KeyError, TypeError, AttributeError, BoundaryError) as error:
+                    package_reason = (
+                        error.code
+                        if isinstance(error, BoundaryError)
+                        else "original_composition_binding_changed"
                     )
-                candidate = json.loads(native_package)
-                if (
-                    hashlib.sha256(native_package).hexdigest() != manifest["artifact"]["sha256"]
-                    or not isinstance(candidate, dict)
-                    or candidate.get("model_id") != manifest["artifact"]["id"]
-                    or candidate.get("input_spec") != manifest["input"]["input_spec"]
-                    or candidate.get("agent_spec", {}).get("id") != manifest["agent"]["id"]
-                    or candidate.get("agent_spec", {}).get("version")
-                    != manifest["agent"]["version"]
-                ):
-                    package_reason = "original_composition_binding_changed"
-                else:
-                    package = candidate
             _native(outcome, value, events, package, package_reason)
         else:
             _generic(outcome, value, manifest, events, text_terminal)
@@ -592,7 +610,8 @@ def project(
         outcome["terminal_observation"].update(
             {"status": "unknown", "result": None, "ready_summary": None, "witnesses": []}
         )
-        outcome["operation_end"].update(
-            {"status": "unknown", "reason_codes": ["original_projection_unavailable"]}
-        )
+        if events is None:
+            outcome["operation_end"].update(
+                {"status": "unknown", "reason_codes": ["original_projection_unavailable"]}
+            )
     return outcome

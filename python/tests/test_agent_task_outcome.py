@@ -218,6 +218,7 @@ def test_invalid_or_changed_original_evidence_cannot_prove_completion(produced_p
     outcome = project(verified, native=False, text_terminal=_terminal_screen)
     assert outcome["task_completion"]["status"] == "unknown"
     assert outcome["terminal_observation"]["status"] == "unknown"
+    assert outcome["operation_end"]["status"] == "unknown"
     failed = verify_agent_run_evidence(directory, expected)
     assert failed.status == "fail"
     assert project(failed, native=False)["task_completion"]["status"] == "unknown"
@@ -238,6 +239,87 @@ def test_projection_limit_is_explicit_unknown_without_partial_completion(
         "projection_file_unavailable_or_over_limit"
     ]
     assert outcome["task_completion"]["witness"] is None
+
+
+def test_generic_handoff_rejects_event_drift_after_sdk_before_projection(
+    produced_public, tmp_path, monkeypatch
+):
+    import sts2_platform_evidence
+
+    from spireagent.json_boundary import BoundaryError
+
+    directory = produced_public()
+    expected = original_expected(directory)
+    service = LocalModelService(ProjectConfig(tmp_path / "drift-app", "", "", None, combination()))
+    copied = service.directory / "agent-runs" / expected["run_id"]
+    shutil.copytree(directory, copied)
+    previous = {"prior_immutable_report": True}
+    service.state.update(startup=expected, selection_id="sealed-selection", evaluation=previous)
+    original_verify = sts2_platform_evidence.verify_agent_run_evidence
+
+    def changed_after_verify(path, startup):
+        verified = original_verify(path, startup)
+        assert verified.status == "pass"
+        with (path / "events.jsonl").open("ab") as output:
+            output.write(b' {"foreign_event":true}\n')
+        return verified
+
+    monkeypatch.setattr(sts2_platform_evidence, "verify_agent_run_evidence", changed_after_verify)
+    with pytest.raises(BoundaryError, match="finalized_stop_evidence_changed"):
+        service._evaluation_handoff()
+    assert service.state["evaluation"] == previous
+    assert service.evaluations() == []
+
+
+def test_generic_handoff_uses_same_frozen_events_for_dto_and_legacy_counts(
+    produced_public, tmp_path, monkeypatch
+):
+    from collections import Counter
+
+    from spireagent.workbench import agent_task_outcome
+
+    directory = produced_public()
+    expected = original_expected(directory)
+    original_events = (directory / "events.jsonl").read_bytes()
+    expected_counts = dict(
+        Counter(json.loads(line)["kind"] for line in original_events.splitlines())
+    )
+    service = LocalModelService(ProjectConfig(tmp_path / "frozen-app", "", "", None, combination()))
+    copied = service.directory / "agent-runs" / expected["run_id"]
+    shutil.copytree(directory, copied)
+    service.state.update(startup=expected, selection_id="sealed-selection")
+    original_project = agent_task_outcome.project
+
+    def changed_after_projection(*args, **kwargs):
+        assert kwargs["frozen_events"] == original_events
+        outcome = original_project(*args, **kwargs)
+        with (copied / "events.jsonl").open("ab") as output:
+            output.write(b' {"foreign_event":true}\n')
+        return outcome
+
+    monkeypatch.setattr(agent_task_outcome, "project", changed_after_projection)
+    service._evaluation_handoff()
+    report = service.state["evaluation"]
+    assert report["event_counts"] == expected_counts
+    assert report["agent_task_outcome"]["task_completion"]["status"] == "completed"
+    assert (
+        report["agent_task_outcome"]["evidence"]["events"]["sha256"]
+        == hashlib.sha256(original_events).hexdigest()
+    )
+
+
+def test_recorded_budget_survives_unavailable_task_manifest(produced_public):
+    directory = produced_public("budget")
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass"
+    with (directory / "policy-manifest.json").open("ab") as output:
+        output.write(b" ")
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == "unknown"
+    assert outcome["terminal_observation"]["status"] == "unknown"
+    assert outcome["operation_end"]["status"] == "censored"
+    assert outcome["operation_end"]["reason_codes"] == ["recorded_budget_end"]
+    assert outcome["operation_end"]["budget"]["exhausted_reason"] == "policy_call_limit"
 
 
 @pytest.fixture
@@ -380,6 +462,87 @@ def test_native_summary_preserves_task_binding_and_independent_cleanup(native_so
     if variant == "tainted-cleanup":
         assert outcome["operation_end"]["recorded_reason"] == "release_unknown"
         assert outcome["operation_end"]["reason_codes"] == ["recorded_runtime_taint"]
+
+
+@pytest.mark.parametrize("variant", ["body-change", "package-limit", "events-change"])
+def test_native_projection_failure_degrades_only_its_independent_axes(
+    native_source, monkeypatch, variant
+):
+    from sts2_platform_evidence import verify_agent_session_run_evidence
+
+    from spireagent.workbench import agent_task_outcome
+
+    holder, canonical, task_spec = native_source
+    f = native_summary(holder, canonical)
+    stopped = f.events.pop()
+    f.add("runtime_tainted", reason="release_unknown", retry=False)
+    f.events.append(stopped)
+    f.run.update(tainted=True, status="tainted")
+    package = native_package(f, task_spec())
+    verified = verify_agent_session_run_evidence(f.directory, f.startup)
+    assert verified.status == "pass", verified.findings
+    if variant == "body-change":
+        metadata = f.event("agent_sample_input_stored")["payload"]["metadata"]
+        with (f.directory / metadata["observation"]["path"]).open("ab") as output:
+            output.write(b" ")
+    elif variant == "package-limit":
+        monkeypatch.setattr(agent_task_outcome, "MAX_METADATA_BYTES", len(package) - 1)
+    else:
+        with (f.directory / "events.jsonl").open("ab") as output:
+            output.write(b" ")
+    outcome = project(verified, native=True, native_package=package)
+    assert outcome["task_completion"]["status"] == "unknown"
+    if variant == "package-limit":
+        assert outcome["terminal_observation"]["result"] == "loss"
+        assert outcome["task_completion"]["reason_codes"] == [
+            "original_package_metadata_over_limit"
+        ]
+    else:
+        assert outcome["terminal_observation"]["status"] == "unknown"
+    if variant == "events-change":
+        assert outcome["operation_end"]["status"] == "unknown"
+    else:
+        assert outcome["operation_end"]["status"] == "failed"
+        assert outcome["operation_end"]["recorded_reason"] == "release_unknown"
+        assert outcome["operation_end"]["reason_codes"] == ["recorded_runtime_taint"]
+
+
+def test_prior_summary_cannot_complete_a_later_nonterminal_close(native_source):
+    from sts2_platform_evidence import verify_agent_session_run_evidence
+
+    holder, canonical, task_spec = native_source
+    f = native_summary(holder, canonical)
+    f.events = [
+        event
+        for event in f.events
+        if event["kind"] not in {"agent_sample_segment_ended", "stopped"}
+    ]
+    for event in f.events:
+        if event["kind"] in {"agent_sample_next_completed", "agent_directive"}:
+            event["payload"]["output"]["directive"] = {
+                "type": "abstain",
+                "reason": "ordinary_policy_abstention",
+            }
+    holder.add_sample("inspect_b", 2)
+    for event in f.events:
+        if (
+            event["kind"] in {"agent_sample_next_completed", "agent_directive"}
+            and event["payload"]["output"]["state_version"] == 2
+        ):
+            event["payload"]["output"]["directive"] = {
+                "type": "close",
+                "reason": "native_ready_summary_task_complete",
+            }
+    holder.end()
+    package = native_package(f, task_spec())
+    verified = verify_agent_session_run_evidence(f.directory, f.startup)
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=True, native_package=package)
+    assert outcome["terminal_observation"]["result"] == "loss"
+    assert outcome["terminal_observation"]["witnesses"][0]["consumption_id"] == "consume-1"
+    assert outcome["task_completion"]["status"] == "unproved"
+    assert outcome["task_completion"]["witness"] is None
+    assert outcome["operation_end"]["status"] == "censored"
 
 
 def test_native_summary_without_exact_ack_is_rejected_by_installed_sdk(native_source):
