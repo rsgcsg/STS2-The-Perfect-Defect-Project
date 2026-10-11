@@ -221,6 +221,13 @@ npm run check:plan -- --base origin/develop
 npm run check:plan -- --base origin/develop --run
 ```
 
+The plan job checks the committed event-base-to-HEAD patch before receipt lookup
+or routing outputs, so bad patch hygiene blocks docs, Python, full and reuse lanes.
+Local `--run` uses the same barrier. An absent or all-zero event base checks the
+selected head's first parent, or the empty tree for an initial commit; invalid
+supplied revisions fail before execution. Scope/event rules remain unchanged,
+and lane worktree checks still cover changes made during the checks.
+
 The router uses actual committed Git changes, not a caller-selected test list:
 
 | Scope | Selected checks | Eligible changes |

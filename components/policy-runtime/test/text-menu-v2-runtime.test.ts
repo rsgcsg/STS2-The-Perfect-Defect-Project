@@ -536,7 +536,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect(f.events.filter(event => event.kind === "menu_navigation")).toHaveLength(1);
   });
 
-  it("hands off after three consecutive v2 stale submissions", async () => {
+  it("hands off at the absolute v2 stale recovery deadline", async () => {
     let clock = 0;
     const f = fixture();
     let ordinal = 0;
@@ -574,6 +574,9 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect(f.context).toHaveBeenCalledTimes(2);
     clock = 750;
     expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
+    clock = 10_000;
+    expect(await runtime.tick()).toMatchObject({ reason: "stale_recovery_exhausted" });
     expect(runtime.status()).toMatchObject({ mode: "human", tainted: false });
     expect(f.submit).toHaveBeenCalledTimes(3);
     expect(policy).toHaveBeenCalledTimes(3);
@@ -582,7 +585,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect(f.submit).toHaveBeenCalledTimes(3);
   });
 
-  it("resets the consecutive stale count after an applied text selection", async () => {
+  it("resets the stale recovery episode after an applied text selection", async () => {
     let clock = 0;
     const f = fixture();
     let submitted = 0;
@@ -627,6 +630,12 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
     expect(f.submit).toHaveBeenCalledTimes(4);
+    clock = 10_000; // The original episode would be expired, but accepted navigation reset it.
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status().mode).toBe("auto");
+    clock = 10_250; // The new episode remains absolute despite its fresh snapshots.
+    expect(await runtime.tick()).toMatchObject({ reason: "stale_recovery_exhausted" });
+    expect(runtime.status().mode).toBe("human");
   });
 
   it.each([

@@ -399,7 +399,8 @@ def _public_m0_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any]]
         ) from error
 
 
-def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None = None
+def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None = None,
+                         program_agent: bool = False
                          ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
     """Bind the fixed code-owned publication target, never an advertised subset."""
     from spireagent.json_boundary import object_fields
@@ -408,7 +409,19 @@ def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None 
         PUBLICATION_PROFILE_SHA256,
     )
     from stpd.native_code_scope import REQUIRED_METHODS
-    from stpd.policy.native_agent import SUPPORTED_ACTION_VERBS, SUPPORTED_INTERACTION_KINDS
+    if program_agent:
+        from stpd.policy.native_teacher_manifest import required_methods
+
+        method_requirements = required_methods(execution_policy)
+        interaction_kinds, action_verbs = ["*"], ["*"]
+    else:
+        from stpd.policy.native_agent import SUPPORTED_ACTION_VERBS, SUPPORTED_INTERACTION_KINDS
+
+        method_requirements = list(REQUIRED_METHODS)
+        interaction_kinds, action_verbs = (
+            list(SUPPORTED_INTERACTION_KINDS),
+            list(SUPPORTED_ACTION_VERBS),
+        )
 
     try:
         reply = object_fields(
@@ -442,12 +455,16 @@ def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None 
             or capabilities.get("protocol_version") != "1.0.0"
         ):
             raise ValueError
-        methods = list(REQUIRED_METHODS)
+        methods = list(method_requirements)
         if execution_policy is not None:
-            from stpd.policy.native_operational_outcome import checked_execution_policy
+            if program_agent:
+                from stpd.policy.native_operational_outcome_v2 import checked_execution_policy
+            else:
+                from stpd.policy.native_operational_outcome import checked_execution_policy
 
             checked_execution_policy(execution_policy)
-            methods.append("current_owned")
+            if "current_owned" not in methods:
+                methods.append("current_owned")
             mechanisms = capabilities.get("implemented_mechanisms")
             if (
                 not isinstance(mechanisms, list)
@@ -521,8 +538,8 @@ def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None 
         requirements = {"connector_protocol_version": capabilities["protocol_version"],
                         "environment": environment, "required_methods": methods}
         support = {"game_versions": [game["version"]], "game_commits": [game["commit"]],
-                   "interaction_kinds": list(SUPPORTED_INTERACTION_KINDS),
-                   "action_verbs": list(SUPPORTED_ACTION_VERBS)}
+                   "interaction_kinds": interaction_kinds,
+                   "action_verbs": action_verbs}
         return requirements, support, required
     except (KeyError, TypeError, ValueError) as error:
         if isinstance(error, BoundaryError) and error.code == "native_required_seam_unavailable":
@@ -918,6 +935,31 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration",
                                 "m2_runtime_contract_unavailable") from error
 
+    def register_composition(
+        self, model_id: object, *, environment_kind: str = "native",
+        task_option: str = "default", program_option: str = "none",
+    ) -> dict[str, Any]:
+        """Closed product choices select real owning specs before registration."""
+        if (task_option not in {"default", "none", "ready-standard-summary"}
+                or program_option not in {"none", "card-reward-take"}):
+            raise BoundaryError("local_model_registration", "unsupported_composition_option")
+        identity = digest(model_id, "local_model_registration.model_id")
+        model_type = self._export_status(identity)["operation"].get("model_type")
+        if model_type not in {"public_m0", "public_m2"}:
+            raise BoundaryError("local_model_registration", "public_composition_required")
+        task = (_DEFAULT_PUBLIC_TASK if task_option == "default" else None
+                if task_option == "none" else _public_m0_task(_DEFAULT_PUBLIC_TASK)
+                if model_type == "public_m0" else _public_m2_task(_DEFAULT_PUBLIC_TASK))
+        program = None
+        if program_option == "card-reward-take":
+            if model_type != "public_m0":
+                raise BoundaryError("local_model_registration", "program_requires_public_m0")
+            from stpd.policy.public_m0_agent_program import card_reward_take_program_spec
+
+            program = card_reward_take_program_spec()
+        return self.register(identity, environment_kind=environment_kind,
+                             task=task, program=program)
+
     def register(self, model_id: object, *, environment_kind: str = "native",
                  task: object = _DEFAULT_PUBLIC_TASK,
                  program: object = None) -> dict[str, Any]:
@@ -1113,6 +1155,96 @@ class LocalModelRegistration:
             raise
         except OSError as error:
             raise BoundaryError("local_model_registration", "registration_write_failed") from error
+
+    def register_teacher(
+        self, *, variant: str = "continuous", environment_kind: str = "native"
+    ) -> dict[str, Any]:
+        """Register the builtin program, without Model/export/backend authority."""
+        from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+        from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
+        from stpd.policy.native_teacher_agent import descriptor, write_artifact
+        from stpd.policy.native_teacher_manifest import teacher_manifest
+
+        from .native_teacher_support import ADAPTER, installation_config, validate
+
+        if environment_kind != "native" or variant not in {"baseline", "owned", "continuous"}:
+            raise BoundaryError("local_model_registration", "unsupported_teacher_composition")
+        policy = (progress_aware_strict_policy() if variant == "continuous" else
+                  owned_current_known_stale_policy() if variant == "owned" else None)
+        deadline = monotonic() + REGISTRATION_SECONDS
+        _, sdk = self._native_runtime(deadline=deadline)
+        observed = self._capabilities(sdk, deadline=deadline, input_profile=NATIVE_PROFILE)
+        _, _, seams = _native_requirements(observed, execution_policy=policy, program_agent=True)
+        capabilities = observed["capabilities"]
+        current_descriptor = descriptor(execution_policy=policy)
+        private = self.models.private_root
+        if private.is_symlink() or (private.exists() and not _ordinary(private, directory=True)):
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        private.mkdir(mode=0o700, exist_ok=True)
+        lock_path = private / LOCK
+        if lock_path.is_symlink():
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        with instance_lock(lock_path):
+            for entry in reversed(self._entries()):
+                if entry.get("adapter") != ADAPTER:
+                    continue
+                try:
+                    config, manifest = validate(
+                        self.models.root,
+                        self.models.entry_path(entry, "config"),
+                        self.models.entry_path(entry, "manifest"),
+                        binding_root=private,
+                    )
+                    raw = _object_file(Path(config["artifact_path"]))
+                    if raw == current_descriptor:
+                        candidate = teacher_manifest(raw, manifest["artifact"], capabilities, seams,
+                            manifest_id=entry["id"], execution_policy=policy)
+                        if candidate == manifest:
+                            self.models._public_manifest_contract(
+                                self.models.entry_path(entry, "manifest")
+                            )
+                            return {
+                                "schema": "spireagent/local-agent-registration-v1",
+                                "status": "registered",
+                                "selection_id": entry["id"],
+                                "models": [],
+                                "reused": True,
+                            }
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+            folder = private / REGISTRATIONS
+            if folder.is_symlink():
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            selection = "local-native-teacher-" + uuid.uuid4().hex
+            target = folder / selection
+            target.mkdir(mode=0o700)
+            artifact_path = target / "program.json"
+            config_path, manifest_path = target / "config.json", target / "manifest.json"
+            try:
+                artifact = write_artifact(artifact_path, execution_policy=policy)
+                manifest = teacher_manifest(current_descriptor, artifact, capabilities, seams,
+                                             manifest_id=selection, execution_policy=policy)
+                config = installation_config(artifact_path, artifact["sha256"])
+                manifest_path.write_bytes(json_bytes(manifest))
+                config_path.write_bytes(json_bytes(config))
+                validate(self.models.root, config_path, manifest_path, binding_root=private)
+                self.models._public_manifest_contract(manifest_path)
+                entry = {"id": selection, "label": "原生程序 Teacher（无学习模型） " + variant,
+                         "adapter": ADAPTER, "runtime_profile": NATIVE_PROFILE,
+                         "manifest": manifest_path.relative_to(private).as_posix(),
+                         "config": config_path.relative_to(private).as_posix()}
+                entries = self._entries()
+                _remaining(deadline)
+                atomic_json(private / REGISTRY, {"schema": "stpd/local-token-policies-v1",
+                                                "policies": [*entries, entry]})
+            except Exception:
+                for path in (artifact_path, manifest_path, config_path):
+                    path.unlink(missing_ok=True)
+                target.rmdir()
+                raise
+            return {"schema": "spireagent/local-agent-registration-v1", "status": "registered",
+                    "selection_id": selection, "models": [], "reused": False}
 
     def _register_native(self, identity: str, *, environment_kind: str,
                          deadline: float) -> dict[str, Any]:

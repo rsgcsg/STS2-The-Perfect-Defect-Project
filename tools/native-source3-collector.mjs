@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, readdir, open } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const PIPE_SCHEMA = "spireagent/native-source3-collector-pipe-v2";
@@ -380,58 +380,26 @@ async function compiledIdentity(directory) {
 }
 
 export function teacherManifest(options, capabilities, deps) {
-  const descriptor = options.teacher_descriptor;
-  exact(descriptor, ["schema", "agent_spec", "input_spec_body", "input_spec", "adapter", "code_files", "runtime_provenance"]);
-  if (descriptor.schema !== "stpd/native-program-teacher-artifact-v1"
-      || descriptor.agent_spec.learned !== false || descriptor.agent_spec.scores !== null
-      || descriptor.agent_spec.model_bindings?.length !== 0)
-    throw new Error("explicit_program_teacher_required");
-  if (options.execution_policy) {
-    const versions = continuous(options)
-      ? { teacher: "1.0.11", adapter: "1.7.0" }
-      : { teacher: "1.0.10", adapter: "1.6.0" };
-    if (!object(descriptor.agent_spec.execution_policy)
-        || deps.canonicalJson(descriptor.agent_spec.execution_policy) !== deps.canonicalJson(options.execution_policy)
-        || descriptor.agent_spec.teacher?.version !== versions.teacher || descriptor.adapter.version !== versions.adapter
-        || continuous(options) && descriptor.agent_spec.version !== versions.adapter)
-      throw new Error("teacher_execution_policy_mismatch");
-  } else if (Object.hasOwn(descriptor.agent_spec, "execution_policy"))
-    throw new Error("undeclared_teacher_execution_policy");
-  const c = capabilities, artifact = options.teacher_artifact;
+  const artifact = options.teacher_artifact;
   exact(artifact, ["id", "path", "sha256"]);
   if (!path.isAbsolute(artifact.path) || path.dirname(artifact.path) !== options.output)
     throw new Error("owned_teacher_artifact_path_required");
-  return deps.validateAgentManifest({ schema: "sts2.policy-runtime/agent-manifest-1",
-    manifest_id: "native-program-teacher-" + artifact.sha256.slice(0, 16),
-    agent: { id: descriptor.agent_spec.id, version: descriptor.agent_spec.version, provider: "stpd",
-      architecture: "explicit_native_public_program_teacher" }, adapter: descriptor.adapter, artifact,
-    input: { profile: "native-logical-v1", input_spec: descriptor.input_spec,
-      projection: { id: "stpd-native-program-teacher-current-v1", version: "1.0.0" },
-      state_format_version: "stpd/native-program-teacher-state-v1",
-      state_recovery: { mode: "none", max_state_bytes: 0, model_bindings: [] },
-      history_mode: "sampled_current", consumption_mode: "once_per_occurrence", gap_policy: "handoff",
-      attachment: { eager_scope: [], required_seams: deps.NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams,
-        delivery_mode: "scoped" } },
-    requirements: { connector_protocol_version: c.protocol_version,
-      environment: { host_kind: c.host.host_kind, connector_version: c.host.version,
-        connector_source_revision: c.host.implementation.source_revision,
-        connector_artifact_sha256: c.host.implementation.artifact_sha256,
-        connector_module_version_id: c.host.implementation.module_version_id,
-        modset_status: c.game.modset.status, modset_fingerprint: c.game.modset.fingerprint,
-        loaded_mod_ids: c.game.modset.loaded_mod_ids },
-      required_methods: ["capabilities", "attach", "current", "read", "catalog", "submit", "result",
-        "events", "await", "cancel_wait", "detach", "renew", "retain", "release",
-        ...(options.execution_policy ? ["current_owned"] : [])] },
-    support: { game_versions: [c.game.version], game_commits: [c.game.commit],
-      interaction_kinds: ["*"], action_verbs: ["*"] },
-    limits: { max_message_bytes: MAX_PIPE_BYTES, max_acquisitions: 256,
-      max_retained_acquisition_bytes: 256 * 1024 * 1024, max_pending_queries: 8,
-      max_queries_per_turn: 8, max_query_bytes_per_turn: 128 * 1024 * 1024,
-      max_capture_bytes: Math.min(options.max_input_bytes, 8 * 1024 * 1024), max_catalog_actions: 16384,
-      max_cancelled_ids: 256, agent_timeout_ms: 30_000 },
-    ...(options.execution_policy ? { execution_policy: options.execution_policy } : {}),
-    claims: { catalog_filtered: false, creates_action_authority: false, creates_native_operands: false,
-      human_origin: false, causal_successor: false } });
+  // One STPD pure factory owns descriptor versions, limits and composition.
+  // Runtime remains the public wire validator. No collection/control loop moves.
+  const result = spawnSync(options.python_executable, ["-m", "stpd.policy.native_teacher_manifest"], {
+    cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") },
+    input: JSON.stringify({ descriptor: options.teacher_descriptor, artifact, capabilities,
+      required_seams: deps.NATIVE_LOGICAL_PUBLICATION_PROFILE.required_seams,
+      max_input_bytes: options.max_input_bytes, manifest_id: null,
+      execution_policy: options.execution_policy ?? null }),
+    timeout: 10000, maxBuffer: 256 * 1024, encoding: "utf8"
+  });
+  if (result.error || result.status !== 0) {
+    let code = "teacher_manifest_factory_failed";
+    try { const value = JSON.parse(result.stderr); if (/^[a-z0-9_]{1,128}$/u.test(value.error)) code = value.error; } catch {}
+    throw new Error(code);
+  }
+  return deps.validateAgentManifest(JSON.parse(result.stdout));
 }
 
 /** One static program child, with actual process receipts outside the public port. */

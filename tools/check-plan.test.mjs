@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
-import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff } from "./check-plan.mjs";
+import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff, checkCommittedPatch } from "./check-plan.mjs";
 
 test("only modified editorial surfaces select docs; additions, deletion and rename stay full", () => {
   assert.equal(classifyChanges([{ status: "M", file: "README.md", oldMode: "100644", newMode: "100644" }]).scope, "docs");
@@ -33,6 +33,101 @@ test("exact Git comparison works, dirty or missing provenance fails closed", () 
     assert.equal(makePlan({ base: "missing", cwd }).reason, "diff_unavailable");
     fs.writeFileSync(path.join(cwd, "untracked.js"), "change");
     assert.equal(makePlan({ base, cwd }).reason, "dirty_worktree");
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("hosted planning rejects committed EOF whitespace before publishing a lane or executing it", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "check-plan-hygiene-"));
+  const cwd = path.join(temporary, "repo");
+  fs.mkdirSync(cwd);
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  const output = path.join(temporary, "route.outputs");
+  const marker = path.join(temporary, "expensive.started");
+  const environment = { ...process.env, GITHUB_ACTIONS: "false", GITHUB_OUTPUT: output,
+    TEST_EXPENSIVE_MARKER: marker, CHECK_FULL: "false" };
+  delete environment.GH_TOKEN;
+  delete environment.GITHUB_STEP_SUMMARY;
+  const cli = (...args) => spawnSync(process.execPath, ["tools/check-plan.mjs", ...args], {
+    cwd, env: environment, encoding: "utf8",
+  });
+  try {
+    fs.cpSync(path.resolve(import.meta.dirname), path.join(cwd, "tools"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, ".github/workflows"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".github/workflows/ci.yml"), "name: fixture\n");
+    fs.writeFileSync(path.join(cwd, "runner.mjs"),
+      "import fs from 'node:fs'; fs.writeFileSync(process.env.TEST_EXPENSIVE_MARKER, 'started');\n");
+    fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ scripts: {
+      "check:docs": "node runner.mjs", "check:python-scope": "node runner.mjs",
+      check: "node runner.mjs",
+    } }));
+    const scopes = [["docs", "README.md"], ["python", "python/stpd/fixture.py"],
+      ["full", "components/fixture.txt"]];
+    for (const [, file] of scopes) {
+      fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, file), "base\n");
+    }
+    git("init"); git("config", "user.email", "test@example.invalid");
+    git("config", "user.name", "Test"); git("config", "core.whitespace", "blank-at-eof");
+    git("add", "."); git("commit", "-m", "base"); const base = git("rev-parse", "HEAD");
+    for (const [scope, file, reuseEligible] of [...scopes, ["full", "components/fixture.txt", true]])
+      for (const bad of [true, false]) {
+      git("reset", "--hard", base);
+      fs.rmSync(output, { force: true }); fs.rmSync(marker, { force: true });
+      fs.writeFileSync(path.join(cwd, file), bad ? "changed\n\n" : "changed\n");
+      git("commit", "-am", "selected patch");
+      environment.GITHUB_ACTIONS = reuseEligible ? "true" : "false";
+      environment.GITHUB_EVENT_NAME = "push";
+      environment.GITHUB_REF = "refs/heads/develop";
+      environment.GITHUB_REPOSITORY = "fixture/repository";
+      assert.equal(git("status", "--porcelain"), "");
+      assert.equal(git("diff", "--check"), ""); // The old lane check missed committed errors.
+      const planned = cli("--check-patch", "--base", base);
+      if (planned.status === 0) {
+        const selected = fs.readFileSync(output, "utf8").match(/^scope=(.+)$/m)?.[1];
+        environment.CHECK_SCOPE = selected;
+        const executed = cli("execute");
+        assert.equal(executed.status, 0, executed.stderr);
+      }
+      if (bad) {
+        assert.notEqual(planned.status, 0, `${scope}: committed bad patch published a lane`);
+        assert.match(planned.stdout + planned.stderr, /new blank line at EOF/);
+        assert.equal(fs.existsSync(output), false);
+        assert.equal(fs.existsSync(marker), false);
+      } else {
+        assert.equal(planned.status, 0, planned.stderr);
+        assert.match(fs.readFileSync(output, "utf8"), new RegExp(`^scope=${scope}$`, "m"));
+        assert.equal(fs.readFileSync(marker, "utf8"), "started");
+      }
+    }
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+});
+
+test("committed-patch fallback uses only actual first-parent/root provenance and rejects invalid revisions", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "check-patch-base-"));
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  try {
+    git("init"); git("config", "user.email", "test@example.invalid"); git("config", "user.name", "Test");
+    fs.writeFileSync(path.join(cwd, "README.md"), "initial\n");
+    git("add", "."); git("commit", "-m", "initial");
+    const initial = git("rev-parse", "HEAD");
+    const empty = execFileSync("git", ["hash-object", "-t", "tree", "--stdin"], {
+      cwd, input: "", encoding: "utf8",
+    }).trim();
+    assert.deepEqual(checkCommittedPatch({ cwd }), { base: empty, head: initial });
+    fs.writeFileSync(path.join(cwd, "README.md"), "next\n"); git("commit", "-am", "next");
+    const head = git("rev-parse", "HEAD");
+    for (const base of [undefined, "", "0".repeat(40), initial])
+      assert.deepEqual(checkCommittedPatch({ base, cwd }), { base: initial, head });
+    for (const base of ["missing", "--output=unexpected"])
+      assert.throws(() => checkCommittedPatch({ base, cwd }));
+    assert.throws(() => checkCommittedPatch({ base: initial, head: "--help", cwd }));
+    assert.equal(fs.existsSync(path.join(cwd, "unexpected")), false);
+    // A truncated/shallow history is not an initial commit. Retain its declared
+    // parent and fail closed if that parent object cannot be verified.
+    fs.writeFileSync(path.join(cwd, ".git/shallow"), head + "\n");
+    const object = path.join(cwd, ".git/objects", initial.slice(0, 2), initial.slice(2));
+    fs.unlinkSync(object);
+    assert.throws(() => checkCommittedPatch({ cwd }));
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 });
 

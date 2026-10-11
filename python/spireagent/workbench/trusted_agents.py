@@ -10,7 +10,7 @@ from spireagent.json_boundary import BoundaryError
 TRUSTED_AGENT_ADAPTERS = frozenset({
     "s1-v1", "token-v1", "stpd-m2-decision-adapter", "stpd-s0-structured-adapter",
     "stpd-native-structured-m2-agent", "stpd-public-m0-decision-adapter",
-    "stpd-public-m2-decision-adapter",
+    "stpd-public-m2-decision-adapter", "stpd-native-public-program-teacher",
 })
 AGENT_PROFILES = (
     ("s1-v1", "s1-v1", "text-menu-v1", True),
@@ -21,6 +21,7 @@ AGENT_PROFILES = (
     ("public-snapshot-m0-v1", "stpd-public-m0-decision-adapter", "snapshot-1", True),
     ("public-snapshot-m2-v1", "stpd-public-m2-decision-adapter", "snapshot-1", True),
     ("native-logical-v1", "stpd-native-structured-m2-agent", "native-logical-v1", True),
+    ("native-logical-v1", "stpd-native-public-program-teacher", "native-logical-v1", True),
 )
 
 
@@ -41,6 +42,10 @@ def trusted_agent_support(adapter_id: str) -> ModuleType:
         from stpd import public_m0_policy_installation
 
         return public_m0_policy_installation
+    if adapter_id == "stpd-native-public-program-teacher":
+        from spireagent.workbench import native_teacher_support
+
+        return native_teacher_support
     # Explicit domain modules remain the installation/package authority.
     if adapter_id == "stpd-native-structured-m2-agent":
         from spireagent.workbench import native_agent_support

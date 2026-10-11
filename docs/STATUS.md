@@ -4,34 +4,124 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
-## G2/V1 supervisor checkpoint, observed 2026-10-11
+## Runtime33 candidate after Auto5 repairs, observed 2026-10-11
 
-The [active boundary packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
-is the sole detailed current-round receipt/identity/count entry, including the
-installed diagnostic candidate and its exact build/load/runtime scope. The
-[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
-obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
+Normal merges retain independently accepted admission4a5449d1, portable service
+fixture2b3915a0 and Runtime readiness9756d147. Their recorded local gates passed;
+CI38115573320 on old6dc ended failed (Linux2/Windows2 ten admission/endpoint cases;
+Windows1 two common-service cases). Actual Windows success awaits a fresh candidate.
 
-Completed receipts include formal SDK/consumer restoration, compatible export and
-locked numerical parity, plus actual paired A/B40-update TRAIN fits with published
-artifacts and preserved legacy history. Current derived native registration/game
-use remains unperformed. M2's natural loss summary is mechanically accepted with
-strategy failed in that attempt. Optional M0 Auto1 remains incomplete/no summary;
-its separate corrected offline audit now accepts declared card takes and bounded
-later progress, with original failure/bytes unchanged and unknown joins retained.
+Runtime33 sourcefb906728/BOM and immutable archive6c87e66b/content8317363d/code4ffd923b
+passed independent review. The actual compiled package passed extended synthetic
+settling and original idle-deadline cancellation; both typed seals passed and730 files
+stayed unchanged. Root's two common-service cases passed against the same archive.
+The existing owner installed33, loadedfalse/activatedfalse; Mod42 and original weights
+remain unchanged. No native33 result follows from these checks.
 
-The legacy data inventory is metadata/sequence feasibility only and supplies no
-adequate independent Defect whole-game evaluation or qualified current-game/A0 M2
-history. Runtime rc30 source/package/identity and independent review plus exact
-installation are accepted. Its separate M0 Auto2 made bounded reward progress but
-ended incomplete/tainted at `successor_not_stable`, without summary. Typed seal and
-Stop/signed Host cleanup and independent after-run review accept a valid sealed,
-tainted failure. CI380957 on f3 completed/failure: both Linux leaves passed and
-both Windows leaves failed. Independently reviewed test-only corrections945/648
-require fresh full selected CI; no hosted Windows pass is claimed. No Human/scientific, basic-strategy or
-full G2/V1 acceptance follows. Aggregate provider spend is USD0. The current scope
-finishes coherent delivery/report, then continues the newly requested architecture/
-external-reference audit and capability work. It adds no native replay to this packet.
+[Current packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#runtime33-candidate-and-one-fresh-auto6-envelope)
+allocates one fresh bounded Auto6 only after its final tuple/caller/startup gates.
+It has not dispatched at this snapshot. Auto5 and all historical failures below retain
+original identities and outcomes; Runtime32 archive/pin remains available for rollback.
+
+## Auto5 and current repair boundary, observed 2026-10-11
+
+Frozen6dc0f722 loaded exact Runtime32/code95b769a2 and unchanged Mod42/artifact2ef3dcf7.
+Auto5 closed as a valid sealed **tainted incomplete failure**:126.630s,109 submissions,
+86 delivered/23 known stale,355 events,78 prior-frame joins/31 unknown. Three reward
+cards and later rooms do not prove strategy or Summary. The original common request,
+composition, preparation, run and immutable evaluation are exactly bound; independent
+auditb778cf99 accepted integrity/association while retaining the failure.
+
+Final End Turn was delivered; all41 subsequent diagnostic polls were complete newer
+settling observations over10.820s, followed by `successor_not_stable`. This establishes
+the exhausted readiness-wait policy, not native delivery uncertainty or a native stall.
+The game was closed before eventual readiness was established. Maximum consecutive
+stale refusals was2, so this run does not demonstrate the new stale window's benefit.
+Stop released/unloaded; Host exited0 unforced and strict process discovery was empty.
+No additional game is allocated. Source-only Auto waiting and application admission
+compatibility repairs are now active in separate worktrees; see the
+[current packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto5-closure-and-current-repair-packet).
+
+PR174's fresh CI38115573320 passed Linux1 and failed Linux2 with10 Python failures;
+Windows remained running at this observation. Frozen6dc is not eligible for merge.
+Earlier source/package/installation claims below remain limited to their own snapshots.
+
+## Common execution and finite recovery source candidate, 2026-10-11
+
+Reviewed a164+b507 unify effective Agent composition/request through existing owners.
+Teacher models=[] and stateful PublicM2 have actual same-service process/Stop/seal
+checks; full six application-owner suites passed270 with real rc32/typed Evidence.
+Fresh public projections retain only artifact ID/SHA. Prior metadata fixtures, an
+introduced private-path defect and setup-only TIME_WAIT failures remain recorded.
+
+Runtime32/source9b092a51 implements the reviewed10s per-episode recovery window in
+one existing deadline owner. Final component461PASS/3optionalSKIP, repository and
+SDK232 checks passed. Immutable archiveccaf03a4/contentd21ed735/code95b769a2 passed
+four-known-stale-to-fresh-delivery and actual idle-expiry compiled tests with typed
+seals. These source/package gates do not establish a new installed/live result.
+Test-only Connector provenanceb3dd538c leaves Mod42 and bundled SDK code unchanged.
+
+PR173 CI38109117835 still failed one Windows SDK operation-case timeout after its
+Python stage passed. Reviewed7d moves compiler preparation before that unchanged
+case; its local controlled RED/GREEN is not a new hosted Windows pass. The next
+complete candidate requires its own full CI. One scoped Auto5 envelope is recorded
+in the [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#integrated-common-execution-and-one-auto5-envelope);
+its original operation/PR closeout records actual execution separately.
+
+## Agent run Auto4 closure, observed 2026-10-11
+
+Frozen6330b8ce with independently reviewed/built/installed/loaded Connector23/Mod42
+(source1c7, artifact2ef3dcf7/MVIDddf4c579) and unchanged Runtime31 completed one
+bounded operational attempt. Verified sealed354 events record110 submissions,
+90 delivered/20 known stale; three reward-card choices and later3 combat/2 event
+interaction IDs show progress. No Summary: final three stale refusals triggered
+existing `action_not_delivered`. Common Task/terminal remain unknown; operation is
+censored, not strategy-qualified. Stop released control, Host exited0 unforced,
+strict game-process discovery was empty and the caller correctly exited1 incomplete.
+
+Independent after-run audit4bfd1747 confirms exact identities,77 prior-frame joins/
+33 unknown and original-history preservation. Available EndTurn successors include
+seven settling/C0 and three interactive/C1 observations. Missing original scored
+frames prevent exact per-stale attribution. No Connector defect or old Auto2 cause
+is proved. Root allocated source/test work on a finite operational recovery window;
+no further native attempt or Runtime upgrade has occurred. P1 common startup remains
+isolated: two real service-process cases pass, remaining gates/review are pending.
+See the [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto4-actual-closeout-and-next-source-decision).
+
+## Agent run Auto3 closure, observed 2026-10-11
+
+The [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md) owns current source
+state and promotion gates; [CURRENT](memory/CURRENT.md) routes the active work.
+Root candidate `0817351f` has normally merged independently accepted Runtime
+successor diagnostics, common application task outcome and native End Turn queue/
+exact-offer correction. Runtime rc31, Connector rc22 and Mod rc41 identities/BOM are
+source candidates. Annotator production/version is retained with docs/test provenance
+only. Final local Runtime442 tests plus3 optional skips, application189, repository
+and exact Connector/Mod builds passed. Independent package/artifact checks and
+existing-owner installation passed for rc31/rc41. The exact tuple was loaded for
+Auto3 at frozen `f559c96c`. That single comparison is consumed: typed sealed,
+untainted incomplete `auto_surface_not_admitted`, no reward/summary; independent
+audit and Stop/signed Host cleanup pass. It does not qualify strategy or prove old
+Auto2's timeout fixed. Detailed original counts/identities remain in the active packet;
+rc30/rc40 rollback material and original Auto1/Auto2 receipts remain preserved.
+Root accepted bounded Connector readiness/window/profile and application terminal-tail
+reason scopes. Connector design received independent architecture review; independent
+implementation reviews remain pending. Source owners are active, without a new
+implementation receipt or further native attempt allocated in this packet.
+
+Common task outcome source separates qualified Public M2 loss-summary completion
+from operational failure, observed result and unassessed strategy; M0 without an
+original qualifying witness stays unknown. This is source acceptance, not a new
+native outcome or Auto2 cause proof. The [previous closeout](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
+retains restoration/parity, paired TRAIN fits, data limits and original Auto1/Auto2
+valid sealed failures. They do not establish basic strategy or full G2/V1 approval.
+
+PR171 head74260b61 passed all four OS leaves and portable in CI38100661045,
+then normally merged into develop09440e80 with the same tested tree. Merge
+CI38104068580 reused its execution receipt but failed committed patch hygiene:
+one extra EOF blank line in a test. A separate bounded hygiene repair is active;
+this does not erase the completed source tests or count as a passed merge gate.
+New-source checks remain separate. Provider spend is USD0 in the same USD20 envelope.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09

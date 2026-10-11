@@ -11,6 +11,8 @@ import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 import type { PublicStatefulPolicy, PublicStatefulPolicyDecisionInput, PublicObservationCompletion } from "./contracts.js";
 import { PublicObservationTracker, validatePublicObservationCompletion } from "./public-observation.js";
+import { SuccessorWaitDiagnostics, type SuccessorWaitCategory, type SuccessorWaitDiagnosticSink } from "./successor-wait-diagnostics.js";
+export type { SuccessorWaitDiagnostic, SuccessorWaitDiagnosticSink } from "./successor-wait-diagnostics.js";
 
 export interface RuntimeOptions {
   manifest: PolicyManifest;
@@ -25,6 +27,8 @@ export interface RuntimeOptions {
   evidence?: AgentRunEvidence;
   staleRefresh?: { maxAttempts: number; baseBackoffMs: number };
   successorPoll?: { maxAttempts: number; baseBackoffMs: number };
+  /** Private, bounded failure diagnostics; never Agent-run Evidence or action input. */
+  successorWaitDiagnosticSink?: SuccessorWaitDiagnosticSink;
   policyTimeoutMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   /** Monotonic clock used for the finite Shadow/Auto authorization. */
@@ -52,15 +56,17 @@ export function admitWholeDecisionBundle(bundle: AnyDecisionBundle, manifest?: P
   return { admitted: true, reason: "whole_decision_admitted", candidateDigest, candidateCount: actions.length };
 }
 
-export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void; inputProfile?: TextInputProfile }): Promise<AnyDecisionBundle | null> {
+export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void; inputProfile?: TextInputProfile; shouldContinue?: () => boolean }): Promise<AnyDecisionBundle | null> {
   if (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts < 1) throw new Error("maxAttempts must be a positive integer");
   if (options.baseBackoffMs < 0) throw new Error("baseBackoffMs must be non-negative");
   const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    if (options.shouldContinue && !options.shouldContinue()) return null;
     try { return await connector.observeBundle(requiredReadKinds, options.inputProfile); } catch (error) {
       if (!isStale(error)) throw error;
       const delayMs = attempt < options.maxAttempts ? options.baseBackoffMs * (2 ** (attempt - 1)) : 0;
       await options.onStale?.(attempt, delayMs);
+      if (options.shouldContinue && !options.shouldContinue()) return null;
       if (delayMs > 0) await sleep(delayMs);
     }
   }
@@ -90,7 +96,8 @@ export class PolicyRuntime {
   private environment: RuntimeStatus["environment"] = null;
   private submittedRequestIds = new Set<string>();
   private tickActive = false;
-  private consecutiveStaleSubmissions = 0;
+  private staleRecovery: { deadline: number; attempts: number; epoch: number; generation: number } | null = null;
+  private staleRecoveryHandoff: { generation: number; finished: boolean } | null = null;
   private staleSubmissionCooldown: { eligibleAt: number; epoch: number; generation: number } | null = null;
   private nativeSubmissionsUsed = 0;
   private menuNavigationsUsed = 0;
@@ -115,6 +122,7 @@ export class PolicyRuntime {
   private readonly policyTimeoutMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly monotonicNow: () => number;
+  private readonly successorWaitDiagnostics?: SuccessorWaitDiagnostics;
   private readonly autoBudget: AutonomyBudgetConfig;
   private get autonomyBudgetState() { return this.owner.state; }
 
@@ -147,6 +155,7 @@ export class PolicyRuntime {
     }
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.monotonicNow = options.monotonicNow ?? (() => performance.now());
+    if (options.successorWaitDiagnosticSink) this.successorWaitDiagnostics = new SuccessorWaitDiagnostics(options.successorWaitDiagnosticSink, this.monotonicNow);
     this.owner = new RuntimeLifecycleOwner(options.autoBudget, this.monotonicNow, this.mode);
     this.autoBudget = this.owner.budget;
     const started = isAutonomyMode(this.mode);
@@ -286,12 +295,17 @@ export class PolicyRuntime {
           await this.handoffAutonomyBudget();
           if (this.tainted) throw new Error(`runtime is tainted: ${this.taintReason}`);
         }
-        if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) this.beginAutonomyBudget();
+        if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) {
+          if (this.staleRecoveryHandoff && !this.staleRecoveryHandoff.finished) {
+            await this.handoffStaleRecovery(this.staleRecoveryHandoff.generation);
+            if (this.tainted) throw new Error(`runtime is tainted: ${this.taintReason}`);
+          }
+          this.beginAutonomyBudget();
+        }
         else if (!isAutonomyMode(mode) && mode !== "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("mode_changed");
         else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
-        if (mode === "auto") { this.consecutiveStaleSubmissions = 0; this.staleSubmissionCooldown = null; }
         if (!(await this.appendEvidence("mode_changed", { mode, autonomy_budget: this.autonomyBudgetStatus() }))) {
           this.mode = "human";
           if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
@@ -315,6 +329,8 @@ export class PolicyRuntime {
         // optional fresh-game precondition lookup. Fences and budget still win;
         // eligibility restores the ordinary complete admission path.
         this.checkRecoveryEpoch(expected?.recoveryEpoch);
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+        if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (this.staleSubmissionCooldownPending()) {
           if (!this.autonomyBudgetAvailable()) {
             await this.handoffAutonomyBudget();
@@ -327,6 +343,7 @@ export class PolicyRuntime {
       });
     } finally {
       this.tickActive = false;
+      this.successorWaitDiagnostics?.flush();
     }
   }
 
@@ -345,14 +362,22 @@ export class PolicyRuntime {
       await this.handoffAutonomyBudget();
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
+    const entryExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+    if (entryExpiry) return { type: "not_admitted", reason: entryExpiry, status: this.status() };
     let capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>;
     try {
       capabilities = await this.options.connector.capabilities({ inputProfile });
     } catch (error) {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
         return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
       await this.failClosed(`capabilities_failed:${message(error)}`);
       return { type: "not_admitted", reason: "capabilities_failed", status: this.status() };
+    }
+    {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
     }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
@@ -375,6 +400,10 @@ export class PolicyRuntime {
       }
       this.lastEvidenceEnvironmentFingerprint = admittedEnvironmentKey;
     }
+    {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
+    }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     this.refreshing = true;
@@ -387,6 +416,8 @@ export class PolicyRuntime {
           () => this.options.connector.observeTextMenuContext!(inputProfile));
         if (observation.cancelled) {
           this.refreshing = false;
+          const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+          if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
           return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
         }
         const context = observation.value;
@@ -397,15 +428,23 @@ export class PolicyRuntime {
         bundle = { observation: context.snapshot, reads: [] };
       } else {
         const observation = await this.withManagedObservationLease(preparationEpoch,
-          () => refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } }));
+          () => refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep,
+            shouldContinue: () => {
+              this.checkStaleRecoveryDeadline();
+              return preparationEpoch === this.recoveryEpoch && !this.mutationCancellationRequested();
+            }, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } }));
         if (observation.cancelled) {
           this.refreshing = false;
+          const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+          if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
           return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
         }
         bundle = observation.value;
       }
     } catch (error) {
       this.refreshing = false;
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.controllerReleaseUnconfirmed) {
         if (!this.tainted) await this.taint(`managed_observation_lease_unknown:${message(error)}`);
         return { type: "not_admitted", reason: `managed_observation_lease_unconfirmed:${message(error)}`, status: this.status() };
@@ -419,6 +458,10 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "observation_failed", status: this.status() };
     }
     this.refreshing = false;
+    {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
+    }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!bundle) return { type: "not_admitted", reason: "stale_refresh_exhausted", status: this.status() };
@@ -454,6 +497,10 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "snapshot_already_scored", status: this.status() };
     }
     const input: PolicyDecisionInput = { run_id: this.runId, manifest: this.options.manifest, bundle, candidate_digest: admission.candidateDigest, candidate_count: admission.candidateCount };
+    {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
+    }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!this.consumePolicyCall()) {
@@ -524,6 +571,8 @@ export class PolicyRuntime {
         if (this.publicPort) this.publicObservations.reset();
         if (this.interactionPort) this.confirmedInteraction = null;
       }
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.autonomyBudgetState.exhaustedReason === "deadline") {
         await this.handoffAutonomyBudget();
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
@@ -536,6 +585,8 @@ export class PolicyRuntime {
     } finally {
       if (this.activePolicy?.controller === policyController) this.activePolicy = null;
     }
+    const policyExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+    if (policyExpiry) return { type: "not_admitted", reason: policyExpiry, status: this.status() };
     if (this.recoveryEpoch !== policyRecoveryEpoch || this.mutationCancellationRequested()) {
       this.resetInteractionContinuity();
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
@@ -569,6 +620,8 @@ export class PolicyRuntime {
       await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
+    const decisionExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+    if (decisionExpiry) return { type: "not_admitted", reason: decisionExpiry, status: this.status() };
     if (this.mode === "shadow") return { type: "shadow", decision, status: this.status() };
     if (!resolved) {
       if (this.mode === "one_step") await this.completeOneStep();
@@ -576,6 +629,8 @@ export class PolicyRuntime {
       return { type: "not_executed", decision, status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (await this.finishAutonomyBudgetHandoffIfRequested())
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
@@ -588,11 +643,15 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "controller_acquire_failed", status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (await this.finishAutonomyBudgetHandoffIfRequested())
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       await this.releaseController();
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
+    const submissionExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+    if (submissionExpiry) return { type: "not_admitted", reason: submissionExpiry, status: this.status() };
     const requestId = `request-${this.runId}-${decision.decision_id}`;
     if (this.submittedRequestIds.has(requestId)) { await this.failClosed("duplicate_request_id"); return { type: "not_admitted", reason: "duplicate_request_id", status: this.status() }; }
     if (!this.consumeSubmissionAttempt()) {
@@ -623,6 +682,9 @@ export class PolicyRuntime {
       return { type: "unknown", decision, receipt, error: reason, status: this.status() };
     }
     this.lastReceipt = { request_id: receipt.request_id, delivery: receipt.delivery, reason_code: receipt.reason_code ?? null, successor_snapshot_id: receipt.successor?.snapshot_id ?? null };
+    if (receipt.delivery === "not_delivered" && receipt.reason_code === "stale_snapshot"
+        && receipt.retry.allowed && receipt.retry.reason === "fresh_snapshot_required")
+      this.anchorStaleRecovery(submissionEpoch);
     const receiptRecorded = await this.appendEvidence("receipt", { decision_id: decision.decision_id, receipt });
     if (!receiptRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
     if (receipt.delivery === "unknown") { await this.taint(`unknown_delivery:${receipt.reason_code ?? "unspecified"}`); return { type: "unknown", decision, receipt, error: "Connector returned unknown delivery", status: this.status() }; }
@@ -639,11 +701,12 @@ export class PolicyRuntime {
       }
       return { type: "not_delivered", decision, receipt, status: this.status() };
     }
-    this.consecutiveStaleSubmissions = 0;
-    this.staleSubmissionCooldown = null;
+    this.acceptStaleRecoveryProgress(submissionEpoch);
     try {
-      const successor = await this.stableSuccessor(bundle.observation);
+      const successor = await this.stableSuccessor(bundle.observation, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+        if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (await this.finishAutonomyBudgetHandoffIfRequested())
           return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
@@ -681,12 +744,13 @@ export class PolicyRuntime {
     // Human/Stop/budget can enter while the durable append is pending. There
     // is no await between this fence and submit: a cancelled intent must not
     // issue a new Connector mutation. No Connector result exists to record.
+    this.checkStaleRecoveryDeadline();
     if (submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()) {
       if (!(await this.appendEvidence("text_menu_dispatch_cancelled", {
         decision_id: decision.decision_id, reason: "recovery_before_submit"
       }))) await this.taint("agent_evidence_dispatch_cancel_write_failed");
-      if (await this.finishAutonomyBudgetHandoffIfRequested())
-        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+      if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
     this.submittedRequestIds.add(requestId);
@@ -716,6 +780,9 @@ export class PolicyRuntime {
       return { type: "unknown", decision, receipt: result, error: "Connector returned unknown native delivery", status: this.status() };
     }
     if (result.status === "not_applied") {
+      if (this.options.evidence && previous.schema === "sts2.player-environment/text-menu-snapshot-2"
+          && result.reason_code === "stale_snapshot" && result.retry === "reobserve" && result.native_delivery === null)
+        this.anchorStaleRecovery(submissionEpoch);
       const recorded = await this.appendEvidence("text_menu_not_applied", { decision_id: decision.decision_id, result });
       if (!recorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
       this.confirmedInteraction = null;
@@ -732,8 +799,6 @@ export class PolicyRuntime {
       }
       return { type: "text_not_applied", decision, result, status: this.status() };
     }
-    this.consecutiveStaleSubmissions = 0;
-    this.staleSubmissionCooldown = null;
     if (action.effect_domain === "text_menu") {
       if (result.native_delivery !== null || !result.successor || !this.validTextMenuSuccessor(previous, result.successor, true)) {
         await this.taint("menu_navigation_successor_invalid");
@@ -741,7 +806,10 @@ export class PolicyRuntime {
       }
       const navigationRecorded = await this.appendEvidence("menu_navigation", { decision_id: decision.decision_id, action_id: action.action_id, result });
       if (!navigationRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
-      else this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
+      else {
+        this.acceptStaleRecoveryProgress(submissionEpoch);
+        this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
+      }
       this.setObservedSnapshot(result.successor);
       if (this.mode === "one_step") await this.completeOneStep();
       return { type: "navigated", decision, action, result, successor: result.successor, status: this.status() };
@@ -749,10 +817,15 @@ export class PolicyRuntime {
     this.lastReceipt = { request_id: result.request_id, delivery: "delivered", reason_code: result.reason_code, successor_snapshot_id: result.successor?.snapshot_id ?? null };
     const deliveryRecorded = await this.appendEvidence("text_native_delivery", { decision_id: decision.decision_id, result });
     if (!deliveryRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
-    else this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
+    else {
+      this.acceptStaleRecoveryProgress(submissionEpoch);
+      this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
+    }
     try {
-      const successor = await this.stableSuccessor(previous);
+      const successor = await this.stableSuccessor(previous, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
+        if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (await this.finishAutonomyBudgetHandoffIfRequested()) return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
       }
@@ -794,26 +867,116 @@ export class PolicyRuntime {
     this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
   }
 
+  private anchorStaleRecovery(submissionEpoch: number): void {
+    if (this.mode !== "auto" || this.tainted || submissionEpoch !== this.recoveryEpoch
+        || this.mutationCancellationRequested() || this.autonomyBudgetState.state !== "active") return;
+    if (!this.staleRecovery) {
+      this.staleRecovery = { deadline: this.monotonicNow() + 10_000, attempts: 0,
+        epoch: submissionEpoch, generation: this.autonomyBudgetGeneration };
+      this.scheduleAutonomyBudgetDeadline();
+    }
+  }
+
+  private acceptStaleRecoveryProgress(submissionEpoch: number): void {
+    // A real result remains owed after expiry; it cannot refund a won deadline.
+    this.checkStaleRecoveryDeadline();
+    if (this.tainted || submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()
+        || this.autonomyBudgetState.state !== "active") return;
+    this.staleRecovery = null;
+    this.staleSubmissionCooldown = null;
+    this.scheduleAutonomyBudgetDeadline();
+  }
+
   private async finishKnownNonDelivery(refreshable: boolean, handoffReason: string,
                                       submissionEpoch: number): Promise<void> {
     this.staleSubmissionCooldown = null;
+    this.checkStaleRecoveryDeadline();
     if (submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()) {
-      // The queued winning recovery owns Human/Stop/deadline attribution.
-      // Keep the correlated known receipt and release; do not synthesize a
-      // stale-result handoff or end its authorization as mode_changed.
+      // Already submitted work is classified before the queued winning recovery
+      // releases ownership. Never invent another stale handoff or rearm Auto.
       await this.releaseController();
       return;
     }
-    if (!refreshable || ++this.consecutiveStaleSubmissions >= 3)
+    if (!refreshable || !this.staleRecovery) {
       await this.releaseControllerAndReturnHuman(handoffReason);
-    else {
-      await this.releaseController();
-      if (this.mode === "auto" && !this.tainted && submissionEpoch === this.recoveryEpoch
-          && !this.mutationCancellationRequested() && this.autonomyBudgetState.state === "active")
-        this.staleSubmissionCooldown = { eligibleAt: this.monotonicNow()
-          + (this.consecutiveStaleSubmissions === 1 ? 250 : 500), epoch: submissionEpoch,
-          generation: this.autonomyBudgetGeneration };
+      return;
     }
+    const episode = this.staleRecovery;
+    episode.attempts += 1;
+    await this.releaseController();
+    this.checkStaleRecoveryDeadline();
+    if (this.mode === "auto" && !this.tainted && submissionEpoch === this.recoveryEpoch
+        && !this.mutationCancellationRequested() && this.autonomyBudgetState.state === "active"
+        && episode === this.staleRecovery) {
+      const remaining = Math.min(episode.deadline - this.monotonicNow(),
+        this.autoBudget.deadlineMs - this.budgetElapsedMs());
+      if (remaining > 0) this.staleSubmissionCooldown = { eligibleAt: this.monotonicNow()
+        + Math.min(episode.attempts === 1 ? 250 : episode.attempts === 2 ? 500 : 1000, remaining),
+        epoch: submissionEpoch, generation: this.autonomyBudgetGeneration };
+    }
+  }
+
+  private checkStaleRecoveryDeadline(): void {
+    const episode = this.staleRecovery;
+    if (!episode || episode.generation !== this.autonomyBudgetGeneration
+        || episode.epoch !== this.recoveryEpoch || this.tainted || this.stopped || this.stopRequested || this.requestedMode === "human") return;
+    if (this.autonomyBudgetState.state === "exhausted") {
+      this.requestAutonomyBudgetHandoff(); return;
+    }
+    if (this.autonomyBudgetState.state !== "active" || this.monotonicNow() < episode.deadline) return;
+    if (!this.autonomyBudgetAvailable()) { this.requestAutonomyBudgetHandoff(); return; }
+    this.requestStaleRecoveryHandoff(episode.generation);
+  }
+
+  private requestStaleRecoveryHandoff(generation: number): void {
+    if (generation !== this.autonomyBudgetGeneration || this.staleRecoveryHandoff
+        || this.tainted || this.stopped || this.stopRequested || this.requestedMode === "human") return;
+    if (!this.autonomyBudgetAvailable()) { this.requestAutonomyBudgetHandoff(); return; }
+    this.staleRecoveryHandoff = { generation, finished: false };
+    // Freeze the original wallet when this earlier deadline wins. A later
+    // status read/global deadline cannot change attribution while submit is owed.
+    this.endAutonomyBudget("mode_changed");
+    this.advanceRecoveryEpoch(); this.resetInteractionContinuity(); this.cancelActivePolicy(); this.mode = "human";
+    void this.serialize(() => this.handoffStaleRecovery(generation)).catch((error: unknown) => {
+      const reason = `stale_recovery_handoff_failed:${message(error)}`;
+      this.errors = [...this.errors, reason].slice(-20);
+      this.invalidations = [...this.invalidations, reason].slice(-20);
+    });
+  }
+
+  private async handoffStaleRecovery(generation: number): Promise<void> {
+    const handoff = this.staleRecoveryHandoff;
+    if (!handoff || handoff.finished || generation !== handoff.generation
+        || generation !== this.autonomyBudgetGeneration) return;
+    // Mark before awaits so reentrant admission cannot append a duplicate.
+    handoff.finished = true;
+    this.mode = "human"; this.endAutonomyBudget("mode_changed");
+    try { await this.releaseController(); } catch { /* retains exact taint/unconfirmed ownership */ }
+    if (!(await this.appendEvidence("handoff_to_human", { reason: "stale_recovery_exhausted" }))) {
+      const reason = "stale_recovery_exhaustion_evidence_write_failed";
+      if (!this.tainted) await this.taintWithoutEvidence(reason, false);
+      await this.appendEvidence("runtime_tainted", { reason, retry: false });
+    }
+  }
+
+  private get hasRecoveryDeadline(): boolean {
+    return this.staleRecovery !== null || this.staleRecoveryHandoff !== null || this.autonomyBudgetRecoveryFenced;
+  }
+
+  private async finishRecoveryDeadlineIfDue(): Promise<string | null> {
+    if (this.stopped || this.tainted || this.stopRequested || this.requestedMode === "human") return null;
+    if (this.autonomyBudgetRecoveryFenced) {
+      await this.handoffAutonomyBudget(); return "autonomy_budget_exhausted";
+    }
+    this.checkStaleRecoveryDeadline();
+    if (this.autonomyBudgetRecoveryFenced) {
+      await this.handoffAutonomyBudget(); return "autonomy_budget_exhausted";
+    }
+    if (this.staleRecoveryHandoff && !this.staleRecoveryHandoff.finished) {
+      await this.handoffStaleRecovery(this.staleRecoveryHandoff.generation);
+      return "stale_recovery_exhausted";
+    }
+    return null;
   }
 
   private staleSubmissionCooldownPending(): boolean {
@@ -925,6 +1088,8 @@ export class PolicyRuntime {
 
   private beginAutonomyBudget(): void {
     this.staleSubmissionCooldown = null;
+    this.staleRecovery = null;
+    this.staleRecoveryHandoff = null;
     this.nativeSubmissionsUsed = 0;
     this.menuNavigationsUsed = 0;
     this.autonomyBudgetHandoffQueued = false;
@@ -933,7 +1098,7 @@ export class PolicyRuntime {
     this.owner.begin(() => this.requestAutonomyBudgetHandoff());
   }
 
-  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void { this.staleSubmissionCooldown = null; this.owner.end(reason); }
+  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void { this.staleSubmissionCooldown = null; this.staleRecovery = null; this.owner.end(reason); }
   private budgetElapsedMs(): number { return this.owner.elapsed(); }
   private autonomyBudgetStatus(): RuntimeStatus["autonomy_budget"] {
     return this.owner.status(() => this.requestAutonomyBudgetHandoff());
@@ -942,7 +1107,12 @@ export class PolicyRuntime {
   private autonomyBudgetAvailable(): boolean { return this.owner.available(); }
   private consumePolicyCall(): boolean { return this.owner.consumeCall(); }
   private consumeSubmissionAttempt(): boolean { return this.owner.consumeSubmission(); }
-  private scheduleAutonomyBudgetDeadline(): void { this.owner.scheduleDeadline(() => this.requestAutonomyBudgetHandoff()); }
+  private scheduleAutonomyBudgetDeadline(): void {
+    const episode = this.staleRecovery;
+    this.owner.scheduleDeadline(() => this.requestAutonomyBudgetHandoff(), episode ? {
+      at: episode.deadline, onDeadline: () => this.checkStaleRecoveryDeadline()
+    } : undefined);
+  }
 
   private requestAutonomyBudgetHandoff(): void {
     if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted("deadline");
@@ -983,35 +1153,104 @@ export class PolicyRuntime {
     await this.handoffAutonomyBudget();
     return true;
   }
-  private async stableSuccessor(previous: AnyDecisionBundle["observation"]): Promise<AnyDecisionBundle["observation"] | null> {
-    for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
-      if (this.mutationCancellationRequested()) return null;
-      // One observation per attempt: do not multiply nested retry budgets.
-      const observation = await this.withManagedObservationLease(this.recoveryEpoch,
-        () => refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
-          inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep }));
-      if (observation.cancelled) return null;
-      const next = observation.value;
-      if (next) {
-        const observed = next.observation;
-        if (observed.schema !== previous.schema) throw new Error("successor_profile_drift");
-        if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
-            || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
-          throw new Error("successor_environment_identity_drift");
+  private async stableSuccessor(previous: AnyDecisionBundle["observation"], requestId: string, decisionId: string): Promise<AnyDecisionBundle["observation"] | null> {
+    const publicAuto = this.mode === "auto" && previous.schema === "sts2.player-environment/snapshot-1";
+    const epoch = this.recoveryEpoch, generation = this.autonomyBudgetGeneration;
+    const intervalMs = publicAuto ? Math.max(1, this.successorPoll.baseBackoffMs) : this.successorPoll.baseBackoffMs;
+    const waitController = publicAuto ? new AbortController() : null;
+    // Reuse the existing owner cancellation scope. Read-only acquisition/sleep
+    // may finish late; neither its result nor its cleanup owns a later scope.
+    if (waitController) this.activePolicy = { controller: waitController };
+    const cancelled = (): boolean => {
+      if (publicAuto && this.autonomyBudgetState.state === "active"
+          && this.budgetElapsedMs() >= this.autoBudget.deadlineMs) this.requestAutonomyBudgetHandoff();
+      return this.mutationCancellationRequested() || epoch !== this.recoveryEpoch
+        || generation !== this.autonomyBudgetGeneration;
+    };
+    const diagnostic = this.successorWaitDiagnostics?.begin({ runId: this.runId, requestId, decisionId, previous,
+      maxAttempts: this.successorPoll.maxAttempts, intervalMs,
+      waitPolicy: publicAuto ? "auto_public_settling" : "legacy_total_poll_limit" });
+    let attempt = 0, unusable = 0, qualifiedSettling = 0;
+    let observed: AnyDecisionBundle["observation"] | undefined;
+    let category: SuccessorWaitCategory = "acquisition_error";
+    let outcome: "accepted" | "exhausted" | "cancelled" | "error" = "exhausted";
+    try {
+      while (publicAuto ? unusable < this.successorPoll.maxAttempts : attempt < this.successorPoll.maxAttempts) {
+        attempt += 1;
+        observed = undefined;
+        category = "acquisition_error";
+        if (cancelled()) {
+          diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
-        if (observed.snapshot_id !== previous.snapshot_id && observed.sequence <= previous.sequence) {
-          throw new Error("successor_sequence_not_newer");
+        // One observation per poll: no nested refresh allowance or new policy call.
+        const acquisition = this.withManagedObservationLease(epoch, () => {
+          diagnostic?.pollStarted();
+          return refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
+            inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
+        });
+        const observation = waitController
+          ? await withTimeout(acquisition, null, "", waitController.signal) : await acquisition;
+        if (observation.cancelled || cancelled()) {
+          diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
-        if (observed.snapshot_id !== previous.snapshot_id && observed.status !== "settling") {
-          this.lastSnapshotId = observed.snapshot_id;
-          this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
-          this.lastReads = next.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
-          return observed;
+        const next = observation.value;
+        if (next) {
+          observed = next.observation;
+          if (observed.schema !== previous.schema) { category = "profile_drift"; throw new Error("successor_profile_drift"); }
+          if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
+              || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
+            category = "environment_identity_drift"; throw new Error("successor_environment_identity_drift");
+          }
+          if (observed.snapshot_id !== previous.snapshot_id && observed.sequence <= previous.sequence) {
+            category = "sequence_not_newer"; throw new Error("successor_sequence_not_newer");
+          }
+          const sameBasis = observed.snapshot_id === previous.snapshot_id;
+          // Preserve the existing non-settling successor contract. Later input
+          // admission, not this observation, decides whether a Model may act.
+          if (!sameBasis && observed.status !== "settling") {
+            diagnostic?.row(attempt, "accepted", observed, false);
+            this.lastSnapshotId = observed.snapshot_id;
+            this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
+            this.lastReads = next.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
+            outcome = "accepted"; return observed;
+          }
+          const completeSettling = !sameBasis && observed.status === "settling"
+            && observed.schema === "sts2.player-environment/snapshot-1"
+            && observed.completeness.status === "complete" && observed.bound_actions.status === "complete"
+            && observed.bound_actions.materialized_count === observed.bound_actions.total_count
+            && observed.bound_actions.materialized_count === observed.bound_actions.actions.length;
+          if (publicAuto && completeSettling) qualifiedSettling += 1;
+          else unusable += 1;
+          diagnostic?.row(attempt, sameBasis ? "same_basis"
+            : publicAuto && !completeSettling ? "untrusted_settling" : "settling", observed, sameBasis);
+        } else {
+          unusable += 1;
+          diagnostic?.row(attempt, "no_whole_bundle");
+        }
+        observed = undefined;
+        category = "wait_error";
+        const more = publicAuto ? unusable < this.successorPoll.maxAttempts : attempt < this.successorPoll.maxAttempts;
+        if (more && intervalMs > 0) {
+          const delayMs = publicAuto ? Math.min(intervalMs, Math.max(0, this.autoBudget.deadlineMs - this.budgetElapsedMs())) : intervalMs;
+          if (delayMs > 0) {
+            const waiting = this.sleep(delayMs);
+            if (waitController) await withTimeout(waiting, null, "", waitController.signal);
+            else await waiting;
+          }
         }
       }
-      if (attempt < this.successorPoll.maxAttempts && this.successorPoll.baseBackoffMs > 0) await this.sleep(this.successorPoll.baseBackoffMs);
+      return null;
+    } catch (error) {
+      if (publicAuto && cancelled()) {
+        diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
+      }
+      diagnostic?.row(attempt, category, observed, observed?.snapshot_id === previous.snapshot_id);
+      outcome = "error";
+      throw error;
+    } finally {
+      if (waitController && this.activePolicy?.controller === waitController) this.activePolicy = null;
+      if (outcome !== "accepted") diagnostic?.finish(outcome, { unusable, qualifiedSettling });
     }
-    return null;
   }
 
   private async withManagedObservationLease<T>(expectedRecoveryEpoch: number,
@@ -1027,6 +1266,7 @@ export class PolicyRuntime {
       await this.taint(`managed_observation_controller_acquire_unknown:${message(error)}`);
       throw error;
     }
+    this.checkStaleRecoveryDeadline();
     if (this.recoveryEpoch !== expectedRecoveryEpoch || this.mutationCancellationRequested()) {
       await this.releaseController();
       return { cancelled: true };
@@ -1056,7 +1296,8 @@ export class PolicyRuntime {
     return this.stopRequested
       || this.requestedMode === "human"
       || this.requestedMode === "shadow"
-      || this.autonomyBudgetRecoveryFenced;
+      || this.autonomyBudgetRecoveryFenced
+      || this.staleRecoveryHandoff !== null;
   }
   private cancelActivePolicy(): void {
     this.owner.cancelActive();
@@ -1175,10 +1416,10 @@ class PolicyRecoveryCancelledError extends Error {
   constructor() { super("policy decision cancelled for recovery"); }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string, signal?: AbortSignal): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number | null, detail: string, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
+  const timeout = timeoutMs === null ? null : new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(detail)), timeoutMs);
   });
   const cancellation = signal === undefined
@@ -1188,7 +1429,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string, 
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     });
-  const races: Promise<T | never>[] = [promise, timeout];
+  const races: Promise<T | never>[] = [promise];
+  if (timeout) races.push(timeout);
   if (cancellation) races.push(cancellation);
   return Promise.race(races).finally(() => {
     if (timer !== undefined) clearTimeout(timer);

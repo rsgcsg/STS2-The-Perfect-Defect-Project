@@ -6,6 +6,10 @@
 Human、研究或完整 G2/V1 资格。具体原始运行、包及检查见
 [本轮交付记录](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)。
 
+后续关于共同执行合同、历史用户要求和新旧替换边界的进一步核对，见
+[统一抽象与持续演进续审](UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md)。
+本报告仍保留上述源码基线的判断与范围。
+
 ## 判断
 
 **目前是一套共同权威和应用服务支撑的系统，承载多个语义不同的 Agent／环境组合。

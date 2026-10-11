@@ -95,6 +95,24 @@ export function makePlan({ base, head = "HEAD", forceFull = false, cwd = root } 
   }
 }
 
+export function checkCommittedPatch({ base, head = "HEAD", cwd = root } = {}) {
+  const git = (...args) => execFileSync("git", args, {
+    cwd, encoding: "utf8", input: "", stdio: ["pipe", "pipe", "pipe"],
+  }).trim();
+  const commit = value => git("rev-parse", "--verify", "--end-of-options", `${value}^{commit}`);
+  const exactHead = commit(head);
+  let exactBase;
+  if (base === undefined || base === "" || /^0{40}$/.test(base)) {
+    const firstParent = git("cat-file", "commit", exactHead).split("\n\n")[0]
+      .match(/^parent ([0-9a-f]+)$/mu)?.[1];
+    exactBase = firstParent ? commit(firstParent) : git("hash-object", "-t", "tree", "--stdin");
+  } else exactBase = commit(base);
+  execFileSync("git", ["diff", "--check", exactBase, exactHead, "--"], {
+    cwd, stdio: "inherit",
+  });
+  return { base: exactBase, head: exactHead };
+}
+
 export function aggregatePassed(scope, results) {
   if (results.plan !== "success") return false;
   if (scope === "docs") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
@@ -149,7 +167,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } else {
     const baseIndex = args.indexOf("--base");
     const headIndex = args.indexOf("--head");
-    const plan = makePlan({ base: baseIndex < 0 ? process.env.CHECK_BASE : args[baseIndex + 1], head: headIndex < 0 ? "HEAD" : args[headIndex + 1], forceFull: args.includes("--full") || process.env.CHECK_FULL === "true" });
+    if ((baseIndex >= 0 && args[baseIndex + 1] === undefined) ||
+        (headIndex >= 0 && args[headIndex + 1] === undefined)) throw new Error("missing_comparison_revision");
+    const base = baseIndex < 0 ? process.env.CHECK_BASE : args[baseIndex + 1];
+    const head = headIndex < 0 ? "HEAD" : args[headIndex + 1];
+    // This barrier precedes receipt lookup, routing outputs and every lane. The
+    // classification/event rules remain independent of its closed base fallback.
+    const checked = args.includes("--check-patch") || args.includes("--run")
+      ? checkCommittedPatch({ base, head }) : null;
+    const plan = makePlan({ base, head, forceFull: args.includes("--full") || process.env.CHECK_FULL === "true" });
+    if (checked) plan.committed_patch = checked;
     const e = process.env;
     if (plan.scope === "python" && ((e.GITHUB_EVENT_NAME === "pull_request" && e.GITHUB_BASE_REF === "main") ||
         (e.GITHUB_EVENT_NAME === "push" && e.GITHUB_REF === "refs/heads/main"))) {
@@ -169,7 +196,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `scope=${plan.scope}\nproof=${plan.proof?.url || ""}\n`);
     if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Check scope: **${plan.scope}** (${plan.reason}). Base ${plan.base}; tested checkout ${plan.head}. Source/test only.\n`);
     if (args.includes("--run")) {
-      if (plan.base && plan.head) execFileSync("git", ["diff", "--check", plan.base, plan.head, "--"], { cwd: root, stdio: "inherit" });
       execute(plan.scope);
     }
   }

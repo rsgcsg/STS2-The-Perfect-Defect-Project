@@ -148,6 +148,41 @@ public sealed class NativeLogicalBridgeTests
         Assert.Equal("delivered", delivered.Delivery); Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, logs);
     }
     [Fact]
+    public void EndTurnPossibleRequestFailureRetainsUnknownAndOriginalReplayNeverCallsAgain()
+    {
+        using var fixture = new Fixture();
+        fixture.Frame = fixture.Frame with { Leaves = fixture.Frame.Leaves.Select(l => l with
+            { Verb = "end_turn", Label = "End turn" }).ToArray() };
+        int nativeRequests = 0;
+        fixture.OnDispatch = () => fixture.Outcome = NativeEndTurnInput.Deliver(() =>
+            { nativeRequests++; throw new InvalidOperationException("after possible end turn request"); });
+        var current = fixture.Current();
+        var action = Assert.Single(fixture.Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
+        var request = new PlayerEnvironmentActionRequest("end-turn-original", current.Capture.SnapshotId, action.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile);
+        var result = fixture.Submit(request);
+        Assert.Equal("unknown", result.Delivery); Assert.Equal("never_automatic", result.Retry);
+        Assert.Equal("native_end_turn_input_unknown", result.Reason);
+        RequestTestDriver.AssertWireEqual(result, fixture.Submit(request));
+        Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, nativeRequests);
+    }
+    [Fact]
+    public void PrivateAvailabilityExpiryChangesNativeIdentityBeforePublishingSupportedRichLeaves()
+    {
+        using var fixture = new Fixture();
+        fixture.Frame = fixture.Frame with { CombatWithdrawal = new("exact-owner", global::STS2Connector.LiveHost.CombatWithdrawalState.Pending) };
+        var first = fixture.Current();
+        var old = Assert.Single(fixture.Owner.Store.Catalog(first.Capture!.CaptureId).Actions);
+        fixture.Frame = fixture.Frame with { CombatWithdrawal = fixture.Frame.CombatWithdrawal! with
+            { State = global::STS2Connector.LiveHost.CombatWithdrawalState.Expired } };
+        var second = fixture.Current();
+        Assert.NotEqual(first.Capture.SnapshotId, second.Capture!.SnapshotId);
+        Assert.Single(fixture.Owner.Store.Catalog(second.Capture.CaptureId).Actions);
+        var result = fixture.Submit(new("old-availability", first.Capture.SnapshotId, old.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile));
+        Assert.Equal("not_started", result.Delivery); Assert.Equal(0, fixture.Dispatches);
+    }
+    [Fact]
     public void LaterSourceCallbackCannotEncodeAheadOfAnOlderCapturedCurrent()
     {
         using var fixture = new Fixture();

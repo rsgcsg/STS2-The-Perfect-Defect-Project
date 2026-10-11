@@ -58,27 +58,43 @@ fresh observation and complete menu (an atomic context for the required
 stateful v2 port), asks the policy again, and uses new decision and request
 IDs. It never reuses the old bound action, request or scores; a fresh policy
 decision may choose the same semantic action.
-Three consecutive stale submissions hand back to Human; an applied text menu
-navigation or native delivery resets that count. Other unapplied results,
-unknown delivery, evidence or release failure, and cancellation do not continue
-Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
+For generic Snapshot1 and the retryable text-menu-v2 path, the first correlated,
+explicitly retryable known stale result anchors a per-episode absolute monotonic
+10,000 ms recovery window before Evidence or controller-release latency. Each
+retry releases control, waits a positive adaptive cooldown of 250, 500, then
+1,000 ms (capped at 1,000 ms and clamped to remaining local and global time),
+and obtains a fresh complete observation, fresh scores and new decision/request
+IDs. A tick before cooldown eligibility returns `not_admitted` with reason
+`stale_submission_cooldown` and performs no environment or policy work.
 
-For generic Snapshot1 and the existing retryable text-menu-v2 path, the first
-and second consecutive, correlated known stale non-deliveries release control
-and schedule monotonic 250 ms and 500 ms cooldowns before the next observation.
-A tick before eligibility returns the existing `not_admitted` shape with reason
-`stale_submission_cooldown`; it makes no capability, observation, policy or
-submission call and consumes no additional call/submission budget. Equality at
-cooldown eligibility permits a fresh complete bundle, new decision/request identities
-and fresh scoring. The existing server tick loop drives this without a sleep
-inside the serialized owner or an additional timer.
+New observations, changing fair-player facts, catalogs, scores and tokens never
+renew the window. Only an accepted delivered/applied result in the original live
+recovery epoch and authorization, before expiry wins, resets the episode; an
+applied text menu navigation counts as progress at this layer. A genuinely new
+Auto authorization starts a new allowance. Redundant Auto commands and cycling
+between autonomous modes within one active authorization do not refill it.
+The existing total time, policy-call and submission wallets remain unchanged,
+and every fresh attempt is charged normally. Generic Snapshot1 retains its
+optional Evidence writer compatibility; v2 still requires a writer for retry.
 
-Stop, Human recovery and finite authorization expiry retain priority. A late
-result from an old recovery epoch cannot arm a cooldown; a new authorized Auto,
-delivery, Stop or Human handoff clears it. The three-stale ceiling, receipt
-correlation, explicit retry admission and evidence/release failure behavior
-remain unchanged. This is operational backpressure, not a readiness or effect
-settlement proof. The separately declared native Agent 8/3 policy is unchanged.
+The shared Runtime lifecycle owner schedules the earlier global or local
+absolute deadline. Local expiry itself fences and cancels pending policy work,
+serializes Human/controller release and records `handoff_to_human` with exactly
+`{reason: "stale_recovery_exhausted"}`, even while idle without another tick or
+status read. Global expiry wins equality. Admission checks enforce expiry before
+environment work, after observation/policy awaits and before acquisition/submit.
+An already submitted request is still owed its actual correlated result and
+Evidence classification before final release; a late delivered result cannot
+revive Auto or reset an expired window. Failed handoff Evidence writes taint.
+Unknown/partial delivery, correlation failure, nonretryable rejection, failed
+Evidence/release, Stop, Human recovery and identity/epoch drift retain their
+strict handoff/taint behavior. Delivery-successor wait exhaustion never retries.
+
+This finite allowance is an operational cost/scope choice, not proof of native
+readiness, effect settlement, eventual delivery or eventual game summary. It
+replaces the generic/v2 three-stale cutoff; the native-logical Agent's separately
+declared 8/3 policy and global timer remain unchanged. It needs a newly qualified
+Runtime package before live use; historical runs and artifacts remain immutable.
 
 Before observation, each Connector Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
@@ -443,23 +459,89 @@ bind decision metadata/scores, Receipt and successor but do not archive every
 pre-decision Snapshot/Read input. Research projections and evaluation protocols
 remain external consumers' responsibility.
 
+Generic Policy Runtime successor waiting supports private, opt-in failure
+diagnostics through `RuntimeOptions.successorWaitDiagnosticSink`. The CLI enables
+this sink only when `STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS=1`, writing one
+JSON line to its existing stderr stream (captured by the local Model service's
+private `runtime.log`). Accepted waits produce no line and consume no diagnostic
+record budget. These lines are operational diagnostics, outside sealed Agent-run
+Evidence and the public status/HTTP contracts.
+
+Each failed, cancelled or throwing wait reports the existing request/decision and
+basis Snapshot IDs, poll count, monotonic elapsed time and at most 64 retained
+poll rows. Rows contain only observed Snapshot ID/sequence/status, interaction
+kind/completeness, same-basis/settling flags and a closed outcome category.
+Missing whole bundles are labelled `no_whole_bundle`; arbitrary error messages,
+Snapshot content, action operands, referents and Reads are excluded. Oversized
+strings are omitted with an explicit flag. Old rows are dropped with explicit
+counts; each JSON record is at most 32 KiB. At most 16 failure records and one
+explicit cap marker are sent per Runtime instance. Sink errors disable only
+diagnostics. The opt-in CLI writer handles both write callbacks and later stderr
+`error` events, including EPIPE. It owns one stderr error listener for this
+single-Runtime CLI process lifetime, so pending error events remain contained
+after Stop; the default-off path attaches no listener. No global exception
+handler is added. The default remains off. The private record declares whether
+`max_attempts` limits all polls (legacy profiles/One-Step) or cumulative unusable
+polls (generic public Auto), and reports actual unusable and qualified-settling
+counts beside total `poll_count`. Qualified settling may therefore produce more
+than 41 actual Auto polls; scalar row, byte and failure-record caps remain fixed.
+Diagnostics do not establish native causal settlement.
+
 ## Continuous-operation repair candidate
 
 The source candidate keeps Auto active after a correlated `not_delivered` receipt
 only when `reason_code=stale_snapshot` and the Connector explicitly allows a fresh
 snapshot retry. The controller is released and the next tick reacquires a complete
-bundle, rescores it and creates new decision/request IDs. Three consecutive stale
-submissions return to Human. Other non-delivery, unsupported decisions and all
+bundle, rescores it and creates new decision/request IDs within the finite recovery window described above. Its expiry returns to Human. Other non-delivery, unsupported decisions and all
 unknown delivery retain existing handoff/taint behavior; no old action is replayed.
 
-After delivered input, the default bounded observation wait is 41 samples at a
-250 ms fixed interval (10 seconds of scheduled waiting, plus bounded HTTP time),
-with one observation attempt per sample. This accommodates enemy animations; it
-is not a causal settlement proof. Human/Stop interrupts further polling and never
-submits another action. Exhaustion or identity drift still fails closed. Initial
-settling frames do not terminate Auto; unsupported stable surfaces still hand off.
-These changes require a newly pinned package before live use; rc.4 artifacts remain
-immutable and do not acquire this behavior from a source edit.
+After a correlated delivered generic public Snapshot1 action in Auto, Runtime
+keeps that same in-flight decision/request and controller while observing under
+the original absolute authorization deadline. Complete same-profile/environment
+settling frames distinct from the original scored basis with a greater sequence,
+with a complete and consistent `bound_actions` catalog, may continue waiting.
+Repeated occurrences of one such newer settling watermark also qualify. These
+polls never become Model inputs, policy calls, another submission or a successor
+event, and do not renew time/call/submission budgets. This covers both generic
+M0 and PublicM2 Port4 without a Host/model-specific split.
+
+The configured `successorPoll.maxAttempts` (default 41) is a cumulative allowance
+for unusable polls in this Auto scope: same-original-basis, missing whole bundle
+and incomplete/truncated/untrusted settling consume it. Qualified settling never
+refunds spent unusable polls. Profile/environment/sequence errors and transport
+exceptions retain immediate strict failure behavior. Polls use the configured
+interval (default 250 ms), with a minimum positive 1 ms yield for this Auto path,
+and clamp the next delay to the original deadline's remaining time. At that
+deadline, the existing owner fences the wait and serializes Human/release/evidence
+without a second tick or status read. Stop/Human fence late observations and
+prevent any further acquisition or action; original delivered knowledge remains
+in its Receipt. Exhausting unusable observations still taints conservatively and
+never retries the delivered request.
+
+A distinct newer same-environment non-settling observation preserves the existing
+successor event and validation; it is an observation, not causal settlement or
+a guarantee of future input admission. Interactive child selectors use the
+ordinary successor and complete-input path without a native scene/timing gate.
+PublicM2 remembers a delivered interaction only after that successor is written,
+and offers it once on a subsequent admitted input. Settling polls do not advance
+its input ordinal/history. Stop/deadline/taint retain existing continuity cleanup.
+
+One-Step retains the original total poll cap (default 41 samples and 40×250 ms
+scheduled waits, plus bounded acquisition). Text-menu-v1/v2, Managed text-v2 and
+native-logical Agent contracts remain unchanged. Extending One-Step would affect
+its existing synchronous caller timing and requires a separate contract packet.
+The continuation guarantee applies to background Auto: a manual synchronous Auto
+HTTP tick can outlast a caller timeout. An unknown command outcome remains
+unknown and must not be replayed; this change promises no universal command
+latency or new reconciliation manager. A One-Step mode change queued behind an
+in-flight extended Auto wait also inherits that wait's latency; its own subsequent
+tick still retains the One-Step poll cap.
+
+Initial Auto settling already waits under its original global authorization.
+This correction aligns post-delivery trustworthy waiting with that finite owner;
+it does not establish native readiness duration, effect settlement, eventual
+successor/game summary or strategy quality. It requires a newly qualified package
+before live use. Historical artifacts and failed attempts remain immutable.
 
 ### Sealed public observation acquisition
 

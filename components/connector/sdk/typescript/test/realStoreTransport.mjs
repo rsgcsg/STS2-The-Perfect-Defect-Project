@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 let preparedDll;
-function prepareBridge() {
+// Compile-only preparation; callers may run it before spending a case budget.
+// The DLL cache contains no process, Store, HTTP or SDK/controller state.
+export function prepareBridge() {
   if (process.env.STS2_OWNED_CURRENT_BRIDGE_DLL) return process.env.STS2_OWNED_CURRENT_BRIDGE_DLL;
   if (preparedDll) return preparedDll;
   const project = fileURLToPath(new URL("../../../host/tests/STS2Connector.NativeLogical.OwnedCurrent.Bridge/STS2Connector.NativeLogical.OwnedCurrent.Bridge.csproj", import.meta.url));

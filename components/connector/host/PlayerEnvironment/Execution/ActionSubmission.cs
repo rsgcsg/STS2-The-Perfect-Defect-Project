@@ -15,12 +15,22 @@ namespace STS2Connector.PlayerEnvironment;
 internal static partial class PlayerEnvironmentService
 {
     internal static bool RunAdmittedLegacy(PlayerEnvironmentActionRequest request)
+        => RunAdmittedLegacyCore(request, Requests,
+            () => BuildSnapshot(inputProfile: request.InputProfile),
+            StartPlayerEnvironmentInput, Observe);
+
+    // The production wrapper binds all dependencies to the existing native
+    // owner. This same original-request path supports crossed capture tests.
+    internal static bool RunAdmittedLegacyCore(PlayerEnvironmentActionRequest request, RequestNamespace requests,
+        Func<SnapshotBuildResult> capture,
+        Func<SnapshotBuildResult, NativeUiBoundAction, IReadOnlyDictionary<string, string>, NativeInputResult> start,
+        Func<string?, PlayerEnvironmentSnapshot> observe)
     {
-        using var preparation = Requests.PrepareOriginal(request);
+        using var preparation = requests.PrepareOriginal(request);
         if (preparation is null) return false;
         string requestId = request.RequestId!;
         IReadOnlyDictionary<string, string> parameters = new Dictionary<string, string>(StringComparer.Ordinal);
-            SnapshotBuildResult snapshot = BuildSnapshot(inputProfile: request.InputProfile);
+            SnapshotBuildResult snapshot = capture();
             string boundActionId = request.BoundActionId ?? string.Empty;
             PlayerEnvironmentBoundAction? boundAction = snapshot.Snapshot.BoundActions.Actions
                 .SingleOrDefault(candidate => string.Equals(
@@ -88,7 +98,7 @@ internal static partial class PlayerEnvironmentService
             NativeInputResult started;
             try
             {
-                started = StartPlayerEnvironmentInput(
+                started = start(
                     snapshot,
                     binding.NativeAction,
                     parameters);
@@ -133,7 +143,7 @@ internal static partial class PlayerEnvironmentService
             string detail = $"Native UI input was delivered ({evidence}); the attached successor is an immediate post-delivery observation, not causal settlement.";
             try
             {
-                postDeliveryObservation = Observe(request.InputProfile);
+                postDeliveryObservation = observe(request.InputProfile);
             }
             catch (Exception exception)
             {

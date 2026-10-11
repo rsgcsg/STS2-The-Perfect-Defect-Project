@@ -119,6 +119,13 @@ public sealed class ProcessLocalTextMenuWitnessTests
         var frozen = new ProcessLocalTextMenuWitnessFrame(card with
         { Leaves = card.Leaves.Append(endTurn).ToArray() },
             Capabilities(), "source", false);
+        var machine = new ProcessLocalTextMenuWitnessFrame(card with
+        { Leaves = card.Leaves.Append(endTurn).ToArray() },
+            Capabilities(), "source", true);
+        var machineMatch = machine.Resolve(new("end_turn", button, null,
+            new Dictionary<string, object>(StringComparer.Ordinal)));
+        Assert.Equal("controller_active", machineMatch.Status);
+        Assert.Equal(0, machineMatch.MatchCount); Assert.Null(machineMatch.Action);
         var exact = frozen.Resolve(new ProcessLocalObservedTextMenuAction(
             "end_turn", button, null,
             new Dictionary<string, object>(StringComparer.Ordinal)));

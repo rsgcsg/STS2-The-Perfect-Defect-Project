@@ -19,8 +19,8 @@ predecessor artifact does not transfer to a new Native Foundation artifact.
 | Native validator | `CardModel.CanPlayTargeting`; potion ownership, usage, custom usability and `IsValidTarget`; native play phase |
 | Decision boundary | local player play phase with game action synchronization in `PlayPhase` |
 | Presentation owner | `NCombatRoom`, `NPlayerHand`, potion holders and `NEndTurnButton` |
-| Delivery seam | `CardModel.TryManualPlay`, `PotionModel.EnqueueManualUse`, `PlayerCmd.EndTurn` |
-| Exact binding | process-local card, potion, target and room objects behind Connector referents |
+| Delivery seam | `CardModel.TryManualPlay`, `PotionModel.EnqueueManualUse`, exact `NEndTurnButton.CallReleaseLogic` completed logical gesture -> native captured-turn `EndPlayerTurnAction` request |
+| Exact binding | process-local card, potion, target and room objects behind Connector referents; End Turn also binds current player/hand/button/combat state, enabled play readiness, not-ready Undo guard and read-only seen-FTUE gate |
 | Lifecycle | exact `GameAction` accepted/start/pause/resume/cancel/finish observations |
 | Next-decision seam | typed player-side `TurnStarted` after semantic `Play`/executor unpause/synchronizer `PlayPhase` and the exact `NEndTurnButton.OnTurnStarted` input-owner callback; Connector must independently capture a complete matching frame |
 | Root/continuation | card, potion and End Turn are roots; nested choices remain descendants of the executing root |
@@ -29,6 +29,22 @@ predecessor artifact does not transfer to a new Native Foundation artifact.
 | Ritsu support | card/potion/combat lifecycle events exist, but no generic exact action timeline or causal next-decision replacement was found |
 | Missing evidence | owner-ready repair artifact T2/T3, including Map Commit -> Combat ready -> no next Human input -> Close |
 | Migration verdict | Direct Native Foundation implemented; presentation and exact delivery remain Connector-owned |
+
+End Turn preserves native player-input queue ordering rather than invoking
+`PlayerCmd.EndTurn` directly ahead of waiting inputs. Its gesture completion is
+the same native factory used by the long-press bar; no physical signal or hold
+duration is fabricated. Unseen/unknown playable-card FTUE fails the current input
+owner explicitly unsupported/partial before authority. This does not authorize
+FTUE/save/preference mutation, predict queued card legality or identify a
+historical run's timeout cause. Exact source/ABI/queue tests, clean build and later
+loaded runtime evidence remain separate; acceptance is not enqueue/Commit proof.
+The standalone queue regression uses the pinned native queue and native queued
+End Turn type with synthetic held action tasks; only native logger initialization
+is isolated from absent Godot OS services. It verifies queue ordering/selection,
+not executing End Turn effects. The cancellation branch is exact ABI/IL evidence:
+native `GameAction.Cancel` requires Godot deferred completion, so cancellation
+execution remains a separate Godot-backed gate. Neither method nor its effects
+are patched or simulated to obtain a passing standalone check.
 
 ## PlayerChoice
 

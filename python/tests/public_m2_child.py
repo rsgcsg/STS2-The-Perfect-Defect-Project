@@ -20,13 +20,19 @@ def main() -> int:
     record = Path(sys.argv[2])
     old, model = setup()
     config = replace(old.config, max_actions_per_step=31)
+    # Same counting fixture can bind a real Workbench installation manifest;
+    # this changes only the synthetic backend's declared metadata, never admission.
+    profile = manifest["adapter_config"]["stpd_public_m2"]
+    registered = len(sys.argv) > 3 and sys.argv[3] == "registered"
+    if registered:
+        config = replace(config, state_tokenizer_sha256=profile["state_tokenizer_sha256"])
     adapter = PublicM2PolicyAdapter(
         model,
         old.tokenizer,
         config,
         manifest,
-        weights_sha256="c" * 64,
-        input_digest="d" * 64,
+        weights_sha256=profile["weights_sha256"] if registered else "c" * 64,
+        input_digest=profile["engine_input_digest"] if registered else "d" * 64,
     )
     decide = adapter.decide
 

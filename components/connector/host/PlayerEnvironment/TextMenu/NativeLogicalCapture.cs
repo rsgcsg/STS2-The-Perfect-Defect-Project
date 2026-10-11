@@ -26,8 +26,9 @@ internal static class NativeLogicalCapture
         frame = AppendPeek(frame, entities);
         frame = NativeLogicalPresentation.Attach(frame, entities);
         frame = NativeLogicalGridCompleteness.Check(frame, entities);
-        return Validate(frame);
+        return Finish(frame);
     }
+    internal static TextMenuFrame Finish(TextMenuFrame frame) => CombatWithdrawalProjection.Finalize(Validate(frame));
 
     internal static TextMenuFrame Validate(TextMenuFrame frame)
     {

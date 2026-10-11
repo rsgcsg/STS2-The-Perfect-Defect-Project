@@ -1,8 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { realStoreBridge } from "./realStoreBridge.mjs";
+import { prepareBridge } from "./realStoreTransport.mjs";
 import { measuredBudget } from "./nativeLogicalFixtures.js";
 
 describe("actual linked C# Store/Projector with REST SDK", () => {
+  beforeAll(() => {
+    // Prepare the immutable producer outside each case's operation timer.
+    // realStoreBridge still starts a fresh process and empty actual Store.
+    const started = performance.now();
+    console.info("real_store_bridge_preparation_phase=" + JSON.stringify({ phase: "preparation_started" }));
+    prepareBridge();
+    console.info("real_store_bridge_preparation_phase=" + JSON.stringify({ phase: "prepared", elapsed_ms: performance.now() - started }));
+  }, 60000);
   it("performs 100 owned complete assemblies past MaxCaptures=4 and reclaims actual bytes each time", async () => {
     const f = await realStoreBridge(), budget = measuredBudget();
     let iteration = -1;

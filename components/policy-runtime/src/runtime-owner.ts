@@ -117,14 +117,23 @@ export class RuntimeLifecycleOwner {
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
   }
-  scheduleDeadline(onDeadline: () => void): void {
+  scheduleDeadline(onDeadline: () => void,
+    local?: { at: number; onDeadline: () => void }): void {
+    this.clearDeadline();
     if (this.state.state !== "active") return;
-    const generation = this.generation, remaining = this.budget.deadlineMs - this.elapsed();
-    if (remaining <= 0) { onDeadline(); return; }
-    const timer = setTimeout(() => {
+    const generation = this.generation;
+    const remaining = Math.min(this.budget.deadlineMs - this.elapsed(),
+      local ? local.at - this.monotonicNow() : Infinity);
+    const expire = () => {
       if (generation !== this.generation || this.state.state !== "active") return;
-      this.exhaust("deadline"); onDeadline();
-    }, remaining);
+      // The global wallet keeps priority, including equal absolute deadlines.
+      if (this.elapsed() >= this.budget.deadlineMs || !local) {
+        this.exhaust("deadline"); onDeadline();
+      } else if (this.monotonicNow() >= local.at) local.onDeadline();
+      else this.scheduleDeadline(onDeadline, local);
+    };
+    if (remaining <= 0) { expire(); return; }
+    const timer = setTimeout(expire, remaining);
     this.timer = timer;
     timer.unref?.();
   }

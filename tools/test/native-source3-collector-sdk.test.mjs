@@ -497,7 +497,7 @@ test("collector builder binds real Python v1/v2 descriptors and rejects cross-ve
     const prepared = spawnSync(python, ["-c", factory, path.join(output, `code-${index}.json`), JSON.stringify(policy)],
       { cwd: ROOT, env: { ...process.env, PYTHONPATH: path.join(ROOT, "python") }, encoding: "utf8" });
     assert.equal(prepared.status, 0, prepared.stderr);
-    const actual = JSON.parse(prepared.stdout), options = { output, max_input_bytes: 8 * 1024 * 1024,
+    const actual = JSON.parse(prepared.stdout), options = { output, python_executable: python, max_input_bytes: 8 * 1024 * 1024,
       execution_policy: policy, ...actual };
     const deps = { ...sdk, ...runtimeApi };
     const capabilities = clone(wire.capabilities);

@@ -50,7 +50,8 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 | Host 能力合同 | 公平可捕获事实、精确操作、时钟、实例与支持的管理能力 | Native Foundation 提供语义/生命周期 seam，Connector NativeUi 绑定实际公开 UI；Host Runtime 管进程、隔离与恢复 |
 | 公开交互合同／协议核心 | 信息范围、完整操作关系、版本、事件、读取与失败含义 | Connector 保存公开投影、exact bindings、immutable bytes；不含模型或研究策略 |
 | 面向 Agent 的环境接口 | 读取、接收公开事件、结构查询/选择、提交、等待与控制 | Connector SDK 等提供交互能力，服务全量评分和不评分的消费者 |
-| 完整 Agent | 取得、表示、状态、时机、选择和依赖组合 | 对外交付一个版本化个体；runner 不在外面偷偷补信息或替选 |
+| 完整 Agent | 程序、取得/Input/history/state、零到多个 Model、时机、选择与环境要求的组合 | 对外交付一个版本化个体；runner 不在外面偷偷补信息或替选 |
+| Goal／Task 验收 | 目标、允许起点/管理范围、完成/删失条件与所需原件见证 | 与 Agent 策略、端口结束表达、研究 TargetSpec 分开；不产生原生合法性或控制权限 |
 | Model | 明确输入/输出、计算结构、固定或学习参数及可选状态转换 | 可以表示、预测、评分或生成；不直接持有 native operand、私有存档或控制权限 |
 | 记录与验证 | 实际捕获、来源、顺序、输入见证、结果和缺口 | Annotator/Evidence 不产生行动权威、Human 来源或研究准入 |
 | 数据与研究 | 投影、假设、用途、划分、目标、训练和评价 | STPD 消费公共合同及原件；未来标签与输入分开 |
@@ -67,8 +68,9 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要求完整 scores/index。
 改变端口传输形式本身不表示改变游戏信息或操作语义。
 
-完整 Agent 可以由固定规则、一个或多个 Model 与共享库构成，也可以整体作为模型
-描述；不要求所有 Agent 经训练或所有组件联合优化。策略是取得、调度或选择的规则，
+完整 Agent 可以由固定程序、零到多个 Model 与共享库构成；即使决策程序主要由一个
+模型实现，Agent/Model 与控制/lifecycle 角色仍分开。不要求所有 Agent 经训练或所有
+组件联合优化。策略是取得、调度或选择的规则，
 可以固定或学习。共享库实现分页、校验、去重与传输；AgentSpec 声明使用能力的策略。
 环境适配器、模型输入适配器和端口适配器各说明自己的职责，不能用“adapter”隐藏
 自动浏览、摘要或替选。训练目标由研究 TargetSpec 固定，不是每个 Model 的定义条件。
@@ -80,6 +82,35 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 具体目录与依赖见[组件](COMPONENTS.md)。名称调整须消除真实耦合，不为风格重写组件。
 
 共享抽象须由默认结构 M2 和另一实际查询/结构请求消费者共同检验。历史合成例子只能提供反例。新增机制扩 owning adapter，不另建模型仓库、原生动作队列、许可账本或因果 tracker。
+
+### 共同组合与本次执行：已采纳方向与实现边界
+
+[ADR-0016](adr/0016-agent-composition-and-execution-request.md)为 **Accepted（仅架构/迁移范围）**：
+统一对象、组合、生命周期保证与替换判据，不要求一个 wire、一个大类或三个登记系统。
+既有共同应用/控制/store 已成立，`AgentTaskOutcome` 共同结果投影已实现；共同可执行
+`AgentComposition`／`AgentRunRequest` 的当前 P1 A+B 已授权实施、未验收。以下采纳方向
+的具体实现仍需验证，不表示新
+产品能力、公开 wire 或 G1/G2/V1 通过声明；既有 owner、ID 与资格保持原义。
+
+| 必须分开的层次 | 声明内容 | 身份／执行边界 |
+| --- | --- | --- |
+| 语义定义 | Agent 程序、Input/取得、history/state/advance/reset、Model roles/bindings、chooser/timing、Env requirements；独立 Goal/验收 | 行为变化产生新组合/合同；Goal 不把预算停止或程序时机当胜负/质量 |
+| 本次请求与解析绑定 | 组合/Goal 引用、初始条件、环境/资源选择、授权与有限预算、实现 driver/package | 固定本次 intent，现有领域 owner 准备/执行；实际 Host/Runtime/attempt IDs 由原回执关联，不再建控制器或 scheduler |
+| 产物与来源 | 原 Model/参数、程序/实现产物、Input/Target、Source/use、code/lock 与原件 | 复用现有 store/registry/IDs；同义或同数值不抹去不同 provenance，无关提交不应成为语义变化 |
+
+同一描述必须实际驱动 catalog、readiness、启动和结果引用，不能仅在展示层镜像。
+旧入口先翻译为该请求，保留并显示**各入口实际已有** Task/program/profile/budget 默认值；
+不假定所有旧端口默认相同。不可拆的旧包用 `legacy_bound_composition` 引用原件，
+缺元数据保持 unknown，不虚构新的 Model/Goal。训练的 Recipe/InputSpec/TargetSpec/初始化
+workload 是同框架的未来映射，仍由原训练 owner 执行，不假扮游戏 Agent；它不属于
+当前 P1 A+B 或首个结构门。具体实施合同见现有 [Local model task flow](../python/docs/LOCAL_MODEL_TASK_FLOW.md)。
+
+现有 TaskSpecs 中混合的策略和端口见证要求保持其旧身份/行为/包绑定，包括第5节的
+既有 TaskSpec 版本。新 Goal 关系必须显式映射，不能回写历史或将旧默认重新解释。
+共同启动的首个结构门至少覆盖 **Public M2 有状态 decision-only** 与 **无模型 Teacher
+Agent-session**：前者保留原消费/reset，后者 `models=[]` 而不伪造权重；同一描述经过
+真实选取/预检/领域启动/Stop/结果接缝。此门不替代默认结构 M2、全场景或真实游戏资格。
+用户举例是设计探针，不是完整选项表；新增合法组合按需求扩拥有的能力，不预建全部组合。
 
 ### 统一责任与允许差异的判定
 
@@ -95,11 +126,21 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 | 控制权、预算、进程端口、取消、结果核对和 Stop | Runtime driver；复用同一控制 owner，不在 Agent 外暗补策略，也不把 Runtime 嵌入另一个 Agent Runtime |
 | 改变公开范围、取得时点、动作粒度、中间机会、取消或失败含义 | versioned environment profile/owning contract；需要公平性、生产者/消费者、记录与迁移验证 |
 | 原始记录的重表达、截断、上下文或目标选择 | 研究投影/InputSpec/TargetSpec；保留原来源、缺口、分母与 use/split，明确它是派生训练假设 |
+| Goal／验收终点变化 | 任务 owner 的版本化目标与 profile-specific witness binding；Agent 策略、操作终态、胜负与质量独立 |
+| 上层组合/执行抽象本身变化 | 只有合法用例确实无法表达、反复跨层分支/重复权威或有证据的不可接受成本才触发；版本化、最小迁移及退出/退休条件见 ADR-0016 |
 
 例如旧 `Play(card,target)` 迁移到 Begin→Focus→Confirm，可属于显式 Agent 执行计划，
 但完整合法 card-target 关系必须来自 Connector/native owner。缺该关系时留在原 profile，
 或由 owner 设计另一个语义 profile；Agent 不得重建合法性。打开详情再返回不是免费 Query。
 查询冻结 chunks 不推进记忆；真实重访不能因正文 hash 相同被抹掉。
+
+同义 adapter 的必要条件是信息与曝光顺序、行动/取消机会、消费/记忆/reset、错误与停止
+含义均保持；原合同要求字节一致时仍须字节一致。改变 chooser/timing/输入历史或参数
+行为应标识新 Agent/模型绑定；改变环境语义应改 owning profile/contract。资源/实现可换，
+但须验证实际能力与上述合同，不能用相同 JSON、SDK 名称或当前 SHA 相等推断等价。
+不强制 SDK/Runtime/Connector 同步升版；现有精确 byte/pin 校验不因这条原则放松。
+每次扩展只验证最小受影响接缝和必要较高证据，记录旧入口退出与归档 reader 保留条件，
+不以“统一”强制全仓重写或保留没有实际消费者收益的适配。
 
 旧 decision-only 端口与 native Agent-session 可以作为同一平台的不同 driver 并存。
 恢复 Public M2 必须保持原 segment/ordinal/digest、每个新观察一次 W 更新及 reset 规则；

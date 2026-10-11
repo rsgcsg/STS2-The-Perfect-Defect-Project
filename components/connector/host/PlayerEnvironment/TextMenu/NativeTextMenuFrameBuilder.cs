@@ -30,11 +30,18 @@ internal static class NativeTextMenuFrameBuilder
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
         bool nativeLogical = false)
     {
+        // The completed End Turn gesture's unsupported owner cannot be rebuilt
+        // as a filtered complete text/native menu by later information capture.
+        if (legacy.HostObservation.Completeness.Missing.Any(value => value is
+            NativeEndTurnInput.FtueUnseen or NativeEndTurnInput.FtueUnknown or NativeEndTurnInput.BindingUnavailable))
+            return new TextMenuFrame(legacy.Snapshot with { Status = "visible_unsupported" },
+                "unsupported-end-turn:" + legacy.Snapshot.Interaction.InteractionId, Array.Empty<TextMenuLeaf>());
         TextMenuFrame frame = CaptureCore(legacy, entities, executeLegacy, nativeLogical);
         frame = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
         return frame with
         {
-            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page, nativeLogical)
+            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page, nativeLogical),
+            CombatWithdrawal = legacy.HostObservation.CombatWithdrawal
         };
     }
 
@@ -517,7 +524,7 @@ internal static class NativeTextMenuFrameBuilder
             .ToArray();
     }
 
-    private static TextMenuLeaf FromLegacy(
+    internal static TextMenuLeaf FromLegacy(
         PlayerEnvironmentBoundAction action,
         PlayerEnvironmentNativeBinding binding,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy) =>

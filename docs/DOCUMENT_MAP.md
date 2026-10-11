@@ -8,6 +8,8 @@ not another requirements, identity or status registry.
 
 - [V1 specification](BASELINE_V1_SPEC.zh-CN.md): required outcomes, selected
   design, rationale, assumptions and unimplemented choices.
+- [Agent composition/execution decision](adr/0016-agent-composition-and-execution-request.md):
+  Accepted architecture/migration direction; concrete P1 startup remains unaccepted, training mapping is future scope.
 - [Execution and acceptance matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
   active packets, dependencies, authorization, budget and exact remaining gates.
 - [Task index](plans/BASELINE_TASKS.zh-CN.md): stable P/E/G/V/R IDs.

@@ -45,6 +45,15 @@ internal static partial class PlayerEnvironmentService
                 ?? NativeRestSite.TryBuild(Entities, game),
                 rewardPageProfile: inputProfile != null));
         LiveObservation nativeDraft = draft;
+        // Native lifecycle availability is observed once on the complete base
+        // capture, before any profile branch. Rich leaves cannot renew its clock.
+        PersistentVisibleStateBuildResult shared = Measure(
+            "persistent_visible_state", () => game.Compatibility.StateObservationAllowed
+                ? PersistentVisibleStateReader.Build(Entities)
+                : new PersistentVisibleStateBuildResult(false, null, null));
+        draft = CombatInputAvailability.Attach(draft, shared.RunActive && shared.State != null && shared.Failure == null,
+            Environment.TickCount64);
+        nativeDraft = draft;
         if (suppressNativePageEvidence)
             draft = NativePageEvidence.SuppressMutation(draft);
         bool rewardPotionProfile = inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile;
@@ -83,11 +92,6 @@ internal static partial class PlayerEnvironmentService
                     "The exact current native UI owns input.")
         };
 
-        PersistentVisibleStateBuildResult shared = Measure(
-            "persistent_visible_state",
-            () => game.Compatibility.StateObservationAllowed
-                ? PersistentVisibleStateReader.Build(Entities)
-                : new PersistentVisibleStateBuildResult(false, null, null));
         long nativeSequence = RewardPageIdentity.ObserveNative(
             CommonNativeSignature(game, nativeDraft, shared.State));
         draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
@@ -189,6 +193,9 @@ internal static partial class PlayerEnvironmentService
                 Array.Empty<string>())))
             .OrderBy(read => read.ReadId, StringComparer.Ordinal)
             .ToArray();
+        var view = FinalSnapshotView(draft, projected.Projection, visibility.HiddenByPolicy,
+            profileCatalogIncomplete, textMenuCapture, stage);
+        stage = view.Stage;
         string signature = Measure("stable_snapshot_signature", () => StableIdentityHash.Object(new
         {
             game.Version,
@@ -202,6 +209,7 @@ internal static partial class PlayerEnvironmentService
             reads,
             visibility.HiddenByPolicy
         }));
+        signature = FinalSnapshotSignature(signature, draft.CombatWithdrawal, view);
         if (rewardPotionProfile && draft.RewardPotionFacts is { } exact)
             signature = RewardPotionViewSignature(signature, exact);
         (string snapshotId, long sequence) = inputProfile == null
@@ -209,31 +217,8 @@ internal static partial class PlayerEnvironmentService
             : rewardPotionProfile
                 ? RewardPageIdentity.ObserveRewardPotion(nativeSequence, signature)
                 : RewardPageIdentity.ObserveReward(nativeSequence, signature);
-        bool visibleUnsupported = draft.Surface is UnsupportedSurface
-            || profileCatalogIncomplete;
-        bool actionsPublished = projected.Projection.Status == "complete"
-            && projected.Projection.MaterializedCount > 0;
-        bool textCombatEntryReady = CanPublishTextCombatEntry(
-            textMenuCapture, draft.Surface, draft.Readiness,
-            draft.Completeness, projected.Projection);
-        string status = actionsPublished || textCombatEntryReady
-            ? "interactive"
-            : visibleUnsupported ? "visible_unsupported" : draft.Readiness == "settling" ? "settling" : "observed";
-        PlayerEnvironmentCompleteness completeness = ToCompleteness(
-            draft.Completeness,
-            visibility.HiddenByPolicy,
-            visibleUnsupported ? "visible_unmapped" : null);
-        if (projected.Projection.Status != "complete")
-        {
-            completeness = completeness with
-            {
-                Status = "partial",
-                Missing = completeness.Missing
-                    .Append("finite_bound_action_projection_incomplete")
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray()
-            };
-        }
+        string status = view.Status;
+        PlayerEnvironmentCompleteness completeness = view.Completeness;
         var snapshot = new PlayerEnvironmentSnapshot(
             PlayerEnvironmentContract.ProtocolVersion,
             inputProfile == null
@@ -273,6 +258,26 @@ internal static partial class PlayerEnvironmentService
             projected.Bindings,
             readBuilds);
     }
+
+    internal static CombatInputView FinalSnapshotView(LiveObservation draft, PlayerEnvironmentBoundActionProjection projection,
+        IReadOnlyList<string> hidden, bool incompleteProfile, bool textCapture, string stage)
+    {
+        bool unsupported = draft.Surface is UnsupportedSurface || incompleteProfile;
+        bool actions = projection.Status == "complete" && projection.MaterializedCount > 0;
+        bool textEntry = CanPublishTextCombatEntry(textCapture, draft.Surface, draft.Readiness, draft.Completeness, projection);
+        string status = actions || textEntry ? "interactive"
+            : unsupported ? "visible_unsupported" : draft.Readiness == "settling" ? "settling" : "observed";
+        var completeness = ToCompleteness(draft.Completeness, hidden, unsupported ? "visible_unmapped" : null);
+        if (projection.Status != "complete") completeness = completeness with
+        { Status = "partial", Missing = completeness.Missing.Append("finite_bound_action_projection_incomplete").Distinct(StringComparer.Ordinal).ToArray() };
+        // The text/native adapter must first discover its complete richer leaves.
+        return textCapture ? new(status, stage, completeness)
+            : CombatWithdrawalProjection.Apply(status, stage, completeness, projection.Status == "complete",
+                projection.MaterializedCount, draft.CombatWithdrawal);
+    }
+    internal static string FinalSnapshotSignature(string signature, CombatWithdrawalProof? proof, CombatInputView view) =>
+        proof == null ? signature : StableIdentityHash.Object(new { signature, availability = proof.Identity,
+            view.Status, view.Stage, view.Completeness });
 
     internal static bool CanPublishTextCombatEntry(
         bool textMenuCapture,
@@ -365,8 +370,9 @@ internal static partial class PlayerEnvironmentService
     internal static string CommonNativeSignature(
         GameBuildIdentity game,
         LiveObservation nativeDraft,
-        PersistentVisibleState? sharedState) =>
-        StableIdentityHash.Object(new
+        PersistentVisibleState? sharedState)
+    {
+        string signature = StableIdentityHash.Object(new
         {
             game.Version,
             game.Commit,
@@ -377,6 +383,11 @@ internal static partial class PlayerEnvironmentService
             nativeDraft.Context,
             nativeDraft.Completeness
         });
+        if (nativeDraft.EndTurnBindingIdentity != null)
+            signature = StableIdentityHash.Object(new { signature, nativeDraft.EndTurnBindingIdentity });
+        return nativeDraft.CombatWithdrawal == null ? signature
+            : StableIdentityHash.Object(new { signature, availability = nativeDraft.CombatWithdrawal.Identity });
+    }
 
     internal static BoundActionProjectionResult CloseIncompleteRewardCatalog(
         BoundActionProjectionResult projected) =>
