@@ -4,6 +4,25 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
+## Auto6 and separate Goal reader candidate, observed 2026-10-11
+
+PR174 exact8f45 passed full dual-OS/portable CI38118653994, normal-merged as471cbdbb;
+integration CI38121970826 passed its verified execution-reuse route. Old failed jobs
+retain their outcomes. Auto6 loaded Runtime33 and unchanged Mod42, reaching natural
+loss Summary at floor11/score161 after294.473s. All886 events verify; Stop/Host/caller
+cleanup passed, untainted.194 prior-frame joins are known;79 remain unknown.
+
+Separately reviewed readerb928 (89 outcome cases/mypy) creates a new exact prior-witness
+mechanical result through the existing application owner: reportd319 completed/task_ended,
+observed loss, strategy not_assessed. Originalcb93 remains unknown; all original files
+are unchanged. This source awaits its own selected full CI. See the
+[current packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection)
+for exact boundaries. No extra game, training or strategy qualification follows.
+
+Native Host candidatea196 has independent source/exact-build evidence, not installation
+or three-mode/two-presentation qualification. Final package and default Instant remain
+pending. Installed Runtime33/Mod42 retain their own identities and rollback owners.
+
 ## Runtime33 candidate after Auto5 repairs, observed 2026-10-11
 
 Normal merges retain independently accepted admission4a5449d1, portable service

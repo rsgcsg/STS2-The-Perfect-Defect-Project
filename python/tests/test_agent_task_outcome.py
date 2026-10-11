@@ -161,6 +161,152 @@ def test_public_m0_ordinary_abstention_has_no_original_completion_witness(produc
     assert outcome["operation_end"]["status"] == "censored"
 
 
+def test_public_m0_prior_sealed_summary_proves_only_declared_mechanical_goal(produced_public):
+    directory = produced_public("m0-legacy-summary")
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == "completed"
+    assert outcome["terminal_observation"]["result"] == "loss"
+    assert outcome["terminal_observation"]["ready_summary"] is True
+    assert outcome["operation_end"]["status"] == "task_ended"
+    witness = outcome["task_completion"]["witness"]
+    assert witness["basis"] == "prior_sealed_public_observation"
+    assert (witness["event_sequence"] < witness["decision_event_sequence"]
+            < witness["handoff_event_sequence"] < witness["stopped_event_sequence"])
+    assert witness["candidate_count"] == 1
+    assert "consumption_id" not in witness and "observation_ordinal" not in witness
+    assert outcome["strategy_quality"] == "not_assessed"
+
+
+@pytest.mark.parametrize("variant,result", [("win", "win"), ("timestamp-only", "loss")])
+def test_public_m0_legacy_goal_keeps_outcome_and_observation_time_separate(
+    produced_public, variant, result
+):
+    directory = produced_public("m0-legacy-" + variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == "completed"
+    assert outcome["terminal_observation"]["result"] == result
+    assert outcome["strategy_quality"] == "not_assessed"
+
+
+@pytest.mark.parametrize(
+    "variant,completion,terminal",
+    [
+        ("no-task", "unknown", "observed"),
+        ("wrong-task", "unknown", "observed"),
+        ("wrong-adapter", "unknown", "unknown"),
+        ("conflicting-body", "unknown", "unknown"),
+        ("conflicting-catalog", "unknown", "unknown"),
+        ("incomplete", "unknown", "unknown"),
+        ("missing-field", "unknown", "unknown"),
+        ("partial-catalog", "unknown", "unknown"),
+        ("noninteractive", "unknown", "unknown"),
+        ("not-ready", "unproved", "observed"),
+        ("nonzero", "unproved", "observed"),
+        ("selected", "unproved", "observed"),
+        ("wrong-snapshot", "unknown", "observed"),
+        ("wrong-digest", "unknown", "observed"),
+        ("wrong-count", "unknown", "observed"),
+        ("foreign-runtime", "unknown", "observed"),
+        ("foreign-environment", "unknown", "observed"),
+        ("future-only", "unknown", "observed"),
+        ("no-handoff", "unproved", "observed"),
+        ("wrong-handoff", "unproved", "observed"),
+        ("later-decision", "unproved", "observed"),
+        ("later-mode", "unproved", "observed"),
+        ("later-submission", "unknown", "observed"),
+        ("substantive-tail", "unproved", "observed"),
+        ("no-stop", "unproved", "observed"),
+    ],
+)
+def test_public_m0_legacy_goal_requires_original_body_binding_and_owned_end(
+    produced_public, variant, completion, terminal
+):
+    directory = produced_public("m0-legacy-" + variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == completion
+    assert outcome["task_completion"]["witness"] is None
+    assert outcome["terminal_observation"]["status"] == terminal
+    assert outcome["strategy_quality"] == "not_assessed"
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+    if variant == "future-only":
+        final = [event for event in events if event["kind"] == "decision"][-1]
+        assert all(event["sequence"] > final["sequence"]
+                   for event in events if event["kind"] in {"receipt", "successor"})
+    if variant == "later-submission":
+        handoff = next(event for event in events if event["kind"] == "handoff_to_human")
+        assert any(event["kind"] == "receipt" and event["sequence"] > handoff["sequence"]
+                   for event in events)
+    if variant == "not-ready":
+        assert outcome["terminal_observation"]["result"] == "loss"
+        assert outcome["terminal_observation"]["ready_summary"] is False
+
+
+@pytest.mark.parametrize("variant", ["wrong-port", "wrong-schema", "conflicting-sequence",
+                                     "unknown-tail"])
+def test_invalid_public_m0_legacy_records_fail_at_the_owning_verifier(produced_public, variant):
+    directory = produced_public("m0-legacy-" + variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "fail"
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == "unknown"
+    assert outcome["terminal_observation"]["status"] == "unknown"
+    assert outcome["operation_end"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("variant,operation", [("cleanup-failure", "failed"),
+                                               ("tainted-cleanup", "failed"),
+                                               ("tainted-manifest", "unknown"),
+                                               ("budget-stop", "censored")])
+def test_public_m0_legacy_goal_does_not_override_recorded_cleanup_or_budget(
+    produced_public, variant, operation
+):
+    directory = produced_public("m0-legacy-" + variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["task_completion"]["status"] == "completed"
+    assert outcome["operation_end"]["status"] == operation
+    assert outcome["terminal_observation"]["result"] == "loss"
+    assert outcome["strategy_quality"] == "not_assessed"
+    if variant == "budget-stop":
+        assert outcome["operation_end"]["reason_codes"] == ["recorded_budget_end"]
+    if variant == "tainted-manifest":
+        assert outcome["operation_end"]["tainted"] is True
+
+
+def test_public_m0_application_publishes_a_new_projection_without_rewriting_old_report(
+    produced_public, tmp_path
+):
+    directory = produced_public("m0-legacy-summary")
+    expected = original_expected(directory)
+    service = LocalModelService(ProjectConfig(tmp_path / "m0-app", "", "", None, combination()))
+    shutil.copytree(directory, service.directory / "agent-runs" / expected["run_id"])
+    service.state.update(startup=expected, selection_id="sealed-m0-selection")
+    service._evaluation_handoff()
+    report = service.state["evaluation"]
+    assert report["agent_task_outcome"]["task_completion"]["status"] == "completed"
+    assert report["game_outcome"] == "not_measured"
+    old = json.loads(json.dumps(report))
+    old["agent_task_outcome"]["task_completion"].update(
+        status="unknown", reason_codes=["original_input_witness_unavailable"], witness=None
+    )
+    old.pop("evaluation_id")
+    old["evaluation_id"] = hashlib.sha256(canonical_json(old).encode()).hexdigest()
+    old_path = service.directory / "evaluations" / (old["evaluation_id"] + ".json")
+    old_raw = json.dumps(old).encode()
+    old_path.write_bytes(old_raw)
+    service._evaluation_handoff()
+    assert old_path.read_bytes() == old_raw
+    assert service.state["evaluation"] == report
+    assert len(list((service.directory / "evaluations").glob("*.json"))) == 2
+
+
 @pytest.mark.parametrize("variant", ["no-input", "conflicting-terminal"])
 def test_missing_or_conflicting_originals_remain_unknown(produced_public, variant):
     directory = produced_public(variant)

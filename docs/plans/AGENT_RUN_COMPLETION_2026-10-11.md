@@ -1,9 +1,9 @@
 # Agent run completion and native input order — 2026-10-11
 
-Current decision: see [Runtime33 candidate and one fresh Auto6 envelope](#runtime33-candidate-and-one-fresh-auto6-envelope).
-Three source repairs and the exact Runtime33 package are independently accepted;
-Runtime33 is installed but not native-loaded. One fresh Auto6 awaits final caller gates.
-PR174 old6dc CI ended failed; a fresh candidate gate remains required.
+Current decision: see [Auto6 result and mechanical Goal projection](#auto6-result-and-mechanical-goal-projection).
+PR174 is integrated; its actual Auto6 reached a natural loss Summary. A separate
+reviewed reader candidate produces a new formal mechanical Goal report while preserving
+original evidence. Native speed qualification and decision quality remain pending.
 
 ## Prior Auto3 preparation snapshot
 
@@ -635,3 +635,49 @@ mandatory. Any failure closes this single allocation; no automatic extra game fo
 The frozen bounded diagnostic may overlap isolated CI under TESTING's existing rules;
 full dual-OS success remains required for merge. GPU spend remainsUSD0/no job; no new
 training, data-use, publication or final qualification permission is implied.
+
+## Auto6 result and mechanical Goal projection
+
+PR174 exact8f45c5ad passed full dual-OS/portable CI38118653994 and was normally merged
+as develop471cbdbb with identical tree. Integration CI38121970826 passed its current
+identity/verified execution-reuse route. All earlier failed jobs remain failed.
+
+The single allocated Auto6 loaded exact Runtime33/archive6c87e66b/code4ffd923b and
+unchanged Mod42/artifact2ef3dcf7. It reached natural loss Summary at floor11,score161,
+ascension0:294.473s,273 program calls,272 unique submissions,209 delivered/63 known
+stale, five declared reward-program takes and886 typed-verified sealed events.
+Stop released/unloaded untainted; Host exited0 unforced/HTTP200, caller exited0 and
+strict process discovery was empty. Independent audit28fb41ed accepted requestf503,
+composition1ecc,run e023 and evaluationcb93 binding.194 prior-frame joins are known;
+79 remain unknown. The run proves bounded operational continuity to natural loss,
+not a win, decision quality, broad mechanism coverage or causal settlement.
+
+Original AppTaskOutcome cb93 correctly retained Task/terminal unknown under its old
+reader. Reviewed application-only b9289132 now recognizes the closed legacy M0 Task
+from an exact complete prior sealed observation, catalog-bound zero/null abstention
+and the owned final handoff/Stop. Conflicting same-ID bodies, wrong binding, missing
+proof or later substantive activity refuse completion. Existing cleanup/taint/budget
+precedence and independent terminal observation remain. It creates no consumed-input
+or training proof and never fills other missing frame joins. Actual original-reader
+RED,89 outcome checks and scoped mypy passed independent review; old183 assertions
+and intermediate failures remain preserved. This source is normally merged on the
+separate Goal delivery topic from471; it requires fresh selected full CI.
+
+Root used the existing LocalModelService evaluation owner with fresh private copies
+of the original sealed bundle and bound request. New reportd31939d1 records Task
+completed/operation task_ended/observed loss/strategy not_assessed, with exact witness
+882→883→885→886 and body digest745a5dfd. Independent review verified canonical report
+identity, original requestf503 and preservation of all nine original seal/request/
+evaluation/session files. Oldcb93 remains immutable and unknown. Projection is a
+new derived evaluation, not an alteration of the frozen run or another game/NN run.
+
+The latest owner direction requires one Native Host with windowed/headless presentation
+and fully supported Normal/Fast/Instant; default project-managed Instant follows exact
+qualification. Candidatea196 is separately source-reviewed and exact-build checked,
+with no installed/runtime/default promotion. Its Host preparation writes the typed
+native preference after safe isolated mainmenu readiness and verifies readback; it
+does not patch time scale, waits, RNG or game rules. Final identity/package/rollback
+and bounded runtime gates remain separate. An ordinary episode application use case
+must reuse existing Host, Runtime and common Agent owners; private qualification
+analysis is not a second gameplay service. No additional game or training is allocated
+by this documentation. USD20 envelope remains cumulative, observed USD0/no paid job.
