@@ -1545,10 +1545,42 @@ def text_runtime_profile(service, tmp_path):
     (private / "token-policies-v1.json").write_text(json.dumps({
         "schema": "stpd/local-token-policies-v1", "policies": [entry],
     }), encoding="utf-8")
-    (private / "manifest.json").write_text(json.dumps({
-        "representation": {"input_schema": "sts2.player-environment/text-menu-snapshot-1"},
-        "manifest_id": "text-b", "artifact": {"sha256": "a" * 64},
-    }), encoding="utf-8")
+    # The protocol/budget seam still mocks readiness and the child. Supply real
+    # owning installation metadata so common composition resolution is exercised;
+    # this metadata-only synthetic export has no weights or ready-model claim.
+    from spireagent.json_boundary import FrozenObject, json_bytes
+    from stpd.fullrun.text_menu_inputs import IDENTITY
+    from stpd.token_policy_installation import bind_text_menu_export
+
+    export = tmp_path / "text-protocol-export"
+    export.mkdir()
+    artifact = Manifest("model", Producer("test/text-runtime-protocol", "a" * 40, "b" * 64),
+                        parameters=FrozenObject.of({"serializer": IDENTITY,
+                                                    "qualification": "metadata_fixture_only"}))
+    (export / "model.json").write_bytes(json_bytes({
+        "schema": "stpd/stage1a-export-v1", "model_id": artifact.artifact_id,
+        "model": json.loads(artifact.to_bytes()),
+    }))
+    bind_text_menu_export(
+        local_models.ROOT, export, private / entry["config"], private / entry["manifest"],
+        manifest_id=entry["id"], binding_root=private,
+        policy={"id": "text-protocol-fixture", "version": "1.0.0", "provider": "test",
+                "architecture": "metadata_only_budget_transport_fixture"},
+        requirements={
+            "connector_protocol_version": "1.0.0",
+            "environment": {"host_kind": "test", "connector_version": "test",
+                            "connector_source_revision": "test",
+                            "connector_artifact_sha256": "a" * 64,
+                            "connector_module_version_id": "test", "modset_status": "exact",
+                            "modset_fingerprint": "test", "loaded_mod_ids": []},
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-menu-action-id-order",
+            "score_count_matches_candidate_count": True, "selected_index": True,
+            "successor_required": True,
+        },
+        support={"game_versions": ["test"], "game_commits": ["test"],
+                 "interaction_kinds": ["combat_turn"], "action_verbs": ["end_turn"]},
+    )
     pin = {"package": local_models.RUNTIME_PACKAGE,
            "dependency_layout": "bundled_source_candidate"}
     (private / "text-menu-runtime-v1.json").write_text(json.dumps({
@@ -1587,10 +1619,13 @@ def test_run_profiles_are_fixed_per_selection_and_legacy_extended_is_rejected(
     for shipped in service.registry()["policies"]:
         if shipped["id"] == entry["id"]:
             continue
-        source = local_models.ROOT / shipped["manifest"]
-        destination = service.root / shipped["manifest"]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
+        # A shipped selection includes both originals used by the catalog and
+        # immutable request, not only the display manifest.
+        for field in ("manifest", "config"):
+            source = local_models.ROOT / shipped[field]
+            destination = service.root / shipped[field]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
     policies = {item["selection_id"]: item for item in service.catalog()["policies"]}
     text = policies[entry["id"]]
     assert text["default_run_profile"] == "short"
