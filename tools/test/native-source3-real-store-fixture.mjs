@@ -208,10 +208,25 @@ try {
   recordPhase("fixture_failed", null, { failing_phase: phase });
   // Snapshot the failing phase and actual pending producer operations before
   // cleanup changes them. The Python test retains these original stderr bytes.
-  const observed = transport?.diagnostics() ?? null;
+  const startup = error.realStoreStartupDiagnostics;
+  const observed = transport?.diagnostics() ?? startup?.before_cleanup ?? null;
   const diagnostics = observed && { ...observed, events: observed.events.slice(-12) };
+  if (diagnostics && startup) {
+    const displayed = startup.stderr_original.subarray(0, 8192);
+    Object.assign(diagnostics, { backend_cleanup: startup.cleanup,
+      backend_stderr_original_base64: displayed.toString("base64"),
+      backend_stderr_bytes: startup.stderr_bytes,
+      backend_stderr_retained_bytes: startup.stderr_retained_bytes,
+      backend_stderr_truncated: startup.stderr_truncated,
+      backend_stderr_displayed_bytes: displayed.length,
+      backend_stderr_display_truncated: startup.stderr_retained_bytes > displayed.length });
+  }
+  const originalError = Buffer.from(String(error.stack ?? error));
+  // An early backend exit can embed its entire retained stderr in the Error.
+  // Bound its displayed view as well as the base64 byte view above.
   process.stderr.write(JSON.stringify({ schema: "spireagent/test-real-chain-failure-1",
-    phase, scenario: scenario ?? null, original_error: String(error.stack ?? error),
+    phase, scenario: scenario ?? null, original_error: originalError.subarray(0, 8192).toString("utf8"),
+    original_error_bytes: originalError.length, original_error_display_truncated: originalError.length > 8192,
     diagnostics }) + "\n");
   let producerExit = null, cleanupError = null;
   try { producerExit = await transport?.close() ?? null; }
