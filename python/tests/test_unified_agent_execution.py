@@ -289,3 +289,52 @@ def test_request_detaches_caller_inputs_and_cannot_claim_native_authority(tmp_pa
     with pytest.raises(BoundaryError, match="effective_composition_or_request_changed"):
         instance.run_agent(forged)
     assert instance.intent_generation == 0 and not (instance.directory / "requests").exists()
+
+
+@pytest.mark.parametrize("field", ["learned", "max_state_bytes", "max_submissions"])
+def test_request_bool_integer_substitution_rejected_before_owner_effects(
+    tmp_path, monkeypatch, field
+):
+    declared = descriptor()
+    artifact = write_artifact(tmp_path / "teacher-program.json")
+    manifest = teacher_manifest(declared, artifact, caps(), [])
+    comp = describe(
+        {
+            "id": manifest["manifest_id"],
+            "adapter": declared["adapter"]["id"],
+            "runtime_profile": "native-logical-v1",
+        },
+        manifest,
+        {},
+        declared,
+    )
+    effective = create(comp, "start", "short", {"max_submissions": 1}, "native")
+    instance = service(tmp_path, monkeypatch)
+    monkeypatch.setattr(instance, "agent_request", lambda *_a, **_k: copy.deepcopy(effective))
+    forged = copy.deepcopy(effective)
+    if field == "learned":
+        forged["program_binding"]["learned"] = 0
+        forged["composition"]["semantic_definition"]["program"]["learned"] = 0
+    elif field == "max_state_bytes":
+        forged["composition"]["semantic_definition"]["input"]["state_recovery"][field] = False
+        forged["composition"]["semantic_definition"]["state"]["declaration"]["state_recovery"][
+            field
+        ] = False
+    else:
+        forged["budget"]["limits"][field] = True
+    assert forged == effective  # Exact RED cause: Python equality loses JSON type.
+    with pytest.raises(BoundaryError, match="effective_composition_or_request_changed"):
+        instance.run_agent(forged)
+    assert not (instance.directory / "requests").exists() and instance.intent_generation == 0
+
+
+def test_original_request_rejects_changed_composition_despite_rehashed_file(tmp_path):
+    request = create(m2(), "start", "short", None, "native")
+    request["composition"]["semantic_definition"]["state"]["forged"] = True
+    ref = publish(tmp_path, request, "a" * 32)
+    startup = {
+        "manifest_id": "public-m2",
+        "policy_manifest_sha256": m2()["implementation"]["manifest_sha256"],
+    }
+    with pytest.raises(BoundaryError, match="original_request_run_binding_changed"):
+        original(tmp_path, ref, startup)

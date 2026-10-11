@@ -132,7 +132,7 @@ def _composition(manifest: Mapping[str, Any], native: bool) -> dict[str, Any]:
         "adapter": dict(manifest.get("adapter", {})),
         "runtime_artifact": dict(manifest.get("artifact", {})),
         "models": (
-            list(manifest.get("input", {}).get("state_recovery", {}).get("model_bindings", []))
+            None
             if native
             else [
                 {
@@ -454,6 +454,13 @@ def _native(
         }
     )
     if package is not None and not teacher:
+        # Recovery bindings do not declare the complete model dependency set.
+        # A sampled-current learned Agent can have recovery.mode=none and [].
+        composition["models"] = [{
+            "model_id": package["model_id"],
+            "weights_sha256": package.get("weights", {}).get("sha256"),
+            "binding": "original_native_model_package",
+        }]
         composition["model"].update(
             {
                 "package_schema": package.get("schema"),

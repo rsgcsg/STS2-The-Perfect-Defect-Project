@@ -6,6 +6,13 @@ This is the owning orchestration guide for `workbench.local_models`,
 remain authoritative. This flow does not make arbitrary downloaded checkpoints
 executable and does not qualify Human data or model game performance.
 
+The common executable `AgentComposition` / immutable `AgentRunRequest` contract
+for this same orchestration owner is defined in
+[AGENT_EXECUTION_CONTRACT.md](AGENT_EXECUTION_CONTRACT.md). It includes model-less
+Teacher and Public M2 admission, request/run association and their different Task
+witnesses. This guide continues to own the existing preparation, control, Stop,
+sharing and recovery flow; the common contract adds no second execution owner.
+
 The existing `LocalModelExport.start` owner accepts the explicit closed
 `compatibility_profile="native-evidence-rc27-to-rc29-v1"` for a supported original
 sampled native Model. Ordinary calls keep strict original export behavior. The

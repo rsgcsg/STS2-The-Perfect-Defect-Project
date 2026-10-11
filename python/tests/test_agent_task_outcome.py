@@ -536,6 +536,11 @@ def test_native_acknowledged_original_summary_requires_declared_task(native_sour
     verified = verify_agent_session_run_evidence(f.directory, f.startup)
     assert verified.status == "pass", verified.findings
     outcome = project(verified, native=True, native_package=package)
+    assert f.agent["input"]["state_recovery"]["model_bindings"] == []
+    assert outcome["agent_composition"]["models"] == [{
+        "model_id": f.agent["artifact"]["id"], "weights_sha256": None,
+        "binding": "original_native_model_package",
+    }]
     assert outcome["task_completion"]["status"] == "completed"
     assert outcome["terminal_observation"]["result"] == "loss"
     assert outcome["operation_end"]["status"] == "task_ended"
@@ -546,6 +551,7 @@ def test_native_acknowledged_original_summary_requires_declared_task(native_sour
         native_package=None,
         package_reason="original_package_metadata_unavailable",
     )
+    assert missing["agent_composition"]["models"] is None
     assert missing["task_completion"]["status"] == "unknown"
     assert missing["terminal_observation"]["result"] == "loss"
 

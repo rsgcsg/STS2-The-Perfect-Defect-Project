@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
+from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 
 SCHEMA = "spireagent/agent-run-request-v1"
@@ -53,9 +54,11 @@ def create(
 
 def checked(value: object, effective: dict[str, Any]) -> dict[str, Any]:
     request = object_fields(value, set(effective), "agent_run_request")
-    if request != effective:
+    if json_bytes(request) != json_bytes(effective):
+        # Python equality conflates bool/int (and int/float) in nested metadata.
+        # JSON's typed canonical bytes bind the exact admitted semantic values.
         raise BoundaryError("agent_run_request", "effective_composition_or_request_changed")
-    return cast(dict[str, Any], decode_json(json_bytes(request)))
+    return cast(dict[str, Any], decode_json(json_bytes(effective)))
 
 
 def publish(directory: Path, request: dict[str, Any], operation_id: str) -> dict[str, Any]:
@@ -98,11 +101,18 @@ def original(directory: Path, reference: dict[str, Any], startup: dict[str, Any]
     value = decode_json(raw)
     if not isinstance(value, dict):
         raise BoundaryError("agent_run_request", "original_request_invalid")
-    implementation = value["composition"]["implementation"]
+    composition = dict(value["composition"])
+    claimed_composition = composition.pop("composition_id")
+    computed_composition = hashlib.sha256(canonical_json(composition).encode()).hexdigest()
+    implementation = composition["implementation"]
     manifest_sha = startup.get("agent_manifest_sha256", startup.get("policy_manifest_sha256"))
     manifest_id = startup.get("agent_manifest_id", startup.get("manifest_id"))
     if (
-        value["composition_id"] != reference["composition_id"]
+        value["schema"] != SCHEMA
+        or value["selection_id"] != composition["selection_id"]
+        or claimed_composition != computed_composition
+        or value["composition_id"] != claimed_composition
+        or value["composition_id"] != reference["composition_id"]
         or value["operation_id"] != reference["operation_id"]
         or implementation["manifest_sha256"] != manifest_sha
         or implementation["original_manifest_id"] != manifest_id
