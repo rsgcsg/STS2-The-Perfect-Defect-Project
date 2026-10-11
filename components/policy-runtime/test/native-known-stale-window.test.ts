@@ -21,7 +21,14 @@ const knownWindowPolicy = JSON.parse(readFileSync(new URL("../contracts/fixtures
 const continuousPolicy = JSON.parse(readFileSync(new URL("../contracts/fixtures/continuous-strict-v2.json", import.meta.url), "utf8")).execution_policy;
 const child = fileURLToPath(new URL("./fixtures/sampled-agent-child.mjs", import.meta.url));
 const cleanup: (() => Promise<void>)[] = [];
-function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
+const heldGates = new Set<{ release: () => void }>();
+function gate() {
+  let resolve!: () => void, enter!: () => void;
+  const promise = new Promise<void>(value => { resolve = value; });
+  const entered = new Promise<void>(value => { enter = value; });
+  const held = { promise, entered, enter, release: () => { heldGates.delete(held); resolve(); } };
+  heldGates.add(held); return held;
+}
 function abortable(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
   if (!signal) return promise;
   signal.throwIfAborted();
@@ -31,9 +38,10 @@ function abortable(promise: Promise<void>, signal?: AbortSignal): Promise<void> 
     promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
-async function until(predicate: () => boolean) {
-  for (let i = 0; i < 2000 && !predicate(); i++) await new Promise<void>(resolve => setImmediate(resolve));
-  expect(predicate(), "bounded actual OS/SDK fixture phase reached").toBe(true);
+async function atBarrier(tick: Promise<unknown>, held: ReturnType<typeof gate>) {
+  await Promise.race([held.entered, tick.then(result => {
+    throw new Error("actual Runtime completed before requested fixture barrier: " + JSON.stringify(result));
+  })]);
 }
 async function handoff(runtime: NativeAgentRuntimeOwner) {
   const pending = (runtime as unknown as { budgetHandoff: Promise<void> | null }).budgetHandoff;
@@ -109,16 +117,16 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; window
       client: { client_session_id: "client-fixture", client_instance_id: input.clientInstanceId }, controller: null } }),
     acquireController: async () => ({ raw: {}, data: { runtime_instance_id: source.capture.session.runtime_instance_id, status: "controller_acquired",
       controller: { controller_lease_id: "lease-fixture", controller_generation: 1, client_session_id: "client-fixture", expires_at: new Date(Date.now() + 120000).toISOString() } } }),
-    releaseController: async () => { controllerReleases++; await controllerReleaseGate?.promise; return { raw: {}, data: { runtime_instance_id: source.capture.session.runtime_instance_id, status: "controller_released", controller: null } }; },
+    releaseController: async () => { controllerReleases++; controllerReleaseGate?.enter(); await controllerReleaseGate?.promise; return { raw: {}, data: { runtime_instance_id: source.capture.session.runtime_instance_id, status: "controller_released", controller: null } }; },
     nativeLogicalRequest: async (operation: NativeLogicalTransportOperation, body: JsonObject = {}, transportOptions: NativeLogicalTransportOptions = {}) => {
       transportOptions.signal?.throwIfAborted(); calls.push({ operation, body: structuredClone(body) });
       if (operation === "submit") {
         onSubmit?.();
         if (options.causalStale && behavior === "stale") changePublicFacts();
-        await submitGate?.promise;
+        submitGate?.enter(); await submitGate?.promise;
       }
-      if (operation === "await" && awaitGate) await abortable(awaitGate.promise, transportOptions.signal);
-      if (operation === "current_owned" && currentGate) await abortable(currentGate.promise, transportOptions.signal);
+      if (operation === "await" && awaitGate) { awaitGate.enter(); await abortable(awaitGate.promise, transportOptions.signal); }
+      if (operation === "current_owned" && currentGate) { currentGate.enter(); await abortable(currentGate.promise, transportOptions.signal); }
       let response;
       if (operation === "current_owned") {
         if (options.causalStale) offeredFacts.set(source.capture.snapshot_id, publicFacts());
@@ -183,7 +191,10 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; window
     onSubmit: (fn: () => void) => { onSubmit = fn; }, failRelease: (fn: (id: string) => boolean) => { failRelease = fn; },
     expire: () => { clock = options.deadlineMs ?? 60000; } };
 }
-afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const close of cleanup.splice(0)) await close(); });
+afterEach(async () => {
+  for (const held of [...heldGates]) held.release();
+  vi.useRealTimers(); vi.restoreAllMocks(); for (const close of cleanup.splice(0)) await close();
+});
 
 describe("native policy3 causal continuous-goal falsifiers", () => {
   it("continues beyond eight genuine whole-facts refusals spread across delivered progress", async () => {
@@ -276,10 +287,12 @@ describe("native policy3 original owner deadline and cleanup", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = await fixture({ window: true, causalStale: true });
     expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
-    if (operation === "await") { f.restoreOffered(); f.holdAwait(); } else f.holdCurrent();
+    if (operation === "await") f.restoreOffered();
+    const held = operation === "await" ? f.holdAwait() : f.holdCurrent();
     const before = f.calls.filter(c => c.operation === operation).length;
     const tick = f.runtime.tick();
-    await until(() => f.calls.filter(c => c.operation === operation).length > before);
+    await atBarrier(tick, held);
+    expect(f.calls.filter(c => c.operation === operation).length).toBeGreaterThan(before);
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000);
     expect(await tick).toMatchObject({ type: "not_admitted", reason: "known_stale_recovery_exhausted" });
     await handoff(f.runtime);
@@ -291,12 +304,12 @@ describe("native policy3 original owner deadline and cleanup", () => {
   it("anchors receipt before blocked native-result Evidence and keeps original result before handoff", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = await fixture({ window: true, causalStale: true }), held = gate();
-    const append = f.evidence.append.bind(f.evidence); let resultOffered = false;
+    const append = f.evidence.append.bind(f.evidence);
     vi.spyOn(f.evidence, "append").mockImplementation(async (...args) => {
-      if (args[0] === "native_result") { resultOffered = true; await held.promise; }
+      if (args[0] === "native_result") { held.enter(); await held.promise; }
       return append(...args);
     });
-    const tick = f.runtime.tick(); await until(() => resultOffered);
+    const tick = f.runtime.tick(); await atBarrier(tick, held);
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000);
     expect(f.controllerReleases()).toBe(1);
     held.release(); expect(await tick).toMatchObject({ type: "not_delivered", reason: "known_stale_recovery_exhausted" });
@@ -312,7 +325,8 @@ describe("native policy3 original owner deadline and cleanup", () => {
     const f = await fixture({ window: true, causalStale: true });
     await f.runtime.tick(); f.changePublicFacts(); f.clock(9999); f.behavior("delivered");
     const held = f.holdSubmit(), tick = f.runtime.tick();
-    await until(() => f.calls.filter(c => c.operation === "submit").length === 2);
+    await atBarrier(tick, held);
+    expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(2);
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000);
     expect(f.controllerReleases()).toBe(1);
     held.release(); expect((await tick).type).toBe("delivered"); await handoff(f.runtime);
@@ -376,12 +390,12 @@ describe("native policy3 original owner deadline and cleanup", () => {
   it.each(["human", "stop"])("winning %s remains sticky at a blocked receipt append", async winner => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = await fixture({ window: true, causalStale: true }), held = gate();
-    const append = f.evidence.append.bind(f.evidence); let offered = false;
+    const append = f.evidence.append.bind(f.evidence);
     vi.spyOn(f.evidence, "append").mockImplementation(async (...args) => {
-      if (args[0] === "native_result") { offered = true; await held.promise; }
+      if (args[0] === "native_result") { held.enter(); await held.promise; }
       return append(...args);
     });
-    const tick = f.runtime.tick(); await until(() => offered);
+    const tick = f.runtime.tick(); await atBarrier(tick, held);
     const changed = winner === "human" ? f.runtime.setMode("human") : f.runtime.stop();
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000);
     held.release(); await tick; await changed;
@@ -394,12 +408,12 @@ describe("native policy3 original owner deadline and cleanup", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const f = await fixture({ window: true, causalStale: true }); await f.runtime.tick();
     f.changePublicFacts(); f.clock(9999);
-    const held = gate(), append = f.evidence.append.bind(f.evidence); let offered = false;
+    const held = gate(), append = f.evidence.append.bind(f.evidence);
     vi.spyOn(f.evidence, "append").mockImplementation(async (...args) => {
-      if (args[0] === "native_submission_requested") { offered = true; await held.promise; }
+      if (args[0] === "native_submission_requested") { held.enter(); await held.promise; }
       return append(...args);
     });
-    const tick = f.runtime.tick(); await until(() => offered);
+    const tick = f.runtime.tick(); await atBarrier(tick, held);
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000); held.release();
     expect(await tick).toMatchObject({ type: "not_admitted", reason: "known_stale_recovery_exhausted" });
     await handoff(f.runtime);
@@ -446,7 +460,8 @@ describe("native policy3 original owner deadline and cleanup", () => {
     const f = await fixture({ window: true, causalStale: true }); await f.runtime.tick();
     const held = f.holdControllerRelease();
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000);
-    await until(() => f.controllerReleases() === 1);
+    await held.entered;
+    expect(f.controllerReleases()).toBe(1);
     const stopped = f.runtime.stop(); await new Promise<void>(resolve => setImmediate(resolve));
     expect(f.controllerReleases()).toBe(1); expect(f.runtime.status().controller).toBe("unknown");
     held.release(); await handoff(f.runtime); await stopped;
