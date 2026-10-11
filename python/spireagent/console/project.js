@@ -2585,11 +2585,21 @@ window.SpireProject = (() => {
     setupDetails.dataset.preserve = "model-runtime-setup";
     setupDetails.append(el("summary", "详情 · 运行环境设置"), runtimeSetup);
     box.append(setupDetails);
+    const teacherSetup = panel("内置程序 Agent", "Teacher 使用公开输入和声明的固定程序，没有学习模型或权重。登记不会加载或接管游戏，仍需检查本机环境。");
+    teacherSetup.append(command(ctx, "register-builtin-native-teacher", "登记内置原生 Teacher", async () => {
+      const registered = await request(ctx, "/api/local-model-registrations/register-teacher", {variant: "continuous"});
+      if (registered.schema !== "spireagent/local-agent-registration-v1" || registered.status !== "registered"
+          || !selectionId(registered.selection_id) || !Array.isArray(registered.models) || registered.models.length)
+        throw new Error("agent_registration_identity_mismatch");
+      note(ctx, "程序 Teacher 已登记；请在同一 Agent 列表检查并加载，尚未接管游戏。");
+      await reload(ctx);
+    }, {disabled: !canPrepareRuntime}));
+    box.append(teacherSetup);
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
-      "选择本机模型",
-      "准备并加载会检查兼容性和固定运行环境。加载完成后由你开始测试，也可在游戏内操作。",
+      "选择本机 Agent",
+      "完整 Agent 可以绑定模型或使用固定程序。准备并加载会检查原组成和运行环境，Human 加载后再显式开始测试。",
     );
     if (!catalog)
       preparations.append(
@@ -3141,16 +3151,32 @@ window.SpireProject = (() => {
     }
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
+    const publicComposition = !managed && ["public_m0", "public_m2"].includes(support.model_type);
+    const compositionChoices = el("div", null, "form-grid");
+    const taskChoice = publicComposition ? select(compositionChoices, "Agent 任务", "agent-task",
+      [["default", "原默认任务"], ["ready-standard-summary", "至普通结算页"], ["none", "无任务基线"]], "default") : null;
+    const programChoice = publicComposition && support.model_type === "public_m0"
+      ? select(compositionChoices, "奖励选择程序", "agent-program",
+        [["none", "原模型分数选择"], ["card-reward-take", "当前可选卡牌中取模型最高分"]], "none") : null;
+    if (publicComposition) card.append(compositionChoices);
     const registerAction = (label) => command(ctx, actionName, label, async () => {
       if (!live(ctx) || !supportsLocalModelExport(model, support)) return;
       try {
-        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
+        const options = publicComposition ? {task_option: taskChoice.value,
+          program_option: programChoice?.value || "none"} : {};
+        const result = await request(ctx, publicComposition
+          ? "/api/local-model-registrations/register-composition" : "/api/local-model-registrations/register",
+          {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {}), ...options}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
             || (result.environment_kind || "native") !== environmentKind
             || result.model_id !== model.artifact_id || result.status !== "registered"
             || result.loaded !== false || result.runtime_profile !== expectedProfile
             || !selectionId(result.selection_id))
           throw new Error("local_model_registration_invalid");
+        if (publicComposition && live(ctx)) {
+          window.SpireProject.navigate("local-models", result.selection_id);
+          return;
+        }
       } catch (error) {
         if (error.message === "request_unknown") {
           if (live(ctx)) await reload(ctx);

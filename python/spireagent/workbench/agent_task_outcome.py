@@ -130,6 +130,17 @@ def _composition(manifest: Mapping[str, Any], native: bool) -> dict[str, Any]:
         "manifest_id": manifest.get("manifest_id"),
         "agent": dict(manifest.get("agent" if native else "policy", {})),
         "adapter": dict(manifest.get("adapter", {})),
+        "runtime_artifact": dict(manifest.get("artifact", {})),
+        "models": (
+            None
+            if native
+            else [
+                {
+                    "runtime_artifact_id": manifest.get("artifact", {}).get("id"),
+                    "runtime_artifact_sha256": manifest.get("artifact", {}).get("sha256"),
+                }
+            ]
+        ),
         "model": {
             "runtime_artifact_id": manifest.get("artifact", {}).get("id"),
             "runtime_artifact_sha256": manifest.get("artifact", {}).get("sha256"),
@@ -422,6 +433,15 @@ def _native(
     composition = outcome["agent_composition"]
     task = package.get("agent_spec", {}).get("task_spec") if package is not None else None
     known = task in (ready_summary_task_spec(), map_timed_ready_summary_task_spec())
+    teacher = bool(
+        package is not None
+        and package.get("schema") == "stpd/native-program-teacher-artifact-v1"
+        and value.agent_manifest["adapter"]["id"] == "stpd-native-public-program-teacher"
+    )
+    if teacher and package is not None:
+        composition["models"] = []
+        composition["model"] = None
+        composition["program"] = package["agent_spec"]
     composition.update(
         {
             "task_spec": task if known else None,
@@ -433,7 +453,14 @@ def _native(
             else [package_reason or "original_package_metadata_unavailable"],
         }
     )
-    if package is not None:
+    if package is not None and not teacher:
+        # Recovery bindings do not declare the complete model dependency set.
+        # A sampled-current learned Agent can have recovery.mode=none and [].
+        composition["models"] = [{
+            "model_id": package["model_id"],
+            "weights_sha256": package.get("weights", {}).get("sha256"),
+            "binding": "original_native_model_package",
+        }]
         composition["model"].update(
             {
                 "package_schema": package.get("schema"),
@@ -503,7 +530,7 @@ def _native(
                 "observation": _file_reference(value, observation_file["path"]),
                 "events": outcome["evidence"]["events"],
             }
-            acknowledged_basis = (witness, terminal.agent_task_complete)
+            acknowledged_basis = (witness, terminal.agent_task_complete, terminal.outcome)
             if terminal.outcome is not None:
                 _remember_terminal(
                     observed,
@@ -517,12 +544,15 @@ def _native(
             output = payload["output"]
             directive = output["directive"]
             report = last["report"]
-            witness, ready = acknowledged_basis
+            witness, ready, terminal_result = acknowledged_basis
+            reason = ("natural_ready_summary_" + terminal_result
+                      if teacher and terminal_result in {"win", "loss"}
+                      else "native_ready_summary_task_complete" if not teacher else None)
             if (
                 known
                 and ready
                 and directive["type"] == "close"
-                and directive["reason"] == "native_ready_summary_task_complete"
+                and reason is not None and directive["reason"] == reason
                 and all(
                     output[key] == report[key]
                     for key in ("continuity_token", "consumption_id", "state_version")
@@ -558,6 +588,7 @@ def project(
     package_reason: str | None = None,
     text_terminal: Callable[[Any], str | None] = lambda _value: None,
     frozen_events: bytes | None = None,
+    application_request_status: str | None = None,
 ) -> AgentTaskOutcome:
     outcome = _empty(result.status)
     if result.status != "pass" or result.value is None:
@@ -590,10 +621,21 @@ def project(
                             "agent_task_outcome", "original_package_metadata_over_limit"
                         )
                     candidate = json.loads(native_package)
+                    teacher = (
+                        isinstance(candidate, dict)
+                        and candidate.get("schema") == "stpd/native-program-teacher-artifact-v1"
+                        and manifest.get("adapter", {}).get("id")
+                        == "stpd-native-public-program-teacher"
+                        and candidate.get("adapter") == manifest["adapter"]
+                        and candidate.get("agent_spec", {}).get("model_bindings") == []
+                        and candidate.get("agent_spec", {}).get("learned") is False
+                        and candidate.get("agent_spec", {}).get("scores") is None
+                        and manifest["input"]["state_recovery"]["model_bindings"] == []
+                    )
                     if (
                         hashlib.sha256(native_package).hexdigest() != manifest["artifact"]["sha256"]
                         or not isinstance(candidate, dict)
-                        or candidate.get("model_id") != manifest["artifact"]["id"]
+                        or (not teacher and candidate.get("model_id") != manifest["artifact"]["id"])
                         or candidate.get("input_spec") != manifest["input"]["input_spec"]
                         or candidate.get("agent_spec", {}).get("id") != manifest["agent"]["id"]
                         or candidate.get("agent_spec", {}).get("version")
@@ -609,6 +651,14 @@ def project(
                         else "original_composition_binding_changed"
                     )
             _native(outcome, value, events, package, package_reason)
+            if (manifest.get("adapter", {}).get("id") == "stpd-native-public-program-teacher"
+                    and application_request_status is not None
+                    and application_request_status != "bound"):
+                outcome["task_completion"].update({
+                    "status": "unknown",
+                    "reason_codes": ["original_request_run_binding_unavailable"],
+                    "witness": None,
+                })
         else:
             _generic(outcome, value, manifest, events, text_terminal)
         _operation_end(outcome, value, events)

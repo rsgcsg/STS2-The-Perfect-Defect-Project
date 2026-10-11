@@ -904,7 +904,8 @@ class Application:
         return self.local_model_export.start(model_id)
 
     def register_local_model(self, model_id: object, *,
-                             environment_kind: str = "native") -> dict[str, Any]:
+                             environment_kind: str = "native",
+                             composition_options: dict[str, str] | None = None) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_registration", "running_instance_unavailable")
         try:
@@ -918,7 +919,27 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_model_registration", "running_configuration_mismatch")
+        if composition_options is not None:
+            return self.local_model_registration.register_composition(
+                model_id, environment_kind=environment_kind, **composition_options
+            )
         return self.local_model_registration.register(model_id, environment_kind=environment_kind)
+
+    def register_builtin_teacher(self, *, variant: str = "continuous") -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_model_registration", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError(
+                "local_model_registration", "running_instance_unavailable"
+            ) from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_model_registration", "running_configuration_mismatch")
+        return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
         self.local_environment.close()
@@ -991,6 +1012,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             return body
 
         def model_action(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+            if path == "/api/local-models/run-agent":
+                return app.models.run_agent(body)
             if path == "/api/local-models/prepare" and set(body) in (
                 {"selection_id"}, {"selection_id", "run_profile"}
             ):
@@ -1853,10 +1876,35 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
-                if self.path != "/api/local-model-registrations/register":
+                if self.path not in {"/api/local-model-registrations/register",
+                                     "/api/local-model-registrations/register-teacher",
+                                     "/api/local-model-registrations/register-composition"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
+                    if self.path == "/api/local-model-registrations/register-teacher":
+                        body = self.json_body(maximum=128)
+                        if set(body) not in (set(), {"variant"}):
+                            raise ValueError
+                        value = app.register_builtin_teacher(
+                            variant=body.get("variant", "continuous")
+                        )
+                        self.respond(200, json.dumps(value).encode())
+                        return
+                    if self.path == "/api/local-model-registrations/register-composition":
+                        body = self.json_body(maximum=256)
+                        if (not {"model_id", "task_option", "program_option"} <= set(body)
+                                or set(body) - {"model_id", "environment_kind", "task_option",
+                                                "program_option"}):
+                            raise ValueError
+                        value = app.register_local_model(
+                            body["model_id"],
+                            environment_kind=body.get("environment_kind", "native"),
+                            composition_options={key: body[key] for key in
+                                                 ("task_option", "program_option")},
+                        )
+                        self.respond(200, json.dumps(value).encode())
+                        return
                     body = self.json_body(maximum=128)
                     if set(body) not in ({"model_id"}, {"model_id", "environment_kind"}):
                         raise ValueError
