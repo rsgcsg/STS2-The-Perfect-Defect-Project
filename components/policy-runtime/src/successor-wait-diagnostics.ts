@@ -3,7 +3,7 @@ import type { Writable } from "node:stream";
 
 type Observation = AnyDecisionBundle["observation"];
 export type SuccessorWaitCategory = "same_basis" | "settling" | "accepted" | "no_whole_bundle"
-  | "cancelled" | "profile_drift" | "environment_identity_drift" | "sequence_not_newer" | "acquisition_error" | "wait_error";
+  | "untrusted_settling" | "cancelled" | "profile_drift" | "environment_identity_drift" | "sequence_not_newer" | "acquisition_error" | "wait_error";
 export interface SuccessorWaitPollDiagnostic {
   attempt: number;
   elapsed_ms: number | null;
@@ -29,6 +29,10 @@ export interface SuccessorWaitFailureDiagnostic {
   elapsed_ms: number | null;
   poll_count: number;
   max_attempts: number;
+  wait_policy: "legacy_total_poll_limit" | "auto_public_settling";
+  limit_scope: "total_polls" | "cumulative_unusable_polls";
+  unusable_poll_count: number;
+  qualified_settling_poll_count: number;
   interval_ms: number;
   rows_total: number;
   rows_dropped: number;
@@ -64,7 +68,7 @@ export class SuccessorWaitDiagnostics {
   constructor(private readonly sink: SuccessorWaitDiagnosticSink, private readonly clock: () => number) {}
 
   begin(context: { runId: string; requestId: string; decisionId: string; previous: Observation;
-    maxAttempts: number; intervalMs: number }): SuccessorWaitTrace | undefined {
+    maxAttempts: number; intervalMs: number; waitPolicy?: SuccessorWaitFailureDiagnostic["wait_policy"] }): SuccessorWaitTrace | undefined {
     if (this.disabled || this.capReported) return undefined;
     try { return new SuccessorWaitTrace(context, this.clock, record => { this.pending = record; }); }
     catch { this.disabled = true; return undefined; }
@@ -90,14 +94,17 @@ class SuccessorWaitTrace {
   private readonly record: SuccessorWaitFailureDiagnostic;
   private failed = false;
   constructor(context: { runId: string; requestId: string; decisionId: string; previous: Observation;
-    maxAttempts: number; intervalMs: number }, private readonly clock: () => number,
+    maxAttempts: number; intervalMs: number; waitPolicy?: SuccessorWaitFailureDiagnostic["wait_policy"] }, private readonly clock: () => number,
     private readonly queue: (record: SuccessorWaitFailureDiagnostic) => void) {
     this.started = clock();
     const values = [context.runId, context.requestId, context.decisionId, context.previous.snapshot_id].map(value => bounded(value, 256));
     this.record = { diagnostic: "successor_wait_failure", run_id: values[0]!, request_id: values[1]!,
       decision_id: values[2]!, basis_snapshot_id: values[3]!, basis_sequence: context.previous.sequence,
       fields_omitted: values.some(value => value === null), outcome: "exhausted", elapsed_ms: null,
-      poll_count: 0, max_attempts: context.maxAttempts, interval_ms: context.intervalMs,
+      poll_count: 0, max_attempts: context.maxAttempts,
+      wait_policy: context.waitPolicy ?? "legacy_total_poll_limit",
+      limit_scope: context.waitPolicy === "auto_public_settling" ? "cumulative_unusable_polls" : "total_polls",
+      unusable_poll_count: 0, qualified_settling_poll_count: 0, interval_ms: context.intervalMs,
       rows_total: 0, rows_dropped: 0, truncated: false, polls: [] };
   }
   pollStarted(): void { this.record.poll_count += 1; }
@@ -114,10 +121,12 @@ class SuccessorWaitTrace {
       if (this.record.polls.length > MAX_ROWS) this.record.polls.shift();
     } catch { this.failed = true; }
   }
-  finish(outcome: "exhausted" | "cancelled" | "error"): void {
+  finish(outcome: "exhausted" | "cancelled" | "error", counts?: { unusable: number; qualifiedSettling: number }): void {
     if (this.failed) return;
     try {
       this.record.outcome = outcome;
+      this.record.unusable_poll_count = counts?.unusable ?? 0;
+      this.record.qualified_settling_poll_count = counts?.qualifiedSettling ?? 0;
       this.record.elapsed_ms = elapsed(this.clock, this.started);
       do {
         this.record.rows_dropped = this.record.rows_total - this.record.polls.length;
