@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from spireagent.encoding import canonical_json, semantic_hash
 from spireagent.json_boundary import BoundaryError
 
 SCHEMA = "spireagent/agent-task-outcome-v1"
@@ -195,6 +196,155 @@ def _public_terminal(snapshot: Any) -> str | None:
     )
 
 
+def _m0_frame(
+    snapshot: dict[str, Any], manifest: dict[str, Any], reference: dict[str, Any]
+) -> dict[str, Any] | None:
+    from stpd.fullrun.public_inputs import project_public_snapshot
+    from stpd.policy.public_m0_task import ready_summary
+
+    try:
+        public = project_public_snapshot(
+            snapshot, compact=manifest["representation"]["id"] == "public_compact"
+        )
+        if (snapshot["completeness"]["missing"] != []
+                or snapshot["interaction"]["kind"] not in manifest["support"]["interaction_kinds"]
+                or any(action["verb"] not in manifest["support"]["action_verbs"]
+                       for action in snapshot["bound_actions"]["actions"])):
+            return None
+        try:
+            ready = ready_summary(snapshot)
+        except BoundaryError:
+            ready = False
+        return {**reference, "snapshot": snapshot, "candidate_digest": public.candidate_digest,
+                "candidate_count": len(public.actions), "ready_summary": ready}
+    except (BoundaryError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _m0_end_tail(
+    events: list[dict[str, Any]], decision_index: int
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    tail = events[decision_index + 1:]
+    if not tail or tail[-1]["kind"] != "stopped":
+        return None
+    handoff = None
+    for event in tail[:-1]:
+        kind = event["kind"]
+        if kind == "controller_released":
+            continue
+        if (handoff is None and kind == "handoff_to_human"
+                and event["payload"].get("reason") == "policy_abstained"):
+            handoff = event
+        elif handoff is not None and kind in {
+            "fail_closed", "runtime_tainted", "controller_release_failed"
+        }:
+            # A declared Goal and later failed/uncertain cleanup remain separate.
+            continue
+        else:
+            return None
+    return (handoff, tail[-1]) if handoff is not None else None
+
+
+def _legacy_m0(
+    outcome: AgentTaskOutcome, manifest: dict[str, Any], events: list[dict[str, Any]]
+) -> None:
+    from stpd.policy.public_m0_task import validate_task_spec
+
+    original = manifest.get("adapter_config", {}).get("public_m0", {})
+    composition = outcome["agent_composition"]
+    composition.update(task_spec=original.get("task_spec"),
+                       program_spec=original.get("program_spec"))
+    try:
+        task = validate_task_spec(original.get("task_spec"))
+    except BoundaryError:
+        task = None
+    completion = outcome["task_completion"]
+    completion.update({"task_spec": composition["task_spec"], "reason_codes": [
+        "task_spec_unbound" if task is None else "original_input_witness_unavailable"
+    ]})
+    signatures: dict[str, str] = {}
+    frames: dict[str, dict[str, Any]] = {}
+    conflicting: set[str] = set()
+    observed: list[dict[str, Any]] = []
+    environment = None
+    available = False
+    candidate = None
+    for index, event in enumerate(events):
+        kind, payload = event["kind"], event["payload"]
+        if kind == "environment_admitted":
+            environment = payload["environment"]
+        snapshot = (payload.get("successor") if kind == "successor"
+                    else payload.get("receipt", {}).get("successor") if kind == "receipt"
+                    else None)
+        if snapshot is not None:
+            identity = snapshot["snapshot_id"]
+            # Compare all PRIOR same-ID bodies before selecting by digest/count.
+            # Only this top-level timestamp is non-semantic in the owning tracker.
+            body = {key: value for key, value in snapshot.items() if key != "observed_at"}
+            signature = canonical_json(body)
+            if identity in signatures and signatures[identity] != signature:
+                conflicting.add(identity)
+                frames.pop(identity, None)
+                observed[:] = [record for record in observed if record["snapshot_id"] != identity]
+            signatures[identity] = signature
+            if identity not in conflicting:
+                reference = {
+                    "basis": "prior_sealed_public_observation", "profile": "snapshot-1",
+                    "source_kind": "successor" if kind == "successor" else "receipt.successor",
+                    "event_sequence": event["sequence"],
+                    "source_decision_id": payload["decision_id"],
+                    "snapshot_id": identity, "sequence": snapshot["sequence"],
+                    "body_sha256": semantic_hash(body), "events": outcome["evidence"]["events"],
+                }
+                frame = _m0_frame(snapshot, manifest, reference)
+                if frame is not None:
+                    available = True
+                    frames[identity] = frame
+                    result = _public_terminal(snapshot)
+                    if result is not None:
+                        _remember_terminal(observed, {**reference, "result": result,
+                                                     "ready_summary": frame["ready_summary"]})
+        if kind != "decision":
+            continue
+        # Every later decision replaces an earlier candidate; future bodies cannot fill it.
+        candidate = None
+        decision = payload["decision"]
+        frame = frames.get(decision["snapshot_id"])
+        if task is None:
+            continue
+        completion.update({"status": "unknown",
+                           "reason_codes": ["original_input_witness_unavailable"]})
+        if frame is None or environment is None:
+            continue
+        if (frame["snapshot"]["session"] != {
+            key: environment[key] for key in ("runtime_instance_id", "environment_fingerprint")
+        } or decision["candidate_digest"] != frame["candidate_digest"]
+                or decision["candidate_count"] != frame["candidate_count"]):
+            completion["reason_codes"] = ["original_public_observation_binding_unavailable"]
+            continue
+        completion.update({"status": "unproved",
+                           "reason_codes": ["declared_task_end_not_recorded"]})
+        if (frame["ready_summary"] and decision["disposition"] == "abstain"
+                and decision["selected_index"] is None
+                and payload["resolved_bound_action_id"] is None
+                and len(decision["scores"]) == frame["candidate_count"]
+                and all(type(score) in (int, float) and score == 0
+                        for score in decision["scores"])):
+            candidate = (index, {key: value for key, value in frame.items()
+                                 if key not in {"snapshot", "ready_summary"}})
+            candidate[1].update(decision_id=decision["decision_id"],
+                                decision_event_sequence=event["sequence"],
+                                end_kind="declared_program_zero_abstention")
+    if candidate is not None:
+        end = _m0_end_tail(events, candidate[0])
+        if end is not None:
+            handoff, stopped = end
+            witness = {**candidate[1], "handoff_event_sequence": handoff["sequence"],
+                       "stopped_event_sequence": stopped["sequence"]}
+            completion.update({"status": "completed", "reason_codes": [], "witness": witness})
+    _terminal(outcome, observed, available and not conflicting)
+
+
 def _terminal(outcome: AgentTaskOutcome, observed: list[dict[str, Any]], available: bool) -> None:
     results = {record["result"] for record in observed}
     outcome["terminal_observation"] = {
@@ -304,6 +454,12 @@ def _generic(
     events: list[dict[str, Any]],
     text_terminal: Callable[[Any], str | None],
 ) -> None:
+    if ((manifest.get("adapter", {}).get("id"), manifest.get("adapter", {}).get("protocol"))
+            == ("stpd-public-m0-decision-adapter", "sts2.policy-runtime/decision-only-ndjson-1")
+            and manifest.get("representation", {}).get("input_schema")
+            == "sts2.player-environment/snapshot-1"):
+        _legacy_m0(outcome, manifest, events)
+        return
     composition = outcome["agent_composition"]
     task = _public_task(manifest)
     public_m0 = manifest.get("adapter", {}).get("id") == "stpd-public-m0-decision-adapter"
