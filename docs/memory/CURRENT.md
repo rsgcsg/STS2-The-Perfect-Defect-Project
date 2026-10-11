@@ -1,114 +1,104 @@
-# Current project context — Host/Agent contracts and learning delivery
+# Current project context — native continuation and branch stops
 
-Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Current develop is
-`32298949711e886beb483614b87eb806160fc349`; Root's execution checkout remains
-frozen `e47964dce760061474aab701da65eeebf0f43959`. These are different sources.
+Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Remote develop remains
+`32298949711e886beb483614b87eb806160fc349`. Root's local integration candidate is
+`fb7fd31d`, topic `codex/native-episode-continuation`, continuing reviewed Episode6cf,
+PR176abbf and policy3/358 increments from cd390690. It is not
+merged develop or runtime qualification. `e47964dce760061474aab701da65eeebf0f43959`
+is the preserved source of the last actual games, not the current Root checkout.
 The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
 Resolve live GitHub refs and original owner records before acting; exact source
 and owner records override this file.
 
 ## Goal and routing
 
-Continue stable environment → useful data/management → real training → Model/Agent
-→ execution/evaluation. Historical M0/M2 recovery tests composition/substitution
-and cost; it is not the goal or a prerequisite to all new learning. Read the
+Continue stable environment → useful data/management → training → Model/Agent
+→ execution/evaluation. Historical M0/M2 recovery is a composition/cost probe,
+not a prerequisite to all learning. Read the
 [active dependency order](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order),
 [baseline](../BASELINE_V1_SPEC.zh-CN.md),
 [architecture](../ARCHITECTURE.md#product-boundary) and
 [ADR-0016](../adr/0016-agent-composition-and-execution-request.md).
-The [selected convergence](../ARCHITECTURE.md#selected-convergence-and-change-rules)
-retains a common ExecutionRuntime kernel/current separate supervision, without
-renaming Policy Runtime. Narrow native dependencies are the next architecture
-refactoring, not a game/data prerequisite. SDK is a library; Host exceeds its
-launcher. A future direct driver needs the same owner/guarantees and a real need;
-IPC is not a proved bottleneck. Core/extension mapping and direct product support
-remain unfinished. Native UI/headless are presentations of one official-game Host;
-scoped evidence does not prove all Host equivalence or an ordinary default.
+The selected architecture retains one ExecutionRuntime kernel/current supervision,
+without renaming Policy Runtime. Narrow dependency cleanup does not block ready
+engineering; SDK-direct/default or cross-Host equivalence is not thereby qualified.
+Native UI/headless remain presentations of one official-game Host.
 
-## Integrated source and original results
+V1 data/Agent proposal options A/A+ or another direction still await the user's
+explicit final choice. Dependent new data implementation, collection, fit and
+auxiliary development STOP there; no route is selected by this handoff. Existing
+Episode/native policy/PR176 engineering continues. Actual Human participation stops
+only its dependent branch. Root stops the round when all branches are complete or
+waiting on user/external conditions, with a concrete handoff.
 
-[PR175](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/175) at06e32e9c
-was normally merged as32298949. Fresh full
-[CI38130462706](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38130462706)
-passed both Linux and both Windows leaves plus portable. Merge
-[CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
-passed fresh repository/identity checks and portable aggregation through verified
-same-tree reuse of that full execution receipt; OS leaves were skipped, not rerun.
-This is source/test evidence for that source, not frozen e479 or unmerged candidates.
-The merged Goal reader and derived Auto6 report retain original unknown records;
-[the packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection)
-keeps their exact prior scope.
+## Current source and gate evidence
 
-Auto7 at frozen e479, Runtime33/code4ffd923b and Mod43/artifactf56b3240,
-explicit headless Instant, reached mechanical natural loss Summary:
-floor11/score161/A0,52.094s Auto elapsed,154 program calls/153 delivered submissions,
-zero stale/unknown delivery,466 sealed typed-verified events. Stop released/unloaded
-untainted; Host/caller exited0 unforced. Original application Task/terminal remain
-unknown; no new Goal projection or consumed-input proof was created. Comparison
-with Auto6 is not fixed-trajectory speedup, strategy or ordinary-default qualification.
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) is not merged.
+Fresh full [CI38148835498](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38148835498)
+at abbf7e2c completed failed: Windows1 failed; Linux1/2 and Windows2 passed; portable
+failed. The sole Windows1 failure is localized to an unchanged Source3 real-store
+.NET backend startup-readiness 10s window within a 130s outer body. The prior owned-
+stale Runtime488 checks passed; neither establishes this failure's cause or a fix.
+The SDK author is diagnosing read-only; no rerun is allocated. Prior 6dd failure and
+local baeb acceptance remain separate. No hosted pass is inferred for Root fb7fd31d.
 
-Native137 Auto3 at frozen e479 completed 23 calls/submissions: 15 delivered/8 known
-not_started stale refusals,5837ms Auto elapsed, stopping at the existing limit of
-eight total known stale refusals. Eight native rejection diagnostics report public_facts_changed with equal
-expected/projected Snapshot IDs; one path detail is truncated. Task is unproved,
-operation censored; the original observations remain unchanged. Versioned policy3
-per-episode recovery is now under source implementation; no new game, inference
-or installation is implied.
-Cleanup was graceful/unforced exit 0,39.3798s Root outer wall, no errors/remaining
-owned/strict game processes. These counters and diagnostics are not Task, strategy,
-training admission or causal-settlement evidence.
+At Episode66707bd, 399 checks plus build passed in the bounded follow-up batch;
+6cf adds three type casts with scoped
+mypy8 passing. Source/common-process acceptance retains the disclosed synthetic
+World/numerical fixtures; it is not native gameplay or trained-weight inference.
+Native policy3 source24, Evidence54/pure100/final30 checks have independent acceptance.
+Full Evidence372 and pure-proof42 passed. Runtime34's cd390 owner gate failed in
+83.705s: TS typecheck,512 passing tests/3 existing optional skips and build passed,
+but installed-package smoke rejected exported version constant33 versus package34.
+The first wrong fact was the forgotten src/contracts.ts literal. Root corrected
+only that literal at 7a5e889b and five current BOM fields at fb7fd31d. Package-gate
+rerun is pending; no behavior retest or package acceptance is claimed.
 
-## Active implementation and next gates
+Evidence30 is pinned to 3988448dbb486d830a4e36f6a92049960fdc2e73; uv.lock SHA begins
+25e801bb. The isolated reader's 28 files were verified against that exact producer;
+Root's existing venv stays Evidence29. Old27/29 artifacts and dependency identities
+remain frozen. A new source pin or isolated reader check is not a deployed upgrade.
 
-Historical M0 candidate 48f1fc6d passed seven actual synthetic application cases,
-13.875s supervisor wall/13.34s pytest, exit 0/owned processes empty. They exercise
-ordinary training/export/registration and explicit pause/resume ownership. Final
-independent review accepts 48f for PR preparation in that source/synthetic App scope;
-full CI/integration, real-corpus fit and data/strategy quality remain pending.
+Host rc28 full source checks passed at13b. The e573 cache-contaminated artifact was
+invalidated; repaired8ccb79 has source-file and standalone bound checks passing,
+but is still unusable for ordinary native launch: reference CLI writes package.local.
+The author now fixes external Application state-root derivation and ready readback
+on `codex/native-host-external-state`; source work is ongoing before an actual game.
+This packaging/state-root blocker is not a gameplay/Model or qualification result.
 
-[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) hosted
-6ddc9256 failed three leaves in
-[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
-Its TokenRanking regression repair at local baeb8958 has independent acceptance
-with one Reward and seven historical cases passing; this is not a latest hosted
-pass. Two unchanged Windows test failures remain under bounded diagnostic work.
-Episode f7fdbd1c's 36 Application cases and bounded synthetic common-process seam
-have independent acceptance: Teacher retains prior passing receipt/assertions only
-(old raw artifacts unavailable); final PublicM2 originals are verified. No new
-two-case aggregate PASS is claimed. The default-CI fixture lacked the supplied
-archive environment; the author is using the existing source-package owner and
-adding actual HTTP/CLI entry coverage. These new deltas are unexecuted. Legacy/root,
-metadata and CI remain pending; no installed/native/default or strategy qualification.
+## Last actual attempts and preserved limits
 
-Run A and B in parallel: A diagnoses the Native137 stale block with its existing
-trained Model and completes reusable ordinary Episode prepare/run/Stop/typed close;
-B's V1 data/Agent proposal is awaiting the user's explicit final A/A+ or other
-choice (proposal options, not workstream letters); no source route is selected here.
-Dependent new data implementation,
-collection, training and auxiliary development stop at that branch boundary.
-After selection/allocation, B eligible view + recipe → CPU fit/export can proceed
-alongside A; A usable Runtime + exported Model joins at game evaluation, not training.
-Existing-model/runtime/Episode/PR176 work does not wait for B; novelty is not a goal.
+Auto7 at e479/Runtime33/Mod43, explicit headless Instant, reached mechanical natural
+loss floor11/score161/A0:52.094s Auto elapsed,154 program calls/153 delivered,
+zero stale/unknown delivery and466 sealed typed-verified events. Stop/Host/caller
+closed untainted/unforced0. Original App Task/terminal remain unknown; no consumed-
+input proof or strict trajectory speedup, strategy/default qualification follows.
 
-C prepares GPU backend/cost read-only in parallel: static/CPU compatibility →
-bounded GPU smoke proving actual CUDA/checkpoint/export/cost, with synthetic data
-allowed before real-data readiness → real fit/scale only with useful admitted data,
-passed smoke and budget within the same USD20. External CombatSolver producer
-and GPU work are assigned investigations, with no build/generated data/provider
-job claimed. D keeps architecture, historical compatibility, specifications and
-exact-head CI coherent throughout; it does not block already-ready game/data work.
-Freeze actual candidates and meet owning gates/allocation at each transition;
-ordinary default/SDK-direct promotion and broader G2/V1 remain open.
-Human participation stops only its dependent branch with a concrete handoff.
-Root stops the round when every branch is completed or waiting on user/external
-conditions; one pending choice does not pause independent authorized engineering.
+Native137 Auto3 at e479 used23 calls/submissions,15 delivered/8 known not_started
+stales in5837ms, ending at the total-eight limit with Task unproved/operation censored.
+Eight rejection diagnostics were public_facts_changed with equal expected/projected
+Snapshot IDs; one path detail was truncated. Root outer39.3798s ended0 gracefully,
+without errors/owned/strict game processes. These original observations are unchanged.
+No new game, production install, retained-Model derivative or game-bound NN
+execution has occurred since Auto3; synthetic source checks have separate scope.
+
+## Next owning gates
+
+Review Runtime34's corrected package-gate receipt, finish the ordinary native Host external-
+state package boundary, then freeze the coherent source/package/metadata tuple and
+run its selected gates. No failing hosted head is merged. Existing-model diagnosis
+uses its actual prerequisites/allocation rather than retraining for novelty.
+After V1 selection/allocation, B eligible view+recipe can CPU-fit/export alongside A;
+A usable execution+exported Model joins at game evaluation. GPU remains read-only
+preparation: static/CPU compatibility → allocated CUDA/checkpoint/export/cost smoke
+(synthetic may precede real data) → useful admitted data+passed smoke+budget for scale.
+Required CI, historical readers and scoped evidence remain throughout this finite DAG.
 
 ## Remaining Platform non-claims
 
 Same cumulative USD20 GPU envelope, observed USD0/no provider job. This handoff
 allocates no new game, real-data use/fit, paid compute, main/release or final G1/G2/V1
-approval. Root owns allocations, shared refs/BOM and the one heavy/native slot;
-workers use disjoint topics and independent review. Data quantity/quality needs
-and large-fit cost are reported before expanding work. Old failures, private
-originals, rollback receipts and exposure limits remain; no source merge or loss
-promotes itself to Human, research, strategy or full qualification.
+approval. Root owns shared refs/BOM, allocations and the heavy/native slot. Source,
+local merge, package checks, installation/load, Human, research and strategy are
+separate evidence. Preserve failures, original records, rollback and exposure limits;
+none of the candidate gates promotes itself to ordinary default or full qualification.
