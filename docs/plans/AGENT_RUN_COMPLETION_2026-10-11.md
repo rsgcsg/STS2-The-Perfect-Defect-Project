@@ -356,3 +356,14 @@ source review determine its delivery. It need not delay this independent native
 observation, and its source cannot be imported during a frozen run. Training and
 general placement remain later scope. Cumulative paid GPU spend remains USD0 of
 the same USD20 envelope, with no provider job started.
+
+Pre-dispatch update: independent metadata/build review accepted the exact above
+artifacts. Owner deployment installed Mod42; doctor reports no game process and
+exact installed SHA/MVID. Rollback2026-10-11T03-51-29.161Z preserves original
+Mod41a67e240f. Actual installed Runtime31 plus its bundled SDK passed a synthetic
+wire probe: settling/C0 caused no scoring/acquire/submit and retained Auto; one
+delivery crossed settling to interactive without rescoring; observed/unsupported
+still handed off. All instances stopped/released and730 installed files were
+unchanged. Receipt3761a51a belongs to consumer compatibility only, not native
+execution. The initial malformed transport-envelope probe failure is retained.
+Final caller/source/consumer pins and cold-load identity remain dispatch gates.

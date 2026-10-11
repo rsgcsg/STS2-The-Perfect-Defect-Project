@@ -38,8 +38,8 @@ PR171 head74260b61 passed full CI38100661045: all four Linux/Windows leaves and
 portable. Normal develop merge09440e80 preserves the exact tested tree and component
 provenance. Merge CI38104068580 accepted that executed receipt but failed committed
 patch hygiene on one extra EOF blank line in test_public_m0_policy_port.py.
-A separate bounded repair is active; executable CI success and this failed gate
-remain distinct. The current topic imports develop09440 normally, without promoting
+Reviewed repairc9 is included in this topic; dedicated PR173 full CI is still
+pending. Executable CI success and the failed merge gate remain distinct. The current topic imports develop09440 normally, without promoting
 the old CI to new source or any runtime/strategy claim.
 
 ## Exact candidate loaded; Auto3 closed incomplete
@@ -87,8 +87,10 @@ so the precise readiness failure remains unknown.
 
 Connector withdrawal repair968c866e is independently accepted and integrated:
 762 Host,25 focused,232 SDK and126 portable checks passed at the author source.
-Root candidate Connector23/Mod42 versions and BOM are committed; clean builds and root gates passed. Independent metadata review, install and
-Auto4 remain pending. Installed Mod41 remains the Auto3 artifact. Application reason repair
+Root Connector23/Mod42 metadata, clean builds and root gates are independently
+accepted. Mod42 is installed with verified Mod41 rollback; not yet loaded. The
+unchanged installed Runtime31 passed a synthetic wire compatibility probe. Auto4
+caller/frozen-tuple review and execution remain pending. Application reason repair
 f78f32c7 is integrated with42 checks; only the exact terminal handoff reason/reference
 is added, never a changed task/outcome or rewritten original Auto3 report.
 
