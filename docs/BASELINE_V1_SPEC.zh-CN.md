@@ -92,6 +92,13 @@ Host 抽象是提供世界能力的角色，Host Runtime 只是其进程/隔离/
 不决定协议；现有 Public M0 用 generic Snapshot1/Decision1（inputProfile 为 null），
 `public-snapshot-m0-v1` 是应用组合名；Public M2 用 Snapshot1/Decision4。
 
+工程方向已选定为统一 ExecutionRuntime 角色与内核，保留 Policy Runtime 组件名；
+当前默认仍采用独立受监督的 Runtime 进程。待实现的收敛先采用 native 窄接口，
+解开具体 REST/NDJSON 耦合；SDK-direct/in-process 是未来同一执行 owner 内的
+可替换 driver，须满足共同预算、Stop、unknown、证据及消费合同，并由真实需求推动。
+实施与调整按 [ARCHITECTURE 的选定收敛和变更规则](ARCHITECTURE.md#selected-convergence-and-change-rules)，
+此选择不改变当前协议语义或表示内核收敛已经完成。
+
 面向 Agent 的环境接口与 Runtime–Agent 程序端口分开：前者由 Connector 提供游戏交互能力；
 后者是 Policy Runtime 与 Agent 程序之间的消息合同。当前通用
 [Agent 端口](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md)支持消费、查询、
