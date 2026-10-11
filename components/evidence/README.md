@@ -3,8 +3,8 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-The typed Agent-session verifier accepts explicitly declared execution policy1
-and continuous strict policy2. Public
+The typed Agent-session verifier accepts explicitly declared execution policy1,
+continuous strict policy2, and fixed recovery-window policy3. Public
 `SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` advertises all three implemented
 parsers as an immutable tuple. Policy2 retains original dispatch/result joins,
 changed-input ACK/Next fences and monotonic counters, with consecutive3 and

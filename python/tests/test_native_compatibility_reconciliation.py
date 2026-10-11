@@ -40,7 +40,9 @@ def interrupted(tmp_path, monkeypatch):
         "model",
         old_producer,
         (Parent("original_model", original.artifact_id),),
-        parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA}),
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": COMPATIBILITY_PROFILE}
+        ),
     )
     journal = {
         "schema": owner.SCHEMA,
@@ -211,6 +213,41 @@ def test_new_profile_cannot_borrow_an_old_profile_absence_receipt(interrupted):
     assert service._path().read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "selected_profile", [COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE]
+)
+def test_present_reconciliation_cannot_borrow_other_derived_profile(
+    interrupted, monkeypatch, selected_profile
+):
+    from dataclasses import replace
+
+    service, store, original, derived, journal, _ = interrupted
+    other = (
+        OPERATIONAL_COMPATIBILITY_PROFILE
+        if selected_profile == COMPATIBILITY_PROFILE
+        else COMPATIBILITY_PROFILE
+    )
+    foreign = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": other}
+        ),
+    )
+    store.publish(foreign)
+    journal.update(model_id=foreign.artifact_id, derived_model_id=foreign.artifact_id)
+    journal["native_compatibility"]["profile"] = selected_profile
+    atomic_json(service._path(), journal)
+    monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 10)
+    before = service._path().read_bytes()
+    with pytest.raises(BoundaryError, match="reconciliation_intent_mismatch"):
+        service.reconcile_native_compatibility(
+            journal["operation_id"],
+            original_model_id=original.artifact_id,
+            derived_model_id=foreign.artifact_id,
+        )
+    assert service._path().read_bytes() == before
+
+
 def test_separate_explicit_new_intent_links_receipt_and_cannot_republish_old_id(
     interrupted, monkeypatch
 ):
@@ -223,7 +260,9 @@ def test_separate_explicit_new_intent_links_receipt_and_cannot_republish_old_id(
         "model",
         producer,
         (Parent("original_model", original.artifact_id),),
-        parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA}),
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": COMPATIBILITY_PROFILE}
+        ),
     )
     module = ModuleType("stpd.policy.native_structured_export")
     published = []

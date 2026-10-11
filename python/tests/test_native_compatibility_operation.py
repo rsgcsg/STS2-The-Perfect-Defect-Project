@@ -37,7 +37,11 @@ def service(tmp_path, monkeypatch):
         "model", origin, parameters=FrozenObject.of({"schema": COMMON_MODEL_SCHEMA})
     )
     derived = Manifest(
-        "model", target, parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA})
+        "model",
+        target,
+        parameters=FrozenObject.of(
+            {"schema": COMPATIBLE_MODEL_SCHEMA, "compatibility_profile": COMPATIBILITY_PROFILE}
+        ),
     )
     records = {original.artifact_id: original}
     store = SimpleNamespace(
@@ -162,6 +166,27 @@ def test_selected_operational_profile_cannot_publish_borrowed_legacy_derivative(
     install_publisher(*service, selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
     monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
     selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    result = settled(selected)
+    assert result["status"] == "failed" and result["error_code"] == "compatibility_profile_mismatch"
+    assert "derived_model_id" not in result
+
+
+def test_selected_legacy_profile_cannot_publish_borrowed_operational_derivative(
+    service, monkeypatch
+):
+    selected, original, derived, records, module = service
+    derived = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {
+                "schema": COMPATIBLE_MODEL_SCHEMA,
+                "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE,
+            }
+        ),
+    )
+    install_publisher(selected, original, derived, records, module)
+    monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
+    selected.start(original.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
     result = settled(selected)
     assert result["status"] == "failed" and result["error_code"] == "compatibility_profile_mismatch"
     assert "derived_model_id" not in result

@@ -750,9 +750,8 @@ class LocalModelExport:
                     if (
                         derived.parent("original_model") != original_id
                         or derived.producer.to_dict() != compatibility["export_producer"]
-                        or (compatibility["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
-                            and derived.parameters.value().get("compatibility_profile")
-                            != compatibility["profile"])
+                        or derived.parameters.value().get("compatibility_profile")
+                        != compatibility["profile"]
                     ):
                         raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
                     destination = _destination(self.config, derived_id, native=True)
@@ -1358,8 +1357,7 @@ class LocalModelExport:
                 from stpd.policy.native_structured_export import publish_native_compatible_model
 
                 def before_publish(derived: Manifest) -> None:
-                    if (compatibility["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
-                            and derived.parameters.value().get("compatibility_profile")
+                    if (derived.parameters.value().get("compatibility_profile")
                             != compatibility["profile"]):
                         raise BoundaryError("local_model_export", "compatibility_profile_mismatch")
                     if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
