@@ -433,5 +433,3 @@ def test_public_scratch_rejects_an_unneeded_qwen_snapshot(tmp_path):
     with pytest.raises(BoundaryError, match="scratch_has_no_qwen_dependency"):
         _validate_qwen_snapshot(config, {"backbone": {"kind": "scratch"}},
                                 str(tmp_path / "unrelated"))
-
-

@@ -39,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           CHECK_FULL: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
-        run: node tools/check-plan.mjs
+        run: node tools/check-plan.mjs --check-patch
 
   docs:
     needs: plan
@@ -58,10 +58,6 @@ jobs:
         env:
           CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
         run: node tools/check-plan.mjs execute
-      - name: Check committed editorial patch
-        env:
-          CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: git diff --check "$CHECK_BASE" HEAD --
 
   linux-portability:
     needs: plan
