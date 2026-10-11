@@ -34,29 +34,12 @@ permissions and user-only full G2/V1 approval have not changed.
 
 ## Prior round delivered; integration gate pending
 
-PR171 head `f3d07fc96d0965008fad3648f8945c31e171718c` is published and remains draft.
-Local repository/closeout, affected component, package and independent reviews passed;
-full dual-OS/portable CI38095716370 completed/failure: Linux1/2 passed, Windows1/2 failed.
-Windows fixture repair is merged on the old delivery topic; a second setup repair is
-active there. Keep that source/CI repair separate from this next topic and verify fresh
-selected checks and normal develop integration separately. This topic starts from that
-explicit dependent f3 base; do not append new work to PR171's tested candidate or rewrite
-component provenance when bringing in its eventual develop merge.
-
-Actual prior outcomes remain separate: old partial Public M2 reached a natural loss
-summary mechanically but failed strategy; original native learner had a bounded learned
-C13 delivery at its original tuple; compatible derived export/parity completed but current
-derived game use is unperformed. A/B reward fits each completed40 updates on40 TRAIN rows,
-not held-out or causal quality evidence. Defect inventory finds1537 TRAIN/8 DEV, with only
-sequence feasibility and insufficient independent whole-game evaluation.
-
-M0 Auto1's corrected separate audit verifies reward progress while retaining its original
-incomplete run and private-audit failure. Auto2 at source b727/Runtime rc30 made110 attempts,
-91 delivered/19 stale in126205ms, then a delivered End Turn exhausted successor waiting.
-Its seal is valid but tainted/incomplete, with no summary. Stop released control and signed
-Host exit0 was unforced; taint is preserved. Both original attempts are closed, with no
-new game since. Installed rc30 and Mod rc40 still have their prior tuples; new source below
-has not been packaged, installed or run.
+PR171 now publishes repaired old-topic head `74260b61`; it remains draft.
+CI38100661045 is running all four Linux/Windows leaves. Prior CI380957 on f3 failed
+both Windows leaves with both Linux leaves passed. Accepted test-only945/648 fixes
+remain separate from this topic, whose explicit dependent base is f3. Verify fresh
+full checks and normal develop integration before importing that merge; preserve
+component provenance and do not transfer CI to new source.
 
 ## Accepted source candidate; final promotion pending
 
@@ -65,7 +48,9 @@ Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Tu
 `574b9069`. Candidate identities/BOM now name Runtime `0.1.0-rc.31`, Connector
 `1.3.0-rc.22` and Mod `0.2.0-rc.41`. Annotator production is unchanged/version
 `0.3.0-rc.18` retained; its source provenance change is docs/tests only. Final assembled
-build/package/install/game checks remain unperformed; installed rc30/Mod40 is unchanged.
+Runtime442+3skips, repository, exact Connector/Mod builds and application189 checks
+passed. Package pinf0ed46d9 names rc31 archivee58b448b; Modrc41 isa67e240f/MVID35dd0481.
+Package/artifact review and install/load/game remain pending; installedrc30/Mod40 unchanged.
 
 - Diagnostics retain default-off private bounded output and the same41/250 wait policy;
   accepted source/compiled-CLI checks do not establish new native successor evidence.

@@ -1,19 +1,17 @@
 # Agent run completion and native input order — 2026-10-11
 
-Status: independently accepted source is merged at candidate
-`0817351fb7aa2e815003ceb2a28857ccc03d0a06`; final assembled builds/package/install
-and the fresh game comparison have not occurred. Installed Runtime rc30/Mod rc40
-remain at their previous exact tuples. Lead topic `codex/agent-run-completion`
-depends explicitly on
-published PR171 head `f3d07fc96d0965008fad3648f8945c31e171718c`; its fresh full CI is
-[38095716370](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38095716370).
-That run completed/failure: both Linux leaves passed, both Windows leaves failed
-and the portable aggregate failed.
-PR171 remains draft at its separate published f3 head. Windows fixture correction
-`945c07c4` is normally merged at `8b1941e2` on the old delivery topic; a second setup
-repair remains active there. Neither belongs to this next topic yet. Verify fresh
-selected CI and normal develop integration for that old candidate separately; do
-not mix this packet into its tested head or borrow its CI result for the new source.
+Status: accepted source is assembled with version/BOM candidate `0817351f`;
+Runtime package pin is committed at `f0ed46d9`. Final local Runtime checks and
+Connector/Mod builds passed; new install/load/game comparison remain pending.
+Installed Runtime rc30/Mod rc40 still retain their previous exact tuples.
+
+This topic explicitly depends on old PR171's original f3 base. Its Windows fixture
+repairs `945c07c4` and `64850707` are normally merged on that separate delivery topic,
+now published at `74260b61`. [CI38100661045](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38100661045)
+is running all four Linux/Windows leaves. Prior CI380957 on f3 failed both Windows
+leaves; both Linux leaves passed and the portable aggregate failed. Verify new full
+CI and normal develop integration independently. Do not add this packet to the old
+PR or transfer old CI to this source.
 
 ## Objective and authority
 
@@ -87,10 +85,37 @@ release artifact, installation/load or native comparison receipt.
 | Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | Previous exact Mod rc40 remains installed |
 | Annotator | `0.3.0-rc.18` retained | Production unchanged; only docs/test provenance changed, with source identity refreshed accordingly |
 
-No full assembled build/package/install/game pass is claimed. Final owning/root
-checks, exact artifact/package pins, caller review and the one fresh bounded Auto
+Final local build/package checks below have passed. Independent package/artifact
+verification, exact install/load, caller review and the one fresh bounded Auto
 remain prerequisites below. Source merge does not diagnose Auto2's missing poll
 frames or retroactively qualify any installed candidate.
+
+
+### Final local candidate checks
+
+Root's clean081 source passed the repository gate, Runtime442 tests with3 existing
+optional skips (56.54s), typecheck/build/package smoke, Connector exact-game build
+and unified Mod build. Root's common outcome/application integration subsequently
+passed189 tests (33.93s). Prior independent Host741 and SourceNative43 results retain
+their original source scopes; metadata-only rebuild is not a new native exercise.
+
+- Runtime rc31: source82c9f166, archive
+  `e58b448bf13208a59a52c1472c5762431e162b570dc103d9c42460705ff42b3d`,
+  canonical content `ec629d9e5b754624d3d6feae29cbfea0c52ff17a0a449ea743f903d70b613936`,
+  code `4cb23c9c3d2f88fc63ba3b99c8a29f624304876a0f84cacd491b12d0a5134469`.
+  The730-file package declares current Connector source2596a88c/contract identity;
+  bundled SDK rc8 and Zod bytes are unchanged from the prior package. Formal pin
+  `f0ed46d9` preserves the previous rc30 tuple separately.
+- Unified Mod rc41: SHA
+  `a67e240f7b0e2676976228316a165f668d1b263bd2cc6bf025ed7de2ed81d81e`,
+  MVID `35dd0481-0386-4a9e-a5a4-e81978e24cb1`; exact v0.111.0/41cef1ea game remains
+  SHA9cb4f1ad/MVID57785517. Build source set, game pins and full logs are retained in
+  the round's private receipts. Compiled Annotator source remains dbe869ce; its
+  docs/test component revision53318 is not a claim of changed executable behavior.
+
+The first version/BOM check exposed omitted Connector release/Mod manifests; the
+normal correction2596a88c aligned them. Final identity7/BOM15 checks passed without
+weakening assertions. No new installed/loaded/native/Human/strategy claim follows.
 
 ### Runtime diagnostics
 
@@ -122,8 +147,10 @@ sealed TaskSpec provide a real producer-to-reader boundary case. Accepted source
 supports its qualified loss-summary task completion separately from win/loss,
 operational failure/cleanup and strategy-not-assessed. M0 remains unknown when no
 qualifying original input/Task witness exists; failure does not replace or erase
-independently proved outcome facts. Native sampled input requires original body, ACK/Close and hash-bound original Task metadata;
-capture references without the body do not prove an endpoint. M0 Port1 ordinary
+independently proved outcome facts. Native terminal observation requires the
+original accepted body and matching offered ACK; Task completion additionally needs
+a Close tied to that current consumption and hash-bound original Task metadata.
+Capture references without the body do not prove an endpoint. M0 Port1 ordinary
 abstention does not prove summary. Missing/conflicting bindings remain unknown;
 a known Task without a qualifying endpoint stays unproved. Do not use current/latest
 state or reason strings to invent prior consumption, numerical W, Human origin,

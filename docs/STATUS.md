@@ -12,8 +12,9 @@ Root candidate `0817351f` has normally merged independently accepted Runtime
 successor diagnostics, common application task outcome and native End Turn queue/
 exact-offer correction. Runtime rc31, Connector rc22 and Mod rc41 identities/BOM are
 source candidates. Annotator production/version is retained with docs/test provenance
-only. Final assembled build/package/install/game gates are unperformed; installed
-Runtime rc30/Mod rc40 and their original receipts remain unchanged.
+only. Final local Runtime442 tests plus3 optional skips, application189, repository
+and exact Connector/Mod builds passed. rc31 package/rc41 artifact are not installed
+or loaded; installed Runtime rc30/Mod rc40 and original receipts remain unchanged.
 
 Common task outcome source separates qualified Public M2 loss-summary completion
 from operational failure, observed result and unassessed strategy; M0 without an
@@ -22,10 +23,10 @@ native outcome or Auto2 cause proof. The [previous closeout](plans/BASELINE_BOUN
 retains restoration/parity, paired TRAIN fits, data limits and original Auto1/Auto2
 valid sealed failures. They do not establish basic strategy or full G2/V1 approval.
 
-Old draft PR171's published f3 candidate has CI38095716370 completed/failure:
-Linux1/2 passed, Windows1/2 failed. Its accepted fixture correction and active setup
-repair stay on the old delivery topic; new-source checks and normal develop integration
-remain separate. Aggregate provider spend remains USD0 within the same USD20 envelope.
+Old draft PR171 now publishes repaired74260b61; CI38100661045 is running all four
+leaves. Prior CI380957 on f3 failed Windows1/2 with Linux1/2 passed. Accepted945/648
+fixture/setup repairs stay on the old delivery topic; new-source checks and normal
+develop integration remain separate. Aggregate provider spend remains USD0 within the same USD20 envelope.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09
