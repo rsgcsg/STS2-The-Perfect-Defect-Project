@@ -4,6 +4,26 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
+## Agent run Auto4 closure, observed 2026-10-11
+
+Frozen6330b8ce with independently reviewed/built/installed/loaded Connector23/Mod42
+(source1c7, artifact2ef3dcf7/MVIDddf4c579) and unchanged Runtime31 completed one
+bounded operational attempt. Verified sealed354 events record110 submissions,
+90 delivered/20 known stale; three reward-card choices and later3 combat/2 event
+interaction IDs show progress. No Summary: final three stale refusals triggered
+existing `action_not_delivered`. Common Task/terminal remain unknown; operation is
+censored, not strategy-qualified. Stop released control, Host exited0 unforced,
+strict game-process discovery was empty and the caller correctly exited1 incomplete.
+
+Independent after-run audit4bfd1747 confirms exact identities,77 prior-frame joins/
+33 unknown and original-history preservation. Available EndTurn successors include
+seven settling/C0 and three interactive/C1 observations. Missing original scored
+frames prevent exact per-stale attribution. No Connector defect or old Auto2 cause
+is proved. Root allocated source/test work on a finite operational recovery window;
+no further native attempt or Runtime upgrade has occurred. P1 common startup remains
+isolated: two real service-process cases pass, remaining gates/review are pending.
+See the [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto4-actual-closeout-and-next-source-decision).
+
 ## Agent run Auto3 closure, observed 2026-10-11
 
 The [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md) owns current source

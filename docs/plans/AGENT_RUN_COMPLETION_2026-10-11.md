@@ -367,3 +367,56 @@ still handed off. All instances stopped/released and730 installed files were
 unchanged. Receipt3761a51a belongs to consumer compatibility only, not native
 execution. The initial malformed transport-envelope probe failure is retained.
 Final caller/source/consumer pins and cold-load identity remain dispatch gates.
+
+
+### Auto4 actual closeout and next source decision
+
+Auto4 at frozen6330b8ce is closed incomplete, not retried. Exact run
+`run-c57b8174-ad0e-4be3-895d-6541959967cd`, Hostc97f8664, Mod42/Runtime31 tuple
+above:114.140s,110 fresh submissions/calls,90 delivered and20 known stale refusals.
+Typed sealed content85bd51b2/events0f9cf651 contains354 events; independent audit4bfd1747
+confirmed77 exact prior public-fact joins and33 unknown, without reconstructing inputs.
+Three card rewards used the declared program: raw NN argmax was Skip, and the program
+selected the highest-scoring eligible card. Later five delivered map decisions and
+three combat/two event interaction IDs prove bounded progress, not five new combats
+or strategy quality. No Summary or unknown delivery was observed.
+
+Ten delivered End Turns include seven immediate settling/C0 observations (five with
+play phase true) and three interactive/C1 observations retaining other controls. This
+is observed projection/continuation evidence for this tuple, not causal settlement or
+a claim that all earlier timeouts are repaired. Diagnostic stderr append was0 bytes;
+no failed terminal successor wait occurred. Stop354 and signed HostHTTP200/unforced
+exit0 were confirmed, followed by strict no-game-process discovery and executor41660
+exit1. Failure31deb618 is the deliberately nonzero incomplete outcome, with no cleanup
+errors or taint. The original Auto1–3 files and original model/export/project remained
+unchanged. Private records are under `.local/g2-v1/supervisor-round-2026-10-11/` in
+`m0-native-withdrawal-auto4`; independent audit and final diagnosis are retained there.
+
+The final three correlated stale receipts343/347/351, at55.640/56.097/56.772 UTC
+seconds within04:01, each explicitly allow only a fresh snapshot. Releases precede
+fresh rescoring/new requests; existing250/500ms cooldown timing is consistent. Final
+handoff353 is `action_not_delivered`, retained by the common application result.
+Original scored snapshots125/127/129 are absent. Available124/126/128/12a show energy,
+piles, orb, hand and enemy HP changes, with a stable End Turn handle. These facts do
+not establish each exact rejection cause or an incorrect Connector identity. No new
+withdrawal failure is proved; the existing three-refusal policy behaved as specified.
+
+Root accepts the independent Sol operational-policy review: author a finite10s
+**per-episode** recovery allowance, anchored at the first correlated retryable stale
+receipt before evidence/release delay. This is an explicit cost/scope tradeoff, not a
+native-derived settlement time. Adaptive250/500/1000ms cooldown is capped/clamped to
+remaining local/global time. Changing observations/catalogs never reset the anchor.
+Known accepted delivery/applied operation resets only while its original authorization
+is still live; redundant Auto does not refill it. Existing global wallets and native
+Agent8/3 are unchanged. Generic optional-writer compatibility remains; durability is
+claimed only where the actual writer succeeds.
+
+The existing owner scheduler must make local expiry itself fence/cancel and serialize
+Human/release/evidence without a second tick or GET. Global expiry wins equality;
+local expiry has its own reason, not a false global budget-exhaustion claim. An owed
+Receipt is still classified/recorded, and late delivery cannot revive expired Auto.
+Stop/taint/recovery, nonretryable or unknown delivery, evidence/release failures remain
+strict. A faithful controlled moving-state trace must fail the old three cap and pass
+a new finite window, paired with endless movement, idle expiry, long scoring, stale
+epochs, late receipts and unchanged native-Agent negatives. This allocates source/test
+work only; no new package/install or Auto5 is authorized by this paragraph.

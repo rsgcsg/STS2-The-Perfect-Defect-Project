@@ -1,116 +1,73 @@
-# Current project context — Agent run completion and native order
+# Current project context — continuous Agent execution
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; lead worktree
-`SpireAgent-g1-s0-integration`, active topic `codex/agent-run-completion`.
-The app-default STS2-AI-PLATFORM checkout is historical and belongs to another repository.
-Resolve live GitHub refs, original operations and source/component/BOM/install/runtime identities;
-current code and original evidence override this file.
+`SpireAgent-g1-s0-integration`, topic `codex/agent-run-completion`.
+The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
+Resolve live GitHub refs, exact source/package/install/runtime identities and original
+operations; current source and owner records override this file.
 
-Start with the [active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md).
-The [previous closeout](../plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
-owns restored-model, training, inventory and Auto1/Auto2 receipts. The
-[highest-level architecture audit](../evidence/PROJECT_ARCHITECTURE_AUDIT_2026-10-11.md)
-owns the source-at-b727 findings and external comparison. The
-[G2/V1 matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains all obligations
-and final user approval; STATUS indexes historical evidence levels.
+## Goal and routing
 
-## Objective and authority
+The user authorized autonomous engineering toward reasonable continuous real-game
+Agent capability, with one combination/change logic for old and new implementations.
+Start with the [active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md),
+[abstraction reconciliation](../evidence/UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md),
+[ADR-0016](../adr/0016-agent-composition-and-execution-request.md) and
+[G2/V1 matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
+STATUS and the packet retain prior source/build/Auto1–3 and training evidence.
+ADR acceptance covers architecture/migration direction; implementation and user-only
+G1/G2/V1 acceptance remain separate. Shared services alone do not prove unified execution.
 
-The user requested coherent prior-round closeout, a full topmost architecture audit,
-then autonomous continued work toward reasonable continuous real-game Agent capability.
-The audit confirms common authorities/application services with incomplete task/results
-and some product/resource integration. Do not equate different profiles with two platforms,
-or shared startup with completed architectural unity.
+Root owns integration, exact metadata/pins and one local heavy/native slot; writers use
+isolated worktrees. Freeze source/dependencies/installed bytes while consumers run.
+Unknown delivery is never retried. Preserve original attempts and missing evidence.
+The same USD20 GPU envelope remains USD0 spent, no provider job; no additional training
+is allocated. Main, production/release and destructive authority remain unchanged.
+New workers default to Sol6.1/high; Astra/high is optional for genuinely important
+architecture/high-risk or unresolved repeated failures, at most two concurrently.
+Existing workers need not restart; the owning collaboration guide already records this policy.
 
-Root owns material decisions, independent evidence review, shared refs/BOM/pins and one
-heavy/native local slot. Writers use disjoint worktrees; independent source/read-only work
-and hosted CI can proceed in parallel. Freeze source, dependency environment and installed
-bytes while actual consumers run. Skills/norms are maintainable guidance, not a new approval
-ritual. Unknown delivery is never automatically retried; new work preserves old attempts.
+## Integrated native candidate and closed Auto4
 
-The same aggregate USD20 GPU envelope continues, observed spend USD0 and no provider job.
-No new training/paid job is allocated to this packet. Production/main/release/destructive
-permissions and user-only full G2/V1 approval have not changed.
+Connector23/Mod42 source1c7f78ce contains independently accepted withdrawal repair968,
+preceded by faithful native End Turn574 and common application outcome7e/f78. Clean
+builda420 and root gates passed; Mod42 SHA2ef3dcf7/MVIDddf4c579 was installed and loaded
+for frozen6330b8ce. Runtime31/source82c9/packagee58b stayed unchanged; its actual
+installed SDK/Runtime passed the synthetic compatibility probe. Mod41 backup and
+Runtime31 archive remain exact rollback/reference inputs.
 
-## Prior delivery merged; integration hygiene correction pending
+Auto4 is **closed incomplete**:114.140s,110 submissions,90 delivered/20 known stale,
+354 verified sealed events,77 exact prior-frame joins/33 unknown. Three reward-card
+choices and later3 combat/2 event interaction IDs show operational progress, not
+strategy qualification. No Summary. Final three stale refusals caused the existing
+`action_not_delivered` handoff. Stop confirmed Human/released/not loaded/untainted;
+signed Host exited0 unforced and strict process discovery found no game. One Auto4
+allowance is consumed. No additional game is allocated.
 
-PR171 head74260b61 passed full CI38100661045: all four Linux/Windows leaves and
-portable. Normal develop merge09440e80 preserves the exact tested tree and component
-provenance. Merge CI38104068580 accepted that executed receipt but failed committed
-patch hygiene on one extra EOF blank line in test_public_m0_policy_port.py.
-Reviewed repairc9 is included in this topic; dedicated PR173 full CI is still
-pending. Executable CI success and the failed merge gate remain distinct. The current topic imports develop09440 normally, without promoting
-the old CI to new source or any runtime/strategy claim.
+## Active owning work
 
-## Exact candidate loaded; Auto3 closed incomplete
-
-Root candidate `0817351fb7aa2e815003ceb2a28857ccc03d0a06` normally merges accepted
-Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Turn
-`574b9069`. Candidate identities/BOM now name Runtime `0.1.0-rc.31`, Connector
-`1.3.0-rc.22` and Mod `0.2.0-rc.41`. Annotator production is unchanged/version
-`0.3.0-rc.18` retained; its source provenance change is docs/tests only. Final assembled
-Runtime442+3skips, repository, exact Connector/Mod builds and application189 checks
-passed. Package pinf0ed46d9 names rc31 archivee58b448b; Modrc41 isa67e240f/MVID35dd0481.
-Independent package/artifact review and owner installation passed; rc31 and Mod41
-were installed and loaded for Auto3 at frozen `f559c96c`. Exact rc30 archive/pin and
-Mod40 backup are retained. Previous Auto1/Auto2 receipts remain unchanged.
-
-- Diagnostics retain default-off private bounded output and the same41/250 wait policy;
-  accepted source/compiled-CLI checks do not establish new native successor evidence.
-- The common application projection now supports Public M2's original qualified
-  loss-summary completion, independently from operational failure/cleanup, observed
-  win/loss and strategy-not-assessed. M0 ordinary abstain/missing original input stays
-  unknown. No current-state backfill, overwritten history or second Task service.
-- Shared End Turn source now invokes the native completed-button queue with exact
-  offered native scope, FTUE/Undo/owner guards, four-profile completeness and machine/
-  Human suppression. Its accepted fidelity correction is not proof of Auto2's cause.
-
-Auto3's one comparison is consumed: valid sealed/untainted incomplete handoff
-`auto_surface_not_admitted`, no reward/summary. Stop released control/not loaded and
-signed Host exited0 unforced; the heavy slot is released. Runtime stderr append0
-bytes has no failed terminal wait and does not prove old Auto2's timeout repaired.
-Detailed identities/counts/receipts belong to the active packet.
-
-The first owning next fact is Connector's supported ready/no-current-command gap
-following exact native button withdrawal; Runtime follows its existing observed
-handoff contract. The earlier same-gap successor was followed by round2 evidence;
-no final queued-action execution or Auto2 cause is proved. Root accepted both bounded
-follow-up scopes; both implementations are now independently reviewed and integrated
-as recorded below. One distinct Auto4 is now conditionally allocated in the active packet; no execution yet.
-
-The canceled-Defend log can also result from ordinary native execution-time revalidation;
-its wording does not prove a paused-action bug. The inspected controller-release path does
-not cancel already-delivered native card actions. Failed Auto2 polling frames are absent,
-so the precise readiness failure remains unknown.
-
-## Current owning follow-ups and non-claims
-
-Connector withdrawal repair968c866e is independently accepted and integrated:
-762 Host,25 focused,232 SDK and126 portable checks passed at the author source.
-Root Connector23/Mod42 metadata, clean builds and root gates are independently
-accepted. Mod42 is installed with verified Mod41 rollback; not yet loaded. The
-unchanged installed Runtime31 passed a synthetic wire compatibility probe. Auto4
-caller/frozen-tuple review and execution remain pending. Application reason repair
-f78f32c7 is integrated with42 checks; only the exact terminal handoff reason/reference
-is added, never a changed task/outcome or rewritten original Auto3 report.
-
-The [unified abstraction reconciliation](../evidence/UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md)
-joins233 historical user messages and current code. Shared owners/results exist;
-a common executable startup contract is not yet delivered. AgentComposition and
-AgentRunRequest A+B implementation is active in an isolated worktree: PublicM2
-stateful and model-less Teacher must use the same existing service/registry.
-ADR-0016 architecture/migration direction is adopted; this is not G1/G2/V1 acceptance.
-
-No Runtime production change, queue gate, timer extension or new environment profile
-is allocated to the withdrawal repair. Preserve the rc31 package/pin when its actual
-SDK/schema contract remains compatible. Any later runtime candidate needs its own
-source/artifact/caller gates and distinct bounded attempt; Auto3 is closed and its
-allowance consumed. Root owns shared identity/BOM/install and the heavy slot.
-No delivered/unknown request is replayed or historical input backfilled.
+- **Runtime operational recovery:** independent diagnosis found no proven Connector
+  error in Auto4's final tail. Original scored frames are missing; available fair facts
+  changed during the burst. Sol review accepted replacing the three-refusal policy with
+  a finite per-episode recovery window in the existing owner. Source authoring/tests are
+  pending, including idle expiry and unknown/late-Receipt fences. Native Agent8/3 and
+  global budgets remain unchanged. No new package/install or native result is claimed.
+- **Common executable composition/request:** P1 A+B remains in its isolated author
+  worktree. Actual same-service Teacher (models=[]) and stateful PublicM2 process paths
+  passed startup/control/Stop/seal checks with the accepted Runtime31 and Evidence29.
+  A natural-Close response exposed an application loaded-state lag, now repaired through
+  its existing cleanup owner. Exact source review and remaining gates are pending;
+  this implementation is not integrated or fully accepted yet.
+- **Integration hygiene:** PR171 head742 passed full CI38100661045 and normal merge094
+  preserved its tested tree. Merge CI38104068580 failed an EOF patch gate. Reviewed
+  repairc9 is in this topic; dedicated PR173 CI38109117835 has both Linux leaves passed,
+  Windows/portable pending. Verify current exact results before normal develop merge.
 
 ## Remaining Platform non-claims
 
-Broader meaningful data, independent strategy evaluation, current-game/A0 and M2 history
-qualification, full SC/SX/product coverage,30 attempts,recovery/performance,10k meaningful
-training and user approval remain open. Model restoration, small TRAIN fit, accepted input
-and mechanical natural loss do not establish basic reasonable whole-game ability.
+No basic reasonable whole-game ability, causal settlement, old Auto2 timeout repair,
+Human qualification or scientific success follows. Existing data exposure/split limits,
+small Defect dev coverage and unqualified M2 sequence links remain explicit. Broader
+SC/SX/product coverage,30 attempts,recovery/performance,10k meaningful training and
+user approval remain open in the matrix. No later observations backfill missing inputs;
+no merge promotes source/test to installed, loaded, runtime, Human or qualification.
