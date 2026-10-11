@@ -43,21 +43,44 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 把允许的公开信息与操作实现为交互合同，完整 Agent 据此取得信息并行动，Model
 承担其中的计算。记录保存实际发生的事实；研究把记录变成有声明的输入与目标；
 应用组织任务、资源和产物。一个用户可以只录制、分析或运行，不必每次走完整条链。
+以下是完整逻辑关系；图中连接不表示各个具体实现已经完成或取得同一资格。
 
 ```text
-在线：世界 ↔ Host 能力接口 ↔ Connector 通信/映射 ↔ Agent 交互协议标准 ↔ 完整 Agent
-                                                               └ 可选 Model
-       Runtime–Agent 端口承载本次程序通信、消费和指令
-                 实际 capture/witness/offer/consume/input/result
-                                  ↓
-研究：不可变原始记录 → 验证＋来源/成员/use/split → Projection＋InputSpec＋TargetSpec
-                                                       ↓
-                                            训练输入＋recipe/初始化/run/attempt
-                                                       ↓
-                                                 checkpoint/Model
-                                                       ↓
-部署：当前计算/输入/状态兼容验证 → 可信加载/必要导出与 Agent 组合 → 新实例运行与结果
+应用：Task / Experiment + 资源、权限、预算与调度
+                       ↓ 本次请求与解析
+                 ExecutionContext
+                 ├ 绑定 AgentComposition、Goal/Task、起点与实际实例
+                 └ 绑定交互 profile、Connector、Host、资源及实现 driver/package
+
+在线：完整 Agent ↔ Agent 面向的环境交互合同 ↔ Connector 通信/映射 ↔ Host 能力合同 ↔ 世界
+      └ program + Input/取得/history/state + 零到多个 optional Models
+
+      既有 Runtime owner 横向贯穿：授权 / 有限预算 / Stop / 投递与 unknown / 消费 / 证据
+      当前默认部署：独立受监督的 Policy Runtime + Runtime–Agent 程序端口
+      Host Runtime 另管游戏进程、隔离与恢复；部署方式不合并这些责任
+
+原件：native / Runtime / Human / external 记录
+      └ 声明 actor、capture/proof、可得信息；保留 capture/witness/offer/consume/input/result
+                       ↓
+      同一 Store / Curation owner：Source 与证明、权限、相关来源组、use/split/Gold
+                       ↓
+      Projection + InputSpec（声明信息范围；fair student 排除隐藏量）
+                       + TargetSpec（可另准入 privileged 离线标签）
+                       ↓
+      Recipe ＋ 初始化 → TrainRun / attempt → checkpoint / Model
+                       ↓
+      AgentComposition → ExecutionContext → Run / eval / result
+                                             ├ 新原件回到 Store / Curation
+                                             └ 结果反馈 Task / Experiment 与后续研究
 ```
+
+图中的共同角色不要求每次走完整流程：只录制、分析、复用已有 Model 或运行已有
+Agent 都可以。当前受信执行入口支持零或一个 Model；多 Model 是可表达的方向，
+尚未实现通用受信执行。应用调用各领域既有 owner，不另建通用 scheduler、许可或训练账本；
+逻辑 ExecutionContext 固定本次解析关系，实际 IDs 和终态仍由原回执关联。环境交互
+合同、Runtime–Agent 端口、记录 grammar 与 Model Input/Target 各有自己的版本与语义，
+不能因图中连接或同样使用 JSON 就统称一个协议。Runtime 的选定内核/部署方向及变更
+规则见 [ARCHITECTURE](ARCHITECTURE.md#selected-convergence-and-change-rules)。
 
 Recorder 是在声明 seam 捕获事实的能力；Record 是留下的不可变原件，可以没有动作或
 合格后继。记录格式固定保存事实及引用的语义，JSONL/archive/Parquet 是物理载体；
@@ -125,9 +148,10 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 [ADR-0016](adr/0016-agent-composition-and-execution-request.md)为 **Accepted（仅架构/迁移范围）**：
 统一对象、组合、生命周期保证与替换判据，不要求一个 wire、一个大类或三个登记系统。
 既有共同应用/控制/store 已成立，`AgentTaskOutcome` 共同结果投影已实现；共同可执行
-`AgentComposition`／`AgentRunRequest` 的当前 P1 A+B 已授权实施、未验收。以下采纳方向
-的具体实现仍需验证，不表示新
-产品能力、公开 wire 或 G1/G2/V1 通过声明；既有 owner、ID 与资格保持原义。
+`AgentComposition`／`AgentRunRequest` 的 P1 A+B 已进入当前主线源码实现（[PR174](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/174)）。
+这更新共同应用接缝的源码状态；各 driver/profile/消费者的真实进程执行、自然任务与
+更高资格仍按 owning 原件逐项核验。源码集成不表示所有组合或部署方式已支持，也不
+表示公开 wire、G1/G2/V1 或用户最终批准通过；既有 owner、ID 与资格保持原义。
 
 | 必须分开的层次 | 声明内容 | 身份／执行边界 |
 | --- | --- | --- |
