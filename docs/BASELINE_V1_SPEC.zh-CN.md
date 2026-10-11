@@ -55,7 +55,7 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
                                                        ↓
                                                  checkpoint/Model
                                                        ↓
-部署：当前计算/输入/状态兼容验证 → export/Agent 组合 → 新环境实例中的运行与结果
+部署：当前计算/输入/状态兼容验证 → 可信加载/必要导出与 Agent 组合 → 新实例运行与结果
 ```
 
 Recorder 是在声明 seam 捕获事实的能力；Record 是留下的不可变原件，可以没有动作或
@@ -273,7 +273,7 @@ AI 功能录制不能填 `human_origin_attested=True`，旧 Human bundle 保持�
 | --- | --- |
 | actor 声明 | 谁/什么程序操作，是否未知；声明不等于 Human 身份证明 |
 | capture/proof 能力 | 原件实际证明了观察、绑定、投递、消费还是 causal successor |
-| 信息制度 | 原 actor/teacher 与 student 各能取得什么，何时取得，历史/reset 如何定义 |
+| 可用信息范围 | 原 actor/teacher 与 student 各能取得什么，何时取得，历史/reset 如何定义 |
 | 目标含义与质量 | 实际选择、弱示范、预算内 solver 结果或实测后果；正确绑定不证明高质量 |
 | 用途资格 | 原件/权限、相关来源组、use/split/Gold 是否允许这次训练或评价 |
 
@@ -317,8 +317,9 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 
 同一 source→use preflight→input/run→attempt→checkpoint/result→Agent 包→注册→实际运行→报告保留全身份链。复用 ArtifactStore/RunReporter/CurationLedger/operations/registry；索引不代替原件或任务终态。
 
-训练产生 Model 及其 ancestry；export 后才与程序组成可执行 Agent。本次 Task、Agent、
-Model、record/schema/protocol、训练 run 和实际环境实例的 IDs 各自保留。能加载旧参数
+训练产物保留 ancestry；Agent 通过已有可信加载及必要的导出合同引用具体 Model，
+固定计算或无模型程序不强制经过训练或导出。本次 Task、Agent、Model、record/schema/protocol、
+训练 run 和实际环境实例的 IDs 各自保留。能加载旧参数
 不证明当前输入/状态兼容，兼容运行不证明数据准入、同分布或策略质量；换 Agent 的
 取得/历史/选择/时机也不自动要求新环境 wire。共同执行关系见
 [Agent 合同](../python/docs/AGENT_EXECUTION_CONTRACT.md)。
