@@ -409,6 +409,16 @@ def test_warm_start_has_fresh_optimizer_plan_and_cannot_resume_original_checkpoi
         )
         with pytest.raises(BoundaryError, match="warm_start_weights_required"):
             engine.advance()
+        # A historical input never inherits a legacy owner's implicit ready
+        # state when its constructor omitted the new field. All output/update
+        # entries must refuse before touching weights or creating artifacts.
+        del engine.initialized
+        for entry in (
+            engine.advance, lambda: engine.scores(0), engine.model_bytes, engine.checkpoint
+        ):
+            with pytest.raises(BoundaryError, match="warm_start_weights_required"):
+                entry()
+        engine.initialized = False
         raw = b"".join(store.read_payload(model.payload("weights")))
         identity = warm_start_metadata(store, relation, config)
         engine.initialize_model_weights(raw, identity)

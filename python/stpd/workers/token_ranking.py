@@ -386,7 +386,9 @@ class TokenRankingEngine:
 
     def initialize_model_weights(self, raw: bytes, identity: dict[str, Any]) -> None:
         """New-run weight initialization only; never imports optimizer/cursor/RNG."""
-        if (self.initialization is None or identity != self.initialization
+        if (self.inputs.manifest.parameters.value().get("schema")
+                != HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA
+                or self.initialization is None or identity != self.initialization
                 or self.initialized or self.step != 0 or self.optimizer.state
                 or hashlib.sha256(raw).hexdigest() != identity.get("weights_sha256")):
             raise BoundaryError("token_training", "warm_start_step_zero_identity_required")
@@ -404,9 +406,16 @@ class TokenRankingEngine:
                         for a in row.actions)
         return cast(Tensor, self.model(state, actions))
 
-    def advance(self) -> float:
-        if not self.initialized:
+    def _require_initialized(self) -> None:
+        # Only the historical input introduces a weights-first contract. Other
+        # existing typed owners may provide their own constructor (Reward M0).
+        if (self.inputs.manifest.parameters.value().get("schema")
+                == HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA
+                and getattr(self, "initialized", False) is not True):
             raise BoundaryError("token_training", "warm_start_weights_required")
+
+    def advance(self) -> float:
+        self._require_initialized()
         if self.step >= self.config.steps:
             raise BoundaryError("token_training", "exhausted")
         self.model.train()
@@ -436,8 +445,7 @@ class TokenRankingEngine:
         return float(loss.detach())
 
     def scores(self, index: int) -> tuple[float, ...]:
-        if not self.initialized:
-            raise BoundaryError("token_training", "warm_start_weights_required")
+        self._require_initialized()
         self.model.eval()
         with torch.no_grad():
             values = self._scores(index)
@@ -446,13 +454,11 @@ class TokenRankingEngine:
         return tuple(float(v) for v in values.cpu().tolist())
 
     def model_bytes(self) -> bytes:
-        if not self.initialized:
-            raise BoundaryError("token_training", "warm_start_weights_required")
+        self._require_initialized()
         return save(self._weights())
 
     def checkpoint(self) -> bytes:
-        if not self.initialized:
-            raise BoundaryError("token_training", "warm_start_weights_required")
+        self._require_initialized()
         return encode_checkpoint({
             "schema": (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if self.is_light_action_m0
                        else CHECKPOINT_SCHEMA),
