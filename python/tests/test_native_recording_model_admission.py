@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 
 import pytest
@@ -21,6 +22,24 @@ def shared(browser_app, runtime_http, bridge, monkeypatch):
     app, _, _, _, _, _, _ = browser_app
     client, runtime, runtime_calls = runtime_http
     native, _, native_calls, behavior = bridge
+    # Admission tests use a real registered selection rather than an unregistered
+    # placeholder. Copy both original shipped metadata files; no Model/weights
+    # load or fabricated composition bypass enters this concurrency fixture.
+    shipped = app.models.selection("s1-human-combat-v4")
+    catalog = copy.deepcopy(app.models.registry())
+    root = app.config.state_dir / "admission-fixture-owner"
+    (root / "configs/developer").mkdir(parents=True)
+    for field in ("config", "manifest"):
+        target = root / shipped[field]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(app.models.entry_path(shipped, field).read_bytes())
+    # S1 is a shipped selection, not a token/native private-roster adapter.
+    # Keep that owning schema and exact originals rather than widening admission.
+    catalog["policies"] = [{**shipped, "id": "fixture-model"}]
+    (root / "configs/developer/local-policies-v1.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    app.models.root = root
     app.models.client = client
     app.models.native_tasks = native
     app.models.state.update(
@@ -407,3 +426,39 @@ def test_known_new_runtime_makes_old_unknown_inapplicable_without_source_start_o
     assert len(starts) == 1 and app.models.state["operation"]["status"] == "completed"
     assert app._recording_unknown_notice["command_id"] == request["command_id"]
     assert sum(route == "/v1/tasks/recording/command" for route, _ in native_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "entry", ["start", "prepare_and_load", "prepare_and_takeover", "run_agent"]
+)
+def test_reserved_source_guard_precedes_every_original_request_read(shared, monkeypatch, entry):
+    app, _, _, _, native, _, behavior = shared
+    app.models.client = None
+    app.models.state.update(status="idle", loaded=False, runtime=None)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("reserved Source must reject before original request/composition reads")
+
+    monkeypatch.setattr(app.models, "agent_request", forbidden)
+    entered, release = pause_at_owner_status(native, monkeypatch)
+    thread, _, errors = worker(
+        lambda: app.control_native_recording(
+            body(behavior["recording"], "start_new_session", "unknown")
+        )
+    )
+    try:
+        assert entered.wait(timeout=2)
+        generation = app.models.intent_generation
+        with pytest.raises(BoundaryError, match="native_recording_command_pending"):
+            if entry == "run_agent":
+                app.models.run_agent(
+                    {"selection_id": "unregistered", "operation": "start", "run_profile": "short"}
+                )
+            else:
+                getattr(app.models, entry)("unregistered")
+        assert app.models.intent_generation == generation and app.models.thread is None
+        assert not (app.models.directory / "requests").exists()
+    finally:
+        release.set()
+        finish(thread)
+    assert not errors

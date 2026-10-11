@@ -424,6 +424,7 @@ def test_workbench_first_model_command_uses_persisted_endpoint_not_current_confi
             return {
                 "status": {
                     "schema": "sts2.policy-runtime/status-1",
+                    "lifecycle": "running",
                     "environment": None,
                     "run_id": "fixture-run",
                     "mode": (body or {}).get("mode", "human"),
