@@ -3,9 +3,12 @@
  * production program Teacher/collector. Host/control/native results are SYN.
  * No game, native Service/Executor, Source recording or research admission. */
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import * as sdk from "../../components/connector/sdk/typescript/dist/index.js";
 import * as runtimeApi from "../../components/policy-runtime/dist/index.js";
@@ -18,8 +21,21 @@ const wire = JSON.parse(await readFile(path.join(ROOT, "components/connector/con
 const clone = value => structuredClone(value);
 const runtimeId = "runtime-real-chain-SYN", environmentId = "environment-real-chain-SYN", stream = "stream-real-chain-SYN";
 const lifetime = createCollectionLifetime();
-process.on("SIGTERM", () => lifetime.stop("external_signal"));
-process.on("SIGINT", () => lifetime.stop("external_signal"));
+const phasePath = process.env.STS2_REAL_STORE_FIXTURE_PHASES;
+const phaseStarted = performance.now();
+let phaseBytes = 0;
+function recordPhase(phase, operation = null, details = {}) {
+  if (!phasePath) return;
+  assert.ok(path.isAbsolute(phasePath));
+  const raw = JSON.stringify({ phase, operation, elapsed_ms: performance.now() - phaseStarted, ...details }) + "\n";
+  phaseBytes += Buffer.byteLength(raw);
+  assert.ok(phaseBytes <= 65536, "bounded test fixture phases required");
+  // Synchronous close after every append keeps startup evidence available even
+  // when Windows terminates Node before its catch/final proof can run.
+  appendFileSync(phasePath, raw, "utf8");
+}
+process.on("SIGTERM", () => { recordPhase("external_signal"); lifetime.stop("external_signal"); });
+process.on("SIGINT", () => { recordPhase("external_signal"); lifetime.stop("external_signal"); });
 const peer = createPipePeer(process.stdin, process.stdout, sdk.parseNativeLogicalJson, lifetime);
 
 const referent = (id, role, properties = null) => ({ referent_id: id, role, kind: "entity", label: id,
@@ -54,12 +70,14 @@ async function compiledRuntimeIdentity() {
 
 let transport;
 let phase = "awaiting_parent_init", scenario;
+recordPhase(phase);
 try {
   const init = await peer.receive();
   assert.deepEqual(Object.keys(init).sort(), ["operation_id", "options", "schema", "type"]);
   assert.equal(init.schema, OWNED_PIPE_SCHEMA); assert.equal(init.type, "init");
   const options = init.options;
   scenario = options.seed;
+  recordPhase("parent_init_received");
   assert.ok(["SYN_REAL_CHAIN_COMPLETE", "SYN_REAL_CHAIN_CURRENT_GAP", "SYN_REAL_CHAIN_NATIVE_UNKNOWN"].includes(scenario));
   assert.equal(options.record_source3, false);
   const endpoint = new URL(options.endpoint);
@@ -125,10 +143,31 @@ try {
     if (method === "detach") return clone(wire.detach);
     assert.fail("unexpected SYN control route " + route);
   };
-  phase = "opening_real_store_transport";
-  transport = await openRealStoreTransport({ port: Number(endpoint.port), fallback });
+  const holdMs = Number(process.env.STS2_REAL_STORE_FIXTURE_STARTUP_HOLD_MS ?? 0);
+  assert.ok(Number.isInteger(holdMs) && holdMs >= 0 && holdMs <= 5000);
+  if (holdMs) {
+    phase = "startup_hold_started"; recordPhase(phase);
+    await delay(holdMs, undefined, { signal: lifetime.signal });
+  }
+  phase = "opening_real_store_transport"; recordPhase(phase);
+  const bridgeDll = process.env.STS2_OWNED_CURRENT_BRIDGE_DLL;
+  assert.ok(bridgeDll && path.isAbsolute(bridgeDll), "prepare immutable bridge before collection");
+  recordPhase("prepared_bridge_selected");
+  transport = await openRealStoreTransport({ port: Number(endpoint.port), fallback,
+    backendFactory() {
+      recordPhase("backend_spawn_requested");
+      const backend = spawn(process.env.STS2_OWNED_CURRENT_DOTNET ?? "dotnet", [bridgeDll], {
+        env: { ...process.env, DOTNET_PROCESSOR_COUNT: "2", DOTNET_GENERATE_ASPNET_CERTIFICATE: "false",
+          DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1", DOTNET_CLI_TELEMETRY_OPTOUT: "1" },
+        stdio: ["pipe", "pipe", "pipe"] });
+      backend.once("spawn", () => recordPhase("backend_spawned", null, { pid: backend.pid }));
+      backend.once("close", (code, signal) => recordPhase("backend_closed", null, { code, signal }));
+      return backend;
+    } });
+  recordPhase("typed_empty_store_ready");
   assert.equal(transport.endpoint, options.endpoint); // No endpoint alias or SDK redirect.
   transport.beforeRequest(async operation => {
+    recordPhase("http_requested", operation);
     if (operation === "current_owned") {
       current++;
       await transport.call("set_frame", { frame: publicFrame(current,
@@ -136,6 +175,7 @@ try {
     }
   });
   transport.afterReply((operation, value) => {
+    recordPhase("http_replied", operation);
     if (operation === "current_owned") { currents.push(clone(value)); currentCapture = value.capture; }
     if (operation === "catalog") {
       assert.equal(value.total_count, 2); assert.equal(value.digest, sdk.digestNativeLogicalActions(value.actions));
@@ -144,19 +184,19 @@ try {
   });
   const handoff = () => ({ schema: "sts2.host-runtime/reference-controller-handoff-1", runtime_instance_id: runtimeId,
     controller: null, basis: "fresh_control_observation_after_close" });
-  phase = "reading_compiled_runtime_identity";
+  phase = "reading_compiled_runtime_identity"; recordPhase(phase);
   const deps = { ...sdk, ...runtimeApi, runtimeIdentity: await compiledRuntimeIdentity(),
     verifyTerminalSummary: verifiedTerminalSummary, resolveInstallation: value => value,
     async startEpisode() { return { identity: { endpoint: options.endpoint, host: { runtime_instance_id: runtimeId } },
       async releaseController() { assert.equal(lease ?? null, null); return handoff(); },
       async close() { return { code: 0, signal: null, forced: false, scope: "SYN_Host_no_game" }; } }; } };
-  phase = "running_real_collection";
+  phase = "running_real_collection"; recordPhase(phase);
   await runNativeSource3(options, init.operation_id, peer, deps, lifetime);
-  phase = "checking_terminal_store_stats";
+  phase = "checking_terminal_store_stats"; recordPhase(phase);
   const stats = await transport.stats(), diagnostics = transport.diagnostics(), producerMethods = clone(transport.requests);
-  phase = "closing_real_store_transport";
+  phase = "closing_real_store_transport"; recordPhase(phase);
   const producerExit = await transport.close(); transport = undefined;
-  phase = "writing_real_chain_proof";
+  phase = "writing_real_chain_proof"; recordPhase(phase);
   await writeFile(path.join(options.output, "real-chain-producer-proof.json"), JSON.stringify({
     schema: "spireagent/test-real-chain-proof-1", scenario, scope: "SYN_public_frames_Host_control_native_results_no_game",
     actual: ["C#_Store_Projector", "loopback_HTTP", "public_SDK", "Runtime", "OS_program_Teacher", "Node_collector", "Python_parent", "public_I27_helper"],
@@ -165,6 +205,7 @@ try {
     diagnostics, currents, catalogs, submits, admission: "not_run", learned: false }) + "\n", { flag: "wx" });
   process.stdin.destroy();
 } catch (error) {
+  recordPhase("fixture_failed", null, { failing_phase: phase });
   // Snapshot the failing phase and actual pending producer operations before
   // cleanup changes them. The Python test retains these original stderr bytes.
   const observed = transport?.diagnostics() ?? null;
