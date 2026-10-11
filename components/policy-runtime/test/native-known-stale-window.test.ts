@@ -14,7 +14,6 @@ import { validateAgentExecutionPolicy, validateAgentManifest, type AgentManifest
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { SyntheticNativeHttp } from "./native-runtime-fixtures.js";
 import { fixturePortCloser } from "./fixture-process.js";
-import { fixtureProgress } from "./fixture-progress.js";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8")).execution_policy;
@@ -31,6 +30,7 @@ function abortable(promise: Promise<void>, signal?: AbortSignal): Promise<void> 
     signal.addEventListener("abort", abort, { once: true });
     promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
+}
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 2000 && !predicate(); i++) await new Promise<void>(resolve => setImmediate(resolve));
   expect(predicate(), "bounded actual OS/SDK fixture phase reached").toBe(true);
