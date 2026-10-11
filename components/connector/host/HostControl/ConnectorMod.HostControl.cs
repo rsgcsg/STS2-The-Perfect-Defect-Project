@@ -6,7 +6,37 @@ namespace STS2Connector;
 
 public static partial class ConnectorMod
 {
-    private const int MaxHostControlBodyBytes = 4 * 1024;
+    internal const int MaxHostControlBodyBytes = 4 * 1024;
+
+    private static void HandlePostHostPreparation(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        HostPreparationRequest? preparation = ReadBoundedJsonBody<HostPreparationRequest>(
+            request, response, MaxHostControlBodyBytes, "Host native speed preparation");
+        if (preparation == null) return;
+        if (!IsSafeProtocolIdentifier(preparation.ExpectedRuntimeInstanceId, 128)
+            || preparation.HostControlToken?.Length != 64)
+        {
+            SendApiError(response, 400, "invalid_host_preparation_contract",
+                "An exact runtime instance and 256-bit process-local Host control token are required.");
+            return;
+        }
+        try
+        {
+            HostShutdownAuthorization authorization = HostLifecycleControl.Authorize(
+                new HostShutdownRequest(preparation.ExpectedRuntimeInstanceId, preparation.HostControlToken));
+            if (!authorization.Allowed)
+            {
+                SendApiError(response, authorization.Status == "runtime_instance_changed" ? 409 : 403,
+                    authorization.Status, "Host preparation failed closed.");
+                return;
+            }
+            var task = RunOnMainThread(() => HostNativeSpeedControl.Prepare(authorization.RuntimeInstanceId));
+            HostNativeSpeedProvenance result = task.GetAwaiter().GetResult();
+            if (!result.Ready) response.StatusCode = 409;
+            SendJson(response, result);
+        }
+        catch (Exception exception) { SendApiInternalError(response, "host_preparation_failed", exception); }
+    }
 
     private static void HandlePostHostShutdown(
         HttpListenerRequest request,

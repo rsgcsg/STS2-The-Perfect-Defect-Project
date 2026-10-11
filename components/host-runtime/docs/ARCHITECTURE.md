@@ -105,6 +105,51 @@ A package, boot, loaded identity, mutation, journey, differential, performance,
 or qualification result is valid only for the exact source, artifact, game,
 Modset, profile, and launch configuration named by its evidence.
 
+## Native speed run configuration
+
+`nativeSpeed` is an optional closed `normal|fast|instant` run configuration of
+the existing shipped native Host. All three modes use the same process,
+Player Environment/Agent protocol, native legality, save and lifecycle owners.
+The episode factory's `displayMode: headless|native-ui` selects presentation
+and verifies the existing observed `headless|live_ui` identity accordingly.
+Both presentations forward the same isolated profile binding. Native UI seed
+preparation requires that binding and the existing Host token/exact identity;
+its eligibility is independent of whether a speed override is requested.
+Omitting it preserves the native preference; unmanaged/shared personal games
+receive no override. The experimental `shipped_noninteractive_v01110` execution
+profile is a different mechanism and is not a speed alias.
+
+An explicit request requires the Host's existing isolated profile generation,
+Steam disabled before initialization, and its expected native user-data path.
+The process-local Host control token and exact runtime authorize a bounded
+preparation request containing no mode, path, property name or native operand.
+On the game main thread, after native prefs load and the startup Instant-to-Fast
+clamp, the Connector verifies admitted exact game/Mod identity, actual native
+user-data/profile containment and generation, and the exact unobstructed main
+menu with no active run or multiplayer owner. It writes only the public typed
+`PrefsSave.FastMode` property and immediately reads that property back.
+
+Preparation occurs once before bootstrap gameplay inputs. Repetition of the
+same exact preparation verifies and returns the recorded result; conflicting
+configuration, missing readiness, shared profile, unknown identity/isolation,
+active gameplay, or later mode/profile drift fail closed. No timer reapplies a
+mode, no provenance read mutates prefs, and no Fast fallback satisfies Instant.
+Read-only private Host provenance records requested/before/effective mode,
+readiness and runtime/profile binding. The caller verifies it before bootstrap
+and again through the existing post-bootstrap provenance check before handing
+the episode to an Agent. These facts never enter player Snapshot/Read or model
+input and do not create a public speed action.
+
+The intended project-managed default is Instant only after a separately
+authorized exact build/install/load and all-three-mode conformance gate. This
+source candidate keeps explicit opt-in and makes no default, performance,
+save/restore, full-run or runtime qualification claim. Normal and Fast remain
+supported explicit configurations and reference conditions. Native settings
+may save into the isolated working copy on quit; immutable templates and
+personal prefs are not edited. A failed configuration blocks the run. If
+qualified Instant still fails measured throughput, resource or save/restore
+needs, alternate Hosts are evaluated later through the existing contracts.
+
 ## Component Boundary
 
 The root Platform owns these components:

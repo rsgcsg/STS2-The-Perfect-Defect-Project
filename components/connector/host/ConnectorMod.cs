@@ -21,13 +21,14 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.23";
+    public const string Version = "1.3.0-rc.24";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
     internal const string HostControlTokenEnvironmentVariable =
         "STS2_CONNECTOR_HOST_CONTROL_TOKEN";
     internal const string RunSeedEnvironmentVariable = "STS2_CONNECTOR_RUN_SEED";
+    internal const string NativeSpeedEnvironmentVariable = "STS2_CONNECTOR_NATIVE_SPEED";
 
     private static HttpListener? _listener;
     private static Thread? _serverThread;
@@ -45,7 +46,11 @@ public static partial class ConnectorMod
         int Port,
         bool NativePageEvidenceEnabled,
         string? HostControlToken,
-        string? RunSeed);
+        string? RunSeed,
+        string? NativeSpeed = null,
+        string? ProfileRoot = null,
+        string? ProfileGeneration = null,
+        string? UserDataRoot = null);
 
     private static RuntimeConfig LoadRuntimeConfig()
     {
@@ -61,7 +66,11 @@ public static partial class ConnectorMod
         {
             Port = processPort,
             HostControlToken = hostControlToken,
-            RunSeed = runSeed
+            RunSeed = runSeed,
+            NativeSpeed = HostNativeSpeedSession.ResolveMode(System.Environment.GetEnvironmentVariable(NativeSpeedEnvironmentVariable)),
+            ProfileRoot = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_PROFILE_ROOT"),
+            ProfileGeneration = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_PROFILE_GENERATION"),
+            UserDataRoot = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_USER_DATA_ROOT")
         };
     }
 
@@ -177,6 +186,8 @@ public static partial class ConnectorMod
                 config.NativePageEvidenceEnabled);
             HostLifecycleControl.Configure(config.HostControlToken);
             HostRunSeedControl.Configure(config.RunSeed);
+            HostProfileControl.Configure(config.ProfileRoot, config.ProfileGeneration, config.UserDataRoot);
+            HostNativeSpeedControl.Configure(config.NativeSpeed);
             int port = config.Port;
 
             _listener = new HttpListener();
@@ -396,6 +407,11 @@ public static partial class ConnectorMod
                     HandlePostHostShutdown(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
+            }
+            else if (path == "/api/host-control/prepare")
+            {
+                if (request.HttpMethod == "POST") HandlePostHostPreparation(request, response);
+                else SendError(response, 405, "Method not allowed");
             }
             else if (path == "/api/host-control/provenance")
             {

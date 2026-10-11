@@ -24,6 +24,7 @@ import {
   SOURCE_CANARY_ENVIRONMENT_VARIABLE
 } from "./connector-endpoint.mjs";
 import { validateRequestedHostExecutionProfile } from "./host-execution-profile.mjs";
+import { nativeSpeedLaunchEnvironment, NATIVE_SPEED_ENVIRONMENT_VARIABLES } from "./native-speed.mjs";
 
 export function resolveExperimentalConnectorCanary({
   installation,
@@ -282,6 +283,14 @@ export async function requestHostProvenance({
   return result;
 }
 
+export async function requestHostPreparation({ endpoint, hostControlToken,
+  expectedRuntimeInstanceId, timeoutMs = 30_000 }) {
+  const result = await requestHostControl({ endpoint, hostControlToken,
+    expectedRuntimeInstanceId, route: "/api/host-control/prepare", timeoutMs });
+  if (result.status === "response") return { ...result, status: "prepared" };
+  return result;
+}
+
 export async function stopChild(child, {
   endpoint = null,
   hostControlToken = null,
@@ -344,8 +353,14 @@ export function shippedRuntimeLaunch(installation, {
   runSeed = null,
   connectorCanary = null,
   hostExecutionProfile = null,
+  nativeSpeed = null,
   displayMode = "headless"
 } = {}) {
+  const speedEnvironment = nativeSpeedLaunchEnvironment(nativeSpeed, connectorEndpoint == null ? null : launchProfile);
+  if (Object.keys(speedEnvironment).length > 0) {
+    if (connectorEndpoint == null) throw new Error("native_speed_requires_host_control");
+    shippedDisplayArguments("native-ui", launchProfile); // Same verified isolation for either display driver.
+  }
   const requestedHostExecutionProfile = validateRequestedHostExecutionProfile(hostExecutionProfile);
   const connector = connectorEndpoint == null
     ? null
@@ -367,6 +382,15 @@ export function shippedRuntimeLaunch(installation, {
       : { STS2_CONNECTOR_HOST_EXECUTION_PROFILE: requestedHostExecutionProfile }),
     ...extraEnvironment
   }, connectorCanary);
+  for (const key of NATIVE_SPEED_ENVIRONMENT_VARIABLES) {
+    if (Object.hasOwn(extraEnvironment, key)) throw new Error("native_speed_environment_override");
+    delete environment[key]; // An ambient request must never modify a personal process.
+  }
+  Object.assign(environment, speedEnvironment);
+  if (Object.keys(speedEnvironment).length > 0 && (environment[HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE] !== hostControlToken
+    || Object.entries(launchProfile.environment).some(([key, value]) => environment[key] !== value))) {
+    throw new Error("native_speed_isolation_environment_override");
+  }
   if (launchProfile?.steam === "disabled_before_platform_initialization") {
     delete environment.SteamAppId;
     delete environment.SteamGameId;
@@ -394,7 +418,8 @@ export function shippedRuntimeLaunch(installation, {
         : "exact_process_local_canary",
       canary_game_id: connectorCanary?.game_id ?? null,
       canary_source_revision: connectorCanary?.source_revision ?? null,
-      requested_execution_profile: requestedHostExecutionProfile
+      requested_execution_profile: requestedHostExecutionProfile,
+      requested_native_speed: nativeSpeed
     }
   };
 }

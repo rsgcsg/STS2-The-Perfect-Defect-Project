@@ -15,6 +15,8 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
     <Compile Include="*.cs" />
     <Compile Include="../../MainThreadWorkQueue.cs" Link="MainThreadWorkQueue.cs" />
+    <Compile Include="../../HostControl/HostNativeSpeedCore.cs" Link="HostControl/HostNativeSpeedCore.cs" />
+    <Compile Include="../../HostControl/HostProfileIsolation.cs" Link="HostControl/HostProfileIsolation.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/TextMenuContracts.cs" Link="Protocol/TextMenuContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Requests/*.cs" Link="Requests/%(Filename)%(Extension)" />
