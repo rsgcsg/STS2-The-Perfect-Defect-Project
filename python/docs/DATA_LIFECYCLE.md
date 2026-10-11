@@ -1,7 +1,13 @@
 # End-to-End Data Lifecycle
 
-This is the operational contract from verified Platform evidence to a training-host input.
-It does not authorize training or move gameplay authority into STPD.
+This guide specifies physical storage, derivation and training-host transfer for
+the strict ResearchTransition/combat-v0/Scheme1 lane. Its Parquet/B0 and optional
+frozen-Qwen contracts remain unchanged; they are not a required intermediate form
+for every record or training target. [Data and Provenance](DATA_AND_PROVENANCE.md#scope-and-connected-routes)
+routes public H-BC, Source3 and direct Agent samples to their existing owners.
+They use source-specific proof and input contracts over the same immutable
+storage/use lifecycle. This guide does not authorize training or move gameplay,
+source proof or research-target authority into storage/transfer.
 
 ## Authority And Artifact Classes
 
@@ -18,14 +24,14 @@ STS2 + Platform Annotator
   -> owner/scientific workflow separately authorizes optimizer creation
 ```
 
-Platform evidence is the reconstruction authority for the Human witness. The canonical STPD
+Within this lane, Platform evidence is the reconstruction authority for the Human witness. The canonical STPD
 corpus is the research authority for splits, eligibility and model-neutral transitions. Text,
 tokens and frozen features are disposable derived artifacts. Receipts, staging success and
 cache hits never grant training authorization.
 
 ## Canonical Storage Decision
 
-`ResearchTransition v0` remains the logical scientific API. Its physical representation is
+For this lane, `ResearchTransition v0` remains the logical scientific API. Its physical representation is
 canonical JSON fields in Zstd-compressed Parquet. The read-only profiler verifies manifest,
 file checksum, row hashes and semantic dataset hash before measuring it:
 
@@ -122,6 +128,8 @@ classes and never write back into canonical data.
 
 ## Evidence Boundary
 
+The measurements and non-claims in this guide describe the 2026-08-29 lane experiment;
+current project/runtime evidence is tracked in [root STATUS](../../docs/STATUS.md).
 Portable tests prove deterministic identity, tamper rejection, drift rejection, immutable
 retry and exact reconstruction. The local experiment proves only the measured 106-row
 layout. No remote transfer, full-corpus profile, real-Qwen compile, optimizer run,

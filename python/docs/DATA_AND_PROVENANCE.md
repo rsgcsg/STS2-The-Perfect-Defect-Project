@@ -1,5 +1,32 @@
 # Data and Provenance
 
+## Scope and connected routes
+
+The common relationships are original producer/Host/actor provenance → verified
+source and membership/use → declared Projection/InputSpec/TargetSpec → training
+input/recipe/run → Model → executable Agent and a new run. The original Host is
+an offline provenance reference, not a required live dependency. Model deployment
+compatibility is a separate computation/input/state/Agent check. See the
+[baseline relationships and five source axes](../../docs/BASELINE_V1_SPEC.zh-CN.md#6-记录来源转换与目标)
+and [common Agent execution](AGENT_EXECUTION_CONTRACT.md).
+
+The full-transition/B0/Qwen flow below is the strict combat-v0/Scheme1 lane,
+not a universal normalization requirement. Existing routes retain their own proof:
+
+| Route | Original-to-input relationship and owning contract |
+| --- | --- |
+| Strict ResearchTransition | Exact S/A/S′, eligibility, whole-root split and B0; the requirements below remain unchanged |
+| Public Human-observation BC | Exact original H/proof/public-action binding → allocation → sample/disposition → encoded input; [Public H-BC](research/STAGE1A_WORKFLOW.md#exact-human-observation-bc-view), N without successor supervision |
+| Native Source3 | Ordered captured bases/publications/inputs → declared publication-memory, recorded-capture or sampled view; [Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md) |
+| Direct native Agent samples | Runtime's stored offered bytes and protocol joins → reviewed producer/student relation, known context and sparse N; [sampled admission](NATIVE_AGENT_SAMPLED_ADMISSION.md) |
+
+Integrity verification, source-specific research eligibility and permission for
+this training use are distinct. These routes share Curation/ArtifactStore and
+existing training owners; they do not all require a causal successor, a Qwen
+cache, or a new Source registry. [Platform record ownership](../../docs/FULL_RUN_DATA_CHAIN.md)
+separates Human causal records, Source3 and Agent evidence. Raw originals and
+their schema/producer identities are never relabelled to enter another lane.
+
 ## Data flow
 
 ```text
@@ -38,7 +65,7 @@ and a cache or staging receipt never becomes research or training authority.
 
 ## Required provenance
 
-Every transition records:
+Every strict ResearchTransition in the lane above records:
 
 - policy source/version and optional confidence;
 - rank/transition/return eligibility;
@@ -96,7 +123,12 @@ External processing must address:
 - missing negative/counterfactual actions;
 - changes in serializer, tokenizer, model revision, or cache format.
 
-Unknown rights or provenance means exclude the source from training.
+Unknown rights or unverifiable original source provenance means exclude the source
+from training. A verified original with an absent game/Mod/ascension field is a
+different case: its declared target/use and owning lane determine which claims
+and transformations remain eligible. Preserve unknowns; never borrow today's Host
+metadata or weaken a strict validator requiring exact identity. Historical-transfer
+N supervision does not establish current-game/A0, causal Z or independent-test claims.
 
 ## Native Human Recorder Source
 
@@ -134,7 +166,10 @@ then invokes this same strict importer for every session.
 
 V1 bundle verification now runs through Platform Evidence with the former STPD
 implementation retained as a parity oracle. This changes ownership, not the
-accepted V1 corpus semantics. No V2 Human runtime evidence is claimed yet.
+accepted V1 corpus semantics. The original V1 parity-migration statement
+“No V2 Human runtime evidence is claimed yet” is historical, not a current
+project-wide verdict. Current scoped runtime/Human claims are indexed by
+[root STATUS](../../docs/STATUS.md) and their exact owner receipts.
 
 Corpus construction rejects duplicate session/bundle/export identities and
 global record/transition collisions. It groups complete runs and any
