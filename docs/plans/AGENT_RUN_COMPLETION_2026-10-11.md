@@ -1,11 +1,19 @@
 # Agent run completion and native input order — 2026-10-11
 
-Status: active source implementation; no new package, installation or game run in
-this packet yet. Lead topic `codex/agent-run-completion` depends explicitly on
+Status: independently accepted source is merged at candidate
+`0817351fb7aa2e815003ceb2a28857ccc03d0a06`; final assembled builds/package/install
+and the fresh game comparison have not occurred. Installed Runtime rc30/Mod rc40
+remain at their previous exact tuples. Lead topic `codex/agent-run-completion`
+depends explicitly on
 published PR171 head `f3d07fc96d0965008fad3648f8945c31e171718c`; its fresh full CI is
 [38095716370](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38095716370).
-PR171 remains a separate source-delivery candidate until its required checks and
-normal develop integration are verified. Do not append this packet to its tested head.
+That run completed/failure: both Linux leaves passed, both Windows leaves failed
+and the portable aggregate failed.
+PR171 remains draft at its separate published f3 head. Windows fixture correction
+`945c07c4` is normally merged at `8b1941e2` on the old delivery topic; a second setup
+repair remains active there. Neither belongs to this next topic yet. Verify fresh
+selected CI and normal develop integration for that old candidate separately; do
+not mix this packet into its tested head or borrow its CI result for the new source.
 
 ## Objective and authority
 
@@ -38,9 +46,9 @@ valid tainted failure, not natural summary. Stop released control and Host exite
 unforced. No unsuccessful-poll frames were retained, so their exact rejection
 predicates and the native cause of non-readiness remain unproved.
 
-Exact-game inspection adds a separate source fact. All current Snapshot/text/native
-End Turn projections share a direct `PlayerCmd.EndTurn(false)` binding. Vanilla's
-completed button gesture disables the button, captures the turn number and queues
+The pre-correction exact-game inspection established a separate source fact:
+Snapshot/text/native End Turn projections shared direct `PlayerCmd.EndTurn(false)`.
+Vanilla's completed button gesture disables the button, captures the turn number and queues
 `EndPlayerTurnAction`, which later checks that turn and calls `EndTurn(true)`.
 With A executing and B already waiting, direct end-turn phase entry can cancel B;
 the native button queues End Turn after B. This establishes an input-order fidelity
@@ -57,13 +65,32 @@ Do not infer new causes from those uncorrelated log lines.
 | Workstream | First missing/incorrect fact and owner | Source state and limit |
 | --- | --- | --- |
 | Successor wait diagnostics | Runtime cannot explain its failed existing acquisitions | `2da07100` independently reviewed and integrated on this topic; source/test only, not installed |
-| Common task outcome | Application handoff ignores durable Public M2 task input and does not expose common task/end/result axes | Application-only implementation active from the shared f3 base; no new Runtime event or historical backfill |
-| Native End Turn input | Shared Connector binding bypasses native queued input order | Independently accepted bounded contract correction; NativeUi/LiveHost implementation and faithful tests active |
+| Common task outcome | Application handoff lacked common task/end/result axes from durable witnesses | `7e7acc56` independently accepted and normally merged at `b8038e1e`; application-only source, no new Runtime event or historical backfill |
+| Native End Turn input | Shared Connector binding bypassed native queued input order | `574b9069` independently accepted and normally merged at `2dbe7638`; exact-offer/queue correction and faithful source tests, not installed/runtime evidence |
 
 Writers have disjoint owned worktrees and files. Root re-reads every actual diff and
 receipt. Heavy checks acquire the shared slot only when ready; code, read-only review
 and isolated hosted CI need not wait for that slot. The native binding author does
 not self-accept its implementation. No writer changes Root's versions/BOM/install.
+
+### Assembled source candidate and identity boundary
+
+At `0817351f`, Root has merged all three accepted source streams and updated the
+candidate versions/manifest/BOM identities through `82c9f166`, `2596a88c` and
+`0817351f`. This records source identity and intended packaging, not a final build,
+release artifact, installation/load or native comparison receipt.
+
+| Component | Source candidate | Installed boundary |
+| --- | --- | --- |
+| Policy Runtime | `0.1.0-rc.31`; accepted diagnostics `2da07100` | Previous exact rc30 installation remains current |
+| Connector | `1.3.0-rc.22`; accepted native queue/exact-offer binding | New candidate has not been installed through the production Mod |
+| Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | Previous exact Mod rc40 remains installed |
+| Annotator | `0.3.0-rc.18` retained | Production unchanged; only docs/test provenance changed, with source identity refreshed accordingly |
+
+No full assembled build/package/install/game pass is claimed. Final owning/root
+checks, exact artifact/package pins, caller review and the one fresh bounded Auto
+remain prerequisites below. Source merge does not diagnose Auto2's missing poll
+frames or retroactively qualify any installed candidate.
 
 ### Runtime diagnostics
 
@@ -83,15 +110,19 @@ synthetic CLI evidence, not game performance or a new native successor witness.
 
 ### Application task outcome
 
-Add one pure projection to the two existing handoffs and their existing immutable
-report persistence. Preserve old schemas/fields and do not overwrite historical
-evaluation artifacts. Independently express task completion, operational end,
+The merged application source adds one pure projection to the two existing
+handoffs and their immutable report persistence. Old schemas/fields and historical
+evaluation artifacts remain preserved. Independently express task completion,
+operational end,
 observed win/loss/ambiguity and strategy-not-assessed, with exact evidence and Agent
 composition references. A completed task can coexist with a later cleanup failure.
 
 Public M2's original full `public_decision_input`, exact completion/decision and
-sealed TaskSpec provide a real producer-to-reader boundary case. Native sampled
-input requires original body, ACK/Close and hash-bound original Task metadata;
+sealed TaskSpec provide a real producer-to-reader boundary case. Accepted source
+supports its qualified loss-summary task completion separately from win/loss,
+operational failure/cleanup and strategy-not-assessed. M0 remains unknown when no
+qualifying original input/Task witness exists; failure does not replace or erase
+independently proved outcome facts. Native sampled input requires original body, ACK/Close and hash-bound original Task metadata;
 capture references without the body do not prove an endpoint. M0 Port1 ordinary
 abstention does not prove summary. Missing/conflicting bindings remain unknown;
 a known Task without a qualifying endpoint stays unproved. Do not use current/latest
@@ -106,9 +137,10 @@ refactor is necessary for this seam.
 
 ### Native End Turn
 
-Correct the shared native binding once, rather than adding Model or Runtime pacing.
-Use the exact current native button's public `CallReleaseLogic()` as a completed
-logical gesture. It preserves native button withdrawal, captured-turn checking,
+The accepted merged source corrects the shared native binding once, using the exact
+native button's public `CallReleaseLogic()` as a completed logical gesture without
+Model/Runtime pacing. Exact offered native scope is retained for execution. It
+preserves native button withdrawal, captured-turn checking,
 queue ordering and `canBackOut:true`. `ForceClick()` is not equivalent with long-press
 enabled; do not synthesize a timed press or change preferences.
 
@@ -120,8 +152,8 @@ authority in all four projections; never silently filter End Turn and claim comp
 Do not call the mutating tutorial predicate, mark tutorials seen, or recreate native
 HasCardsToPlay. Existing profile preparation owns tutorial preferences.
 
-The new callback enters existing Annotator hooks. Verify external-controller and
-ProtocolDispatch suppression: machine input must not become Human or duplicate a
+The callback enters existing Annotator hooks. Source tests verify external-controller
+and ProtocolDispatch suppression: machine input must not become Human or duplicate a
 native input root. No Annotator production change is allocated without identifying
 a separate owning defect. Private captured native references must remain excluded
 from serialized public observations.
@@ -141,7 +173,8 @@ remain separate; proprietary sources/assemblies stay private and untracked.
 
 ## Integration and next actual boundary
 
-1. Complete independent code reviews and affected faithful gates. Verify PR171's
+1. Accepted implementation reviews and source merges are complete; finish affected
+   assembled gates and exact artifact checks. Verify PR171's
    selected full dual-OS/portable CI and normal integration separately; bring the
    actual develop merge into this dependent topic without rewriting provenance.
 2. Assemble accepted changes, update only affected component versions/identity/BOM

@@ -4,33 +4,28 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
-## G2/V1 supervisor checkpoint, observed 2026-10-11
+## Agent run source candidate, observed 2026-10-11
 
-The [active boundary packet](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
-is the sole detailed current-round receipt/identity/count entry, including the
-installed diagnostic candidate and its exact build/load/runtime scope. The
-[execution matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retains task/acceptance
-obligations; [CURRENT](memory/CURRENT.md) routes active work and next dependencies.
+The [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md) owns current source
+state and promotion gates; [CURRENT](memory/CURRENT.md) routes the active work.
+Root candidate `0817351f` has normally merged independently accepted Runtime
+successor diagnostics, common application task outcome and native End Turn queue/
+exact-offer correction. Runtime rc31, Connector rc22 and Mod rc41 identities/BOM are
+source candidates. Annotator production/version is retained with docs/test provenance
+only. Final assembled build/package/install/game gates are unperformed; installed
+Runtime rc30/Mod rc40 and their original receipts remain unchanged.
 
-Completed receipts include formal SDK/consumer restoration, compatible export and
-locked numerical parity, plus actual paired A/B40-update TRAIN fits with published
-artifacts and preserved legacy history. Current derived native registration/game
-use remains unperformed. M2's natural loss summary is mechanically accepted with
-strategy failed in that attempt. Optional M0 Auto1 remains incomplete/no summary;
-its separate corrected offline audit now accepts declared card takes and bounded
-later progress, with original failure/bytes unchanged and unknown joins retained.
+Common task outcome source separates qualified Public M2 loss-summary completion
+from operational failure, observed result and unassessed strategy; M0 without an
+original qualifying witness stays unknown. This is source acceptance, not a new
+native outcome or Auto2 cause proof. The [previous closeout](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md#current-supervisor-round-2026-10-11)
+retains restoration/parity, paired TRAIN fits, data limits and original Auto1/Auto2
+valid sealed failures. They do not establish basic strategy or full G2/V1 approval.
 
-The legacy data inventory is metadata/sequence feasibility only and supplies no
-adequate independent Defect whole-game evaluation or qualified current-game/A0 M2
-history. Runtime rc30 source/package/identity and independent review plus exact
-installation are accepted. Its separate M0 Auto2 made bounded reward progress but
-ended incomplete/tainted at `successor_not_stable`, without summary. Typed seal and
-Stop/signed Host cleanup and independent after-run review accept a valid sealed,
-tainted failure. All four recorded CI leaves failed;
-reviewed repairs require fresh selected CI. No Human/scientific, basic-strategy or
-full G2/V1 acceptance follows. Aggregate provider spend is USD0. The current scope
-finishes coherent delivery/report, then continues the newly requested architecture/
-external-reference audit and capability work. It adds no native replay to this packet.
+Old draft PR171's published f3 candidate has CI38095716370 completed/failure:
+Linux1/2 passed, Windows1/2 failed. Its accepted fixture correction and active setup
+repair stay on the old delivery topic; new-source checks and normal develop integration
+remain separate. Aggregate provider spend remains USD0 within the same USD20 envelope.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09

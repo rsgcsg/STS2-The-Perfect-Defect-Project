@@ -36,8 +36,10 @@ permissions and user-only full G2/V1 approval have not changed.
 
 PR171 head `f3d07fc96d0965008fad3648f8945c31e171718c` is published and remains draft.
 Local repository/closeout, affected component, package and independent reviews passed;
-fresh full dual-OS/portable CI38095716370 is in progress. Old failed CI remains historical.
-Verify final checks and normal develop integration separately. This topic starts from that
+full dual-OS/portable CI38095716370 completed/failure: Linux1/2 passed, Windows1/2 failed.
+Windows fixture repair is merged on the old delivery topic; a second setup repair is
+active there. Keep that source/CI repair separate from this next topic and verify fresh
+selected checks and normal develop integration separately. This topic starts from that
 explicit dependent f3 base; do not append new work to PR171's tested candidate or rewrite
 component provenance when bringing in its eventual develop merge.
 
@@ -56,21 +58,24 @@ Host exit0 was unforced; taint is preserved. Both original attempts are closed, 
 new game since. Installed rc30 and Mod rc40 still have their prior tuples; new source below
 has not been packaged, installed or run.
 
-## Current source work
+## Accepted source candidate; final promotion pending
 
-- Runtime bounded private successor diagnostics: independently accepted `2da07100`,
-  integrated on this topic. Default-off, no additional observations/authority, same41/250
-  waiting policy. Actual compiled CLI EPIPE regression repaired; component442 passed,
-  3 optional skips, typecheck/build/package passed. No native diagnosis from a new run yet.
-- Application common task outcome: one pure projection in existing handoffs under
-  implementation. Use verified original Task/input/completion witnesses, retain independent
-  operational-end, observed-result and strategy axes. M0 ordinary abstain and missing native
-  input bodies remain unproved/unknown; no current-state backfill or new Task service.
-- Shared native End Turn: independently approved contract correction under implementation.
-  Native completed-button input queues after prior accepted cards and checks captured turn;
-  the old direct command can cancel waiting cards. Exact FTUE/Undo/control/owner guards,
-  four-profile completeness and machine/Human suppression are required. This is a source
-  fidelity issue, not proof of Auto2's historical timeout cause.
+Root candidate `0817351fb7aa2e815003ceb2a28857ccc03d0a06` normally merges accepted
+Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Turn
+`574b9069`. Candidate identities/BOM now name Runtime `0.1.0-rc.31`, Connector
+`1.3.0-rc.22` and Mod `0.2.0-rc.41`. Annotator production is unchanged/version
+`0.3.0-rc.18` retained; its source provenance change is docs/tests only. Final assembled
+build/package/install/game checks remain unperformed; installed rc30/Mod40 is unchanged.
+
+- Diagnostics retain default-off private bounded output and the same41/250 wait policy;
+  accepted source/compiled-CLI checks do not establish new native successor evidence.
+- The common application projection now supports Public M2's original qualified
+  loss-summary completion, independently from operational failure/cleanup, observed
+  win/loss and strategy-not-assessed. M0 ordinary abstain/missing original input stays
+  unknown. No current-state backfill, overwritten history or second Task service.
+- Shared End Turn source now invokes the native completed-button queue with exact
+  offered native scope, FTUE/Undo/owner guards, four-profile completeness and machine/
+  Human suppression. Its accepted fidelity correction is not proof of Auto2's cause.
 
 The canceled-Defend log can also result from ordinary native execution-time revalidation;
 its wording does not prove a paused-action bug. The inspected controller-release path does
@@ -79,8 +84,8 @@ so the precise readiness failure remains unknown.
 
 ## Remaining Platform non-claims
 
-Complete independent implementation reviews and owning source/exact-game gates, then Root
-assembles versions/identity/BOM/packages and reviews the frozen caller. Intermediate topic
+Complete final assembled source/exact-game/artifact gates after the accepted reviews
+and candidate identity/BOM update. Root owns packaging/install and frozen caller review. Intermediate topic
 source identity is ahead of the unchanged installed candidate; do not borrow its receipts.
 The packet allocates at most one new bounded M0 Auto comparison after prerequisites, with
 private diagnostics and exact new identities. It never replays the old delivered End Turn.
