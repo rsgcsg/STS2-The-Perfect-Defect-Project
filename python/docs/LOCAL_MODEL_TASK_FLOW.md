@@ -345,3 +345,64 @@ unsealed, mismatched or tampered evidence and an occupied port cannot use this
 path. It sends no gameplay request, performs no automatic action retry, and does
 not turn port absence into proof of past delivery. Normal live recovery retains
 its exact-runtime checks. Successful retirement permits a new explicit load.
+
+## Common recorded Agent task outcome
+
+Local generic and native handoffs add the versioned application DTO
+`agent_task_outcome.schema=spireagent/agent-task-outcome-v1`. Their existing
+outer schemas, scalar fields, immutable evaluation IDs and evidence scopes stay
+compatible. New derived reports have new content-based IDs; old evaluations are
+not rewritten. The canonical executable shape is
+`spireagent.workbench.agent_task_outcome.AgentTaskOutcome`.
+
+The DTO keeps independent facts:
+
+| Axis | Values and meaning |
+| --- | --- |
+| `task_completion.status` | `completed`: exact supported original Task/Agent composition, qualified endpoint witness and declared program end join. `unproved`: known Task and bound input, but no qualifying completion witness. `unknown`: Task/composition/input binding unavailable or conflicting. Neither unproved nor unknown asserts that the game never completed. |
+| `operation_end.status` | `task_ended`, `censored`, `failed`, or `unknown`, projected from recorded program end, stop/budget, fail-closed and uncertainty facts. A proved summary followed by cleanup failure retains completed Task and failed operation end. |
+| `terminal_observation` | Original public win/loss, conflicting observations, absence from available inputs, or unavailable input. Ready summary is a separate predicate. Receipt, HP, a later Current and process exit are not substitutes. |
+| `agent_composition` | Original manifest identity/hash, Agent or policy, adapter, runtime-declared Model artifact reference, input/profile and exact Task/program metadata when bound. These refs do not carry private artifact paths or grant use/control. |
+| `evidence` | Owning verifier status/content identity and original events file identity. Integrity/internal consistency is not native-world authenticity or scientific qualification. |
+| `strategy_quality` | Always `not_assessed`; recorded endpoint/loss and mechanical Task completion do not assess gameplay strategy. |
+
+Public M2 Port4 records full qualified public input and exact decision/control
+association. Its supported ready-summary Task is read from the sealed Policy
+Manifest and uses the existing domain predicate; matching declared program-zero
+abstention proves recorded mechanical completion. Terminal win/loss remains an
+observation and does not prove numerical W behavior. Public M0 Port1 lacks that
+full-input witness: ordinary abstention/Stop is never promoted to completion.
+Existing text terminal observations retain their original meaning and do not
+invent a Task descriptor.
+
+Native sampled-current completion requires the original stored observation,
+accepted consume/ACK, matching Close watermark and supported original Task.
+Terminal win/loss observation uses the acknowledged original body independently
+of Close, so Await, ordinary abstention or an operator Stop can retain an observed
+terminal result without proving Task completion. Stop before a completed Next
+retains the owning verifier's recorded uncertainty in the operation axis.
+Native Task metadata is read only when existing registered owner metadata and
+package bytes match the sealed Agent artifact and Agent/InputSpec identities;
+no current/default Task or version-only lookup is substituted. Legacy native
+full-reference runs retain capture references/ACKs but no sealed original body;
+completion and terminal facts remain unknown where that body is missing. No new
+Runtime witness, backfill, current-game lookup, NN loader or weight read occurs.
+
+Interpreted files are rechecked against the owning verifier's accepted inventory.
+Projection currently bounds events to 64 MiB, one native observation to 16 MiB and
+package metadata to 1 MiB; exceeding that application projection envelope reports
+an explicit unknown reason instead of fabricating or truncating a witness.
+Terminal references retain the latest original witness for each result/readiness
+combination; repeated screens do not enlarge the DTO or conceal conflicting results.
+Actor/Human classification, data/training admission, legality, native delivery,
+causal successor and research qualification remain with their existing owners.
+An original `fail_closed` or `runtime_tainted` event establishes a recorded
+operation failure and retains its reason. This does not settle native delivery,
+the successor, or uncertain cleanup. Taint/pending/unknown control without a
+corresponding failure event remains unknown. Recorded stopped-budget facts are
+retained in the independent operation axis.
+Task/package/body projection errors leave recorded operation facts available
+when the original events still match the accepted inventory. Changed events
+cannot support any axis. The generic handoff freezes and hash-checks one events
+byte sequence for both the common DTO and existing scalar counters/observations,
+so reopening a changed file cannot mix foreign facts with the old evidence ID.

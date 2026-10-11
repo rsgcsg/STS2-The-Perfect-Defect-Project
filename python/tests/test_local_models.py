@@ -1750,9 +1750,18 @@ def test_verified_event_projection_counts_attempts_and_marks_conflicting_termina
         canonical_json({"kind": kind, "payload": payload, "sequence": sequence}) + "\n"
         for sequence, (kind, payload) in enumerate(items, 1)
     ))
+    # This fixture stubs typed acceptance, including its exact accepted bytes;
+    # production-SDK drift rejection is covered by test_agent_task_outcome.py.
+    original_manifest = json.loads((directory / "manifest.json").read_bytes())
+    inventory = {"files": [
+        {"path": path.name, "bytes": len(raw := path.read_bytes()),
+         "sha256": hashlib.sha256(raw).hexdigest()}
+        for path in directory.iterdir() if path.is_file()
+    ]}
     monkeypatch.setattr(sts2_platform_evidence, "verify_agent_run_evidence", lambda *_: (
         SimpleNamespace(status="pass", findings=[], value=SimpleNamespace(
-            content_id="a" * 64, event_count=len(items)
+            content_id="a" * 64, event_count=len(items), directory=directory,
+            manifest=original_manifest, evidence_manifest=inventory,
         ))
     ))
     service.state.update(startup=expected, selection_id="s1-human-combat-v4")
@@ -1769,6 +1778,7 @@ def test_verified_event_projection_counts_attempts_and_marks_conflicting_termina
         "status": "ambiguous", "result": None, "observation_count": 2,
         "first_event_sequence": 1, "last_event_sequence": 6,
     }
+    assert report["agent_task_outcome"]["terminal_observation"]["status"] == "ambiguous"
     assert report["game_outcome"] == "not_measured"
 
 
