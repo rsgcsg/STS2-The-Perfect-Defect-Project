@@ -44,7 +44,9 @@
         "consumers/python/sts2_headless",
         "src/workstation-api.mjs",
         "src/game-processes.mjs",
-        "src/shipped-player-environment.mjs"
+        "src/shipped-player-environment.mjs",
+        "src/native-episode-tuple.mjs",
+        "tools/reference-pe-driver.mjs"
       ]
     },
     "annotator": {
