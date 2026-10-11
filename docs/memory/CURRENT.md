@@ -51,7 +51,9 @@ Native137 Auto3 at frozen e479 completed 23 calls/submissions: 15 delivered/8 kn
 not_started stale refusals,5837ms Auto elapsed, stopping at the existing limit of
 eight total known stale refusals. Eight native rejection diagnostics report public_facts_changed with equal
 expected/projected Snapshot IDs; one path detail is truncated. Task is unproved,
-operation censored; cause review/next policy-source decision remain pending.
+operation censored; the original observations remain unchanged. Versioned policy3
+per-episode recovery is now under source implementation; no new game, inference
+or installation is implied.
 Cleanup was graceful/unforced exit 0,39.3798s Root outer wall, no errors/remaining
 owned/strict game processes. These counters and diagnostics are not Task, strategy,
 training admission or causal-settlement evidence.
@@ -64,14 +66,29 @@ ordinary training/export/registration and explicit pause/resume ownership. Final
 independent review accepts 48f for PR preparation in that source/synthetic App scope;
 full CI/integration, real-corpus fit and data/strategy quality remain pending.
 
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) hosted
+6ddc9256 failed three leaves in
+[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
+Its TokenRanking regression repair at local baeb8958 has independent acceptance
+with one Reward and seven historical cases passing; this is not a latest hosted
+pass. Two unchanged Windows test failures remain under bounded diagnostic work.
+Episode f7fdbd1c's 36 Application cases and bounded synthetic common-process seam
+have independent acceptance: Teacher retains prior passing receipt/assertions only
+(old raw artifacts unavailable); final PublicM2 originals are verified. No new
+two-case aggregate PASS is claimed. The default-CI fixture lacked the supplied
+archive environment; the author is using the existing source-package owner and
+adding actual HTTP/CLI entry coverage. These new deltas are unexecuted. Legacy/root,
+metadata and CI remain pending; no installed/native/default or strategy qualification.
+
 Run A and B in parallel: A diagnoses the Native137 stale block with its existing
 trained Model and completes reusable ordinary Episode prepare/run/Stop/typed close;
-B prioritizes automatic program demonstrations/CombatSolver combat-teacher material,
-whose producer/adapter is not yet verified; existing Human material is supplementary
-or for a targeted gap. Source/quality/use/groups determine the fixed small view.
-B eligible view + recipe → bounded CPU fit/export may proceed alongside A.
-A usable Runtime + exported Model join at ordinary register/load/game evaluation,
-not at training. Existing-model diagnosis does not wait for B; novelty is not a goal.
+B's V1 data/Agent proposal is awaiting the user's explicit final A/A+ or other
+choice (proposal options, not workstream letters); no source route is selected here.
+Dependent new data implementation,
+collection, training and auxiliary development stop at that branch boundary.
+After selection/allocation, B eligible view + recipe → CPU fit/export can proceed
+alongside A; A usable Runtime + exported Model joins at game evaluation, not training.
+Existing-model/runtime/Episode/PR176 work does not wait for B; novelty is not a goal.
 
 C prepares GPU backend/cost read-only in parallel: static/CPU compatibility →
 bounded GPU smoke proving actual CUDA/checkpoint/export/cost, with synthetic data
@@ -82,6 +99,9 @@ job claimed. D keeps architecture, historical compatibility, specifications and
 exact-head CI coherent throughout; it does not block already-ready game/data work.
 Freeze actual candidates and meet owning gates/allocation at each transition;
 ordinary default/SDK-direct promotion and broader G2/V1 remain open.
+Human participation stops only its dependent branch with a concrete handoff.
+Root stops the round when every branch is completed or waiting on user/external
+conditions; one pending choice does not pause independent authorized engineering.
 
 ## Remaining Platform non-claims
 
