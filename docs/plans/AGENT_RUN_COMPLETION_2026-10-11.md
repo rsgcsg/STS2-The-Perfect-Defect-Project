@@ -695,9 +695,13 @@ passed fresh repository/identity checks and portable aggregation through verifie
 same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
 qualifies the historical e479 game source or later unmerged candidates.
 
-Root now works on local `codex/native-episode-continuation` candidate
-fb7fd31d, continuing reviewed Episode6cf, PR176abbf and native policy3/358 increments
-from cd3906906684ad4cd640831281a354e44b2c8f0e. Remote develop remains32298949. The following
+Root's reviewed code assembly on `codex/native-episode-continuation` is
+3af1a3d898a184649f7bbcfde2e5bf508187a4c3 after reviewed Data27 merge19584e1f and
+seven combined Connector BOM fields. Host30/Runtime34/Evidence30/Model identities
+are unchanged; combined-source independent review is accepted, while final Root
+repository/selected full-hosted gates remain pending. Native close qualification
+below is exact b055, and Auto4 ran at4e6438932fe9cfb943634e1f047b3b5dfb390df4.
+Remote develop remains32298949. The following
 Auto7/Auto3 facts retain their original e479 execution source; it is preserved
 history, not Root's current checkout. Local integration is not develop merge,
 hosted CI or installed/runtime promotion.
@@ -723,6 +727,28 @@ Root outer elapsed 39.3798s, no errors, remaining owned processes or strict game
 processes. Outer wall and Auto elapsed are different counters; cleanup completion
 does not prove Task, strategy, training admission or causal settlement.
 
+### Ordinary Auto4 result and remaining cleanup boundary
+
+One genuine ordinary Application preparation/registration/cold Human load at4e
+ran policy3 to acknowledged ready Summary: Task completed/task_ended, natural
+Defect/A0 loss,floor5,score50. Independent installed-Evidence30 verification passed
+with no findings;4222 sealed events and864 original files stayed unchanged. Counts
+are 297 Next,286 Consume+ACK,285 unique Acts/results:181 delivered,104 known
+not_started,zero delivery unknown;11 Await and1 Close. All285 execution fields
+remain unknown. The exact consumed Summary/ACK/Close precedes released/stopped,
+known W/no pending/untainted and unexhausted budget; Auto elapsed74032ms.
+
+This is accepted Task evidence, **not a clean whole attempt**. Caller exits1 with
+false original_actor_changed after the original retired same-run status has
+runtime=null; no replacement Actor was observed. Native child exit0/unforced and
+runtime-bound HTTP200 are real, but the Host reference driver exits−15 with forced
+fallback. Original immutable finish is phase unknown/finish_complete=true and
+cleanup_unknown. Actor finish owned_process_contained/exit0/seal is not proof of
+physical Actor killing. Root outer104.510s exits1, without outer containment or
+surviving owned/strict game processes; inner cleanup failure remains. The reserved
+unknown resource cannot be cleared, relabelled or silently reused for a new prepare.
+Floor5/score50 does not prove reasonable strategy, general math or across-seed benefit.
+
 ### Current work and dependency order
 
 The completed historical M0 candidate 48f1fc6d passed seven actual synthetic
@@ -735,15 +761,15 @@ strategy result. Earlier failures remain preserved. The current Native137 traine
 is available for operational diagnosis; retraining is not required to make it new.
 
 Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
-is unmerged at abbf7e2c. Fresh full
-[CI38148835498](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38148835498)
-completed failed: Windows1 failed, Linux1/2 and Windows2 passed, portable failed.
-The sole Windows1 failure is localized to the unchanged Source3 real-store .NET
-backend startup-readiness 10s window, within its 130s outer body. Previous owned-stale
-Runtime488 checks passed. This is a localized failure, not a proved cause/fix;
-the existing SDK author is diagnosing read-only and no rerun is allocated.
-Earlier6dd failures and baeb local repair acceptance retain their original scope;
-no hosted pass is borrowed for Root fb7fd31d.
+is unmerged at27c96bcadc998c77911b9c34984caf00aa8a8b5f. Fresh full
+[CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
+is in progress. CI3a33 finished failed only at SDK10k's5s whole-test cap/6.861s;
+all other OS leaves passed. The independently reviewed1376 test-strategy change
+was normally merged/pushed: only count10000 gets15s, all completeness/order/resource
+assertions and SDK1s request deadline are retained, with an automatic timeout negative.
+Local39 tests+tsc passed; this is no production performance fix or proof of the
+historical Windows phase. Python/diagnostics/real C# passes do not explain the old
+ready failure. Old6dd/abbf/a33 failures remain failed; no full pass is borrowed.
 
 At Episode66707bd, 399 checks plus build passed in the bounded follow-up batch;
 the 6cf delta adds three type casts with scoped
@@ -755,29 +781,80 @@ ended failed after 83.705s: TS typecheck,512 tests passing/3 existing optional s
 and build passed; installed-package smoke rejected exported constant33 versus
 package34. The first incorrect fact was the missed src/contracts.ts version
 literal. Only that literal was corrected in 7a5e889b and five current BOM fields
-in fb7fd31d. Corrected package-gate rerun remains pending, without a behavior retest
-or package acceptance claim.
+in fb7fd31d. Corrected build/package smoke/candidate archive then passed in
+1.195/6.622/2.726s, producing Runtime34 archive30079e65. The unchanged24 policy3
+tests passed in 6.859s against that compiled immutable archive at db9, using installed
+Evidence30 through the existing adapter. This demonstrates the tested compiled seam;
+it is not an independent raw-fixture audit or actual native-game qualification.
 
 Evidence30 now pins 3988448dbb486d830a4e36f6a92049960fdc2e73 with uv.lock SHA
 25e801bb0e0eb0b0fc6098ec77b1c3664fa2cdde349e5d13e3462ea3c05d8960. The isolated
-new reader's 28 files match that exact producer while old Root venv29 stays unchanged;
-old27/29 package/lock identities remain frozen. Source pinning is not installation.
+new reader's 28 files matched that producer in the earlier isolated check without
+changing old Root venv29. The new compiled gate explicitly used Evidence30 via its
+adapter. Old27/29 identities remain frozen. The db9 application-combination pin
+correction retained its original RED1 and passed 5 cases in 0.16s. Source/package
+pinning does not assert production installation.
 
-Host rc28 full source checks passed at13b. Cache-contaminated e573 was invalidated;
-8ccb79 source-file inventory and standalone bounds passed, but ordinary native use
-is still blocked by reference CLI writing package.local. The owning
-`codex/native-host-external-state` increment derives external Application state and
-verifies ready readback before an actual game. This source repair is ongoing; it
-does not grant a usable native package or runtime/default qualification. Next:
-review Runtime34's corrected package gate, finish this package boundary, freeze coherent
-source/metadata/package identity and complete the selected integration gates.
-There has been no new game, production install, retained-Model derivative or
-game-bound NN execution since Auto3; synthetic source gates retain their own scope.
+Host external-state/ready-readback repair1d4 and Host29 package evidence remain
+accepted, with old e573 invalid. Auto4 actually loaded Host29 and exposed the real
+driver-close failure above. Exit-wait cleanup030d967b has independent bounded
+source/process acceptance: actual old RED reproduced native exit0/ACK plus driver−15,
+new GREEN clears the wait's owned timer/listener and retains Python's5s close bound.
+The controlled reproduction proves that mechanism, not historical active-handle
+attribution. Host30 is locally integrated atb055. Its22.7999s owner gate passed:
+319 Node passes+4 proprietary skips,29 Python passes;79 Host/703 standalone files
+are preserved/matched, archive8b1eee01/content9b484200. Independent package review
+is accepted, separate from actual native lifecycle qualification.
+
+The separately allocated Host30 close-only gate atb055 is now executed: Root elapsed
+19.9233s/exit0, native child0/signalnull/unforced/runtime-bound HTTP200, driver0 with
+no fallback/error, phaseclosed/finish_complete and actor_not_associated/no Model.
+Application exited0 and its live pointer was removed. All279 original pins matched;
+there was no interrupt, outer containment/signals/errors or owned/strict game survivor.
+After-run independent review is accepted. Native Godot's1090 ERROR-prefixed lines
+remain preserved, with their cause unestablished; known exit0/no fallback and no
+driver/outer error is not an error-free-game claim. It uses fresh legitimate state and
+does not rewrite original Auto4 unknown or prove a historical timer handle/strategy.
+The future private observer repair's9 tests and30 negative subcases plus independent
+review are accepted; its original Host-unknown rejection remains. Neither result is
+another Agent Task, training or default/full native qualification.
+
+Ordinary App40 passed, but the first 3.636s batch ended ERROR because Root's explicit
+Runtime34 archive invocation met a helper requiring shipped33 pin. No source edit
+was needed: default source-packaging invocation passed 2 process cases in 13.630s.
+Both paths use synthetic World/CountingM2. Subsequent ordinary Runtime34 installation
+is independently accepted:730 files equal archive30079e65/contenta8773f70/code87b5053f,
+with old Runtime33 rollback retained. Auto4 adds actual loaded execution, separate
+from that installation receipt. The compiled24 policy3 tests remain accepted without
+an independent raw-fixture audit.
+
+The actual ordinary operational derivativee894 from original8eb is exported with
+unchanged weightsf1cd0183,40-file closure849219b9 and retained training ancestry.
+Independent bounded CPU parity accepts 43 tensors, three complete two-action catalogs
+and memory/reset equality against the retained original report. It is no fit or
+general mathematical proof. Auto4 adds genuine registration/online Task evidence;
+it does not promote the mechanical Teacher source or strategy quality. Next: finish
+the exact final source/head/package tuple and close out selected integration
+gates. Combined-source independent review is accepted; PR176's new full CI and
+final Root repository/full-hosted gates remain pending;
+no additional native attempt or interpretation of Auto4 cleanup is allocated here.
 
 The user retains final V1 data/Agent selection. The reviewed private proposal is
 awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
 specification or permission to start the dependent implementation/data/fit.
 Proposal option A/A+ is distinct from the workstream letters below.
+
+### Pending V1 data and Agent choice
+
+| Proposal option | Proposed bounded delivery; both await the user's final choice |
+| --- | --- |
+| A | Native Human public pre-input bases and exact-N choices → BC → one shared M2 scoring the complete current C across the declared scenes. Check real capture, label quality/use and a small pilot before scale; existing Defect/A0 scope is retained, not reapproved here. |
+| A+ | The same native baseline plus only one bounded old-Human/public-log/Solver auxiliary lane, comparing auxiliary pretraining+native fine-tuning with the baseline. Derived partial targets need their matching declared grammar/masks; no fabricated native trajectory/full C or hidden teacher facts in fair student inputs. Stop an auxiliary lane without credible benefit. |
+
+Neither route is selected or implemented by this table. The current K1/d96,
+180,545-parameter model is a baseline, not proved strongest or information-sufficient.
+Representation, memory and planning may change through their existing owning
+Input/Model/Agent contracts; data volume alone does not establish capability.
 
 The selected finite dependency graph is:
 
