@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections import deque
 from dataclasses import replace
@@ -879,6 +880,108 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(self.commands, ["start_new_session", "close"])
         self.assertFalse(any(value["type"] == "runtime_continue" for value in self.messages))
         self.assertEqual(report["submissions"], 0)
+
+    def test_actual_pipe_queued_final_precedes_persistent_EOF_and_exact_finish(self):
+        script = self.root / "ordered-terminal-child.mjs"
+        messages = [{"i": number} for number in range(8)] + [{"type": "closed", "SYN": True}]
+        diagnostic = b"SYN trailing diagnostic\n"
+        script.write_text(
+            "const messages = " + json.dumps(messages) + ";\n"
+            + ('for (const message of messages) '
+               'process.stdout.write(JSON.stringify(message)+"\\n");\n')
+            + "process.stderr.write(" + json.dumps(diagnostic.decode()) + ");\n"
+        )
+        child = module.OwnedPipeChild(script, module.Cancellation())
+        try:
+            self.assertEqual([child.receive(timeout=5) for _ in messages], messages)
+            with self.assertRaisesRegex(BoundaryError, "child_stdout_closed") as first:
+                child.receive(timeout=5)
+            with self.assertRaisesRegex(BoundaryError, "child_stdout_closed") as repeated:
+                child.receive(timeout=0.01)
+            self.assertIs(first.exception, repeated.exception)
+        finally:
+            receipt = child.finish()
+        self.assertEqual(receipt["pid"], child.process.pid)
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertIsNone(receipt["signal"])
+        self.assertFalse(receipt["forced_by_parent"])
+        self.assertEqual(receipt["stderr_bytes"], len(diagnostic))
+        self.assertTrue(receipt["reader_terminal"] and receipt["diagnostics_terminal"])
+        assert child.process.stdin is not None
+        assert child.process.stdout is not None
+        assert child.process.stderr is not None
+        self.assertTrue(child.process.stdin.closed)
+        self.assertTrue(child.process.stdout.closed and child.process.stderr.closed)
+
+    def test_actual_child_EOF_before_ready_keeps_unknown_and_exact_owner_cleanup(self):
+        script = self.root / "early-terminal-child.mjs"
+        diagnostic = b"SYN failed before Ready\n"
+        script.write_text(
+            'import readline from "node:readline";\n'
+            + "const reader = readline.createInterface({ input: process.stdin });\n"
+            + 'reader.once("line", line => {\n'
+            + "  JSON.parse(line);\n"
+            + "  process.stderr.write(" + json.dumps(diagnostic.decode())
+            + ", () => process.exit(1));\n"
+            + "});\n"
+        )
+        received_errors = []
+        app_closes = []
+
+        class ObservedChild(module.OwnedPipeChild):
+            def receive(self, timeout=0.25):
+                try:
+                    return super().receive(timeout)
+                except BoundaryError as error:
+                    received_errors.append(error)
+                    raise
+
+        def child_factory(_path, cancellation):
+            child = ObservedChild(script, cancellation)
+            self.children.append(child)
+            return child
+
+        def app_factory(config, path):
+            app = self.application(config, path)
+            close = app.close
+
+            def observed_close():
+                app_closes.append(True)
+                close()
+
+            self.mock(app, "close", observed_close)
+            return app
+
+        self.request = replace(self.request, deadline_ms=30_000)
+        started = time.monotonic()
+        report = module.collect_source3(
+            self.config, self.root / "config.json", self.request,
+            app_factory=app_factory, child_factory=child_factory, preflight=self.preflight,
+            cancel=self.cancel,
+        )
+        self.assertLess(time.monotonic() - started, self.request.deadline_ms / 1000)
+        self.assertEqual(report["error_code"], "child_stdout_closed")
+        self.assertEqual(report["status"], "unknown")
+        self.assertEqual(report["runtime_quiescence"], "unconfirmed")
+        self.assertIsNone(report["source_start"])
+        self.assertIsNone(report["source_close"])
+        self.assertIsNone(report["child_final"])
+        self.assertEqual(report["submissions"], 0)
+        self.assertEqual(self.commands, [])
+        self.assertEqual(app_closes, [True])
+        self.assertEqual(len(received_errors), 2)
+        self.assertIs(received_errors[0], received_errors[1])
+        child = self.children[0]
+        self.assertEqual(report["child"]["pid"], child.process.pid)
+        self.assertEqual(report["child"]["exit_code"], child.process.wait())
+        self.assertNotEqual(report["child"]["exit_code"], 0)
+        self.assertFalse(report["child"]["forced_by_parent"])
+        self.assertEqual(report["child"]["stderr_bytes"], len(diagnostic))
+        self.assertTrue(
+            report["child"]["reader_terminal"] and report["child"]["diagnostics_terminal"]
+        )
+        self.assertTrue(child.process.stdin.closed)
+        self.assertTrue(child.process.stdout.closed and child.process.stderr.closed)
 
     def test_pipe_reader_EOF_drains_bounded_queue_without_leaking_process(self):
         script = self.root / "pure-child.mjs"
