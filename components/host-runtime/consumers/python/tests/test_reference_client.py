@@ -49,6 +49,41 @@ class ReferenceClientTests(unittest.TestCase):
             self.assertFalse(client.close_receipt()["world_mutation_offered"])
             self.assertNotIn("reset_started", log.read_text())
 
+    def test_real_child_shutdown_exits_driver_without_python_fallback(self):
+        with TemporaryDirectory() as root:
+            command = [shutil.which("node") or "node",
+                       str(ROOT/"tools/test-fixtures/reference-shutdown.mjs"), root]
+            client = ReferencePlayerEnvironment(command, response_timeout_seconds=10)
+            try:
+                client.reset("FIRST")
+                client.release_bootstrap("fixture-runtime")
+                client.close()
+                receipt = client.close_receipt()
+                self.assertEqual(receipt["close_result"]["type"], "close_result")
+                native = receipt["close_result"]["exit"]
+                self.assertEqual(native["code"], 0)
+                self.assertIsNone(native["signal"])
+                self.assertFalse(native["forced"])
+                self.assertEqual(native["host_shutdown"]["http_status"], 200)
+                self.assertEqual(native["host_shutdown"]["response"], {
+                    "status": "shutdown_requested", "runtime_instance_id": "fixture-runtime",
+                })
+                self.assertEqual(receipt["driver_exit_code"], 0)
+                self.assertFalse(receipt["forced_fallback"])
+                self.assertIsNone(receipt["cleanup_error"])
+                events = [json.loads(line) for line in
+                          (Path(root)/"events.jsonl").read_text().splitlines()]
+                self.assertEqual(sum(event["event"] == "host_shutdown" for event in events), 1)
+                exited = [event for event in events if event["event"] == "native_child_exit"]
+                self.assertEqual(exited, [{"event": "native_child_exit", "code": 0, "signal": None}])
+                self.assertEqual(events[-1]["event"], "driver_finished")
+            finally:
+                print(json.dumps({"fixture": "actual_reference_child_shutdown",
+                                  "close_receipt": client.close_receipt(),
+                                  "events": [json.loads(line) for line in
+                                             (Path(root)/"events.jsonl").read_text().splitlines()]}))
+                client.close()
+
     def test_real_pipe_eof_interrupts_blocked_reset_without_waiting_read_timeout(self):
         with TemporaryDirectory() as root:
             command, log = self.command(root, blockReset=True)
