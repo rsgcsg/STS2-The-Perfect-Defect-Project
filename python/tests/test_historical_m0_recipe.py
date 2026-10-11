@@ -18,9 +18,11 @@ from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.historical_m0_data import (
+    historical_dev_reference,
     publish_historical_source,
     record_historical_use,
     require_historical_source,
+    reserve_historical_dev,
 )
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.trusted_recipes import (
@@ -508,6 +510,158 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
         assert model.parameters.value()["scope"] == DIAGNOSTIC_SCOPE
         metrics = store.get_manifest(result.parent("offline_evaluation"))
         assert metrics.parameters.value()["clean_held_out_claim"] is False
+        # Exercise the real selected-scope owner entry on the actual child Model,
+        # including idempotence and fail-before-mutation reference/policy fences.
+        evaluation_id = historical_dev_reference(model_id, source_id, operation["operation_id"])
+        relation, summary = require_historical_source(owner, store, source_id)
+        dev = [member for member in relation.value["members"] if member["split"] == "dev"]
+        selected_dev_runs = {member["run_id"] for member in dev}
+        selected_dev_archives = {member["source_archive_sha256"] for member in dev}
+        selected_dev_sources = {
+            source["artifact_id"]
+            for source in summary["datasets"][0]["sources"]
+            if source["archive_sha256"] in selected_dev_archives
+        }
+        with owner.transaction() as db:
+            expected_related = owner.ledger._groups(db, selected_dev_runs)
+            expected_overlap = bool(
+                expected_related
+                & owner.ledger._groups(
+                    db,
+                    {m["run_id"] for m in relation.value["members"] if m["split"] == "train"},
+                )
+            )
+            assert {
+                row[0]
+                for row in db.execute(
+                    "SELECT run FROM curation_uses WHERE kind='evaluation' AND reference=?",
+                    (evaluation_id,),
+                )
+            } == expected_related
+            assert {
+                row[0]
+                for row in db.execute(
+                    "SELECT source FROM curation_source_uses "
+                    "WHERE kind='evaluation' AND reference=?",
+                    (evaluation_id,),
+                )
+            } == selected_dev_sources
+        exposed = _ledger_exposure(owner)
+        original_payloads = {
+            payload.sha256
+            for identity in (original["allocation_id"], original["model_view_id"])
+            for payload in store.get_manifest(identity).payloads
+        }
+        original_payloads.add(old_inputs.payload("rows").sha256)
+        original_payloads.update(
+            payload.sha256
+            for source in summary["datasets"][0]["sources"]
+            for payload in store.get_manifest(source["artifact_id"]).payloads
+        )
+        read_payload = store.read_payload
+
+        def no_original_payload_reads(payload):
+            assert payload.sha256 not in original_payloads, "DEV hydrated original payload"
+            yield from read_payload(payload)
+
+        monkeypatch.setattr(store, "read_payload", no_original_payload_reads)
+        admitted_dev = reserve_historical_dev(
+            owner, store, model_id, source_id, operation["operation_id"], evaluation_id
+        )
+        assert _ledger_exposure(owner) == exposed
+        assert admitted_dev["semantic_overlap"] == expected_overlap
+        assert admitted_dev["clean_held_out_claim"] is False
+        assert admitted_dev["qualified_run_ids"] == sorted(selected_dev_runs)
+        for wrong_model, wrong_source, wrong_reference in (
+            (initial_model.artifact_id, source_id, evaluation_id),
+            (model_id, original["dataset_id"], evaluation_id),
+            (model_id, source_id, operation["operation_id"]),
+        ):
+            with pytest.raises(BoundaryError, match="reference_binding_mismatch"):
+                reserve_historical_dev(
+                    owner,
+                    store,
+                    wrong_model,
+                    wrong_source,
+                    operation["operation_id"],
+                    wrong_reference,
+                )
+            assert _ledger_exposure(owner) == exposed
+        # A structurally valid original public Model still cannot be substituted
+        # even when its caller supplies a newly computed reference.
+        with pytest.raises(BoundaryError, match="model_source_binding_mismatch"):
+            reserve_historical_dev(
+                owner,
+                store,
+                initial_model.artifact_id,
+                source_id,
+                operation["operation_id"],
+                historical_dev_reference(
+                    initial_model.artifact_id, source_id, operation["operation_id"]
+                ),
+            )
+        assert _ledger_exposure(owner) == exposed
+        with pytest.raises(BoundaryError):
+            reserve_historical_dev(
+                owner,
+                store,
+                model_id,
+                original["dataset_id"],
+                operation["operation_id"],
+                historical_dev_reference(
+                    model_id, original["dataset_id"], operation["operation_id"]
+                ),
+            )
+        assert _ledger_exposure(owner) == exposed
+        wrong_model = replace(
+            model,
+            parameters=FrozenObject.of(
+                {
+                    **model.parameters.value(),
+                    "training_binding": {
+                        **model.parameters.value()["training_binding"],
+                        "allocation_id": "f" * 64,
+                    },
+                }
+            ),
+        )
+        store.publish(wrong_model)
+        with pytest.raises(BoundaryError, match="model_source_binding_mismatch"):
+            reserve_historical_dev(
+                owner,
+                store,
+                wrong_model.artifact_id,
+                source_id,
+                operation["operation_id"],
+                historical_dev_reference(
+                    wrong_model.artifact_id, source_id, operation["operation_id"]
+                ),
+            )
+        assert _ledger_exposure(owner) == exposed
+        for purpose in ("test", "gold"):
+            # Synthetic imported conflicting ledger state: exercise the existing
+            # current-owner policy fences rather than changing its public kind API.
+            claim = "blocked-" + purpose
+            with owner.transaction() as db:
+                db.execute(
+                    "INSERT INTO curation_claims VALUES(?,?,?,?)",
+                    (claim, purpose, None, 0.0),
+                )
+                db.executemany(
+                    "INSERT INTO curation_claim_runs VALUES(?,?)",
+                    ((claim, run) for run in selected_dev_runs),
+                )
+            try:
+                with pytest.raises(BoundaryError):
+                    reserve_historical_dev(
+                        owner, store, model_id, source_id, operation["operation_id"], evaluation_id
+                    )
+                assert _ledger_exposure(owner) == exposed
+            finally:
+                with owner.transaction() as db:
+                    db.execute("DELETE FROM curation_claim_runs WHERE claim=?", (claim,))
+                    db.execute("DELETE FROM curation_claims WHERE id=?", (claim,))
+        monkeypatch.setattr(store, "read_payload", read_payload)
         exported = LocalModelExport(project)
         exported.start(model_id)
         assert exported.thread is not None

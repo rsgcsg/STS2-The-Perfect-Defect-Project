@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,13 @@ from stpd.fullrun.historical_public_m0 import (
     relation_reference,
     verify_selected_human_encoding,
 )
-from stpd.historical_m0_spec import HISTORICAL_PUBLIC_PROOF_KIND, HISTORICAL_PUBLIC_RECEIPT_SCHEMA
+from stpd.historical_m0_spec import (
+    DIAGNOSTIC_SCOPE,
+    HISTORICAL_PUBLIC_PROOF_KIND,
+    HISTORICAL_PUBLIC_RECEIPT_SCHEMA,
+    INPUT_SCHEMA,
+    RUN_SCHEMA,
+)
 
 _PROOF_FILES = (
     "stpd/fullrun/historical_public_m0.py",
@@ -278,3 +285,131 @@ def require_historical_use(
         operation_id,
     )
     return summary
+
+
+def historical_dev_reference(model_id: str, source_id: str, training_operation_id: str) -> str:
+    """Bind an existing evaluation-use reference without another registry/table."""
+    return semantic_hash(
+        [
+            "historical_public_m0_selected_dev",
+            digest(model_id, "historical_m0.evaluation_model"),
+            digest(source_id, "historical_m0.evaluation_source"),
+            digest(training_operation_id, "historical_m0.training_operation", length=32),
+        ]
+    )[:32]
+
+
+def reserve_historical_dev(
+    owner: Any,
+    store: Any,
+    model_id: str,
+    source_id: str,
+    training_operation_id: str,
+    evaluation_operation_id: str,
+) -> dict[str, Any]:
+    """Apply the owner's existing training-purpose DEV policy to verified selected refs.
+
+    Source/H permission remains current. This reads immutable manifests and the
+    selected relation's metadata; it never hydrates original allocation/archive
+    payloads. Only this owner entry writes diagnostic evaluation uses.
+    """
+    from stpd.policy.token_decision import check_light_action_m0_model
+
+    digest(evaluation_operation_id, "historical_m0.evaluation_operation", length=32)
+    if evaluation_operation_id != historical_dev_reference(
+        model_id, source_id, training_operation_id
+    ):
+        raise BoundaryError("historical_m0_data", "evaluation_reference_binding_mismatch")
+    relation, summary = require_historical_source(owner, store, source_id)
+    require_historical_use(owner, store, source_id, training_operation_id)
+    model = store.get_manifest(model_id)
+    _, info = check_light_action_m0_model(model)
+    inputs = store.get_manifest(model.parent("training_input"))
+    input_info = inputs.parameters.value()
+    run = store.get_manifest(model.parent("run"))
+    run_info = run.parameters.value()
+    checkpoint = store.get_manifest(model.parent("checkpoint"))
+    original = relation.value["originals"]
+    expected_binding = {
+        "schema": "stpd/light-action-m0-training-binding-v1",
+        "dataset_ids": sorted([original["dataset_id"], source_id]),
+        "training_operation_id": training_operation_id,
+        "allocation_id": original["allocation_id"],
+        "model_view_id": original["model_view_id"],
+    }
+    source, _ = read_relation(store, source_id)
+    expected_relation = {
+        "source_id": source_id,
+        "original_input_id": original["training_input_id"],
+        "mapping_sha256": relation.value["mapping_sha256"],
+        "original_admission_receipt_id": original["admission_receipt_id"],
+        "historical_public_receipt_id": source.parameters.value()["historical_public_receipt_id"],
+    }
+    if (
+        inputs.kind != "training_input"
+        or input_info.get("schema") != INPUT_SCHEMA
+        or info.get("input_schema") != INPUT_SCHEMA
+        or input_info.get("training_binding") != expected_binding
+        or info.get("training_binding") != expected_binding
+        or input_info.get("historical_relation") != expected_relation
+        or info.get("historical_relation") != expected_relation
+        or inputs.parent("source") != source_id
+        or inputs.parent("original_input") != original["training_input_id"]
+        or inputs.parent("model_view") != original["model_view_id"]
+        or model.parent("model_view") != original["model_view_id"]
+        or run.kind != "run"
+        or run_info.get("schema") != RUN_SCHEMA
+        or run_info.get("source_id") != source_id
+        or run_info.get("operation_id") != training_operation_id
+        or run.parent("training_input") != inputs.artifact_id
+        or run_info.get("initialization") != input_info.get("initialization")
+        or info.get("initialization") != input_info.get("initialization")
+        or checkpoint.kind != "checkpoint"
+        or checkpoint.parent("run") != run.artifact_id
+        or checkpoint.parent("training_input") != inputs.artifact_id
+        or checkpoint.parameters.value().get("step") != info.get("steps")
+        or model.producer != run.producer
+        or inputs.producer != run.producer
+        or checkpoint.producer != run.producer
+    ):
+        raise BoundaryError("historical_m0_data", "evaluation_model_source_binding_mismatch")
+    dev = [member for member in relation.value["members"] if member["split"] == "dev"]
+    if not dev:
+        raise BoundaryError("historical_m0_data", "empty_selected_dev")
+    runs = {member["run_id"] for member in dev}
+    archives = {member["source_archive_sha256"] for member in dev}
+    sources = summary["datasets"][0]["sources"]
+    if not archives <= {source["archive_sha256"] for source in sources}:
+        raise BoundaryError("historical_m0_data", "selected_dev_source_mismatch")
+    dev_sources = {
+        source["artifact_id"] for source in sources if source["archive_sha256"] in archives
+    }
+    train_runs = {
+        member["run_id"] for member in relation.value["members"] if member["split"] == "train"
+    }
+    with owner.transaction() as db:
+        related = owner.ledger._groups(db, runs)
+        if any(
+            purpose in {"test", "gold"} for purpose, _ in owner.ledger._claims(db, related).values()
+        ):
+            raise BoundaryError("historical_m0_data", "sealed_dev_source_forbidden")
+        overlap = bool(related & owner.ledger._groups(db, train_runs))
+        db.executemany(
+            "INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+            ((run, "evaluation", evaluation_operation_id, time.time()) for run in sorted(related)),
+        )
+        db.executemany(
+            "INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+            ((source, "evaluation", evaluation_operation_id) for source in sorted(dev_sources)),
+        )
+    return {
+        **DIAGNOSTIC_SCOPE,
+        "model_id": model_id,
+        "source_id": source_id,
+        "allocation_id": original["allocation_id"],
+        "training_operation_id": training_operation_id,
+        "evaluation_operation_id": evaluation_operation_id,
+        "qualified_run_ids": sorted(runs),
+        "semantic_overlap": overlap,
+        "ledger_scope": summary["ledger_scope"],
+    }

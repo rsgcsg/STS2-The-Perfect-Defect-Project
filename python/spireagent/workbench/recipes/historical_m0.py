@@ -13,13 +13,15 @@ from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.historical_m0_data import (
+    historical_dev_reference,
     record_historical_use,
     require_historical_source,
     require_historical_use,
+    reserve_historical_dev,
 )
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from stpd.fullrun.historical_public_m0 import warm_start_metadata
-from stpd.historical_m0_spec import DIAGNOSTIC_SCOPE, RUN_SCHEMA, HistoricalM0Config
+from stpd.historical_m0_spec import RUN_SCHEMA, HistoricalM0Config
 
 from .structured import StructuredRecipeAdapter
 
@@ -292,16 +294,14 @@ def run_historical_child(
     else:
 
         def dev_admitter(model: Any, view: Any) -> dict[str, Any]:
-            summary = require_historical_use(owner, store, request.source_id, args.operation_id)
-            bound = summary["datasets"][0]
-            for source in bound["sources"]:
-                owner.ledger.use_source(source["artifact_id"], "evaluation", args.operation_id)
-            owner.ledger.use(
-                {sample.run_id for sample in relation.samples if sample.split == "dev"},
-                "evaluation",
+            return reserve_historical_dev(
+                owner,
+                store,
+                model.artifact_id,
+                request.source_id,
                 args.operation_id,
+                historical_dev_reference(model.artifact_id, request.source_id, args.operation_id),
             )
-            return dict(DIAGNOSTIC_SCOPE)
 
         result = execute_tokens(
             fenced,

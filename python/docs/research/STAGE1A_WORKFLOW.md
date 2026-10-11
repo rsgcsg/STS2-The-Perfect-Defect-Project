@@ -167,6 +167,11 @@ The configured owner checks historical admission/current permission and reserves
 the new operation before publication. Frozen codecs inherit all original TRAIN
 exposure; model initialization additionally inherits its full ancestry. Original
 DEV membership remains diagnostic, with no clean-held-out or current-game/A0 claim.
+The configured Curation owner applies its existing training-purpose DEV policy to
+verified selected run/archive references, including related-group and test/Gold
+checks. Diagnostic use is limited to selected DEV groups/sources; its evaluation
+reference binds the actual Model, historical source and training operation, so
+repeat admission is idempotent and another Model/source cannot borrow that use.
 
 This route supports only an explicit compatible Model-weight warm start: exact
 graph/public InputSpec/renderer/codecs/dtype and finite tensor inventory, loaded
