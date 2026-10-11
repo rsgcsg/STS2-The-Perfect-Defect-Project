@@ -35,13 +35,13 @@ permissions and user-only full G2/V1 approval have not changed.
 ## Prior round delivered; integration gate pending
 
 PR171 now publishes repaired old-topic head `74260b61`; it remains draft.
-CI38100661045 is running all four Linux/Windows leaves. Prior CI380957 on f3 failed
+CI38100661045 remains in progress: Linux1/2 passed, Windows1/2 are running. Prior CI380957 on f3 failed
 both Windows leaves with both Linux leaves passed. Accepted test-only945/648 fixes
 remain separate from this topic, whose explicit dependent base is f3. Verify fresh
 full checks and normal develop integration before importing that merge; preserve
 component provenance and do not transfer CI to new source.
 
-## Accepted source candidate; final promotion pending
+## Exact candidate loaded; Auto3 closed incomplete
 
 Root candidate `0817351fb7aa2e815003ceb2a28857ccc03d0a06` normally merges accepted
 Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Turn
@@ -51,7 +51,8 @@ Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Tu
 Runtime442+3skips, repository, exact Connector/Mod builds and application189 checks
 passed. Package pinf0ed46d9 names rc31 archivee58b448b; Modrc41 isa67e240f/MVID35dd0481.
 Independent package/artifact review and owner installation passed; rc31 and Mod41
-are installed, not yet loaded. Exact rc30 archive/pin and Mod40 backup are retained.
+were installed and loaded for Auto3 at frozen `f559c96c`. Exact rc30 archive/pin and
+Mod40 backup are retained. Previous Auto1/Auto2 receipts remain unchanged.
 
 - Diagnostics retain default-off private bounded output and the same41/250 wait policy;
   accepted source/compiled-CLI checks do not establish new native successor evidence.
@@ -63,6 +64,19 @@ are installed, not yet loaded. Exact rc30 archive/pin and Mod40 backup are retai
   offered native scope, FTUE/Undo/owner guards, four-profile completeness and machine/
   Human suppression. Its accepted fidelity correction is not proof of Auto2's cause.
 
+Auto3's one comparison is consumed: valid sealed/untainted incomplete handoff
+`auto_surface_not_admitted`, no reward/summary. Stop released control/not loaded and
+signed Host exited0 unforced; the heavy slot is released. Runtime stderr append0
+bytes has no failed terminal wait and does not prove old Auto2's timeout repaired.
+Detailed identities/counts/receipts belong to the active packet.
+
+The first owning next fact is Connector's supported ready/no-current-command gap
+following exact native button withdrawal; Runtime follows its existing observed
+handoff contract. The earlier same-gap successor was followed by round2 evidence;
+no final queued-action execution or Auto2 cause is proved. Independent architecture
+review accepted the bounded follow-up designs; source owners are active, with no new
+implementation receipt or extra run claimed yet.
+
 The canceled-Defend log can also result from ordinary native execution-time revalidation;
 its wording does not prove a paused-action bug. The inspected controller-release path does
 not cancel already-delivered native card actions. Failed Auto2 polling frames are absent,
@@ -70,11 +84,17 @@ so the precise readiness failure remains unknown.
 
 ## Remaining Platform non-claims
 
-Complete final assembled source/exact-game/artifact gates after the accepted reviews
-and candidate identity/BOM update. Root owns packaging/install and frozen caller review. Intermediate topic
-source identity now matches the installed candidate; a new load/run still needs its own receipts.
-The packet allocates at most one new bounded M0 Auto comparison after prerequisites, with
-private diagnostics and exact new identities. It never replays the old delivered End Turn.
+Source/build/package/install/caller/load and independent Auto3 audit are complete at
+their bounded levels; the original attempt remains failed and its allowance consumed.
+Autonomous continuation now has two active source owners: Connector's private exact
+availability proof/sticky20s window/final-profile mapper, and application's bounded
+terminal-tail reason projection with all outcome axes preserved. No Runtime production,
+queue gate, timer extension or new profile. The rc31 package/pin may remain if actual
+SDK/schema compatibility is unchanged; Root verifies identities without forced lockstep.
+Any later candidate
+needs its own source/artifact/runtime gates and distinct attempt envelope; this packet
+allocates no further native run. Root retains shared identity/BOM/install and resource
+ownership. No old delivered/unknown request is replayed or historical input backfilled.
 
 Broader meaningful data, independent strategy evaluation, current-game/A0 and M2 history
 qualification, full SC/SX/product coverage,30 attempts,recovery/performance,10k meaningful

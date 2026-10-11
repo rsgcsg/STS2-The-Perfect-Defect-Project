@@ -4,7 +4,7 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
-## Agent run source candidate, observed 2026-10-11
+## Agent run Auto3 closure, observed 2026-10-11
 
 The [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md) owns current source
 state and promotion gates; [CURRENT](memory/CURRENT.md) routes the active work.
@@ -14,8 +14,15 @@ exact-offer correction. Runtime rc31, Connector rc22 and Mod rc41 identities/BOM
 source candidates. Annotator production/version is retained with docs/test provenance
 only. Final local Runtime442 tests plus3 optional skips, application189, repository
 and exact Connector/Mod builds passed. Independent package/artifact checks and
-existing-owner installation passed for rc31/rc41. No new load/run yet; rc30/rc40
-original receipts and exact rollback material remain preserved.
+existing-owner installation passed for rc31/rc41. The exact tuple was loaded for
+Auto3 at frozen `f559c96c`. That single comparison is consumed: typed sealed,
+untainted incomplete `auto_surface_not_admitted`, no reward/summary; independent
+audit and Stop/signed Host cleanup pass. It does not qualify strategy or prove old
+Auto2's timeout fixed. Detailed original counts/identities remain in the active packet;
+rc30/rc40 rollback material and original Auto1/Auto2 receipts remain preserved.
+Independent design review accepted bounded Connector readiness/window/profile and
+application terminal-tail reason follow-ups; source owners are active, without a new
+implementation receipt or further native attempt allocated in this packet.
 
 Common task outcome source separates qualified Public M2 loss-summary completion
 from operational failure, observed result and unassessed strategy; M0 without an
@@ -24,8 +31,8 @@ native outcome or Auto2 cause proof. The [previous closeout](plans/BASELINE_BOUN
 retains restoration/parity, paired TRAIN fits, data limits and original Auto1/Auto2
 valid sealed failures. They do not establish basic strategy or full G2/V1 approval.
 
-Old draft PR171 now publishes repaired74260b61; CI38100661045 is running all four
-leaves. Prior CI380957 on f3 failed Windows1/2 with Linux1/2 passed. Accepted945/648
+Old draft PR171 publishes repaired74260b61; CI38100661045 remains in progress:
+Linux1/2 passed, Windows1/2 running. Prior CI380957 on f3 failed Windows1/2 with Linux1/2 passed. Accepted945/648
 fixture/setup repairs stay on the old delivery topic; new-source checks and normal
 develop integration remain separate. Aggregate provider spend remains USD0 within the same USD20 envelope.
 Historical observations below retain their original identities and limits.

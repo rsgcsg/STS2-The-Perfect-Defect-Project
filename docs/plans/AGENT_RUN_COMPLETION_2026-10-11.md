@@ -3,13 +3,15 @@
 Status: accepted source is assembled with version/BOM candidate `0817351f`;
 Runtime package pin is committed at `f0ed46d9`. Final local Runtime checks and
 Connector/Mod builds and independent package/artifact reviews passed. The existing
-owners installed Runtime rc31 and Mod rc41; new load/game comparison remains pending.
+owners installed Runtime rc31 and Mod rc41. The single new Auto3 at frozen `f559c96c`
+loaded the exact tuple and closed as a valid sealed, untainted incomplete handoff;
+its actual receipt and remaining boundary are recorded below.
 Exact previous rc30 archive/pin and Mod rc40 backup remain available.
 
 This topic explicitly depends on old PR171's original f3 base. Its Windows fixture
 repairs `945c07c4` and `64850707` are normally merged on that separate delivery topic,
 now published at `74260b61`. [CI38100661045](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38100661045)
-is running all four Linux/Windows leaves. Prior CI380957 on f3 failed both Windows
+is still in progress at this snapshot: Linux1/2 passed, Windows1/2 remain running. Prior CI380957 on f3 failed both Windows
 leaves; both Linux leaves passed and the portable aggregate failed. Verify new full
 CI and normal develop integration independently. Do not add this packet to the old
 PR or transfer old CI to this source.
@@ -63,9 +65,9 @@ Do not infer new causes from those uncorrelated log lines.
 
 | Workstream | First missing/incorrect fact and owner | Source state and limit |
 | --- | --- | --- |
-| Successor wait diagnostics | Runtime cannot explain its failed existing acquisitions | `2da07100` independently reviewed and integrated on this topic; source/test only, not installed |
+| Successor wait diagnostics | Runtime could not explain failed existing acquisitions | `2da07100` accepted, packaged/installed in rc31 and loaded for Auto3; that attempt had no failed terminal successor wait |
 | Common task outcome | Application handoff lacked common task/end/result axes from durable witnesses | `7e7acc56` independently accepted and normally merged at `b8038e1e`; application-only source, no new Runtime event or historical backfill |
-| Native End Turn input | Shared Connector binding bypassed native queued input order | `574b9069` independently accepted and normally merged at `2dbe7638`; exact-offer/queue correction and faithful source tests, not installed/runtime evidence |
+| Native End Turn input | Shared Connector binding bypassed native queued input order | `574b9069` accepted/merged at `2dbe7638`; exact-offer/queue correction built/installed in Mod rc41 and loaded for Auto3, without a general native-order or strategy qualification |
 
 Writers have disjoint owned worktrees and files. Root re-reads every actual diff and
 receipt. Heavy checks acquire the shared slot only when ready; code, read-only review
@@ -81,15 +83,16 @@ release artifact, installation/load or native comparison receipt.
 
 | Component | Source candidate | Installed boundary |
 | --- | --- | --- |
-| Policy Runtime | `0.1.0-rc.31`; accepted diagnostics `2da07100` | rc31 installed; not loaded for the new attempt |
-| Connector | `1.3.0-rc.22`; accepted native queue/exact-offer binding | rc22 installed inside exact Mod rc41; no new load yet |
-| Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | rc41 installed; exact previous rc40 backup verified |
+| Policy Runtime | `0.1.0-rc.31`; accepted diagnostics `2da07100` | Exact rc31 installed and loaded for Auto3 |
+| Connector | `1.3.0-rc.22`; accepted native queue/exact-offer binding | Exact rc22 inside Mod rc41 loaded for Auto3 |
+| Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | Exact rc41 installed/loaded for Auto3; prior rc40 backup retained |
 | Annotator | `0.3.0-rc.18` retained | Production unchanged; only docs/test provenance changed, with source identity refreshed accordingly |
 
 Final local build/package checks below have passed. Independent package/artifact
-verification and exact install have passed; load, caller review and the one fresh
-bounded Auto remain prerequisites below. Source merge does not diagnose Auto2's missing poll
-frames or retroactively qualify any installed candidate.
+verification, exact install, caller review and Auto3 load have passed. The one fresh
+bounded comparison is consumed and incomplete; no further attempt is allocated here.
+Source merge does not diagnose Auto2's missing poll frames or retroactively qualify
+any installed candidate.
 
 
 ### Final local candidate checks
@@ -121,7 +124,86 @@ actual Mod PE metadata/sourceSet/game identity. Root's existing Runtime installe
 returned installed/not-loaded/not-activated; Game Mod owner installed the exact
 rc41 SHA/MVID above with no running game. Its archived prior Mod matches rc40
 SHA4e2f6bab/MVID87ec9d9a. These are installation receipts, not loaded/native/Human or
-strategy evidence. New caller review and loaded qualification remain pending.
+strategy evidence. The later reviewed caller/load/Auto3 receipts below qualify only
+that separate bounded operation, not successful task completion.
+
+### Actual Auto3 closure: valid seal, incomplete no-input handoff
+
+The one authorized fresh comparison executed at source
+`f559c96c6844da66fd6e1c7cb28b97ca7dfa647b`, public consumer
+`3c54183e8d6416d19235efd692c37feaa4e0f88f9ed9e13188a7ab3c92ffec13`, original d6
+reward-program Agent and reviewed caller. Run `run-ae6383f0-9900-4eb7-b846-688404a5f7eb`,
+Host `40e45a53feab4a5c85bfb8b037ac9765` loaded exact Runtime rc31 code `4cb23c9c…`
+and Mod rc41 SHA `a67e240f…`/MVID `35dd0481…`, matching installation/pin/startup.
+Private originals remain `m0-card-reward-program-auto3/native-auto-pilot3`.
+
+Recorded Auto budget elapsed is14155ms,15 policy calls/submission attempts,
+12 delivered and3 known stale not-delivered receipts,0 unknown delivery. This is
+Auto elapsed, not total Host/caller wall time. No reward choice or ready summary was
+reached. Original `failure.json` is incomplete/`unsupported_or_non_task_handoff`,
+handoff `auto_surface_not_admitted`, untainted/errors empty, no exhausted budget
+or supervisor censor; no caller retry or Shadow call occurred.
+
+Typed content `adfe5e538d29907b8e30e1ca5acb2760545452480dbbbd721cd6b93b483238a1`
+and events digest `01951aa2ee94cb80c14bccb433627b800d1607d12968cbea4b0a008b687eb057`
+verify54 events,15 decisions/receipts, eight strict prior public-fact joins and seven
+unknown joins. Unknown joins stay unknown and do not become P1 consumed-input
+records. The common AppTaskOutcome has task/terminal unknown and operation
+`censored` with `recorded_stop_without_proved_task_completion`; that projection's
+recorded-stop category is separate from the driver's absent supervisor censor.
+No terminal win/loss, summary, strategy or Human qualification is added.
+
+Stop is stopped/model not loaded/Human/controller released, no taint/errors;
+cleanup errors are empty. Signed Host shutdown returned HTTP200, exit0 unforced,
+with no remaining owner/game process. Root executor58199 ended exit1 with its heavy
+slot released. Independent after-run receipt `m0-auto3-after-run-independent-review.json`,
+SHA `0a42dddfb796a69427a10a554e7b5e5818b0d2678fe63c84c6ff19b7529a2b04`, accepts a
+valid sealed, untainted incomplete operational attempt. Original Auto1/Auto2 files,
+sealed events, project/export and failures remain unchanged.
+
+The complete post-close Runtime stderr append is0 bytes, untruncated. This attempt
+contains no failed terminal successor wait, so it supplies no failed-wait diagnostic
+record; zero bytes do not prove sink completeness or that Auto2's historical timeout
+was repaired. The native End Turn Receipt states accepted input request, not causal
+settlement or final queued-action execution.
+
+### Next owning boundary: accepted design and active source follow-up
+
+The read-only diagnosis `native-auto3-no-input-diagnosis.md`, SHA
+`a29dc240fe32ae7231dce385798f101ef59b2e9cf0804f8d1684851b4f342b9d`, identifies an
+exact supported combat ready/no-current-command classification gap. Final delivered
+End Turn event50 is followed by successful successor51: complete `observed` combat,
+stage `ready`, C0 and disabled End Turn, missing=[]; release52/handoff53/Stop54 follow.
+This is not FTUE rejection, unknown delivery or failed successor acquisition.
+Runtime correctly follows its existing noninteractive handoff contract.
+
+The native completed-button source withdraws that exact control before the queued
+turn action executes, while semantic Play can still be open. An earlier first End
+Turn in this same attempt exposed the same category, then later public evidence
+reached round2. Those facts do not identify the final native queue action, exact
+transient duration or causal settlement, and do not diagnose old Auto2.
+
+Independent architecture review has accepted two bounded follow-up designs. Root
+has assigned disjoint source owners from the same f559 base; their source work is
+active, with no implementation receipt or new game result claimed yet.
+
+- The native diagnostics owner corrects Connector capture/readiness through one
+  private exact-native availability proof, a scoped sticky20s no-input window and
+  final per-profile mapping. Preserve enabled gameplay and richer text/native
+  information leaves. The bound is independent of view order/matched drafts and
+  temporary overlay return; pending/expired status precedes identity hashing.
+  No Runtime production change, hidden queue gate, timer extension or new profile.
+- The application/data owner preserves the exact bounded terminal-tail handoff
+  reason (`auto_surface_not_admitted` event53 then Stop54) in the common outcome.
+  Existing task/status/result axes remain unchanged; no older-handoff search,
+  consumed-input backfill or overwritten historical report is introduced.
+
+The current Runtime rc31 package/pin may be reused for a later Connector-only
+candidate if its declared SDK bytes/schema and compatibility remain unchanged;
+Root verifies exact identities rather than forcing component versions in lockstep.
+No further native attempt is allocated here. Autonomous continuation proceeds with
+these owning repairs while preserving Auto3's consumed failure and qualifying any
+later distinct candidate separately. No new training/provider job or GPU spend.
 
 ### Runtime diagnostics
 
@@ -206,22 +288,20 @@ remain separate; proprietary sources/assemblies stay private and untracked.
 
 ## Integration and next actual boundary
 
-1. Accepted implementation reviews and source merges are complete; finish affected
-   assembled gates and exact artifact checks. Verify PR171's
-   selected full dual-OS/portable CI and normal integration separately; bring the
-   actual develop merge into this dependent topic without rewriting provenance.
-2. Assemble accepted changes, update only affected component versions/identity/BOM
-   and formal package pins, then run the selected root gates. Review the complete
-   assembled producer/caller/reader and freeze its exact source and dependencies.
-3. Root may allocate at most one fresh M0 Auto comparison for this candidate after
-   exact build/package/install/load prerequisites and caller review. Reuse the declared
-   d6 reward-program Agent, original weights and seed; at most2000 submissions,
-   4000 policy calls and1800s of Auto. Host setup, caller deadline and cleanup have
-   separate bounded receipts. Enable the private diagnostic explicitly. No replay of
-   old delivered/unknown requests, hidden clicks, unreviewed fallback or extra run.
-4. Audit actual input acceptance/order, any wait diagnostic, common task result and
-   Stop/Host closure. A new failure informs a new decision; neither raising the wait
-   deadline nor claiming settlement from elapsed time is a preselected repair.
+1. Source reviews/merges, final local gates, exact package/build/install and reviewed
+   caller/load are complete for this candidate; Auto3 consumed the packet's one
+   fresh bounded comparison and is closed incomplete. Never replay its delivered
+   End Turn or use this packet to launch an extra run.
+2. Verify old PR171's repaired742 full CI and normal develop integration separately;
+   retain its exact source/receipt and import the real merge without rewriting
+   component provenance. That hosted result cannot qualify this next source or Auto3.
+3. Continue the accepted bounded Connector availability/window/profile-mapping and
+   application terminal-tail source follow-ups under independent implementation review.
+   A later candidate needs owning source/tests, exact assembled identity/build/install/
+   caller gates and a distinct runtime envelope; no extra game is allocated here.
+4. Preserve the complete original Auto3 audit, common task outcome, known failure and
+   Stop/Host closure. It supplies the next decision, not a natural-summary pass,
+   Auto2 cause proof, longer-timeout prescription or general strategy qualification.
 
 Rollback retains the prior rc30 Runtime archive/pin and rc40 Mod backup and uses
 existing installers/owned lifecycle. Restoring source is not proof installed bytes
