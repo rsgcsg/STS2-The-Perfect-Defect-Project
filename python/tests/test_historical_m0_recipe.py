@@ -461,6 +461,9 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
     store, owner, project, original, selection, samples, rows, old_inputs = _original_encoded(
         pair_originals
     )
+    original_input_bytes = old_inputs.to_bytes()
+    original_payloads_by_role = {payload.role: payload.to_dict() for payload in old_inputs.payloads}
+    original_row_bytes = b"".join(store.read_payload(old_inputs.payload("rows")))
     actual_producer = source_identity(ROOT)
     previous = torch.get_num_threads()
     torch.set_num_threads(2)
@@ -691,8 +694,16 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
             projected.state_text, projected.action_texts
         )
         old_rows = b"".join(store.read_payload(old_inputs.payload("rows")))
-        assert old_rows
-        assert store.get_manifest(original["training_input_id"]) == old_inputs
+        assert old_rows and old_rows == original_row_bytes
+        assert hashlib.sha256(old_rows).hexdigest() == old_inputs.payload("rows").sha256
+        stored_original = store.get_manifest(original["training_input_id"])
+        assert (
+            stored_original.artifact_id == old_inputs.artifact_id == original["training_input_id"]
+        )
+        assert stored_original.to_bytes() == original_input_bytes
+        assert {
+            payload.role: payload.to_dict() for payload in stored_original.payloads
+        } == original_payloads_by_role
         from test_public_m0_policy_port import capabilities
 
         models = LocalModelService(project)
