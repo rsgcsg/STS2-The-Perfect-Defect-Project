@@ -56,7 +56,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         if (playerCombat == null)
             return null;
         NativeCombatDecision semanticDecision = NativeCombatDecisionProvider.Capture(entities);
-        CardModel[] visibleHandCards = hand.ActiveHolders
+        var visibleHolders = hand.ActiveHolders;
+        CardModel[] visibleHandCards = visibleHolders
             .Select(holder => holder.CardModel)
             .Where(card => card != null)
             .Cast<CardModel>()
@@ -101,6 +102,16 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         if (canEndTurn)
             endTurn = NativeEndTurnInput.Capture(room, hand, player, out endTurnMissing);
         string? endTurnIdentity = endTurn == null ? null : NativeEndTurnInput.Identity(entities, endTurn.ExactScope);
+        int commandCount = playableCards.Count + usablePotions.Count + (canEndTurn ? 1 : 0);
+        bool completeDiscovery = semanticDecision.Status == "captured"
+            && visibleHandCards.Length == visibleHolders.Count && context.CaptureMissing.Count == 0;
+        var availability = CombatInputAvailability.Capture(room, hand, player, entities, commandCount,
+            completeDiscovery, inputReady);
+        if (commandCount == 0 && (availability is { CanStartWithdrawal: true } or { CanContinueWithdrawal: true }))
+        {
+            bool? ftue = NativeEndTurnInput.ReadFtueSeen();
+            if (ftue != true) endTurnMissing = ftue == false ? NativeEndTurnInput.FtueUnseen : NativeEndTurnInput.FtueUnknown;
+        }
         var surface = new CombatTurnSurface(
             Kind,
             entities.GetId(room, "room"),
@@ -149,6 +160,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         {
             EndTurnBinding = endTurn,
             EndTurnBindingIdentity = endTurnIdentity,
+            CombatAvailabilityEvidence = availability,
             Diagnostics = new[]
             {
                 new HostDiagnostic(
@@ -180,7 +192,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             { PlayerVisibleSemantics = "partial", InteractionDiscovery = "empty_fail_closed", Missing = absent },
             InputOwnership = new("none_fail_closed", null, "The native End Turn input binding is unsupported."),
             EndTurnBinding = null,
-            EndTurnBindingIdentity = null
+            EndTurnBindingIdentity = null,
+            CombatAvailabilityEvidence = null, CombatWithdrawal = null
         };
     }
 

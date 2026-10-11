@@ -167,6 +167,22 @@ public sealed class NativeLogicalBridgeTests
         Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, nativeRequests);
     }
     [Fact]
+    public void PrivateAvailabilityExpiryChangesNativeIdentityBeforePublishingSupportedRichLeaves()
+    {
+        using var fixture = new Fixture();
+        fixture.Frame = fixture.Frame with { CombatWithdrawal = new("exact-owner", global::STS2Connector.LiveHost.CombatWithdrawalState.Pending) };
+        var first = fixture.Current();
+        var old = Assert.Single(fixture.Owner.Store.Catalog(first.Capture!.CaptureId).Actions);
+        fixture.Frame = fixture.Frame with { CombatWithdrawal = fixture.Frame.CombatWithdrawal! with
+            { State = global::STS2Connector.LiveHost.CombatWithdrawalState.Expired } };
+        var second = fixture.Current();
+        Assert.NotEqual(first.Capture.SnapshotId, second.Capture!.SnapshotId);
+        Assert.Single(fixture.Owner.Store.Catalog(second.Capture.CaptureId).Actions);
+        var result = fixture.Submit(new("old-availability", first.Capture.SnapshotId, old.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile));
+        Assert.Equal("not_started", result.Delivery); Assert.Equal(0, fixture.Dispatches);
+    }
+    [Fact]
     public void LaterSourceCallbackCannotEncodeAheadOfAnOlderCapturedCurrent()
     {
         using var fixture = new Fixture();

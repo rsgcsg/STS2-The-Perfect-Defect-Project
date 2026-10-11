@@ -84,6 +84,7 @@ internal sealed partial class NativeLogicalService : IDisposable
     private string bindingRevision = NativeLogicalWire.Id("binding"), focusOccurrence = NativeLogicalWire.Id("focus");
     private TextMenuFrame? currentNative;
     private NativeLogicalPublicFrame? currentFacts, projectedBasis;
+    private string? currentAvailabilityIdentity;
     private IReadOnlyDictionary<string, string> currentActionKeys = new Dictionary<string, string>();
     private string? projectedSnapshot;
     private readonly NativeLogicalExecutor executor;
@@ -194,8 +195,11 @@ internal sealed partial class NativeLogicalService : IDisposable
             new(missing.Count == 0 ? "complete" : "partial", Array.AsReadOnly(missing.Distinct(StringComparer.Ordinal).ToArray())));
         lock (basisGate)
         {
-            if (currentFacts is not null && !SameFacts(currentFacts, facts))
+            string? availability = native.CombatWithdrawal?.Identity;
+            if (currentFacts is not null && (!SameFacts(currentFacts, facts)
+                || currentAvailabilityIdentity != availability))
             { bindingRevision = NativeLogicalWire.Id("binding"); facts = facts with { OwnerOccurrence = facts.OwnerOccurrence with { BindingRevision = bindingRevision } }; }
+            currentAvailabilityIdentity = availability;
             currentFacts = facts; currentNative = native;
         }
         return new(facts, native.GameContinuityId, DateTimeOffset.UtcNow);

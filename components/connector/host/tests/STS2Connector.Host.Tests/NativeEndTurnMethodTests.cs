@@ -80,7 +80,9 @@ public sealed class NativeEndTurnMethodTests
         Assert.Equal(typeof(CombatState).MakeByRefType(), accessor.ReturnType);
         Assert.Equal(typeof(NEndTurnButton), Assert.Single(accessor.GetParameters()).ParameterType);
         var capture = Instructions(Method(typeof(NativeEndTurnInput), nameof(NativeEndTurnInput.Capture))).ToArray();
-        Assert.Contains(capture, i => i.Member?.Name == nameof(SaveManager.SeenFtue));
+        Assert.Contains(capture, i => i.Member?.Name == nameof(NativeEndTurnInput.ReadFtueSeen));
+        Assert.Contains(Instructions(Method(typeof(NativeEndTurnInput), nameof(NativeEndTurnInput.ReadFtueSeen))),
+            i => i.Member?.Name == nameof(SaveManager.SeenFtue));
         Assert.Contains(capture, i => i.Member?.Name == nameof(CombatManager.IsPlayerReadyToEndTurn));
         Assert.DoesNotContain(capture, i => i.Member?.DeclaringType == typeof(NEndTurnButton) && i.Op == OpCodes.Stfld);
         var members = typeof(NativeEndTurnInput).GetNestedTypes(Flags).Append(typeof(NativeEndTurnInput))
@@ -88,6 +90,20 @@ public sealed class NativeEndTurnMethodTests
             .SelectMany(Instructions).Select(i => i.Member).OfType<MethodInfo>().ToArray();
         Assert.Contains(members, m => m.DeclaringType == typeof(NEndTurnButton) && m.Name == nameof(NEndTurnButton.CallReleaseLogic));
         Assert.DoesNotContain(members, m => m.DeclaringType == typeof(PlayerCmd) || m.Name is "ForceClick" or "ShouldShowPlayableCardsFtue" or "SecretEndTurnLogicViaFtue" or "MarkFtueAsComplete" or "HasCardsToPlay" or "set_IsLongPressEnabled");
+    }
+    [Fact]
+    public void NativeWithdrawalUsesOnlyPinnedDisabledStateAndPureNativeHandGetter()
+    {
+        var state = typeof(NEndTurnButton).GetField("_state", Flags)!;
+        Assert.True(state.FieldType.IsEnum);
+        Assert.Equal(new[] { "Enabled", "Disabled", "Hidden" }, Enum.GetNames(state.FieldType));
+        Assert.Equal(1, Convert.ToInt32(Enum.Parse(state.FieldType, "Disabled")));
+        var getter = Method(typeof(NEndTurnButton), "get_CanTurnBeEnded");
+        Assert.Equal(typeof(bool), getter.ReturnType); Assert.Empty(getter.GetParameters());
+        Assert.DoesNotContain(Instructions(getter), i => i.Op == OpCodes.Stfld || i.Op == OpCodes.Stsfld);
+        var accessor = Method(typeof(NativeEndTurnInput), nameof(NativeEndTurnInput.ReadCanTurnBeEnded));
+        Assert.Equal("get_CanTurnBeEnded", accessor.GetCustomAttribute<UnsafeAccessorAttribute>()!.Name);
+        Assert.Equal(UnsafeAccessorKind.Method, accessor.GetCustomAttribute<UnsafeAccessorAttribute>()!.Kind);
     }
     private sealed record Instruction(OpCode Op, MemberInfo? Member, int Offset, int? Target);
     private static readonly Dictionary<short, OpCode> Ops = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)

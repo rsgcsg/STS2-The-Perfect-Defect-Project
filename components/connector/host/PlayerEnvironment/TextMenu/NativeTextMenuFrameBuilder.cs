@@ -40,7 +40,8 @@ internal static class NativeTextMenuFrameBuilder
         frame = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
         return frame with
         {
-            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page, nativeLogical)
+            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page, nativeLogical),
+            CombatWithdrawal = legacy.HostObservation.CombatWithdrawal
         };
     }
 
