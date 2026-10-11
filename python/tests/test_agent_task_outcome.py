@@ -322,6 +322,126 @@ def test_recorded_budget_survives_unavailable_task_manifest(produced_public):
     assert outcome["operation_end"]["budget"]["exhausted_reason"] == "policy_call_limit"
 
 
+@pytest.mark.parametrize("variant", ["handoff-terminal", "handoff-cleanup"])
+def test_actual_runtime_handoff_reason_survives_reasonless_stop(produced_public, tmp_path, variant):
+    directory = produced_public(variant)
+    expected = original_expected(directory)
+    verified = verify_agent_run_evidence(directory, expected)
+    assert verified.status == "pass", verified.findings
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+    handoff = next(event for event in events if event["kind"] == "handoff_to_human")
+    assert handoff["payload"]["reason"] == "auto_surface_not_admitted"
+    assert not any(event["kind"] in {"decision", "receipt"} for event in events)
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    end = outcome["operation_end"]
+    assert end["status"] == "censored"
+    assert end["recorded_reason"] == "auto_surface_not_admitted"
+    assert end["event_sequence"] == handoff["sequence"]
+    assert end["controller"] == "released" and end["budget"]["ended_reason"] == "mode_changed"
+    assert outcome["task_completion"]["status"] == "unknown"
+    assert outcome["terminal_observation"]["status"] == "unknown"
+    service = LocalModelService(
+        ProjectConfig(tmp_path / "handoff-app", "", "", None, combination())
+    )
+    shutil.copytree(directory, service.directory / "agent-runs" / expected["run_id"])
+    service.state.update(startup=expected, selection_id="sealed-selection")
+    service._evaluation_handoff()
+    assert service.state["evaluation"]["agent_task_outcome"] == outcome
+    assert service.state["evaluation"]["game_outcome"] == "not_measured"
+
+
+@pytest.mark.parametrize("variant", ["handoff-continued", "handoff-resumed-no-step"])
+def test_resumed_auto_work_or_intent_blocks_old_handoff_reason(produced_public, variant):
+    directory = produced_public(variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+    assert len([event for event in events if event["kind"] == "handoff_to_human"]) == 1
+    assert any(event["kind"] == "decision" for event in events) == (variant == "handoff-continued")
+    assert outcome["operation_end"]["status"] == "censored"
+    assert outcome["operation_end"]["recorded_reason"] is None
+    assert outcome["operation_end"]["event_sequence"] == events[-1]["sequence"]
+
+
+def test_two_auto_epochs_only_attach_the_terminal_handoff_reason(produced_public):
+    directory = produced_public("handoff-two-epochs")
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_bytes().splitlines()]
+    handoffs = [event for event in events if event["kind"] == "handoff_to_human"]
+    assert [event["payload"]["reason"] for event in handoffs] == [
+        "auto_surface_not_admitted",
+        "policy_abstained",
+    ]
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["operation_end"]["recorded_reason"] == "policy_abstained"
+    assert outcome["operation_end"]["event_sequence"] == handoffs[-1]["sequence"]
+    assert outcome["task_completion"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("variant", ["handoff-failed", "handoff-tainted", "handoff-budget"])
+def test_handoff_does_not_override_failure_taint_or_budget_precedence(produced_public, variant):
+    directory = produced_public(variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    end = outcome["operation_end"]
+    assert end["recorded_reason"] != "auto_surface_not_admitted"
+    if variant == "handoff-budget":
+        assert end["status"] == "censored" and end["reason_codes"] == ["recorded_budget_end"]
+        assert end["budget"]["exhausted_reason"] == "policy_call_limit"
+    else:
+        assert end["status"] == "failed"
+        assert end["reason_codes"] == [
+            "recorded_fail_closed" if variant == "handoff-failed" else "recorded_runtime_taint"
+        ]
+
+
+@pytest.mark.parametrize("variant", ["handoff-substantive", "handoff-unknown"])
+def test_substantive_or_unverified_tail_cannot_reuse_handoff_reason(produced_public, variant):
+    directory = produced_public(variant)
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == ("fail" if variant == "handoff-unknown" else "pass")
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["operation_end"]["recorded_reason"] is None
+    assert outcome["operation_end"]["status"] == (
+        "unknown" if variant == "handoff-unknown" else "censored"
+    )
+
+
+def test_changed_handoff_events_cannot_supply_original_end_reason(produced_public):
+    directory = produced_public("handoff-terminal")
+    verified = verify_agent_run_evidence(directory, original_expected(directory))
+    assert verified.status == "pass"
+    with (directory / "events.jsonl").open("ab") as output:
+        output.write(b" ")
+    outcome = project(verified, native=False, text_terminal=_terminal_screen)
+    assert outcome["operation_end"]["status"] == "unknown"
+    assert outcome["operation_end"]["recorded_reason"] is None
+
+
+def test_stop_reason_and_uncertainty_are_not_overwritten_by_handoff():
+    """Pure precedence seam; current typed generic Stop does not carry a reason."""
+    from types import SimpleNamespace
+
+    from spireagent.workbench.agent_task_outcome import _empty, _operation_end
+
+    events = [
+        {"kind": "handoff_to_human", "sequence": 1, "payload": {"reason": "old_handoff"}},
+        {"kind": "stopped", "sequence": 2, "payload": {"reason": "explicit_stop"}},
+    ]
+    value = SimpleNamespace(manifest={"tainted": False})
+    outcome = _empty("pass")
+    _operation_end(outcome, value, events)
+    assert outcome["operation_end"]["recorded_reason"] == "explicit_stop"
+    assert outcome["operation_end"]["event_sequence"] == 2
+    events[-1]["payload"] = {"controller": "unknown"}
+    _operation_end(outcome, value, events)
+    assert outcome["operation_end"]["status"] == "unknown"
+    assert outcome["operation_end"]["recorded_reason"] is None
+
+
 @pytest.fixture
 def native_source(tmp_path, monkeypatch):
     """Owning SDK source-shaped sample fixture; no neural/native implementation."""

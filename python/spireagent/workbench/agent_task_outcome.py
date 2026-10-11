@@ -264,6 +264,23 @@ def _operation_end(outcome: AgentTaskOutcome, value: Any, events: list[dict[str,
         )
     else:
         end.update({"status": "unknown", "reason_codes": ["operation_end_not_recorded"]})
+    if (
+        stopped is not None
+        and events[-1] is stopped
+        and end["recorded_reason"] is None
+        and end["status"] in {"censored", "task_ended"}
+        and "recorded_budget_end" not in end["reason_codes"]
+    ):
+        # Only controller release is documented cleanup. Any other intervening
+        # event blocks reuse of an earlier handoff, including a new Auto epoch.
+        for event in reversed(events[:-1]):
+            if event["kind"] == "controller_released":
+                continue
+            if event["kind"] == "handoff_to_human":
+                reason = event["payload"].get("reason")
+                if isinstance(reason, str) and reason:
+                    end.update({"recorded_reason": reason, "event_sequence": event["sequence"]})
+            break
 
 
 def _generic(

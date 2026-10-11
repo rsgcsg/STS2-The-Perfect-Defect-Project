@@ -406,3 +406,10 @@ when the original events still match the accepted inventory. Changed events
 cannot support any axis. The generic handoff freezes and hash-checks one events
 byte sequence for both the common DTO and existing scalar counters/observations,
 so reopening a changed file cannot mix foreign facts with the old evidence ID.
+A reasonless final Stop retains the exact immediately preceding operative
+`handoff_to_human` reason and event sequence; only controller-release cleanup may
+intervene. Controller and budget facts still come from the final Stop.
+A later mode, decision, submission, consumption, directive or unknown
+substantive event blocks reuse of an older handoff. Explicit Stop reasons and
+existing failure, uncertainty and budget precedence remain unchanged; the reason
+does not prove Task completion or a terminal game result.
