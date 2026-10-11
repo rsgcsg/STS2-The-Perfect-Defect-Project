@@ -420,3 +420,53 @@ strict. A faithful controlled moving-state trace must fail the old three cap and
 a new finite window, paired with endless movement, idle expiry, long scoring, stale
 epochs, late receipts and unchanged native-Agent negatives. This allocates source/test
 work only; no new package/install or Auto5 is authorized by this paragraph.
+
+
+## Integrated common execution and one Auto5 envelope
+
+Independent source review accepted P1a164 plus path-projection/fixture follow-upb507.
+Public M2 and model-less Teacher now use the same existing service with immutable
+composition/request references; original manifests still own launch/path validation.
+Fresh public descriptors/results carry artifact ID/SHA only. The full six application
+owner files passed270 tests with actual rc32/typed Evidence, preserving all479 previous
+assertions. Original7 failures, the real private-path output defect and14 temporary
+plain-bind setup errors remain recorded; no socket guard or assertion was weakened.
+
+Runtime recovery sourcef5d2c5f0 is accepted and integrated as rc32/source9b092a51.
+Combined local component check passed461 tests with3 existing optional skips, and
+root repository gates passed. Archiveccaf03a4/contentd21ed735/code95b769a2 is pinned.
+The actual unpacked compiled package passed four known stale refusals followed by
+fresh delivery and its real10s idle deadline without another Tick/GET. Both sealed
+traces passed Node and typed Python verification; independent artifact review accepted
+the exact tuple. The first probe lacked an Evidence parent directory and failed before
+Runtime construction; it is preserved separately from the successful corrected probe.
+
+SDK fixture repair7d8ab1f7 separates the existing60s compile preparation from unchanged
+30s/100-assembly operation checks. Its controlled32s compiler-delay original fails and
+corrected fixture passes; the historical Windows exhausted phase remains unknown.
+All three case bodies and31 producer inputs are unchanged; Root combinedSDK232 passed.
+Test-only Connector current provenance isb3dd538c; installed Mod42 compiled-source1c7
+and every packaged SDK production byte remain unchanged. Runtime32 is not repacked
+solely for this test change; historical bundle source remains its original1c7.
+PR173's failing Windows SDK run remains failed. Its reviewed hygiene changes and this
+fixture repair are included in the next complete candidate; no failed-head merge or
+borrowed earlier CI success is permitted.
+
+Root allocates **one distinct Auto5** through the same existing application service
+after exact owner install/rollback and final frozen caller review. This validates the
+combined common-request application and new Runtime operational policy with the same
+d6 Model, explicit reward-card program, immutable Host/seed and unchanged Mod42.
+Bounds remain2000 submissions/4000 program calls/1800s autonomy,1830s caller,2160s Host,
+2CPU and one local heavy slot. No new training or paid resource is allocated; cumulative
+GPU spend remains USD0 of the same USD20 envelope. New source/consumer/request/run and
+output identities are mandatory; no Auto4 replay or later-frame input reconstruction.
+
+The candidate's source gates and final package checks precede execution. Required full
+Linux/Windows CI may run concurrently on the frozen candidate; it governs source
+integration separately. The original operation's sealed result/Stop/Host receipts and
+PR closeout own the actual Auto5 outcome; this source envelope does not imply that it
+ran or succeeded. Never launch again from this paragraph after its output exists.
+After any failure retain the exact cause/unknowns and cleanup, then reassess; no further
+automatic game attempt is allocated. Summary, reasonable strategy, Human and full
+G1/G2/V1 acceptance remain distinct. Rollback uses the retained rc31 archive/pin and
+existing Mod42/Mod41 owner receipts, not a source reset masquerading as deployment.

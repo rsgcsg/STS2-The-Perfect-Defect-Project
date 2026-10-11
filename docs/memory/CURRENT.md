@@ -44,24 +44,30 @@ strategy qualification. No Summary. Final three stale refusals caused the existi
 signed Host exited0 unforced and strict process discovery found no game. One Auto4
 allowance is consumed. No additional game is allocated.
 
-## Active owning work
+## Integrated source and next execution boundary
 
-- **Runtime operational recovery:** independent diagnosis found no proven Connector
-  error in Auto4's final tail. Original scored frames are missing; available fair facts
-  changed during the burst. Sol review accepted replacing the three-refusal policy with
-  a finite per-episode recovery window in the existing owner. Source authoring/tests are
-  pending, including idle expiry and unknown/late-Receipt fences. Native Agent8/3 and
-  global budgets remain unchanged. No new package/install or native result is claimed.
-- **Common executable composition/request:** P1 A+B remains in its isolated author
-  worktree. Actual same-service Teacher (models=[]) and stateful PublicM2 process paths
-  passed startup/control/Stop/seal checks with the accepted Runtime31 and Evidence29.
-  A natural-Close response exposed an application loaded-state lag, now repaired through
-  its existing cleanup owner. Exact source review and remaining gates are pending;
-  this implementation is not integrated or fully accepted yet.
-- **Integration hygiene:** PR171 head742 passed full CI38100661045 and normal merge094
-  preserved its tested tree. Merge CI38104068580 failed an EOF patch gate. Reviewed
-  repairc9 is in this topic; dedicated PR173 CI38109117835 has both Linux leaves passed,
-  Windows/portable pending. Verify current exact results before normal develop merge.
+- **Runtime32** source9b092a51 contains the independently accepted finite recovery
+  window. Combined461 tests/3 existing optional skips and repository gates passed.
+  Archiveccaf03a4/contentd21ed735/code95b769a2 passed actual compiled four-stale recovery
+  and idle-expiry probes with both typed seals. It is pinned; owner installation and
+  any actual use remain separately recorded. Mod42 and SDK production bytes are unchanged.
+- **Common composition/request** sourcea164+b507 is independently accepted and merged.
+  Actual Teacher and PublicM2 process paths use the same service/registry/Stop/result
+  owners. All270 application-owner tests passed with exact rc32; fresh descriptors and
+  results are path-free while original validation remains strict. Original failures
+  and interim private synthetic records remain unchanged. General placement, multiple
+  models and training workloads are later scope, not claims of this slice.
+- **CI correction:** PR171's source head742 passed full CI and normal develop merge094;
+  its merge gate failed EOF hygiene. Reviewed PR173 repairc9 then passed three OS leaves
+  but CI38109117835 failed one Windows SDK30s case; Windows Python itself passed. Reviewed
+  test-only setup repair7d separates bounded compiler preparation from the unchanged
+ 100-assembly case. CurrentRootSDK232 passes; no new Windows pass is claimed. Both
+  corrections belong to the complete next candidate, which still requires full dual-OS CI.
+- **One Auto5 envelope** is fixed in the active packet for the common application and
+  rc32 candidate after owner install/rollback/final caller checks. Same original Model,
+  program, Host/seed, Mod42 and global budgets; no Auto4 replay. Actual dispatch/result
+  must be read from its original operation and PR closeout, never inferred from this
+  source envelope. Freeze candidate during execution; required hosted CI may overlap.
 
 ## Remaining Platform non-claims
 

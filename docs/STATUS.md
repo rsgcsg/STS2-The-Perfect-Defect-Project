@@ -4,6 +4,28 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
+## Common execution and finite recovery source candidate, 2026-10-11
+
+Reviewed a164+b507 unify effective Agent composition/request through existing owners.
+Teacher models=[] and stateful PublicM2 have actual same-service process/Stop/seal
+checks; full six application-owner suites passed270 with real rc32/typed Evidence.
+Fresh public projections retain only artifact ID/SHA. Prior metadata fixtures, an
+introduced private-path defect and setup-only TIME_WAIT failures remain recorded.
+
+Runtime32/source9b092a51 implements the reviewed10s per-episode recovery window in
+one existing deadline owner. Final component461PASS/3optionalSKIP, repository and
+SDK232 checks passed. Immutable archiveccaf03a4/contentd21ed735/code95b769a2 passed
+four-known-stale-to-fresh-delivery and actual idle-expiry compiled tests with typed
+seals. These source/package gates do not establish a new installed/live result.
+Test-only Connector provenanceb3dd538c leaves Mod42 and bundled SDK code unchanged.
+
+PR173 CI38109117835 still failed one Windows SDK operation-case timeout after its
+Python stage passed. Reviewed7d moves compiler preparation before that unchanged
+case; its local controlled RED/GREEN is not a new hosted Windows pass. The next
+complete candidate requires its own full CI. One scoped Auto5 envelope is recorded
+in the [active packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#integrated-common-execution-and-one-auto5-envelope);
+its original operation/PR closeout records actual execution separately.
+
 ## Agent run Auto4 closure, observed 2026-10-11
 
 Frozen6330b8ce with independently reviewed/built/installed/loaded Connector23/Mod42
