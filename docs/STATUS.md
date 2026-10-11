@@ -4,6 +4,25 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
+## Runtime33 candidate after Auto5 repairs, observed 2026-10-11
+
+Normal merges retain independently accepted admission4a5449d1, portable service
+fixture2b3915a0 and Runtime readiness9756d147. Their recorded local gates passed;
+CI38115573320 on old6dc ended failed (Linux2/Windows2 ten admission/endpoint cases;
+Windows1 two common-service cases). Actual Windows success awaits a fresh candidate.
+
+Runtime33 sourcefb906728/BOM and immutable archive6c87e66b/content8317363d/code4ffd923b
+passed independent review. The actual compiled package passed extended synthetic
+settling and original idle-deadline cancellation; both typed seals passed and730 files
+stayed unchanged. Root's two common-service cases passed against the same archive.
+The existing owner installed33, loadedfalse/activatedfalse; Mod42 and original weights
+remain unchanged. No native33 result follows from these checks.
+
+[Current packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#runtime33-candidate-and-one-fresh-auto6-envelope)
+allocates one fresh bounded Auto6 only after its final tuple/caller/startup gates.
+It has not dispatched at this snapshot. Auto5 and all historical failures below retain
+original identities and outcomes; Runtime32 archive/pin remains available for rollback.
+
 ## Auto5 and current repair boundary, observed 2026-10-11
 
 Frozen6dc0f722 loaded exact Runtime32/code95b769a2 and unchanged Mod42/artifact2ef3dcf7.

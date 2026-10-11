@@ -1,8 +1,9 @@
 # Agent run completion and native input order — 2026-10-11
 
-Current decision: see [Auto5 closure and current repair packet](#auto5-closure-and-current-repair-packet).
-PR174 at6dc failed its Linux2 source gate; Auto5 is closed tainted/incomplete.
-Two reviewed-direction source repairs are active; no new game is allocated.
+Current decision: see [Runtime33 candidate and one fresh Auto6 envelope](#runtime33-candidate-and-one-fresh-auto6-envelope).
+Three source repairs and the exact Runtime33 package are independently accepted;
+Runtime33 is installed but not native-loaded. One fresh Auto6 awaits final caller gates.
+PR174 old6dc CI ended failed; a fresh candidate gate remains required.
 
 ## Prior Auto3 preparation snapshot
 
@@ -561,3 +562,76 @@ only when commands are ready. Read exact code and faithful regressions independe
 then batch accepted corrections before one fresh required CI candidate. Do not merge
 failed6dc or reuse its Linux1 PASS as a changed-head verdict. No main/release, training,
 paid job, Human/scientific/strategy qualification or full G1/G2/V1 approval is added.
+
+
+## Runtime33 candidate and one fresh Auto6 envelope
+
+Accepted source is normally merged, preserving original commits: application admission
+4a5449d1 restores the pure recording guard before composition/original reads while
+retaining atomic dispatch recheck;152 related cases passed. Test-only2b3915a0 corrects
+Windows separators in the actual synthetic-world child router; seven pure path cases
+and both actual Teacher/PublicM2 service cases passed locally,33 old assertions retained.
+Runtime9756d147 implements the reviewed Auto waiting contract above, including explicit
+manual Auto/queued One-Step command-latency limits;488 checks/three existing optional
+skips, typecheck/build/temporary-package passed. Independent source review4a265a7b
+accepted exact source. Original REDs, old fixture failures and a120s combined test-batch
+timeout are preserved; the later152-case run completed in120.64s under a separate cap.
+
+Old6dc CI38115573320 is terminal failed: Linux1 passed, Linux2 and Windows2 failed the
+same ten admission/endpoint cases; Windows1 failed Teacher start then shared-service
+closed. A POSIX-only test router is a demonstrated Windows defect; old first-child
+stderr remains unobserved. The SDK and Runtime Windows2 gates passed their old source
+scopes. None of these receipts is a pass for changed source. Root will publish this
+batched candidate for fresh full dual-OS/portable CI; PR174 remains draft until required
+latest-candidate checks and review pass. Main/release/full G1/G2/V1 are outside scope.
+
+### Exact package and installed boundary
+
+Runtime33 metadata sourcefb906728/tree d1995c97/digestc3f4b1c2 and version0.1.0-rc.33
+are independently accepted. BOM current fields/mirrors changed, historical producers
+and other components did not. Initial repository check caught three stale current
+mirrors; corrected52e64880 passed the full repository gate. Package built from clean52e:
+archive6c87e66b/content8317363d/code4ffd923b, registry pin97b7593e. Its bundled SDK has
+current whole-component provenanceb3dd but unchanged production bundle96862d42.
+
+Root read the compiled probe and ran it once on this extracted archive:54 decoded
+complete/repeated settling observations,13.5s simulated time, then an interactive
+child; exactly one policy call/submission and one later successor. A second case used
+the real100ms original owner deadline while a read remained unresolved, with no GET
+or second tick: Human/released, original Receipt delivered, no successor/late revival.
+Both stopped untainted and passed formal typed Evidence verification;730 package files
+were unchanged. Receipt6c44e6d4 and independent package reviewf42a5f74 bind the exact
+bytes. Preparation with the wrong system Python failed before Runtime construction;
+that failure is retained. Root actual common-service Teacher/PublicM2 checks against
+this archive passed2 cases in4.84s. These are synthetic/consumer evidence only.
+
+The existing installer then verified Runtime33 in the original local model profile,
+loadedfalse/activatedfalse. Strict game discovery was empty. Mod42 artifact2ef3dcf7/
+MVIDddf4c579 remains unchanged (compiled Connector1c7f78ce); no unnecessary native
+rebuild/reinstall. Verified prior Runtime32 archiveccaf03a4/contentd21ed735 and its exact
+pin remain rollback inputs. Source pins and installer receipts do not prove cold load.
+
+### One fresh Auto6 allocation and stop conditions
+
+Within the existing authorized local engineering scope, Root allocates ONE fresh
+bounded Auto6 after independent final caller/installed-tuple review and strict idle
+checks. This is a new request/run, never a retry of Auto5's delivered End Turn or its
+failed operation. It tests whether the corrected readiness policy permits further
+continuous play; it does not assume eventual Summary or improved strategy.
+
+Keep original d6 model/export, explicit card-reward program, projectee66679b/export
+ec125a5d, same Host scriptedd487e9/seed and Mod42. Use qualified Runtime33 only.
+Existing limits remain2000 submissions/4000 program calls/1800s Auto,1830s caller,
+2160s Host andCPU2. The private caller differs from Auto5 by only title/version/attempt/
+intent literals; no control, diagnostic collection, budget, model or action changes.
+Final source SHA, fresh consumer digest, exact argv and new output identity must be
+frozen and independently checked before dispatch. No dispatch exists at this snapshot.
+
+The normal Host cold-load, exact loaded identity, fresh Human/control and startup
+gates still apply. Retain original requests, raw failures, diagnostics and typed seals.
+Unknown commands/delivery are not replayed; missing observations remain unknown.
+Stop/seal, owner Host shutdown, caller terminal exit and strict process cleanup are
+mandatory. Any failure closes this single allocation; no automatic extra game follows.
+The frozen bounded diagnostic may overlap isolated CI under TESTING's existing rules;
+full dual-OS success remains required for merge. GPU spend remainsUSD0/no job; no new
+training, data-use, publication or final qualification permission is implied.
