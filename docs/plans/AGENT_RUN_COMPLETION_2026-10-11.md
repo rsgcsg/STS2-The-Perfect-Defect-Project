@@ -693,7 +693,14 @@ passed four OS leaves and portable. Merge
 [CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
 passed fresh repository/identity checks and portable aggregation through verified
 same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
-qualifies Root's different frozen e479 execution source or unmerged candidates.
+qualifies the historical e479 game source or later unmerged candidates.
+
+Root now works on local `codex/native-episode-continuation` candidate
+fb7fd31d, continuing reviewed Episode6cf, PR176abbf and native policy3/358 increments
+from cd3906906684ad4cd640831281a354e44b2c8f0e. Remote develop remains32298949. The following
+Auto7/Auto3 facts retain their original e479 execution source; it is preserved
+history, not Root's current checkout. Local integration is not develop merge,
+hosted CI or installed/runtime promotion.
 
 Independently reviewed original Auto7 at e479 loaded Runtime33/code4ffd923b and
 Mod43/artifactf56b3240 in explicit headless Instant. It reached mechanical natural
@@ -728,21 +735,44 @@ strategy result. Earlier failures remain preserved. The current Native137 traine
 is available for operational diagnosis; retraining is not required to make it new.
 
 Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
-hosted head 6ddc9256 failed three OS leaves in full
-[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
-The owning TokenRanking regression repair at local baeb8958 is independently
-accepted with its original RED and one Reward/seven historical green cases;
-no latest-head hosted success is claimed. Two unchanged Windows test failures
-remain under a separate bounded diagnostic-only investigation. Episode f7fdbd1c's
-36 Application cases and final bounded synthetic common-process seam are independently
-accepted. Teacher retains the original passing test receipt/assertions, with its
-old raw temporary artifacts unavailable; final PublicM2 originals are independently
-verified. This is not a new two-case aggregate PASS or native/NN qualification.
-The default-CI process fixture lacked the supplied archive environment. The author
-is correcting that through the existing source-package owner and adding actual
-HTTP/CLI entry coverage; these new deltas are unexecuted. Legacy/root checks,
-metadata and CI remain pending. Native policy3's versioned per-episode recovery is under source
-implementation. No new game, inference, install or strategy result follows.
+is unmerged at abbf7e2c. Fresh full
+[CI38148835498](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38148835498)
+completed failed: Windows1 failed, Linux1/2 and Windows2 passed, portable failed.
+The sole Windows1 failure is localized to the unchanged Source3 real-store .NET
+backend startup-readiness 10s window, within its 130s outer body. Previous owned-stale
+Runtime488 checks passed. This is a localized failure, not a proved cause/fix;
+the existing SDK author is diagnosing read-only and no rerun is allocated.
+Earlier6dd failures and baeb local repair acceptance retain their original scope;
+no hosted pass is borrowed for Root fb7fd31d.
+
+At Episode66707bd, 399 checks plus build passed in the bounded follow-up batch;
+the 6cf delta adds three type casts with scoped
+mypy8 passing. Reviewed common-process fixtures retain their synthetic World and
+disclosed numerical leaves, not actual game/learned-inference qualification. Native
+policy3 source24, Evidence54/pure100/final30 checks are independently accepted.
+Full Evidence372 and pure-proof42 also passed. Runtime34's full cd390 owner gate
+ended failed after 83.705s: TS typecheck,512 tests passing/3 existing optional skips
+and build passed; installed-package smoke rejected exported constant33 versus
+package34. The first incorrect fact was the missed src/contracts.ts version
+literal. Only that literal was corrected in 7a5e889b and five current BOM fields
+in fb7fd31d. Corrected package-gate rerun remains pending, without a behavior retest
+or package acceptance claim.
+
+Evidence30 now pins 3988448dbb486d830a4e36f6a92049960fdc2e73 with uv.lock SHA
+25e801bb0e0eb0b0fc6098ec77b1c3664fa2cdde349e5d13e3462ea3c05d8960. The isolated
+new reader's 28 files match that exact producer while old Root venv29 stays unchanged;
+old27/29 package/lock identities remain frozen. Source pinning is not installation.
+
+Host rc28 full source checks passed at13b. Cache-contaminated e573 was invalidated;
+8ccb79 source-file inventory and standalone bounds passed, but ordinary native use
+is still blocked by reference CLI writing package.local. The owning
+`codex/native-host-external-state` increment derives external Application state and
+verifies ready readback before an actual game. This source repair is ongoing; it
+does not grant a usable native package or runtime/default qualification. Next:
+review Runtime34's corrected package gate, finish this package boundary, freeze coherent
+source/metadata/package identity and complete the selected integration gates.
+There has been no new game, production install, retained-Model derivative or
+game-bound NN execution since Auto3; synthetic source gates retain their own scope.
 
 The user retains final V1 data/Agent selection. The reviewed private proposal is
 awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
