@@ -50,7 +50,8 @@ Runtime diagnostics `2da07100`, application outcome `7e7acc56` and native End Tu
 `0.3.0-rc.18` retained; its source provenance change is docs/tests only. Final assembled
 Runtime442+3skips, repository, exact Connector/Mod builds and application189 checks
 passed. Package pinf0ed46d9 names rc31 archivee58b448b; Modrc41 isa67e240f/MVID35dd0481.
-Package/artifact review and install/load/game remain pending; installedrc30/Mod40 unchanged.
+Independent package/artifact review and owner installation passed; rc31 and Mod41
+are installed, not yet loaded. Exact rc30 archive/pin and Mod40 backup are retained.
 
 - Diagnostics retain default-off private bounded output and the same41/250 wait policy;
   accepted source/compiled-CLI checks do not establish new native successor evidence.
@@ -71,7 +72,7 @@ so the precise readiness failure remains unknown.
 
 Complete final assembled source/exact-game/artifact gates after the accepted reviews
 and candidate identity/BOM update. Root owns packaging/install and frozen caller review. Intermediate topic
-source identity is ahead of the unchanged installed candidate; do not borrow its receipts.
+source identity now matches the installed candidate; a new load/run still needs its own receipts.
 The packet allocates at most one new bounded M0 Auto comparison after prerequisites, with
 private diagnostics and exact new identities. It never replays the old delivered End Turn.
 

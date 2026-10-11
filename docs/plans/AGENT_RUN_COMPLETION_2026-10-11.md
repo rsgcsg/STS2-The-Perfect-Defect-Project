@@ -2,8 +2,9 @@
 
 Status: accepted source is assembled with version/BOM candidate `0817351f`;
 Runtime package pin is committed at `f0ed46d9`. Final local Runtime checks and
-Connector/Mod builds passed; new install/load/game comparison remain pending.
-Installed Runtime rc30/Mod rc40 still retain their previous exact tuples.
+Connector/Mod builds and independent package/artifact reviews passed. The existing
+owners installed Runtime rc31 and Mod rc41; new load/game comparison remains pending.
+Exact previous rc30 archive/pin and Mod rc40 backup remain available.
 
 This topic explicitly depends on old PR171's original f3 base. Its Windows fixture
 repairs `945c07c4` and `64850707` are normally merged on that separate delivery topic,
@@ -80,14 +81,14 @@ release artifact, installation/load or native comparison receipt.
 
 | Component | Source candidate | Installed boundary |
 | --- | --- | --- |
-| Policy Runtime | `0.1.0-rc.31`; accepted diagnostics `2da07100` | Previous exact rc30 installation remains current |
-| Connector | `1.3.0-rc.22`; accepted native queue/exact-offer binding | New candidate has not been installed through the production Mod |
-| Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | Previous exact Mod rc40 remains installed |
+| Policy Runtime | `0.1.0-rc.31`; accepted diagnostics `2da07100` | rc31 installed; not loaded for the new attempt |
+| Connector | `1.3.0-rc.22`; accepted native queue/exact-offer binding | rc22 installed inside exact Mod rc41; no new load yet |
+| Game Mod | `0.2.0-rc.41`; candidate manifest/BOM updated | rc41 installed; exact previous rc40 backup verified |
 | Annotator | `0.3.0-rc.18` retained | Production unchanged; only docs/test provenance changed, with source identity refreshed accordingly |
 
 Final local build/package checks below have passed. Independent package/artifact
-verification, exact install/load, caller review and the one fresh bounded Auto
-remain prerequisites below. Source merge does not diagnose Auto2's missing poll
+verification and exact install have passed; load, caller review and the one fresh
+bounded Auto remain prerequisites below. Source merge does not diagnose Auto2's missing poll
 frames or retroactively qualify any installed candidate.
 
 
@@ -115,7 +116,12 @@ their original source scopes; metadata-only rebuild is not a new native exercise
 
 The first version/BOM check exposed omitted Connector release/Mod manifests; the
 normal correction2596a88c aligned them. Final identity7/BOM15 checks passed without
-weakening assertions. No new installed/loaded/native/Human/strategy claim follows.
+weakening assertions. Independent review verified all730 package files/pins and
+actual Mod PE metadata/sourceSet/game identity. Root's existing Runtime installer
+returned installed/not-loaded/not-activated; Game Mod owner installed the exact
+rc41 SHA/MVID above with no running game. Its archived prior Mod matches rc40
+SHA4e2f6bab/MVID87ec9d9a. These are installation receipts, not loaded/native/Human or
+strategy evidence. New caller review and loaded qualification remain pending.
 
 ### Runtime diagnostics
 
