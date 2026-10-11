@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { JsonObject } from "@rsgcsg/sts2-connector-client";
+export function prepareBridge(): string;
 export interface RealStoreTransport {
   endpoint: string;
   requests: { operation: string; body: JsonObject }[];
