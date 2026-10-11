@@ -202,10 +202,22 @@ export async function waitForExit(child, timeoutMs) {
   if (child.exitCode != null || child.signalCode != null) {
     return { code: child.exitCode, signal: child.signalCode };
   }
-  return await Promise.race([
-    new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal }))),
-    new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))
-  ]);
+  return await new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+    };
+    const finish = (value) => { cleanup(); resolve(value); };
+    const onExit = (code, signal) => finish({ code, signal });
+    try {
+      child.once("exit", onExit);
+      timer = setTimeout(() => finish(null), timeoutMs);
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
 }
 
 export async function requestHostShutdown({
