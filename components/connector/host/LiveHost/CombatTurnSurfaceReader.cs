@@ -100,6 +100,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         string? endTurnMissing = null;
         if (canEndTurn)
             endTurn = NativeEndTurnInput.Capture(room, hand, player, out endTurnMissing);
+        string? endTurnIdentity = endTurn == null ? null : NativeEndTurnInput.Identity(entities, endTurn.ExactScope);
         var surface = new CombatTurnSurface(
             Kind,
             entities.GetId(room, "room"),
@@ -134,6 +135,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             context,
             surface
         });
+        if (endTurnIdentity != null)
+            signature = StableIdentityHash.Object(new { signature, endTurnIdentity });
 
         var observation = new LiveObservation(
             signature,
@@ -145,6 +148,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             Array.Empty<string>())
         {
             EndTurnBinding = endTurn,
+            EndTurnBindingIdentity = endTurnIdentity,
             Diagnostics = new[]
             {
                 new HostDiagnostic(
@@ -175,7 +179,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             Completeness = observation.Completeness with
             { PlayerVisibleSemantics = "partial", InteractionDiscovery = "empty_fail_closed", Missing = absent },
             InputOwnership = new("none_fail_closed", null, "The native End Turn input binding is unsupported."),
-            EndTurnBinding = null
+            EndTurnBinding = null,
+            EndTurnBindingIdentity = null
         };
     }
 

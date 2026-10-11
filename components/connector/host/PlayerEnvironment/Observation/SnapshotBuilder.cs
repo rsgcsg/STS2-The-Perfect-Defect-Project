@@ -365,8 +365,9 @@ internal static partial class PlayerEnvironmentService
     internal static string CommonNativeSignature(
         GameBuildIdentity game,
         LiveObservation nativeDraft,
-        PersistentVisibleState? sharedState) =>
-        StableIdentityHash.Object(new
+        PersistentVisibleState? sharedState)
+    {
+        string signature = StableIdentityHash.Object(new
         {
             game.Version,
             game.Commit,
@@ -377,6 +378,9 @@ internal static partial class PlayerEnvironmentService
             nativeDraft.Context,
             nativeDraft.Completeness
         });
+        return nativeDraft.EndTurnBindingIdentity == null ? signature
+            : StableIdentityHash.Object(new { signature, nativeDraft.EndTurnBindingIdentity });
+    }
 
     internal static BoundActionProjectionResult CloseIncompleteRewardCatalog(
         BoundActionProjectionResult projected) =>

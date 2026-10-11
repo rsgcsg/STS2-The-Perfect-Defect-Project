@@ -523,7 +523,7 @@ internal static class NativeTextMenuFrameBuilder
             .ToArray();
     }
 
-    private static TextMenuLeaf FromLegacy(
+    internal static TextMenuLeaf FromLegacy(
         PlayerEnvironmentBoundAction action,
         PlayerEnvironmentNativeBinding binding,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy) =>

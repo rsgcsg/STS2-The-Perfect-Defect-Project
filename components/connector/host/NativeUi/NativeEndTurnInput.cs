@@ -29,6 +29,20 @@ internal static class NativeEndTurnInput
     internal sealed record Scope(object ModelRoom, object Room, object Player, object Hand,
         object Button, object Combat, int TurnNumber);
 
+    // Existing opaque native aliases bind the offered capture, not only the
+    // freshly rebuilt delivery. Only this digest enters opaque snapshot/action
+    // identity; the private aliases and captured turn never become operands.
+    internal static string Identity(NativeEntityRegistry entities, Scope scope) => StableIdentityHash.Object(new
+    {
+        modelRoom = entities.GetId(scope.ModelRoom, "end_turn_model_room"),
+        room = entities.GetId(scope.Room, "room"),
+        player = entities.GetId(scope.Player, "player"),
+        hand = entities.GetId(scope.Hand, "end_turn_hand"),
+        button = entities.GetId(scope.Button, "end_turn_button"),
+        combat = entities.GetId(scope.Combat, "end_turn_combat"),
+        scope.TurnNumber
+    });
+
     // This exact field has no public typed accessor in the pinned game. Copy its
     // value only: no reflective invocation or write to native state is allowed.
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_combatState")]

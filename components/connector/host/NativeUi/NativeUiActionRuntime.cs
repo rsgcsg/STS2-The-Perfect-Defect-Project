@@ -1212,8 +1212,11 @@ internal static partial class NativeUiActionRuntime
         LiveObservation draft,
         NativeUiActionDescriptor action)
     {
-        return new NativeUiBoundAction(
-            BuildCandidate(action, "player_environment_native_binding"));
+        var candidate = BuildCandidate(action, "player_environment_native_binding");
+        if (action.Kind == "end_turn" && draft.EndTurnBindingIdentity is { } exact)
+            candidate = candidate with { CandidateId = "candidate_" + StableIdentityHash.Object(new
+                { candidate.CandidateId, nativeBinding = exact })[..20] };
+        return new NativeUiBoundAction(candidate);
     }
 
     private static NativeUiActionCandidate BuildCandidate(
