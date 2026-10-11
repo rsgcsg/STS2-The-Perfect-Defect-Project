@@ -73,9 +73,10 @@ Detailed identities/counts/receipts belong to the active packet.
 The first owning next fact is Connector's supported ready/no-current-command gap
 following exact native button withdrawal; Runtime follows its existing observed
 handoff contract. The earlier same-gap successor was followed by round2 evidence;
-no final queued-action execution or Auto2 cause is proved. Independent architecture
-review accepted the bounded follow-up designs; source owners are active, with no new
-implementation receipt or extra run claimed yet.
+no final queued-action execution or Auto2 cause is proved. Root accepted both bounded
+follow-up scopes; Connector design received independent architecture review. Each
+implementation still requires independent code review; source owners are active,
+with no new implementation receipt or extra run claimed yet.
 
 The canceled-Defend log can also result from ordinary native execution-time revalidation;
 its wording does not prove a paused-action bug. The inspected controller-release path does

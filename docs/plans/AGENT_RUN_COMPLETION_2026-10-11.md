@@ -173,7 +173,7 @@ The read-only diagnosis `native-auto3-no-input-diagnosis.md`, SHA
 `a29dc240fe32ae7231dce385798f101ef59b2e9cf0804f8d1684851b4f342b9d`, identifies an
 exact supported combat ready/no-current-command classification gap. Final delivered
 End Turn event50 is followed by successful successor51: complete `observed` combat,
-stage `ready`, C0 and disabled End Turn, missing=[]; release52/handoff53/Stop54 follow.
+stage `ready`, C0 and no offered End Turn, missing=[]; release52/handoff53/Stop54 follow.
 This is not FTUE rejection, unknown delivery or failed successor acquisition.
 Runtime correctly follows its existing noninteractive handoff contract.
 
@@ -183,9 +183,10 @@ Turn in this same attempt exposed the same category, then later public evidence
 reached round2. Those facts do not identify the final native queue action, exact
 transient duration or causal settlement, and do not diagnose old Auto2.
 
-Independent architecture review has accepted two bounded follow-up designs. Root
-has assigned disjoint source owners from the same f559 base; their source work is
-active, with no implementation receipt or new game result claimed yet.
+Root accepted two bounded follow-up scopes; Connector design received independent
+architecture review, while each implementation still requires independent code review.
+Root assigned disjoint source owners from the same f559 base; source work is active,
+with no implementation receipt or new game result claimed yet.
 
 - The native diagnostics owner corrects Connector capture/readiness through one
   private exact-native availability proof, a scoped sticky20s no-input window and
