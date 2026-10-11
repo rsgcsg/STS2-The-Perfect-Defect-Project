@@ -23,7 +23,10 @@ from .fullrun.native_structured_inputs import (
     PROJECTION as FEATURE_PROJECTION,
 )
 from .native_graph_spec import NativeGraphControl, checked_control
-from .policy.native_operational_outcome import checked_execution_policy
+from .policy.native_execution_policy import (
+    KNOWN_STALE_WINDOW_POLICY_SCHEMA,
+    checked_execution_policy,
+)
 from .policy.native_task import (
     map_timed_ready_summary_task_spec,
     observe_ready_summary,
@@ -106,9 +109,10 @@ def sampled_agent_spec(
         "task_spec": map_timed_ready_summary_task_spec(),
     }
     if execution_policy is not None:
+        policy = checked_execution_policy(execution_policy)
         spec.update(
-            version="1.2.0",
-            execution_policy=checked_execution_policy(execution_policy),
+            version="1.3.0" if policy["schema"] == KNOWN_STALE_WINDOW_POLICY_SCHEMA else "1.2.0",
+            execution_policy=policy,
             operational_outcome="validate_original_intention_ignore_for_model_input_W_and_scores",
             I=False,
             F=False,

@@ -43,6 +43,7 @@ from spireagent.workbench.research_process import private_child
 from stpd.native_code_scope import (
     COMMON_MODEL_SCHEMA,
     COMPATIBILITY_PROFILE,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     is_native_model_schema,
 )
 from stpd.structured_code_scope import (
@@ -61,6 +62,18 @@ SUPPORT_SCHEMA = "stpd/local-model-export-support-v1"
 RECONCILIATION_SCHEMA = "stpd/native-compatible-export-reconciliation-v1"
 RECONCILIATION_ROOT = "model-export-reconciliations"
 RECONCILIATION_BYTES = 128 * 1024
+NATIVE_COMPATIBILITY_PROFILES = (COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE)
+
+
+def _require_native_compatibility_binding(
+    model: Manifest, selected: dict[str, Any], *, code: str = "compatibility_profile_mismatch"
+) -> None:
+    """One exact selected derivative binding; validating its own package is separate."""
+    originals = [p.artifact_id for p in model.parents if p.role == "original_model"]
+    if (model.parameters.value().get("compatibility_profile") != selected["profile"]
+            or originals != [selected["original_model_id"]]
+            or model.producer.to_dict() != selected["export_producer"]):
+        raise BoundaryError("local_model_export", code)
 
 
 def _ordinary(path: Path, *, directory: bool) -> bool:
@@ -545,7 +558,7 @@ class LocalModelExport:
                 compatibility = value["native_compatibility"]
                 if (value.get("model_type") != "native" or not isinstance(compatibility, dict)
                         or set(compatibility) != {"profile", "original_model_id", "export_producer"}
-                        or compatibility["profile"] != COMPATIBILITY_PROFILE):
+                        or compatibility["profile"] not in NATIVE_COMPATIBILITY_PROFILES):
                     raise ValueError
                 original = digest(compatibility["original_model_id"],
                                   "local_model_export.original_model")
@@ -650,7 +663,7 @@ class LocalModelExport:
             raw != json_bytes(receipt)
             or receipt["schema"] != RECONCILIATION_SCHEMA
             or receipt["operation_id"] != operation_id
-            or receipt["profile"] != COMPATIBILITY_PROFILE
+            or receipt["profile"] not in NATIVE_COMPATIBILITY_PROFILES
             or receipt["outcome"]
             not in {"manifest_absent_at_reconciliation",
                     "manifest_present_verified_at_reconciliation"}
@@ -745,11 +758,8 @@ class LocalModelExport:
                         raise
                     outcome, manifest_sha = "manifest_absent_at_reconciliation", None
                 else:
-                    if (
-                        derived.parent("original_model") != original_id
-                        or derived.producer.to_dict() != compatibility["export_producer"]
-                    ):
-                        raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
+                    _require_native_compatibility_binding(derived, compatibility,
+                        code="reconciliation_intent_mismatch")
                     destination = _destination(self.config, derived_id, native=True)
                     _native_package(reader, derived, destination, materialize=True)
                     outcome = "manifest_present_verified_at_reconciliation"
@@ -784,7 +794,8 @@ class LocalModelExport:
                 return checked
 
     def _checked_absent_reconciliation(
-        self, journal: dict[str, Any], original_id: str, requested_receipt: str
+        self, journal: dict[str, Any], original_id: str, requested_receipt: str,
+        selected_profile: str | None,
     ) -> dict[str, Any]:
         compatibility = journal.get("native_compatibility")
         if (
@@ -800,6 +811,7 @@ class LocalModelExport:
             or receipt["receipt_sha256"] != requested_receipt
             or receipt["outcome"] != "manifest_absent_at_reconciliation"
             or receipt["original_model_id"] != original_id
+            or receipt["profile"] != selected_profile
             or receipt["derived_model_id"] != journal.get("derived_model_id")
             or receipt["original_journal_sha256"]
             != hashlib.sha256(self._path().read_bytes()).hexdigest()
@@ -1101,18 +1113,23 @@ class LocalModelExport:
         from spireagent.workbench.developer_server import instance_lock
 
         identity = digest(model_id, "local_model_export.model_id")
-        if compatibility_profile is not None and compatibility_profile != COMPATIBILITY_PROFILE:
+        if (compatibility_profile is not None
+                and compatibility_profile not in NATIVE_COMPATIBILITY_PROFILES):
             raise BoundaryError("local_model_export", "unsupported_native_compatibility_profile")
         if prior_native_reconciliation is not None:
             digest(prior_native_reconciliation, "local_model_export.reconciliation_receipt")
-            if compatibility_profile != COMPATIBILITY_PROFILE:
+            if compatibility_profile not in NATIVE_COMPATIBILITY_PROFILES:
                 raise BoundaryError("local_model_export",
                                     "explicit_new_compatibility_intent_required")
         with self.lock:
             previous = self._read()
             prior_receipt = (self._checked_absent_reconciliation(previous, identity,
-                              prior_native_reconciliation)
+                              prior_native_reconciliation, compatibility_profile)
                              if prior_native_reconciliation is not None else None)
+            if (previous.get("status") == "pending" and compatibility_profile is not None
+                    and previous.get("native_compatibility", {}).get("profile")
+                    != compatibility_profile):
+                raise BoundaryError("local_model_export", "compatibility_intent_mismatch")
             if (previous["status"] == "pending" and self.thread is not None
                     and self.thread.is_alive()):
                 if previous["model_id"] == identity:
@@ -1129,6 +1146,11 @@ class LocalModelExport:
                     and previous["store_root"] != str(root)):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = store.get_manifest(identity)
+            if (previous.get("status") == "pending" and "native_compatibility" in previous
+                    and previous.get("derived_model_id") == identity):
+                # Reject a named foreign derivative before rewriting the original
+                # unknown publication journal or starting a materialization child.
+                _require_native_compatibility_binding(model, previous["native_compatibility"])
             compatibility = None
             if compatibility_profile is not None:
                 if model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA:
@@ -1226,7 +1248,11 @@ class LocalModelExport:
                     raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
                 if prior_receipt is not None:
                     self._checked_absent_reconciliation(current, identity,
-                                                       prior_receipt["receipt_sha256"])
+                                                       prior_receipt["receipt_sha256"],
+                                                       compatibility_profile)
+                if (current.get("status") == "pending" and "native_compatibility" in current
+                        and current.get("derived_model_id") == identity):
+                    _require_native_compatibility_binding(model, current["native_compatibility"])
                 destination = _destination(self.config, identity, memory=memory,
                                            structured=structured, native=native,
                                            public_m0=public_m0, public_m2=public_m2)
@@ -1341,10 +1367,17 @@ class LocalModelExport:
                         or operation.get("status") != "pending"):
                     raise BoundaryError("local_model_export", "operation_superseded")
                 compatibility = operation.get("native_compatibility")
+            if compatibility is not None and "derived_model_id" in operation:
+                # This resumes an already recorded unknown publication intent.
+                # A failed binding/export cannot relabel that history as known
+                # prepublication failure or create a completed receipt.
+                mark_started()
+                _require_native_compatibility_binding(model, compatibility)
             if compatibility is not None and "derived_model_id" not in operation:
                 from stpd.policy.native_structured_export import publish_native_compatible_model
 
                 def before_publish(derived: Manifest) -> None:
+                    _require_native_compatibility_binding(derived, compatibility)
                     if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
                         raise BoundaryError("local_model_export", "compatibility_source_changed")
                     selected = self._native_publication_store(
