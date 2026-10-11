@@ -144,10 +144,18 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
   });
   it("keeps W/prefix/child while unchanged Current only waits, then ACKs a changed unit and chooses a new request", async () => {
+    const recordPhase = fixtureProgress("owned-stale-unchanged-current");
+    const progress: typeof recordPhase = (...args) => { try { recordPhase(...args); } catch { /* Diagnostics never decide the test outcome. */ } };
+    progress("initialization-started");
     const f = await fixture();
+    progress("initialized");
     const first = await f.runtime.tick(); expect(first.type, JSON.stringify(first)).toBe("fresh_decision_required");
+    progress("initial-refusal-recorded");
     const initial = f.runtime.status().session;
-    for (let i = 0; i < 20; i++) expect((await f.runtime.tick()).type).toBe("awaited");
+    for (let i = 0; i < 20; i++) {
+      expect((await f.runtime.tick()).type).toBe("awaited");
+      if ((i + 1) % 5 === 0) progress("unchanged-awaits-completed", { unchanged_awaits: i + 1 });
+    }
     expect(f.runtime.status().session).toEqual(initial); expect(f.handles.size).toBe(1);
     expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
     const outcome = (f.inputs[1] as Record<string, unknown>).operational_outcome;
@@ -156,9 +164,14 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     const second = f.runtime.status().session; expect(second.session_id).toBe(initial.session_id); expect(second.continuity_token).toBe(initial.continuity_token); expect(second.state_version).toBe(2);
     const submits = f.calls.filter(c => c.operation === "submit"); expect(submits[1]!.body.request_id).not.toBe(submits[0]!.body.request_id);
     expect(submits[1]!.body.expected_snapshot_id).not.toBe(submits[0]!.body.expected_snapshot_id); expect(f.handles.size).toBe(1);
+    progress("changed-unit-ack-act-completed", { state_version: second.state_version, original_submissions: submits.length });
     f.applyFrame("map_c"); expect((await f.runtime.tick()).type).toBe("delivered"); expect((f.inputs.at(-1) as Record<string, unknown>).operational_outcome).toBeNull();
+    progress("next-unit-ack-act-completed");
+    progress("runtime-stop-started");
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
+    progress("runtime-stopped", { reader_handles: f.handles.size });
     const events = await f.events(); expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(3); expect(events.filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(1);
+    progress("original-events-read", { durable_events: events.length });
     const intents = events.filter(e => e.kind === "native_submission_requested"); expect(intents).toHaveLength(3); expect(intents.every(e => Object.keys(e.payload.dispatch_binding).length === 4)).toBe(true);
   });
   it("ends exactly at the third consecutive refusal and records the threshold original result", async () => {
