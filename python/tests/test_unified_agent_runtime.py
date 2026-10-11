@@ -21,9 +21,36 @@ from stpd import public_m2_policy_installation
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def packaged_runtime_cli(command):
+    # Popen receives str(Path), whose separator follows the child host platform.
+    return command[0] == "node" and command[1].replace("\\", "/").endswith("dist/cli.js")
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        (["node", "/fixture/runtime/dist/cli.js"], True),
+        (["node", r"C:\fixture\runtime\dist\cli.js"], True),
+        (["node", "C:/fixture/runtime/dist/cli.js"], True),
+        (["python", r"C:\fixture\runtime\dist\cli.js"], False),
+        (["node", r"C:\fixture\runtime\dist\other.js"], False),
+        (["node", "/fixture/runtime/other/cli.js"], False),
+        (["node", r"C:\fixture\runtime\dist\cli.js.bak"], False),
+    ],
+)
+def test_packaged_runtime_cli_routing_uses_host_path_separators(command, expected):
+    assert packaged_runtime_cli(command) is expected
+
+
 def settled(service):
     service.thread.join(timeout=30)
     assert not service.thread.is_alive()
+    if service.state["operation"]["status"] != "completed":
+        print(json.dumps({
+            "diagnostic": "unified_agent_operation_failed",
+            "operation_status": service.state["operation"]["status"],
+            "error_code": service.state.get("error_code"),
+        }))
     assert service.state["operation"]["status"] == "completed", service.state
     return service.status()
 
@@ -132,7 +159,7 @@ def test_same_common_service_real_start_control_stop_and_original_request(
     trace = tmp_path / "model-trace.jsonl"
 
     def child_boundary(command, **kw):
-        if command[0] != "node" or not command[1].endswith("dist/cli.js"):
+        if not packaged_runtime_cli(command):
             return real_popen(command, **kw)
         commands.append(copy.deepcopy(command))
         routed = [
