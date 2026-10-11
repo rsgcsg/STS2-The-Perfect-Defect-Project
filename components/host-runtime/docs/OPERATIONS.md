@@ -2,6 +2,24 @@
 
 ## Native episode bootstrap transfer
 
+Installed reference drivers require an explicit `--local-root` outside the
+immutable package. The path must be absolute, canonical, ordinary and disjoint
+from the package; symlinked paths are rejected. The same existing Host factory
+uses this root for `profile-templates`, isolated `profiles` and `evidence`.
+Its ready line reports the actual local and evidence roots under
+`sts2.host-runtime/reference-state-root-1`, before any reset. A consumer requiring
+external state checks this readback and refuses an older driver that ignores the
+option. No-argument `.local` behavior remains only for an ordinary source checkout.
+
+The ordinary Application derives `<state_dir>/native-host`, independently of
+HTTP input. The operator stages the existing immutable `defect-a0-s0` template
+there as `profile-templates/defect-a0-s0/{template.json,user-data/}`. Use the
+existing template capture/transfer owner; retain its original game identity,
+payload digest and bytes. `instantiateProfileTemplate` verifies these facts for
+each new isolated generation. Do not put templates, profiles or evidence inside
+the installed package, manufacture a missing template, or relax its complete
+package-content pin. State preparation is not native execution qualification.
+
 The existing reference driver ready line still means only that its process is
 ready. Its additive bootstrap-handoff capability must be present before a
 consumer's first reset. `release_bootstrap` calls the existing exact controller

@@ -71,6 +71,18 @@ packet rejects `default` as `qualified_default_unavailable`; explicit
 Normal/Fast/Instant share the same native Host and public contracts. No accepted
 mode/presentation/package/tuple default basis is available here, and this
 configuration does not perform or prove six-cell qualification.
+Owned preparation derives the external Host state directory as
+`<ProjectConfig.state_dir>/native-host`; the request body and trusted profile do
+not add another caller-supplied path. The operator stages the existing template
+at `native-host/profile-templates/defect-a0-s0/{template.json,user-data/}` through
+the existing Host template owner. The directory must be canonical, ordinary and
+disjoint from the immutable installed package. The reference CLI receives
+`--local-root` and its actual ready readback must match both this local root and
+its `evidence` child before reset. An older CLI without the capability, or a
+wrong/unsafe root, rejects before offering native preparation. Package hashing
+still covers every installed file; mutable state is never excluded to make a
+modified installation pass. Template absence/drift remains an owning template
+failure, not permission to create replacement game state.
 The profile's closed `candidate_admission` selects `sealed` or `exact_canary`
 separately for game and Connector; only this trusted configuration can forward
 the existing process opt-ins. Its `installed_tuple` is checked by the Host before
