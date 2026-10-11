@@ -36,5 +36,11 @@
       <HintPath>$(STS2GameDataDir)/GodotSharp.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <!-- Test-only logger initialization isolation for the actual native queue.
+         No action, queue, legality or delivery method is patched. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(STS2GameDataDir)/0Harmony.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

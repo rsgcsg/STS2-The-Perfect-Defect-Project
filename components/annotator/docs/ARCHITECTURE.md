@@ -49,8 +49,12 @@ frame.
 The observer uses Harmony Prefix/Finalizer only to establish a thread-local UI
 scope and a Postfix to observe an action already accepted by STS2. It does not
 skip a method, alter an argument/result, transpile game code, or enqueue an
-action. Connector-origin actions call a different native entry path and do not
-enter the human UI scope.
+action. Connector's completed End Turn gesture shares the native
+`CallReleaseLogic` hooks. The original native-logical request's lexical
+`ProtocolDispatch` scope suppresses an additional native-UI Source root;
+external-controller guards suppress Human text-input correlation and exclude
+Human semantic eligibility. A shared native method or accepted queued action
+does not promote machine input to Human origin.
 
 Starting a native card play removes its holder from the hand. The observer
 captures H before `NPlayerHand.StartCardPlay`, carries that exact invocation to

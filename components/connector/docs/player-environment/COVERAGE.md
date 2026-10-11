@@ -17,7 +17,13 @@ not suppress the Surface when the shipped hand still accepts input. Cards
 already moved from `NPlayerHand.ActiveHolders` to the native play queue are
 excluded, and End Turn is published only while its real native button remains
 enabled. This preserves the game's own queueing behavior without creating a
-second legality model.
+second legality model. End Turn binds the exact native button's completed logical
+gesture (`CallReleaseLogic`) and preserves its captured-turn player queue path.
+The native playable-card FTUE must already be seen; unseen/unknown FTUE is
+explicit unsupported/partial across all current input profiles, never a filtered
+complete catalog. The native Undo-ready branch is outside this End Turn action.
+These are source obligations; delivery alone proves neither queued execution nor
+next-turn settlement.
 The opt-in text menu publishes a mouse-held card operation only for
 single-enemy targeting while the current `NTargetManager` retains the exact
 `NMouseCardPlay` exit predicate and its targeting signal connection. Its

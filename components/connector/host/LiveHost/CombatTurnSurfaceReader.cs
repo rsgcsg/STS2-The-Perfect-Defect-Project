@@ -24,7 +24,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
 {
     internal const string PlayCardDeliveryEvidence = "native_card_play_accepted";
     internal const string UsePotionDeliveryEvidence = "native_potion_use_enqueued";
-    internal const string EndTurnDeliveryEvidence = "native_end_turn_command_submitted";
+    internal const string EndTurnDeliveryEvidence = NativeEndTurnInput.DeliveryEvidence;
 
     public string Kind => "combat_turn";
 
@@ -96,6 +96,10 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         bool canEndTurn = inputReady
             && room.Ui.EndTurnButton.IsEnabled
             && semanticDecision.Actions.Any(action => action.Verb == "end_turn");
+        NativeEndTurnInput.Binding? endTurn = null;
+        string? endTurnMissing = null;
+        if (canEndTurn)
+            endTurn = NativeEndTurnInput.Capture(room, hand, player, out endTurnMissing);
         var surface = new CombatTurnSurface(
             Kind,
             entities.GetId(room, "room"),
@@ -131,7 +135,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             surface
         });
 
-        return new LiveObservation(
+        var observation = new LiveObservation(
             signature,
             readiness,
             context,
@@ -140,6 +144,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             game,
             Array.Empty<string>())
         {
+            EndTurnBinding = endTurn,
             Diagnostics = new[]
             {
                 new HostDiagnostic(
@@ -153,6 +158,24 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
                     RequiredForAction: false,
                     SafeDetail: "Pile counts remain in immediate context; player-inspectable contents use the state-bound Read contract.")
             }
+        };
+        return ApplyEndTurnCapturePolicy(observation, endTurnMissing);
+    }
+
+    internal static LiveObservation ApplyEndTurnCapturePolicy(LiveObservation observation, string? missing)
+    {
+        if (missing == null) return observation;
+        string[] absent = observation.Completeness.Missing.Append(missing).Distinct(StringComparer.Ordinal).ToArray();
+        return observation with
+        {
+            Signature = StableIdentityHash.Object(new { observation.Signature, absent }),
+            Readiness = "unsupported",
+            Surface = new UnsupportedSurface(observation.Surface.Kind, missing,
+                "The native End Turn gesture requires an exact current binding and an already seen playable-card FTUE."),
+            Completeness = observation.Completeness with
+            { PlayerVisibleSemantics = "partial", InteractionDiscovery = "empty_fail_closed", Missing = absent },
+            InputOwnership = new("none_fail_closed", null, "The native End Turn input binding is unsupported."),
+            EndTurnBinding = null
         };
     }
 
@@ -289,9 +312,10 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
 
     internal static NativeInputResult StartDirectEndTurn(
         NativeEntityRegistry entities,
-        string expectedRoomId) =>
+        string expectedRoomId, NativeEndTurnInput.Binding? expected) =>
         TryResolveDirectCombatOwner(entities, expectedRoomId, out Player? player)
-            ? StartEndTurn(player!)
+            && expected != null && ReferenceEquals(expected.Player, player)
+            ? NativeEndTurnInput.Start(expected)
             : NativeInputResult.Rejected(
                 "combat_binding_changed",
                 "The exact combat room or player is no longer current.");
@@ -363,25 +387,6 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
 
         expectedPotion.EnqueueManualUse(expectedTarget);
         return NativeInputResult.Delivered(UsePotionDeliveryEvidence);
-    }
-
-    internal static NativeInputResult StartEndTurn(Player expectedPlayer)
-    {
-        if (!IsActionablePlayerTurn(expectedPlayer))
-            return NativeInputResult.Rejected("combat_phase_changed", "Combat is no longer in the local player's play phase.");
-        NPlayerHand? hand = NPlayerHand.Instance;
-        NEndTurnButton? endTurnButton = NCombatRoom.Instance?.Ui.EndTurnButton;
-        if (hand == null
-            || hand.InCardPlay
-            || hand.CurrentMode != NPlayerHand.Mode.Play
-            || hand.PeekButton?.IsPeeking == true
-            || endTurnButton?.IsEnabled != true)
-        {
-            return NativeInputResult.Rejected("end_turn_not_available", "The hand UI no longer permits ending the turn.");
-        }
-
-        PlayerCmd.EndTurn(expectedPlayer, canBackOut: false);
-        return NativeInputResult.Delivered(EndTurnDeliveryEvidence);
     }
 
     internal static bool CanUsePotion(Player player, PotionModel? potion) =>
