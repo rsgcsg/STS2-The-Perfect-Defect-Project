@@ -28,6 +28,7 @@ def describe(
     teacher = adapter == TEACHER_ADAPTER
     artifact = dict(manifest.get("artifact", {}))
     original_input = dict(manifest.get("input" if native else "representation", {}))
+    state: dict[str, Any]
     if teacher:
         if (
             not native

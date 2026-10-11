@@ -438,7 +438,7 @@ def _native(
         and package.get("schema") == "stpd/native-program-teacher-artifact-v1"
         and value.agent_manifest["adapter"]["id"] == "stpd-native-public-program-teacher"
     )
-    if teacher:
+    if teacher and package is not None:
         composition["models"] = []
         composition["model"] = None
         composition["program"] = package["agent_spec"]

@@ -731,8 +731,13 @@ class LocalModelService:
 
         if not isinstance(value, dict):
             raise BoundaryError("agent_run_request", "invalid_request")
-        effective = self.agent_request(value.get("selection_id"), value.get("operation"),
-                                       value.get("run_profile", "short"),
+        identity, operation, profile = (
+            value.get("selection_id"), value.get("operation"), value.get("run_profile", "short")
+        )
+        if (not isinstance(identity, str) or not isinstance(operation, str)
+                or not isinstance(profile, str)):
+            raise BoundaryError("agent_run_request", "invalid_request")
+        effective = self.agent_request(identity, operation, profile,
                                        native_context=native_context)
         request = checked(value, effective)
         operation = request["operation"]

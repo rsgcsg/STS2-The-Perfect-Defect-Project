@@ -338,3 +338,17 @@ def test_original_request_rejects_changed_composition_despite_rehashed_file(tmp_
     }
     with pytest.raises(BoundaryError, match="original_request_run_binding_changed"):
         original(tmp_path, ref, startup)
+
+
+@pytest.mark.parametrize("field", ["selection_id", "operation", "run_profile"])
+@pytest.mark.parametrize("invalid", [None, False, 1, ["not-a-string"]])
+def test_request_selector_types_reject_before_resolution(tmp_path, monkeypatch, field, invalid):
+    instance = service(tmp_path, monkeypatch)
+    request = instance.agent_request("public-m2", "start")
+    request[field] = invalid
+    calls = []
+    monkeypatch.setattr(instance, "agent_request", lambda *_a, **_k: calls.append("resolve"))
+    with pytest.raises(BoundaryError, match="invalid_request"):
+        instance.run_agent(request)
+    assert calls == [] and instance.intent_generation == 0
+    assert not (instance.directory / "requests").exists()
