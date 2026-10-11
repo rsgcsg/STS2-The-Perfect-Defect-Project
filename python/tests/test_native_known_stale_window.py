@@ -253,7 +253,7 @@ def test_even_rehashed_current_model_feature_or_original_outcome_changes_are_rej
     [
         ('name = "torch"\nversion = "2.13.0"', 'name = "torch"\nversion = "2.13.1"'),
         (
-            'name = "rsgcsg-sts2-platform-evidence"\nversion = "0.1.0rc29"',
+            f'name = "rsgcsg-sts2-platform-evidence"\nversion = "{scope.OPERATIONAL_EVIDENCE_VERSION}"',
             'name = "rsgcsg-sts2-platform-evidence"\nversion = "0.1.0rc99"',
         ),
     ],

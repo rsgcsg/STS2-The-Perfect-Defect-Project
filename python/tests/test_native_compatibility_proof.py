@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -24,6 +25,20 @@ def proof():
     return json.loads(FIXTURE.read_bytes())
 
 
+def recorded_rc29_target(proof):
+    # Reconstruct the exact archived two-record migration, then check its
+    # independently recorded complete hash. The live lock now targets rc30.
+    target = proof["original_lock"].replace(
+        'name = "rsgcsg-sts2-platform-evidence"\nversion = "0.1.0rc27"',
+        'name = "rsgcsg-sts2-platform-evidence"\nversion = "0.1.0rc29"',
+    ).replace(
+        "cd319ba9146eddb39bb09439fc9b2e366061360e",
+        "ba05adce73d067f4fb400fb2ac3af6a2b2279a80",
+    )
+    assert hashlib.sha256(target.encode()).hexdigest() == scope.TARGET_LOCK_SHA256
+    return target
+
+
 def test_fixed_original_inventory_and_complete_evidence_lock_delta(proof):
     assert [row["path"] for row in proof["source_files"]] == list(scope.LEGACY_PATHS)
     assert len(proof["source_files"]) == 39
@@ -33,7 +48,7 @@ def test_fixed_original_inventory_and_complete_evidence_lock_delta(proof):
     with pytest.raises(BoundaryError, match="inference_source_changed"):
         scope.checked_native_compatibility_proof(proof)
     assert scope.compatibility_original_identity()["scope"] == scope.LEGACY_GRAPH_SCOPE
-    scope._evidence_only_lock_delta(proof["original_lock"], (ROOT / "uv.lock").read_text())
+    scope._evidence_only_lock_delta(proof["original_lock"], recorded_rc29_target(proof))
 
 
 @pytest.mark.parametrize(
@@ -109,7 +124,7 @@ def test_changed_current_math_agent_input_or_lock_is_rejected(
     ],
 )
 def test_structural_delta_rejects_even_if_a_caller_rehashes_the_changed_lock(proof, replacement):
-    target = (ROOT / "uv.lock").read_text()
+    target = recorded_rc29_target(proof)
     before, after = replacement
     assert before in target
     changed = target.replace(before, after, 1)
