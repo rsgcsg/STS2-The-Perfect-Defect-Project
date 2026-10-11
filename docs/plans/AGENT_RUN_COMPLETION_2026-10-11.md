@@ -704,31 +704,64 @@ application Task/terminal remain unknown; no new Goal-reader projection or actua
 consumed-input witness was created. Auto6/7 differ in delivered trajectory and
 operating tuple; the elapsed values are not a fixed-trajectory speedup benchmark.
 
-Native137 attempt2 at the same frozen source, Runtime and Mod produced21 program
-calls/submissions,15 delivered and6 not_started stale refusals in5231ms Auto elapsed.
-The311 sealed typed-verified events retain21 exact sample/consume/ACK/directive joins.
-The final known-stale streak limit caused handoff: Task unproved, operation censored,
-no ready Summary observed. Stop released with pending null and no taint; Host/caller
-exit0 unforced closes the operation, not its Task. Recorded execution/effect remain
-unknown; no cause, strategy, training or causal-successor qualification is inferred.
+The latest Native137 Auto3 diagnostic at frozen e479 completed 23 program calls/
+submissions: 15 delivered and 8 known not_started stale refusals in 5837ms Auto elapsed.
+It hit the existing limit of eight total known stale refusals; Task remains unproved and the
+operation censored. All eight recorded native rejection diagnostics report
+`public_facts_changed` with expected/projected Snapshot IDs equal; one detail is
+truncated at the path-count limit. These are execution diagnostics, not proof that
+a particular protocol/Agent/Connector repair is correct. Cause review and the next
+policy/source decision remain pending. Cleanup was graceful/unforced exit0, with
+Root outer elapsed 39.3798s, no errors, remaining owned processes or strict game
+processes. Outer wall and Auto elapsed are different counters; cleanup completion
+does not prove Task, strategy, training admission or causal settlement.
 
-The next product/learning work uses the existing owners: Native episode Application
-admission/idempotency/typed close and actual process seams, and historical M0 Data
-selected-input proof/Model verification/export/registration with bounded scans.
-Their candidate gates remain active, not finally accepted here; ordinary default
-and SDK-direct execution are not promoted by these attempts. The unified
-[architecture](../ARCHITECTURE.md#product-boundary) permits different deployments
-while preserving one execution context and the owning guarantees. Historical
-M0/M2 recovery is a composition/cost probe, not a universal prerequisite to learning.
-Prioritize operational-block diagnosis and evaluation using qualified existing
-sources and the current Native137 Model. Then select useful existing or new Human,
-program or privileged-teacher data by quality/coverage needs for training/evaluation
-through the same owners. New collection or retraining is not a goal by itself.
-Source relation/use, recipe, application readiness and exact candidate identity
-are the actual prerequisites; complete historical restoration is not.
-Broader mechanism, data/quality and G2/V1 obligations remain open. This update grants
-no extra game, real-data fit, paid compute or final approval; the USD20 envelope
-remains cumulative with observed USD0/no provider job.
+### Current work and dependency order
+
+The completed historical M0 candidate 48f1fc6d passed seven actual synthetic
+application cases: 13.875s supervisor wall/13.34s pytest, exit 0 and no remaining owned
+processes. They exercise the ordinary training/export/registration seam and explicit
+pause/resume ownership, with bounded selected-input verification. Final independent
+review accepts 48f for PR preparation in that source/synthetic App scope; full CI and
+integration remain pending. This is not a real-corpus fit, high-quality dataset or
+strategy result. Earlier failures remain preserved. The current Native137 trained Model
+is available for operational diagnosis; retraining is not required to make it new.
+
+The selected finite dependency graph is:
+
+```text
+A: native stale diagnosis/repair + reusable ordinary Episode prepare/run/Stop
+B: useful source/quality/use preparation -> fixed small training view
+B eligible view + recipe -> bounded CPU fit -> ordinary exported Model (parallel A)
+A usable execution + exported Model -> register/load -> actual game evaluation
+C: GPU backend/cost preparation (read-only now, parallel)
+   static/CPU compatibility -> bounded GPU smoke -> actual backend/cost evidence
+   passed smoke + useful data + budget -> real GPU fit / scale
+D: architecture, compatibility, specifications and required CI across all stages
+```
+
+| Workstream | Now / entry condition | Exit and next consumer |
+| --- | --- | --- |
+| A — reliable running | Review Auto3's actual rejection diagnostics with the existing Native137 Model; decide any owning repair and complete ordinary Episode admission/idempotency, prepare/run/Stop/typed-close. | Pass the affected source/contract and authorized runtime gates, exposing reusable ordinary execution/cleanup. Existing-model diagnosis/evaluation can proceed when its actual prerequisites hold, without B or new training. |
+| B — useful data | Prefer automatic program demonstrations and a bounded CombatSolver combat-teacher source; this producer/adapter route is not yet verified and has no build/generated batch. Qualified existing Human material is supplementary or selected for a targeted gap. Historical M0 App-wiring evidence is engineering support. | Verify source/rights, target method/quality, fair student basis/complete-C mapping, groups/exposure/use; fix a useful small Input/Target/history/reset view with exclusions. An eligible view + trusted recipe may enter bounded CPU fit and ordinary Model export in parallel with A; missing producer/basis/permission remains a dependency. |
+| A+exported Model — game evaluation | A usable Runtime/application path and the exported Model are ready. B's fit needs only its own eligible view/recipe, initialization, identity and finite allocation; it does not wait for A's running repair. | Register/load through the ordinary owners and perform an actual new-seed learned game evaluation, retaining fit metrics and all Run/checkpoint/Model/export ancestry. Natural win/loss and censor/unknown remain distinct. Poor fit or strategy redirects data/model work without erasing engineering evidence or claiming quality. |
+| C — GPU and cost | Separate read-only backend/cost preparation is parallel now; no backend build/provider job is claimed. Static/CPU contract preparation defines the bounded GPU smoke and checkpoint/export/inference comparisons. | The allocated smoke establishes actual CUDA, checkpoint/export compatibility and measured cost; synthetic data may test this before real data is ready. Passed smoke + useful admitted data + a finite budget allow real GPU fit/scale within the same cumulative USD20. Actual GPU qualification is an output of the smoke, not its circular prerequisite. |
+| D — coherent changes | Apply the selected architecture/change rules, historical consumer/reader obligations, cheapest faithful checks and required exact-head CI throughout A/B/C. | Integrate independently reviewed useful increments. Architecture cleanup is not a prerequisite to game/data work whose own prerequisites hold; required gates are not waived or borrowed from another source. |
+
+External-source and GPU assignments are preparation, not execution receipts. Source
+builders, generated labels, actual data-use/fit and provider work each require their
+own verified readiness and bounded allocation. The lead coordinates the one heavy/
+native slot while read-only and disjoint source work proceeds in parallel. The next
+handoff names completed evidence, active blockers and one actual next consumer;
+documents, a job plan or a new dataset ID are not a substitute for that delivery.
+
+Existing requirements, mechanism/coverage obligations and failure lessons remain;
+dependencies are reordered rather than deferred away. Historical M0/M2 recovery
+is a composition/cost probe, not a requirement to restore the entire old M2 chain
+before A/B or to collect/retrain solely for novelty. Broader data quality and G2/V1
+work remain open. This update grants no extra game, real-data fit, paid compute or
+final approval; observed GPU spend is USD0 with no provider job, under the same
+cumulative USD20 envelope.
 
 The selected project convergence retains a common ExecutionRuntime kernel and
 the current separate supervisor as the default. Policy Runtime remains the

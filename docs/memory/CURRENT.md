@@ -1,4 +1,4 @@
-# Current project context — Host/Agent contracts and new learning chain
+# Current project context — Host/Agent contracts and learning delivery
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Current develop is
 `32298949711e886beb483614b87eb806160fc349`; Root's execution checkout remains
@@ -9,31 +9,21 @@ and owner records override this file.
 
 ## Goal and routing
 
-Continue stable environment → new data/management → real training → Model/Agent
+Continue stable environment → useful data/management → real training → Model/Agent
 → execution/evaluation. Historical M0/M2 recovery tests composition/substitution
 and cost; it is not the goal or a prerequisite to all new learning. Read the
-[active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-integration-and-completed-attempts),
+[active dependency order](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order),
 [baseline](../BASELINE_V1_SPEC.zh-CN.md),
 [architecture](../ARCHITECTURE.md#product-boundary) and
 [ADR-0016](../adr/0016-agent-composition-and-execution-request.md).
-Agent interaction standard, Connector mapping and Host capabilities form one
-logical chain; execution context spans it. SDK is a library; Host is more than
-the Host Runtime launcher. Policy Runtime is the current supervised implementation,
-not a mandatory permanent process hop. A complete ordinary SDK-direct driver
-and the minimal replaceable Host core/extension map remain unfinished.
-
-[Selected convergence](../ARCHITECTURE.md#selected-convergence-and-change-rules)
-retains one ExecutionRuntime kernel and current separate supervision as default,
-without renaming Policy Runtime. The next architecture refactoring is narrow native Agent-port/
-environment dependencies; REST/NDJSON remain implementations. A later SDK-direct
-driver needs an actual capability/cost case and the same owner, budget/Stop,
-unknown, late-response, consumption/state and evidence guarantees; IPC is not a
-proved main bottleneck. This documentation does not implement that extraction.
-
-Native UI/headless are presentations of one official-game Host. Speed/presentation
-must preserve the selected contracts; scoped runtime evidence does not establish
-all Host equivalence or a qualified ordinary application default. Current trusted
-zero/one-model execution is narrower than the logical future composition space.
+The [selected convergence](../ARCHITECTURE.md#selected-convergence-and-change-rules)
+retains a common ExecutionRuntime kernel/current separate supervision, without
+renaming Policy Runtime. Narrow native dependencies are the next architecture
+refactoring, not a game/data prerequisite. SDK is a library; Host exceeds its
+launcher. A future direct driver needs the same owner/guarantees and a real need;
+IPC is not a proved bottleneck. Core/extension mapping and direct product support
+remain unfinished. Native UI/headless are presentations of one official-game Host;
+scoped evidence does not prove all Host equivalence or an ordinary default.
 
 ## Integrated source and original results
 
@@ -57,28 +47,41 @@ untainted; Host/caller exited0 unforced. Original application Task/terminal rema
 unknown; no new Goal projection or consumed-input proof was created. Comparison
 with Auto6 is not fixed-trajectory speedup, strategy or ordinary-default qualification.
 
-Native137 attempt2 at the same frozen source/runtime/Mod had21 program calls and
-submissions:15 delivered/6 not_started stale refusals,5.231s Auto elapsed and311
-sealed typed-verified events. The original known-stale streak limit caused handoff;
-Task is unproved, operation censored, no ready Summary observed. Stop released,
-pending null, untainted; Host/caller exited0 unforced. Delivery does not prove Commit,
-causal settlement, policy quality or training admission. No cause is inferred here.
+Native137 Auto3 at frozen e479 completed 23 calls/submissions: 15 delivered/8 known
+not_started stale refusals,5837ms Auto elapsed, stopping at the existing limit of
+eight total known stale refusals. Eight native rejection diagnostics report public_facts_changed with equal
+expected/projected Snapshot IDs; one path detail is truncated. Task is unproved,
+operation censored; cause review/next policy-source decision remain pending.
+Cleanup was graceful/unforced exit 0,39.3798s Root outer wall, no errors/remaining
+owned/strict game processes. These counters and diagnostics are not Task, strategy,
+training admission or causal-settlement evidence.
 
 ## Active implementation and next gates
 
-Historical M0 Data repairs selected H/public/codec proof, ordinary Model export/
-registration and bounded verification reuse within existing owners. Its current
-synthetic lifecycle gates are still active; no final source acceptance or new
-real-data fit follows from intermediate results. Native episode Application
-ownership/idempotency, typed close and actual process seams remain under repair/
-review; no completed ordinary default or SDK-direct promotion is claimed.
-Freeze the reviewed actual candidate and identities before each selected gate.
-Prioritize operational-block diagnosis and evaluation using qualified existing
-sources and the current Native137 Model. Then choose useful existing or new Human,
-program or privileged-teacher data by quality/coverage needs, and train/evaluate
-through the same owners. Collection or retraining is not required merely to make
-the work new; exact source/use, recipe and application prerequisites still apply.
-All mandatory broader G2/V1 work remains separately open.
+Historical M0 candidate 48f1fc6d passed seven actual synthetic application cases,
+13.875s supervisor wall/13.34s pytest, exit 0/owned processes empty. They exercise
+ordinary training/export/registration and explicit pause/resume ownership. Final
+independent review accepts 48f for PR preparation in that source/synthetic App scope;
+full CI/integration, real-corpus fit and data/strategy quality remain pending.
+
+Run A and B in parallel: A diagnoses the Native137 stale block with its existing
+trained Model and completes reusable ordinary Episode prepare/run/Stop/typed close;
+B prioritizes automatic program demonstrations/CombatSolver combat-teacher material,
+whose producer/adapter is not yet verified; existing Human material is supplementary
+or for a targeted gap. Source/quality/use/groups determine the fixed small view.
+B eligible view + recipe → bounded CPU fit/export may proceed alongside A.
+A usable Runtime + exported Model join at ordinary register/load/game evaluation,
+not at training. Existing-model diagnosis does not wait for B; novelty is not a goal.
+
+C prepares GPU backend/cost read-only in parallel: static/CPU compatibility →
+bounded GPU smoke proving actual CUDA/checkpoint/export/cost, with synthetic data
+allowed before real-data readiness → real fit/scale only with useful admitted data,
+passed smoke and budget within the same USD20. External CombatSolver producer
+and GPU work are assigned investigations, with no build/generated data/provider
+job claimed. D keeps architecture, historical compatibility, specifications and
+exact-head CI coherent throughout; it does not block already-ready game/data work.
+Freeze actual candidates and meet owning gates/allocation at each transition;
+ordinary default/SDK-direct promotion and broader G2/V1 remain open.
 
 ## Remaining Platform non-claims
 
