@@ -256,7 +256,7 @@ def native_source(tmp_path, monkeypatch):
     holder.f.tearDown()
 
 
-def native_summary(holder, canonical):
+def native_summary(holder, canonical, *, result="loss"):
     import copy
     import hashlib
 
@@ -269,7 +269,7 @@ def native_summary(holder, canonical):
         content={
             "context": {
                 "kind": "game_over",
-                "result": "loss",
+                "result": result,
                 "game_mode": "standard",
                 "score": 10,
                 "floor_reached": 1,
@@ -393,6 +393,59 @@ def test_native_summary_without_exact_ack_is_rejected_by_installed_sdk(native_so
     verified = verify_agent_session_run_evidence(f.directory, f.startup)
     assert verified.status == "fail"
     assert project(verified, native=True)["task_completion"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "variant,result",
+    [("await", "loss"), ("abstain", "win"), ("stop", "loss"), ("stop-no-ack", "loss")],
+)
+def test_acknowledged_native_terminal_is_observed_without_close(native_source, variant, result):
+    from sts2_platform_evidence import verify_agent_session_run_evidence
+
+    holder, canonical, task_spec = native_source
+    f = native_summary(holder, canonical, result=result)
+    if variant.startswith("stop"):
+        f.events = [
+            event
+            for event in f.events
+            if event["kind"] not in {"agent_sample_next_completed", "agent_directive"}
+        ]
+        f.event("stopped")["payload"]["agent_state"] = "uncertain"
+        if variant == "stop-no-ack":
+            f.events = [
+                event for event in f.events if event["kind"] != "agent_sample_consume_ack_offered"
+            ]
+    else:
+        directive = {"type": "abstain", "reason": "ordinary_policy_abstention"}
+        if variant == "await":
+            directive = {
+                "type": "await",
+                "after_cursor": f.events[0]["payload"]["subscription"]["starting_cursor"],
+                "condition": "any_event",
+                "timeout_ms": 250,
+            }
+        for event in f.events:
+            if event["kind"] in {"agent_sample_next_completed", "agent_directive"}:
+                event["payload"]["output"]["directive"] = directive
+    package = native_package(f, task_spec())
+    verified = verify_agent_session_run_evidence(f.directory, f.startup)
+    assert verified.status == "pass", verified.findings
+    outcome = project(verified, native=True, native_package=package)
+    assert outcome["task_completion"]["status"] == "unproved"
+    assert outcome["task_completion"]["witness"] is None
+    if variant == "stop-no-ack":
+        assert outcome["terminal_observation"]["status"] == "unknown"
+        assert outcome["terminal_observation"]["witnesses"] == []
+    else:
+        assert outcome["terminal_observation"]["status"] == "observed"
+        assert outcome["terminal_observation"]["result"] == result
+        assert outcome["terminal_observation"]["ready_summary"] is True
+        witness = outcome["terminal_observation"]["witnesses"][0]
+        assert witness["consume_event_sequence"] < witness["acknowledgement_event_sequence"]
+        assert "directive_event_sequence" not in witness
+    assert outcome["operation_end"]["status"] == (
+        "unknown" if variant.startswith("stop") else "censored"
+    )
 
 
 def test_full_reference_capture_pointer_cannot_become_terminal_body(native_source):

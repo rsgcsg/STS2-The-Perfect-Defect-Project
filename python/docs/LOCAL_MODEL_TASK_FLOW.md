@@ -377,6 +377,10 @@ invent a Task descriptor.
 
 Native sampled-current completion requires the original stored observation,
 accepted consume/ACK, matching Close watermark and supported original Task.
+Terminal win/loss observation uses the acknowledged original body independently
+of Close, so Await, ordinary abstention or an operator Stop can retain an observed
+terminal result without proving Task completion. Stop before a completed Next
+retains the owning verifier's recorded uncertainty in the operation axis.
 Native Task metadata is read only when existing registered owner metadata and
 package bytes match the sealed Agent artifact and Agent/InputSpec identities;
 no current/default Task or version-only lookup is substituted. Legacy native

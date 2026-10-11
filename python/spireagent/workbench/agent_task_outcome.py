@@ -429,7 +429,8 @@ def _native(
         return
     stored: dict[str, dict[str, Any]] = {}
     last = None
-    acked: set[str] = set()
+    last_sequence = None
+    acknowledged_basis = None
     observed: list[dict[str, Any]] = []
     available = False
     for event in events:
@@ -438,20 +439,18 @@ def _native(
             stored[payload["metadata"]["acquisition_id"]] = payload["metadata"]
         elif kind == "agent_consumed":
             last = payload
-        elif kind == "agent_sample_consume_ack_offered":
-            acked.add(payload["acknowledgement"]["consumption_id"])
-        elif kind == "agent_directive" and last is not None:
-            output = payload["output"]
-            directive = output["directive"]
-            if directive["type"] != "close":
-                continue
+            last_sequence = event["sequence"]
+            acknowledged_basis = None
+        elif kind == "agent_sample_consume_ack_offered" and last is not None:
             report = last["report"]
+            acknowledgement = payload["acknowledgement"]
             if (
-                not all(
-                    output[key] == report[key]
-                    for key in ("continuity_token", "consumption_id", "state_version")
+                acknowledgement != last["acknowledgement"]
+                or any(
+                    acknowledgement[key] != report[key]
+                    for key in ("acquisition_id", "consumption_id", "state_version", "advanced")
                 )
-                or report["consumption_id"] not in acked
+                or acknowledgement["prefix"]["continuity_token"] != report["continuity_token"]
             ):
                 continue
             metadata = stored.get(report["acquisition_id"])
@@ -469,7 +468,8 @@ def _native(
             available = True
             witness = {
                 "profile": "native-logical-v1",
-                "directive_event_sequence": event["sequence"],
+                "consume_event_sequence": last_sequence,
+                "acknowledgement_event_sequence": event["sequence"],
                 "acquisition_id": report["acquisition_id"],
                 "consumption_id": report["consumption_id"],
                 "state_version": report["state_version"],
@@ -478,6 +478,7 @@ def _native(
                 "observation": _file_reference(value, observation_file["path"]),
                 "events": outcome["evidence"]["events"],
             }
+            acknowledged_basis = (witness, terminal.agent_task_complete)
             if terminal.outcome is not None:
                 _remember_terminal(
                     observed,
@@ -487,22 +488,36 @@ def _native(
                         "ready_summary": terminal.agent_task_complete,
                     },
                 )
+        elif kind == "agent_directive" and last is not None and acknowledged_basis is not None:
+            output = payload["output"]
+            directive = output["directive"]
+            report = last["report"]
+            witness, ready = acknowledged_basis
             if (
                 known
-                and terminal.agent_task_complete
+                and ready
+                and directive["type"] == "close"
                 and directive["reason"] == "native_ready_summary_task_complete"
+                and all(
+                    output[key] == report[key]
+                    for key in ("continuity_token", "consumption_id", "state_version")
+                )
             ):
                 outcome["task_completion"].update(
-                    {"status": "completed", "reason_codes": [], "witness": witness}
+                    {
+                        "status": "completed",
+                        "reason_codes": [],
+                        "witness": {**witness, "directive_event_sequence": event["sequence"]},
+                    }
                 )
-    if not available:
+    if known and outcome["task_completion"]["status"] != "completed":
         bound = last is not None and last["report"]["acquisition_id"] in stored
         outcome["task_completion"].update(
             {
-                "status": "unproved" if known and bound else "unknown",
+                "status": "unproved" if bound else "unknown",
                 "reason_codes": [
                     "declared_task_end_not_recorded"
-                    if known and bound
+                    if bound
                     else "acknowledged_terminal_body_unavailable"
                 ],
             }
