@@ -57,7 +57,8 @@ function frames() {
 }
 
 async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = false, stopAfterAwait = false, nativeRejectedAt = null, target = 6, hugeStartup = false, largeStatus = false, privateWriteFailure = false, currentFailureAt = null, currentDiagnosticWriteFailure = false,
-  ownedPolicy = false, continuousPolicy = false, staleAt = [], maxSubmissions = null, summaryFailure = false } = {}) {
+  ownedPolicy = false, continuousPolicy = false, staleAt = [], maxSubmissions = null, summaryFailure = false,
+  renewBeforeFirstAction = false } = {}) {
   const selectedPolicy = continuousPolicy ? CONTINUOUS_EXECUTION_POLICY : OWNED_EXECUTION_POLICY;
   const temporary = await mkdtemp(path.join(os.tmpdir(), "source3-runtime-teacher-"));
   // The production request owns an ordinary canonical directory. The helper
@@ -76,6 +77,8 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
     m.writeFile(path.join(output, "native-current-failure-reply.json"), "preserved_existing_private_file"));
   const actor = JSON.parse(prepared.stdout), seen = { pipe: [], requests: [], submits: [], waits: 0,
     sourceCloses: 0, hostCloses: 0, order: [], retentionsReleased: [], captures: [] };
+  let observeRenewal;
+  const renewalObserved = new Promise(resolve => { observeRenewal = resolve; });
   let values = frames();
   if (ownedPolicy) {
     // A refused native input cannot advance to its expected owner. Preserve
@@ -161,6 +164,14 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
       return response(result);
     }
     const method = route.split("/").at(-1);
+    if (method === "renew") {
+      seen.renewals = (seen.renewals ?? 0) + 1; observeRenewal();
+      assert.deepEqual(body, { client_session_id: client.client_session_id,
+        subscription_id: subscription.subscription_id, scope_id: subscription.scope_id, after_cursor: cursor });
+      subscription.expires_at = new Date(Date.now() + c.limits.retention_ms).toISOString();
+      return response({ ...clone(wire.renew), subscription, next_cursor: cursor,
+        high_watermark: cursor, retained_start_cursor: subscription.starting_cursor });
+    }
     if (method === "capabilities") return response(c);
     if (method === "attach") {
       assert.deepEqual(body.eager_scope, []);
@@ -233,6 +244,25 @@ async function collect(t, { unknownAt = null, pendingAt = null, sourceOff = fals
   };
   function Environment(base, timeout) { return new sdk.PlayerEnvironmentRestClient(base, timeout, fetchFixture); }
   const deps = { ...sdk, ...runtimeApi, PlayerEnvironmentRestClient: Environment,
+    AgentRunEvidence: { async createSession(options) {
+      const evidence = await runtimeApi.AgentRunEvidence.createSession(options);
+      if (!renewBeforeFirstAction) return evidence;
+      const append = evidence.append.bind(evidence);
+      evidence.append = async (kind, ...args) => {
+        if (kind === "native_session_attached") {
+          // Delay only this real write's completion until the original Runtime
+          // performs its passive renewal. Its timer and the stdio Agent stay real.
+          let timer;
+          try {
+            await Promise.race([renewalObserved, new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("fixture_passive_renewal_not_observed")), 8000);
+            })]);
+          } finally { clearTimeout(timer); }
+        }
+        return append(kind, ...args);
+      };
+      return evidence;
+    } },
     NdjsonAgentSessionPort: class extends runtimeApi.NdjsonAgentSessionPort {
       constructor(child, ...args) {
         seen.teacherLaunches = (seen.teacherLaunches ?? 0) + 1;
@@ -405,15 +435,29 @@ for (const currentDiagnosticWriteFailure of [false, true]) {
   });
 }
 
-test("generic Runtime retains unknown original intent in immutable evidence, no next action or invented pending ID", async t => {
-  const { final, seen, events } = await collect(t, { unknownAt: 2 });
-  assert.equal(seen.submits.length, 2);
+function assertUnknownIntent({ final, seen, events }) {
+  const failureContext = JSON.stringify({ reason: final.reason, runtime_errors: final.runtime_status?.errors ?? null,
+    runtime_mode: final.runtime_status?.mode ?? null, teacher_exit: final.teacher_exit,
+    request_routes: seen.requests.slice(-32).map(value => value.route),
+    native_gaps: events.filter(value => value.kind === "native_gap").slice(-4).map(value => value.payload.gap) }).slice(0, 8192);
+  assert.equal(seen.submits.length, 2, failureContext);
   assert.equal(final.runtime_status.tainted, true);
   assert.equal(final.runtime_status.autonomy_budget.submissions_used, 2);
   assert.equal(final.unknown_request_id_projection, "not_exposed_by_public_status_see_original_immutable_evidence");
   const original = seen.submits[1].request_id;
   assert.ok(events.some(value => value.kind === "native_submission_requested" && value.payload.request_id === original));
   assert.ok(!seen.requests.some(value => value.route.includes("/actions/")));
+}
+
+test("generic Runtime retains unknown original intent in immutable evidence, no next action or invented pending ID", async t => {
+  assertUnknownIntent(await collect(t, { unknownAt: 2 }));
+});
+
+test("passive subscription renewal before the first action preserves the unknown original intent", async t => {
+  const result = await collect(t, { unknownAt: 2, renewBeforeFirstAction: true });
+  assertUnknownIntent(result);
+  assert.equal(result.seen.renewals, 1);
+  assert.ok(!result.events.some(value => value.kind === "native_gap"));
 });
 
 test("Source3 opt-out is explicit while direct Agent evidence stays real and actor remains program-only", async t => {
