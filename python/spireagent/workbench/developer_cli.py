@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             "model",
             "migrate-model-state",
             "environment-profile",
+            "native-episode",
             "credential",
             "collection-tool",
             "collection-upgrade",
@@ -129,11 +130,32 @@ def main(argv: list[str] | None = None) -> int:
             "auto",
             "stop",
             "reconcile",
+            "prepare-owned",
+            "attach",
+            "native-status",
+            "native-finish",
+            "agent-request",
+            "run-agent",
         ),
         help="local model action; generation changes require a stopped Workbench",
     )
     parser.add_argument("--credential-file", type=Path)
     parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
+    parser.add_argument("--intent-id", help="original native preparation intent ID")
+    parser.add_argument(
+        "--native-episode-ref", help="opaque prepared/attached Application resource"
+    )
+    parser.add_argument("--native-seed", help="explicit canonical Defect A0 start seed")
+    parser.add_argument("--display-mode", choices=("headless", "native-ui"), default="headless")
+    parser.add_argument(
+        "--native-speed", choices=("default", "normal", "fast", "instant"), default="default"
+    )
+    parser.add_argument(
+        "--run-operation",
+        choices=("start", "prepare-and-load", "prepare-and-takeover"),
+        default="prepare-and-takeover",
+    )
+    parser.add_argument("--run-profile", choices=("short", "extended"), default="short")
     parser.add_argument(
         "--tool-directory", type=Path, help="absolute public CollectionTool directory"
     )
@@ -261,6 +283,21 @@ def main(argv: list[str] | None = None) -> int:
                     if args.plan_only
                     else collect_source3(config, args.config, request)
                 )
+            elif args.command == "native-episode":
+                from spireagent.workbench.local_model_cli import native_episode_command
+
+                result = native_episode_command(
+                    config,
+                    args.action,
+                    intent_id=args.intent_id,
+                    environment_ref=args.native_episode_ref,
+                    seed=args.native_seed,
+                    display_mode=args.display_mode,
+                    speed=args.native_speed,
+                    selection=args.selection,
+                    operation=args.run_operation,
+                    run_profile=args.run_profile,
+                )
             elif args.command == "model":
                 from spireagent.workbench.local_model_cli import model_command
 
@@ -280,15 +317,21 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "environment-profile":
                 from spireagent.workbench.local_environment import configure_managed_host
 
-                if (args.candidate_directory is None or args.host_package_directory is None
-                        or args.host_package_pin is None or args.input_profile is None):
+                if (
+                    args.candidate_directory is None
+                    or args.host_package_directory is None
+                    or args.host_package_pin is None
+                    or args.input_profile is None
+                ):
                     raise BoundaryError("local_environment", "candidate_and_host_pin_required")
                 pin = decode_json(args.host_package_pin.read_bytes())
                 if not isinstance(pin, dict):
                     raise BoundaryError("local_environment", "host_package_pin_invalid")
                 result = configure_managed_host(
-                    config, args.candidate_directory,
-                    host_root=args.host_package_directory, host_pin=pin,
+                    config,
+                    args.candidate_directory,
+                    host_root=args.host_package_directory,
+                    host_pin=pin,
                     input_profile=args.input_profile,
                 )
             elif args.command == "migrate-model-state":

@@ -29,7 +29,7 @@ from uuid import uuid4
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.encoding import canonical_json
-from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields
+from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
 from spireagent.package_identity import PackageIdentityError
 from spireagent.policies import SUPPORTED_ADAPTERS, policy_support
 from spireagent.policy_files import (
@@ -117,6 +117,8 @@ def _validate_text_profile(profile: dict[str, Any], schema: str,
         except BoundaryError as error:
             raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
     return pin
+
+
 _BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
 _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
@@ -163,10 +165,6 @@ def _terminal_screen(value: object) -> str | None:
         return None
     result = context.get("result")
     return result if isinstance(result, str) and result in {"win", "loss"} else None
-
-
-
-
 
 
 def _check_runtime_port(port: int) -> None:
@@ -511,10 +509,23 @@ class RuntimeClient:
 
 
 class LocalModelService:
-    def __init__(self, config: ProjectConfig, hub: HubClient | None = None, *,
-                 managed_target: Callable[[], dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        config: ProjectConfig,
+        hub: HubClient | None = None,
+        *,
+        managed_target: Callable[[], dict[str, Any]] | None = None,
+        native_episode_resolver: Callable[[object], dict[str, Any]] | None = None,
+        native_episode_authorizer: Callable[[object], dict[str, Any]] | None = None,
+        native_episode_guard: Callable[[dict[str, Any] | None, str], None] | None = None,
+        native_episode_associate: Callable[[dict[str, Any], str, Any], None] | None = None,
+    ) -> None:
         self.config, self.hub = config, hub
         self.managed_target = managed_target
+        self.native_episode_resolver = native_episode_resolver
+        self.native_episode_authorizer = native_episode_authorizer
+        self.native_episode_guard = native_episode_guard
+        self.native_episode_associate = native_episode_associate
         self.root = ROOT
         self.directory = config.state_dir / "models"
         # The checkout supplies executable code and the shipped catalog. This
@@ -713,20 +724,58 @@ class LocalModelService:
         return launch_arguments(resolved)
 
     def agent_request(
-        self, identity: str, operation: str, run_profile: str = "short", *,
+        self,
+        identity: str,
+        operation: str,
+        run_profile: str = "short",
+        *,
         native_context: dict[str, Any] | None = None,
+        native_episode_ref: object | None = None,
     ) -> dict[str, Any]:
         from .agent_run_request import create
 
         bounded = self._run_profile(identity, run_profile)
         composition = self.composition(identity)
         manifest = _object_file(self.entry_path(self.selection(identity), "manifest"))
-        return create(composition, operation, run_profile,
-                      RUN_PROFILES[run_profile] if bounded else None,
-                      "managed" if managed_manifest(manifest) else "native", native_context)
+        episode = None
+        if native_episode_ref is not None:
+            if self.native_episode_resolver is None:
+                raise BoundaryError("native_episode", "application_owner_required")
+            episode = self.native_episode_resolver(native_episode_ref)
+            if managed_manifest(manifest):
+                raise BoundaryError("native_episode", "native_episode_target_conflict")
+            if episode["binding"]["ownership"] == "attached":
+                state = composition["semantic_definition"]["state"]
+                if not (
+                    state["kind"] in {"stateless_current", "qualified_public_W"}
+                    or (
+                        state["kind"] == "ACK_committed_script"
+                        and composition["semantic_definition"]["input"].get("history_mode")
+                        == "sampled_current"
+                        and composition["semantic_definition"]["input"]
+                        .get("state_recovery", {})
+                        .get("mode")
+                        == "none"
+                    )
+                ):
+                    raise BoundaryError("native_episode", "current_start_unsupported")
+        return create(
+            composition,
+            operation,
+            run_profile,
+            RUN_PROFILES[run_profile] if bounded else None,
+            "managed" if managed_manifest(manifest) else "native",
+            native_context,
+            episode,
+        )
 
-    def run_agent(self, value: object, *, native_context: dict[str, Any] | None = None,
-                  native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+    def run_agent(
+        self,
+        value: object,
+        *,
+        native_context: dict[str, Any] | None = None,
+        native_authorizer: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         from .agent_run_request import checked
 
         if not isinstance(value, dict):
@@ -737,23 +786,50 @@ class LocalModelService:
         if (not isinstance(identity, str) or not isinstance(operation, str)
                 or not isinstance(profile, str)):
             raise BoundaryError("agent_run_request", "invalid_request")
+        with self.lock:
+            self._require_source_admission()
+        episode = None
+        admission = value.get("admission_context")
+        if isinstance(admission, dict) and "native_episode" in admission:
+            from .native_episode_binding import checked_context
+
+            supplied = checked_context(admission["native_episode"])
+            if self.native_episode_resolver is None:
+                raise BoundaryError("native_episode", "application_owner_required")
+            episode = self.native_episode_resolver(supplied["environment_ref"])
+            if episode != supplied:
+                raise BoundaryError("native_episode", "resource_binding_changed")
         # Admission owns Source/model exclusion before any original metadata read.
         # _begin repeats the same pure guard atomically before intent/dispatch.
         with self.lock:
-            self._require_model_admission()
-        effective = self.agent_request(identity, operation, profile,
-                                       native_context=native_context)
+            self._require_model_admission(episode, action="creation")
+        effective = self.agent_request(
+            identity,
+            operation,
+            profile,
+            native_context=native_context,
+            **({"native_episode_ref": episode["environment_ref"]} if episode is not None else {}),
+        )
         request = checked(value, effective)
         operation = request["operation"]
         if operation == "start":
             if native_context is not None or native_authorizer is not None:
                 raise BoundaryError("agent_run_request", "native_context_requires_prepared_load")
             return self.start(
-                request["selection_id"], request["run_profile"], _agent_request=request
+                request["selection_id"],
+                request["run_profile"],
+                _agent_request=request,
+                _native_episode_context=episode,
             )
-        return self._prepare_and_load(request["selection_id"], request["run_profile"],
-            takeover=operation == "prepare-and-takeover", native_context=native_context,
-            native_authorizer=native_authorizer, agent_request=request)
+        return self._prepare_and_load(
+            request["selection_id"],
+            request["run_profile"],
+            takeover=operation == "prepare-and-takeover",
+            native_context=native_context,
+            native_authorizer=native_authorizer,
+            agent_request=request,
+            native_episode_context=episode,
+        )
 
     def selection(self, identity: str) -> dict[str, Any]:
         for entry in self.registry()["policies"]:
@@ -1294,6 +1370,8 @@ class LocalModelService:
         """Reserve application sequencing, never gameplay or external SDK authority."""
         reservation = object()
         with self.lock:
+            if self.native_episode_guard is not None:
+                self.native_episode_guard(None, "recording")
             if require_human and (self.closed or self._recording_recovery_required(self.state)):
                 raise BoundaryError("recording", "model_recovery_required")
             if self._recording_source_reservation is not None:
@@ -1315,23 +1393,42 @@ class LocalModelService:
         with self.lock:
             self._recording_admission_guard = guard
 
-    def _require_model_admission(self) -> None:
+    def _require_source_admission(self) -> None:
         if self._recording_source_reservation is not None or (
             self._recording_admission_guard is not None and self._recording_admission_guard()
         ):
             raise BoundaryError("local_model", "native_recording_command_pending")
 
+    def _require_model_admission(
+        self, episode: dict[str, Any] | None = None, *, action: str = "control"
+    ) -> None:
+        self._require_source_admission()
+        if self.native_episode_guard is not None:
+            self.native_episode_guard(
+                episode if action == "creation" else self.state.get("native_episode"), action
+            )
+
     def _begin(
-        self, action: str, operation: Callable[[], None], *, recovery: bool = False,
+        self,
+        action: str,
+        operation: Callable[[], None],
+        *,
+        recovery: bool = False,
         admission: Callable[[], None] | None = None,
         agent_request: dict[str, Any] | None = None,
         request_context: dict[str, Any] | None = None,
+        native_episode_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if self.closed:
                 raise BoundaryError("local_model", "service_closed")
             if not recovery:
-                self._require_model_admission()
+                self._require_model_admission(
+                    native_episode_context,
+                    action="creation"
+                    if action in {"start", "prepare-and-load", "prepare-and-takeover"}
+                    else "control",
+                )
             if self.thread and self.thread.is_alive() and not recovery:
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.state["status"] in {"command_unknown", "recovery_required"} and not recovery:
@@ -1346,6 +1443,11 @@ class LocalModelService:
                     agent_request["operation"],
                     agent_request["run_profile"],
                     **({"native_context": request_context} if request_context is not None else {}),
+                    **(
+                        {"native_episode_ref": native_episode_context["environment_ref"]}
+                        if native_episode_context is not None
+                        else {}
+                    ),
                 )
                 admitted_request = checked(agent_request, effective)
                 reference = publish(self.directory, admitted_request, current["id"])
@@ -1450,10 +1552,16 @@ class LocalModelService:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
         return bounded
 
-    def start(self, identity: str, run_profile: str = "short", *,
-              _agent_request: dict[str, Any] | None = None) -> dict[str, Any]:
+    def start(
+        self,
+        identity: str,
+        run_profile: str = "short",
+        *,
+        _agent_request: dict[str, Any] | None = None,
+        _native_episode_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
-            self._require_model_admission()
+            self._require_model_admission(_native_episode_context, action="creation")
         request = _agent_request or self.agent_request(identity, "start", run_profile)
         self._run_profile(identity, run_profile)
         intent = self.intent_generation
@@ -1469,10 +1577,18 @@ class LocalModelService:
             intent = self.intent_generation
             self.state.pop("_native_intent", None)
             self._native_authorizer = None
+            self._bind_native_episode_intent(_native_episode_context)
 
         return self._begin(
-            "start", lambda: self._start(identity, intent) if run_profile == "short"
-            else self._start(identity, intent, run_profile), admission=admit, agent_request=request,
+            "start",
+            lambda: (
+                self._start(identity, intent)
+                if run_profile == "short"
+                else self._start(identity, intent, run_profile)
+            ),
+            admission=admit,
+            agent_request=request,
+            native_episode_context=_native_episode_context,
         )
 
     def prepare_and_load(self, identity: str, run_profile: str = "short", *,
@@ -1491,17 +1607,24 @@ class LocalModelService:
                                       native_context=native_context,
                                       native_authorizer=native_authorizer)
 
-    def _prepare_and_load(self, identity: str, run_profile: str, *,
-                          takeover: bool, native_context: dict[str, Any] | None,
-                          native_authorizer: Callable[[], None] | None,
-                          agent_request: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _prepare_and_load(
+        self,
+        identity: str,
+        run_profile: str,
+        *,
+        takeover: bool,
+        native_context: dict[str, Any] | None,
+        native_authorizer: Callable[[], None] | None,
+        agent_request: dict[str, Any] | None = None,
+        native_episode_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Prepare a reviewed selection, then load in Human mode; never fetch model weights.
 
         Only the existing bounded, hash-pinned Runtime installer is automatic.
         Adapter/weights/backend requirements remain explicit owning readiness checks.
         """
         with self.lock:
-            self._require_model_admission()
+            self._require_model_admission(native_episode_context, action="creation")
         request = agent_request or self.agent_request(identity,
             "prepare-and-takeover" if takeover else "prepare-and-load", run_profile,
             **({"native_context": native_context} if native_context is not None else {}))
@@ -1563,6 +1686,7 @@ class LocalModelService:
 
         def admit() -> None:
             self._require_intent(intent)
+            self._bind_native_episode_intent(native_episode_context)
             if native_context is not None:
                 if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
                     raise BoundaryError("local_model", "native_intent_context_required")
@@ -1577,9 +1701,28 @@ class LocalModelService:
                 self.state.pop("_native_intent", None)
                 self._native_authorizer = None
 
-        return self._begin("prepare-and-takeover" if takeover else "prepare-and-load", prepare,
-                           admission=admit, agent_request=request,
-                           request_context=native_context)
+        return self._begin(
+            "prepare-and-takeover" if takeover else "prepare-and-load",
+            prepare,
+            admission=admit,
+            agent_request=request,
+            request_context=native_context,
+            native_episode_context=native_episode_context,
+        )
+
+    def _bind_native_episode_intent(self, context: dict[str, Any] | None) -> None:
+        if context is None:
+            self.state.pop("native_episode", None)
+        else:
+            from .native_episode_binding import checked_context
+
+            self.state["native_episode"] = checked_context(context)
+        self.state.pop("native_episode_spawned", None)
+
+    def _authorize_native_episode(self, context: dict[str, Any]) -> dict[str, Any]:
+        if self.native_episode_authorizer is None:
+            raise BoundaryError("native_episode", "application_owner_required")
+        return self.native_episode_authorizer(context)
 
     def native_intent_context(self, request_id: object) -> dict[str, Any]:
         identity = digest(request_id, "local_model.native_request", length=32)
@@ -1614,7 +1757,11 @@ class LocalModelService:
             raise BoundaryError("local_model", "managed_environment_unavailable") from error
 
     def _send_control(
-        self, client: RuntimeClient, route: str, body: dict[str, Any], intent: int,
+        self,
+        client: RuntimeClient,
+        route: str,
+        body: dict[str, Any],
+        intent: int,
         binding: RuntimeControlBinding | None = None,
     ) -> dict[str, Any]:
         # Keep model mutations serialized, but never queue recovery behind their
@@ -1628,6 +1775,15 @@ class LocalModelService:
             )):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
             native = self.state.get("_native_intent")
+            episode = self.state.get("native_episode")
+            if route in {"/mode", "/tick"} and not recovery and episode is not None:
+                self._authorize_native_episode(episode)
+                if (
+                    binding is None
+                    or binding.runtime_instance_id != episode["binding"]["runtime_instance_id"]
+                ):
+                    raise BoundaryError("native_episode", "runtime_or_installed_tuple_changed")
+                self._require_intent(intent)
             if (
                 route in {"/mode", "/tick"}
                 and not recovery
@@ -1643,8 +1799,7 @@ class LocalModelService:
             self._require_intent(intent)
             return value
 
-    def _start(self, identity: str, intent: int | None = None,
-               run_profile: str = "short") -> None:
+    def _start(self, identity: str, intent: int | None = None, run_profile: str = "short") -> None:
         bounded = self._run_profile(identity, run_profile)
         if intent is None:
             intent = self.intent_generation
@@ -1662,6 +1817,9 @@ class LocalModelService:
         _check_runtime_port(15527)
         managed = managed_manifest(manifest)
         native_context = self.state.get("_native_intent")
+        episode_context = self.state.get("native_episode")
+        if managed and episode_context is not None:
+            raise BoundaryError("native_episode", "native_episode_target_conflict")
         if (managed and isinstance(native_context, dict)
                 and native_context.get("intent_generation") == intent):
             raise BoundaryError("local_model", "native_model_target_unavailable")
@@ -1669,6 +1827,8 @@ class LocalModelService:
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
                      _loopback(self.config.platform_url or "http://127.0.0.1:15526"))
+        if episode_context is not None:
+            connector = self._authorize_native_episode(episode_context)["endpoint"]
         if target is not None:
             environment_arguments = runtime_arguments(target, self.private_root)
         else:
@@ -1728,6 +1888,7 @@ class LocalModelService:
         self.directory.mkdir(parents=True, exist_ok=True)
         with self.lock:
             self._require_intent(intent)
+            self._require_model_admission(episode_context, action="creation")
             if (
                 request_ref is not None
                 and self.composition(identity)["composition_id"] != admitted["composition_id"]
@@ -1745,10 +1906,21 @@ class LocalModelService:
                     stderr=log,
                 )
             self.process = process
+            if episode_context is not None:
+                self.state["native_episode_spawned"] = {
+                    "environment_ref": episode_context["environment_ref"],
+                    "pid": process.pid,
+                }
             # A new Human-mode child must not inherit a prior run's attestation
             # or evaluation if its own startup fails.
-            for key in ("startup", "runtime", "evaluation", "recovery_evidence",
-                        "startup_agent_run_request"):
+            for key in (
+                "startup",
+                "runtime",
+                "evaluation",
+                "recovery_evidence",
+                "startup_agent_run_request",
+                "startup_native_episode",
+            ):
                 self.state.pop(key, None)
             self.state.update(status="loading", loaded=False, connector_endpoint=connector)
             if selected_target is None:
@@ -1789,14 +1961,29 @@ class LocalModelService:
                               or any(runtime["autonomy_budget"].get(key) != value
                                      for key, value in limits.items())):
                 raise ValueError
+            if episode_context is not None:
+                self._authorize_native_episode(episode_context)
             with self.lock:
                 self._require_intent(intent)
                 if self.closed:
                     raise BoundaryError("local_model", "service_closed")
+                if episode_context is not None:
+                    self._require_model_admission(episode_context, action="creation")
+                    if self.native_episode_associate is None:
+                        raise BoundaryError("native_episode", "application_owner_required")
+                    self.native_episode_associate(episode_context, startup["run_id"], request_ref)
+                    self.state["startup_native_episode"] = {
+                        "run_id": startup["run_id"],
+                        "admission_context": episode_context,
+                    }
                 self.client = client
                 self.state.update(
-                    status="loaded", loaded=True, startup=startup, runtime=runtime, error_code=None,
-                    startup_agent_run_request={"run_id": startup["run_id"], "request": request_ref}
+                    status="loaded",
+                    loaded=True,
+                    startup=startup,
+                    runtime=runtime,
+                    error_code=None,
+                    startup_agent_run_request={"run_id": startup["run_id"], "request": request_ref},
                 )
             self.start_observer()
         except (queue.Empty, OSError, ValueError, TypeError, BoundaryError):
@@ -2072,6 +2259,12 @@ class LocalModelService:
                     raise BoundaryError("local_model", "runtime_game_mismatch")
                 NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
                 self._require_intent(intent)
+                episode = self.state.get("native_episode")
+                if episode is not None:
+                    self._authorize_native_episode(episode)
+                    if binding.runtime_instance_id != episode["binding"]["runtime_instance_id"]:
+                        raise BoundaryError("native_episode", "runtime_or_installed_tuple_changed")
+                    self._require_intent(intent)
                 context = NativeTasks.model_context(
                     observation, observation["run_id"], binding.recovery_epoch
                 )
@@ -2312,8 +2505,10 @@ class LocalModelService:
                         else "runtime_finalization_unavailable"
                     )
 
-    def _stop_process(self) -> None:
-        process = self.process
+    def _stop_process(self, expected_process: subprocess.Popen[bytes] | None = None) -> None:
+        process = expected_process if expected_process is not None else self.process
+        if expected_process is not None and self.process is not expected_process:
+            raise BoundaryError("native_episode", "actor_replaced")
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -2321,6 +2516,120 @@ class LocalModelService:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+
+    def stop_native_episode_actor(
+        self, context: dict[str, Any], *, timeout: float
+    ) -> dict[str, Any]:
+        """Original Actor Stop/seal owner; caller holds no Environment lock."""
+        with self.lock:
+            if self.state.get("native_episode") != context:
+                # No automatic adoption of a recovered or replacement Actor.
+                return {"status": "not_associated", "run_id": None, "seal": "not_applicable"}
+            association = self.state.get("startup_native_episode")
+            run_id = (
+                association.get("run_id")
+                if isinstance(association, dict) and association.get("admission_context") == context
+                else None
+            )
+            process = self.process
+            running = self.client is not None or (
+                self.thread is not None and self.thread.is_alive()
+            )
+        operation_error = None
+        if running:
+            try:
+                self.command("stop")
+                thread = self.thread
+                if thread is not None:
+                    thread.join(timeout=timeout)
+            except (OSError, ValueError) as error:
+                operation_error = (
+                    error.code if isinstance(error, BoundaryError) else "actor_stop_failed"
+                )
+        with self.lock:
+            if self.state.get("native_episode") != context:
+                raise BoundaryError("native_episode", "actor_replaced")
+            if self.process is not process:
+                spawned = self.state.get("native_episode_spawned")
+                if (
+                    run_id is not None
+                    or not isinstance(spawned, dict)
+                    or spawned.get("environment_ref") != context["environment_ref"]
+                ):
+                    raise BoundaryError("native_episode", "actor_replaced")
+                process = self.process
+            if self.thread is not None and self.thread.is_alive():
+                self.intent_generation += 1
+                operation_error = "actor_stop_reply_unknown"
+            runtime = self.state.get("runtime")
+            evaluation = self.state.get("evaluation")
+            operation = self.state.get("operation")
+        evaluation_matches = (
+            run_id is not None
+            and isinstance(evaluation, dict)
+            and evaluation.get("run_id") == run_id
+        )
+        # A failed seal or missing Stop reply still requires bounded containment
+        # of this exact owned process. This is not a signed Runtime Stop result.
+        if process is not None and process.poll() is None:
+            self._stop_process(expected_process=process)
+        exited = process is None or process.poll() is not None
+        stopped = (
+            isinstance(runtime, dict)
+            and runtime.get("run_id") == run_id
+            and runtime.get("lifecycle") == "stopped"
+        )
+        return cast(dict[str, Any], json.loads(
+            json.dumps(
+                {
+                    "status": "stopped"
+                    if stopped
+                    else "owned_process_contained"
+                    if exited
+                    else "unknown",
+                    "run_id": run_id,
+                    "process_exit_code": process.poll() if process is not None else None,
+                    "stop_operation": operation,
+                    "stop_error": operation_error,
+                    "seal": "available"
+                    if evaluation_matches
+                    else "unknown"
+                    if run_id is not None
+                    else "not_applicable",
+                    "evaluation_reference": {
+                        "schema": cast(dict[str, Any], evaluation).get("schema"),
+                        "run_id": run_id,
+                        "sha256": hashlib.sha256(json_bytes(evaluation)).hexdigest(),
+                        "owner": "LocalModelService",
+                    }
+                    if evaluation_matches
+                    else None,
+                }
+            )
+        ))
+
+    def native_episode_driver_lost(self, context: dict[str, Any]) -> None:
+        """Exit notification fences/stops only the still-associated original."""
+        with self.lock:
+            if self.closed or self.state.get("native_episode") != context:
+                return
+            association = self.state.get("startup_native_episode")
+            if self.client is not None and (
+                not isinstance(association, dict)
+                or association.get("admission_context") != context
+                or association.get("run_id") != self.client.startup.get("run_id")
+            ):
+                return
+            if self.client is None and not (self.thread is not None and self.thread.is_alive()):
+                return
+            try:
+                self.command("stop")
+            except BoundaryError as error:
+                self.state["native_episode_driver_loss"] = {
+                    "status": "unknown",
+                    "error_code": error.code,
+                }
+                self._save()
 
     def _evaluation_handoff(self) -> None:
         from sts2_platform_evidence import verify_agent_run_evidence
@@ -2579,8 +2888,28 @@ class LocalModelService:
             if not isinstance(reference, dict):
                 raise BoundaryError("agent_run_request", "invalid_request_reference")
             request = original(self.directory, reference, startup)
-            return {"status": "bound", "request": reference, "run_id": startup["run_id"],
-                    "composition": request["composition"]}
+            result = {
+                "status": "bound",
+                "request": reference,
+                "run_id": startup["run_id"],
+                "composition": request["composition"],
+            }
+            context = request.get("admission_context", {}).get("native_episode")
+            if context is not None:
+                resource = self.state.get("startup_native_episode")
+                verified = (
+                    isinstance(resource, dict)
+                    and resource.get("run_id") == startup["run_id"]
+                    and resource.get("admission_context") == context
+                )
+                result["native_episode"] = {
+                    "status": "bound" if verified else "unknown",
+                    "admission_context": context,
+                    "basis": "original_request_and_startup_resource_association"
+                    if verified
+                    else "original_resource_association_unavailable",
+                }
+            return result
         except (OSError, ValueError, KeyError, TypeError):
             return {"status": "unknown", "request": reference, "run_id": startup["run_id"],
                     "reason": "original_request_run_binding_unavailable"}

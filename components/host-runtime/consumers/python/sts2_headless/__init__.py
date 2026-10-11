@@ -4,6 +4,7 @@ from .client import (
     DriverInitializationError,
     FiniteActionView,
     ManagedPlayerEnvironment,
+    ReferencePlayerEnvironment,
     SyncVectorPlayerEnvironment,
     ThreadedVectorPlayerEnvironment,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "DriverInitializationError",
     "FiniteActionView",
     "ManagedPlayerEnvironment",
+    "ReferencePlayerEnvironment",
     "SyncVectorPlayerEnvironment",
     "ThreadedVectorPlayerEnvironment",
     "ManagedHostServiceClient",
