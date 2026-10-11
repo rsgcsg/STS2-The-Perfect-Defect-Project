@@ -329,7 +329,7 @@ export class PolicyRuntime {
         // optional fresh-game precondition lookup. Fences and budget still win;
         // eligibility restores the ordinary complete admission path.
         this.checkRecoveryEpoch(expected?.recoveryEpoch);
-        const expiry = await this.finishRecoveryDeadlineIfDue();
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
         if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (this.staleSubmissionCooldownPending()) {
           if (!this.autonomyBudgetAvailable()) {
@@ -362,13 +362,13 @@ export class PolicyRuntime {
       await this.handoffAutonomyBudget();
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
-    const entryExpiry = await this.finishRecoveryDeadlineIfDue();
+    const entryExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
     if (entryExpiry) return { type: "not_admitted", reason: entryExpiry, status: this.status() };
     let capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>;
     try {
       capabilities = await this.options.connector.capabilities({ inputProfile });
     } catch (error) {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
         return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
@@ -376,7 +376,7 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "capabilities_failed", status: this.status() };
     }
     {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
     }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
@@ -401,7 +401,7 @@ export class PolicyRuntime {
       this.lastEvidenceEnvironmentFingerprint = admittedEnvironmentKey;
     }
     {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
     }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
@@ -416,7 +416,7 @@ export class PolicyRuntime {
           () => this.options.connector.observeTextMenuContext!(inputProfile));
         if (observation.cancelled) {
           this.refreshing = false;
-          const expiry = await this.finishRecoveryDeadlineIfDue();
+          const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
           if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
           return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
         }
@@ -435,7 +435,7 @@ export class PolicyRuntime {
             }, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } }));
         if (observation.cancelled) {
           this.refreshing = false;
-          const expiry = await this.finishRecoveryDeadlineIfDue();
+          const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
           if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
           return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
         }
@@ -443,7 +443,7 @@ export class PolicyRuntime {
       }
     } catch (error) {
       this.refreshing = false;
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.controllerReleaseUnconfirmed) {
         if (!this.tainted) await this.taint(`managed_observation_lease_unknown:${message(error)}`);
@@ -459,7 +459,7 @@ export class PolicyRuntime {
     }
     this.refreshing = false;
     {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
     }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
@@ -498,7 +498,7 @@ export class PolicyRuntime {
     }
     const input: PolicyDecisionInput = { run_id: this.runId, manifest: this.options.manifest, bundle, candidate_digest: admission.candidateDigest, candidate_count: admission.candidateCount };
     {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
     }
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
@@ -571,7 +571,7 @@ export class PolicyRuntime {
         if (this.publicPort) this.publicObservations.reset();
         if (this.interactionPort) this.confirmedInteraction = null;
       }
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (this.autonomyBudgetState.exhaustedReason === "deadline") {
         await this.handoffAutonomyBudget();
@@ -585,7 +585,7 @@ export class PolicyRuntime {
     } finally {
       if (this.activePolicy?.controller === policyController) this.activePolicy = null;
     }
-    const policyExpiry = await this.finishRecoveryDeadlineIfDue();
+    const policyExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
     if (policyExpiry) return { type: "not_admitted", reason: policyExpiry, status: this.status() };
     if (this.recoveryEpoch !== policyRecoveryEpoch || this.mutationCancellationRequested()) {
       this.resetInteractionContinuity();
@@ -620,7 +620,7 @@ export class PolicyRuntime {
       await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
-    const decisionExpiry = await this.finishRecoveryDeadlineIfDue();
+    const decisionExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
     if (decisionExpiry) return { type: "not_admitted", reason: decisionExpiry, status: this.status() };
     if (this.mode === "shadow") return { type: "shadow", decision, status: this.status() };
     if (!resolved) {
@@ -629,7 +629,7 @@ export class PolicyRuntime {
       return { type: "not_executed", decision, status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (await this.finishAutonomyBudgetHandoffIfRequested())
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
@@ -643,14 +643,14 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "controller_acquire_failed", status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       if (await this.finishAutonomyBudgetHandoffIfRequested())
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       await this.releaseController();
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
-    const submissionExpiry = await this.finishRecoveryDeadlineIfDue();
+    const submissionExpiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
     if (submissionExpiry) return { type: "not_admitted", reason: submissionExpiry, status: this.status() };
     const requestId = `request-${this.runId}-${decision.decision_id}`;
     if (this.submittedRequestIds.has(requestId)) { await this.failClosed("duplicate_request_id"); return { type: "not_admitted", reason: "duplicate_request_id", status: this.status() }; }
@@ -705,7 +705,7 @@ export class PolicyRuntime {
     try {
       const successor = await this.stableSuccessor(bundle.observation, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
-        const expiry = await this.finishRecoveryDeadlineIfDue();
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
         if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (await this.finishAutonomyBudgetHandoffIfRequested())
           return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
@@ -749,7 +749,7 @@ export class PolicyRuntime {
       if (!(await this.appendEvidence("text_menu_dispatch_cancelled", {
         decision_id: decision.decision_id, reason: "recovery_before_submit"
       }))) await this.taint("agent_evidence_dispatch_cancel_write_failed");
-      const expiry = await this.finishRecoveryDeadlineIfDue();
+      const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
       if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
@@ -824,7 +824,7 @@ export class PolicyRuntime {
     try {
       const successor = await this.stableSuccessor(previous, requestId, decision.decision_id);
       if (this.mutationCancellationRequested()) {
-        const expiry = await this.finishRecoveryDeadlineIfDue();
+        const expiry = this.hasRecoveryDeadline ? await this.finishRecoveryDeadlineIfDue() : null;
         if (expiry) return { type: "not_admitted", reason: expiry, status: this.status() };
         if (await this.finishAutonomyBudgetHandoffIfRequested()) return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
@@ -957,6 +957,10 @@ export class PolicyRuntime {
       if (!this.tainted) await this.taintWithoutEvidence(reason, false);
       await this.appendEvidence("runtime_tainted", { reason, retry: false });
     }
+  }
+
+  private get hasRecoveryDeadline(): boolean {
+    return this.staleRecovery !== null || this.staleRecoveryHandoff !== null || this.autonomyBudgetRecoveryFenced;
   }
 
   private async finishRecoveryDeadlineIfDue(): Promise<string | null> {
