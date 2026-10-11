@@ -710,8 +710,8 @@ It hit the existing limit of eight total known stale refusals; Task remains unpr
 operation censored. All eight recorded native rejection diagnostics report
 `public_facts_changed` with expected/projected Snapshot IDs equal; one detail is
 truncated at the path-count limit. These are execution diagnostics, not proof that
-a particular protocol/Agent/Connector repair is correct. Cause review and the next
-policy/source decision remain pending. Cleanup was graceful/unforced exit0, with
+a particular protocol/Agent/Connector repair is correct. The ongoing policy3 source
+work does not rewrite these originals. Cleanup was graceful/unforced exit0, with
 Root outer elapsed 39.3798s, no errors, remaining owned processes or strict game
 processes. Outer wall and Auto elapsed are different counters; cleanup completion
 does not prove Task, strategy, training admission or causal settlement.
@@ -727,11 +727,33 @@ integration remain pending. This is not a real-corpus fit, high-quality dataset 
 strategy result. Earlier failures remain preserved. The current Native137 trained Model
 is available for operational diagnosis; retraining is not required to make it new.
 
+Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
+hosted head 6ddc9256 failed three OS leaves in full
+[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
+The owning TokenRanking regression repair at local baeb8958 is independently
+accepted with its original RED and one Reward/seven historical green cases;
+no latest-head hosted success is claimed. Two unchanged Windows test failures
+remain under a separate bounded diagnostic-only investigation. Episode f7fdbd1c's
+36 Application cases and final bounded synthetic common-process seam are independently
+accepted. Teacher retains the original passing test receipt/assertions, with its
+old raw temporary artifacts unavailable; final PublicM2 originals are independently
+verified. This is not a new two-case aggregate PASS or native/NN qualification.
+The default-CI process fixture lacked the supplied archive environment. The author
+is correcting that through the existing source-package owner and adding actual
+HTTP/CLI entry coverage; these new deltas are unexecuted. Legacy/root checks,
+metadata and CI remain pending. Native policy3's versioned per-episode recovery is under source
+implementation. No new game, inference, install or strategy result follows.
+
+The user retains final V1 data/Agent selection. The reviewed private proposal is
+awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
+specification or permission to start the dependent implementation/data/fit.
+Proposal option A/A+ is distinct from the workstream letters below.
+
 The selected finite dependency graph is:
 
 ```text
 A: native stale diagnosis/repair + reusable ordinary Episode prepare/run/Stop
-B: useful source/quality/use preparation -> fixed small training view
+B: final V1 choice STOP -> allocated source/use work -> fixed small training view
 B eligible view + recipe -> bounded CPU fit -> ordinary exported Model (parallel A)
 A usable execution + exported Model -> register/load -> actual game evaluation
 C: GPU backend/cost preparation (read-only now, parallel)
@@ -742,11 +764,21 @@ D: architecture, compatibility, specifications and required CI across all stages
 
 | Workstream | Now / entry condition | Exit and next consumer |
 | --- | --- | --- |
-| A — reliable running | Review Auto3's actual rejection diagnostics with the existing Native137 Model; decide any owning repair and complete ordinary Episode admission/idempotency, prepare/run/Stop/typed-close. | Pass the affected source/contract and authorized runtime gates, exposing reusable ordinary execution/cleanup. Existing-model diagnosis/evaluation can proceed when its actual prerequisites hold, without B or new training. |
-| B — useful data | Prefer automatic program demonstrations and a bounded CombatSolver combat-teacher source; this producer/adapter route is not yet verified and has no build/generated batch. Qualified existing Human material is supplementary or selected for a targeted gap. Historical M0 App-wiring evidence is engineering support. | Verify source/rights, target method/quality, fair student basis/complete-C mapping, groups/exposure/use; fix a useful small Input/Target/history/reset view with exclusions. An eligible view + trusted recipe may enter bounded CPU fit and ordinary Model export in parallel with A; missing producer/basis/permission remains a dependency. |
+| A — reliable running | Continue authorized native policy3 source/failure-contract work and Episode source/process/identity/integration gates, preserving Auto3 and the existing trained Model. | Pass the affected owning gates and independent review, exposing reusable ordinary execution/cleanup. Existing-model diagnosis/evaluation proceeds only under its actual requirements/allocation, without B or new training. |
+| B — useful data | STOP at the user's final V1 choice. Human/native, program, existing/derived and Solver candidates were compared, but the current proposal does not authorize a selected batch, new collector/adapter or fit. | After explicit selection and bounded allocation, verify source/rights, target quality/method, fair basis/complete-C mapping, groups/use; fix the declared Input/Target view. Its eligible view + recipe may train/export alongside A. Actual Human participation is a separate stop for its dependent branch. |
 | A+exported Model — game evaluation | A usable Runtime/application path and the exported Model are ready. B's fit needs only its own eligible view/recipe, initialization, identity and finite allocation; it does not wait for A's running repair. | Register/load through the ordinary owners and perform an actual new-seed learned game evaluation, retaining fit metrics and all Run/checkpoint/Model/export ancestry. Natural win/loss and censor/unknown remain distinct. Poor fit or strategy redirects data/model work without erasing engineering evidence or claiming quality. |
 | C — GPU and cost | Separate read-only backend/cost preparation is parallel now; no backend build/provider job is claimed. Static/CPU contract preparation defines the bounded GPU smoke and checkpoint/export/inference comparisons. | The allocated smoke establishes actual CUDA, checkpoint/export compatibility and measured cost; synthetic data may test this before real data is ready. Passed smoke + useful admitted data + a finite budget allow real GPU fit/scale within the same cumulative USD20. Actual GPU qualification is an output of the smoke, not its circular prerequisite. |
 | D — coherent changes | Apply the selected architecture/change rules, historical consumer/reader obligations, cheapest faithful checks and required exact-head CI throughout A/B/C. | Integrate independently reviewed useful increments. Architecture cleanup is not a prerequisite to game/data work whose own prerequisites hold; required gates are not waived or borrowed from another source. |
+
+STOP is branch-specific: the pending V1 choice stops its new implementation,
+collection, training and auxiliary development. Existing authorized native/Episode
+and PR176 repair/diagnostic/CI delivery work continues. No failed hosted head is
+merged, and local repair acceptance does not substitute for latest-head CI. GPU
+and auxiliary execution still require the selected finite task/allocation; cumulative
+GPU spend remains USD0. If a branch needs actual Human participation, it returns
+the concrete entry and missing evidence while independent work proceeds. Root
+ends the round only when every branch is complete or waiting on user/external
+conditions, with an honest handoff rather than fictional background continuation.
 
 External-source and GPU assignments are preparation, not execution receipts. Source
 builders, generated labels, actual data-use/fit and provider work each require their
