@@ -480,9 +480,12 @@ diagnostics. The opt-in CLI writer handles both write callbacks and later stderr
 `error` events, including EPIPE. It owns one stderr error listener for this
 single-Runtime CLI process lifetime, so pending error events remain contained
 after Stop; the default-off path attaches no listener. No global exception
-handler is added. The default remains off; the existing 41 attempts, 250 ms interval,
-observations, control lifecycle, strict successor checks and unknown/taint
-semantics are unchanged. Diagnostics do not establish native causal settlement.
+handler is added. The default remains off. The private record declares whether
+`max_attempts` limits all polls (legacy profiles/One-Step) or cumulative unusable
+polls (generic public Auto), and reports actual unusable and qualified-settling
+counts beside total `poll_count`. Qualified settling may therefore produce more
+than 41 actual Auto polls; scalar row, byte and failure-record caps remain fixed.
+Diagnostics do not establish native causal settlement.
 
 ## Continuous-operation repair candidate
 
@@ -492,14 +495,53 @@ snapshot retry. The controller is released and the next tick reacquires a comple
 bundle, rescores it and creates new decision/request IDs within the finite recovery window described above. Its expiry returns to Human. Other non-delivery, unsupported decisions and all
 unknown delivery retain existing handoff/taint behavior; no old action is replayed.
 
-After delivered input, the default bounded observation wait is 41 samples at a
-250 ms fixed interval (10 seconds of scheduled waiting, plus bounded HTTP time),
-with one observation attempt per sample. This accommodates enemy animations; it
-is not a causal settlement proof. Human/Stop interrupts further polling and never
-submits another action. Exhaustion or identity drift still fails closed. Initial
-settling frames do not terminate Auto; unsupported stable surfaces still hand off.
-These changes require a newly pinned package before live use; rc.4 artifacts remain
-immutable and do not acquire this behavior from a source edit.
+After a correlated delivered generic public Snapshot1 action in Auto, Runtime
+keeps that same in-flight decision/request and controller while observing under
+the original absolute authorization deadline. Complete same-profile/environment
+settling frames distinct from the original scored basis with a greater sequence,
+with a complete and consistent `bound_actions` catalog, may continue waiting.
+Repeated occurrences of one such newer settling watermark also qualify. These
+polls never become Model inputs, policy calls, another submission or a successor
+event, and do not renew time/call/submission budgets. This covers both generic
+M0 and PublicM2 Port4 without a Host/model-specific split.
+
+The configured `successorPoll.maxAttempts` (default 41) is a cumulative allowance
+for unusable polls in this Auto scope: same-original-basis, missing whole bundle
+and incomplete/truncated/untrusted settling consume it. Qualified settling never
+refunds spent unusable polls. Profile/environment/sequence errors and transport
+exceptions retain immediate strict failure behavior. Polls use the configured
+interval (default 250 ms), with a minimum positive 1 ms yield for this Auto path,
+and clamp the next delay to the original deadline's remaining time. At that
+deadline, the existing owner fences the wait and serializes Human/release/evidence
+without a second tick or status read. Stop/Human fence late observations and
+prevent any further acquisition or action; original delivered knowledge remains
+in its Receipt. Exhausting unusable observations still taints conservatively and
+never retries the delivered request.
+
+A distinct newer same-environment non-settling observation preserves the existing
+successor event and validation; it is an observation, not causal settlement or
+a guarantee of future input admission. Interactive child selectors use the
+ordinary successor and complete-input path without a native scene/timing gate.
+PublicM2 remembers a delivered interaction only after that successor is written,
+and offers it once on a subsequent admitted input. Settling polls do not advance
+its input ordinal/history. Stop/deadline/taint retain existing continuity cleanup.
+
+One-Step retains the original total poll cap (default 41 samples and 40×250 ms
+scheduled waits, plus bounded acquisition). Text-menu-v1/v2, Managed text-v2 and
+native-logical Agent contracts remain unchanged. Extending One-Step would affect
+its existing synchronous caller timing and requires a separate contract packet.
+The continuation guarantee applies to background Auto: a manual synchronous Auto
+HTTP tick can outlast a caller timeout. An unknown command outcome remains
+unknown and must not be replayed; this change promises no universal command
+latency or new reconciliation manager. A One-Step mode change queued behind an
+in-flight extended Auto wait also inherits that wait's latency; its own subsequent
+tick still retains the One-Step poll cap.
+
+Initial Auto settling already waits under its original global authorization.
+This correction aligns post-delivery trustworthy waiting with that finite owner;
+it does not establish native readiness duration, effect settlement, eventual
+successor/game summary or strategy quality. It requires a newly qualified package
+before live use. Historical artifacts and failed attempts remain immutable.
 
 ### Sealed public observation acquisition
 

@@ -52,21 +52,23 @@ describe("private successor wait failure diagnostics", () => {
 
   it("records actual same-basis and settling polls without extra observations or replay", async () => {
     const records: SuccessorWaitDiagnostic[] = [];
-    const f = fixture([bundle(["a"]), bundle(["a"]), { observation: snapshot([], "settling-3", "settling", 3), reads: [] }], record => {
+    const f = fixture([bundle(["a"]), bundle(["a"]), { observation: snapshot([], "settling-3", "settling", 3), reads: [] }, bundle(["a"])], record => {
       expect(f.runtime.status().controller).toBe("released"); records.push(record);
-    });
+    }, 2);
     const result = await f.runtime.tick();
     expect(result.type).toBe("unknown");
     const record = failure(records);
-    expect(record).toMatchObject({ outcome: "exhausted", poll_count: 2, max_attempts: 2, interval_ms: 250,
-      basis_snapshot_id: "snapshot-1", basis_sequence: 1, elapsed_ms: 250, rows_total: 2, rows_dropped: 0, truncated: false });
+    expect(record).toMatchObject({ outcome: "exhausted", poll_count: 3, max_attempts: 2, interval_ms: 250,
+      wait_policy: "auto_public_settling", limit_scope: "cumulative_unusable_polls", unusable_poll_count: 2, qualified_settling_poll_count: 1,
+      basis_snapshot_id: "snapshot-1", basis_sequence: 1, elapsed_ms: 500, rows_total: 3, rows_dropped: 0, truncated: false });
     expect(record.polls).toMatchObject([
       { attempt: 1, elapsed_ms: 0, snapshot_id: "snapshot-1", sequence: 1, status: "interactive", category: "same_basis", same_basis: true, settling: false },
-      { attempt: 2, elapsed_ms: 250, snapshot_id: "settling-3", sequence: 3, status: "settling", category: "settling", same_basis: false, settling: true }
+      { attempt: 2, elapsed_ms: 250, snapshot_id: "settling-3", sequence: 3, status: "settling", category: "settling", same_basis: false, settling: true },
+      { attempt: 3, elapsed_ms: 500, snapshot_id: "snapshot-1", sequence: 1, status: "interactive", category: "same_basis", same_basis: true, settling: false }
     ]);
     expect(result.type === "unknown" && result.decision?.decision_id).toBe(record.decision_id);
     expect(result.type === "unknown" && "request_id" in result.receipt! && result.receipt.request_id).toBe(record.request_id);
-    expect(f.connector.observeCount).toBe(3);
+    expect(f.connector.observeCount).toBe(4);
     expect(f.connector.submitCount).toBe(1);
     expect(f.runtime.status()).toMatchObject({ tainted: true, taint_reason: "successor_not_stable", controller: "released" });
     await f.runtime.tick(); expect(f.connector.submitCount).toBe(1); expect(records).toHaveLength(1);
@@ -153,9 +155,14 @@ describe("private successor wait failure diagnostics", () => {
 
   it("retains the final 64 rows and exact dropped/count information on longer waits", async () => {
     const records: SuccessorWaitDiagnostic[] = [];
-    const f = fixture([bundle(["a"]), ...Array.from({ length: 80 }, (_, index) => ({
-      observation: snapshot([], `settling-${index + 2}`, "settling", index + 2), reads: []
-    }))], record => records.push(record));
+    const f = fixture([bundle(["a"]), ...Array.from({ length: 80 }, (_, index) => {
+      const observation = snapshot([], `settling-${index + 2}`, "settling", index + 2);
+      // Exercise a terminal diagnostic without turning qualified settling into
+      // the old total-poll ceiling: partial frames spend the unusable allowance.
+      observation.completeness.status = "partial";
+      observation.completeness.missing = ["visible_fact"];
+      return { observation, reads: [] };
+    })], record => records.push(record));
     expect((await f.runtime.tick()).type).toBe("unknown");
     expect(failure(records)).toMatchObject({ poll_count: 80, rows_total: 80, rows_dropped: 16, truncated: true });
     expect(failure(records).polls).toHaveLength(64);
@@ -170,11 +177,13 @@ describe("private successor wait failure diagnostics", () => {
     const next = snapshot([], "\u0001".repeat(100), "settling", 2);
     next.interaction.kind = "private-kind".repeat(100);
     next.interaction.content.surface.secret = "private-entire-frame";
+    next.completeness.status = "partial";
+    next.completeness.missing = ["visible_fact"];
     const f = fixture([basis, { observation: next, reads: [] }], record => records.push(record));
     expect((await f.runtime.tick()).type).toBe("unknown");
     const record = failure(records);
     expect(record).toMatchObject({ basis_snapshot_id: null, fields_omitted: true });
-    expect(record.polls[0]).toMatchObject({ snapshot_id: null, interaction_kind: null, fields_omitted: true, category: "settling" });
+    expect(record.polls[0]).toMatchObject({ snapshot_id: null, interaction_kind: null, fields_omitted: true, category: "untrusted_settling" });
     expect(Buffer.byteLength(JSON.stringify(record)) + 1).toBeLessThanOrEqual(32 * 1024);
     expect(JSON.stringify(record)).not.toContain("private-entire-frame");
     expect(JSON.stringify(record)).not.toContain("private-kind");
@@ -2221,7 +2230,9 @@ describe("continuous native decision recovery", () => {
 
   it("hands off on bounded successor exhaustion and never resubmits", async () => {
     const connector = new FakeConnector(bundle(["a"])); connector.stale = false;
-    connector.observationQueue = [bundle(["a"]), ...Array.from({length: 3}, (_, i) => ({observation: snapshot([], `settling-${i}`, "settling", i+2), reads: []}))];
+    // Qualified Auto settling is deadline-bounded; same original basis still
+    // consumes the finite unusable allowance and preserves no-replay coverage.
+    connector.observationQueue = [bundle(["a"]), ...Array.from({length: 3}, () => bundle(["a"]))];
     const runtime = new PolicyRuntime({manifest: manifest(), connector, mode: "auto", policy,
       successorPoll: {maxAttempts: 3, baseBackoffMs: 0}, sleep: async () => {}});
     expect((await runtime.tick()).type).toBe("unknown");

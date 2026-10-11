@@ -1154,27 +1154,43 @@ export class PolicyRuntime {
     return true;
   }
   private async stableSuccessor(previous: AnyDecisionBundle["observation"], requestId: string, decisionId: string): Promise<AnyDecisionBundle["observation"] | null> {
+    const publicAuto = this.mode === "auto" && previous.schema === "sts2.player-environment/snapshot-1";
+    const epoch = this.recoveryEpoch, generation = this.autonomyBudgetGeneration;
+    const intervalMs = publicAuto ? Math.max(1, this.successorPoll.baseBackoffMs) : this.successorPoll.baseBackoffMs;
+    const waitController = publicAuto ? new AbortController() : null;
+    // Reuse the existing owner cancellation scope. Read-only acquisition/sleep
+    // may finish late; neither its result nor its cleanup owns a later scope.
+    if (waitController) this.activePolicy = { controller: waitController };
+    const cancelled = (): boolean => {
+      if (publicAuto && this.autonomyBudgetState.state === "active"
+          && this.budgetElapsedMs() >= this.autoBudget.deadlineMs) this.requestAutonomyBudgetHandoff();
+      return this.mutationCancellationRequested() || epoch !== this.recoveryEpoch
+        || generation !== this.autonomyBudgetGeneration;
+    };
     const diagnostic = this.successorWaitDiagnostics?.begin({ runId: this.runId, requestId, decisionId, previous,
-      maxAttempts: this.successorPoll.maxAttempts, intervalMs: this.successorPoll.baseBackoffMs });
-    let attempt = 0;
+      maxAttempts: this.successorPoll.maxAttempts, intervalMs,
+      waitPolicy: publicAuto ? "auto_public_settling" : "legacy_total_poll_limit" });
+    let attempt = 0, unusable = 0, qualifiedSettling = 0;
     let observed: AnyDecisionBundle["observation"] | undefined;
     let category: SuccessorWaitCategory = "acquisition_error";
     let outcome: "accepted" | "exhausted" | "cancelled" | "error" = "exhausted";
     try {
-      for (attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
+      while (publicAuto ? unusable < this.successorPoll.maxAttempts : attempt < this.successorPoll.maxAttempts) {
+        attempt += 1;
         observed = undefined;
         category = "acquisition_error";
-        if (this.mutationCancellationRequested()) {
+        if (cancelled()) {
           diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
-        // One observation per attempt: do not multiply nested retry budgets.
-        const observation = await this.withManagedObservationLease(this.recoveryEpoch,
-          () => {
-            diagnostic?.pollStarted();
-            return refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
-              inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
-          });
-        if (observation.cancelled) {
+        // One observation per poll: no nested refresh allowance or new policy call.
+        const acquisition = this.withManagedObservationLease(epoch, () => {
+          diagnostic?.pollStarted();
+          return refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
+            inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
+        });
+        const observation = waitController
+          ? await withTimeout(acquisition, null, "", waitController.signal) : await acquisition;
+        if (observation.cancelled || cancelled()) {
           diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
         }
         const next = observation.value;
@@ -1188,26 +1204,52 @@ export class PolicyRuntime {
           if (observed.snapshot_id !== previous.snapshot_id && observed.sequence <= previous.sequence) {
             category = "sequence_not_newer"; throw new Error("successor_sequence_not_newer");
           }
-          diagnostic?.row(attempt, observed.snapshot_id === previous.snapshot_id ? "same_basis"
-            : observed.status === "settling" ? "settling" : "accepted", observed, observed.snapshot_id === previous.snapshot_id);
-          if (observed.snapshot_id !== previous.snapshot_id && observed.status !== "settling") {
+          const sameBasis = observed.snapshot_id === previous.snapshot_id;
+          // Preserve the existing non-settling successor contract. Later input
+          // admission, not this observation, decides whether a Model may act.
+          if (!sameBasis && observed.status !== "settling") {
+            diagnostic?.row(attempt, "accepted", observed, false);
             this.lastSnapshotId = observed.snapshot_id;
             this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
             this.lastReads = next.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
             outcome = "accepted"; return observed;
           }
-        } else diagnostic?.row(attempt, "no_whole_bundle");
+          const completeSettling = !sameBasis && observed.status === "settling"
+            && observed.schema === "sts2.player-environment/snapshot-1"
+            && observed.completeness.status === "complete" && observed.bound_actions.status === "complete"
+            && observed.bound_actions.materialized_count === observed.bound_actions.total_count
+            && observed.bound_actions.materialized_count === observed.bound_actions.actions.length;
+          if (publicAuto && completeSettling) qualifiedSettling += 1;
+          else unusable += 1;
+          diagnostic?.row(attempt, sameBasis ? "same_basis"
+            : publicAuto && !completeSettling ? "untrusted_settling" : "settling", observed, sameBasis);
+        } else {
+          unusable += 1;
+          diagnostic?.row(attempt, "no_whole_bundle");
+        }
         observed = undefined;
         category = "wait_error";
-        if (attempt < this.successorPoll.maxAttempts && this.successorPoll.baseBackoffMs > 0) await this.sleep(this.successorPoll.baseBackoffMs);
+        const more = publicAuto ? unusable < this.successorPoll.maxAttempts : attempt < this.successorPoll.maxAttempts;
+        if (more && intervalMs > 0) {
+          const delayMs = publicAuto ? Math.min(intervalMs, Math.max(0, this.autoBudget.deadlineMs - this.budgetElapsedMs())) : intervalMs;
+          if (delayMs > 0) {
+            const waiting = this.sleep(delayMs);
+            if (waitController) await withTimeout(waiting, null, "", waitController.signal);
+            else await waiting;
+          }
+        }
       }
       return null;
     } catch (error) {
+      if (publicAuto && cancelled()) {
+        diagnostic?.row(attempt, "cancelled"); outcome = "cancelled"; return null;
+      }
       diagnostic?.row(attempt, category, observed, observed?.snapshot_id === previous.snapshot_id);
       outcome = "error";
       throw error;
     } finally {
-      if (outcome !== "accepted") diagnostic?.finish(outcome);
+      if (waitController && this.activePolicy?.controller === waitController) this.activePolicy = null;
+      if (outcome !== "accepted") diagnostic?.finish(outcome, { unusable, qualifiedSettling });
     }
   }
 
@@ -1374,10 +1416,10 @@ class PolicyRecoveryCancelledError extends Error {
   constructor() { super("policy decision cancelled for recovery"); }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string, signal?: AbortSignal): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number | null, detail: string, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
+  const timeout = timeoutMs === null ? null : new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(detail)), timeoutMs);
   });
   const cancellation = signal === undefined
@@ -1387,7 +1429,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string, 
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     });
-  const races: Promise<T | never>[] = [promise, timeout];
+  const races: Promise<T | never>[] = [promise];
+  if (timeout) races.push(timeout);
   if (cancellation) races.push(cancellation);
   return Promise.race(races).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
