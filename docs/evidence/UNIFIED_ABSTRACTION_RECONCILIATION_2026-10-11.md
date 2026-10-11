@@ -6,6 +6,14 @@
 活动运行和交付状态由 [CURRENT](../memory/CURRENT.md)、
 [当前执行包](../plans/AGENT_RUN_COMPLETION_2026-10-11.md)单一维护。
 
+后续进展注：下文保留 `6d809fbf` 时的判断。P1 的共同组合、请求和执行接线现已实现，
+并在 `6dc0f722` 的 Auto5 中验证了原请求、实际运行和结果的关联，见
+[实现合同](../../python/docs/AGENT_EXECUTION_CONTRACT.md)及
+[Auto5 与当前修复包](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto5-closure-and-current-repair-packet)。
+Auto5 和该候选的 CI 均出现失败，后续修复尚未接受；这不构成整局能力或所有组合的可运行证明。
+既定计划中的分层、多模块、检索、搜索和视觉方案仍可按本文的逻辑角色表达，
+但需要各自的组件、环境能力或资源实现与验证；未来组合不因此成为当前支持范围。
+
 ## 1. 核心判断
 
 **可以并且应当使用同一套对象关系、组合规则、生命周期保证和变更判据，表达新旧方案。**
