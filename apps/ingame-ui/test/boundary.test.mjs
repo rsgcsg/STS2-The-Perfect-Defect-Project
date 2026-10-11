@@ -27,7 +27,7 @@ test("Live UI has a visible entry without keyboard or gameplay authority", () =>
 });
 
 test("Workbench browser opens after a user click and exact-instance health check", () => {
-  assert.match(mod, /BuildHeaderButton\("工作台", BeginOpenWorkbench/u);
+  assert.match(mod, /BuildHeaderButton\("兼容浏览器", BeginOpenWorkbench/u);
   assert.match(mod, /if \(_disposed \|\| _workbenchOpenCheck is \{ IsCompleted: false \}\)\s+return/u);
   assert.match(mod, /CompleteWorkbenchOpenCheck\(\);/u);
   assert.match(mod, /if \(!result\.CanOpen \|\| result\.Url is null\)[\s\S]*?return;[\s\S]*?OS\.ShellOpen\(result\.Url\)/u);
@@ -57,8 +57,8 @@ test("Workbench registration bridge is exact-loopback, game-instance-bound metad
   assert.doesNotMatch(taskBridge, /OS\.ShellOpen|Process\.Start|WebBrowser/u);
 });
 
-test("Product navigation exposes exactly model tests and Human collection", () => {
-  assert.match(mod, /new\[\] \{ "模型实战", "真人采集" \}/u);
+test("Product navigation retains model and Human surfaces and adds the native Workbench", () => {
+  assert.match(mod, /new\[\] \{ "运行状态与恢复", "真人采集", "工作台" \}/u);
   assert.match(mod, /BuildAgentRunPage\(_surfaceViewport\)/u);
   assert.match(mod, /BuildRecorderPage\(_surfaceViewport\)/u);
   assert.match(mod, /_surfaces\.Add\(_agentRunPage\)/u);
@@ -132,24 +132,25 @@ test("Session changes may reset scroll, normal feed updates do not", () => {
   assert.match(mod, /ResetLayout[\s\S]*scroll\.ScrollVertical = 0/u);
 });
 
-test("Agent Run uses only existing typed Policy Runtime status and controls", () => {
+test("Agent Run retains typed diagnostics and recovery while execution uses Workbench", () => {
   assert.match(mod, /FormatAgentRun\(status\)/u);
   assert.match(mod, /Policy Runtime: \{status\.PolicyRuntimeTransportStatus\}/u);
   assert.match(mod, /SetRuntimeModeAsync\(mode\)/u);
-  assert.match(mod, /TickRuntimeAsync\(\)/u);
-  assert.match(mod, /准备模型不会自动操作游戏/u);
+  assert.match(mod, /OpenNativeWorkbenchPage\("play"\)/u);
+  assert.match(mod, /独立 Human\/Stop 恢复/u);
   assert.match(mod, /PolicyUnavailableReason/u);
   assert.match(client, /sts2\.policy-runtime\/http-2/u);
   assert.match(client, /Headers\.Add\("X-STS2-Policy-Run-ID", expectedRunId\)/u);
   assert.match(client, /HttpMethod\.Post, "v2\/" \+ relativePath/u);
-  assert.match(mod, /SetModeAsync\(mode, expected, binding\)/u);
-  assert.match(mod, /TickAsync\(expected, binding/u);
+  assert.match(mod, /SetModeAsync\(mode, expected\)/u);
+  assert.doesNotMatch(mod, /_statusClient\.TickAsync/u);
   assert.match(contracts, /PolicyRuntime/u);
   assert.doesNotMatch(contracts, /ReadScoreNodes|Contains\("score"/u);
 });
 
 test("Recorder controls use the typed application boundary", () => {
-  assert.match(mod, /RecordingApplicationService\.Instance\.Execute\(command\)/u);
+  assert.match(mod, /PlatformRecordingCommands\.Execute\(new\(runtime, before\.Lifecycle\.SessionId, command\)/u);
+  assert.match(mod, /owner\.QueryStatus, owner\.ExecuteForSession/u);
   assert.match(mod, /RecordingApplicationService\.Instance\.QueryStatus\(\)/u);
   assert.match(mod, /RecordingCommandKind\.StartNewSession/u);
   assert.match(mod, /RecordingLifecycleState\.Recording/u);
@@ -245,23 +246,22 @@ test("recording handoff validates expected session inside the Recorder owner loc
 });
 
 
-test("model commands bind the observed Runtime to this game and recovery epoch", () => {
-  assert.match(mod, /GetPlayerEnvironmentControlSnapshot\(\).RuntimeInstanceId/u);
-  assert.match(mod, /ObserveBindingAsync\(expected, game\)/u);
-  assert.ok(mod.indexOf("binding = await _statusClient.ObserveBindingAsync") < mod.indexOf("var prepared = PlatformCollectionHandoff.Prepare"));
+test("ordinary model controls reach Workbench instead of preparing and posting directly", () => {
+  const flow = mod.slice(mod.indexOf("private async Task RunPolicyCommandAsync"), mod.indexOf("private async Task PollAsync"));
+  assert.match(flow, /if \(!recovery\) \{ OpenNativeWorkbenchPage\("play"\); return; \}/u);
+  assert.doesNotMatch(flow, /PrepareForModel|ObserveBindingAsync|TickAsync/u);
   assert.match(client, /X-STS2-Game-Instance-ID/u);
   assert.match(client, /X-STS2-Recovery-Epoch/u);
 });
 
 
-test("unknown model commands retain a run fence while Human and Stop remain available", () => {
+test("independent direct recovery retains remembered run without pairing or fresh status", () => {
   assert.match(client, /PlatformPolicyTransport.SendAsync/u);
   assert.match(client, /AllowAutoRedirect = false, UseProxy = false/u);
   assert.match(mod, /HasUnknownCommand\(_displayedPolicyRunId\)/u);
-  assert.match(mod, /_compactHumanButton.Disabled = !\(available \|\| uncertain\)/u);
-  assert.match(mod, /_endTestButton.Disabled = !\(available \|\| uncertain\)/u);
-  assert.match(mod, /_tickButton.Disabled = !available \|\| uncertain/u);
+  assert.match(mod, /bool recoveryAvailable = _displayedPolicyRunId is not null && !_disposed/u);
+  assert.match(mod, /_compactHumanButton.Disabled = !recoveryAvailable/u);
+  assert.match(mod, /_endTestButton.Disabled = !recoveryAvailable/u);
+  assert.match(mod, /_tickButton.Disabled = _disposed/u);
   assert.match(mod, /status.PolicyRuntime\?\.RunId \?\? _displayedPolicyRunId/u);
-  const preparation = mod.slice(mod.indexOf("binding = await _statusClient.ObserveBindingAsync"), mod.indexOf("var prepared = PlatformCollectionHandoff.Prepare"));
-  assert.match(preparation, /intent != Interlocked.Read\(ref _policyUiIntent\) \|\| _disposed/u);
 });

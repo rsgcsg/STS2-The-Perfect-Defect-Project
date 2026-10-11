@@ -8,11 +8,12 @@ import {
   loadHostRuntimeWorkstationApi,
   resolveWorkstationInstallation
 } from "../../components/annotator/tools/workstation-platform.mjs";
-import { sourceSetIdentity } from "./source-identity.mjs";
+import { assertGameModVersions, sourceSetIdentity } from "./source-identity.mjs";
 import { publicAssemblyIdentity } from "./public-provenance.mjs";
 
 const appRoot = import.meta.dirname;
 const platformRoot = path.resolve(appRoot, "../..");
+assertGameModVersions(platformRoot);
 const outputRoot = path.join(appRoot, "bin/Release/net9.0");
 const artifact = path.join(outputRoot, "STS2_PLATFORM.dll");
 const project = path.join(appRoot, "STS2Platform.GameMod.csproj");

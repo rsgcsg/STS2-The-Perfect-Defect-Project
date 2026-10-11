@@ -35,6 +35,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="../contracts/native-logical-publication-profile-v1.json"
+                      LogicalName="STS2Connector.NativeLogicalPublicationProfileV1" />
     <Compile Include="../../native-foundation/src/*.cs" Link="NativeFoundation/%(Filename)%(Extension)" />
     <Reference Include="sts2">
       <HintPath>$(STS2GameDataDir)/sts2.dll</HintPath>

@@ -456,7 +456,7 @@ test("PlayerChoice continuation uses STS2 lifecycle and generated choices retain
   assert.match(generatedChoice, /NChooseACardSelectionScreen\.OnSkipButtonReleased/u);
   assert.match(runtime, /NativePlayerChoiceLineage\.Capture\(\)[\s\S]*NativeWitnessIdentity\.Get\(lineage\.ParentAction, "game_action"\)[\s\S]*lineage\.ParentActionType[\s\S]*lineage\.ParentState/u);
   assert.match(patches, /TryEnterGeneratedChoiceCardScope\(__instance, holder\)/u);
-  assert.match(patches, /TryEnterGeneratedChoiceSkipScope\(__instance\)/u);
+  assert.match(patches, /\[HarmonyArgument\(0\)\] NButton button[\s\S]*TryEnterGeneratedChoiceSkipScope\(__instance, button\)/u);
   assert.match(trace, /NativeContinuationObserved/u);
   assert.match(trace, /semantic_native_continuation_without_pause/u);
   assert.doesNotMatch(trace, /PendingDecision|AcceptedHumanActionLedger|SerializedEvidenceAdmission/u);
@@ -488,8 +488,11 @@ test("current recording store has no archival native-ledger authority", () => {
   const audit = read("components/annotator/src/STS2HumanAnnotator.Core/CurrentRecordingAudit.cs");
   const bundle = read("components/annotator/src/STS2HumanAnnotator.Core/CurrentSessionBundle.cs");
 
-  assert.match(store, /public sealed class RecordingSessionStore/u);
-  assert.doesNotMatch(store, /AppendNativeActionEvent|_nativeActionLedger/u);
+  assert.match(store, /public sealed partial class RecordingSessionStore/u);
+  const storeSources = fs.readdirSync(path.join(root, "components/annotator/src/STS2HumanAnnotator.Core"))
+    .filter((file) => /^CurrentRecordingStore(?:\.[^.]+)?\.cs$/u.test(file))
+    .map((file) => read(`components/annotator/src/STS2HumanAnnotator.Core/${file}`)).join("\n");
+  assert.doesNotMatch(storeSources, /AppendNativeActionEvent|_nativeActionLedger/u);
   assert.doesNotMatch(audit, /ValidateNativeActionLedger|NativeActionLedgerValidator/u);
   assert.match(bundle, /native-action-ledger\.jsonl/u);
   assert.match(bundle, /archival reader input/u);
@@ -558,7 +561,7 @@ test("card reward alternatives cannot use visual position as the native callback
   const alternatives = sourceBetween(
     reader,
     "private static NCardRewardAlternativeButton[] AlternativeButtons",
-    "private static bool IsHolderClickable"
+    "internal static bool IsHolderClickable"
   );
 
   // Equal labels and counts still permit opposite visual positions. The native

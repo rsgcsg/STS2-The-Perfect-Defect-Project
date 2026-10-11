@@ -3,17 +3,28 @@
 
 # Architecture
 
-The [P0/P2 baseline foundation proposal](design/BASELINE_FOUNDATION.zh-CN.md)
-reviews the broader system and lists decisions for P3–P5. It does not replace
-the accepted contracts below or select a default information profile. Current
-facts and proposal conflicts are separated in the [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md).
+The [current baseline specification](BASELINE_V1_SPEC.zh-CN.md) owns the selected
+Agent/protocol direction and its design revisions. This document owns durable
+component authority and existing architectural boundaries. Protocol-specific
+implementation and compatibility remain in their owning contracts; candidate
+qualification is tracked by [STATUS](STATUS.md). Historical design proposals are
+linked from [DOCUMENT_MAP](DOCUMENT_MAP.md), not additional current requirements.
 
 ## Product Boundary
 
 STS2 AI Platform provides a real-game Host, fair-player Player Environment,
-native-human evidence recording, model-neutral policy execution lifecycle and
+native interaction recording, model-neutral policy execution lifecycle and
 strategy-free integration tools. It does not own policy inference, reward,
 models, training or research authority.
+
+The [baseline specification](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)
+maps one set of logical roles to these components. The Host capability contract
+connects a concrete world; Host Runtime is its process/lifecycle component.
+Connector implements the public interaction contract and Agent-facing environment
+interface. The separate Runtime-to-Agent port transports a complete Agent's
+consumption and directives. These roles do not prescribe separate services.
+Model denotes an optional computation component with fixed or learned parameters;
+research owns its training targets through TargetSpec.
 
 ## Accepted native logical interaction direction
 
@@ -159,9 +170,9 @@ delivery time. Reads are state-bound and non-authorizing. Host control is not a
 Player Environment action. Annotator observes accepted native-human actions and
 cannot execute them. Unknown delivery is never automatically retried.
 
-The Policy Runtime receives the complete ordered Connector catalog and only
-Manifest-required advertised Reads. It cannot filter or invent candidates. Its
-adapter returns scores plus an index, and Runtime resolves that index locally
+The legacy scoring Policy branch receives the complete ordered Connector catalog
+and only Manifest-required advertised Reads. It cannot filter or invent candidates.
+Its adapter returns scores plus an index, and Runtime resolves that index locally
 against the same Snapshot before acquiring the one Connector controller. Shadow
 never acquires a controller; One-Step returns to Human; Auto hands off on an
 unsupported surface, abstention, or not-delivered Receipt. A Receipt successor
@@ -169,6 +180,15 @@ is an immediate post-delivery observation, not causal settlement; stable next
 decision evidence remains separate. A transport exception after submission or
 an `unknown` Receipt taints the run and is never retried. Adapter failure or a
 bounded decision timeout returns to Human before controller acquisition.
+
+The explicit native logical Agent branch uses the same controller/budget/Stop
+owner and the versioned [Agent session port](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md).
+It supports observation consumption, queries and Act/Await/Abstain/Close. Scores
+are optional diagnostics; a submitted handle or expression must resolve to the
+original complete Connector relation. This port is distinct from the public
+environment interface, and does not grant inference, legality or native operands
+to Runtime. Original delivery, execution, effect and cancel knowledge remain
+separate; no branch automatically retries an unknown delivery.
 
 ## Component DAG
 

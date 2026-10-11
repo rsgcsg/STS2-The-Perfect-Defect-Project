@@ -27,4 +27,18 @@ public sealed class RecordingApplicationService
 
     public RecordingCommandResult ExecuteForSession(RecordingCommand command, string? expectedSessionId) =>
         RecorderRuntime.ExecuteRecordingCommand(command, new RecordingSessionExpectation(expectedSessionId));
+
+    /// <summary>Composition-only passive publication provider. It owns no recorder lifecycle.</summary>
+    public void ConfigureSourceBridge(ISourceRecordingBridge bridge) => RecorderRuntime.ConfigureSourceBridge(bridge);
+
+    public SourceInputScope BeginSourceInput(string inputId, SourceClockReference clock,
+        FrozenPublicCapture? capture, FrozenPublicCatalog? catalog) =>
+        RecorderRuntime.BeginSourceInput(inputId, clock, capture, catalog);
+
+    public void CompleteSourceInput(SourceInputScope scope, SourceInputOutcome outcome) =>
+        RecorderRuntime.CompleteSourceInput(scope, outcome);
+
+    public SourceInputScope BindSourceInputBasis(SourceInputScope scope,
+        FrozenPublicCapture? capture, FrozenPublicCatalog? catalog) =>
+        RecorderRuntime.BindSourceInputBasis(scope, capture, catalog);
 }

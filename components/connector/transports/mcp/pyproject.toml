@@ -10,3 +10,7 @@ dependencies = [
 
 [project.scripts]
 sts2-connector-mcp = "server:main"
+
+[tool.uv]
+# MCP supplies PyJWT[crypto]; exclude the affected GHSA-ffc3-869f-jxw9 releases.
+constraint-dependencies = ["pyjwt>=2.14.0"]

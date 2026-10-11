@@ -22,6 +22,10 @@ const nativeUiPatches = fs.readFileSync(
   path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeUiPatches.cs"),
   "utf8"
 );
+const sourceInput = fs.readFileSync(
+  path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.SourceInput.cs"),
+  "utf8"
+);
 
 const forbidden = [
   ["HarmonyTranspiler", "transpiler patches are forbidden"],
@@ -125,7 +129,9 @@ if (/\b(?:internal|private)\s+static\s+bool\s+Prefix\s*\(/u.test(nativeUiPatches
   errors.push("annotator Prefixes must never skip a native STS2 method");
 if (/AllowMutation|BlockMutation/u.test(sources))
   errors.push("evidence admission must not create gameplay mutation authority");
-if (!nativeUiPatches.includes("RecorderRuntime.StageCardPlay(holder);"))
+if (!nativeUiPatches.includes("RecorderRuntime.StageNativeCardPlay(__instance, holder);")
+    || !sourceInput.includes("StageNativeCardPlay(NPlayerHand hand, NHandCardHolder holder)")
+    || !sourceInput.includes("if (!IsSourceRecording) return StageCardPlay(holder);"))
   errors.push("card staging must observe the exact pre-action frame without controlling native input");
 if (!recorderRuntime.includes("native input continues without a canonical transition claim"))
   errors.push("unresolved evidence must fail closed for canonical claims without blocking native Human input");

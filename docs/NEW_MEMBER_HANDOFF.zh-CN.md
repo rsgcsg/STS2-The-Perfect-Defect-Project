@@ -1,6 +1,6 @@
 # SpireAgent 新成员与 Agent 完整交付指南
 
-> 统一任务界面已部署，当前组合与验收范围见[本轮验收](evidence/UNIFIED_TASK_FLOW_2026-09-16.md)：暂停、继续、Close、上传和成员下载通过；44 次接受操作中保留 1 条明确的 Close 尾部未解决记录，不宣称零失败或完整局。日常使用先看[统一任务流程](../python/docs/UNIFIED_TASK_FLOW.zh-CN.md)。正式合并与发布状态另由 PR #10 及正式 Release 确认；发布附件分别记录实际程序与集成身份，不因文档更新重装。
+> 接手前先读 [CURRENT](memory/CURRENT.md) 与 [STATUS](STATUS.md)，区分现行候选、已安装程序和历史发布。本指南中的 2026-09-16 采集流程是有证据的历史组合；新版 native Source3、模型和游戏内工作台按当前规范/执行包逐项验收，不能从旧界面步骤推断新能力。安装与操作细节沿各 owner 文档和实际发布，不因文档更新重装。
 
 适用对象：已收到 GitHub 邀请、已加入 Hub，希望参与采集、数据、模型、工程和运维的新成员，以及受其委托的 Agent。
 
@@ -44,13 +44,13 @@
 
 ### 已经验证到哪里
 
-以下是历史迁移基线，当前组合见上方本轮验收；历史发布为 [project/2026-09-15](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/releases/tag/project/2026-09-15)：
+以下是历史迁移基线，当前进展由 STATUS 路由；历史发布为 [project/2026-09-15](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/releases/tag/project/2026-09-15)：
 
 - 已验收运行代码：`45ef463e3c13cd82db55601c122a292c37aaae2e`；集成 main/develop SHA 另见发布附件 `integration-receipt.json`。
 - 该次 macOS 真人录制 580 条 accepted，580 条 proved/canonical，81 条子选择器正确关联；0 真实失败、0 unresolved。72 条 diagnostic 保留。
 - 一局自然失败结束，另一局不完整；Close、上传、云端验收及成员下载字节核对通过。
 - Linux/Windows 自动测试通过，不等于 Windows/Linux 原生 Mod 安装已真人验证。
-- 没有因此宣称所有角色/版本/稀有路径都已验证，也没有模型质量或 GPU 训练资格。当前 compute budget 为 0；没有新的预算授权时不启动 GPU 或收费任务。
+- 没有因此宣称所有角色/版本/稀有路径都已验证，也没有模型质量或 GPU 训练资格。这份历史验收没有授权新的付费任务；本次任务的预算由当前执行包明确，不从旧指南继承额度。
 
 详见 [迁移与默认流程](MONOREPO_MIGRATION.md) 和 [真人证据](evidence/MONOREPO_HUMAN_GATE_2026-09-15.md)。历史证据不改名、不补写成新版本证据。
 
@@ -389,6 +389,9 @@ session / run / decision / receipt / dataset / job ID（按相关性）：
 若负责人只要求提交待审 PR，做到可审查交付即可，不擅自 merge/deploy；若已明确授权整个发布，则完成对应治理流程，不重复索要已授予的权限。缺 secret 时先确认它是否已存在于批准的本地私有配置，不让人反复粘贴。
 
 ## 11. 第一次接手的完成标准
+
+按实际职责选择下列条目：源码开发不以账号/采集/生产接管全部完成为前提；
+采集者不必构建代码，普通成员不必获得 SSH。没有承担的角色明确不适用。
 
 - [ ] 能说清 Mod、Workbench、Hub、STPD 各自职责，并确认只使用新仓库。
 - [ ] 接受 GitHub 邀请，自己的账号/提交身份正确；Hub 登录与所需权限已核对。

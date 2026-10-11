@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { componentRoot, fileTreeSha256, npm, packageRuntime } from "./package.mjs";
@@ -30,10 +30,21 @@ try {
   assert.equal(zodEntry?.inBundle, true);
   assert.equal(fileTreeSha256(path.join(installed, "node_modules", "zod")), first.identity.connector_sdk.transitive_zod.bundle_sha256);
   copyFileSync(path.join(componentRoot, "tools/installed-smoke.mjs"), path.join(root, "smoke.mjs"));
+  copyFileSync(path.join(componentRoot, "contracts/fixtures/owned-current-known-stale-v1.json"), path.join(root, "owned-stale-fixture.json"));
   for (const name of ["text-menu-v2-card-only-root", "text-menu-v2-card-only-select"]) {
     copyFileSync(path.join(componentRoot, `../connector/sdk/typescript/test/fixtures/${name}.json`),
       path.join(root, `${name}.json`));
   }
+  const publicationProfilePath = path.join(componentRoot, "../connector/contracts/native-logical-publication-profile-v1.json");
+  const publicationProfile = JSON.parse(readFileSync(publicationProfilePath, "utf8"));
+  const agentManifest = JSON.parse(readFileSync(path.join(componentRoot, "contracts/fixtures/agent-session-v1.json"), "utf8")).manifest;
+  agentManifest.input.attachment = {
+    eager_scope: publicationProfile.eager_scope,
+    required_seams: publicationProfile.required_seams,
+    delivery_mode: publicationProfile.delivery_mode
+  };
+  writeFileSync(path.join(root, "native-agent-manifest.json"), JSON.stringify(agentManifest));
+  copyFileSync(publicationProfilePath, path.join(root, "native-publication-profile.json"));
   const smoke = spawnSync(process.execPath, ["smoke.mjs"], { cwd: root, encoding: "utf8", timeout: 20000 });
   if (smoke.error) throw smoke.error;
   assert.equal(smoke.status, 0, smoke.stderr || smoke.stdout);

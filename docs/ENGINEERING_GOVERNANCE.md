@@ -87,10 +87,14 @@ allowed with explicit migration, consumer and evidence impacts. Do not create a
 general framework for hypothetical use or choose a whole protocol from one example.
 
 Material choices about requirements, information exposure, protocol meaning,
-experiment conditions or authority require a bounded decision packet: evidence,
-options, consequences and a recommendation. Pause dependent work for the user or
-design owner; continue independent authorized work. Routine implementation within
-an accepted contract does not require repeated human confirmation.
+experiment conditions or authority need a bounded decision in the existing owning
+specification or task: evidence, options, chosen behavior, consumer/migration
+impact and how it will be tested. When the user has delegated design judgment,
+the lead makes and records that decision within the granted scope; it does not
+require another approval for every refinement. Pause dependent work only for an
+unresolved authority, product-goal or material choice outside that scope, while
+continuing independent work. Historical implementation prescriptions may change;
+failed evidence and user-required outcomes cannot be silently removed to pass a gate.
 
 Review readiness means the outcome, owner, dependencies, failure semantics and
 falsifiable examples are clear enough for the packet, not that every future detail
@@ -139,6 +143,60 @@ Keep these categories distinct:
 A generic `Ready`, `CanPlay`, or `Finished` must not silently represent several
 categories.
 
+### Classify failures before choosing a repair
+
+Keep the original failure and locate the first incorrect fact, rather than naming
+the last exception or counting every failing test as a different defect. Write
+the intended guarantee, its owner, the producer-to-consumer path, the observed
+counterexample and one bounded experiment that could disprove the explanation.
+When the cause is unknown, label it unknown; do not call it flaky, harmless or
+architectural merely because a rerun differs or many tests fail.
+
+| Finding | Distinguishing evidence | Appropriate correction |
+| --- | --- | --- |
+| Implementation defect | The existing contract can express the required behavior; an owner emits or handles a wrong fact. | Repair that owner and regress the failure family, including its negative/cleanup path. |
+| Fixture or conformance defect | Production serialization or validation rejects the test's independently invented DTO, ordering or identity. | Use the actual producer/shared contract; preserve strict validation and the original rejection. |
+| Protocol defect | Correct participants cannot distinguish or express a required result, ordering, validity, scope or failure under the contract. | Revise the owning versioned contract and test both producer and consumer, including migration. |
+| Architecture defect | The selected information flow or allocation of responsibility cannot provide the guarantee, or multiple owners repeatedly reconstruct the same high-risk fact. | Demonstrate the incompatible flow or recurring duplication, change the responsible boundary and remove the workarounds. |
+| Cost or scope mismatch | Measured latency, memory, throughput, maintenance or coupling exceeds an explicit task budget even when behavior is correct. | Measure the bottleneck, compare bounded alternatives and record the required tradeoff; do not silently lower the promised outcome. |
+| Requirement ambiguity | There is no agreed observable outcome or two requirements conflict. | Resolve the material choice in the owning specification before dependent work. |
+
+A large diff, slow suite, many symptoms or one integration failure is a signal to
+investigate, not proof that the architecture is wrong. Test the suspected boundary
+against two structurally different real mechanisms when generalizing it. Inspect
+the actual native/external owner before importing assumptions from a similarly
+named object. A falsified explanation is useful evidence; discard its proposed
+patch instead of writing a test that makes the assumption appear true.
+
+Separate provenance from compatibility, seeded construction from immutable
+artifact equality, acknowledgement from termination, and termination from durable
+recoverability. The exact distinction depends on the domain; require the source
+and consumers to preserve it before treating a convenient status label as a
+universal fact. Historical hashes and outcomes stay immutable.
+
+### Match investment to the delivery
+
+In the existing task/PR, state the contribution to the current delivery, the
+observable completion boundary, the cheapest faithful falsifying experiment and
+the relevant time/resource budget. A dependency follows the fact its consumer
+needs; a merge gate is not automatically a launch prerequisite for every isolated
+development diagnostic. TESTING owns execution and evidence requirements.
+
+After a failed experiment, name the new evidence before repeating an expensive
+gate. Discard falsified explanations. Repeated failure of the same guarantee,
+correct participants that cannot express the required behavior, recurring
+cross-owner reconstruction, growing case-specific exceptions, or measured
+compatibility/maintenance cost activate the existing L3 boundary review. Many
+unrelated failures or slow CI alone do not prove an architecture defect.
+
+Compare continued repair, contract revision, responsibility changes and an
+explicitly narrower/deferred scope by useful behavior, consumer compatibility,
+migration/rollback and recurring validation/operation cost. Separate necessary
+integrity and safety from convenient assumptions, including unnecessarily coupled
+identities or schedules. Do not preserve an abstraction solely because it exists,
+or redesign it without a real counterexample. A revised scope remains visibly
+incomplete against the original goal; it never turns unknown into success.
+
 ## 4. Causal change and abstraction admission
 
 Prefer the smallest **clean causal change**, not the smallest textual diff. A
@@ -186,70 +244,26 @@ effect to prove an earlier action.
 
 ## 6. Testing strategy
 
-Use the cheapest test that can falsify the risky claim, then escalate only when
-the claim requires stronger evidence:
+[Testing and Evidence](TESTING.md#test-design-and-maintenance) owns test creation,
+maintenance, fixture fidelity, test shapes, local feedback, required execution
+and evidence meanings. Follow its claim/risk -> owning fact -> faithful normal/
+negative checks -> evidence -> consumer decision sequence. Use the cheapest test
+that can falsify the risky claim, then escalate when the claim requires stronger
+evidence; green lower-layer checks do not qualify a higher-layer claim.
 
-```text
-source/static -> unit -> component -> contract/integration
-  -> cross-layer causal -> exact build -> runtime -> Human
-```
+Governance owns [failure classification](#classify-failures-before-choosing-a-repair)
+and the L1/L3 response: preserve escaped failures, repair their owning cause and
+improve the discovery path. Repeated failures of one assumption require the
+existing contract/architecture review. Several unrelated failures do not justify
+a general rewrite. Passing a new regression alone does not prove its fixture
+faithful or close stated native, service or scientific unknowns.
 
-### When a new test is required
-
-Add or update a test in the same PR when production behavior changes, a bug is
-fixed, a refactor lacks a safe baseline, a public contract changes, a new
-abstraction is introduced, or a CI/governance failure escaped.
-
-For a production or Human incident:
-
-```text
-preserve the failure
-  -> add the lowest-cost faithful regression
-  -> fix the owning cause
-  -> add a boundary/cross-layer regression when the incident crossed layers
-```
-
-The regression should catch the failure family earlier, not only one literal
-incident. A separate test is normally unnecessary for prose-only clarification,
-dead-code removal whose observable contract is already covered, or a change
-with exact existing coverage; the PR names that coverage.
-
-### Test shapes
-
-- **Unit**: deterministic calculations, parsers, validation, codecs, identity
-  mapping, and local branches.
-- **Component**: several classes inside one owner.
-- **Contract/conformance**: public providers, consumers, and external adapters
-  against the same contract.
-- **Integration**: an A-to-B boundary where independently green units may
-  disagree.
-- **Cross-layer causal**: Human/root occurrence through native identity, Commit,
-  successor, persistence, and the production final auditor.
-- **Exact-game**: compilation and conformance against the exact local STS2.
-- **Runtime/system**: package, install, load, lifecycle, recovery, and rollback.
-- **Journey/E2E**: a few critical workflows; presentation never becomes
-  semantic authority.
-- **Performance/load/resilience/security**: only when the change or claim owns
-  that risk, with claim-adjacent baselines and metrics.
-
-Critical lifecycle fixtures use realistic identities, ordering, duplicate,
-stale, cancel, unknown, and final-auditor behavior. Simplified flags or direct
-root injection cannot prove a production lifecycle they bypass.
-
-### Where tests run
-
-Every PR runs deterministic, portable, fast, diagnostically clear tests.
-Path-conditional jobs are allowed only when routing itself is tested. Broad but
-expensive deterministic suites, compatibility, flake detection, soak, and trend
-measurement run scheduled or on demand. Proprietary exact-game, Human,
-production-secret, destructive production, and raw-session work stays outside
-public hosted CI. Release/manual gates own package/install/load/rollback,
-production-like E2E, load/resilience, and Human qualification as claimed.
-
-A flaky test is a defect. A diagnostic rerun may locate it, but a second green
-result does not automatically satisfy merge. Quarantine requires an owner,
-issue, replacement signal, and removal deadline. See [Testing and
-Evidence](TESTING.md) for the executable matrix.
+TESTING's [dependency/result rules](TESTING.md#execute-by-dependency-and-report-every-selected-owner)
+and [hosted contract](TESTING.md#hosted-ci-contract) govern selected gates.
+Required failure, cancellation or blocked dependency fails the gate. Recommendations
+for faster feedback or scheduled diagnostics cannot remove the current router's
+selected checks or a stronger active-task prerequisite. A routing/gate change needs
+its own reviewed policy/code change; ordinary prose edits do not create new lanes.
 
 ## 7. Evidence discipline
 
@@ -387,6 +401,22 @@ Govern changes and claims, not people:
 
 Postmortems are blameless and ask which system condition allowed the error.
 
+### Preserve one product while migrating consumers
+
+Replace legacy consumers incrementally through their existing public owner APIs.
+For each useful increment, identify the current caller, retained input/action/history
+semantics, destination adapter/driver, parity normal/negative cases and rollback.
+First restore faithful use of an existing artifact; cross-profile redesign and new
+training are separate increments. Do not rewrite historical identity or hide changed
+information/timing/selection behind an adapter. One control/Stop owner, application
+service, task owner and data-use authority remain throughout coexistence.
+
+Review the dependency chain and unique diff of an old PR before adopting it. An open
+branch is available source, not integrated capability; bulk-merging the whole stack
+or rebuilding it from zero both need evidence. Retire an old entry only after its
+actual callers and archival contracts have a tested replacement. This is a migration
+method, not a mandate for new services or a single wire for every model.
+
 ## 14. Health signals and definition of done
 
 CI green is necessary, not sufficient. Review trends in PR lead time/stale age,
@@ -394,7 +424,14 @@ latest-head CI duration/flake, post-merge breakage/revert rate, escaped
 cross-layer defects, repeated failure families, stale-evidence misuse, Human
 gates discovering automatable defects, Skill false triggers/overlap, and any
 `unknown` promoted to success. Metrics improve the system; they do not rank
-people.
+people. Measure delivered capability alongside engineering speed: can the intended
+consumer select/load/use/stop/reopen the artifact, does the real task progress, which
+mechanisms remain unsupported, and what recurring manual work remains? Keep environment
+execution, admitted data/coverage, learned autonomous use and decision quality separate.
+PR/test/worker counts are activity, not substitutes for these outcomes. Natural summary
+is a liveness result; decision quality still needs declared comparisons and failure
+analysis. Review/CI/local-runtime time and repeated prerequisite cost locate bottlenecks
+without imposing a universal duration or lowering required gates.
 
 Before recommending merge, confirm exact repo/base/latest head and overlap,
 change class and owning fact, no duplicate authority or hidden retry/backfill,

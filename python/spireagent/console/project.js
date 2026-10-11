@@ -54,6 +54,7 @@ window.SpireProject = (() => {
   let exportId = null;
   let readiness = new Map();
   const pending = new Set();
+  const recordingIntents = new Map();
   const commandControls = new Map();
   let activeDataset = null;
   let localRecordingSnapshot = null;
@@ -278,6 +279,7 @@ window.SpireProject = (() => {
       runtime_game_mismatch: "模型运行器连接的不是当前游戏，请重新加载模型。",
       runtime_recovery_epoch_mismatch: "你已暂停或结束测试，这条旧操作已取消。",
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
+      recording_confirmation_storage_unavailable: "浏览器无法保留录制请求确认标记，本次没有发送。恢复浏览器存储后再明确操作；结束录制仍可使用。",
       local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。未启动训练或登记。",
@@ -297,6 +299,7 @@ window.SpireProject = (() => {
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
+      registration_verification_storage_failed: "登记校验的临时存储写入失败；请先检查工作台运行环境，再明确重试。原导出和登记保留。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",
       request_unavailable: "暂时无法读取服务，请刷新重试。",
@@ -320,12 +323,14 @@ window.SpireProject = (() => {
       quality_annotations_changed: "预览后操作标记发生了变化，请重新预览再确认生成。",
       held_out_data_cannot_train: "测试集和 Gold 不能作为训练输入。",
     };
-    return (
+    const message = (
       known[error?.message] ||
       (/^[a-z0-9_:.\/-]{1,120}$/.test(error?.message || "")
         ? `服务未完成请求（${error.message}）。`
         : "服务暂时不可用，请刷新状态。")
     );
+    return error?.message === "registration_verification_storage_failed" && hex(error?.errorId, 32)
+      ? `${message} 日志编号：${error.errorId}` : message;
   };
   async function request(ctx, path, body, localCsrfToken) {
     if (!live(ctx)) throw new Error("context_changed");
@@ -370,8 +375,14 @@ window.SpireProject = (() => {
     }
     const flowDiagnostic = !mutation && path === member("collection-flow") && value?.schema === "stpd/local-collection-flow-v1";
     const taskDiagnostic = !mutation && hex(value?.id,32) && path === member(`datasets/${value.id}`) && value.state === "failed";
-    if (!response.ok || (value?.error && !flowDiagnostic && !taskDiagnostic))
-      throw new Error(value?.error || "request_unavailable");
+    if (!response.ok || (value?.error && !flowDiagnostic && !taskDiagnostic)) {
+      const error = new Error(value?.error || "request_unavailable");
+      if (value?.error === "registration_verification_storage_failed"
+          && value?.category === "storage" && value?.status === "failed"
+          && value?.stage === "local_model_registration" && hex(value?.error_id, 32))
+        error.errorId = value.error_id;
+      throw error;
+    }
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("request_unavailable");
     return value;
@@ -409,7 +420,7 @@ window.SpireProject = (() => {
     button.dataset.action = name;
     const key = `${ctx.account}:${name}`;
     const controlKey = key;
-    const disabledState = () => Boolean(options.disabled);
+    const disabledState = () => Boolean(typeof options.disabled === "function" ? options.disabled() : options.disabled);
     button.disabled = disabledState() || pending.has(key);
     if (current === ctx) {
       let controls = commandControls.get(controlKey);
@@ -2323,16 +2334,20 @@ window.SpireProject = (() => {
         "runtime_exited",
         "stopped",
       ].includes(data.status);
+    const tickSafe = data.loaded === true && runtime?.lifecycle === "running" && !changing
+      && !data.observation_error && !runtime?.tainted && !runtime?.pending_request
+      && !["command_unknown","recovery_required","runtime_exited","stopped"].includes(data.status);
     const advanced = el("details"); advanced.dataset.preserve = "model-advanced"; advanced.append(el("summary", "高级测试方式"));
     for (const [action, label] of [
       ["shadow", "只评分（不操作）"],
       ["one_step", "执行一个决策"],
+      ["tick", "当前模式推进一次 Tick"],
       ["auto", "开始测试"],
       ["human", "暂停并接管"],
       ["stop", "结束测试"],
     ]) {
       const recovery = ["human", "stop"].includes(action);
-      (["shadow", "one_step"].includes(action) ? advanced : actions).append(
+      (["shadow", "one_step", "tick"].includes(action) ? advanced : actions).append(
         command(
           ctx,
           `model-command-${action}`,
@@ -2346,7 +2361,7 @@ window.SpireProject = (() => {
             await reload(ctx);
           },
           {
-            disabled: recovery ? !recoverable : !safe,
+            disabled: recovery ? !recoverable : action === "tick" ? !tickSafe : !safe,
             danger: action === "stop",
           },
         ),
@@ -2566,7 +2581,10 @@ window.SpireProject = (() => {
         note(ctx, "本机服务已接收准备请求；请以操作状态和安装回执为准。尚未登记或加载模型。");
         await reload(ctx);
       }, {disabled: !canPrepareRuntime}));
-    box.append(runtimeSetup);
+    const setupDetails = el("details");
+    setupDetails.dataset.preserve = "model-runtime-setup";
+    setupDetails.append(el("summary", "详情 · 运行环境设置"), runtimeSetup);
+    box.append(setupDetails);
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
@@ -3042,39 +3060,37 @@ window.SpireProject = (() => {
     return overview;
   }
 
-  function supportsLocalModelExport(value) {
-    const parameters = value?.parameters && typeof value.parameters === "object"
-      && !Array.isArray(value.parameters) ? value.parameters : {};
-    const config = parameters.config && typeof parameters.config === "object"
-      && !Array.isArray(parameters.config) ? parameters.config : {};
-    const serializer = parameters.serializer && typeof parameters.serializer === "object"
-      && !Array.isArray(parameters.serializer) ? parameters.serializer : {};
-    const backbone = parameters.backbone && typeof parameters.backbone === "object"
-      && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
-    if (parameters.schema === "stpd/experimental-m2-model-v1")
-      return memoryModelVariant(value) !== null;
-    const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
-    return value?.kind === "model" && hex(value.artifact_id)
-      && parameters.schema === "stpd/stage1a-model-v1"
-      && parameters.qualification === "engineering_only"
-      && ["stage1a.b.s.v2", "stage1a.dsimple.s.v1"].includes(config.recipe)
-      && config.device === "cpu"
-      && backbone.kind === "scratch"
-      && Object.keys(serializer).length === serializerKeys.length
-      && serializerKeys.every(key => Object.hasOwn(serializer, key))
-      && serializer.version === "stpd-text-menu-current-page-v1"
-      && serializer.profile === "text_menu_current_page"
-      && serializer.source_schema === "sts2.player-environment/text-menu-snapshot-1"
-      && serializer.input_profile === "text-menu-v1"
-      && serializer.status === "provisional";
+  function supportsLocalModelExport(model, support) {
+    const profiles = {token:["text-menu-v1"], memory:["text-menu-m2-v1", "text-menu-m2-v2"],
+      structured:["text-menu-m2-v2"], native:["native-logical-v1"]};
+    return model?.kind === "model" && hex(model.artifact_id)
+      && support?.schema === "stpd/local-model-export-support-v1"
+      && support.model_id === model.artifact_id && support.status === "supported"
+      && support.verification_state === "not_checked"
+      && typeof support.model_type === "string"
+      && Object.hasOwn(profiles, support.model_type)
+      && profiles[support.model_type].includes(support.runtime_profile);
+  }
+
+  async function localModelSupport(ctx, model) {
+    let support;
+    try {
+      support = await request(ctx, `/api/local-model-exports/support?model_id=${encodeURIComponent(model.artifact_id)}`);
+    } catch { return null; }
+    return live(ctx) && supportsLocalModelExport(model, support) ? support : null;
   }
 
   function localModelRegistrationReason(code) {
     const known = {
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。尚未登记。",
+      native_models_extra_required: "本机原生模型计算依赖尚未准备；请先完成开发者工具包的模型环境初始化。",
+      native_runtime_profile_required: "原生模型运行环境尚未准备；请到模型页查看运行环境详情。",
+      native_runtime_local_install_required: "原生模型运行组件尚未通过核验；请在运行环境详情中检查安装状态。",
+      native_managed_environment_not_supported: "此原生模型当前仅用于原游戏环境。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
+      registration_verification_storage_failed: "登记校验的临时存储写入失败；请先检查工作台运行环境，再明确重试。原导出和登记保留。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",
@@ -3091,17 +3107,14 @@ window.SpireProject = (() => {
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
 
-  async function localModelRegistrationCard(ctx, model, environmentKind = "native") {
+  async function localModelRegistrationCard(ctx, model, support, environmentKind = "native") {
     const managed = environmentKind === "managed";
     const actionName = managed ? "register-managed-model" : "register-local-model";
     const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
-    const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
-    const expectedProfile = memory
-      ? (model.workbench_memory_recipe?.endsWith(".v2")
-        ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
+    const expectedProfile = support.runtime_profile;
     const card = panel(
       managed ? "用于独立游戏环境" : "用于原游戏",
-      "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
+      "已准备的模型可直接使用。缺少登记时，请在详情中核对环境并登记；登记本身不会加载模型。",
     );
     if (managed) card.append(el("p", "先在“环境与场景”启动独立游戏。此登记复用同一份模型权重；加载时绑定所选环境，暂停模型后仍可继续同一局。", "small muted"));
     const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}${managed ? "&environment_kind=managed" : ""}`;
@@ -3129,7 +3142,7 @@ window.SpireProject = (() => {
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
     const registerAction = (label) => command(ctx, actionName, label, async () => {
-      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      if (!live(ctx) || !supportsLocalModelExport(model, support)) return;
       try {
         const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
@@ -3160,9 +3173,40 @@ window.SpireProject = (() => {
     if (!csrf && status.status !== "unavailable")
       card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
     if (status.status === "registered") {
-      card.append(el("p", "此模型已登记到本机模型列表；这条登记不保证当前游戏环境兼容，Runtime 会在决策前重新检查。登记本身不会加载模型，当前运行状态请到模型页查看。", "small muted"));
+      card.append(el("p", "此模型已登记。使用时复用已核验的导出、登记和运行环境，加载完成后由你操作游戏。实际加载仍会重新检查兼容性，Runtime 会在决策前重新检查。", "small muted"));
+      let state;
+      try { state = await request(ctx, "/api/local-models/status"); } catch { state = null; }
+      if (!live(ctx)) return card;
+      const knownState = state?.schema === "stpd/local-models-v1"
+        && typeof state.loaded === "boolean"
+        && ["idle", "stopped", "failed", "loaded", "command_unknown", "recovery_required",
+            "runtime_exited"].includes(state.status);
+      const knownOperation = state?.operation === null
+        || (state?.operation && typeof state.operation === "object"
+          && !Array.isArray(state.operation)
+          && ["completed", "failed"].includes(state.operation.status));
+      const canUse = knownState && state.loaded === false
+        && ["idle", "stopped", "failed"].includes(state.status)
+        && knownOperation && !!csrf;
+      let useSent = false;
+      card.append(command(ctx, managed ? "use-managed-model" : "use-local-model", "使用这个模型", async () => {
+        if (!live(ctx) || !canUse || useSent || !supportsLocalModelExport(model, support)) return;
+        useSent = true;
+        try {
+          await request(ctx, "/api/local-models/prepare", {selection_id:status.selection_id}, csrf);
+        } catch (error) {
+          if (error.message !== "request_unknown") throw error;
+          // Observe the original outcome on the model page; never resubmit it.
+        }
+        if (live(ctx)) window.SpireProject.navigate("local-models", status.selection_id);
+      }, {primary:true, disabled:() => !canUse || useSent}));
+      if (!canUse) card.append(el("p", state?.loaded
+        ? "当前已有模型会话；请在模型页查看或结束后再使用。"
+        : "当前运行状态尚未确认可加载；请到模型页核对状态后再使用。", "small muted"));
       card.append(link("打开此模型选择", route("local-models", status.selection_id)));
-      card.append(registerAction("重新核对登记"));
+      const details = el("details");
+      details.append(el("summary", "详情 · 模型登记"), registerAction("重新核对登记"));
+      card.append(details);
     } else if (status.status === "unavailable") {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
       if (["text_runtime_profile_required", "text_runtime_local_install_required"].includes(status.reason_code))
@@ -3172,13 +3216,15 @@ window.SpireProject = (() => {
       card.append(el("p", status.reason_code === "source_binding_changed"
         ? localModelRegistrationReason(status.reason_code)
         : "登记只建立本机模型选择项，不会自动检查加载条件或执行游戏。", "small muted"));
-      card.append(registerAction("登记到模型列表"));
+      const details = el("details");
+      details.append(el("summary", "详情 · 模型登记"), registerAction("登记到模型列表"));
+      card.append(details);
       card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     }
     return card;
   }
 
-  async function localModelExportCard(ctx, model) {
+  async function localModelExportCard(ctx, model, support) {
     const variant = memoryModelVariant(model);
     const memory = variant !== null;
     const memoryName = variant?.name;
@@ -3209,9 +3255,12 @@ window.SpireProject = (() => {
       ? operation.model_id === undefined || hex(operation.model_id)
       : hex(operation.model_id));
     const validType = status.schema === "stpd/local-model-export-operation-v1"
-      ? operation?.model_type === undefined
+      ? operation?.model_type === undefined || ["native", "structured"].includes(operation?.model_type)
       : operation?.model_type === "memory";
-    if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType
+    const matchingType = operation?.status === "idle" || operation?.model_id !== model.artifact_id
+      || (support.model_type === "token" ? operation?.model_type === undefined
+        : operation?.model_type === support.model_type);
+    if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType || !matchingType
         || (memory && operation.status !== "idle" && operation.model_id === model.artifact_id
             && status.schema !== "stpd/local-model-export-operation-v2")) {
       card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
@@ -3222,7 +3271,7 @@ window.SpireProject = (() => {
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
     const startCommand = (label, disabled) => command(ctx, "start-local-model-export", label, async () => {
-      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      if (!live(ctx) || !supportsLocalModelExport(model, support)) return;
       try {
         await request(ctx, "/api/local-model-exports/start", {model_id:model.artifact_id}, csrf);
       } catch (error) {
@@ -3274,10 +3323,10 @@ window.SpireProject = (() => {
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
-      const registration = await localModelRegistrationCard(ctx, model);
+      const registration = await localModelRegistrationCard(ctx, model, support);
       if (live(ctx)) card.append(registration);
       if (live(ctx) && variant?.profile === "text-menu-v2-confirmed-interaction") {
-        const managedRegistration = await localModelRegistrationCard(ctx, model, "managed");
+        const managedRegistration = await localModelRegistrationCard(ctx, model, support, "managed");
         if (live(ctx)) card.append(managedRegistration);
       }
     } else if (operation.status === "failed" && sameModel) {
@@ -3294,8 +3343,10 @@ window.SpireProject = (() => {
       card.append(el("p", "最近的导出记录属于另一模型。", "small muted"));
     }
     if (!csrf) card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
-    card.append(startCommand(label, disabled));
-    card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+    const details = el("details");
+    details.append(el("summary", "详情 · 导出校验"), startCommand(label, disabled),
+      command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+    card.append(details);
     return card;
   }
 
@@ -3572,14 +3623,218 @@ window.SpireProject = (() => {
     return card;
   }
 
+  function trainingCapabilitiesValid(value) {
+    const object = item => item && typeof item === "object" && !Array.isArray(item);
+    const boundsValid = bounds => Array.isArray(bounds) && bounds.length === 2
+      && bounds.every(Number.isSafeInteger) && bounds[0] <= bounds[1];
+    return value?.schema === "spireagent/training-capabilities-v1"
+      && value.automatic_retry === false && Array.isArray(value.recipes)
+      && Array.isArray(value.placements)
+      && value.recipes.every(item => typeof item?.recipe_id === "string"
+        && typeof item.dependencies_available === "boolean" && Array.isArray(item.placement_ids)
+        && Array.isArray(item.supported_actions) && object(item.config_defaults)
+        && object(item.config_fields) && Object.values(item.config_fields).every(boundsValid)
+        && object(item.limits) && Object.values(item.limits).every(bounds => object(bounds)
+          && Number.isSafeInteger(bounds.minimum) && Number.isSafeInteger(bounds.maximum)
+          && bounds.minimum <= bounds.maximum))
+      && value.placements.every(item => typeof item?.placement_id === "string");
+  }
+
+  function trainingIntent() {
+    if (!globalThis.crypto?.randomUUID) throw new Error("training_intent_unavailable");
+    return globalThis.crypto.randomUUID().replaceAll("-", "");
+  }
+
+  function trainingRequestForm(ctx, card, dataset, capabilities, choices, selected, name, actionName,
+    label, csrfToken, after = null) {
+    const form = el("div", null, "project-form");
+    const recipe = select(form, "训练配方", name, choices, selected);
+    const source = select(form, "训练来源（当前资料）", "local-training-source",
+      [[dataset.artifact_id, dataset.parameters?.display_name || dataset.artifact_id.slice(0, 16)]], dataset.artifact_id);
+    source.disabled = true;
+    const options = {primary:true};
+    const details = el("div", null, "project-form");
+    const reason = el("p", "", "small muted");
+    let descriptor, placement, configControls, limitControls;
+    let button;
+    const update = () => {
+      descriptor = capabilities.recipes.find(item => item.recipe_id === recipe.value);
+      details.replaceChildren();
+      configControls = new Map(); limitControls = new Map();
+      const placements = capabilities.placements.filter(item => descriptor?.placement_ids.includes(item.placement_id));
+      placement = select(details, "计算资源", "local-training-placement", placements.map(item =>
+        [item.placement_id, `${item.placement_id} · ${item.device || "设备未声明"}${item.remote ? " · 远端" : " · 本机"}`]), placements[0]?.placement_id || "");
+      for (const [key, bounds] of Object.entries(descriptor?.config_fields || {})) {
+        const control = input(details, `训练配置 · ${key}`, `local-training-config-${key}`,
+          descriptor.config_defaults[key], "number");
+        control.min = bounds[0]; control.max = bounds[1]; control.step = 1;
+        configControls.set(key, control);
+      }
+      for (const key of descriptor?.fixed_config_fields || [])
+        details.append(el("p", `${key}：${descriptor.config_defaults[key]}（配方固定）`, "small muted"));
+      for (const [key, bounds] of Object.entries(descriptor?.limits || {})) {
+        const control = input(details, key === "wall_seconds" ? "累计运行时间上限（秒）" : `资源上限 · ${key}`,
+          `local-training-limit-${key}`, bounds.default ?? Math.min(600, bounds.maximum), "number");
+        control.min = bounds.minimum; control.max = bounds.maximum; control.step = 1;
+        limitControls.set(key, control);
+      }
+      options.disabled = !descriptor || !descriptor.dependencies_available || placements.length === 0;
+      reason.textContent = !descriptor ? "此配方未被服务声明，不能启动。"
+        : !descriptor.dependencies_available ? localTrainingReason("local_models_extra_required")
+          : !placements.length ? "此配方没有可用计算资源，不能启动。"
+            : descriptor.supported_actions.length ? "可在服务声明的安全边界暂停、取消及恢复；用途与来源资格仍由服务核对。"
+              : "此固定配方不支持暂停、取消或 checkpoint 恢复。";
+      if (button) button.disabled = options.disabled;
+    };
+    recipe.onchange = update;
+    form.append(details, reason); card.append(form);
+    update();
+    button = command(ctx, actionName, label, async () => {
+      if (!live(ctx) || options.disabled || !choices.some(([id]) => id === recipe.value)) return;
+      if (descriptor?.recipe_id !== recipe.value) update();
+      if (options.disabled || !descriptor || !hex(source.value)
+          || !descriptor.placement_ids.includes(placement.value)) return;
+      const config = {...descriptor.config_defaults}, limits = {};
+      for (const [key, control] of configControls) {
+        const number = Number(control.value), bounds = descriptor.config_fields[key];
+        if (!control.value || !Number.isSafeInteger(number) || number < bounds[0] || number > bounds[1])
+          throw new Error("invalid_recipe_config");
+        config[key] = number;
+      }
+      for (const [key, control] of limitControls) {
+        const number = Number(control.value), bounds = descriptor.limits[key];
+        if (!control.value || !Number.isSafeInteger(number) || number < bounds.minimum || number > bounds.maximum)
+          throw new Error("unsupported_resource_limits");
+        limits[key] = number;
+      }
+      const payload = {schema:"spireagent/training-request-v1", intent_id:trainingIntent(),
+        recipe_id:descriptor.recipe_id, source_id:source.value, config, placement_id:placement.value,
+        limits, after_completed_operation_id:after};
+      options.disabled = true; recipe.disabled = true;
+      await request(ctx, "/api/local-training/start", payload, csrfToken);
+      await reload(ctx);
+    }, options);
+    card.append(button);
+  }
+
+  async function typedTrainingCard(ctx, dataset, data, capabilities, sourceBinding = null) {
+    const card = panel("本机训练与恢复", "使用本机服务声明的配方、配置与资源。训练用途和来源由既有服务核对；关闭游戏或面板不等于停止训练。不会自动重试未知结果。");
+    const operation = data.operation;
+    if (data.availability !== "ready") {
+      card.append(el("p", localTrainingReason(data.reason || data.availability), "small muted"));
+      return card;
+    }
+    const csrfToken = data.csrf_token;
+    const task = hex(operation.operation_id, 32) && hex(operation.attempt_id, 32);
+    const currentSource = operation.input_refs?.source_id || operation.dataset_id;
+    const descriptor = capabilities.recipes.find(item => item.recipe_id === operation.recipe_id);
+    const actions = Array.isArray(operation.supported_actions) ? operation.supported_actions : [];
+    if (operation.status !== "idle") {
+      const labels = {pending:"正在执行", paused:"已暂停", cancelled:"已取消", completed:"已完成", failed:"未完成", interrupted_unknown:"结果未知"};
+      card.append(fields([["任务状态", labels[operation.status] || "状态未声明"],
+        ["执行阶段", localTrainingStage(operation.phase || operation.stage)],
+        ["Worker", operation.worker_state || "未知"], ["结果验证", operation.validation_state || "未知"],
+        ["领域完成", operation.domain_completion_state || "未知"],
+        ["结果是否选用", operation.selected_result === true ? "是" : operation.selected_result === false ? "否" : "未知"],
+        ["训练配方", operation.recipe_id || "未知"], ["累计用时（秒）", operation.elapsed_seconds ?? "未知"]]));
+      if (["pause", "cancel"].includes(operation.requested_action) && operation.status === "pending")
+        card.append(el("p", `${operation.requested_action === "pause" ? "暂停" : "取消"}请求已登记，等待 Worker 的明确停止回执；尚未终止。`, "small muted"));
+      const progress = operation.progress;
+      if (progress && Number.isSafeInteger(progress.completed) && progress.completed >= 0)
+        card.append(el("p", `训练进度：${progress.completed} / ${Number.isSafeInteger(progress.total) ? progress.total : "总量未知"} · ${progress.unit || "单位未知"}`, "small muted"));
+      if (operation.status === "interrupted_unknown" || operation.worker_state === "unknown")
+        card.append(el("p", "结果未知。先明确核对原 attempt；本页不会重发训练或自动恢复。", "small muted"));
+      if (operation.error?.code) card.append(technical({error:operation.error}, "查看任务错误"));
+      card.append(technical({operation_id:operation.operation_id, attempt_id:operation.attempt_id,
+        checkpoint_id:operation.checkpoint_id, config:operation.config, limits:operation.limits}, "查看运行身份与累计预算"));
+      if (hex(currentSource) && currentSource !== dataset.artifact_id)
+        card.append(link("打开当前训练来源", route("local-workspace", currentSource)));
+      if (operation.status === "completed") for (const [key, label] of [["result_id","查看训练结果"],["model_id","查看本机模型"]])
+        if (hex(operation[key])) card.append(link(label, route("local-workspace", operation[key])));
+      for (const [action, label] of [["pause","请求暂停"],["cancel","请求取消"],["resume","从此 checkpoint 明确恢复"],["reconcile","核对原 attempt 结果"]]) {
+        const resumeReady = action !== "resume" || (operation.status !== "interrupted_unknown"
+          && operation.worker_state === "terminal"
+          && hex(operation.checkpoint_id) && operation.limits && Object.keys(operation.limits).length > 0);
+        const enabled = task && csrfToken && actions.includes(action)
+          && descriptor?.supported_actions.includes(action) && resumeReady
+          && !(operation.status === "pending" && (operation.requested_action === action
+            || operation.requested_action === "cancel"));
+        const options = {type:"secondary", disabled:!enabled};
+        card.append(command(ctx, `local-training-${action}`, label, async () => {
+          if (!live(ctx) || options.disabled) return;
+          const body = {operation_id:operation.operation_id, expected_attempt_id:operation.attempt_id};
+          if (action === "resume") Object.assign(body, {checkpoint_id:operation.checkpoint_id,
+            intent_id:trainingIntent(), limits:{...operation.limits}});
+          options.disabled = true;
+          await request(ctx, `/api/local-training/${action}`, body, csrfToken);
+          await reload(ctx);
+        }, options));
+        if (!enabled) card.append(el("p", `${label}不可用：${!descriptor?.supported_actions.includes(action)
+          ? "配方未声明此能力" : !actions.includes(action) ? "当前 attempt 未声明此能力" : !resumeReady
+            ? "需要先核对未知结果、明确停止回执、checkpoint 与原累计预算" : "控制意图已登记或浏览器保护令牌不可用"}。`, "small muted"));
+      }
+    }
+    const same = currentSource === dataset.artifact_id;
+    const mayStart = operation.status === "idle" || operation.status === "completed"
+      || (operation.status === "failed" && !operation.run_id);
+    if (mayStart && csrfToken && hex(dataset.artifact_id)) {
+      let choices = capabilities.recipes.map(item => [item.recipe_id, item.recipe_id]);
+      let recommended;
+      if (["stpd/source3-ordered-native-training-source-v1",
+          "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema)) {
+        recommended = sourceBinding?.recommended_recipe_id;
+        if (!live(ctx)) return card;
+        if (!choices.some(([id]) => id === recommended)) {
+          card.append(el("p", "此录制分区的训练用途与配方尚未共同确认；请刷新后再开始训练。", "small muted"));
+          card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", () => reload(ctx), {type:"secondary"}));
+          return card;
+        }
+        choices = choices.filter(([id]) => id === recommended);
+      }
+      const selected = choices.some(([id]) => id === recommended) ? recommended
+        : choices.some(([id]) => id === operation.recipe_id) ? operation.recipe_id
+          : choices.find(([id]) => id === "structured-m2-cpu-v2")?.[0] || choices[0]?.[0];
+      if (choices.length) trainingRequestForm(ctx, card, dataset, capabilities, choices, selected,
+        same && operation.status === "completed" ? "local-training-new-recipe" : "local-training-recipe",
+        same && operation.status === "completed" ? "start-local-training-new" : "start-local-training",
+        same && operation.status === "completed" ? "新建一次训练" : "明确开始本机训练", csrfToken,
+        same && operation.status === "completed" ? operation.operation_id : null);
+    }
+    card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
+      if (task) await request(ctx, `/api/local-training/status?operation_id=${operation.operation_id}`);
+      await reload(ctx);
+    }, {type:"secondary"}));
+    return card;
+  }
+
   async function localTrainingCard(ctx, dataset) {
+    const recordedNative = ["stpd/source3-ordered-native-training-source-v1",
+      "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema);
     const card = panel(
       "本机短训练",
-      dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
+      recordedNative ? "这里使用这份录制数据对应的本机训练配方；先核对训练用途，再明确选择配置与资源。"
+        : dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
         ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
         : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
-    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+    card.append(el("p", recordedNative
+      ? "使用原始公开观察、完整候选操作和符合条件的选择标签；等待检查与不确定尾段保留其原始范围。"
+      : "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+    let sourceBinding = null;
+    if (recordedNative) {
+      try {
+        sourceBinding = await request(ctx, `/api/local-datasets/binding/${dataset.artifact_id}`);
+      } catch {}
+      const expected = dataset.parameters.schema === "stpd/native-agent-sampled-training-source-v1"
+        ? "native_agent_sampled" : "ordered_source3";
+      if (sourceBinding?.schema !== "stpd/local-dataset-binding-v1"
+          || sourceBinding.artifact_id !== dataset.artifact_id || sourceBinding.sample_type !== expected
+          || sourceBinding.source_schema !== dataset.parameters.schema
+          || sourceBinding.curation_purpose !== "training") {
+        card.append(el("p", "本机尚未核对这份录制分区的训练用途；来源仍保留。请先完成用途保存或核对。", "small muted"));
+        return card;
+      }
+    }
     let data;
     try {
       data = await request(ctx, "/api/local-training/status");
@@ -3591,7 +3846,7 @@ window.SpireProject = (() => {
     }
     if (!live(ctx)) return card;
     if (!data || typeof data !== "object" || Array.isArray(data)
-        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2"].includes(data.schema)
+        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2", "spireagent/training-operation-snapshot-v1"].includes(data.schema)
         || !data.operation || typeof data.operation !== "object") {
       card.append(el("p", "本机训练状态格式未知，当前不能启动训练。", "small muted"));
       card.append(technical({error_code:"unknown_local_training_status_schema"}, "查看状态格式错误"));
@@ -3606,6 +3861,19 @@ window.SpireProject = (() => {
         card.append(link("打开本机资料与准备状态", route("local-workspace")));
       return card;
     }
+    let capabilities;
+    try {
+      capabilities = await request(ctx, "/api/local-training/capabilities");
+    } catch {}
+    if (!live(ctx)) return card;
+    if (!trainingCapabilitiesValid(capabilities)) {
+      card.append(el("p", "训练能力声明暂不可用；无法启动或控制任务。", "small muted"));
+      return card;
+    }
+    if (data.schema === "spireagent/training-operation-snapshot-v1"
+        || ["stpd/structured-sequence-source-v1", "stpd/source3-ordered-native-training-source-v1",
+            "stpd/native-agent-sampled-training-source-v1"].includes(dataset.parameters?.schema))
+      return typedTrainingCard(ctx, dataset, data, capabilities, sourceBinding);
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
@@ -3619,6 +3887,8 @@ window.SpireProject = (() => {
       .filter(([, view]) => memoryRecipePageProfile(view) === (managed ? "text-menu-v2" : "text-menu-v1"))
       .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
     if (!managed) choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
+    for (let i = choices.length - 1; i >= 0; i--)
+      if (!capabilities.recipes.some(item => item.recipe_id === choices[i][0])) choices.splice(i, 1);
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);
@@ -3690,49 +3960,160 @@ window.SpireProject = (() => {
     const canStart = !blocksStart && hasCsrf && hex(dataset.artifact_id);
     if (!hasCsrf)
       card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
-    if (canStart) {
-      const form = el("div");
-      const recipe = select(form, "训练配方", "local-training-recipe", choices,
-        managed ? v2MemoryRecipe : defaultRecipe);
-      card.append(form);
-      const startOptions = {primary:true};
-      card.append(command(ctx, "start-local-training",
-        currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练",
-        async () => {
-          if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)
-              || !choices.some(([id]) => id === recipe.value)) return;
-          startOptions.disabled = true;
-          await request(ctx, "/api/local-training/start", {
-            dataset_id:dataset.artifact_id,
-            ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
-          }, csrfToken);
-          await reload(ctx);
-        }, startOptions));
+    if (canStart && choices.length) {
+      trainingRequestForm(ctx, card, dataset, capabilities, choices,
+        managed ? v2MemoryRecipe : defaultRecipe, "local-training-recipe", "start-local-training",
+        currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练", csrfToken);
     }
     if (currentForDataset && operation.status === "completed" && taskId && hasCsrf
         && hex(operation.run_id) && hex(operation.result_id) && hex(operation.model_id)
-        && (hex(operation.evaluation_id) || operation.result_type === "train_only")) {
-      const form = el("div");
-      const recipe = select(form, "新实验配方", "local-training-new-recipe", choices,
+        && (hex(operation.evaluation_id) || operation.result_type === "train_only") && choices.length) {
+      trainingRequestForm(ctx, card, dataset, capabilities, choices,
         choices.some(([id]) => id === operation.recipe) ? operation.recipe
-          : managed ? v2MemoryRecipe : defaultRecipe);
-      card.append(form);
-      const newOptions = {type:"secondary"};
-      card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
-        if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)
-            || !choices.some(([id]) => id === recipe.value)) return;
-        newOptions.disabled = true;
-        await request(ctx, "/api/local-training/start", {
-          dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
-          ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
-        }, csrfToken);
-        await reload(ctx);
-      }, newOptions));
+          : managed ? v2MemoryRecipe : defaultRecipe, "local-training-new-recipe", "start-local-training-new",
+        "新建一次训练", csrfToken, taskId);
     }
     card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
       await reload(ctx);
     }, {type:"secondary"}));
     return card;
+  }
+
+  async function nativeRecordingCard(ctx) {
+    const box = panel("原生交互与观察", "记录当前本机游戏的键鼠/UI 或程序协议交互。请选择操作者声明与输入入口；不会自动开始模型、上传或训练。");
+    const sourceLabels = {declared_human:"人操作·原生键鼠/UI（本人声明）",
+      agent_native_ui:"机器操作·原生键鼠/UI", agent_protocol:"机器操作·Agent 程序协议", unknown:"未知来源"};
+    let view;
+    try { view = await request(ctx, "/api/native-recording/status"); }
+    catch (error) { box.append(el("p", failure(error), "small muted")); return box; }
+    const status = view.status;
+    const fenceKey = "spireagent-recording-unknown:" + status.runtime_instance_id;
+    let browserUnknown = recordingIntents.get(fenceKey) || null;
+    let confirmationStorage = true;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(fenceKey) || "null");
+      if (!browserUnknown && saved) browserUnknown = saved;
+      if (browserUnknown) recordingIntents.set(fenceKey, browserUnknown);
+    } catch { confirmationStorage = false; }
+    const persistIntent = value => {
+      try {
+        if (value) sessionStorage.setItem(fenceKey, JSON.stringify(value));
+        else sessionStorage.removeItem(fenceKey);
+        return true;
+      } catch { confirmationStorage = false; return false; }
+    };
+    if (browserUnknown && !view.unconfirmed) view.unconfirmed = browserUnknown;
+    if (browserUnknown && browserUnknown.isolated_session_id !== status.recording_session_id) {
+      view.recovery_required = true;
+      view.unconfirmed = browserUnknown;
+    }
+    box.append(el("p", `录制状态：${show(status.recording_lifecycle)}`, "small muted"));
+    if (status.source) {
+      const source = status.source;
+      box.append(el("p", `公开观察 ${count(source.observations)} · 输入 ${count(source.inputs)} · 待完成 ${count(source.pending_inputs)} · 缺口 ${count(source.gaps)}`, "small muted"));
+      box.append(el("p", source.accounting_complete ? "当前无记账失败；缺口与覆盖范围分别见诊断。" : "记账不完整，请查看录制诊断。", "small muted"));
+      box.append(el("p", `当前来源：${sourceLabels[source.declaration.source_kind]} · ${source.declaration.actor_id}`, "small muted"));
+    }
+    if (view.model_recovery_required)
+      box.append(el("p", "本机模型正在实战或需要恢复。更改为原生键鼠/UI 或未知来源前，请先在模型页明确归还控制或 Stop。", "small muted"));
+    if (view.unconfirmed)
+      box.append(el("p", `保留未确认录制请求 ${view.unconfirmed.command_id}。刷新不重发，也不证明它执行。可明确结束当前会话，再开始隔离的新会话。`, "small muted"));
+    if (!confirmationStorage)
+      box.append(el("p", "浏览器确认存储不可用。开始、暂停、继续和更改来源已阻断；结束录制仍可使用。此页会保留提示；重新载入后无法恢复本页提示，新的录制变更仍会阻断。", "small muted"));
+    const form = el("div", null, "project-form");
+    const kind = select(form, "操作者声明与输入入口", "native-recording-kind", [["", "请选择来源"],
+      ...Object.entries(sourceLabels)], drafts.get("native-recording-kind") || "");
+    const actor = input(form, "记录内操作者代号（可自定；字母、数字、_、-、.）", "native-recording-actor", drafts.get("native-recording-actor") || "");
+    actor.maxLength = 128;
+    const declared = () => kind.value && /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
+      && ![".", ".."].includes(actor.value)
+      && (!view.model_recovery_required || kind.value === "agent_protocol");
+    const source3 = status.capture_profile_id === "native-logical-source-v3";
+    const fresh = () => ["ready", "closed"].includes(status.recording_lifecycle)
+      && (!view.recovery_required || (status.recording_lifecycle === "closed" && status.closeout_status === "closed"));
+    const eligible = action => !view.command_pending && !!view.csrf_token && (action === "close" || confirmationStorage) && (action === "start_new_session" ? fresh() && declared()
+      : action === "change_source" ? source3 && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
+      : action === "close" ? source3 && ["recording", "paused"].includes(status.recording_lifecycle)
+      : source3 && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
+    const buttons = [];
+    for (const [action, label] of [["start_new_session", "开始录制"], ["pause", "暂停"], ["resume", "继续"], ["change_source", "更改来源"], ["close", "结束并封存"]]) {
+      const button = command(ctx, "native-recording-" + action, label, async () => {
+        if (!eligible(action)) return;
+        const declaration = ["start_new_session", "change_source"].includes(action);
+        const body = {kind: action, runtime_instance_id: status.runtime_instance_id,
+          recording_session_id: status.recording_session_id, source_segment_id: status.source?.segment_id ?? null,
+          source_kind: declaration ? kind.value : null, actor_id: declaration ? actor.value : null,
+          command_id: crypto.randomUUID()};
+        const previous = browserUnknown;
+        const previousRecovery = view.recovery_required, previousNotice = view.unconfirmed;
+        const marker = {command_id:body.command_id, kind:action, recording_session_id:body.recording_session_id,
+          runtime_instance_id:body.runtime_instance_id, source_segment_id:body.source_segment_id, pending:true, previous_unconfirmed:previous
+            ? [...(previous.previous_unconfirmed || []).slice(-7), {command_id:previous.command_id,
+                recording_session_id:previous.recording_session_id, runtime_instance_id:previous.runtime_instance_id}] : []};
+        // Preserve uncertainty before submission. Unavailable storage never grants
+        // a non-recovery mutation whose marker would disappear on full reload.
+        recordingIntents.set(fenceKey, marker);
+        browserUnknown = marker;
+        view.recovery_required = true;
+        view.unconfirmed = marker;
+        if (!persistIntent(marker) && action !== "close") {
+          // This failure happened before POST. Preserve any earlier uncertainty,
+          // but do not mislabel this rejected intent as a submitted unknown.
+          browserUnknown = previous;
+          if (previous) recordingIntents.set(fenceKey, previous);
+          else recordingIntents.delete(fenceKey);
+          view.recovery_required = previousRecovery;
+          view.unconfirmed = previousNotice;
+          box.append(el("p", failure(new Error("recording_confirmation_storage_unavailable")), "small muted"));
+          throw new Error("recording_confirmation_storage_unavailable");
+        }
+        const retire = value => {
+          if (!persistIntent(value)) return;
+          browserUnknown = value;
+          if (value) recordingIntents.set(fenceKey, value);
+          else recordingIntents.delete(fenceKey);
+        };
+        try {
+          const result = await request(ctx, "/api/native-recording/command", body, view.csrf_token);
+          let retained = previous;
+          if (action === "start_new_session" && status.recording_lifecycle === "closed" && status.closeout_status === "closed"
+              && previous && result.status?.recording_session_id !== status.recording_session_id)
+            retained = {...previous, isolated_session_id:result.status.recording_session_id};
+          // Failure to retire leaves the conservative marker in both live and saved scopes.
+          retire(retained);
+          await reload(ctx);
+        } catch (error) {
+          const knownNonDispatch = new Set(["authentication_required", "invalid_native_recording_command",
+            "native_recording_context_changed", "native_recording_command_pending", "native_recording_recovery_required",
+            "native_recording_not_dispatched", "native_recording_rejected", "model_recovery_required",
+            "runtime_connector_binding_required", "connector_identity_unavailable", "native_recording_unavailable",
+            "native_recording_game_identity_mismatch"]);
+          if (knownNonDispatch.has(error.message)) retire(previous);
+          else {
+            marker.pending = false;
+            marker.unknown = true;
+            recordingIntents.set(fenceKey, marker);
+            persistIntent(marker);
+            box.append(el("p", `操作结果未确认：${body.command_id}。不会自动重试。`, "small muted"));
+          }
+          throw error;
+        }
+
+      }, {disabled: () => !eligible(action)});
+      button.disabled = !eligible(action);
+      buttons.push([action, button]); form.append(button);
+    }
+    const refreshButtons = () => {
+      drafts.set("native-recording-kind", kind.value); drafts.set("native-recording-actor", actor.value);
+      for (const [action, button] of buttons) button.disabled = !eligible(action);
+    };
+    kind.onchange = refreshButtons; actor.oninput = refreshButtons;
+    box.append(form);
+    box.append(command(ctx, "refresh-native-recording", "刷新录制状态", async () => { await reload(ctx); }, {type:"secondary"}));
+    box.append(technical({connection:view.connection, profile:status.capture_profile_id,
+      session_id:status.recording_session_id, health:status.health, non_claims:status.non_claims,
+      unconfirmed:view.unconfirmed, previous_unconfirmed:[...(view.previous_unconfirmed || []), ...(browserUnknown?.previous_unconfirmed || [])]}, "查看录制诊断"));
+    return box;
   }
 
   function localRecordingCard(ctx, importStatus) {
@@ -3793,8 +4174,8 @@ window.SpireProject = (() => {
     const rows = (data.candidates || []).map(item => [
       String(item.session_id || "未知").slice(0, 24),
       String(item.timeline_id || "未知").slice(0, 24),
-      item.closed_at || "未知",
-      "录制已结束，内容待验证",
+      item.closed_at || item.created_at || "未知",
+      item.recording_type === "source3" ? "Source 3 已结束，声明来源保留，内容待验证" : "录制已结束，内容待验证",
     ]);
     section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
     const candidates = (data.candidates || []).filter(item =>
@@ -3802,21 +4183,32 @@ window.SpireProject = (() => {
     if (candidates.length) {
       const selection = select(section, "要导入的录制", "local-recording-selection",
         [["", "请选择一条录制"], ...candidates.map(item => [item.candidate_id,
-          `${item.closed_at || "结束时间未知"} · ${item.session_id}`])], "");
+          `${item.closed_at || item.created_at || "结束时间未知"} · ${item.session_id}${item.recording_type === "source3" ? " · Source 3" : ""}`])], "");
       const checkbox = input(section, "我确认所选录制来自真人操作", "local-recording-attestation", false, "checkbox");
-      const canImport = () => checkbox.checked && candidates.some(item => item.candidate_id === selection.value)
+      const sourceNote = el("p", "请选择录制；旧 Human 录制需要独立声明。", "small muted");
+      section.append(sourceNote);
+      const selected = () => candidates.find(item => item.candidate_id === selection.value);
+      const canImport = () => !!selected()
+        && (selected().recording_type === "source3" ? selected().import_supported === true : checkbox.checked)
         && importStatus.status !== "pending" && !!localCsrfToken;
       const button = command(ctx, "import-local-recording", "验证并导入本机", async () => {
         if (!canImport()) return;
         await request(ctx, "/api/local-recordings/import", {
           candidate_id: selection.value,
-          human_origin_attested: true,
+          human_origin_attested: selected().recording_type !== "source3",
         }, localCsrfToken);
         await reload(ctx);
       }, {disabled:true});
       selection.onchange = () => {
         checkbox.checked = false;
-        button.disabled = true;
+        const source3 = selected()?.recording_type === "source3";
+        checkbox.disabled = source3 || !selected();
+        sourceNote.textContent = source3
+          ? selected().import_supported === true
+            ? "Source 3 保留原始来源声明；导入不声明或验证 Human 起源，也不创建训练数据集。"
+            : `Source 3 导入不可用：${selected().import_reason || "来源组件尚未声明支持"}`
+          : "旧 Human 录制需要明确声明真人操作；更换录制会清除声明。";
+        button.disabled = !canImport();
       };
       checkbox.onchange = () => { button.disabled = !canImport(); };
       section.append(button);
@@ -3993,6 +4385,412 @@ window.SpireProject = (() => {
       await reload(ctx);
     }, {type:"secondary"}));
     return section;
+  }
+
+  function nativeAgentSupportValid(support) {
+    return support?.source_profile === "native_agent_sampled_v1"
+      && support.raw_schema === "stpd/native-agent-sampled-original-bundle-v1"
+      && typeof support.product_entry_enabled === "boolean"
+      && Number.isSafeInteger(support.max_raw_references) && support.max_raw_references > 0
+      && support.max_raw_references <= 256 && Array.isArray(support.cohorts)
+      && support.cohorts.length > 0 && support.cohorts.every(value => typeof value === "string")
+      && support.cohorts.includes(support.default_cohort)
+      && Array.isArray(support.relations) && support.relations.length > 0
+      && support.relations.every(item => typeof item?.relation?.id === "string"
+        && hex(item.relation.sha256) && typeof item.label === "string"
+        && Array.isArray(item.cohorts) && item.cohorts.length > 0
+        && item.cohorts.every(value => support.cohorts.includes(value)))
+      && support.relations.some(item => item.relation.id === support.default_relation_id
+        && item.cohorts.includes(support.default_cohort));
+  }
+
+  function nativeAgentImportCard(ctx, status) {
+    const section = panel("导入已结束的程序示范", "选择已结束 Agent 运行的原始目录；保存原件后再独立检查样本、保存训练用途和开始训练。");
+    const support = status?.native_agent_support;
+    if (!nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
+      section.append(el("p", "此程序示范入口尚未开放；现有原件保留。", "small muted"));
+      return section;
+    }
+    if (status.native_legacy_recovery?.required === true
+        || (status.recording_type === "native_agent_sampled" && !hex(status.intent_id,32)
+          && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))) {
+      section.append(el("p", "旧版三字段导入请求仍待核对，当前不能保存新请求。请通过原三字段接口明确核对原目录、原来源与原程序；历史记录仅接受保存的原始规范目录，不推测目录别名。", "small muted"));
+      section.append(command(ctx,"refresh-native-agent-import","刷新目录导入状态",()=>reload(ctx),{type:"secondary"}));
+      return section;
+    }
+    const account = ctx.identity?.principal?.subject || ctx.identity?.status || "local";
+    const scope = JSON.stringify([status.configuration_id,status.workbench_instance_id,account]);
+    const fenceKey = "spireagent-native-import-unknown:" + scope;
+    let storageAvailable = typeof status.configuration_id === "string"
+      && typeof status.workbench_instance_id === "string", persisted = null;
+    try {
+      if (storageAvailable) {
+        persisted = JSON.parse(sessionStorage.getItem(fenceKey) || "null");
+        if (persisted !== null && (persisted.scope !== scope || !hex(persisted.request?.intent_id,32)
+            || !["directory","cohort","relation_id"].every(key => typeof persisted.request[key] === "string")))
+          storageAvailable = false;
+      }
+    } catch { storageAvailable = false; }
+    const writeFence = value => {
+      if (!storageAvailable) return false;
+      try {
+        value ? sessionStorage.setItem(fenceKey,JSON.stringify({scope,request:value}))
+          : sessionStorage.removeItem(fenceKey);
+        return true;
+      } catch { storageAvailable = false; return false; }
+    };
+    const recovery = (Array.isArray(status.native_intent_recovery) ? status.native_intent_recovery : [])
+      .filter(item => hex(item?.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(item.status));
+    if (!recovery.length && status.recording_type === "native_agent_sampled"
+        && hex(status.intent_id,32) && ["pending","publication_unknown","published_index_unavailable","interrupted_unknown"].includes(status.status))
+      recovery.push({intent_id:status.intent_id,status:status.status,cohort:status.cohort,relation_id:status.producer_student_relation?.id});
+    const cached = drafts.get("native-agent-import-scope") === scope
+      ? drafts.get("native-agent-import-request") : null;
+    if (persisted?.request?.intent_id === status.intent_id
+        && ["completed","failed"].includes(status.status)
+        && !recovery.some(item => item.intent_id === status.intent_id) && writeFence(null))
+      persisted = null;
+    // A syntactically valid completed draft is not a recovery correspondence.
+    // Retain an unacknowledged browser fence; otherwise choose only the owner's
+    // unresolved IDs, preserving a cached body only for that selected ID.
+    const selectedOwner = recovery.find(item => item.intent_id === cached?.intent_id) || recovery[0];
+    let recoveryTarget = persisted ? {mode:"fenced",request:persisted.request}
+      : selectedOwner ? {mode:"owner",request:{...selectedOwner,
+        ...(cached?.intent_id === selectedOwner.intent_id ? cached : {})}} : null;
+    const saved = recoveryTarget?.request || cached || {};
+    const serverOnlyRecovery = recoveryTarget?.mode === "owner";
+    const recoverIntent = serverOnlyRecovery ? select(section,"待核对的原始请求","native-agent-recovery-intent",
+      recovery.map(item => [item.intent_id,`${item.intent_id.slice(0,12)} · ${item.status}`]),selectedOwner.intent_id) : null;
+    drafts.set("native-agent-import-scope",scope); drafts.set("native-agent-import-request",saved);
+    const directory = input(section, "已结束 Agent 运行目录", "native-agent-import-directory", saved.directory || "");
+    const cohort = select(section, "数据来源声明", "native-agent-import-cohort",
+      support.cohorts.map(value => [value, support.cohort_labels?.[value] || value]),
+      support.cohorts.includes(saved.cohort) ? saved.cohort : support.default_cohort);
+    const relation = select(section, "产生这些示范的程序", "native-agent-import-relation",
+      support.relations.map(item => [item.relation.id, item.label]),
+      support.relations.some(item => item.relation.id === saved.relation_id)
+        ? saved.relation_id : support.default_relation_id);
+    const note = el("p", null, "small muted"); section.append(note);
+    let dispatched = false;
+    const requestBody = () => ({directory:directory.value.trim(), cohort:cohort.value, relation_id:relation.value});
+    const submitted = () => drafts.get("native-agent-import-request") || {};
+    const matching = () => status.recording_type === "native_agent_sampled"
+      && hex(submitted().intent_id,32) && status.intent_id === submitted().intent_id;
+    const sameOriginalRequest = () => {
+      const original = submitted();
+      return hex(original.intent_id,32) && JSON.stringify(requestBody()) === JSON.stringify({
+        directory:original.directory,cohort:original.cohort,relation_id:original.relation_id});
+    };
+    const uncertain = () => recoveryTarget !== null;
+    const valid = () => !dispatched && storageAvailable && status.status !== "pending" && !!status.csrf_token
+      && directory.value.trim().length > 0 && support.relations.some(item =>
+        item.relation.id === relation.value && item.cohorts.includes(cohort.value))
+      && (!uncertain() || recoveryTarget.mode === "owner" || sameOriginalRequest());
+    const options = {primary:true, disabled:!valid()};
+    const button = command(ctx, "import-native-agent-run", uncertain() ? "明确核对同一导入请求" : "明确保存程序示范原件", async () => {
+      if (!valid() || options.disabled) return;
+      const original = submitted();
+      const body = {...requestBody(),intent_id:recoveryTarget ? recoverIntent?.value || recoveryTarget.request.intent_id
+        : sameOriginalRequest() ? original.intent_id : trainingIntent()};
+      if (!writeFence(body)) {
+        options.disabled = true; button.disabled = true;
+        note.textContent = "浏览器无法保留原导入请求，当前没有提交；请恢复存储后明确核对。";
+        return;
+      }
+      drafts.set("native-agent-import-request", body);
+      dispatched = true; options.disabled = true; button.disabled = true;
+      try {
+        const observed = await request(ctx, "/api/local-recordings/import/native-agent", body, status.csrf_token);
+        if (observed?.intent_id !== body.intent_id) throw new Error("request_unknown");
+        if (["completed","failed"].includes(observed.status)) writeFence(null);
+        await reload(ctx);
+      } catch (error) {
+        const unknown = ["request_unknown","request_unavailable","context_changed"].includes(error.message);
+        if (!unknown) writeFence(null);
+        if (error.message === "intent_payload_mismatch") {
+          // This known pre-IO rejection identifies the registered intent, but
+          // proves the entered body was not its original. Permit explicit body
+          // correction under that same ID instead of fencing the wrong body.
+          recoveryTarget = {mode:"owner",request:{intent_id:body.intent_id,
+            cohort:body.cohort,relation_id:body.relation_id}};
+          drafts.set("native-agent-import-request",recoveryTarget.request);
+        }
+        if (!unknown) { dispatched = false; options.disabled = !valid(); button.disabled = options.disabled; }
+        note.textContent = unknown ? "导入结果尚未确认；请先刷新原操作状态，不会自动重发。"
+          : "导入请求未被确认，请核对目录与来源选项后明确重试。";
+        throw error;
+      }
+    }, options);
+    const changed = () => { options.disabled = !valid(); button.disabled = options.disabled; };
+    directory.oninput = changed; cohort.onchange = changed; relation.onchange = changed;
+    if (recoverIntent) recoverIntent.onchange = () => {
+      const original = recovery.find(item => item.intent_id === recoverIntent.value);
+      if (original) {
+        recoveryTarget = {mode:"owner",request:original};
+        directory.value = cached?.intent_id === original.intent_id ? cached.directory || "" : "";
+        cohort.value = original.cohort; relation.value = original.relation_id;
+        drafts.set("native-agent-import-request",original);
+      }
+      changed();
+    };
+    section.append(button);
+    if (status.status === "pending") note.textContent = "正在保存原件；刷新只读取状态。";
+    if (uncertain()) note.textContent = "此导入请求结果待核对；只可明确使用同一请求身份与原正文核对，不会自动重发。";
+    if (uncertain() && !matching()) note.textContent += " 当前服务状态属于另一请求，不能据此确认本次结果。";
+    if (serverOnlyRecovery) note.textContent = "浏览器原正文未保留。请填写原目录与原选项，明确使用服务记录的原请求身份核对；服务会逐字段检查，不会生成新请求。";
+    if (!storageAvailable) note.textContent = "浏览器请求存储不可用或上下文未核对，当前不能提交或猜测恢复身份。";
+    if (matching() && hex(status.artifact_id))
+      section.append(link("打开已保存的程序示范原件", route("local-workspace", status.artifact_id)));
+    if (status.error_code) section.append(technical({error_code:status.error_code}, "查看导入状态"));
+    section.append(command(ctx, "refresh-native-agent-import", "刷新目录导入状态", () => reload(ctx), {type:"secondary"}));
+    return section;
+  }
+
+  async function localNativeAgentDatasetCard(ctx, candidates, detailId = null) {
+    const section = panel("从程序示范准备训练例子", "原始选择标签与已确认上下文分别保留；等待检查、不确定尾段和来源声明不补成选择标签。");
+    let status;
+    const selectors = new Map();
+    try { status = await request(ctx, "/api/local-datasets/status"); }
+    catch (error) { section.append(el("p", failure(error), "small muted")); return {section,selectors}; }
+    const support = status?.native_agent_support;
+    if (status?.schema !== "stpd/local-dataset-operation-v1"
+        || !nativeAgentSupportValid(support) || support.product_entry_enabled !== true) {
+      section.append(el("p", "程序示范数据入口尚未开放，不能提交预览或保存。", "small muted"));
+      return {section,selectors};
+    }
+    const key = "local-native-agent-source-ids", saved = drafts.get(key);
+    const selected = new Set((Array.isArray(saved) ? saved : detailId ? [detailId] : [])
+      .filter(value => hex(value)).slice(0, support.max_raw_references));
+    const ids = () => [...selected].sort();
+    const operation = status.operation || {status:"idle"};
+    let dirty = false, previewButton, publishButton, previewOptions;
+    const needsRecovery = () => ["failed", "interrupted"].includes(operation.status)
+      && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
+    const same = () => !dirty && operation.kind === "native_agent_sampled"
+      && operation.source_profile === support.source_profile && selected.size > 0
+      && Array.isArray(operation.artifact_ids) && ids().length === operation.artifact_ids.length
+      && ids().every((id,index) => operation.artifact_ids[index] === id);
+    const canPreview = () => !needsRecovery() && status.availability === "ready"
+      && status.operation?.status !== "pending" && !!status.csrf_token
+      && selected.size > 0 && selected.size <= support.max_raw_references
+      && (!detailId || selectors.has(detailId));
+    const changed = () => {
+      dirty = true; drafts.set(key, ids());
+      if (publishButton) publishButton.disabled = true;
+      if (previewButton) previewButton.disabled = !canPreview();
+      if (previewOptions) previewOptions.disabled = !canPreview();
+      for (const [id, checkbox] of selectors)
+        checkbox.disabled = !selected.has(id) && selected.size >= support.max_raw_references;
+    };
+    for (const item of candidates) {
+      if (item.parameters?.schema !== support.raw_schema || item.parameters?.source_profile !== support.source_profile) continue;
+      const checkbox = el("input"); checkbox.type = "checkbox";
+      checkbox.name = `local-native-agent-source-${item.artifact_id}`;
+      checkbox.checked = selected.has(item.artifact_id);
+      checkbox.disabled = !checkbox.checked && selected.size >= support.max_raw_references;
+      checkbox.onchange = () => {
+        if (checkbox.checked && selected.size < support.max_raw_references) selected.add(item.artifact_id);
+        else { selected.delete(item.artifact_id); checkbox.checked = false; }
+        changed();
+      };
+      selectors.set(item.artifact_id, checkbox);
+      if (detailId) { const label = el("label", "选择这份已保存原件", "project-check"); label.append(checkbox); section.append(label); }
+    }
+    if (same() && ["preview_ready","completed"].includes(operation.status)) {
+      const known = value => Number.isSafeInteger(value) && value >= 0 ? count(value) : "未知";
+      section.append(fields([["原始查询", known(operation.counts?.original_offers)],
+        ["已确认上下文", known(operation.counts?.known_context_samples)],
+        ["原始选择标签 N", known(operation.accepted_labels)],
+        ["多候选选择 N", known(operation.coverage?.multi_candidate_N)],
+        ["等待检查排除", known(operation.counts?.readiness_exclusions)],
+        ["确认终局观察", known(operation.counts?.known_ready_summary_samples)],
+        ["原生样本来源核验数", known(operation.counts?.real_native_samples)],
+        ["不确定尾段", Array.isArray(operation.censored_tails) ? count(operation.censored_tails.length) : "未知"]]));
+      for (const [title, values] of [["页面类型与上下文数量",operation.coverage?.native_interaction_kinds],
+          ["选择动作类别与数量",operation.coverage?.chosen_action_verbs], ["排除原因",operation.exclusions]])
+        if (values && typeof values === "object") section.append(table([title,"数量"],
+          Object.entries(values).map(([name,value]) => [name,known(value)])));
+      section.append(technical({qualification:operation.qualification,
+        native_origin_status:operation.native_origin_status, producer_student_relation:operation.producer_student_relation,
+        censored_tails:operation.censored_tails, split_status:operation.split_status}, "查看来源与尾段范围"));
+    }
+    const canPublish = () => status.availability === "ready" && !!status.csrf_token && same()
+      && hex(operation.preview_id,32) && (operation.status === "preview_ready" ? operation.can_publish === true
+        : needsRecovery() && operation.recovery_available === true);
+    if (canPublish()) {
+      const options = {primary:true};
+      publishButton = command(ctx,"publish-native-agent-dataset", needsRecovery() ? "明确核对上次保存结果" : "明确保存训练用途", async () => {
+        if (!canPublish() || options.disabled) return;
+        options.disabled = true; publishButton.disabled = true;
+        await request(ctx,"/api/local-datasets/publish",{preview_id:operation.preview_id},status.csrf_token);
+        await reload(ctx);
+      },options); section.append(publishButton);
+    }
+    if (operation.status === "pending") section.append(el("p","数据操作正在进行；刷新只读状态。","small muted"));
+    if (needsRecovery()) section.append(el("p","上次保存待核对；原选择与预览保留，不会自动重试。","small muted"));
+    if (operation.status === "preview_ready" && !same()) section.append(el("p","当前选择与原预览不匹配，不能保存。","small muted"));
+    if (same() && operation.status === "preview_ready" && !operation.can_publish)
+      section.append(el("p","当前预览没有可保存的选择标签，或用途条件尚未满足。","small muted"));
+    if (same() && operation.status === "completed" && hex(operation.result_artifact_id)) {
+      section.append(el("p","训练用途已保存；尚未开始训练。","small muted"));
+      section.append(link("打开程序示范训练数据集",route("local-workspace",operation.result_artifact_id)));
+    }
+    const options = {primary:true,disabled:!canPreview()}; previewOptions = options;
+    previewButton = command(ctx,"preview-native-agent-dataset","明确检查所选程序示范",async () => {
+      if (!canPreview() || options.disabled) return;
+      options.disabled = true; previewButton.disabled = true; drafts.set(key,ids());
+      await request(ctx,"/api/local-datasets/native-agent-preview",{artifact_ids:ids()},status.csrf_token);
+      await reload(ctx);
+    },options); section.append(previewButton);
+    section.append(command(ctx,"clear-native-agent-selection","清除程序示范选择",() => {
+      selected.clear(); for (const checkbox of selectors.values()) checkbox.checked=false; changed();
+    },{type:"secondary"}));
+    section.append(command(ctx,"refresh-native-agent-dataset","刷新程序示范准备状态",() => reload(ctx),{type:"secondary"}));
+    return {section,selectors};
+  }
+
+  async function localSource3DatasetCard(ctx, candidates, detailId = null) {
+    const section = panel("从 Source 3 录制准备训练例子",
+      "选择已验证的原始录制、操作来源声明与数据视图。原件及混合来源保留；声明不证明 Human 起源。预览、保存训练用途和开始训练分别需要明确操作，最多选择 256 份。");
+    const key = "local-source3-source-ids";
+    const saved = drafts.get(key);
+    const selected = new Set((Array.isArray(saved) ? saved : detailId ? [detailId] : [])
+      .filter((id, index, ids) => hex(id) && ids.indexOf(id) === index).slice(0, 256));
+    const ids = () => [...selected].sort();
+    const selectors = new Map();
+    const note = el("p", null, "small muted");
+    let previewButton, publishButton, cohort, view, status;
+    let previewOptions = null;
+    let changedSelection = false;
+    const changed = () => {
+      changedSelection = true;
+      drafts.set(key, ids());
+      if (cohort) drafts.set("local-source3-cohort", cohort.value);
+      if (view) drafts.set("local-source3-view", view.value);
+      note.textContent = `已选 ${selected.size} 份原始录制；选择已改变，旧预览不能保存。请明确重新检查。`;
+      if (publishButton) publishButton.disabled = true;
+      if (previewButton) previewButton.disabled = !canPreview();
+      if (previewOptions) previewOptions.disabled = !canPreview();
+      for (const [id, checkbox] of selectors)
+        checkbox.disabled = !selected.has(id) && selected.size >= 256;
+    };
+    for (const item of candidates) {
+      const checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.name = `local-source3-source-${item.artifact_id}`;
+      checkbox.checked = selected.has(item.artifact_id);
+      checkbox.disabled = !checkbox.checked && selected.size >= 256;
+      checkbox.onchange = () => {
+        if (checkbox.checked && selected.size < 256) selected.add(item.artifact_id);
+        else { selected.delete(item.artifact_id); checkbox.checked = false; }
+        changed();
+      };
+      selectors.set(item.artifact_id, checkbox);
+      if (detailId) {
+        const label = el("label", `选择原始录制 · ${item.artifact_id.slice(0, 16)}`, "project-check");
+        label.append(checkbox); section.append(label);
+      }
+    }
+    const canPreview = () => status?.availability === "ready" && !!status.csrf_token
+      && ids().length > 0 && ids().length <= 256 && choicesValid()
+      && status.operation?.status !== "pending" && !needsRecovery();
+    const choicesValid = () => status?.source3_support?.cohorts?.includes(cohort?.value)
+      && status.source3_support.views?.some(item => item.view === view?.value);
+    const needsRecovery = () => ["failed", "interrupted"].includes(status?.operation?.status)
+      && (status.operation.recovery_available === true
+        || status.operation.error_code === "publication_recovery_required");
+    try { status = await request(ctx, "/api/local-datasets/status"); }
+    catch (error) { section.append(el("p", failure(error), "small muted")); return {section, selectors}; }
+    const support = status.source3_support;
+    if (status.schema !== "stpd/local-dataset-operation-v1" || !Array.isArray(support?.cohorts)
+        || !Array.isArray(support?.views) || !support.cohorts.includes(support.default_cohort)
+        || !support.views.some(item => item.view === support.default_view)) {
+      section.append(el("p", "Source 3 数据能力声明暂不可用，不能预览或保存。", "small muted"));
+      return {section, selectors};
+    }
+    const savedCohort = drafts.get("local-source3-cohort"), savedView = drafts.get("local-source3-view");
+    cohort = select(section, "目标标签的操作来源", "local-source3-cohort",
+      support.cohorts.map(value => [value, typeof support.source_labels?.[value] === "string"
+        ? support.source_labels[value] : value]),
+      support.cohorts.includes(savedCohort) ? savedCohort : support.default_cohort);
+    section.append(el("p", "此选项筛选目标标签来源；默认选项不会改判原始记录的来源。", "small muted"));
+    view = select(section, "训练数据视图", "local-source3-view",
+      support.views.map(item => [item.view, item.label || item.view]),
+      support.views.some(item => item.view === savedView) ? savedView : support.default_view);
+    const history = el("p", null, "small muted");
+    const showHistory = () => {
+      const chosen = support.views.find(item => item.view === view.value);
+      history.textContent = `历史范围：${chosen?.history_scope || "未声明"}；资格：${chosen?.qualification || "未声明"}。`;
+    };
+    cohort.onchange = changed;
+    view.onchange = () => { showHistory(); changed(); };
+    showHistory(); section.append(history, note);
+    note.textContent = `已选 ${selected.size} 份原始录制（跨页保留）。`;
+    section.append(command(ctx, "clear-source3-selection", "清除 Source 3 来源选择", () => {
+      selected.clear();
+      for (const checkbox of selectors.values()) checkbox.checked = false;
+      changed();
+    }, {type:"secondary"}));
+    const operation = status.operation || {status:"idle"};
+    const same = () => !changedSelection && choicesValid() && operation.kind === "ordered_source3"
+      && operation.cohort === cohort.value && operation.view === view.value
+      && Array.isArray(operation.artifact_ids) && operation.artifact_ids.length === selected.size
+      && selected.size > 0 && ids().every((id, index) => operation.artifact_ids[index] === id);
+    const verifiedResult = () => same() && operation.sample_type === "ordered_source3"
+      && operation.source_view === view.value && operation.source_kind === cohort.value;
+    if (status.availability !== "ready")
+      section.append(el("p", `Source 3 预览不可用：${status.reason || status.availability}`, "small muted"));
+    if (operation.status === "pending")
+      section.append(el("p", "本机数据集操作正在进行；刷新只读状态，不会重复提交。", "small muted"));
+    if (needsRecovery())
+      section.append(el("p", "上次保存失败或中断，结果尚未确认；先核对原预览，不会自动重试。", "small muted"));
+    if (["failed", "interrupted"].includes(operation.status) && operation.error_code)
+      section.append(el("p", `数据准备状态：${operation.error_code}`, "small muted"));
+    if (operation.status === "preview_ready" && !verifiedResult())
+      section.append(el("p", "共享预览与当前原始录制、来源声明或视图不匹配，不能保存。", "small muted"));
+    if (verifiedResult() && ["preview_ready", "completed"].includes(operation.status)) {
+      section.append(fields([["符合条件的原始操作标签 N", count(operation.accepted_labels)],
+        ["历史范围", operation.history_scope || "未声明"],
+        ["资格", operation.qualification || "未声明"],
+        ["推荐训练配方", operation.recommended_recipe_id || "未声明"]]));
+      section.append(technical({counts:operation.counts, N_coverage:operation.N_coverage,
+        exclusions:operation.exclusions, human_origin_verified:operation.human_origin_verified,
+        split_status:operation.split_status}, "查看来源计数与排除原因"));
+    }
+    const canPublish = () => status.availability === "ready" && !!status.csrf_token
+      && verifiedResult() && hex(operation.preview_id, 32)
+      && (operation.status === "preview_ready" ? operation.can_publish === true
+        : needsRecovery() && operation.recovery_available === true);
+    if (canPublish()) {
+      const options = {primary:true};
+      publishButton = command(ctx, "publish-source3-dataset", needsRecovery()
+        ? "核对上次 Source 3 保存结果" : "确认保存训练用途数据集", async () => {
+        if (!canPublish() || options.disabled) return;
+        options.disabled = true;
+        await request(ctx, "/api/local-datasets/publish", {preview_id:operation.preview_id}, status.csrf_token);
+        await reload(ctx);
+      }, options);
+      section.append(publishButton);
+    }
+    if (operation.status === "preview_ready" && same() && !operation.can_publish)
+      section.append(el("p", `当前预览不能保存：${operation.error_code || "后端未确认训练用途资格"}`, "small muted"));
+    if (operation.status === "completed" && verifiedResult() && hex(operation.result_artifact_id)) {
+      section.append(el("p", "已保存训练用途数据集；尚未开始训练。打开数据集后可独立选择训练任务。", "small muted"));
+      section.append(link("打开 Source 3 训练数据集", route("local-workspace", operation.result_artifact_id)));
+    }
+    previewOptions = {primary:true, disabled:!canPreview()};
+    previewButton = command(ctx, "preview-source3-dataset", "检查所选 Source 3 训练例子", async () => {
+      if (!canPreview() || previewOptions.disabled) return;
+      drafts.set(key, ids()); drafts.set("local-source3-cohort", cohort.value); drafts.set("local-source3-view", view.value);
+      previewOptions.disabled = true;
+      await request(ctx, "/api/local-datasets/source3-preview", {
+        artifact_ids:ids(), cohort:cohort.value, view:view.value,
+      }, status.csrf_token);
+      await reload(ctx);
+    }, previewOptions);
+    section.append(previewButton);
+    section.append(command(ctx, "refresh-source3-dataset-status", "刷新 Source 3 数据准备状态", () => reload(ctx), {type:"secondary"}));
+    return {section, selectors};
   }
 
   async function localHumanDatasetCard(ctx, candidates) {
@@ -4621,8 +5419,11 @@ window.SpireProject = (() => {
           && (memoryRecipePageProfile(memoryModelVariant(value)) === "text-menu-v1"
               || memoryModelVariant(value).profile === "text-menu-v2-confirmed-interaction"))
         box.append(await localMemoryEvaluationCard(ctx, value));
-      if (supportsLocalModelExport(value)) {
-        const exportCard = await localModelExportCard(ctx, value);
+      if (value.kind === "model") {
+        const support = await localModelSupport(ctx, value);
+        if (!live(ctx)) return box;
+        const exportCard = support ? await localModelExportCard(ctx, value, support)
+          : panel("模型使用暂不可用", "本机服务尚未确认此模型支持的导出方式。请核对模型来源和资料空间后刷新；未加载模型。" );
         if (live(ctx)) box.append(exportCard);
       }
       if (value.kind === "offline_evaluation")
@@ -4630,6 +5431,17 @@ window.SpireProject = (() => {
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
           && value.parameters?.purpose === "training")
         box.append(await localTrainingCard(ctx, value));
+      if (value.kind === "dataset" && ["stpd/structured-sequence-source-v1",
+          "stpd/source3-ordered-native-training-source-v1",
+          "stpd/native-agent-sampled-training-source-v1"].includes(value.parameters?.schema))
+        box.append(await localTrainingCard(ctx, value));
+      if (value.kind === "evidence" && value.parameters?.schema === "stpd/source3-original-bundle-v1") {
+        box.append(el("p", `录制原始来源声明：${(value.parameters.source_kinds || []).join(" · ")}。声明不验证 Human 起源；导入本身没有训练用途。`, "small muted"));
+        box.append((await localSource3DatasetCard(ctx, [value], value.artifact_id)).section);
+      }
+      if (value.kind === "evidence"
+          && value.parameters?.schema === "stpd/native-agent-sampled-original-bundle-v1")
+        box.append((await localNativeAgentDatasetCard(ctx, [value], value.artifact_id)).section);
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/human-text-input-source-v1") {
         const bindingCard = panel("操作标签训练入口", "只在本机用途账本明确登记此来源用于训练后显示训练入口；操作标签不补成完整决策。");
         let binding = null;
@@ -4698,7 +5510,9 @@ window.SpireProject = (() => {
     }
 
     const importStatus = await request(ctx, "/api/local-recordings/import/status");
+    box.append(await nativeRecordingCard(ctx));
     box.append(localRecordingCard(ctx, importStatus));
+    box.append(nativeAgentImportCard(ctx, importStatus));
 
     const query = drafts.get("local-workspace-search") || "";
     const selectedKind = drafts.get("local-workspace-kind") || "";
@@ -4780,6 +5594,14 @@ window.SpireProject = (() => {
     const hasSavedHumanSelection = Array.isArray(savedHumanSelection) && savedHumanSelection.some(id => hex(id));
     const humanDataset = humanSources.length || hasSavedHumanSelection
       ? await localHumanDatasetCard(ctx, humanSources) : null;
+    const source3Sources = (data.items || []).filter(item => item?.kind === "evidence"
+      && item.parameters?.schema === "stpd/source3-original-bundle-v1" && hex(item.artifact_id));
+    const source3Dataset = source3Sources.length || (drafts.get("local-source3-source-ids") || []).length
+      ? await localSource3DatasetCard(ctx, source3Sources) : null;
+    const nativeSources = (data.items || []).filter(item => item?.kind === "evidence"
+      && item.parameters?.schema === "stpd/native-agent-sampled-original-bundle-v1" && hex(item.artifact_id));
+    const nativeDataset = nativeSources.length || (drafts.get("local-native-agent-source-ids") || []).length
+      ? await localNativeAgentDatasetCard(ctx, nativeSources) : null;
     const rows = [];
     for (const item of data.items || []) {
       const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
@@ -4794,11 +5616,17 @@ window.SpireProject = (() => {
         item.registry_indexed ? (item.registry_cached ? "索引已标记缓存" : "本机索引") : "尚未进入索引",
         technical(item, "查看 metadata 与 payload 摘要"),
         ...(humanDataset ? [selectionCell] : []),
+        ...(source3Dataset ? [source3Dataset.selectors.get(item.artifact_id) || "—"] : []),
+        ...(nativeDataset ? [nativeDataset.selectors.get(item.artifact_id) || "—"] : []),
       ]);
     }
     box.append(table(["本机资料", "内容文件", "本机索引", "来源信息",
-      ...(humanDataset ? ["加入操作标签集"] : [])], rows));
+      ...(humanDataset ? ["加入操作标签集"] : []),
+      ...(source3Dataset ? ["加入 Source 3 预览"] : []),
+      ...(nativeDataset ? ["加入程序示范预览"] : [])], rows));
     if (humanDataset) box.append(humanDataset.section);
+    if (source3Dataset) box.append(source3Dataset.section);
+    if (nativeDataset) box.append(nativeDataset.section);
     if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
     const pagerBox = el("div", null, "project-actions");
     if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {

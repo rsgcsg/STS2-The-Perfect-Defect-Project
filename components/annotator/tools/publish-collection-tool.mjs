@@ -8,6 +8,16 @@ import { fileURLToPath } from "node:url";
 import { componentGitState } from "../../../tools/component-git.mjs";
 import { sourceSetIdentity, sourceSetMatches } from "../../../apps/game-mod/source-identity.mjs";
 
+// Authenticated release capability, not an inference from a working CLI.
+export const sourceV3Support = Object.freeze({
+  schema: "sts2.evidence/source3-collection-support-1",
+  command: "pack-source-v3",
+  recording_schema: "sts2.annotator/source-session-manifest-3",
+  source_profile: "native-logical-source-v3",
+  bundle_schema: "sts2.annotator/source-session-bundle-3",
+  type_id: "source-session-bundle-v3"
+});
+
 export const setupFiles = [
   "apps/game-mod/collection-setup.mjs",
   "apps/game-mod/annotator-configuration.mjs",
@@ -59,6 +69,23 @@ export function inventory(directory) {
   return files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 
+export function collectionIdentity(state, files, modProvenance) {
+  return {
+    product: "STS2 Platform Collection Tool", version: 1, worktree: "clean",
+    workspace_revision: state.workspaceRevision,
+    source_revision: state.componentSourceRevision,
+    component_tree_revision: state.componentTreeRevision,
+    entrypoint: "sts2-human-annotator.dll",
+    supported_recording_schema: "sts2.human-annotator/recording-manifest-2",
+    output_schema: "sts2.human-annotator/session-bundle-3",
+    source_v3_support: sourceV3Support,
+    interrupted_recovery_schema: "sts2.human-annotator/interrupted-recovery-1",
+    collection_setup_entrypoint: "setup/apps/game-mod/collection-setup.mjs",
+    ...(modProvenance ? { collection_setup_provenance: "game-mod/build-provenance.json" } : {}),
+    files
+  };
+}
+
 export function publishCollectionTool(componentRoot, output, { dotnet = "dotnet", modProvenance } = {}) {
   const state = componentGitState(componentRoot);
   if (state.workspaceWorktreeStatus !== "clean")
@@ -76,19 +103,7 @@ export function publishCollectionTool(componentRoot, output, { dotnet = "dotnet"
     if (componentGitState(componentRoot).workspaceWorktreeStatus !== "clean"
         || componentGitState(componentRoot).workspaceRevision !== state.workspaceRevision)
       throw new Error("Source identity changed during collection tool publication");
-    const identity = {
-      product: "STS2 Platform Collection Tool", version: 1, worktree: "clean",
-      workspace_revision: state.workspaceRevision,
-      source_revision: state.componentSourceRevision,
-      component_tree_revision: state.componentTreeRevision,
-      entrypoint: "sts2-human-annotator.dll",
-      supported_recording_schema: "sts2.human-annotator/recording-manifest-2",
-      output_schema: "sts2.human-annotator/session-bundle-3",
-      interrupted_recovery_schema: "sts2.human-annotator/interrupted-recovery-1",
-      collection_setup_entrypoint: "setup/apps/game-mod/collection-setup.mjs",
-      ...(modProvenance ? { collection_setup_provenance: "game-mod/build-provenance.json" } : {}),
-      files: inventory(staging)
-    };
+    const identity = collectionIdentity(state, inventory(staging), modProvenance);
     const release_id = crypto.createHash("sha256").update(canonical(identity)).digest("hex");
     fs.writeFileSync(path.join(staging, "collection-tool.json"),
       `${canonical({ schema: "sts2.evidence/collection-tool-1", release_id, identity })}\n`);

@@ -561,14 +561,14 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
         }
     }
 
-    private static bool IsHolderClickable(NCardHolder holder) =>
+    internal static bool IsHolderClickable(NCardHolder holder) =>
         ClickableField?.GetValue(holder) is true;
 
     private static bool IsCurrent(NCardRewardSelectionScreen screen) =>
         ActiveInputResolver.IsVisibleActiveOverlay(screen)
         && ReferenceEquals(NOverlayStack.Instance?.Peek(), screen);
 
-    private static string? ReadAlternativeLabel(NCardRewardAlternativeButton button)
+    internal static string? ReadAlternativeLabel(NCardRewardAlternativeButton button)
     {
         try
         {

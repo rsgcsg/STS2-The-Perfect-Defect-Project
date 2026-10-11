@@ -1,0 +1,139 @@
+{
+  "schema": "sts2.native-logical.owned-current-conformance-1",
+  "scope": "synthetic_source_test_only",
+  "profile": "native-logical-v1",
+  "supported_method": "current_owned",
+  "implemented_mechanism": "native_current_reader_owned_v1",
+  "request": {
+    "client_session_id": "client-fixture",
+    "eager_scope": [
+      "persistent",
+      "interaction",
+      "referents",
+      "catalog"
+    ],
+    "expected_snapshot_id": null
+  },
+  "reply": {
+    "schema": "sts2.player-environment/native-logical-current-1",
+    "input_profile": "native-logical-v1",
+    "status": "captured",
+    "context": {
+      "schema": "sts2.player-environment/native-logical-context-1",
+      "input_profile": "native-logical-v1",
+      "observation_ref": "snapshot-fixture",
+      "capture_ref": "capture-fixture",
+      "game_continuity_id": null,
+      "stream_generation": "stream-fixture",
+      "publication_cursor": null
+    },
+    "capture": {
+      "schema": "sts2.player-environment/native-logical-capture-1",
+      "capture_id": "capture-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "input_profile": "native-logical-v1",
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "scope_id": "scope-fixture",
+      "capture_ordinal": "1",
+      "captured_at": "1970-01-01T00:00:00+00:00",
+      "expires_at": "1970-01-01T00:02:00+00:00",
+      "byte_count": 1519,
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "read_cursor": "opaque-read-fixture"
+    },
+    "retention": {
+      "retention_handle_id": "retention-fixture",
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1519,
+        "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+        "read_cursor": "opaque-read-fixture"
+      },
+      "read_cursor": "opaque-fresh-retained-read-fixture",
+      "expires_at": "1970-01-01T00:03:00+00:00"
+    },
+    "reason": null
+  },
+  "legacy_reply": {
+    "schema": "sts2.player-environment/native-logical-current-1",
+    "input_profile": "native-logical-v1",
+    "status": "captured",
+    "context": {
+      "schema": "sts2.player-environment/native-logical-context-1",
+      "input_profile": "native-logical-v1",
+      "observation_ref": "snapshot-fixture",
+      "capture_ref": "capture-fixture",
+      "game_continuity_id": null,
+      "stream_generation": "stream-fixture",
+      "publication_cursor": null
+    },
+    "capture": {
+      "schema": "sts2.player-environment/native-logical-capture-1",
+      "capture_id": "capture-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "input_profile": "native-logical-v1",
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "scope_id": "scope-fixture",
+      "capture_ordinal": "1",
+      "captured_at": "1970-01-01T00:00:00+00:00",
+      "expires_at": "1970-01-01T00:02:00+00:00",
+      "byte_count": 1519,
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "read_cursor": "opaque-read-fixture"
+    },
+    "retention": null,
+    "reason": null
+  },
+  "failure_reply": {
+    "schema": "sts2.player-environment/native-logical-current-1",
+    "input_profile": "native-logical-v1",
+    "status": "source_capture_incomplete",
+    "context": null,
+    "capture": null,
+    "retention": null,
+    "reason": "source_capture_incomplete"
+  },
+  "ownership": {
+    "initial_pin": "atomic_transfer_to_original_reader",
+    "reader_expiry_ms": 120000,
+    "legacy_initial_pin_ms": 120000,
+    "public_release": "original_client_owned_handle_only",
+    "extra_retain": false,
+    "response_sidecar": "NativeLogicalOwnedCurrentReply",
+    "reply_transfer": "takeRetention",
+    "assembly_input": "readerLease",
+    "runtime_transfer": "transferRetention"
+  },
+  "sdk_dispatch_binding_fields": [
+    "runtime_instance_id",
+    "client_session_id",
+    "controller_lease_id",
+    "controller_generation"
+  ],
+  "non_claims": [
+    "native_legality",
+    "source_history",
+    "runtime_health",
+    "installed_qualification"
+  ]
+}

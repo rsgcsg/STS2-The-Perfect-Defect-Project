@@ -8,6 +8,23 @@ from .json_boundary import BoundaryError, decode_json
 JSON_LIMIT = 1024 * 1024
 
 
+def require_policy_decision_evidence_protocol(
+    protocol: str, *, stage: str, code: str,
+) -> None:
+    """Require the installed reader's explicit immutable protocol capability.
+
+    This is a model-neutral Evidence fact. Caller-owned error names remain at
+    their existing API boundary; no version guess or source fallback is used.
+    """
+    try:
+        import sts2_platform_evidence
+    except ImportError as error:
+        raise BoundaryError(stage, code) from error
+    protocols = getattr(sts2_platform_evidence, "SUPPORTED_POLICY_DECISION_PROTOCOLS", None)
+    if not isinstance(protocols, tuple) or protocol not in protocols:
+        raise BoundaryError(stage, code)
+
+
 def _object_file(path: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > JSON_LIMIT:
         raise BoundaryError("local_model", "metadata_missing_or_unsafe")

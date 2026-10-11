@@ -16,6 +16,7 @@ from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
 from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
 from stpd.stage1a_recipes import RECIPES
+from stpd.structured_code_scope import is_structured_model_schema
 from stpd.workers.report_schemas import (
     MEMORY_EVALUATION_PROTOCOL as MEMORY_PROTOCOL,
 )
@@ -220,10 +221,94 @@ def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any
     return result
 
 
+def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
+    from stpd.ordered_source_spec import (
+        EVALUATION_INPUT_SCHEMA,
+        EVALUATION_REPORT_SCHEMA,
+        MODEL_SCHEMA,
+    )
+
+    info = manifest.parameters.value()
+    ordered = info["schema"] == EVALUATION_REPORT_SCHEMA
+    request = object_fields(info.get("request"),
+        {"source_id", "model_id", "operation_id", "partition", "intent"},
+        "local_evaluation.structured_request")
+    if (sorted(parent.role for parent in manifest.parents)
+            != ["evaluation_input", "model", "source"]
+            or [payload.role for payload in manifest.payloads] != ["report"]
+            or request["partition"] not in {"dev", "test"}
+            or request["intent"] != "fixed_model_descriptive"
+            or manifest.parent("source") != request["source_id"]
+            or manifest.parent("model") != request["model_id"]
+            or info.get("optimizer_updates") != 0
+            or info.get("qualification") != "engineering_descriptive"
+            or info.get("scientific_verdict") != "not_claimed"):
+        raise BoundaryError("local_evaluation", "invalid_structured_report")
+    model = store.get_manifest(manifest.parent("model"))
+    prepared = store.get_manifest(manifest.parent("evaluation_input"))
+    if (model.kind != "model"
+            or (model.parameters.value().get("schema") != MODEL_SCHEMA if ordered else
+                not is_structured_model_schema(model.parameters.value().get("schema")))
+            or prepared.kind != "analysis"
+            or prepared.parameters.value().get("schema")
+            != (EVALUATION_INPUT_SCHEMA if ordered else
+                "stpd/structured-fixed-model-evaluation-input-v1")
+            or prepared.parameters.value().get("request") != request
+            or prepared.parent("source") != request["source_id"]
+            or prepared.parent("model") != request["model_id"]
+            or prepared.producer != manifest.producer):
+        raise BoundaryError("local_evaluation", "invalid_structured_report")
+    recorded = _payload(store, manifest, "report", 128 * 1024 * 1024)
+    _finite(recorded)
+    if (not isinstance(recorded, dict) or recorded.get("request") != request
+            or recorded.get("evaluation_input_id") != prepared.artifact_id
+            or recorded.get("summary") != info.get("summary")
+            or recorded.get("optimizer_updates") != 0
+            or recorded.get("qualification") != "engineering_descriptive"
+            or recorded.get("model_artifact_id") != model.artifact_id
+            or recorded.get("source_id") != request["source_id"]
+            or recorded.get("package_model_id") != model.parameters.value().get("model_id")
+            or recorded.get("package_manifest_sha256") != model.payload("package_manifest").sha256
+            or recorded.get("weights_sha256") != model.payload("weights").sha256
+            or not isinstance(recorded.get("rows"), list)
+            or len(recorded["rows"]) != info.get("rows")):
+        raise BoundaryError("local_evaluation", "invalid_structured_report")
+    for row in recorded["rows"]:
+        if (not isinstance(row, dict) or type(row.get("candidate_count")) is not int
+                or row["candidate_count"] < 0 or not isinstance(row.get("scores"), list)
+                or len(row["scores"]) != row["candidate_count"]
+                or any(type(score) not in {int, float} for score in row["scores"])
+                or (row.get("label_index") is not None and
+                    (type(row["label_index"]) is not int or
+                     not 0 <= row["label_index"] < row["candidate_count"]))):
+            raise BoundaryError("local_evaluation", "invalid_structured_report")
+    metrics = recorded["summary"]
+    if (not isinstance(metrics, dict) or metrics.get("observations") != info["rows"]
+            or type(metrics.get("labels")) is not int
+            or metrics["labels"] != info.get("known_label_denominator")
+            or sum(row.get("label_index") is not None for row in recorded["rows"])
+            != metrics["labels"]):
+        raise BoundaryError("local_evaluation", "invalid_structured_report")
+    return {"schema": SCHEMA, "validation_scope": SCOPE,
+            "evaluation_id": manifest.artifact_id, "evaluation_schema": info["schema"],
+            "model_id": model.artifact_id, "evaluation_input_id": prepared.artifact_id,
+            "source_id": request["source_id"], "partition": request["partition"],
+            "qualification": "engineering_descriptive", "scientific_verdict": "not_claimed",
+            "decision_count": metrics["labels"], "observation_count": metrics["observations"],
+            "overall": metrics, "optimizer_updates": 0,
+            "source_group_overlap_check": "caller_owned_before_invocation",
+            "model_selection_exposure": "unknown_caller_owned",
+            "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification"}
+
+
 def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
     """Open one recorded report; full typed revalidation remains a separate owner path."""
     manifest = store.get_manifest(digest(evaluation_id, "local_evaluation.artifact_id"))
     schema = manifest.parameters.value().get("schema")
+    if (manifest.kind == "offline_evaluation" and
+            schema in {"stpd/structured-fixed-model-evaluation-report-v1",
+                       "stpd/source3-fixed-native-evaluation-report-v1"}):
+        return _structured_summary(store, manifest)
     if manifest.kind != "offline_evaluation" or schema not in {
         FULLRUN_SCHEMA, TOKEN_SCHEMA, MEMORY_SCHEMA,
     }:

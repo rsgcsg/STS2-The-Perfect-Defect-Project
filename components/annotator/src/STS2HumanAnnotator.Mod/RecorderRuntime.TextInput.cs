@@ -64,7 +64,7 @@ internal static partial class RecorderRuntime
             HumanTextCardScope scope;
             lock (Gate)
             {
-                if (!_initialized || _lifecycle.State != RecordingLifecycleState.Recording
+                if (IsSourceRecording || !_initialized || _lifecycle.State != RecordingLifecycleState.Recording
                     || _store == null || !_humanTextInputHealthy
                     || SessionId == null || TimelineId == null)
                     return null;

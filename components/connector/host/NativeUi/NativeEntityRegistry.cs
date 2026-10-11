@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Threading;
 using STS2Platform.NativeFoundation;
 
@@ -14,7 +15,9 @@ internal sealed class NativeEntityRegistry : INativeReferentIdentity
     private const int PruneBatchSize = 512;
     private sealed record Identity(string Value);
 
-    private readonly string _sessionPrefix = Guid.NewGuid().ToString("N")[..8];
+    private const int AliasEntropyBytes = 24;
+    private readonly Func<byte[]> _aliasEntropy;
+    private readonly object _identityGate = new();
     private readonly ConditionalWeakTable<object, Identity> _identities = new();
     private readonly ConcurrentDictionary<string, WeakReference<object>> _entities =
         new(StringComparer.Ordinal);
@@ -23,22 +26,42 @@ internal sealed class NativeEntityRegistry : INativeReferentIdentity
     private long _lastPrunedIdentity;
     private long _nextIdentity;
 
+    public NativeEntityRegistry() : this(() => RandomNumberGenerator.GetBytes(AliasEntropyBytes)) { }
+
+    // Deterministic entropy injection is for contract tests only; production
+    // always uses the cryptographic constructor above.
+    internal NativeEntityRegistry(Func<byte[]> aliasEntropy) =>
+        _aliasEntropy = aliasEntropy ?? throw new ArgumentNullException(nameof(aliasEntropy));
+
     public string GetId(object entity, string kind)
     {
-        Identity identity = _identities.GetValue(entity, _ =>
+        Identity identity;
+        lock (_identityGate)
         {
-            long sequence = Interlocked.Increment(ref _nextIdentity);
-            Identity identity = new($"{kind}_{_sessionPrefix}_{sequence:x}");
-            _pruneCandidates.Enqueue(identity.Value);
-            return identity;
-        });
-        _entities[identity.Value] = new WeakReference<object>(entity);
+            identity = _identities.GetValue(entity, _ =>
+            {
+                // No native enumeration, allocation counter, session sequence,
+                // object hash or hidden order contributes to a public alias.
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    byte[] entropy = _aliasEntropy();
+                    if (entropy.Length != AliasEntropyBytes)
+                        throw new InvalidOperationException("Native identity requires 192 bits of entropy.");
+                    Identity created = new($"{kind}_{Convert.ToHexString(entropy).ToLowerInvariant()}");
+                    if (!_entities.TryAdd(created.Value, new WeakReference<object>(entity))) continue;
+                    Interlocked.Increment(ref _nextIdentity);
+                    _pruneCandidates.Enqueue(created.Value);
+                    return created;
+                }
+                throw new InvalidOperationException("Native identity entropy repeated; no alias was assigned.");
+            });
+        }
         PruneIfNeeded();
         return identity.Value;
     }
 
     // Diagnostic observation only: never allocate a referent or advance the
-    // public identity sequence. An existing ID does not prove a prior Snapshot.
+    // public alias. An existing ID does not prove a prior Snapshot.
     internal bool TryGetExistingId(object entity, out string? id)
     {
         if (_identities.TryGetValue(entity, out Identity? identity))

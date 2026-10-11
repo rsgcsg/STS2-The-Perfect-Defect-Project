@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
 import shutil
+import stat
+import sys
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -16,6 +20,46 @@ from typing import Any
 from .store import ContentAddressedStore
 
 PromotionVerifier = Callable[[Path, "DirectoryTransferManifest"], None]
+
+
+def _promote_directory_no_replace(source: Path, destination: Path) -> None:
+    """One closed OS publication seam; unsupported primitives never fall back.
+
+    macOS RENAME_EXCL=0x4; Linux RENAME_NOREPLACE=1; Windows rename refuses
+    any existing destination. Both paths are owner-created same-filesystem dirs.
+    """
+    if sys.platform == "win32":
+        os.rename(source, destination)
+        return
+    if sys.platform not in {"darwin", "linux"}:
+        raise OSError(errno.ENOTSUP, "exclusive directory promotion unavailable")
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            function = library.renamex_np
+            function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            function.restype = ctypes.c_int
+            result = function(os.fsencode(source), os.fsencode(destination), 0x4)
+        else:
+            function = library.renameat2
+            function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                                 ctypes.c_char_p, ctypes.c_uint]
+            function.restype = ctypes.c_int
+            result = function(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    except AttributeError as error:
+        raise OSError(errno.ENOTSUP, "exclusive directory promotion symbol unavailable") from error
+    if result != 0:
+        code = ctypes.get_errno() or errno.EIO
+        raise OSError(code, os.strerror(code), destination)
+
+
+def _regular_directory(directory: Path) -> os.stat_result:
+    value = directory.lstat()
+    if (stat.S_ISLNK(value.st_mode)
+            or getattr(value, "st_file_attributes", 0) & 0x400
+            or not stat.S_ISDIR(value.st_mode)):
+        raise ValueError("destination is not a regular directory")
+    return value
 
 
 @dataclass(frozen=True)
@@ -158,46 +202,36 @@ class DirectoryReceiver:
             )
 
         destination = self.store.objects / transfer.content_id
-        if destination.exists():
-            try:
-                if _inventory(destination) != _inventory(source_path):
-                    quarantine = self._quarantine(source_path, "content-collision")
-                    return TransferReceipt(
-                        "collision",
-                        transfer.content_id,
-                        transfer.artifact_type,
-                        transfer.manifest_sha256,
-                        None,
-                        quarantine,
-                        ("existing content ID has different bytes",),
-                    )
-                self._verify_artifact(destination, transfer)
-            except (OSError, ValueError) as error:
-                quarantine = self._quarantine(source_path, "duplicate-integrity")
-                return TransferReceipt(
-                    "quarantined",
-                    transfer.content_id,
-                    transfer.artifact_type,
-                    transfer.manifest_sha256,
-                    None,
-                    quarantine,
-                    (str(error),),
-                )
-            return TransferReceipt(
-                "reused",
-                transfer.content_id,
-                transfer.artifact_type,
-                transfer.manifest_sha256,
-                destination,
-                None,
-            )
+        try:
+            _regular_directory(self.store.objects)
+        except (OSError, ValueError) as error:
+            return TransferReceipt("quarantined", transfer.content_id, transfer.artifact_type,
+                                   transfer.manifest_sha256, None,
+                                   self._quarantine(source_path, "destination-invalid"), (str(error),))
+        try:
+            destination.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            return TransferReceipt("quarantined", transfer.content_id, transfer.artifact_type,
+                                   transfer.manifest_sha256, None,
+                                   self._quarantine(source_path, "destination-invalid"), (str(error),))
+        else:
+            return self._existing_destination(source_path, destination, transfer)
 
         staging = Path(tempfile.mkdtemp(prefix=f".{transfer.content_id}.", dir=self.store.objects))
         try:
             _copy_directory(source_path, staging)
             self._validate_source(staging, transfer)
             self._verify_artifact(staging, transfer)
-            os.replace(staging, destination)
+            self._validate_source(staging, transfer)
+            _regular_directory(self.store.objects)
+            try:
+                _promote_directory_no_replace(staging, destination)
+            except FileExistsError:
+                result = self._existing_destination(source_path, destination, transfer)
+                shutil.rmtree(staging, ignore_errors=True)
+                return result
         except (OSError, TypeError, ValueError) as error:
             shutil.rmtree(staging, ignore_errors=True)
             quarantine = self._quarantine(source_path, "promote-failed")
@@ -219,20 +253,42 @@ class DirectoryReceiver:
             None,
         )
 
+    def _existing_destination(
+        self, source: Path, destination: Path, manifest: DirectoryTransferManifest,
+    ) -> TransferReceipt:
+        # EEXIST is not proof of idempotency. Verify the actual same immutable
+        # object, including its type, exact inventory and typed artifact facts.
+        try:
+            before = _regular_directory(destination)
+            self._validate_source(destination, manifest)
+        except (OSError, ValueError) as error:
+            return TransferReceipt("collision", manifest.content_id, manifest.artifact_type,
+                                   manifest.manifest_sha256, None,
+                                   self._quarantine(source, "content-collision"), (str(error),))
+        try:
+            self._verify_artifact(destination, manifest)
+            after = _regular_directory(destination)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise ValueError("existing object changed during typed verification")
+            self._validate_source(destination, manifest)
+        except (OSError, ValueError) as error:
+            return TransferReceipt("quarantined", manifest.content_id, manifest.artifact_type,
+                                   manifest.manifest_sha256, None,
+                                   self._quarantine(source, "duplicate-integrity"), (str(error),))
+        return TransferReceipt("reused", manifest.content_id, manifest.artifact_type,
+                               manifest.manifest_sha256, destination, None)
+
     def _verify_artifact(self, directory: Path, manifest: DirectoryTransferManifest) -> None:
         if self.promotion_verifier is not None:
             self.promotion_verifier(directory, manifest)
 
     def _validate_source(self, source: Path, manifest: DirectoryTransferManifest) -> None:
-        if not source.is_dir():
-            raise ValueError("transfer source directory is absent")
-        actual = {path.relative_to(source).as_posix(): path for path in source.rglob("*") if path.is_file()}
+        actual = {relative: (size, digest) for relative, size, digest in _inventory(source)}
         expected = {item.path: item for item in manifest.files}
         if set(actual) != set(expected):
             raise ValueError("transfer is partial or has unexpected files")
         for relative, item in expected.items():
-            path = actual[relative]
-            if path.stat().st_size != item.bytes or _sha256_file(path) != item.sha256:
+            if actual[relative] != (item.bytes, item.sha256):
                 raise ValueError(f"transfer checksum mismatch: {relative}")
 
     def _quarantine(self, source: Path, reason: str) -> Path | None:
@@ -248,26 +304,35 @@ class DirectoryReceiver:
 
 
 def _inventory(directory: Path) -> list[tuple[str, int, str]]:
-    if not directory.is_dir():
-        raise ValueError("directory is absent")
+    _regular_directory(directory)
     result: list[tuple[str, int, str]] = []
     for path in sorted(directory.rglob("*")):
-        if path.is_symlink():
-            raise ValueError("symbolic links are not allowed")
-        if path.is_file():
-            result.append((path.relative_to(directory).as_posix(), path.stat().st_size, _sha256_file(path)))
+        value = _regular_entry(path)
+        if stat.S_ISREG(value.st_mode):
+            result.append((path.relative_to(directory).as_posix(), value.st_size, _sha256_file(path)))
     return result
 
 
+def _regular_entry(path: Path) -> os.stat_result:
+    value = path.lstat()
+    if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+        raise ValueError("symbolic links or reparse points are not allowed")
+    if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+        raise ValueError("only regular directories and files are allowed")
+    if stat.S_ISREG(value.st_mode) and value.st_nlink != 1:
+        raise ValueError("hard-link aliases are not allowed")
+    return value
+
+
 def _copy_directory(source: Path, destination: Path) -> None:
+    _regular_directory(source)
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
         target = destination / relative
-        if path.is_symlink():
-            raise ValueError("symbolic links are not allowed")
-        if path.is_dir():
+        value = _regular_entry(path)
+        if stat.S_ISDIR(value.st_mode):
             target.mkdir(parents=True, exist_ok=True)
-        elif path.is_file():
+        elif stat.S_ISREG(value.st_mode):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
 

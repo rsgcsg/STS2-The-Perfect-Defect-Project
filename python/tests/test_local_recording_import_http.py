@@ -11,6 +11,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 import pytest
 
+from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.developer import ProjectConfig, atomic_json, combination
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
 
@@ -28,8 +29,13 @@ def test_local_import_http_requires_browser_proof_and_explicit_attestation(
         "instance_id": app.instance_id, "configuration_id": configuration_id(config),
     })
     calls = []
-    monkeypatch.setattr(app.local_recording_import, "start", lambda candidate, attested:
-                        calls.append((candidate, attested)) or {"status": "pending"})
+    def legacy_start(candidate, attested):
+        # Format dispatch now belongs to the import owner; this fixture is legacy Human.
+        if attested is not True:
+            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+        calls.append((candidate, attested))
+        return {"status": "pending"}
+    monkeypatch.setattr(app.local_recording_import, "start", legacy_start)
     monkeypatch.setattr(app.account, "status", lambda: pytest.fail("cloud login not required"))
     server = create_server(app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -64,7 +70,7 @@ def test_local_import_http_requires_browser_proof_and_explicit_attestation(
         assert post(valid, origin="http://localhost:1")[0] == 403
         assert post(valid, csrf="wrong")[0] == 403
         assert post(valid, host=f"localhost:{server.server_port}")[0] == 403
-        assert post({"candidate_id": "a" * 64})[0] == 400
+        assert post({"candidate_id": "a" * 64})[0] == 409
         assert post({**valid, "human_origin_attested": False})[0] == 409
         assert post({**valid, "path": "/private/raw"})[0] == 400
         assert calls == []

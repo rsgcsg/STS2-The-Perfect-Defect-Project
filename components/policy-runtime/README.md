@@ -5,6 +5,36 @@ lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
 
+An explicit `sts2.policy-runtime/agent-manifest-1` selects the additive
+`native-logical-v1` Agent branch through the same `--manifest` CLI and HTTP service.
+It uses the actual Connector SDK, atomic Attach/source Events, complete catalog
+assembly or declared scoped queries, strict consume/acknowledgement watermarks,
+and the shared controller/epoch/budget/Stop owner. It does not reuse text-menu
+candidate indices. See the [Agent session contract](docs/AGENT_SESSION_PROTOCOL.md)
+for current implementation limits, exact pending-request reconciliation and
+source/test evidence boundaries.
+
+A sampled-current Agent may explicitly select the closed `execution_policy`
+in the Agent session contract. This enables `current_owned` reader lifetimes and
+bounded new decisions after the exact `not_started / stale_snapshot_or_binding`
+result. An unchanged NativeUnit only waits; a new decision requires a changed
+unit, an advanced ConsumeACK, and a completed Next in the same accepted prefix.
+The original request/action/basis is never replayed. Unknown/partial delivery,
+source loss, Human/Stop, controller or budget loss still ends the path.
+
+The native port is exported from the package main entry. Pass the validated
+manifest policy explicitly; omission keeps the legacy five-field Next grammar.
+
+```ts
+import { NdjsonAgentSessionPort } from "@rsgcsg/sts2-policy-runtime";
+
+const port = new NdjsonAgentSessionPort(
+  child, manifest.adapter, manifest.limits, undefined, manifest.execution_policy
+);
+// Or: NdjsonAgentSessionPort.spawn(command, args, manifest.adapter,
+//   manifest.limits, { executionPolicy: manifest.execution_policy });
+```
+
 The Connector supplies one complete ordered `BoundAction` catalog. A policy
 adapter receives that exact Snapshot and Read bundle, echoes the catalog digest,
 returns one score per candidate and an optional selected index, and never returns
@@ -32,6 +62,23 @@ Three consecutive stale submissions hand back to Human; an applied text menu
 navigation or native delivery resets that count. Other unapplied results,
 unknown delivery, evidence or release failure, and cancellation do not continue
 Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
+
+For generic Snapshot1 and the existing retryable text-menu-v2 path, the first
+and second consecutive, correlated known stale non-deliveries release control
+and schedule monotonic 250 ms and 500 ms cooldowns before the next observation.
+A tick before eligibility returns the existing `not_admitted` shape with reason
+`stale_submission_cooldown`; it makes no capability, observation, policy or
+submission call and consumes no additional call/submission budget. Equality at
+cooldown eligibility permits a fresh complete bundle, new decision/request identities
+and fresh scoring. The existing server tick loop drives this without a sleep
+inside the serialized owner or an additional timer.
+
+Stop, Human recovery and finite authorization expiry retain priority. A late
+result from an old recovery epoch cannot arm a cooldown; a new authorized Auto,
+delivery, Stop or Human handoff clears it. The three-stale ceiling, receipt
+correlation, explicit retry admission and evidence/release failure behavior
+remain unchanged. This is operational backpressure, not a readiness or effect
+settlement proof. The separately declared native Agent 8/3 policy is unchanged.
 
 Before observation, each Connector Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
@@ -90,6 +137,42 @@ causal successor association, and it does not expand the policy's supported
 interactions. A failed event write triggers the existing fail-closed handoff.
 
 ## Stateful observation port (opt-in)
+
+The separate `sts2.policy-runtime/decision-only-ndjson-4` profile consumes only
+generic `sts2.player-environment/snapshot-1` with zero Reads and an explicit
+`adapter_config.public_stateful_profile` of
+`sts2.policy-runtime/public-observation-stateful-v1`. It uses the same Runtime,
+NDJSON child transport, controller, finite authorization, Stop and submission
+owners. It does not convert a public Snapshot into text-menu or native-logical
+input, and the complete ordered Connector catalog remains unchanged.
+
+Port4 sends the ordinary five-field decision input under `decision`, with a
+separate `control`: `continuity_token`, `episode_scope`, `episode_id`,
+`segment_id`, `observation_ordinal` and nullable `previous_action`. Snapshot1
+has no atomic game continuity identity, so this implementation explicitly uses
+`bounded_policy_segment`. An accepted new Snapshot watermark advances the
+ordinal once; an unchanged full body/catalog at the same watermark retains it,
+excluding only `observed_at`. Changed same-watermark content or a regressing
+sequence fails closed. Human, a mode change, Stop, budget handoff and an offered
+request without trustworthy completion end that segment. New segments start at
+ordinal1 with fresh identities and empty history; these identities do not prove
+one native game episode.
+
+The output still contains only the original candidate digest, full-length scores
+and optional selected index. Completion echoes the token, episode/segment,
+ordinal, Snapshot ID/sequence and nullable `previous_action_request_id`. The
+existing transport checks exact request/schema/completion and cancellation
+before accepting scores. An optional previous action is control only: it joins
+one durably written delivered Receipt and the Runtime's qualified observed
+successor. It is consumed once at offer and never becomes an inferred Model
+action/feedback channel or causal Human evidence.
+
+Port4 requires the existing Evidence writer. It records `public_decision_input`
+with the exact Snapshot, active mode, control and validated completion immediately
+before the ordinary decision. The matching typed Evidence reader verifies full
+catalog/order, segment/ordinal/cache consistency and known history joins; old
+v1–v3 and Agent-session readers retain their semantics. Source support does not
+update an installed package or qualify a model, native journey or strategy.
 
 A Manifest may select `sts2.policy-runtime/decision-only-ndjson-2` with an
 explicit `text-menu-snapshot-1` or `text-menu-snapshot-2` representation and
@@ -150,7 +233,7 @@ cancellation-event write taints the Agent Run because its evidence is incomplete
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.16` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.24` provides a source candidate for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -159,7 +242,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.16.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.24.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
@@ -178,7 +261,10 @@ package SHA-256/integrity and protocol from `policy-runtime-package.json`.
 Never substitute a floating branch or raw source import for that pin.
 `check:package` packs twice, compares bytes, installs outside the workspace,
 checks bundled SDK/Zod identity and installed bytes, exercises synthetic modes and starts/stops the
-installed CLI in Human mode. This is CPU package evidence with no game contact.
+installed CLI in Human mode. It also checks the installed native Agent Runtime/SDK
+APIs and validates a fixture Agent Manifest against the bundled fixed publication
+profile. This is CPU package evidence with no game contact; the native API check
+does not register or run a real Model.
 It does not establish real-model, game, Full-Run or causal-successor evidence.
 
 ## Process boundary
@@ -388,3 +474,15 @@ This transport does not change input timing: the current stateful port offers
 only admitted, interactive, nonempty action menus. Internal waits and successor
 observations are not Model inputs. A sampled-offer dataset must retain that
 distinction and must not reconstruct Model history from every transport capture.
+
+The required owned-Current lifetime tests compose the real game-free C#
+Store/Projector, REST SDK and an OS Ndjson fixture child. They require the existing
+.NET 9 source-test toolchain; the test helper builds its zero-package portable
+bridge once, or uses `STS2_OWNED_CURRENT_BRIDGE_DLL` when explicitly supplied.
+Controller/capability/Await fixture responses are synthetic; no game or model
+inference is executed.
+
+The Runtime test command serializes test files. The suite includes independent
+fsync-heavy evidence admission tests and a portable bridge build; simultaneous
+files can exhaust the unchanged per-test deadline through filesystem contention.
+Assertions, timeouts, admission limits and optional-case conditions are preserved.

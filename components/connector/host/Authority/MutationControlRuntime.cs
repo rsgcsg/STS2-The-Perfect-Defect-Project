@@ -1,3 +1,5 @@
+using System;
+
 namespace STS2Connector.Authority;
 
 /// <summary>
@@ -25,6 +27,26 @@ internal static class MutationControlRuntime
 
     public static MutationAdmission Authorize(MutationAuthorizationRequest request) =>
         Coordinator.Authorize(request);
+
+    public static MutationAdmission TryBegin(MutationAuthorizationRequest request) => Coordinator.TryBegin(request);
+
+    internal static MutationRequestAdmission TryAdmitRequest(MutationAuthorizationRequest request) =>
+        Coordinator.TryAdmitRequest(request);
+
+    internal static MutationAdmission ValidateActiveControl(MutationAuthorizationRequest request) =>
+        Coordinator.ValidateActiveControl(request);
+
+    internal static bool IsActiveClient(string clientSessionId) => Coordinator.IsActiveClient(clientSessionId);
+
+    internal static bool TryTouchActiveClient(string clientSessionId) => Coordinator.TryTouchActiveClient(clientSessionId);
+
+    internal static MutationClientRevocationResult Revoke(MutationClientRevocationRequest request) => Coordinator.Revoke(request);
+
+    internal static event Action<MutationClientClosure> ClientClosed
+    { add => Coordinator.ClientClosed += value; remove => Coordinator.ClientClosed -= value; }
+
+    public static bool TryWatch(MutationAuthorizationRequest request, Action lost, out IDisposable? watch) =>
+        Coordinator.TryWatch(request, lost, out watch);
 
     public static MutationControlCapability Capability() => Coordinator.Capability();
 }

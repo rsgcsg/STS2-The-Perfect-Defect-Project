@@ -96,6 +96,8 @@ export async function runS0(options, dependencies) {
     : { id: "stpd-s0-structured-adapter", version: "1.0.0", role: "learned" };
   const records = await S0RawRecords.create(directory, runId, actor);
   let episode, runtime, port, evidence, endpoint, stop, runError;
+  let nativeExit = { schema: "sts2.baseline-s0/native-exit-receipt-1", status: "episode_not_returned",
+    runtime_instance_id: null, closed_at: null, receipt: null, error: null };
   const errors = [];
   let ticks = 0, nativeDeliveries = 0, externalStop = false, termination = "bounded_loop_end";
   const signalStop = () => { externalStop = true; void runtime?.stop().catch(error => errors.push(String(error))); };
@@ -160,7 +162,7 @@ export async function runS0(options, dependencies) {
       statefulPolicy = async input => {
         const offerId = await records.offer(input);
         const value = teacher.decide(input);
-        await records.policyResult(offerId, input, value);
+        await records.policyResult(offerId, input, value, teacher.lastDiagnostic);
         return value;
       };
     } else {
@@ -226,17 +228,33 @@ export async function runS0(options, dependencies) {
       } else if (evidence) await evidence.finalize({ status: "stopped", tainted: true, mode: "human" });
     } catch (error) { errors.push(String(error)); runError ??= error; }
     try { port?.close(); } catch (error) { errors.push(String(error)); runError ??= error; }
-    try { if (episode) await episode.close(); }
-    catch (error) { errors.push(String(error)); runError ??= error; }
+    if (episode) {
+      try {
+        const exit = await episode.close();
+        nativeExit = { schema: nativeExit.schema, status: exit == null ? "not_reported" : "reported",
+          runtime_instance_id: episode.identity.host.runtime_instance_id,
+          closed_at: new Date().toISOString(), receipt: exit ?? null, error: null };
+        if (exit == null) {
+          const error = new Error("native_exit_not_reported");
+          errors.push(String(error)); runError ??= error;
+        }
+      } catch (error) {
+        nativeExit = { schema: nativeExit.schema, status: "close_failed",
+          runtime_instance_id: episode.identity.host.runtime_instance_id,
+          closed_at: new Date().toISOString(), receipt: null, error: String(error) };
+        errors.push(String(error)); runError ??= error;
+      }
+    }
     await records.append("run_end", { ticks, native_deliveries: nativeDeliveries,
       offers: records.offerCount, captures: records.captureCount, capture_bytes: records.captureBytes,
-      stop_confirmed: stop?.confirmed === true, termination, errors }).catch(error => { runError ??= error; });
+      stop_confirmed: stop?.confirmed === true, native_exit: nativeExit, termination, errors }).catch(error => { runError ??= error; });
     await records.close().catch(error => { runError ??= error; });
     if (!dependencies) { process.removeListener("SIGINT", signalStop); process.removeListener("SIGTERM", signalStop); }
   }
   const summary = { schema: "sts2.baseline-s0/run-summary-1", run_id: runId, mode: options.mode,
     directory, ticks, offers: records.offerCount, captures: records.captureCount,
-    native_deliveries: nativeDeliveries, stop_confirmed: stop?.confirmed === true, termination, errors,
+    native_deliveries: nativeDeliveries, stop_confirmed: stop?.confirmed === true,
+    native_exit: nativeExit, termination, errors,
     evidence_level: "raw_native_agent_collection_requires_owner_verification", source_kind: "agent" };
   await writeFile(path.join(directory, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, { flag: "wx" });
   if (runError) throw Object.assign(new Error(`S0 run failed: ${errors.join("; ")}`), { summary });

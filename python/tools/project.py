@@ -61,14 +61,28 @@ def validate_repository(root: Path) -> None:
                     f"{route}: broken local document link: {link}")
 
 
-def portable_commands(python: str = sys.executable) -> tuple[tuple[str, ...], ...]:
+def parse_pytest_shard(value: str) -> tuple[int, int]:
+    require(value in ("1/2", "2/2"), "pytest shard must be 1/2 or 2/2")
+    return int(value[0]), 2
+
+
+def portable_commands(python: str = sys.executable, *,
+                      pytest_shard: tuple[int, int] | None = None) -> tuple[tuple[str, ...], ...]:
+    pytest_options: tuple[str, ...] = ()
+    if pytest_shard is not None:
+        index, count = pytest_shard
+        parse_pytest_shard(f"{index}/{count}")
+        pytest_options = ("-p", "tools.pytest_shard", f"--portable-shard-index={index}",
+                          f"--portable-shard-count={count}",
+                          "--portable-shard-manifest=.local/pytest-shard.json")
     return (
         (python, "tools/doctor.py"),
         (python, "-m", "ruff", "check", "."),
         (python, "-m", "mypy", "stpd", "spireagent", "tools"),
         ("npm", "run", "check:connector-sdk"),
-        (python, "-m", "pytest", "-q", "-ra", "--durations=30",
-         "--junitxml=.local/pytest.xml"),
+        (python, "-m", "pytest", "-v", "-ra", "--durations=30",
+         "-o", "faulthandler_timeout=60",
+         "--junitxml=.local/pytest.xml", *pytest_options),
         (python, "-m", "spireagent.workbench", "e2e", "--output", ".local/cpu-e2e.json"),
         (python, "-m", "stpd.cloud_jobs.smoke", "--output", ".local/cloud-worker-cpu.json"),
         (python, "-m", "compileall", "-q", "stpd", "spireagent", "tests", "tools", "deploy"),
@@ -94,10 +108,11 @@ def invoke(command: tuple[str, ...], root: Path) -> None:
                           "seconds": round(time.monotonic() - started, 3)}), flush=True)
 
 
-def check(root: Path, base: str | None = None) -> None:
+def check(root: Path, base: str | None = None,
+          pytest_shard: tuple[int, int] | None = None) -> None:
     require(sys.version_info[:2] == (3, 11), "run via the locked Python 3.11 uv environment")
     validate_repository(root)
-    for command in portable_commands():
+    for command in portable_commands(pytest_shard=pytest_shard):
         invoke(command, root)
     if base and base != "0" * 40:
         require(re.fullmatch(r"[0-9a-f]{40}", base) is not None, "base must be an exact SHA")
@@ -108,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("context", "check", "closeout"))
     parser.add_argument("--base", help="exact base SHA for committed patch hygiene")
+    parser.add_argument("--pytest-shard",
+                        help="explicit top-level hosted pytest partition: 1/2 or 2/2")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -115,12 +132,16 @@ def main(argv: list[str] | None = None) -> int:
                               "python": ">=3.11,<3.12", "integration": "develop",
                               "evidence": "routing only"}, indent=2))
             return 0
-        check(ROOT, args.base)
+        shard = parse_pytest_shard(args.pytest_shard) if args.pytest_shard else None
+        check(ROOT, args.base, shard)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
         require(not dirty, "checkout changed during portable gate; commit and rerun")
         print(json.dumps({"schema": "stpd-portable-result-1", "source": head,
-                          "dirty": dirty, "verdict": "PORTABLE_LOCAL_PASS",
+                          "dirty": dirty, "verdict": ("PORTABLE_PYTEST_PARTITION_PASS" if shard
+                                                       else "PORTABLE_LOCAL_PASS"),
+                          "pytest_partition": ({"index": shard[0], "count": shard[1],
+                                                "complete": False} if shard else None),
                           "non_claims": ["Windows/Linux CI", "runtime", "data", "training",
                                          "scientific readiness", "pre-Full-Run readiness"]},
                          indent=2))

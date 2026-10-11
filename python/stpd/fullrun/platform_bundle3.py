@@ -6,15 +6,11 @@ bundle bytes. Catalogs/lineage/Commit/successors are read, never reconstructed.
 
 from __future__ import annotations
 
-import gzip
 import hashlib
-import io
-import tarfile
 import tempfile
-import zlib
 from collections import Counter, defaultdict
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from sts2_platform_evidence.human_session_bundle_v3 import (
@@ -24,8 +20,11 @@ from sts2_platform_evidence.human_session_bundle_v3 import (
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
 from spireagent.local_verified_bundle import VerifiedLocalBundle
+from spireagent.storage import archives
+from spireagent.storage.archives import MAX_BYTES as MAX_BYTES
+from spireagent.storage.archives import MAX_FILES as MAX_FILES
 
-from ..canonical import canonical_json, semantic_hash
+from ..canonical import semantic_hash
 from .contracts import (
     AdmittedRead,
     EvidenceLink,
@@ -34,6 +33,7 @@ from .contracts import (
     SemanticState,
     SourceProjection,
 )
+from .semantic_projection import _SemanticProjection
 
 # Immutable adapter contract baseline, not the installed verifier or recorded runtime.
 # The historical source_evidence.platform_revision wire field retains this meaning/ID.
@@ -41,8 +41,6 @@ from .contracts import (
 # actual game/Mod provenance remains in recording_identity. Do not rewrite old artifacts.
 SUPPORTED_PLATFORM_CONTRACT_REVISION = "6fb6afc9c7abb8a4d34d18d16de4f19f48bd608d"
 ADAPTER_ID = "stpd-platform-bundle3-adapter-v1@" + SUPPORTED_PLATFORM_CONTRACT_REVISION
-MAX_BYTES = 256 * 1024 * 1024
-MAX_FILES = 20000
 _TERMINATIONS = frozenset(
     {
         "transition_proved",
@@ -50,29 +48,6 @@ _TERMINATIONS = frozenset(
         "action_cancelled_before_start",
         "action_cancelled_after_start",
         "action_aborted_before_commit",
-    }
-)
-# These are capture/identity metadata, not player semantics. The originals remain
-# in the immutable evidence. Unknown hidden/native fields are rejected downstream.
-_METADATA = frozenset(
-    {
-        "entity_id",
-        "referent_id",
-        "interaction_id",
-        "combat_id",
-        "action_keys",
-        "evidence",
-        "non_claims",
-        "sources",
-        "observation_basis",
-        "action_support",
-        "blocked_reason",
-        "native_decision_status",
-        "completeness",
-        "slot_entity_id",
-        "inventory_index",
-        "focused",
-        "hovered",
     }
 )
 
@@ -89,182 +64,16 @@ def _lines(path: Path) -> list[dict[str, Any]]:
 
 
 def archive_bundle(directory: Path) -> bytes:
-    """Deterministic transport of an existing bundle; does not edit or attest it."""
-    paths = sorted(directory.rglob("*"))
-    if any(p.is_symlink() for p in paths):
-        raise BoundaryError("source_archive", "symlink_forbidden")
-    files = [p for p in paths if p.is_file()]
-    if len(files) > MAX_FILES or sum(p.stat().st_size for p in files) > MAX_BYTES:
-        raise BoundaryError("source_archive", "size_limit")
-    target = io.BytesIO()
-    with (
-        gzip.GzipFile(fileobj=target, mode="wb", mtime=0) as compressed,
-        tarfile.open(fileobj=compressed, mode="w") as archive,
-    ):
-        for path in files:
-            content = path.read_bytes()
-            info = tarfile.TarInfo(path.relative_to(directory).as_posix())
-            info.size = len(content)
-            info.mode = 0o600
-            archive.addfile(info, io.BytesIO(content))
-    return target.getvalue()
+    """Preserve the legacy adapter's public transport and capacity boundary."""
+    return archives.archive_bundle(directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
 
 
 def _extract(raw: bytes, directory: Path) -> None:
-    if len(raw) > MAX_BYTES:
-        raise BoundaryError("source_archive", "size_limit")
-    try:
-        # Bound the entire decompressed stream, including PAX/longname headers
-        # that tarfile consumes before yielding a member for our inventory checks.
-        with tempfile.TemporaryFile() as expanded:
-            total_expanded = 0
-            with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as compressed:
-                while chunk := compressed.read(1024 * 1024):
-                    total_expanded += len(chunk)
-                    if total_expanded > MAX_BYTES:
-                        raise BoundaryError("source_archive", "expanded_size_limit")
-                    expanded.write(chunk)
-            expanded.seek(0)
-            _extract_tar(expanded, directory)
-    except (tarfile.TarError, gzip.BadGzipFile, EOFError, zlib.error) as error:
-        raise BoundaryError("source_archive", "invalid_archive") from error
+    archives._extract(raw, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
 
 
 def _extract_tar(expanded: Any, directory: Path) -> None:
-    # Streaming mode prevents a malicious metadata size from issuing an enormous
-    # direct file read, even though the expanded archive is already disk-bounded.
-    with tarfile.open(fileobj=expanded, mode="r|") as archive:
-        names: set[str] = set()
-        total = 0
-        for info in archive:
-            total += info.size
-            if len(names) >= MAX_FILES or total > MAX_BYTES:
-                raise BoundaryError("source_archive", "size_limit")
-            path = PurePosixPath(info.name)
-            folded = info.name.casefold()
-            if (
-                not info.name
-                or "\\" in info.name
-                or path.is_absolute()
-                or any(p in {".", ".."} for p in info.name.split("/"))
-                or ":" in info.name
-                or str(path) != info.name
-                or not info.isfile()
-                or folded in names
-                or info.size < 0
-            ):
-                raise BoundaryError("source_archive", "unsafe_or_duplicate_member")
-            names.add(folded)
-            member = archive.extractfile(info)
-            if member is None:
-                raise BoundaryError("source_archive", "missing_member")
-            content = member.read(info.size + 1)
-            if len(content) != info.size:
-                raise BoundaryError("source_archive", "member_size_mismatch")
-            target = directory / info.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-
-
-class _SemanticProjection:
-    """Project public values; resolve opaque references only from captured entities."""
-
-    def __init__(self, values: list[Any]) -> None:
-        self.entities: dict[str, dict[str, Any]] = {}
-        for value in values:
-            self._collect(value)
-
-    def _collect(self, value: Any) -> None:
-        if isinstance(value, dict):
-            identifier = value.get("entity_id")
-            if isinstance(value.get("interaction_id"), str) and "kind" in value:
-                self.entities[value["interaction_id"]] = {
-                    "kind": value["kind"],
-                    **value.get("content", {}),
-                }
-            if isinstance(value.get("referent_id"), str):
-                # Connector explicitly serializes absent public properties as
-                # null. This adds no inferred facts; the visible referent still
-                # keeps its role and state.
-                properties = value.get("properties")
-                self.entities[value["referent_id"]] = {
-                    "role": value.get("role"),
-                    **({} if properties is None else properties),
-                    "state": value.get("state", {}),
-                }
-            if isinstance(value.get("slot_entity_id"), str):
-                self.entities[value["slot_entity_id"]] = value
-            if isinstance(identifier, str):
-                # Prefer richer normal inspectable descriptions over compact fields.
-                previous = self.entities.get(identifier, {})
-                self.entities[identifier] = {**previous, **value}
-            for item in value.values():
-                self._collect(item)
-        elif isinstance(value, list):
-            for item in value:
-                self._collect(item)
-
-    def clean(self, value: Any, *, resolving: bool = False) -> Any:
-        if isinstance(value, dict):
-            result: dict[str, Any] = {}
-            for key, item in value.items():
-                if key in _METADATA:
-                    continue
-                if key.endswith("_entity_ids") or key.endswith("_referent_ids"):
-                    result[key.removesuffix("_ids") + "_values"] = [
-                        self.reference(x, resolving) for x in item
-                    ]
-                elif key.endswith("_entity_id") or key.endswith("_referent_id"):
-                    result[key.removesuffix("_id") + "_value"] = (
-                        self.reference(item, resolving) if item is not None else None
-                    )
-                else:
-                    result["visible_label" if key == "label" else key] = self.clean(
-                        item, resolving=resolving
-                    )
-            if (
-                value.get("ordering_semantics") == "unordered_multiset"
-                or value.get("kind") == "run_deck"
-            ) and isinstance(result.get("cards"), list):
-                result["cards"] = sorted(result["cards"], key=canonical_json)
-            return result
-        if isinstance(value, list):
-            return [self.clean(item, resolving=resolving) for item in value]
-        if isinstance(value, str) and value in self.entities and not resolving:
-            return self.entity(value)
-        return value
-
-    def reference(self, identifier: str, resolving: bool) -> dict[str, Any]:
-        if not resolving:
-            return self.entity(identifier)
-        if identifier not in self.entities:
-            raise BoundaryError("platform_projection", "missing_referent_semantics")
-
-        # An entity can refer to itself/its owner. Keep a semantic reference rather
-        # than recursively expand a cycle or leak the runtime handle into features.
-        def leaf(value: Any) -> Any:
-            if isinstance(value, dict):
-                return {
-                    key: leaf(item)
-                    for key, item in value.items()
-                    if key not in _METADATA
-                    and not key.endswith(
-                        ("_entity_id", "_entity_ids", "_referent_id", "_referent_ids")
-                    )
-                }
-            if isinstance(value, list):
-                return [leaf(item) for item in value]
-            return value
-
-        return {"semantic_ref": semantic_hash(leaf(self.entities[identifier]))}
-
-    def entity(self, identifier: str | None) -> dict[str, Any]:
-        if identifier is None:
-            return {}
-        if identifier not in self.entities:
-            raise BoundaryError("platform_projection", "missing_referent_semantics")
-        result: dict[str, Any] = self.clean(self.entities[identifier], resolving=True)
-        return result
+    archives._extract_tar(expanded, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
 
 
 def _frame(raw: Path, ref: dict[str, Any]) -> dict[str, Any]:
@@ -423,15 +232,19 @@ class PlatformBundle3SourceAdapter:
             )
 
     def _project_verified_local(
-        self, verified: VerifiedLocalBundle,
+        self,
+        verified: VerifiedLocalBundle,
     ) -> SourceProjection:
         """Project the exact directory held by the local typed-verification context."""
         verified.assert_directory_identity()
         bundle = verified.bundle
         assert isinstance(bundle, HumanSessionBundleV3)
         return self._project(
-            verified.directory, None, bundle.bundle_content_id,
-            dict(bundle.capture_profile), dict(bundle.manifest),
+            verified.directory,
+            None,
+            bundle.bundle_content_id,
+            dict(bundle.capture_profile),
+            dict(bundle.manifest),
             source_sha256=verified.archive_sha256,
         )
 
@@ -442,7 +255,8 @@ class PlatformBundle3SourceAdapter:
         content_id: str,
         profile: dict[str, Any],
         manifest: dict[str, Any],
-        *, source_sha256: str | None = None,
+        *,
+        source_sha256: str | None = None,
     ) -> SourceProjection:
         raw = directory / "raw"
         canonical = _lines(directory / "export/canonical-transitions.jsonl")
@@ -484,8 +298,7 @@ class PlatformBundle3SourceAdapter:
         )
         if source is None and source_sha256 is None:
             raise BoundaryError("platform_projection", "source_identity_required")
-        source_hash = (hashlib.sha256(source).hexdigest() if source is not None
-                       else source_sha256)
+        source_hash = hashlib.sha256(source).hexdigest() if source is not None else source_sha256
         assert source_hash is not None
         runs: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in canonical:

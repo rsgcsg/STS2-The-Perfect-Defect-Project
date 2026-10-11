@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { workspaceStages } from "./check-workspace.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -72,14 +73,26 @@ test("exact-game validation builds the Connector before the dependent Annotator"
 });
 
 
-test("S0 consumer regressions participate in full and Python owner gates", () => {
+test("S0 and native collection regressions participate in full and Python owner gates", () => {
   const { scripts } = packageJson();
-  for (const name of ["check", "check:python-scope"]) {
-    assert.ok(scripts[name].includes("npm run check:s0"), `${name} omits S0 consumers`);
-    assert.ok(scripts[name].indexOf("npm run check:s0") < scripts[name].indexOf("npm run check:python"),
-      `${name} must fail fast on S0 consumers before the long Python suite`);
+  for (const [name, scope] of [["check", "full"], ["check:python-scope", "python"]]) {
+    assert.equal(scripts[name], `node tools/check-workspace.mjs ${scope}`);
+    const stages = workspaceStages(scope);
+    assert.ok(stages.some(stage => stage.args.join(" ") === "run check:s0-tests"), `${name} omits S0 consumers`);
+    assert.ok(stages.findIndex(stage => stage.id === "s0-consumers") < stages.findIndex(stage => stage.id === "python"),
+      `${name} must report S0 consumer failures before the long Python suite`);
   }
   assert.ok(scripts["precheck:s0"].includes("components/connector/sdk/typescript run build"));
-  assert.ok(scripts["check:s0"].includes("tools/test/baseline-s0-runner.test.mjs"));
-  assert.ok(scripts["check:s0"].includes("tools/test/test_baseline_s0_dataset.py"));
+  assert.ok(scripts["precheck:s0"].includes("components/policy-runtime run build"),
+    "native collection requires the public Runtime build in a fresh Python owner gate");
+  assert.ok(scripts["precheck:s0"].indexOf("components/connector/sdk/typescript run build")
+    < scripts["precheck:s0"].indexOf("components/policy-runtime run build"),
+  "the Runtime build consumes the preceding SDK declarations");
+  assert.equal(scripts["check:s0"], "npm run check:s0-tests");
+  assert.ok(scripts["check:s0-tests"].includes("tools/test/baseline-s0-runner.test.mjs"));
+  assert.ok(scripts["check:s0-tests"].includes("tools/test/native-source3-collector.test.mjs"),
+    "native collection lifecycle regressions must run in the selected portable gates");
+  assert.ok(scripts["check:s0-tests"].includes("tools/test/native-source3-collector-sdk.test.mjs"),
+    "native collection must exercise the actual SDK request and reply grammar");
+  assert.ok(scripts["check:s0-tests"].includes("tools/test/test_baseline_s0_dataset.py"));
 });

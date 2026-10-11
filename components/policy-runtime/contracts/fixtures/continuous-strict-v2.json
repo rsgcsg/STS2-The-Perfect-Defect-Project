@@ -1,0 +1,26 @@
+{
+  "schema": "sts2.policy-runtime/continuous-strict-conformance-1",
+  "scope": "synthetic_source_test_only",
+  "execution_policy": {
+    "schema": "sts2.policy-runtime/agent-execution-policy-2",
+    "current_mode": "reader_owned_v1",
+    "known_stale": "fresh_changed_current_v1",
+    "operational_outcome": "known_not_started_v1",
+    "max_consecutive_known_stale_rejections": 3
+  },
+  "application_selection": "progress-aware-strict-v2",
+  "collector_family": {
+    "pipe": "spireagent/native-source3-collector-pipe-v4",
+    "report": "spireagent/native-source3-collection-v4",
+    "full_final": "spireagent/native-source3-collector-final-full-v4"
+  },
+  "required_finite_runtime_budgets": ["max_submissions", "max_policy_calls", "deadline_ms"],
+  "forbidden_policy_fields": ["max_known_stale_rejections", "retry", "native_intent"],
+  "counters": [
+    {"before": [8, 0], "original_result": "known_stale", "after": [9, 1], "may_defer_if_otherwise_authorized": true},
+    {"before": [9, 2], "original_result": "known_stale", "after": [10, 3], "may_defer_if_otherwise_authorized": false},
+    {"before": [9, 1], "original_result": "delivered", "after": [9, 0], "may_defer_if_otherwise_authorized": false},
+    {"before": [9, 1], "original_result": "unchanged_await", "after": [9, 1], "may_defer_if_otherwise_authorized": false}
+  ],
+  "non_claims": ["No native intent authority or relaxed Snapshot equality.", "No automatic retry.", "No installed, native, Human, training or natural-summary qualification."]
+}

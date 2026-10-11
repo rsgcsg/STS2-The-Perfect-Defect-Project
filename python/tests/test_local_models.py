@@ -4,8 +4,12 @@ import copy
 import hashlib
 import io
 import json
+import os
+import subprocess
+import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +27,130 @@ from stpd.canonical import canonical_json
 from stpd.policy import installation
 
 
+@pytest.fixture(scope="module")
+def public_native_preflight(tmp_path_factory):
+    """Use real packaged Runtime/SDK bytes through the normal offline owner.
+
+    An explicit reviewed archive avoids repackaging for a bounded local replay.
+    Normal source gates build the current public package, never a fake validator.
+    These are synthetic protocol manifests, not a trained-model/native gate.
+    """
+    from spireagent.package_identity import directory_sha256
+    from spireagent.workbench.runtime_install import install_runtime
+
+    root = Path(local_models.__file__).resolve().parents[2]
+    repository = root.parent
+    temporary = tmp_path_factory.mktemp("public-native-preflight")
+    supplied = os.environ.get("STPD_TEST_NATIVE_RUNTIME_ARCHIVE")
+    shipped = json.loads((root / "configs/developer/local-policies-v1.json").read_bytes())
+    if supplied:
+        archive = Path(supplied).resolve()
+        pin = shipped["runtime_package"]
+    else:
+        output = temporary / "package"
+        subprocess.run(
+            ["node", "--input-type=module", "-e",
+             "const {packageRuntime}=await import(process.argv[1]);"
+             "packageRuntime(process.argv[2]);",
+             (repository / "components/policy-runtime/tools/package.mjs").as_uri(),
+             str(output)],
+            cwd=repository, capture_output=True, check=True, timeout=60,
+        )
+        report = json.loads((output / "policy-runtime-package.json").read_bytes())
+        archive = output / report["filename"]
+        # This generated source-test package has this checkout's workspace
+        # provenance. Its fixture pin is distinct from the reviewed shipped pin.
+        extracted = temporary / "content"
+        with tarfile.open(archive) as packed:
+            packed.extractall(extracted, filter="data")
+        identity = report["identity"]
+        pin = {
+            "package": report["name"], "version": report["version"],
+            "source_revision": identity["source_revision"],
+            "component_tree_revision": identity["component_tree_revision"],
+            "release_asset_sha256": report["sha256"],
+            "package_content_sha256": directory_sha256(extracted / "package"),
+            "dependency_layout": "bundled_source_candidate",
+            "bundled_connector_pin": identity["connector_sdk"],
+        }
+    fixture_root = temporary / "application"
+    catalog = fixture_root / "configs/developer/local-policies-v1.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({**shipped, "runtime_package": pin}))
+    config = ProjectConfig(temporary / "state", "", "", None, combination())
+    service = LocalModelService(config)
+    service.root = fixture_root
+    installed = install_runtime(
+        service.directory, service.registry()["runtime_package"], service._connector_pin(),
+        archive=archive,
+    )
+    assert installed["status"] == "runtime_installed"
+    profile = json.loads((repository / "components/connector/contracts/"
+                          "native-logical-publication-profile-v1.json").read_bytes())
+    fixtures = repository / "components/policy-runtime/contracts/fixtures"
+    manifests = {}
+    for history, filename in (
+        ("full_reference", "agent-session-v1.json"),
+        ("sampled_current", "sampled-current-carry-v1.json"),
+    ):
+        manifest = json.loads((fixtures / filename).read_bytes())["manifest"]
+        manifest["input"]["attachment"]["required_seams"] = profile["required_seams"]
+        manifests[history] = manifest
+    yield service, manifests, temporary
+    service.close()
+
+
+@pytest.mark.parametrize("history", ["full_reference", "sampled_current"])
+def test_public_native_preflight_accepts_declared_history(public_native_preflight, history):
+    service, manifests, temporary = public_native_preflight
+    manifest_path = temporary / (history + ".json")
+    manifest_path.write_text(json.dumps(manifests[history]))
+    # Do not replace package verification, Node execution, public manifest
+    # validation or the actual bundled SDK/profile with mocks.
+    service._public_manifest_contract(manifest_path)
+
+
+@pytest.mark.parametrize("history,mutation", [
+    ("sampled_current", "full_eager"), ("sampled_current", "full_delivery"),
+    ("full_reference", "empty_eager"), ("full_reference", "scoped_delivery"),
+    ("sampled_current", "scoped_query"), ("sampled_current", "unknown_history"),
+    ("sampled_current", "missing_seam"), ("full_reference", "missing_seam"),
+    ("sampled_current", "wrong_seam_version"), ("sampled_current", "wrong_profile"),
+    ("sampled_current", "unknown_field"), ("sampled_current", "missing_current"),
+])
+def test_public_native_preflight_rejects_crossed_or_untrusted_contract(
+    public_native_preflight, history, mutation,
+):
+    service, manifests, temporary = public_native_preflight
+    manifest = copy.deepcopy(manifests[history])
+    input_ = manifest["input"]
+    attachment = input_["attachment"]
+    if mutation == "full_eager":
+        attachment["eager_scope"] = ["persistent", "interaction", "referents", "catalog"]
+    elif mutation == "full_delivery":
+        attachment["delivery_mode"] = "full_reference"
+    elif mutation == "empty_eager":
+        attachment["eager_scope"] = []
+    elif mutation == "scoped_delivery":
+        attachment["delivery_mode"] = "scoped"
+    elif mutation in {"scoped_query", "unknown_history"}:
+        input_["history_mode"] = "scoped_query" if mutation == "scoped_query" else "other"
+    elif mutation == "missing_seam":
+        attachment["required_seams"].pop()
+    elif mutation == "wrong_seam_version":
+        attachment["required_seams"][0]["version"] = "other"
+    elif mutation == "wrong_profile":
+        input_["profile"] = "other"
+    elif mutation == "unknown_field":
+        input_["untrusted"] = True
+    elif mutation == "missing_current":
+        manifest["requirements"]["required_methods"].remove("current")
+    manifest_path = temporary / (history + "-" + mutation + ".json")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(BoundaryError, match="native_runtime_contract_unavailable"):
+        service._public_manifest_contract(manifest_path)
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     config = ProjectConfig(tmp_path, "", "", None, combination())
@@ -32,8 +160,9 @@ def service(tmp_path, monkeypatch):
     # Synthetic native acceptance isolates the Runtime transport tests. The actual
     # bridge and fail-closed handoff have their own wire-level regression suite.
     monkeypatch.setattr(
-        result.native_tasks, "prepare_model",
-        lambda observed, endpoint: {"runtime_instance_id": "game-1"},
+        result.native_tasks,
+        "prepare_model",
+        lambda observed, endpoint, **kwargs: {"runtime_instance_id": "game-1"},
     )
     return result
 
@@ -703,6 +832,49 @@ def test_downloaded_fullrun_model_is_not_treated_as_a_loadable_policy(service):
     assert service.process is None
 
 
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v999"])
+def test_structured_catalog_requires_explicit_export_and_registration_for_closed_versions(
+    service, version
+):
+    model = Manifest(
+        "model", Producer("test/repository", "a" * 40, "b" * 64),
+        parameters=FrozenObject.of({"schema": "stpd/structured-m2-model-" + version}),
+    )
+    directory = service.config.state_dir / "downloads" / model.artifact_id
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(model.to_bytes())
+    (directory / "download.json").write_text(json.dumps({
+        "schema": "stpd/result-download-v1", "artifact_id": model.artifact_id,
+    }))
+    result = service.catalog()["downloaded_models"][0]
+    expected = "unsupported" if version == "v999" else "export_and_registration_required"
+    assert result["support_status"] == expected
+    assert result["loaded"] is False
+    with pytest.raises(BoundaryError, match="unregistered_policy"):
+        service.start(model.artifact_id)
+    assert service.process is None
+
+
+@pytest.mark.parametrize("receipt", [None, {}, {
+    "schema": "stpd/result-download-v1", "artifact_id": "f" * 64,
+}])
+def test_structured_catalog_keeps_unadmitted_download_visible(service, receipt):
+    model = Manifest(
+        "model", Producer("test/repository", "a" * 40, "b" * 64),
+        parameters=FrozenObject.of({"schema": "stpd/structured-m2-model-v3"}),
+    )
+    directory = service.config.state_dir / "downloads" / model.artifact_id
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_bytes(model.to_bytes())
+    if receipt is not None:
+        (directory / "download.json").write_text(json.dumps(receipt))
+    result, = service.catalog()["downloaded_models"]
+    assert result["artifact_id"] == model.artifact_id
+    assert result["support_status"] == "unsupported" and result["loaded"] is False
+    assert result["local_download"] is (receipt is not None)
+    assert service.process is None
+
+
 def test_prepare_preserves_verified_download_receipt_and_never_starts_runtime(service):
     receipt = {
         "schema": "stpd/result-download-v1",
@@ -790,7 +962,7 @@ def test_native_close_failure_never_requests_model_mode(service, runtime_http, m
     service.client = client
     service.state.update(status="loaded", loaded=True)
 
-    def failed(observed, connector_endpoint):
+    def failed(observed, connector_endpoint, **kwargs):
         raise BoundaryError("local_model", error)
 
     monkeypatch.setattr(service.native_tasks, "prepare_model", failed)
@@ -813,7 +985,7 @@ def test_runtime_environment_observed_during_native_close_must_match(
     service.state.update(status="loaded", loaded=True)
     runtime["environment"] = None
 
-    def closed(observed, endpoint):
+    def closed(observed, endpoint, **kwargs):
         assert observed["environment"] is None
         # Another Runtime caller populated its environment while this handoff
         # was closing the Recorder. Do not authorize a different cached game.
@@ -888,7 +1060,7 @@ def test_human_cancels_old_intent_while_native_close_is_pending(service, monkeyp
             calls.append((route, body))
             return environment() if route == "/environment" else {"status": status()}
 
-    def native_close(_, connector_endpoint):
+    def native_close(_, connector_endpoint, **kwargs):
         entered.set()
         assert release.wait(timeout=3)
         return {"ready_for_model": True, "runtime_instance_id": "game-1"}
@@ -1152,7 +1324,9 @@ def test_old_runtime_requires_upgrade_before_native_close_but_recovery_still_wor
     client, runtime, requests = runtime_http
     client.fixture_control["environment_available"] = False
     closed = []
-    monkeypatch.setattr(service.native_tasks, "prepare_model", lambda *args: closed.append(args))
+    monkeypatch.setattr(
+        service.native_tasks, "prepare_model", lambda *args, **kwargs: closed.append(args)
+    )
     service.client = client
     service.state.update(status="loaded", loaded=True)
     service.command(action)
@@ -1176,7 +1350,9 @@ def test_runtime_actual_connector_must_match_saved_endpoint_before_native_close(
     client, _, requests = runtime_http
     client.fixture_control["instance"] = "other-game"
     closed = []
-    monkeypatch.setattr(service.native_tasks, "prepare_model", lambda *args: closed.append(args))
+    monkeypatch.setattr(
+        service.native_tasks, "prepare_model", lambda *args, **kwargs: closed.append(args)
+    )
     service.client = client
     service.state.update(status="loaded", loaded=True)
     service.command("auto")
@@ -1192,7 +1368,7 @@ def test_other_ui_recovery_during_native_prepare_rejects_late_model_mode(
     client, runtime, requests = runtime_http
     entered, release = threading.Event(), threading.Event()
 
-    def prepare(_status, endpoint):
+    def prepare(_status, endpoint, **kwargs):
         assert endpoint == "http://127.0.0.1:19191"
         entered.set()
         assert release.wait(timeout=3)
@@ -1787,7 +1963,7 @@ def test_offline_runtime_install_binds_explicit_selection_to_separate_slot(
                                   selection=entry["id"], runtime_archive=archive)
     assert calls == [((service.directory / "text-menu-v1", pin, service._connector_pin()),
                       {"archive": archive})]
-    # The original offline CLI stays pinned to rc.6 when no selection was given.
+    # Without a selection, the offline CLI uses the shipped primary Runtime pin.
     # It cannot infer a new Runtime profile from archive contents.
     calls.clear()
     local_model_cli.model_command(service.config, "install-runtime", runtime_archive=archive)

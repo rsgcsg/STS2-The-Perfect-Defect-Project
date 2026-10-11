@@ -176,20 +176,25 @@ public sealed class CardRewardCanaryDiagnosticsTests
     }
 
     [Fact]
-    public void ExistingIdLookupNeverAllocatesOrAdvancesTheReferentCounter()
+    public void ExistingIdLookupNeverAllocatesOrConsumesAliasEntropy()
     {
-        var registry = new NativeEntityRegistry();
+        int entropyCalls = 0;
+        var registry = new NativeEntityRegistry(() =>
+            Enumerable.Repeat((byte)++entropyCalls, 24).ToArray());
         object observed = new();
         object unobserved = new();
         Assert.False(registry.TryGetExistingId(unobserved, out _));
         Assert.Equal(0, registry.TrackedReferenceCount);
+        Assert.Equal(0, entropyCalls);
         string first = registry.GetId(observed, "reward");
-        Assert.EndsWith("_1", first);
+        Assert.Equal("reward_" + string.Concat(Enumerable.Repeat("01", 24)), first);
         Assert.True(registry.TryGetExistingId(observed, out string? same));
         Assert.Equal(first, same);
         Assert.False(registry.TryGetExistingId(unobserved, out _));
         Assert.Equal(1, registry.TrackedReferenceCount);
-        Assert.EndsWith("_2", registry.GetId(unobserved, "reward"));
+        Assert.Equal(1, entropyCalls);
+        Assert.Equal("reward_" + string.Concat(Enumerable.Repeat("02", 24)), registry.GetId(unobserved, "reward"));
+        Assert.Equal(2, entropyCalls);
     }
 
     private static JsonElement Detail(string line)

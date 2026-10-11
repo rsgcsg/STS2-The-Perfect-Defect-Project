@@ -1,23 +1,15 @@
 using System;
-using System.Collections.Concurrent;
-using STS2Connector.Authority;
+using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment;
 
-/// <summary>The same controller and request namespace as native actions, with
-/// separate result semantics for presentation changes. A GET never dispatches.</summary>
-internal sealed class TextMenuExecutor(
-    object submissionGate,
-    ConcurrentDictionary<string, string> requestFingerprints,
-    Func<TextMenuFrame> capture,
-    Func<MutationAuthorizationRequest, MutationAdmission> authorize,
-    Func<string?>? currentController = null)
+internal sealed class TextMenuExecutor(object submissionGate, RequestNamespace requests,
+    Func<TextMenuFrame> capture, Func<string?>? currentController = null)
 {
+    internal RequestNamespace Requests => requests;
     private readonly TextMenuSession session = new();
-    private readonly ConcurrentDictionary<string, TextMenuActionResult> results = new(StringComparer.Ordinal);
     private string? previousController;
-
     private void SynchronizeControl()
     {
         if (currentController == null) return;
@@ -25,108 +17,102 @@ internal sealed class TextMenuExecutor(
         if (controller != previousController) session.ResetCursor();
         previousController = controller;
     }
-
     internal TextMenuSnapshot Observe()
     {
-        lock (submissionGate)
-        {
-            SynchronizeControl();
-            return session.Observe(capture()).Snapshot;
-        }
+        lock (submissionGate) { SynchronizeControl(); return session.Observe(capture()).Snapshot; }
     }
-
     internal TextMenuObservationContext ObserveContext()
     {
         lock (submissionGate)
         {
-            SynchronizeControl();
-            TextMenuFrame frame = capture();
-            return new(TextMenuContract.ObservationContextSchema,
-                session.Observe(frame).Snapshot, frame.GameContinuityId);
+            SynchronizeControl(); TextMenuFrame frame = capture();
+            return new(TextMenuContract.ObservationContextSchema, session.Observe(frame).Snapshot, frame.GameContinuityId);
         }
     }
-
-    internal TextMenuActionResult? Find(string requestId) =>
-        results.TryGetValue(requestId, out var result) ? result : null;
-
-    internal TextMenuActionResult Submit(PlayerEnvironmentActionRequest request)
+    internal bool RunAdmitted(PlayerEnvironmentActionRequest request)
     {
-        string id = request.RequestId ?? "";
-        TextMenuActionResult Result(string status, TextMenuAction? action,
-            string? delivery, string? code, string detail, TextMenuSnapshot? successor,
-            PlayerEnvironmentAttribution? attribution = null) => new(
-                PlayerEnvironmentContract.ProtocolVersion, TextMenuContract.ResultSchema,
-                TextMenuContract.Profile, id, status, action?.EffectDomain, delivery,
-                action, code, detail, status == "not_applied" ? "reobserve" : "never",
-                successor, attribution);
-        if (request.InputProfile != TextMenuContract.Profile || string.IsNullOrWhiteSpace(id))
-            return Result("not_applied", null, null, "invalid_text_menu_request",
-                "An exact text-menu profile and request ID are required.", null);
-
-        lock (submissionGate)
+        using var preparation = requests.PrepareOriginal(request);
+        if (preparation is null) return false;
+        TextMenuAction? action = null;
+        TextMenuActionResult Result(string status, string? delivery, string? code, string message,
+            TextMenuSnapshot? successor) => new(PlayerEnvironmentContract.ProtocolVersion, TextMenuContract.ResultSchema,
+                TextMenuContract.Profile, request.RequestId!, status, action?.EffectDomain, delivery, action, code,
+                message, status == "not_applied" ? "reobserve" : "never", successor, preparation.AdmissionAttribution);
+        void Reject(string code, string message, TextMenuSnapshot? successor = null)
         {
-            string fingerprint = PlayerEnvironmentService.ActionRequestFingerprint(request);
-            if (requestFingerprints.TryGetValue(id, out string? previous))
-                return previous == fingerprint && results.TryGetValue(id, out var replay)
-                    ? replay
-                    : Result("not_applied", null, null, "request_id_conflict",
-                        "This request ID already belongs to another exact action or profile.", null);
-
-            SynchronizeControl();
-            TextMenuFrame frame = capture();
-            TextMenuProjection projection = session.Observe(frame);
-            projection.Choices.TryGetValue(request.BoundActionId ?? "", out var choice);
-            requestFingerprints[id] = fingerprint;
-            TextMenuActionResult Save(TextMenuActionResult result)
+            object rejected = Result("not_applied", action?.Kind == "native_input" ? "not_delivered" : null, code, message, successor);
+            try { preparation.Seal(rejected); }
+            catch (ResultPayloadCapacityException)
             {
-                results[id] = result;
-                return result;
+                preparation.Reservation.ResetEncoding();
+                if (successor is not null)
+                    preparation.Seal(Result("not_applied", action?.Kind == "native_input" ? "not_delivered" : null,
+                        code, message + " Current diagnostic snapshot omitted: successor_payload_capacity_exceeded.", null));
+                else throw;
             }
-            TextMenuActionResult Reject(string code, string detail) => Save(Result(
-                "not_applied", choice?.Action,
-                choice?.Leaf != null ? "not_delivered" : null, code, detail, projection.Snapshot));
+        }
+        TextMenuFrame frame;
+        TextMenuProjection projection;
+        TextMenuChoice? choice;
+        try
+        {
+            SynchronizeControl(); frame = capture(); projection = session.Observe(frame);
+            projection.Choices.TryGetValue(request.BoundActionId!, out choice);
+            action = choice?.Action;
             if (request.ExpectedSnapshotId != projection.Snapshot.SnapshotId)
-                return Reject("stale_snapshot", "The native page or text cursor changed; observe again and choose a new action.");
+            { Reject("stale_snapshot", "The native page or text selection changed; observe again.", projection.Snapshot); return true; }
             if (projection.Snapshot.MenuActions.Status != "complete" || choice == null)
-                return Reject("menu_action_not_current", "This action is not in the current complete menu.");
-            MutationAdmission admission = authorize(new MutationAuthorizationRequest(
-                request.ClientSessionId, request.ControllerLeaseId, request.ControllerGeneration));
-            if (!admission.Accepted)
-                return Reject(admission.ErrorCode ?? "controller_rejected",
-                    admission.Detail ?? "The current controller did not authorize this request.");
-            var source = admission.Attribution;
-            PlayerEnvironmentAttribution? attribution = source == null ? null : new(
-                source.RuntimeInstanceId, source.ClientSessionId, source.ClientInstanceId,
-                source.ProductId, source.ProductName, source.ProductVersion,
-                source.ControllerLeaseId, source.ControllerGeneration);
-
+            { Reject("menu_action_not_current", "This action is not in the current complete menu.", projection.Snapshot); return true; }
             if (choice.TargetCursor != null)
             {
-                TextMenuSnapshot next = session.Navigate(frame,
-                    projection.Snapshot.SnapshotId, choice.Action.ActionId);
-                return Save(Result("applied", choice.Action, null, null,
-                    "Only the text menu cursor changed; no native input was delivered.", next, attribution));
+                var change = session.PrepareSystemApply(frame, projection.Snapshot.SnapshotId, choice.Action.ActionId);
+                // Mandatory complete successor bytes are immutable before any
+                // selection/revision change. A failed prepare leaves state intact.
+                using var frozen = preparation.PrepareTerminal(Result("applied", null, null,
+                    "Only the text menu cursor changed; no native input was delivered.", change.Snapshot));
+                var admission = preparation.TryBegin();
+                if (!admission.Accepted)
+                { frozen.Dispose(); Reject(admission.ErrorCode ?? "controller_rejected", admission.Detail ?? "Controller rejected this original request."); return true; }
+                change.Commit(session);
+                preparation.SealFrozen(Result("applied", null, null,
+                    "Only the text menu cursor changed; no native input was delivered.", change.Snapshot), frozen.Commit());
+                return true;
             }
-            try
-            {
-                var native = choice.Leaf!.Dispatch();
-                if (!native.Accepted)
-                    return Reject(native.ErrorCode ?? "native_input_rejected",
-                        native.Detail ?? "Native execute-time validation rejected this input.");
-            }
-            catch (Exception exception)
-            {
-                return Save(Result("unknown", choice.Action, "unknown", "input_delivery_unknown",
-                    $"Native input may have been delivered before {exception.GetType().Name}; never retry this request.",
-                    null, attribution));
-            }
-            TextMenuSnapshot? observed = null;
-            try { observed = session.Observe(capture()).Snapshot; }
-            catch (Exception) { /* Delivery is known; failed observation cannot undo it. */ }
-            return Save(Result("applied", choice.Action, "delivered",
-                observed == null ? "successor_observation_unavailable" : null,
-                "Native input was delivered. The successor is an immediate observation, not causal settlement.",
-                observed, attribution));
+            LegacyTerminalBounds.Preflight(preparation, Result("unknown", "unknown",
+                LegacyTerminalBounds.MaximumField, LegacyTerminalBounds.MaximumField, null));
+            var started = preparation.TryBegin();
+            if (!started.Accepted) { Reject(started.ErrorCode ?? "controller_rejected", started.Detail ?? "Controller rejected this original request."); return true; }
         }
+        catch (ResultPayloadCapacityException)
+        { Reject("result_core_capacity_exceeded", "The full mandatory result exceeded capacity before any text or native effect."); return true; }
+            preparation.ReleasePreparation();
+            NativeInputResult native;
+            try { native = choice.Leaf!.Dispatch(); }
+            catch (Exception)
+            {
+
+                preparation.Seal(Result("unknown", "unknown", "input_delivery_unknown",
+                    "Native input may have been delivered; never retry this request.", null)); return true;
+            }
+            if (native.LegacyDisposition == LegacyNativeInputDisposition.Unknown)
+            {
+
+                preparation.Seal(Result("unknown", "unknown", "input_delivery_unknown",
+                    "The native input has a partial, unconfirmed or unknown outcome; never retry.", null)); return true;
+            }
+            if (native.LegacyDisposition == LegacyNativeInputDisposition.NotDelivered)
+            { Reject(native.ErrorCode ?? "native_input_rejected", native.Detail ?? "Native execute-time validation rejected this input."); return true; }
+            TextMenuSnapshot? observed = null;
+            try { observed = session.Observe(capture()).Snapshot; } catch (Exception) { }
+            object applied = Result("applied", "delivered", observed == null ? "successor_observation_unavailable" : null,
+                "Native input was delivered. The successor is an immediate observation, not causal settlement.", observed);
+            try { preparation.Seal(applied); }
+            catch (ResultPayloadCapacityException)
+            {
+                preparation.Reservation.ResetEncoding();
+                preparation.Seal(Result("applied", "delivered", "successor_payload_capacity_exceeded",
+                    "Native input was delivered; its optional immediate observation exceeded result capacity.", null));
+            }
+            return true;
     }
 }

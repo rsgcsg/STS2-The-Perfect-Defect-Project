@@ -1,5 +1,6 @@
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
+using STS2Platform.NativeFoundation;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -7,7 +8,9 @@ internal readonly record struct NativeUiScopeEntry(
     bool Entered,
     bool DeferredFailure,
     string? ActionWitnessId = null,
-    bool CarrierBindingFailed = false);
+    bool CarrierBindingFailed = false,
+    NativeSourceInputInvocation? SourceInvocation = null,
+    bool SourceInvocationBorrowed = false);
 
 internal sealed record NativeUiAttemptOutcome(object Operand, Task<bool> Result);
 

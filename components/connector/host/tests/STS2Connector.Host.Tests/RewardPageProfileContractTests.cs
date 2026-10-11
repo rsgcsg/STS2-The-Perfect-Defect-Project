@@ -200,11 +200,14 @@ public sealed class RewardPageProfileContractTests
             "request-unknown-profile", "snapshot", "action", "client", "lease", 1,
             "ordinary-reward-page-v2");
 
-        PlayerEnvironmentActionReceipt receipt = PlayerEnvironmentService.Submit(request);
-
-        Assert.Equal("not_delivered", receipt.Delivery);
-        Assert.Equal("unsupported_input_profile", receipt.ReasonCode);
-        Assert.Null(receipt.Successor);
+        Assert.False(PlayerEnvironmentService.IsSupportedInputProfile(request.InputProfile));
+        using var requests = RequestTestDriver.Namespace();
+        var admission = requests.Admit(request);
+        Assert.Equal("rejected", admission.Status);
+        Assert.Equal("invalid_player_environment_action", admission.Reason);
+        Assert.Null(admission.OriginalCompletion);
+        Assert.Equal(0, requests.SpentIdCount);
+        Assert.Equal(0, requests.Arena.ChargedBytes);
     }
 
     private static LiveObservation Observation(ILiveSurface surface, string completeness) =>

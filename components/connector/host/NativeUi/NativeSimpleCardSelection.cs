@@ -110,10 +110,8 @@ internal static class NativeSimpleCardSelection
             .ToArray();
         NConfirmButton? confirm = FindConfirm(screen);
         NBackButton? cancel = FindCancel(screen);
-        bool canConfirm = preferences.RequireManualConfirmation
-                          && selected.Count >= preferences.MinSelect
-                          && selected.Count <= preferences.MaxSelect
-                          && confirm != null;
+        bool canConfirm = NativeSelectorControl.Available(confirm,
+            control => control.IsEnabled && ConnectorMod.IsNodeVisible(control));
         bool canCancel = preferences.Cancelable && cancel != null;
         string? prompt = ReadNodeText(screen, "%BottomLabel");
         var surface = new NativeSimpleCardSelectionSurface(
@@ -256,15 +254,10 @@ internal static class NativeSimpleCardSelection
             grid.EmitSignal(NCardGrid.SignalName.HolderPressed, holders[0]);
             return Delivered("native_simple_card_holder_pressed");
         }
-        if (operation == ConfirmOperation
-            && preferences.RequireManualConfirmation
-            && selectedCards.Count >= preferences.MinSelect
-            && selectedCards.Count <= preferences.MaxSelect
-            && FindConfirm(screen) is { } confirm)
-        {
-            confirm.ForceClick();
-            return Delivered("native_simple_card_confirm_clicked");
-        }
+        if (operation == ConfirmOperation)
+            return NativeSelectorControl.Click(FindConfirm(screen), () => IsCurrent(screen),
+                control => control.IsEnabled && ConnectorMod.IsNodeVisible(control),
+                control => control.ForceClick(), "native_simple_card_confirm_clicked");
         if (operation == CancelOperation && preferences.Cancelable && FindCancel(screen) is { } cancel)
         {
             cancel.ForceClick();

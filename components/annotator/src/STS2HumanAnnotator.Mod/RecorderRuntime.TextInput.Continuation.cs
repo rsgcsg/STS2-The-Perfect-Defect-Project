@@ -115,7 +115,7 @@ internal static partial class RecorderRuntime
                         is Func<bool> exit && ReferenceEquals(exit.Target, carrier)))) return;
             lock (Gate)
             {
-                if (_lifecycle.State != RecordingLifecycleState.Recording
+                if (IsSourceRecording || _lifecycle.State != RecordingLifecycleState.Recording
                     || SessionId == null || TimelineId == null) return;
                 HumanTextTargetBindings[manager] = new(
                     manager, carrier, SessionId, TimelineId);
@@ -252,7 +252,7 @@ internal static partial class RecorderRuntime
             HumanTextContinuationScope scope;
             lock (Gate)
             {
-                if (!_initialized || _lifecycle.State != RecordingLifecycleState.Recording
+                if (IsSourceRecording || !_initialized || _lifecycle.State != RecordingLifecycleState.Recording
                     || _store == null || !_humanTextInputHealthy
                     || SessionId == null || TimelineId == null) return null;
                 scope = new(HumanTextContinuationCurrent.Value, _store,

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { RuntimeControlPreconditionError, type PolicyRuntime } from "./runtime.js";
+import { RuntimeControlPreconditionError } from "./runtime-owner.js";
+import type { RuntimeServiceOwner, AgentRuntimeTickResult } from "./agent-runtime-contracts.js";
 import type { RuntimeControlPreconditions, TickResult } from "./contracts.js";
 
 const HTTP_SCHEMA = "sts2.policy-runtime/http-2" as const;
@@ -24,7 +25,7 @@ export interface RunningPolicyRuntimeHttpServer {
   close(): Promise<void>;
 }
 
-export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, options: PolicyRuntimeHttpOptions = {}): Promise<RunningPolicyRuntimeHttpServer> {
+export async function startPolicyRuntimeHttpServer(runtime: RuntimeServiceOwner, options: PolicyRuntimeHttpOptions = {}): Promise<RunningPolicyRuntimeHttpServer> {
   const host = options.host ?? "127.0.0.1";
   if (!["127.0.0.1", "localhost", "::1"].includes(host)) throw new Error("Policy Runtime HTTP service is loopback-only");
   const maxBodyBytes = options.maxBodyBytes ?? 8 * 1024;
@@ -41,6 +42,7 @@ export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, optio
       try {
         while (!closing && isDrivenMode(runtime.status().mode) && runtime.status().autonomy_budget.state === "active" && !runtime.status().tainted) {
           const result = await runtime.tick();
+          if (runtime.status().lifecycle === "stopped") { onStopped?.(); return; }
           if (result.type === "unknown" || !isDrivenMode(runtime.status().mode) || runtime.status().autonomy_budget.state !== "active") return;
           if (autoIdleMs > 0) await new Promise((resolve) => setTimeout(resolve, autoIdleMs));
           else await new Promise((resolve) => setImmediate(resolve));
@@ -67,7 +69,7 @@ export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, optio
   } };
 }
 
-async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
+async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
   try {
     if (request.method === "GET" && request.url === "/status") { json(response, 200, { schema: HTTP_SCHEMA, status: runtime.status() }); return; }
     if (request.method === "GET" && request.url === "/v2/environment") {
@@ -75,7 +77,7 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
       json(response, 200, await runtime.readEnvironment()); return;
     }
-    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
+    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
     const denied = mutationRequestError(request);
     if (denied) { request.resume(); json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
     const runHeader = "x-sts2-policy-run-id";
@@ -90,6 +92,13 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
       request.resume(); json(response, 409, { schema: HTTP_SCHEMA, error: "runtime_run_mismatch" }); return;
     }
     const body = await readBody(request, maxBodyBytes);
+    if (request.url === "/v2/reconcile") {
+      const value = strictObject(body, ["request_id"]);
+      if (typeof value.request_id !== "string" || value.request_id.trim() === "") throw new Error("request_id is invalid");
+      if (!runtime.reconcileOriginalRequest) throw new RuntimeControlPreconditionError("runtime_profile_reconcile_unsupported", 409);
+      const result = await runtime.reconcileOriginalRequest(value.request_id, controlPreconditions(request));
+      json(response, 200, { schema: HTTP_SCHEMA, ...result }); return;
+    }
     if (request.url === "/v2/mode") {
       const value = strictObject(body, ["mode"]);
       if (value.mode !== "human" && value.mode !== "shadow" && value.mode !== "one_step" && value.mode !== "auto") throw new Error("mode is invalid");
@@ -119,7 +128,7 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
     const requested = requestedValue === undefined ? 1 : requestedValue;
     if (typeof requested !== "number" || !Number.isSafeInteger(requested) || requested < 1 || requested > maxAutoTicks) throw new Error(`max_ticks must be between 1 and ${maxAutoTicks}`);
     const limit = runtime.status().mode === "one_step" ? 1 : requested;
-    const results: TickResult[] = [];
+    const results: (TickResult | AgentRuntimeTickResult)[] = [];
     const expected = controlPreconditions(request);
     for (let index = 0; index < limit; index += 1) {
       try {
@@ -130,11 +139,18 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
         // A later fence failure cannot erase already executed ticks or advertise
         // the entire POST as known-unapplied. Preserve the completed prefix.
         if (!(error instanceof RuntimeControlPreconditionError) || results.length === 0) throw error;
-        results.push({ type: "not_admitted", reason: error.code, status: runtime.status() });
+        const status = runtime.status();
+        if (status.schema === "sts2.policy-runtime/agent-session-status-1")
+          results.push({ type: "not_admitted", reason: error.code, status });
+        else results.push({ type: "not_admitted", reason: error.code, status });
         break;
       }
     }
     json(response, 200, { schema: `${HTTP_SCHEMA}/tick-1`, results, status: runtime.status() });
+    if (runtime.status().lifecycle === "stopped" && onStopped) {
+      if (response.writableFinished || response.destroyed) onStopped();
+      else { response.once("finish", onStopped); response.once("close", onStopped); }
+    }
   } catch (error) {
     if (error instanceof RuntimeControlPreconditionError) {
       json(response, error.httpStatus, { schema: HTTP_SCHEMA, error: error.code }); return;

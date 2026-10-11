@@ -20,8 +20,15 @@ fails closed.
 
 1. Read root/local AGENTS, `docs/TESTING.md`, `docs/VERSIONING.md`, Status, and
    only the exact component/runbook/evidence relevant to the requested gate.
-2. Verify the source and portable tests before packaging. Do not infer a clean
-   source from an installed artifact.
+2. Select prerequisites by the requested claim under `docs/TESTING.md`, then
+   verify relevant source review, local producer/reader checks and exact-game
+   build/Host/artifact dependencies before the affected runtime step. A bounded
+   authorized native diagnostic may overlap isolated hosted CI on the same frozen
+   candidate once install/load, rollback and Stop prerequisites pass. Do not bypass
+   a failed relevant local gate or mutate generated inputs while consumers use them.
+   Selected full dual-OS/portable CI still governs merge, portability and stronger
+   promotion; record its actual outcome separately. An installed artifact does not
+   prove clean source. A task may require stronger prerequisites.
 3. Produce and hash the exact package/artifact; keep component identity,
    contract identity, workspace provenance, artifact SHA/MVID, and runtime
    identity distinct.
@@ -33,15 +40,21 @@ fails closed.
    `unknown`, taint as required, and never retry automatically.
 7. Run independent verification appropriate to the gate and report non-claims.
 
+This is maintained workflow guidance subordinate to the user's authorized task and
+canonical TESTING rules. Revise a demonstrated workflow mismatch in the owning guide
+and Skill; do not turn an earlier ordering example into a new approval requirement.
+
 Do not promote predecessor evidence, treat compilation as load, invent gameplay
 legality, or absorb external policy/research semantics.
 
 ## Output and stop
 
 Return exact identities, commands, results by evidence level, rollback, blockers,
-and non-claims. Stop for a required Human/runtime action, unavailable exact game
-or credential, authority ambiguity, unsafe install target, or unauthorized
-irreversible action. A failed level leaves later levels unclaimed.
+and non-claims. Stop dependent work for a required Human action, unavailable exact
+game or credential, unresolved authority ambiguity, unsafe install target, or
+unauthorized irreversible action. Continue already authorized runtime steps without
+requesting the same permission again. A failed required dependency blocks its
+downstream claim; report each other reached level and CI outcome in its own scope.
 
 ## Trigger evals
 

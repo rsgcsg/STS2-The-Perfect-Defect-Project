@@ -27,6 +27,7 @@ from ..fullrun.structured_inputs import (
     RELATIONS,
     StructuredFrame,
 )
+from ..native_graph_spec import NativeGraphControl, optional_control
 
 GRAPH_ID = "stpd.structured-observation-only.s-m2-0.v1"
 WIDTH = 96
@@ -147,11 +148,12 @@ def validate_structured_frame(frame: StructuredFrame) -> None:
 class StructuredM2(nn.Module):
     """No controller, receipt, history-action, strategy or model download behavior."""
 
-    def __init__(self, *, seed: int = 0) -> None:
+    def __init__(self, *, seed: int = 0, model_control: NativeGraphControl | None = None) -> None:
         super().__init__()
         if type(seed) is not int or seed < 0:
             raise BoundaryError("structured_model", "seed_invalid")
         self.seed = seed
+        self.model_control = optional_control(model_control)
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(seed)
             self.text = ByteFieldEncoder()
@@ -175,8 +177,20 @@ class StructuredM2(nn.Module):
             self.read_value = nn.Linear(WIDTH, WIDTH)
             self.head = nn.Sequential(nn.Linear(2 * WIDTH, WIDTH), nn.GELU(), nn.Linear(WIDTH, 1))
 
+        if self.slots != SLOTS:
+            # Initialize common E/W/N parameters exactly as the historical K1 model.
+            # Additional learned queries use a separate deterministic RNG stream.
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed + 1)
+                extra = torch.randn(self.slots - SLOTS, WIDTH) * 0.02
+            self.write_query = nn.Parameter(torch.cat((self.write_query.detach(), extra), dim=0))
+
+    @property
+    def slots(self) -> int:
+        return SLOTS if self.model_control is None else self.model_control.graph.slots
+
     def initial_memory(self) -> Tensor:
-        return self.write_query.new_zeros((SLOTS, WIDTH))
+        return self.write_query.new_zeros((self.slots, WIDTH))
 
     def validate_parameters(self) -> None:
         if any(
@@ -190,7 +204,7 @@ class StructuredM2(nn.Module):
     def _memory(self, memory: Tensor) -> None:
         if (
             not isinstance(memory, Tensor)
-            or memory.shape != (SLOTS, WIDTH)
+            or memory.shape != (self.slots, WIDTH)
             or memory.device != self.write_query.device
             or memory.dtype != torch.float32
             or not bool(torch.isfinite(memory).all())
@@ -256,6 +270,10 @@ class StructuredM2(nn.Module):
     def advance(self, entities: Tensor, memory: Tensor) -> Tensor:
         self._entities(entities)
         self._memory(memory)
+        if self.model_control is not None and self.model_control.reset.mode == (
+            "reset_before_each_actual_advance"
+        ):
+            memory = self.initial_memory()
         source = torch.cat((memory, entities), dim=0)
         query = self.write_query + self.old_query(memory)
         attention = torch.softmax(query @ self.write_key(source).T / math.sqrt(WIDTH), dim=-1)

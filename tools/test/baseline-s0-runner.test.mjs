@@ -55,6 +55,56 @@ function nativeMap() {
     properties: value.interaction.content.surface.next_options[0] }];
   return value;
 }
+function publicRewardRef(descriptor, role = "reward") {
+  return { referent_id: descriptor.entity_id, role, kind: "entity", label: descriptor.label ?? descriptor.name,
+    state: { visible: true, enabled: descriptor.enabled, observation_basis: "native_visible_fact" },
+    properties_schema: `sts2.player-environment/referent/${role}-1`, properties: descriptor };
+}
+function ordinaryRewards(rewards = [{ entity_id: "reward-gold", kind: "gold", label: "Continue", description: "Public gold", enabled: true }],
+  { canProceed = true, skips = true } = {}) {
+  const value = snapshot("root", [], "reward_claim");
+  value.interaction.content_schema = "sts2.player-environment/surface/reward_claim-1";
+  value.interaction.content = { surface: { kind: "reward_claim", rewards, potion_slots_full: false,
+    discardable_potions: [], can_proceed: canProceed, proceed_skips_remaining_rewards: skips }, context: { kind: "reward_flow" } };
+  value.referents = rewards.map(reward => publicRewardRef(reward));
+  value.menu_actions.actions = rewards.filter(reward => reward.enabled).map(reward => ({
+    ...action("activate", "native_input"), action_id: `claim-${reward.entity_id}`,
+    subject_referent_id: reward.entity_id, label: "Not a semantic discriminant" }));
+  if (canProceed) value.menu_actions.actions.unshift({ ...action("activate", "native_input"), action_id: "proceed-rewards",
+    label: "Same label as every reward" });
+  value.menu_actions.materialized_count = value.menu_actions.total_count = value.menu_actions.actions.length;
+  return value;
+}
+function linkedRewards() {
+  const value = snapshot("root", [
+    { ...action("skip_rewards", "native_input"), subject_referent_id: "reward-screen" },
+    { ...action("claim_linked_reward", "native_input"), subject_referent_id: "linked-choice" }
+  ], "reward_claim");
+  value.interaction.stage = "native_linked_reward_page";
+  value.interaction.content_schema = "sts2.player-environment/surface/linked_rewards_text_menu-1";
+  value.interaction.content = { surface: { kind: "reward_claim", entries: [{ kind: "linked_reward_set",
+    referent_id: "linked-group", label: "Public group", choices: [{ referent_id: "linked-choice", label: "Public choice", enabled: true }] }],
+    proceed_is_skip: true, proceed_enabled: true }, context: { kind: "reward_claim" } };
+  value.referents = [publicRewardRef({ entity_id: "linked-choice", label: "Public choice", enabled: true }),
+    publicRewardRef({ entity_id: "linked-group", label: "Public group", enabled: false }, "reward_group"),
+    { referent_id: "reward-screen", role: "screen", kind: "control", label: "Rewards",
+      state: { visible: true, enabled: true, observation_basis: "native_visible_fact" }, properties_schema: null, properties: null }];
+  return value;
+}
+function cardRewards({ cardsAvailable = true } = {}) {
+  const card = { entity_id: "reward-card", name: "Public card", description: "Public card rule" };
+  const alternative = { entity_id: "reward-alternative", index: 0, label: "Continue", enabled: true };
+  const value = snapshot("root", [{ ...action("activate", "native_input"), action_id: "alternative-action",
+    subject_referent_id: alternative.entity_id, label: "Continue" }], "card_reward_selection");
+  if (cardsAvailable) value.menu_actions.actions.push({ ...action("select", "native_input"), action_id: "card-choice",
+    subject_referent_id: card.entity_id, label: "Ignore this label" });
+  value.interaction.content_schema = "sts2.player-environment/surface/card_reward_selection-1";
+  value.interaction.content = { surface: { kind: "card_reward_selection", cards: cardsAvailable ? [card] : [],
+    alternatives: [alternative], selectable_card_entity_ids: cardsAvailable ? [card.entity_id] : [] }, context: { kind: "reward_flow" } };
+  value.referents = [publicRewardRef(alternative, "alternative"), ...(cardsAvailable ? [publicRewardRef(card, "card")] : [])];
+  value.menu_actions.materialized_count = value.menu_actions.total_count = value.menu_actions.actions.length;
+  return value;
+}
 function input(value) {
   return { run_id: "test-run", bundle: { observation: value, reads: [] },
     continuity_token: "segment-1", candidate_count: value.menu_actions.actions.length,
@@ -176,8 +226,7 @@ test("native held-card operation and potion owners use current native controls i
 });
 
 test("bounded passthrough scene families have explicit choices and browse cannot loop without exposure", () => {
-  for (const [kind, verb] of [["reward_claim", "proceed_rewards"], ["card_reward_selection", "select"],
-    ["card_bundle_selection", "confirm"], ["native_generated_card_choice", "select"],
+  for (const [kind, verb] of [["card_bundle_selection", "confirm"], ["native_generated_card_choice", "select"],
     ["event_option", "activate"], ["event_dialogue", "activate"], ["rest_site", "activate"],
     ["treasure_room", "activate"], ["shop_inventory", "close"], ["game_over", "activate"]]) {
     assert.equal(new PublicMenuTeacher().decide(input(snapshot("root", [action(verb, "native_input")], kind)))
@@ -191,6 +240,78 @@ test("bounded passthrough scene families have explicit choices and browse cannot
   assert.equal(teacher.browseVisits, 0); // Offered actions never fabricate observed native exposure.
   const result = teacher.decide(input(combat));
   assert.equal(combat.menu_actions.actions[result.output.selected_index].verb, "select_card");
+});
+
+test("ordinary rewards join public reward subjects to GenericAction activate, then typed proceed", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  const teacher = new PublicMenuTeacher({ browse: false });
+  const frame = decodeTextMenuV2Snapshot(ordinaryRewards()).data;
+  const original = JSON.stringify(frame.menu_actions);
+  const result = teacher.decide(input(frame));
+  assert.equal(frame.menu_actions.actions[result.output.selected_index].subject_referent_id, "reward-gold");
+  assert.equal(result.output.scores.length, frame.menu_actions.actions.length);
+  assert.equal(JSON.stringify(frame.menu_actions), original); // No C filtering or mutation.
+  const complete = decodeTextMenuV2Snapshot(ordinaryRewards([], { skips: false })).data;
+  const proceed = teacher.decide(input(complete));
+  assert.equal(complete.menu_actions.actions[proceed.output.selected_index].subject_referent_id, null);
+  const ambiguous = ordinaryRewards([]);
+  ambiguous.menu_actions.actions.push({ ...action("activate", "native_input"), action_id: "second-null-subject" });
+  ambiguous.menu_actions.materialized_count = ambiguous.menu_actions.total_count = 2;
+  assert.equal(teacher.decide(input(ambiguous)).output.selected_index, null);
+  assert.equal(teacher.lastDiagnostic.reason, "reward_public_descriptor_unresolved");
+  const unresolved = ordinaryRewards();
+  unresolved.referents[0].role = "potion"; // Same label/id-like text is not the public reward binding.
+  assert.equal(teacher.decide(input(unresolved)).output.selected_index, null);
+  assert.equal(teacher.lastDiagnostic.reason, "reward_public_descriptor_unresolved");
+  const explicitSkip = ordinaryRewards([]);
+  explicitSkip.menu_actions.actions[0].verb = "skip";
+  assert.equal(teacher.decide(input(explicitSkip)).output.selected_index, 0);
+  explicitSkip.interaction.content.surface.proceed_skips_remaining_rewards = false;
+  assert.equal(teacher.decide(input(explicitSkip)).output.selected_index, null);
+});
+
+test("linked child choices require the current public group and child, then exact screen skip/proceed", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  const teacher = new PublicMenuTeacher({ browse: false });
+  const frame = decodeTextMenuV2Snapshot(linkedRewards()).data;
+  const result = teacher.decide(input(frame));
+  assert.equal(frame.menu_actions.actions[result.output.selected_index].verb, "claim_linked_reward");
+  frame.interaction.content.surface.entries[0].choices[0].enabled = false;
+  frame.menu_actions.actions = [frame.menu_actions.actions[0]];
+  frame.menu_actions.materialized_count = frame.menu_actions.total_count = 1;
+  assert.equal(frame.menu_actions.actions[teacher.decide(input(frame)).output.selected_index].verb, "skip_rewards");
+  frame.interaction.content.surface.proceed_enabled = false;
+  assert.equal(teacher.decide(input(frame)).output.selected_index, null);
+});
+
+test("card reward selects a typed public card before label-only alternatives; unknown effects abstain diagnostically", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  const teacher = new PublicMenuTeacher({ browse: false });
+  const frame = decodeTextMenuV2Snapshot(cardRewards()).data;
+  const result = teacher.decide(input(frame));
+  assert.equal(frame.menu_actions.actions[result.output.selected_index].verb, "select");
+  assert.equal(frame.menu_actions.actions[result.output.selected_index].subject_referent_id, "reward-card");
+  const onlyAlternative = decodeTextMenuV2Snapshot(cardRewards({ cardsAvailable: false })).data;
+  assert.equal(teacher.decide(input(onlyAlternative)).output.selected_index, null);
+  assert.equal(teacher.lastDiagnostic.reason, "card_reward_alternative_effect_not_public");
+  assert.equal(teacher.browseVisits, 0);
+});
+
+test("ambiguous reward diagnostic stays in raw result metadata outside the strict adapter output", async t => {
+  const directory = await temporary(t);
+  const records = await S0RawRecords.create(path.join(directory, "raw"), "test", { id: "teacher" });
+  const value = cardRewards({ cardsAvailable: false }), request = input(value);
+  await records.capture(full(value));
+  const offerId = await records.offer(request);
+  const teacher = new PublicMenuTeacher({ browse: false });
+  const result = teacher.decide(request);
+  await records.policyResult(offerId, request, result, teacher.lastDiagnostic);
+  await records.close();
+  const rows = (await readFile(path.join(records.directory, "records.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  const payload = rows.find(row => row.type === "policy_result").payload;
+  assert.equal(payload.diagnostic.reason, "card_reward_alternative_effect_not_public");
+  assert.equal(payload.chosen_action_id, null);
+  assert.deepEqual(Object.keys(payload.output).sort(), ["candidate_digest", "scores", "selected_index"]);
 });
 
 test("capsules preserve exact bytes; capture is not an offer; latest full snapshot join is mandatory", async t => {
@@ -291,7 +412,10 @@ test("control release must be freshly confirmed with exact runtime and null owne
   assert.equal(failedRequests, 1);
 });
 
-function lifecycleDependencies(trace, { failStop = false, unknown = true } = {}) {
+function lifecycleDependencies(trace, { failStop = false, unknown = true, exitReceipt = {
+  code: 0, signal: null, forced: false, host_shutdown: { status: "requested", http_status: 200,
+    response: { status: "shutdown_requested", runtime_instance_id: "runtime-1" }, error: null }
+}, failClose = false } = {}) {
   class Client {
     async textMenuV2Capabilities() { return { data: capabilities }; }
     async getFullTextMenuV2() { return full(base); }
@@ -317,7 +441,7 @@ function lifecycleDependencies(trace, { failStop = false, unknown = true } = {})
       trace.push("start"); assert.equal(options.characterId, "DEFECT"); assert.equal(options.ascension, 0);
       return { identity: { endpoint: "http://fixture", host: capabilities.host },
         async releaseController() { trace.push("handoff"); return { confirmed: true }; },
-        async close() { trace.push("episode-close"); } };
+        async close() { trace.push("episode-close"); if (failClose) throw new Error("close-failed"); return exitReceipt; } };
     },
     PlayerEnvironmentRestClient: Client, ConnectorPolicyClient: Connector, PolicyRuntime: Runtime,
     POLICY_RUNTIME_VERSION: "fixture", validatePolicyManifest: () => {},
@@ -335,6 +459,38 @@ test("owning episode is handed off, unknown stops without a second tick, Stop pr
   assert.equal(result.termination, "unknown_delivery_or_successor");
   assert.equal(result.offers, 1);
   assert.equal(result.stop_confirmed, true);
+  assert.equal(result.native_exit.status, "reported");
+  assert.equal(result.native_exit.receipt.code, 0);
+  assert.equal(result.native_exit.receipt.forced, false);
+});
+
+test("new runs persist the actual forced exit tuple separately from control release and policy offers", async t => {
+  const directory = await temporary(t), trace = [];
+  const receipt = { code: null, signal: "SIGTERM", forced: true, host_shutdown: {
+    status: "transport_error", response: null, error: "socket closed" } };
+  const result = await runS0({ mode: "collect", evidenceRoot: directory, seed: "1", browse: false },
+    lifecycleDependencies(trace, { exitReceipt: receipt }));
+  assert.deepEqual(result.native_exit.receipt, receipt);
+  assert.equal(result.native_exit.runtime_instance_id, "runtime-1");
+  const rows = (await readFile(path.join(result.directory, "records.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.deepEqual(rows.at(-1).payload.native_exit, result.native_exit);
+  assert.equal(result.stop_confirmed, true); // Released control never implies graceful process exit.
+  assert.equal(result.offers, 1);
+});
+
+test("missing or failed new close receipt is recorded without an invented native exit", async t => {
+  for (const [options, expected] of [[{ exitReceipt: null }, "not_reported"], [{ failClose: true }, "close_failed"]]) {
+    const directory = await temporary(t), trace = [];
+    await assert.rejects(runS0({ mode: "collect", evidenceRoot: directory, seed: "1", browse: false },
+      lifecycleDependencies(trace, options)), error => {
+        assert.equal(error.summary.native_exit.status, expected);
+        assert.equal(error.summary.native_exit.receipt, null);
+        assert.equal(error.summary.stop_confirmed, true);
+        assert.ok(error.summary.errors.length > 0);
+        return true;
+      });
+    assert.equal(trace.at(-1), "episode-close");
+  }
 });
 
 test("Stop failure still closes owning episode and does not claim release", async t => {

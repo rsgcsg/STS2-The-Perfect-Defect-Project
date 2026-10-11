@@ -12,24 +12,13 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
-Current owner authorization requires complete G2/V1 convergence, including all
-required earlier work, implementation, verification and independent evaluation.
-Read [the current specification](docs/BASELINE_V1_SPEC.zh-CN.md),
-[full execution and acceptance matrix](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
-and CURRENT. Only the user can finally approve G2/V1. Source review, lead
-readiness, a merge or historical S0 acceptance cannot substitute that approval.
-Necessary game lifecycle, installs, GitHub integration and deployment remain
-within scope; model/training paid spend retains one aggregate USD 20 cap.
-Preserve Human/Agent origin, data/use/Gold, exact runtime and rollback evidence.
-Old design-only notices describe past packets; required goals remain active.
-Existing Stage1a product/research duties retain their explicitly reconciled scope.
-All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
-supervisor owns planning, delegation and integration coordination; implementation and
-the supervisor's own changes receive independent review. Authorized bounded packets
-include their prerequisites, checks and understood local repairs without a human relay
-at every substep. Five minutes is a passive-wait checkpoint, not a limit on active work.
-Use a real, bounded observer when available and continue independent authorized work;
-stop for a genuine human/access/authority boundary, never invent background monitoring.
+Read the active task linked from CURRENT for its requirements, design version,
+allowed operations, resources and final approver. Task-specific budgets, branches,
+worker status and gate progress belong there, not in this instruction file.
+All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md); one lead
+coordinates disjoint writers and independently reviews evidence, including its
+own changes. Continue already authorized work and routine repairs without using
+the user as a relay. Only stop dependent work at a real unresolved boundary.
 
 Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and
 `docs/TESTING.md`. Read `docs/ENGINEERING_GOVERNANCE.md` when the task changes
@@ -90,6 +79,13 @@ that do not change component source may be squashed. Never weaken BOM/identity
 checks merely to accommodate a provenance-rewriting merge method.
 
 ## Change Loop
+
+Use real needs and evidence to revise designs; current implementation is not a
+reason to freeze a flawed abstraction. Record the chosen behavior, rationale,
+affected consumers and migration in the owning specification before dependent
+implementation. Proposals and historical alternatives do not silently become
+mandatory. Keep one canonical owner per fact; use PROJECT_SYSTEM for document
+placement and update the active handoff when work changes.
 
 Classify the change (`G0`-`G6`), identify the first incorrect fact and owning
 layer, preserve dependency direction, add the lowest-cost faithful regression,

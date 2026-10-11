@@ -166,6 +166,38 @@ async function closeStreams(streams) {
   await Promise.allSettled(streams.map((stream) => finished(stream)));
 }
 
+/** One process-local owner for early cancellation and concurrent closure.
+ * The token remains inside this lifecycle; returned receipts contain no credentials.
+ * Injected stop/output owners are for faithful lifecycle tests, not request data. */
+export function ownReferenceEpisodeLifecycle({ child, endpoint, hostControlToken,
+  controller, runtimeInstance, streams, signal, stop = stopChild, finishOutput = closeStreams }) {
+  let closing;
+  const close = () => {
+    if (!closing) closing = (async () => {
+      try { await controller()?.close(); } catch { /* Exit still belongs to this owner. */ }
+      const exit = await stop(child, { endpoint, hostControlToken,
+        expectedRuntimeInstanceId: runtimeInstance() });
+      try { await finishOutput(streams); }
+      catch (error) {
+        if (error && typeof error === "object") error.host_exit = exit;
+        throw error;
+      }
+      return exit;
+    })().finally(() => signal?.removeEventListener("abort", abort));
+    return closing;
+  };
+  const abort = () => { void close().catch(() => {}); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  return {
+    close,
+    assertActive() {
+      signal?.throwIfAborted();
+      if (closing) throw new Error("reference_episode_closing");
+    }
+  };
+}
+
 export async function startShippedPlayerEnvironmentEpisode({
   installation,
   localRoot,
@@ -178,8 +210,10 @@ export async function startShippedPlayerEnvironmentEpisode({
   timeoutMs = 90_000,
   requestTimeoutMs = 30_000,
   experimentalBuildAcknowledged = false,
-  experimentalConnectorAcknowledged = false
+  experimentalConnectorAcknowledged = false,
+  signal = undefined
 }) {
+  signal?.throwIfAborted();
   if (characterId !== null && (typeof characterId !== "string" || !characterId))
     throw new Error("reference_character_id_invalid");
   if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
@@ -208,6 +242,7 @@ export async function startShippedPlayerEnvironmentEpisode({
     expectedGameIdentity: diskIdentity
   });
   const launchProfile = resolveLaunchProfile({ localRoot, isolatedProfileId: profileId });
+  signal?.throwIfAborted();
   const connectorCanary = resolveExperimentalConnectorCanary({
     installation,
     compatibility,
@@ -217,35 +252,39 @@ export async function startShippedPlayerEnvironmentEpisode({
   mkdirSync(evidenceDirectory, { recursive: true });
   const stdoutStream = createWriteStream(path.join(evidenceDirectory, "stdout.log"));
   const stderrStream = createWriteStream(path.join(evidenceDirectory, "stderr.log"));
-  const launch = shippedRuntimeLaunch(installation, {
-    launchProfile,
-    connectorEndpoint: runtimeEndpoint,
-    runSeed: canonicalSeed,
-    connectorCanary
+  let lifecycle;
+  for (const stream of [stdoutStream, stderrStream]) stream.once("error", () => {
+    void lifecycle?.close().catch(() => {});
   });
+  let launch;
+  try {
+    signal?.throwIfAborted();
+    launch = shippedRuntimeLaunch(installation, {
+      launchProfile,
+      connectorEndpoint: runtimeEndpoint,
+      runSeed: canonicalSeed,
+      connectorCanary
+    });
+  } catch (error) {
+    await closeStreams([stdoutStream, stderrStream]);
+    throw error;
+  }
   const { child } = launch;
-  child.stdout.pipe(stdoutStream);
-  child.stderr.pipe(stderrStream);
   let controller = null;
   let capabilities = null;
-  let closed = false;
   let handoffReceipt = null;
-
-  const close = async () => {
-    if (closed) return null;
-    closed = true;
-    await controller?.close().catch(() => null);
-    const exit = await stopChild(child, {
-      endpoint: runtimeEndpoint,
-      hostControlToken: launch.hostControlToken,
-      expectedRuntimeInstanceId: capabilities?.host?.runtime_instance_id ?? null
-    });
-    await closeStreams([stdoutStream, stderrStream]);
-    return exit;
-  };
+  lifecycle = ownReferenceEpisodeLifecycle({ child, endpoint: runtimeEndpoint,
+    hostControlToken: launch.hostControlToken, controller: () => controller,
+    runtimeInstance: () => capabilities?.host?.runtime_instance_id ?? null,
+    streams: [stdoutStream, stderrStream], signal });
+  const close = lifecycle.close;
 
   try {
+    lifecycle.assertActive();
+    child.stdout.pipe(stdoutStream);
+    child.stderr.pipe(stderrStream);
     const endpointResult = await waitForEndpoint(runtimeEndpoint, timeoutMs, childReference(child));
+    lifecycle.assertActive();
     if (!endpointResult.ok) {
       throw new Error(`Reference Connector endpoint did not become ready: ${endpointResult.error}`);
     }
@@ -253,6 +292,7 @@ export async function startShippedPlayerEnvironmentEpisode({
     const gate = evaluateHeadlessCapabilities(capabilities);
     if (!gate.ok) throw new Error(`Reference capability gate failed: ${gate.errors.join(", ")}`);
     const observations = await waitForInteractiveSnapshot(runtimeEndpoint, timeoutMs, childReference(child));
+    lifecycle.assertActive();
     let snapshot = observations.at(-1)?.value;
     if (snapshot == null) throw new Error("Reference runtime did not mount an interactive snapshot.");
 
@@ -263,12 +303,14 @@ export async function startShippedPlayerEnvironmentEpisode({
       productVersion: readProjectIdentity().version
     });
     await controller.register(capabilities.host, capabilities.control);
+    lifecycle.assertActive();
     const provenanceResponse = await requestHostProvenance({
       endpoint: runtimeEndpoint,
       hostControlToken: launch.hostControlToken,
       expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
       timeoutMs: requestTimeoutMs
     });
+    lifecycle.assertActive();
     let provenance = evaluateEpisodeProvenance({
       requestedSeed: canonicalSeed,
       expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -282,6 +324,7 @@ export async function startShippedPlayerEnvironmentEpisode({
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
         timeoutMs: requestTimeoutMs
       });
+      lifecycle.assertActive();
       provenance = evaluateEpisodeProvenance({
         requestedSeed: canonicalSeed,
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -299,11 +342,13 @@ export async function startShippedPlayerEnvironmentEpisode({
       "tutorial_preference"
     ]);
     for (let index = 0; runEntryKinds.has(snapshot.interaction.kind) && index < 16; index += 1) {
+      lifecycle.assertActive();
       const action = chooseReferenceBootstrapAction(snapshot, { characterId, ascension });
       if (action == null) {
         throw new Error(`Reference reset cannot safely advance ${snapshot.interaction.kind}.`);
       }
       const credentials = await controller.credentials();
+      lifecycle.assertActive(); // An abort during acquisition permits no bootstrap POST.
       const receipt = (await client.submit({
         requestId: `reference-reset-${String(index + 1).padStart(2, "0")}-${randomUUID()}`,
         expectedSnapshotId: snapshot.snapshot_id,
@@ -312,6 +357,7 @@ export async function startShippedPlayerEnvironmentEpisode({
         controllerLeaseId: credentials.controllerLeaseId,
         controllerGeneration: credentials.controllerGeneration
       })).data;
+      lifecycle.assertActive();
       const settled = await settleReferenceReceipt({
         receipt,
         expectedSnapshotId: snapshot.snapshot_id,
@@ -319,6 +365,7 @@ export async function startShippedPlayerEnvironmentEpisode({
         child,
         timeoutMs: requestTimeoutMs
       });
+      lifecycle.assertActive();
       bootstrapTrace.push({
         interaction_kind: snapshot.interaction.kind,
         verb: action.verb,
@@ -404,7 +451,16 @@ export async function startShippedPlayerEnvironmentEpisode({
       close
     };
   } catch (error) {
-    await close();
+    try {
+      const exit = await close();
+      if (error && typeof error === "object") error.host_exit = exit;
+    } catch (cleanupError) {
+      if (error && typeof error === "object") {
+        error.host_cleanup_error = cleanupError;
+        if (cleanupError?.host_exit) error.host_exit = cleanupError.host_exit;
+      }
+    }
+    if (error && typeof error === "object") error.host_started = true;
     throw error;
   }
 }

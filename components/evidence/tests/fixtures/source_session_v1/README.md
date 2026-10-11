@@ -1,0 +1,1 @@
+Synthetic source-session fixture emitted by the C# SourceSessionBundlePacker and independently verified by the Python verifier. It includes one exact input and one unfinished input closed as unknown. No game, Human or native exposure qualification. Semantic tampering tests repair transport hashes before checking the original catalogue, source segment and capture basis.

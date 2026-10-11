@@ -200,7 +200,11 @@ internal static partial class RecorderRuntime
                 _lastSnapshotId,
                 _lastBlockers.ToArray(),
                 ApplicationEvents.LatestSequence,
-                Continuous.Snapshot());
+                Continuous.Snapshot())
+            {
+                Source = _activeCaptureProfileId == SourceSessionContract.ProfileId ? _store?.GetSourceStatus() ?? _lastSourceStatus : null,
+                SourceV2 = IsSourceRecordingV2 ? _store?.GetSourceStatusV2() ?? _lastSourceStatusV2 : null
+            };
         }
     }
 
@@ -211,6 +215,10 @@ internal static partial class RecorderRuntime
         RecordingCommand command, RecordingSessionExpectation? expectedSession = null,
         bool automatic = false)
     {
+        if (IsSourceCommand(command)) return ExecuteSourceCommand(command, expectedSession);
+        lock (Gate)
+            if (SourceCommands.ContainsKey(command.CommandId))
+                return RejectedCommand("recording_command_conflict", "This command ID belongs to an exact source request.");
         if (!string.Equals(
                 command.Schema,
                 RecordingApplicationContract.CommandSchema,
@@ -400,6 +408,8 @@ internal static partial class RecorderRuntime
             CaptureProfile);
 
         _store = store;
+        _activeCaptureProfileId = CaptureProfile.ProfileId;
+        _lastSourceStatus = null;
         SessionId = lifecycle.SessionId;
         TimelineId = timelineId;
         _recordingDirectory = store.DirectoryPath;
@@ -443,7 +453,7 @@ internal static partial class RecorderRuntime
             SessionId,
             TimelineId,
             _currentRunId,
-            CaptureProfile.ProfileId,
+            _activeCaptureProfileId,
             _recordingDirectory,
             _sessionStartedAt.Value,
             _sessionClosedAt);
@@ -475,6 +485,7 @@ internal static partial class RecorderRuntime
                 RecordingCommandKind.Pause => RecordingEventKind.SessionPaused,
                 RecordingCommandKind.Resume => RecordingEventKind.SessionResumed,
                 RecordingCommandKind.Close => RecordingEventKind.SessionCloseRequested,
+                RecordingCommandKind.ChangeSource => RecordingEventKind.SourceChanged,
                 _ => RecordingEventKind.CommandRejected
             }
             : RecordingEventKind.CommandRejected;
@@ -527,6 +538,7 @@ internal static partial class RecorderRuntime
 
     private static void FinalizeClose()
     {
+        if (IsSourceRecording) { FinalizeSourceClose(); return; }
         IReadOnlyList<SemanticBoundaryTraceDraft> closeDrafts;
         lock (Gate)
         {
@@ -787,7 +799,7 @@ internal static partial class RecorderRuntime
     private static bool AcceptingNewWitnesses()
     {
         lock (Gate)
-            return _initialized && _lifecycle.State == RecordingLifecycleState.Recording;
+            return !IsSourceRecording && _initialized && _lifecycle.State == RecordingLifecycleState.Recording;
     }
 
     /// <summary>
@@ -798,6 +810,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     private static bool CanOpenSemanticEvidenceWindow()
     {
+        if (IsSourceRecording) return false;
         RecordingLifecycleState lifecycleState = GetRecordingLifecycle().State;
         return lifecycleState == RecordingLifecycleState.Recording
             || HumanActionScope.Current != null;
@@ -844,12 +857,12 @@ internal static partial class RecorderRuntime
 
     internal static NativeUiScopeEntry TryEnterCardScope(NCardPlay owner, CardModel card, Creature? target)
     {
-        if (!AcceptingNewWitnesses() || SelectorInputActive) return default;
         var arguments = new Dictionary<string, object>(StringComparer.Ordinal);
-        ProcessLocalObservedAction observed;
-        if (target != null)
-            arguments["target"] = target;
-        observed = new ProcessLocalObservedAction("play", card, arguments);
+        if (target != null) arguments["target"] = target;
+        var observed = new ProcessLocalObservedAction("play", card, arguments);
+        if (TryEnterSourceInputScope("NCardPlay.TryPlayCard", nameof(PlayCardAction), owner, observed, out var source,
+            target == null ? "confirm_card" : "confirm_target")) return source;
+        if (!AcceptingNewWitnesses() || SelectorInputActive) return default;
         return TryEnterScope(
             "native_card_play_ui",
             nameof(PlayCardAction),
@@ -963,6 +976,10 @@ internal static partial class RecorderRuntime
         PotionModel potion,
         Creature? target)
     {
+        var sourceArguments = new Dictionary<string, object>(StringComparer.Ordinal);
+        if (target != null) sourceArguments["target"] = target;
+        if (TryEnterSourceInputScope("PotionModel.EnqueueManualUse", nameof(UsePotionAction), potion,
+            new("use_potion", potion, sourceArguments), out var source)) return source;
         ArmedPotionUse? armed;
         lock (Gate)
         {
@@ -1069,10 +1086,10 @@ internal static partial class RecorderRuntime
                 "select",
                 screen,
                 holder.CardModel,
-                holder));
+                holder), sourceOwner: screen);
 
     internal static NativeUiScopeEntry TryEnterGeneratedChoiceSkipScope(
-        NChooseACardSelectionScreen screen) =>
+        NChooseACardSelectionScreen screen, object? sourceControl = null) =>
         TryEnterScope(
             "native_generated_card_choice_skip_ui",
             "NChooseACardSelectionScreen.OnSkipButtonReleased",
@@ -1083,10 +1100,12 @@ internal static partial class RecorderRuntime
             occurrence: GeneratedChoiceOccurrence(
                 "NChooseACardSelectionScreen.OnSkipButtonReleased",
                 "skip",
-                screen));
+                screen), sourceOwner: screen, sourceControl: sourceControl);
 
-    internal static void ObserveGeneratedChoiceCard(CardModel card) =>
-        ObserveAcceptedUiAction(
+    internal static void ObserveGeneratedChoiceCard(CardModel card, NativeSourceInputInvocation? sourceInvocation = null)
+    {
+        if (sourceInvocation != null) { NativeSourceInputProvider.Accepted(sourceInvocation); return; }
+        ObserveAcceptedSemanticUiAction(
             "NChooseACardSelectionScreen.SelectHolder",
             new ProcessLocalObservedAction(
                 "select",
@@ -1098,9 +1117,12 @@ internal static partial class RecorderRuntime
                 NativeWitnessIdentity.Get(card, "card"),
                 new Dictionary<string, string>(StringComparer.Ordinal),
                 DateTimeOffset.UtcNow));
+    }
 
-    internal static void ObserveGeneratedChoiceSkip() =>
-        ObserveAcceptedUiAction(
+    internal static void ObserveGeneratedChoiceSkip(NativeSourceInputInvocation? sourceInvocation = null)
+    {
+        if (sourceInvocation != null) { NativeSourceInputProvider.Accepted(sourceInvocation); return; }
+        ObserveAcceptedSemanticUiAction(
             "NChooseACardSelectionScreen.OnSkipButtonReleased",
             new ProcessLocalObservedAction(
                 "skip",
@@ -1112,6 +1134,7 @@ internal static partial class RecorderRuntime
                 null,
                 new Dictionary<string, string>(StringComparer.Ordinal),
                 DateTimeOffset.UtcNow));
+    }
 
     internal static NativeUiScopeEntry TryEnterScope(
         string origin,
@@ -1120,8 +1143,12 @@ internal static partial class RecorderRuntime
         CardModel? stagedCard = null,
         ProcessLocalObservedAction? semanticSelection = null,
         HumanActionOccurrenceEvidence? occurrence = null,
-        NCardPlay? stagedOwner = null)
+        NCardPlay? stagedOwner = null,
+        object? sourceOwner = null,
+        object? sourceControl = null)
     {
+        if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
+            expectedAction ?? semanticSelection, out var source, sourceControl: sourceControl)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (!CanOpenSemanticEvidenceWindow())
@@ -1257,8 +1284,12 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction observed,
         NativePostCommitCompletionExpectation? completionExpectation = null,
         ProcessLocalObservedAction? nativeSemanticSelection = null,
-        object? nestedInputOwner = null)
+        object? nestedInputOwner = null,
+        object? sourceOwner = null,
+        object? sourceControl = null)
     {
+        if (TryEnterSourceInputScope(nativeActionType, nativeActionType, sourceOwner ?? nestedInputOwner,
+            observed, out var source, sourceControl: sourceControl)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (HumanActionScope.Current != null)
@@ -1370,8 +1401,13 @@ internal static partial class RecorderRuntime
         AppendJournal("native_human_input_rejected", null, _lastSnapshotId,
             $"{nativeActionType};native_operand={NativeWitnessIdentity.Get(operand, "native_operand")};native_result=false");
 
-    internal static void ExitNativeUiScope(NativeUiScopeEntry entry)
+    internal static void ExitNativeUiScope(NativeUiScopeEntry entry, Exception? nativeException = null)
     {
+        if (entry.SourceInvocation != null)
+        {
+            if (!entry.SourceInvocationBorrowed) NativeSourceInputProvider.Finish(entry.SourceInvocation, nativeException);
+            return;
+        }
         if (entry.Entered)
         {
             HumanActionContext? context = HumanActionScope.Current;
@@ -1440,6 +1476,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveAcceptedAction(GameAction action)
     {
+        if (IsSourceRecording) return;
         // Some native UI callbacks enqueue a known child action inside the
         // UI method whose accepted occurrence is already being staged. The
         // exact object binding is installed in RequestEnqueue's Prefix, before
@@ -1634,8 +1671,15 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction observed,
         NativeWitnessEvidence witness,
         bool captureImmediatePostCommitBoundary = true,
-        string? actionWitnessId = null)
+        string? actionWitnessId = null,
+        NativeSourceInputInvocation? sourceInvocation = null,
+        bool sourceAcceptanceProven = false)
     {
+        if (sourceInvocation != null)
+        {
+            if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(sourceInvocation);
+            return false; // Source completions never enter Human observer/bookkeeping.
+        }
         HumanActionContext? context = HumanActionScope.Current;
         try
         {
@@ -1903,6 +1947,7 @@ internal static partial class RecorderRuntime
 
     internal static void OnProcessFrame()
     {
+        if (IsSourceRecording) { FinalizeSourceClose(); return; }
         try
         {
             if (_store != null)
@@ -2245,6 +2290,7 @@ internal static partial class RecorderRuntime
     private static void ObserveNativeDecisionOwnerReady(
         NativeDecisionOwnerReadyObservation observation)
     {
+        if (IsSourceRecording) return; // the passive Connector bridge owns source publication
         string observedSessionId;
         string observedRunId;
         lock (Gate)
@@ -4313,6 +4359,12 @@ internal static partial class RecorderRuntime
 
     private static RecordingScopeStatus BuildScopeStatus(RecordingStoreSnapshot store)
     {
+        if (IsSourceRecording)
+            return new RecordingScopeStatus(Array.Empty<string>(), new Dictionary<string, long>(),
+                new Dictionary<string, long>(), new Dictionary<string, long>(), Array.Empty<string>(),
+                _store?.SourceProfile?.SeamCoverage.Where(pair => pair.Value.Coverage != "complete_at_seam")
+                    .Select(pair => pair.Key).ToArray() ?? Array.Empty<string>(),
+                "Native logical source facts; advertised native coverage remains unqualified.");
         var failedClosed = store.FailedActionFamilies ?? new Dictionary<string, long>(StringComparer.Ordinal);
         string[] notObserved = CaptureProfile.SupportedActionFamilies
             .Where(family => !store.RecordedActionFamilies.ContainsKey(family)
@@ -4536,6 +4588,7 @@ internal static partial class RecorderRuntime
         bool acceptedHumanEffect = false,
         RecordingDecisionFailure? decisionFailure = null)
     {
+        if (IsSourceRecording) return; // legacy Human correlation never authors source-profile evidence
         try
         {
             bool diagnostic = reason == "human_action_native_type_mismatch"
@@ -4738,6 +4791,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     internal static void ObserveNativeRunEnded(bool isVictory)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         string detail = $"RunManager.OnEnded(isVictory={isVictory.ToString().ToLowerInvariant()})";
         lock (Gate)
         {
@@ -4749,8 +4803,11 @@ internal static partial class RecorderRuntime
             if (abandoned)
                 AppendJournal("run_abandoned_native", null, _lastSnapshotId,
                     "RunManager.OnEnded observed IsAbandoned=true.");
-            Continuous.ObserveTerminal(isVictory, abandoned);
-            TerminalSeal.ObserveNativeEnded(SessionId!, _currentRunId, abandoned);
+            if (!IsSourceRecording)
+            {
+                Continuous.ObserveTerminal(isVictory, abandoned);
+                TerminalSeal.ObserveNativeEnded(SessionId!, _currentRunId, abandoned);
+            }
             _statusRefreshRequested = true;
         }
         PublishApplicationEvent(RecordingEventKind.RunEnded, detail: detail);
@@ -4763,6 +4820,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     internal static void ObserveNativeRunStarted(string journalKind)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         bool closePrevious;
         string? previousSession;
         lock (Gate)
@@ -4803,6 +4861,7 @@ internal static partial class RecorderRuntime
 
     private static void SealAfterNativeTerminal()
     {
+        if (IsSourceRecording) return;
         bool seal;
         string? sessionId;
         string runId;
@@ -4831,6 +4890,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveNativeRunCleanup(bool graceful)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         // Cleanup is an observed exit boundary, not victory/defeat evidence.
         lock (Gate)
         {
@@ -4846,6 +4906,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveGameExiting()
     {
+        if (IsSourceRecordingV2) { _store?.MarkSourceV2AccountingFailed("source_process_exit_unproduced"); return; }
         try { ObserveNativeRunCleanup(false); }
         catch (Exception exception) { NativeUiObservationSafety.Report("recording.game_exit", exception); }
     }

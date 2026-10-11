@@ -9,6 +9,324 @@ namespace STS2Connector;
 
 public sealed class PublicInformationBindingsTests
 {
+    [Theory]
+    [InlineData("held")]
+    [InlineData("no-current-card-play")]
+    public void NativeRenderedCardSubjectIsBoundBeforeRequiredInformation(string phase)
+    {
+        var page = Page() with
+        {
+            Referents = Page().Referents.Where(value =>
+                !value.Role.Contains("card", StringComparison.Ordinal)).ToArray(),
+            Interaction = Page().Interaction with { Kind = phase == "held"
+                ? "combat_card_operation" : "combat_turn", Stage = phase }
+        };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        int renderedReads = 0;
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-held", true, () =>
+        {
+            renderedReads++;
+            return NativeLogicalPresentation.RenderedCardSubject("rendered-held", "Defend",
+                "1", "Gain 5 Block.", facts => facts["displayed_star_cost"] = "0");
+        });
+        Assert.NotNull(subject);
+        Assert.Equal(1, renderedReads);
+        Assert.Equal("card", subject!.Role);
+        Assert.Equal("Defend", subject.Label);
+        Assert.Equal("1", subject.Properties!["displayed_cost"]!.GetValue<string>());
+        Assert.Equal("0", subject.Properties["displayed_star_cost"]!.GetValue<string>());
+        Assert.Equal(phase, bindings.Page.Interaction.Stage);
+        Assert.True(bindings.Complete);
+        Assert.Null(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner"));
+        var leaf = PublicInformationBindings.Leaf("exact-rendered-holder", "card_tips", "show_card_tips",
+            subject, () => NativeInputResult.Delivered("exact source fixture"));
+        var observed = Browse(new TextMenuV2Session(), Frame(bindings.Page, leaf), "card_tips");
+        Assert.Equal("rendered-held", observed.MenuActions.Actions.Single(value =>
+            value.Verb == "show_card_tips").SubjectReferentId);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+    }
+
+    [Fact]
+    public void LegacyCardTipBindingNeverReadsOrAddsRenderedSubjects()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        Assert.Null(NativeTextMenuInformation.BindCardTipSubject(bindings, "not-current", false,
+            () => throw new InvalidOperationException("Legacy must not read rendered subjects"),
+            () => throw new InvalidOperationException("Legacy must not read native source coherence")));
+        Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "not-current");
+        var legacy = new PublicInformationBindings(Page());
+        Assert.NotNull(NativeTextMenuInformation.BindCardTipSubject(legacy, "card-a", false,
+            () => throw new InvalidOperationException("Legacy existing subject must not read")));
+        Assert.True(legacy.Complete);
+    }
+
+    [Theory]
+    [InlineData(false, "current")]
+    [InlineData(true, "current")]
+    [InlineData(false, "changed")]
+    [InlineData(true, "changed")]
+    [InlineData(false, "unreadable")]
+    [InlineData(true, "unreadable")]
+    public void EnumeratedNativeCardSourceMustRemainCoherentEvenWithAFrozenSubject(bool existing, string coherence)
+    {
+        var originalSubject = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        var page = Page() with { Referents = existing ? new[] { originalSubject } : Array.Empty<PlayerEnvironmentReferent>() };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        int sourceReads = 0;
+        int displayReads = 0;
+        var result = NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-current", true,
+            () => { displayReads++; return null; }, () =>
+            {
+                sourceReads++;
+                return coherence == "unreadable"
+                    ? throw new InvalidOperationException("Native source unreadable") : coherence == "current";
+            });
+        Assert.Equal(1, sourceReads);
+        Assert.Equal(coherence == "current" && !existing ? 1 : 0, displayReads);
+        if (coherence == "current" && existing)
+        {
+            // Missing fresh display is not a no-tooltip rule when this exact
+            // live holder still binds the already frozen public subject.
+            Assert.Same(originalSubject, result);
+            Assert.True(bindings.Complete);
+        }
+        else
+        {
+            Assert.Null(result);
+            Assert.False(bindings.Complete);
+            string missing = coherence == "changed" ? "card_tip_source_changed"
+                : coherence == "unreadable" ? "card_tip_source_unreadable" : "card_subject";
+            Assert.Contains("public_information_binding_" + missing, bindings.Page.Completeness.Missing);
+            Assert.Empty(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner")!.Leaves);
+        }
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Equal(page.Referents.Count, bindings.Page.Referents.Count);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("unreadable")]
+    [InlineData("foreign-id")]
+    [InlineData("foreign-facts-id")]
+    [InlineData("wrong-role")]
+    [InlineData("wrong-kind")]
+    [InlineData("invisible")]
+    [InlineData("wrong-schema")]
+    [InlineData("empty-label")]
+    [InlineData("wrong-title")]
+    [InlineData("missing-cost")]
+    [InlineData("missing-description")]
+    public void ActiveRenderedCardWithMissingOrForeignFactsRemainsPartial(string failure)
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var supplied = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        if (failure == "foreign-id") supplied = supplied with { ReferentId = "foreign" };
+        else if (failure == "wrong-role") supplied = supplied with { Role = "enemy" };
+        else if (failure == "wrong-kind") supplied = supplied with { Kind = "control" };
+        else if (failure == "invisible") supplied = supplied with { State = supplied.State with { Visible = false } };
+        else if (failure == "wrong-schema") supplied = supplied with { PropertiesSchema = "foreign" };
+        else if (failure == "empty-label") supplied = supplied with { Label = "" };
+        else if (failure == "foreign-facts-id") supplied.Properties!["card_referent_id"] = "foreign";
+        else if (failure == "wrong-title") supplied.Properties!["displayed_title"] = "Other card";
+        else if (failure == "missing-cost") supplied.Properties!.AsObject().Remove("displayed_cost");
+        else if (failure == "missing-description") supplied.Properties!.AsObject().Remove("displayed_description");
+        Assert.Null(NativeTextMenuInformation.BindCardTipSubject(bindings, "rendered-current", true, () =>
+            failure == "unreadable" ? throw new InvalidOperationException("Rendered source unreadable")
+                : failure == "null" ? null : supplied));
+        Assert.False(bindings.Complete);
+        Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
+        if (failure == "unreadable")
+            Assert.Contains("public_information_binding_card_tip_source_unreadable", bindings.Page.Completeness.Missing);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "rendered-current");
+        Assert.Empty(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(bindings.Page, "owner")!.Leaves);
+    }
+
+    [Theory]
+    [InlineData("wrong-role")]
+    [InlineData("invisible")]
+    [InlineData("missing-label")]
+    [InlineData("full-page")]
+    public void ExistingCardSubjectOwnsItsRoleVisibilityAndCurrentPageFacts(string condition)
+    {
+        var existing = Ref("current-page-card", "card", "Selector Defend") with
+        {
+            PropertiesSchema = "sts2.player-environment/referent/card-1",
+            Properties = JsonNode.Parse("""{"definition_id":"DEFEND","cost":"2","description":"Shown selector text"}""")
+        };
+        if (condition == "wrong-role") existing = existing with { Role = "enemy" };
+        else if (condition == "invisible") existing = existing with { State = existing.State with { Visible = false } };
+        else if (condition == "missing-label") existing = existing with { Label = null };
+        var page = Page() with { Referents = new[] { existing } };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, existing.ReferentId, true,
+            () => throw new InvalidOperationException("Existing subject may not be replaced"),
+            () => true);
+        if (condition == "full-page")
+        {
+            Assert.Same(existing, subject);
+            Assert.Equal("2", subject!.Properties!["cost"]!.GetValue<string>());
+            Assert.Equal("Shown selector text", subject.Properties["description"]!.GetValue<string>());
+            Assert.True(bindings.Complete);
+        }
+        else
+        {
+            Assert.Null(subject);
+            Assert.False(bindings.Complete);
+        }
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Equal(JsonSerializer.Serialize(existing), JsonSerializer.Serialize(bindings.Page.Referents.Single()));
+    }
+
+    [Fact]
+    public void RenderedSubjectFreezesOneCopyAndDoesNotBecomeAnotherCatalogOrHandReader()
+    {
+        var page = Page();
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        var supplied = NativeLogicalPresentation.RenderedCardSubject("rendered-current", "Defend", "1", "Block");
+        int reads = 0;
+        var subject = NativeTextMenuInformation.BindCardTipSubject(bindings, supplied.ReferentId, true,
+            () => { reads++; return supplied; });
+        supplied.Properties!["displayed_title"] = "Changed later";
+        supplied.Properties["displayed_cost"] = "99";
+        Assert.NotNull(subject);
+        Assert.Equal("Defend", subject!.Properties!["displayed_title"]!.GetValue<string>());
+        Assert.Equal("1", subject.Properties["displayed_cost"]!.GetValue<string>());
+        Assert.Same(subject, NativeTextMenuInformation.BindCardTipSubject(bindings, supplied.ReferentId, true,
+            () => throw new InvalidOperationException("No second rendered read")));
+        Assert.Equal(1, reads);
+        Assert.Single(bindings.Page.Referents, value => value.ReferentId == supplied.ReferentId);
+        Assert.Same(page.Interaction.Content.Context, bindings.Page.Interaction.Content.Context);
+        Assert.Same(page.BoundActions, bindings.Page.BoundActions);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        Assert.Null(bindings.Card("another-active-card-without-facts"));
+        Assert.False(bindings.Complete);
+    }
+
+    [Fact]
+    public void ExactNativeCardHolderTypeDoesNotBorrowClickableAvailability()
+    {
+        Assert.Equal(typeof(Godot.Control), typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder).BaseType);
+        Assert.Equal(typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder),
+            typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder).BaseType);
+        Assert.False(typeof(MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl)
+            .IsAssignableFrom(typeof(MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder)));
+    }
+
+    [Fact]
+    public void NativeUnavailableCreatureTooltipDoesNotRequireAFrozenSubject()
+    {
+        var page = Page() with
+        {
+            Status = "settling", Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Interaction = Page().Interaction with
+            {
+                Content = new(new JsonObject { ["kind"] = "no_action" },
+                    new JsonObject { ["kind"] = "combat_transition", ["phase"] = "setup" })
+            }
+        };
+        var bindings = new PublicInformationBindings(page);
+        int subjectReads = 0;
+        // v0.111 Creature.HoverTips returns empty before IsInProgress, despite a
+        // visible current hitbox. Exercise the same production binding seam.
+        Assert.Null(bindings.CreatureTooltipSubject(() => false,
+            () => { subjectReads++; return "creature-not-in-setup-context"; }));
+        Assert.Equal(0, subjectReads);
+        Assert.True(bindings.Complete);
+        Assert.Empty(bindings.Page.Completeness.Missing);
+        Assert.Equal("settling", bindings.Page.Status);
+    }
+
+    [Fact]
+    public void UnreadableNativeCreatureTooltipCapabilityRemainsPartialWithoutSubjectLookup()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        int subjectReads = 0;
+        Assert.Null(bindings.CreatureTooltipSubject(
+            () => throw new InvalidOperationException("native capability unreadable"),
+            () => { subjectReads++; return "player"; }));
+        Assert.Equal(0, subjectReads);
+        Assert.Contains("public_information_binding_creature_tip_source_unreadable",
+            bindings.Page.Completeness.Missing);
+        Assert.False(bindings.Complete);
+        Assert.Equal("partial", bindings.Page.Completeness.Status);
+    }
+
+    [Fact]
+    public void AvailableNativeCreatureTooltipStillRequiresItsExactFrozenSubject()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var order = new List<string>();
+        Assert.Equal("enemy", bindings.CreatureTooltipSubject(
+            () => { order.Add("native capability"); return true; },
+            () => { order.Add("subject"); return "enemy"; })!.ReferentId);
+        Assert.Equal(new[] { "native capability", "subject" }, order);
+        Assert.True(bindings.Complete);
+        Assert.Null(bindings.CreatureTooltipSubject(() => true, () => "foreign-creature"));
+        Assert.Contains("public_information_binding_creature_subject", bindings.Page.Completeness.Missing);
+        Assert.False(bindings.Complete);
+    }
+
+    [Fact]
+    public void NativeLocalEmptyOrbKeepsItsFrozenHudPlayerDuringCombatSetup()
+    {
+        var page = Page() with
+        {
+            Status = "settling", Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Interaction = Page().Interaction with
+            {
+                Content = new(new JsonObject { ["kind"] = "no_action" },
+                    new JsonObject { ["kind"] = "combat_transition", ["phase"] = "setup" })
+            }
+        };
+        var before = JsonSerializer.Serialize(page);
+        var bindings = new PublicInformationBindings(page);
+        PlayerEnvironmentReferent slot = bindings.EmptyOrb("ui-empty-slot", "player", 0, 3)!;
+        Assert.NotNull(slot);
+        Assert.Equal("player", slot.Properties!["owner_referent_id"]!.GetValue<string>());
+        PlayerEnvironmentReferent owner = bindings.Page.Referents.Single(value => value.ReferentId == "player");
+        Assert.Equal("Defect", owner.Label);
+        Assert.Equal("player", owner.Role);
+        Assert.Equal(new[] { "character_name", "entity_id" },
+            ((JsonObject)owner.Properties!).Select(pair => pair.Key).Order().ToArray());
+        Assert.True(bindings.Complete);
+        Assert.Equal(before, JsonSerializer.Serialize(page));
+        // The new subject is not a substitute for absent active combat facts.
+        Assert.Null(bindings.Power("power", "player", "STRENGTH", 2, true));
+        Assert.Null(bindings.Intent("intent", "player", 0, 1, true));
+        Assert.False(bindings.Complete);
+    }
+
+    [Theory]
+    [InlineData("foreign")]
+    [InlineData("missing-hud")]
+    [InlineData("wrong-id")]
+    [InlineData("missing-name")]
+    [InlineData("invisible-owner")]
+    public void EmptyOrbCannotInventAnOwnerFromUnrelatedOrMissingHud(string missing)
+    {
+        var page = Page() with { Referents = Array.Empty<PlayerEnvironmentReferent>() };
+        string owner = missing == "foreign" ? "foreign-creature" : "player";
+        if (missing == "missing-hud") page = page with { Persistent = null };
+        else if (missing == "invisible-owner")
+            page = page with { Referents = new[] { Ref("player", "player", "Defect") with
+                { State = new(false, false, false, false, "unavailable") } } };
+        else if (missing is "wrong-id" or "missing-name")
+        {
+            JsonObject hud = (JsonObject)page.Persistent!.Content.DeepClone();
+            if (missing == "wrong-id") hud["player"]!["entity_id"] = "other-player";
+            else hud["player"]!.AsObject().Remove("character_name");
+            page = page with { Persistent = page.Persistent with { Content = hud } };
+        }
+        var bindings = new PublicInformationBindings(page);
+        Assert.Null(bindings.EmptyOrb("ui-empty-slot", owner, 0, 3));
+        Assert.False(bindings.Complete);
+        Assert.DoesNotContain(bindings.Page.Referents, value => value.ReferentId == "ui-empty-slot");
+    }
     private static PlayerEnvironmentReferent Ref(string id, string role, string? label) =>
         new(id, role, "entity", label, new(true, true, false, false, "native_visible_fact"), null, null);
 

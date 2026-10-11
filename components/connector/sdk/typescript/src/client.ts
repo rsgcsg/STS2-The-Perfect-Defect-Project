@@ -6,6 +6,13 @@ import {
   type SealedObservationChunk, type SealedObservationRelease, type FullTextMenuV2Observation
 } from "./sealedObservation.js";
 import { isJsonObject, type JsonObject } from "./json.js";
+import { NATIVE_LOGICAL_PROFILE, NATIVE_LOGICAL_ROUTE, NATIVE_LOGICAL_MAX_RESPONSE_BYTES,
+  parseNativeLogicalJson, type NativeLogicalTransportOperation, type NativeLogicalTransportOptions,
+  type NativeLogicalTransportReply, validateNativeLogicalRequest, decodeNativeLogicalCurrent } from "./nativeLogical.js";
+import { assertNativeLogicalJson } from "./nativeLogicalWire.js";
+import { PLAYER_ENVIRONMENT_CLIENT_REVOCATION_ROUTE, PLAYER_ENVIRONMENT_CLIENT_REVOCATION_MAX_BYTES,
+  validatePlayerClientRevocationRequest, decodePlayerClientRevocation,
+  type PlayerEnvironmentClientRevocation } from "./clientRevocation.js";
 import {
   ORDINARY_REWARD_PAGE_PROFILE,
   decodeRewardPageCapabilities,
@@ -328,6 +335,58 @@ export class PlayerEnvironmentRestClient {
     }));
   }
 
+  async revokeClient(input: { runtimeInstanceId: string; clientSessionId: string }): Promise<DecodedPlayerPayload<PlayerEnvironmentClientRevocation>> {
+    const body = validatePlayerClientRevocationRequest({ runtime_instance_id: input.runtimeInstanceId, client_session_id: input.clientSessionId });
+    const originalRuntimeId = body.runtime_instance_id;
+    const originalClientId = body.client_session_id;
+    let status = 0;
+    const raw = await this.request(PLAYER_ENVIRONMENT_CLIENT_REVOCATION_ROUTE,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, false,
+      { maxResponseBytes: PLAYER_ENVIRONMENT_CLIENT_REVOCATION_MAX_BYTES, onResponseBytes() {}, onResponseStatus(value) { status = value; } });
+    if (status !== 200) throw new PlayerEnvironmentHttpError("Client revocation requires an exact HTTP 200 acknowledgement", status);
+    const reply = decodePlayerClientRevocation(raw);
+    if (reply.data.runtime_instance_id !== originalRuntimeId || reply.data.client_session_id !== originalClientId)
+      throw new Error("Client revocation acknowledgement does not match the original runtime/client");
+    return reply;
+  }
+
+  /** The native facade shares this client's fetch/error boundary and never owns a lease. */
+  async nativeLogicalRequest(operation: NativeLogicalTransportOperation, body?: JsonObject,
+    options: NativeLogicalTransportOptions = {}): Promise<NativeLogicalTransportReply> {
+    const operations: readonly string[] = ["capabilities", "attach", "current", "current_owned", "read", "catalog", "resolve", "events",
+      "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result"];
+    if (!operations.includes(operation)) throw new Error("Unknown native logical operation");
+    validateNativeLogicalRequest(operation, body);
+    const maxResponseBytes = options.maxResponseBytes ?? NATIVE_LOGICAL_MAX_RESPONSE_BYTES;
+    if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0 || maxResponseBytes > NATIVE_LOGICAL_MAX_RESPONSE_BYTES)
+      throw new Error("native logical response byte limit is outside client limits");
+    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0))
+      throw new Error("native logical transport timeout must be positive");
+    if (body !== undefined) assertNativeLogicalJson(body);
+    let path = `${NATIVE_LOGICAL_ROUTE}/${operation}`;
+    let init: RequestInit;
+    if (operation === "capabilities") {
+      if (body !== undefined) throw new Error("native logical capabilities has no request body");
+      init = { method: "GET" };
+    } else if (operation === "result") {
+      if (!body || Object.keys(body).length !== 1 || typeof body.request_id !== "string")
+        throw new Error("native logical result requires only its original request_id");
+      path = `/api/player-environment/actions/${encodeURIComponent(body.request_id)}?input_profile=${NATIVE_LOGICAL_PROFILE}`;
+      init = { method: "GET" };
+    } else {
+      if (!body) throw new Error("native logical operation requires its closed JSON request body");
+      if (operation === "submit") path = "/api/player-environment/actions";
+      const serialized = JSON.stringify(body);
+      if (Buffer.byteLength(serialized, "utf8") > 1024 * 1024) throw new Error("native logical request exceeds client byte limit");
+      init = { method: "POST", headers: { "Content-Type": "application/json" }, body: serialized };
+    }
+    let encodedByteCount = 0;
+    let statusCode = 0;
+    const raw = await this.request(path, init, operation === "submit" || operation === "result", { ...options, maxResponseBytes, operation,
+      onResponseBytes: bytes => { encodedByteCount = bytes; }, onResponseStatus: status => { statusCode = status; } });
+    return { raw, encodedByteCount, statusCode };
+  }
+
   private async get(path: string): Promise<JsonObject> {
     return this.request(path, { method: "GET" });
   }
@@ -347,23 +406,30 @@ export class PlayerEnvironmentRestClient {
   private async request(
     path: string,
     init: RequestInit,
-    acceptReceiptOnError = false
+    acceptReceiptOnError = false,
+    native?: NativeLogicalTransportOptions & { operation?: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
   ): Promise<JsonObject> {
     let response: Response;
+    const requestSignal = native?.signal ? AbortSignal.any([native.signal, AbortSignal.timeout(native.timeoutMs ?? this.timeoutMs)])
+      : AbortSignal.timeout(native?.timeoutMs ?? this.timeoutMs);
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
-        signal: AbortSignal.timeout(this.timeoutMs)
+        signal: requestSignal
       });
     } catch (error) {
       throw new PlayerEnvironmentHttpError(`Player Environment transport failed: ${safeMessage(error)}`);
     }
-    const value: unknown = await response.json().catch(() => ({}));
+    const value: unknown = native ? await readNativeLogicalResponse(response, native.maxResponseBytes, requestSignal,
+      native.onResponseBytes) : await response.json().catch(() => ({}));
+    native?.onResponseStatus(response.status);
     const isReceipt = isJsonObject(value)
       && (value.schema === "sts2.player-environment/receipt-1"
         || value.schema === TEXT_MENU_RESULT_SCHEMA
-        || value.schema === TEXT_MENU_V2_RESULT_SCHEMA);
-    if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
+        || value.schema === TEXT_MENU_V2_RESULT_SCHEMA
+        || native !== undefined && value.schema === "sts2.player-environment/native-logical-result-1");
+    const typedCurrentFailure = (native?.operation === "current" || native?.operation === "current_owned") && isNativeCurrentFailure(response.status, value);
+    if (!response.ok && !(acceptReceiptOnError && isReceipt) && !typedCurrentFailure) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,
         response.status
@@ -373,6 +439,53 @@ export class PlayerEnvironmentRestClient {
       throw new PlayerEnvironmentHttpError("Player Environment response was not a JSON object");
     }
     return value as JsonObject;
+  }
+}
+
+function isNativeCurrentFailure(status: number, value: unknown): boolean {
+  if (status !== 409 && status !== 429) return false;
+  try {
+    const current = decodeNativeLogicalCurrent(value).data;
+    return status === 429 ? current.status === "capacity_exceeded"
+      : current.status === "stale" || current.status === "source_capture_incomplete" || current.status === "failed";
+  } catch { return false; }
+}
+
+async function readNativeLogicalResponse(response: Response, maxBytes: number, signal: AbortSignal | undefined,
+  observedBytes: (bytes: number) => void): Promise<JsonObject> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^[0-9]+$/u.test(declared) || Number(declared) > maxBytes)) {
+    await response.body?.cancel();
+    throw new PlayerEnvironmentHttpError("native logical response exceeds its byte budget");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new PlayerEnvironmentHttpError("native logical response has no JSON body");
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const text: string[] = [];
+  let bytes = 0;
+  const aborted = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", aborted, { once: true });
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const block = await reader.read();
+      signal?.throwIfAborted();
+      if (block.done) break;
+      bytes += block.value.byteLength;
+      if (bytes > maxBytes) throw new PlayerEnvironmentHttpError("native logical response exceeds its byte budget");
+      text.push(decoder.decode(block.value, { stream: true }));
+    }
+    text.push(decoder.decode());
+    const result = parseNativeLogicalJson(text.join(""));
+    observedBytes(bytes);
+    return result;
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", aborted);
+    text.length = 0;
+    reader.releaseLock();
   }
 }
 

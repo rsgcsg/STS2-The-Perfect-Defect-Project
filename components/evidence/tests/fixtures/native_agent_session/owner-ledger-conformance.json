@@ -1,0 +1,1531 @@
+{
+  "schema": "native-agent-owner-ledger-conformance-v1",
+  "runtime_revision": "8ef88c13b9c55fd78b6314b05862675adcd4379f",
+  "source": "actual AgentConsumptionLedger using shared agent-session-v1 fixture acquisitions",
+  "scope": "synthetic declared metadata conformance; no numerical memory or native proof",
+  "records": [
+    {
+      "name": "same_occurrence_Current_is_neutral",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "full_reference",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference"
+        },
+        "consumption_mode": "once_per_occurrence",
+        "state_recovery": {
+          "mode": "opaque",
+          "max_state_bytes": 16777216,
+          "model_bindings": [
+            {
+              "model_id": "fixture-model",
+              "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "A",
+          "witness": {
+            "acquisition_id": "acquisition-A1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A1",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "2",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "76af2937e6d41f60ff43e4d09765b51c7f947a90fcf7374434e7602b12326870",
+              "read_cursor": "read-A1"
+            },
+            "publication_index": "12",
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-A1",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-12",
+              "consumed_publication_index": "12",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "A_duplicate",
+          "witness": {
+            "acquisition_id": "acquisition-A2",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A2",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "3",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "e6c62a548f618716a9c7572489ad4c6053b1c6d452fb1c67cc8ad8255ef6becf",
+              "read_cursor": "read-A2"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A2",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": false
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-A2",
+            "state_version": 1,
+            "advanced": false,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-A_duplicate",
+              "consumed_publication_index": "12",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        }
+      ]
+    },
+    {
+      "name": "nonadjacent_native_revisit_is_new_current_unit",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "full_reference",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference"
+        },
+        "consumption_mode": "once_per_occurrence",
+        "state_recovery": {
+          "mode": "opaque",
+          "max_state_bytes": 16777216,
+          "model_bindings": [
+            {
+              "model_id": "fixture-model",
+              "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "A",
+          "witness": {
+            "acquisition_id": "acquisition-A1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A1",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "2",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "76af2937e6d41f60ff43e4d09765b51c7f947a90fcf7374434e7602b12326870",
+              "read_cursor": "read-A1"
+            },
+            "publication_index": "12",
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-A1",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-12",
+              "consumed_publication_index": "12",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "B",
+          "witness": {
+            "acquisition_id": "acquisition-B1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-B1",
+              "snapshot_id": "snapshot-B1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "4",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "5543e5c272c1d788650c5f6c8ff76d471f3dac8067499ca81a6a004fb7b2b518",
+              "read_cursor": "read-B1"
+            },
+            "publication_index": "13",
+            "snapshot_id": "snapshot-B1",
+            "revision": 3,
+            "owner_occurrence": {
+              "owner_id": "owner-B",
+              "occurrence_id": "occurrence-B1",
+              "binding_revision": "3",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "98aa9713e7f2e6ab7576057f35a5c64d654ab02c228c250e63e64bbe113784a0",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-2",
+            "acquisition_id": "acquisition-B1",
+            "state_version": 2,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-13",
+              "consumed_publication_index": "13",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "A_return",
+          "witness": {
+            "acquisition_id": "acquisition-A3",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A3",
+              "snapshot_id": "snapshot-A3",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "5",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "4c95cfedfef12480e1046587dbc501a808d839d1a5d2abd4e6c1a94169a04e06",
+              "read_cursor": "read-A3"
+            },
+            "publication_index": "14",
+            "snapshot_id": "snapshot-A3",
+            "revision": 4,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A3",
+              "binding_revision": "4",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "88fd199063ef6393b9a99f9b5f5066173609d3fbb1e8981f8ad0de19ccc345ea",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A3",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-3",
+            "state_version": 3,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-3",
+            "acquisition_id": "acquisition-A3",
+            "state_version": 3,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-14",
+              "consumed_publication_index": "14",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        }
+      ]
+    },
+    {
+      "name": "duplicate_advance_is_rejected",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "full_reference",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference"
+        },
+        "consumption_mode": "once_per_occurrence",
+        "state_recovery": {
+          "mode": "opaque",
+          "max_state_bytes": 16777216,
+          "model_bindings": [
+            {
+              "model_id": "fixture-model",
+              "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "A",
+          "witness": {
+            "acquisition_id": "acquisition-A1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A1",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "2",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "76af2937e6d41f60ff43e4d09765b51c7f947a90fcf7374434e7602b12326870",
+              "read_cursor": "read-A1"
+            },
+            "publication_index": "12",
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-A1",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-12",
+              "consumed_publication_index": "12",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "A_duplicate",
+          "witness": {
+            "acquisition_id": "acquisition-A2",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A2",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "3",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "e6c62a548f618716a9c7572489ad4c6053b1c6d452fb1c67cc8ad8255ef6becf",
+              "read_cursor": "read-A2"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A2",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          },
+          "accepted": false,
+          "code": "consumption_unit_advance_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "incremental_authorized_new_scope_advances",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "scoped_query",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "scoped"
+        },
+        "consumption_mode": "incremental_view",
+        "state_recovery": {
+          "mode": "none",
+          "max_state_bytes": 0,
+          "model_bindings": []
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "incremental_persistent",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_persistent",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_persistent",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1176,
+              "sha256": "0c517327a47bd6d224b00f37e3d60fac1995289e589bd94c0303199a2109321a",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent"
+            ],
+            "missing": [
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-incremental_persistent",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "scoped_query",
+              "consumption_mode": "incremental_view",
+              "received_cursor": "source-cursor-incremental_persistent",
+              "consumed_publication_index": null,
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "incremental_expanded",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_expanded",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_expanded",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1386,
+              "sha256": "7e7cff192d3ea6f91080101c01f3128ecb69f1609b03e2202646724bd84ca363",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction"
+            ],
+            "missing": [
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-2",
+            "acquisition_id": "acquisition-incremental_expanded",
+            "state_version": 2,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "scoped_query",
+              "consumption_mode": "incremental_view",
+              "received_cursor": "source-cursor-incremental_expanded",
+              "consumed_publication_index": null,
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [
+                  "referents",
+                  "catalog"
+                ],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "incremental_expanded_duplicate",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_expanded_duplicate",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_expanded_duplicate",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1406,
+              "sha256": "7f2e6562cd7eb1e82d2b4e273195fa86cb12a0366ec91e666ad0f59de5449e8b",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction"
+            ],
+            "missing": [
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": false
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-2",
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "state_version": 2,
+            "advanced": false,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "scoped_query",
+              "consumption_mode": "incremental_view",
+              "received_cursor": "source-cursor-incremental_expanded_duplicate",
+              "consumed_publication_index": null,
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [
+                  "referents",
+                  "catalog"
+                ],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        }
+      ]
+    },
+    {
+      "name": "incremental_repeat_advance_rejected",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "scoped_query",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "scoped"
+        },
+        "consumption_mode": "incremental_view",
+        "state_recovery": {
+          "mode": "none",
+          "max_state_bytes": 0,
+          "model_bindings": []
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "incremental_persistent",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_persistent",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_persistent",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1176,
+              "sha256": "0c517327a47bd6d224b00f37e3d60fac1995289e589bd94c0303199a2109321a",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent"
+            ],
+            "missing": [
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_persistent",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-incremental_persistent",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "scoped_query",
+              "consumption_mode": "incremental_view",
+              "received_cursor": "source-cursor-incremental_persistent",
+              "consumed_publication_index": null,
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [
+                  "interaction",
+                  "referents",
+                  "catalog"
+                ],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "incremental_expanded",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_expanded",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_expanded",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1386,
+              "sha256": "7e7cff192d3ea6f91080101c01f3128ecb69f1609b03e2202646724bd84ca363",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction"
+            ],
+            "missing": [
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_expanded",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-2",
+            "state_version": 2,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-2",
+            "acquisition_id": "acquisition-incremental_expanded",
+            "state_version": 2,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "scoped_query",
+              "consumption_mode": "incremental_view",
+              "received_cursor": "source-cursor-incremental_expanded",
+              "consumed_publication_index": null,
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [
+                  "referents",
+                  "catalog"
+                ],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "incremental_expanded_duplicate",
+          "witness": {
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-incremental_expanded_duplicate",
+              "snapshot_id": "snapshot-Q1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "random-scope-incremental_expanded_duplicate",
+              "capture_ordinal": "7",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1406,
+              "sha256": "7f2e6562cd7eb1e82d2b4e273195fa86cb12a0366ec91e666ad0f59de5449e8b",
+              "read_cursor": "read-Q1"
+            },
+            "publication_index": null,
+            "snapshot_id": "snapshot-Q1",
+            "revision": 6,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-Q1",
+              "binding_revision": "6",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction"
+            ],
+            "missing": [
+              "referents",
+              "catalog"
+            ],
+            "catalog_digest": null,
+            "catalog_count": null,
+            "catalog_materialized": false
+          },
+          "report": {
+            "acquisition_id": "acquisition-incremental_expanded_duplicate",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-2",
+            "consumption_id": "consumption-3",
+            "state_version": 3,
+            "advanced": true
+          },
+          "accepted": false,
+          "code": "consumption_unit_advance_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "fresh_consumption_id_required",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "full_reference",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference"
+        },
+        "consumption_mode": "once_per_occurrence",
+        "state_recovery": {
+          "mode": "opaque",
+          "max_state_bytes": 16777216,
+          "model_bindings": [
+            {
+              "model_id": "fixture-model",
+              "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "A",
+          "witness": {
+            "acquisition_id": "acquisition-A1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-A1",
+              "snapshot_id": "snapshot-A1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "2",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "76af2937e6d41f60ff43e4d09765b51c7f947a90fcf7374434e7602b12326870",
+              "read_cursor": "read-A1"
+            },
+            "publication_index": "12",
+            "snapshot_id": "snapshot-A1",
+            "revision": 2,
+            "owner_occurrence": {
+              "owner_id": "owner-A",
+              "occurrence_id": "occurrence-A1",
+              "binding_revision": "2",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "1707ae268253bf0d7741e58429f2a05bd7177d94db29a0a1bc2affa68a750ef9",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-A1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-A1",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-12",
+              "consumed_publication_index": "12",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        },
+        {
+          "fixture_acquisition": "B",
+          "witness": {
+            "acquisition_id": "acquisition-B1",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-B1",
+              "snapshot_id": "snapshot-B1",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "fixture-runtime",
+                "environment_fingerprint": "fixture-environment"
+              },
+              "stream_generation": "generation-1",
+              "scope_id": "scope-full",
+              "capture_ordinal": "4",
+              "captured_at": "2026-10-08T00:00:00Z",
+              "expires_at": "2026-10-08T00:02:00Z",
+              "byte_count": 1400,
+              "sha256": "5543e5c272c1d788650c5f6c8ff76d471f3dac8067499ca81a6a004fb7b2b518",
+              "read_cursor": "read-B1"
+            },
+            "publication_index": "13",
+            "snapshot_id": "snapshot-B1",
+            "revision": 3,
+            "owner_occurrence": {
+              "owner_id": "owner-B",
+              "occurrence_id": "occurrence-B1",
+              "binding_revision": "3",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "interactive",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "98aa9713e7f2e6ab7576057f35a5c64d654ab02c228c250e63e64bbe113784a0",
+            "catalog_count": 1,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-B1",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": "consumption-1",
+            "consumption_id": "consumption-1",
+            "state_version": 2,
+            "advanced": true
+          },
+          "accepted": false,
+          "code": "consumption_id_reused_or_changed"
+        }
+      ]
+    },
+    {
+      "name": "null_persistent_is_valid_full_reference",
+      "input": {
+        "profile": "native-logical-v1",
+        "input_spec": {
+          "id": "fixture-native-observation-1",
+          "version": "1.0.0",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "projection": {
+          "id": "fixture-public-native",
+          "version": "1"
+        },
+        "state_format_version": "fixture-state-1",
+        "history_mode": "full_reference",
+        "gap_policy": "handoff",
+        "attachment": {
+          "eager_scope": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "required_seams": [
+            {
+              "source_seam": "owner",
+              "version": "1",
+              "coverage": "complete_at_seam"
+            }
+          ],
+          "delivery_mode": "full_reference"
+        },
+        "consumption_mode": "once_per_occurrence",
+        "state_recovery": {
+          "mode": "opaque",
+          "max_state_bytes": 16777216,
+          "model_bindings": [
+            {
+              "model_id": "fixture-model",
+              "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      },
+      "messages": [
+        {
+          "fixture_acquisition": "core_null_persistent",
+          "witness": {
+            "acquisition_id": "acquisition-core-null-persistent",
+            "capture": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-fixture",
+              "snapshot_id": "snapshot-fixture",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "runtime-fixture",
+                "environment_fingerprint": "environment-fixture"
+              },
+              "stream_generation": "stream-fixture",
+              "scope_id": "scope-fixture",
+              "capture_ordinal": "1",
+              "captured_at": "1970-01-01T00:00:00+00:00",
+              "expires_at": "1970-01-01T00:02:00+00:00",
+              "byte_count": 1428,
+              "sha256": "6de6b1fc4ad8cf32e67cf11e4bcfaf3fceb4afb6fb7bd7e970b9060ff2848157",
+              "read_cursor": "opaque-read-fixture"
+            },
+            "publication_index": "1",
+            "snapshot_id": "snapshot-fixture",
+            "revision": 1,
+            "owner_occurrence": {
+              "owner_id": "owner-fixture",
+              "occurrence_id": "occurrence-fixture",
+              "binding_revision": "binding-fixture",
+              "focus_referent_id": null,
+              "focus_occurrence": null
+            },
+            "status": "settling",
+            "included": [
+              "persistent",
+              "interaction",
+              "referents",
+              "catalog"
+            ],
+            "missing": [],
+            "catalog_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+            "catalog_count": 0,
+            "catalog_materialized": true
+          },
+          "report": {
+            "acquisition_id": "acquisition-core-null-persistent",
+            "input_spec": {
+              "id": "fixture-native-observation-1",
+              "version": "1.0.0",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "continuity_token": "continuity-1",
+            "previous_consumption_id": null,
+            "consumption_id": "consumption-1",
+            "state_version": 1,
+            "advanced": true
+          },
+          "acknowledgement": {
+            "consumption_id": "consumption-1",
+            "acquisition_id": "acquisition-core-null-persistent",
+            "state_version": 1,
+            "advanced": true,
+            "prefix": {
+              "continuity_token": "continuity-1",
+              "history_mode": "full_reference",
+              "consumption_mode": "once_per_occurrence",
+              "received_cursor": "source-cursor-1",
+              "consumed_publication_index": "1",
+              "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": null
+              }
+            }
+          },
+          "accepted": true
+        }
+      ]
+    }
+  ]
+}

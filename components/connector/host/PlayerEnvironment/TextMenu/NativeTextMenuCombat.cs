@@ -22,8 +22,8 @@ namespace STS2Connector.PlayerEnvironment;
 /// <summary>
 /// Exact, device-scoped entry points into the game's card-play operation. This
 /// class does not recreate card legality or enqueue a PlayCardAction. Mouse
-/// single-enemy targeting is available only while its exact manager binding
-/// is observable; untargeted mouse release remains outside this menu.
+/// single-creature targeting requires its exact manager binding. The native
+/// logical profile additionally uses source-witnessed mouse confirmation.
 /// </summary>
 internal static class NativeTextMenuCombat
 {
@@ -73,28 +73,37 @@ internal static class NativeTextMenuCombat
         if (manager == null)
             return NativeInputResult.Rejected("controller_input_changed",
                 "Native controller input manager is unavailable.");
+        var stages = new List<NativeInputStage>();
         if (!manager.IsUsingDirectionalNavigation)
         {
-            // NControllerManager._Input recognizes a real controller action,
-            // switches native presentation mode, and focuses the current
-            // screen's default control. This is the game's own device-mode
-            // transition, not a field write or a user preference change.
-            manager._Input(new InputEventAction
-            { Action = Controller.faceButtonSouth, Pressed = true });
-            if (!manager.IsUsingDirectionalNavigation)
-                return NativeInputResult.Delivered(
-                    "native_controller_mode_input_delivered_card_begin_pending");
-            if (!ReferenceEquals(holder.CardModel, card)
+            try { manager._Input(new InputEventAction
+                { Action = Controller.faceButtonSouth, Pressed = true }); }
+            catch (Exception)
+            {
+                stages.Add(new NativeInputStage(NativeInputStageKind.ControllerModeInput, NativeInputDelivery.Unknown,
+                    "native_controller_mode_input_threw"));
+                return NativeInputResult.Unknown("native_controller_input_unknown",
+                    "The controller input boundary threw; delivery is unknown.", stages.ToArray());
+            }
+            stages.Add(new NativeInputStage(NativeInputStageKind.ControllerModeInput, NativeInputDelivery.Delivered,
+                "native_controller_mode_input_delivered"));
+            if (!manager.IsUsingDirectionalNavigation || !ReferenceEquals(holder.CardModel, card)
                 || !CanBegin(hand, holder))
-                return NativeInputResult.Delivered(
-                    "native_controller_mode_changed_card_begin_pending");
+                return NativeInputResult.PartiallyDelivered("native_card_begin_pending",
+                    "Controller input was delivered, but the exact card begin was not delivered.", stages.ToArray());
         }
-
-        // This is the holder's real Pressed signal wired to
-        // NPlayerHand.OnHolderPressed. The private StartCardPlay helper must not
-        // be called by reflection or reproduced by the Connector.
-        holder.EmitSignal(NCardHolder.SignalName.Pressed, holder);
-        return NativeInputResult.Delivered("native_hand_holder_pressed_controller_mode");
+        // The holder's real Pressed signal is wired to NPlayerHand.OnHolderPressed.
+        try { holder.EmitSignal(NCardHolder.SignalName.Pressed, holder); }
+        catch (Exception)
+        {
+            stages.Add(new NativeInputStage(NativeInputStageKind.CardBeginInput, NativeInputDelivery.Unknown,
+                "native_hand_holder_pressed_threw"));
+            return NativeInputResult.Unknown("native_card_begin_unknown",
+                "The card input boundary threw; delivery is unknown.", stages.ToArray());
+        }
+        stages.Add(new NativeInputStage(NativeInputStageKind.CardBeginInput, NativeInputDelivery.Delivered,
+            "native_hand_holder_pressed_controller_mode"));
+        return NativeInputResult.DeliveredStages("native_hand_holder_pressed_controller_mode", stages.ToArray());
     }
 
     internal static NativeInputResult Cancel(
@@ -121,7 +130,7 @@ internal static class NativeTextMenuCombat
     internal static bool OwnsMouseTarget(
         NPlayerHand hand, NMouseCardPlay play, CardModel card) =>
         Owns(hand, play, card)
-        && card.TargetType == TargetType.AnyEnemy
+        && card.TargetType is TargetType.AnyEnemy or TargetType.AnyAlly
         && NTargetManager.Instance is { IsInSelection: true } manager
         // SingleCreatureTargeting passes an instance-bound exit predicate to
         // StartTargeting. This proves the manager still belongs to this play,
@@ -154,6 +163,39 @@ internal static class NativeTextMenuCombat
             .ToArray();
     }
 
+    private static readonly System.Reflection.PropertyInfo? HoveredNodeProperty =
+        typeof(NTargetManager).GetProperty("HoveredNode",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+    internal static Node? CurrentFocusedNode(NTargetManager manager) =>
+        HoveredNodeProperty?.GetValue(manager) as Node;
+
+    internal static NCreature? FocusedTarget(NPlayerHand hand, NCardPlay play, CardModel card)
+    {
+        if (!Owns(hand, play, card) || card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly)
+            || play is NMouseCardPlay mouse && !OwnsMouseTarget(hand, mouse, card)
+            || NTargetManager.Instance is not { IsInSelection: true } manager)
+            return null;
+        NCreature? focused = CurrentFocusedNode(manager) as NCreature;
+        return focused != null && ConnectorMod.IsLiveNode(focused) && ConnectorMod.IsNodeVisible(focused)
+            && NCombatRoom.Instance?.CreatureNodes.Contains(focused) == true ? focused : null;
+    }
+
+    internal static bool CanUnfocusTarget(NPlayerHand hand, NCardPlay play, CardModel card, NCreature expected) =>
+        ReferenceEquals(FocusedTarget(hand, play, card), expected)
+        && NTargetManager.Instance.AllowedToTargetNode(expected);
+
+    internal static NativeInputResult UnfocusTarget(
+        NPlayerHand hand, NCardPlay play, CardModel card, NCreature expected)
+    {
+        if (!CanUnfocusTarget(hand, play, card, expected))
+            return NativeInputResult.Rejected("card_target_focus_changed",
+                "The exact held-card focus is no longer current.");
+        NTargetManager manager = NTargetManager.Instance;
+        manager.OnNodeUnhovered(expected);
+        return NativeInputResult.Delivered("native_target_unfocused");
+    }
+
     internal static NativeInputResult FocusTarget(
         NPlayerHand hand, NCardPlay play, CardModel card, NCreature target)
     {
@@ -171,8 +213,9 @@ internal static class NativeTextMenuCombat
         finally { manager.CreatureHovered -= OnHovered; }
         return accepted
             ? NativeInputResult.Delivered("native_target_focused")
-            : NativeInputResult.Rejected("card_target_focus_blocked",
-                "The native targeting hook did not accept this creature.");
+            : NativeInputResult.DeliveredWithoutAcceptance("card_target_focus_not_witnessed",
+                "Native focus input returned, but target acceptance was not witnessed.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered, "native_target_focus_input_delivered"));
     }
 
     internal static NativeInputResult ConfirmTarget(
@@ -182,25 +225,36 @@ internal static class NativeTextMenuCombat
             return NativeInputResult.Rejected("card_target_changed",
                 "The exact native target is no longer confirmable.");
 
-        // OnNodeHovered is the game's public exact-object focus path; the
-        // signal proves the native hook accepted the intended node immediately
-        // before the game's normal select input is delivered. Do not write the
-        // private HoveredNode or invoke private FinishTargeting.
         bool accepted = false;
         NTargetManager manager = NTargetManager.Instance;
-        void OnHovered(NCreature current)
-        {
-            if (ReferenceEquals(current, target)) accepted = true;
-        }
+        void OnHovered(NCreature current) { if (ReferenceEquals(current, target)) accepted = true; }
         manager.CreatureHovered += OnHovered;
         try { manager.OnNodeHovered(target); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_target_focus_unknown",
+                "The native focus boundary threw; delivery is unknown.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Unknown, "native_target_focus_threw"));
+        }
         finally { manager.CreatureHovered -= OnHovered; }
-        if (!accepted || !manager.IsInSelection)
-            return NativeInputResult.Rejected("card_target_focus_blocked",
-                "Native targeting did not accept the exact creature.");
-
-        manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true });
-        return NativeInputResult.Delivered("native_target_select_input_delivered");
+        if (!accepted)
+            return NativeInputResult.DeliveredWithoutAcceptance("card_target_focus_not_witnessed",
+                "Native focus input returned, but target acceptance was not witnessed.",
+                new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered, "native_target_focus_input_delivered"));
+        var focus = new NativeInputStage(NativeInputStageKind.TargetFocus, NativeInputDelivery.Delivered,
+            "native_target_focused");
+        if (!manager.IsInSelection)
+            return NativeInputResult.PartiallyDelivered("card_target_selection_changed",
+                "Native focus was delivered; target confirmation was not delivered.", focus);
+        try { manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true }); }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_target_confirm_unknown",
+                "Focus was delivered; the confirmation input boundary threw.", focus,
+                new NativeInputStage(NativeInputStageKind.TargetConfirmInput, NativeInputDelivery.Unknown, "native_target_select_input_threw"));
+        }
+        return NativeInputResult.DeliveredStages("native_target_select_input_delivered", focus,
+            new NativeInputStage(NativeInputStageKind.TargetConfirmInput, NativeInputDelivery.Delivered, "native_target_select_input_delivered"));
     }
 
     internal static NativeInputResult ConfirmUntargeted(

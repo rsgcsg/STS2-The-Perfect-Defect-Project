@@ -9,6 +9,8 @@ import {
   agentBudgetFindings,
   agentReferenceFindings,
   documentedCommandFindings,
+  collectProjectSystemFindings,
+  formatContext,
   formatCloseout,
   markdownLinkFindings,
   projectIntegrityFindings,
@@ -28,6 +30,183 @@ function write(root, relative, contents) {
 function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
+
+function initializeGit(root) {
+  git(root, "init", "-b", "develop");
+  git(root, "config", "user.email", "project-system@example.invalid");
+  git(root, "config", "user.name", "Project System Test");
+  write(root, "README.md", "baseline\n");
+  write(root, "AGENTS.md", "Root instructions.\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  git(root, "update-ref", "refs/remotes/origin/develop", "HEAD");
+}
+
+test("application and research context includes only its ordered root, Python ancestor and leaf", () => {
+  for (const [component, leaf, sibling] of [
+    ["project-apps", "python/spireagent/AGENTS.md", "python/stpd/AGENTS.md"],
+    ["research", "python/stpd/AGENTS.md", "python/spireagent/AGENTS.md"]
+  ]) {
+    const root = fixture();
+    try {
+      const instructions = [
+        ["AGENTS.md", "Root 雪.\n"],
+        ["python/AGENTS.md", "Python ancestor.\n"],
+        [leaf, "Owning leaf.\n"]
+      ];
+      for (const [file, contents] of instructions) write(root, file, contents);
+      write(root, sibling, "Unrelated sibling.\n");
+      const output = formatContext(root, { component });
+      const bytes = instructions.reduce((total, [, contents]) => total + Buffer.byteLength(contents), 0) + 4;
+      assert.match(output, new RegExp(`Instruction chain: ${bytes} / ${AGENT_CHAIN_BUDGET_BYTES} bytes`, "u"));
+      assert.ok(output.includes(`${instructions.map(([file]) => `- ${file}`).join("\n")}\n`));
+      assert.ok(!output.includes(`- ${sibling}\n`));
+      assert.match(output, /^- README\.md$/mu);
+      assert.match(output, /^- docs\/TESTING\.md$/mu);
+      assert.match(output, /^- python\/docs\/DOCUMENT_MAP\.md$/mu);
+      assert.doesNotMatch(output, /MONOREPO_MIGRATION|FULLRUN_RESEARCH/u);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("context and budget findings agree when ancestor separators cross the byte limit", () => {
+  const root = fixture();
+  try {
+    write(root, "AGENTS.md", "x".repeat(AGENT_CHAIN_BUDGET_BYTES - 8));
+    write(root, "python/AGENTS.md", "1234");
+    write(root, "python/spireagent/AGENTS.md", "5678");
+    const output = formatContext(root, { component: "project-apps" });
+    const bytes = AGENT_CHAIN_BUDGET_BYTES + 4;
+    assert.match(output, new RegExp(`Instruction chain: ${bytes} / ${AGENT_CHAIN_BUDGET_BYTES} bytes`, "u"));
+    assert.deepEqual(agentBudgetFindings(root), [{
+      code: "agents-instruction-budget-exceeded",
+      file: "python/spireagent/AGENTS.md",
+      message: `${bytes} > ${AGENT_CHAIN_BUDGET_BYTES} bytes`
+    }]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("context and closeout use the actual committed planner rather than unconditional full checks", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    write(root, "README.md", "edited regular prose\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-m", "editorial fixture");
+    for (const output of [formatContext(root), formatCloseout(root)]) {
+      assert.match(output, /docs \(regular_prose_surfaces_only\)/u);
+      assert.match(output, /^- npm run check:plan -- --base origin\/develop --run$/mu);
+      assert.match(output, /Planner will run: npm run check:docs; do not repeat these commands separately\./u);
+      assert.doesNotMatch(output, /^- npm run check(?::docs)?$/mu);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dirty edits retain the planner's conservative full selection", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    write(root, "README.md", "uncommitted prose\n");
+    const output = formatCloseout(root);
+    assert.match(output, /full \(dirty_worktree\)/u);
+    assert.match(output, /Planner will run: npm run check; do not repeat these commands separately\./u);
+    assert.doesNotMatch(output, /^- npm run check$/mu);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("final execution appears once while focused development checks are explicitly optional", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    write(root, "python/spireagent/workbench/server.py", "# source fixture\n");
+    for (const output of [formatContext(root, { component: "project-apps" }), formatCloseout(root)]) {
+      const section = output.split("## Final candidate checks\n\n")[1]?.split("\n## ")[0];
+      assert.ok(section);
+      assert.deepEqual(section.split("\n").filter(line => line.startsWith("- ")), [
+        "- npm run check:plan -- --base origin/develop --run"
+      ]);
+      assert.equal(output.match(/^- npm run check:plan -- --base origin\/develop --run$/gmu)?.length, 1);
+      assert.match(output, /## Optional focused development checks/u);
+      assert.match(output, /Choose only as useful while editing; these are not additional final candidate steps\./u);
+      assert.match(output, /^- npm run check:python$/mu);
+      assert.match(output, /^- npm run project:check$/mu);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Workbench and Live UI source changes prompt evidence review without asserting runtime proof", () => {
+  for (const file of ["apps/workbench/src/workbench-service.mjs", "apps/ingame-ui/PlatformLiveStatusClient.cs"]) {
+    const root = fixture();
+    try {
+      initializeGit(root);
+      write(root, file, "// source fixture\n");
+      const output = formatCloseout(root);
+      assert.match(output, /Evidence\/non-claim impact: review exact evidence level and non-claims/u);
+      assert.match(output, /Contract\/BOM\/version impact: review exact machine-readable owners/u);
+      assert.match(output, /STATUS\/CURRENT impact: review required by changed paths/u);
+      assert.match(output, /Semantic freshness: human review required/u);
+      assert.doesNotMatch(output, /runtime qualified|installed verified/u);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Python production sources prompt status, identity and evidence review without a package edit", () => {
+  for (const file of ["python/spireagent/workbench/server.py", "python/stpd/policy/native_agent.py"]) {
+    const root = fixture();
+    try {
+      initializeGit(root);
+      write(root, file, "# source fixture\n");
+      const output = formatCloseout(root);
+      assert.match(output, /STATUS\/CURRENT impact: review required by changed paths/u);
+      assert.match(output, /Contract\/BOM\/version impact: review exact machine-readable owners/u);
+      assert.match(output, /Evidence\/non-claim impact: review exact evidence level and non-claims/u);
+      assert.match(output, /Semantic freshness: human review required/u);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("component source edits prompt source identity review without a package edit", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    write(root, "components/policy-runtime/src/runtime.ts", "// source fixture\n");
+    const output = formatCloseout(root);
+    assert.match(output, /Contract\/BOM\/version impact: review exact machine-readable owners/u);
+    assert.match(output, /STATUS\/CURRENT impact: review required by changed paths/u);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unrelated prose does not acquire production or runtime evidence implications", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    write(root, "README.md", "unrelated editorial change\n");
+    write(root, "python/docs/notes.md", "ordinary documentation\n");
+    const output = formatCloseout(root);
+    assert.match(output, /STATUS\/CURRENT impact: not indicated by paths; confirm semantic truth/u);
+    assert.match(output, /Contract\/BOM\/version impact: not indicated by paths/u);
+    assert.match(output, /Evidence\/non-claim impact: portable source\/test only unless separately proved/u);
+    assert.doesNotMatch(output, /STATUS\/CURRENT impact: review required/u);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("broken internal Markdown links fail deterministically", () => {
   const root = fixture();
@@ -209,6 +388,29 @@ test("closeout reports semantic review instead of rewriting truth", () => {
     const output = formatCloseout(root);
     assert.match(output, /Semantic freshness: human review required/u);
     assert.match(output, /README\.md/u);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("closeout rejects the assembled CURRENT before candidate checks and preserves its bytes", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    const header = "Resolve live GitHub refs. Current sources override this file. Remaining Platform non-claims\n";
+    const initial = header + "x".repeat(4800);
+    const addition = "雪".repeat(1200);
+    assert.ok(Buffer.byteLength(initial) < 8192 && Buffer.byteLength(addition) < 8192);
+    write(root, "docs/memory/CURRENT.md", initial);
+    assert.match(formatCloseout(root), /Project closeout review/u);
+    const assembled = initial + addition;
+    const file = path.join(root, "docs/memory/CURRENT.md");
+    write(root, "docs/memory/CURRENT.md", assembled);
+    assert.ok(Buffer.byteLength(assembled) > 8192);
+    assert.ok(collectProjectSystemFindings(root).some(item => item.code === "current-context-oversized"),
+      "the mandatory repository guard must reject the same assembled file without depending on manual closeout");
+    assert.throws(() => formatCloseout(root), /current-context-oversized.*8192/su);
+    assert.deepEqual(fs.readFileSync(file), Buffer.from(assembled));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

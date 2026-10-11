@@ -483,6 +483,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
   });
 
   it("reobserves a stale v2 intent and makes a fresh decision with new IDs", async () => {
+    let clock = 0;
     const f = fixture();
     const confirmation = targetSelected(cardSelected().successor!).successor!;
     f.setCurrent(confirmation);
@@ -508,6 +509,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     const offered: string[] = [];
     const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
       runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      monotonicNow: () => clock,
       statefulPolicy: async (input, _signal, onOffer) => {
         onOffer(); offered.push(input.bundle.observation.snapshot_id);
         return { output: { candidate_digest: input.candidate_digest,
@@ -519,6 +521,12 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
     expect(f.connector.releaseController).toHaveBeenCalledTimes(1);
+    clock = 249;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "stale_submission_cooldown" });
+    expect(f.connector.capabilities).toHaveBeenCalledTimes(1);
+    expect(f.context).toHaveBeenCalledTimes(1);
+    expect(offered).toEqual([confirmation.snapshot_id]);
+    clock = 250;
     expect((await runtime.tick()).type).toBe("navigated");
     expect(offered).toEqual([confirmation.snapshot_id, fresh.snapshot_id]);
     expect(f.submit).toHaveBeenCalledTimes(2);
@@ -529,6 +537,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
   });
 
   it("hands off after three consecutive v2 stale submissions", async () => {
+    let clock = 0;
     const f = fixture();
     let ordinal = 0;
     f.submit.mockImplementation(async input => {
@@ -552,11 +561,18 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
           sequence: input.bundle.observation.sequence } };
     });
     const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
-      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, statefulPolicy: policy });
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, statefulPolicy: policy,
+      monotonicNow: () => clock });
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status().mode).toBe("auto");
+    clock = 250;
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status().mode).toBe("auto");
+    clock = 749;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "stale_submission_cooldown" });
+    expect(policy).toHaveBeenCalledTimes(2);
+    expect(f.context).toHaveBeenCalledTimes(2);
+    clock = 750;
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status()).toMatchObject({ mode: "human", tainted: false });
     expect(f.submit).toHaveBeenCalledTimes(3);
@@ -567,6 +583,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
   });
 
   it("resets the consecutive stale count after an applied text selection", async () => {
+    let clock = 0;
     const f = fixture();
     let submitted = 0;
     f.submit.mockImplementation(async input => {
@@ -593,6 +610,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     });
     const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
       runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      monotonicNow: () => clock,
       statefulPolicy: async (input, _signal, onOffer) => {
         onOffer(); const count = input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? 0
           : input.bundle.observation.menu_actions.actions.length;
@@ -602,8 +620,10 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
             sequence: input.bundle.observation.sequence } };
       } });
     expect((await runtime.tick()).type).toBe("text_not_applied");
+    clock = 250;
     expect((await runtime.tick()).type).toBe("navigated");
     expect((await runtime.tick()).type).toBe("text_not_applied");
+    clock = 500; // Delivery reset: another first-stale 250 ms, not 500 ms.
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
     expect(f.submit).toHaveBeenCalledTimes(4);
@@ -694,6 +714,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
   });
 
   it("offers a confirmed interaction once across a stale v2 decision", async () => {
+    let clock = 0;
     const f = fixture();
     const third = decodeTextMenuV2Snapshot({ ...root(), snapshot_id: "text-third",
       sequence: root().sequence + 3, menu: { ...root().menu, native_snapshot_id: "native-third" } }).data;
@@ -723,6 +744,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     const feedback: Array<string | null> = [];
     const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, mode: "auto", evidence: f.evidence,
       runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      monotonicNow: () => clock,
       statefulPolicy: async (input, _signal, onOffer) => {
         onOffer(); const prior = input.previous_interaction?.request_id ?? null;
         feedback.push(prior);
@@ -736,6 +758,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect((await runtime.tick()).type).toBe("navigated");
     const firstRequest = f.submit.mock.calls[0]![0].requestId;
     expect((await runtime.tick()).type).toBe("text_not_applied");
+    clock = 250;
     expect((await runtime.tick()).type).toBe("navigated");
     expect(feedback).toEqual([null, firstRequest, null]);
     expect(f.events.filter(event => event.kind === "menu_navigation")).toHaveLength(2);

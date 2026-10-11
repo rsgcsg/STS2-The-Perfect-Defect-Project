@@ -28,6 +28,9 @@ from spireagent.workbench.developer import ProjectConfig
 SCHEMA = "stpd/local-recording-catalog-v1"
 RECORDING_SCHEMA = "sts2.human-annotator/recording-manifest-2"
 CLOSE_SCHEMA = "sts2.human-annotator/session-close-1"
+SOURCE3_MANIFEST = "sts2.annotator/source-session-manifest-3"
+SOURCE3_CLOSE = "sts2.annotator/source-session-close-3"
+SOURCE3_PROFILE = "native-logical-source-v3"
 MAX_ROOT_ENTRIES = 512
 MAX_METADATA_BYTES = 64 * 1024
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
@@ -106,16 +109,20 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
     except OSError:
         return None
     manifest_bytes = _read_regular_metadata(directory / "recording-manifest.json")
-    close_bytes = _read_regular_metadata(directory / "session-close-receipt.json")
     manifest = _json_object(manifest_bytes)
+    if manifest is None:
+        return None
+    source3 = manifest.get("schema") == SOURCE3_MANIFEST
+    close_bytes = _read_regular_metadata(directory / (
+        "source-close-receipt.json" if source3 else "session-close-receipt.json"))
     close = _json_object(close_bytes)
     if manifest is None or close is None:
         return None
     session_id, timeline_id = manifest.get("session_id"), manifest.get("timeline_id")
-    closed_at = close.get("closed_at")
+    closed_at = manifest.get("created_at") if source3 else close.get("closed_at")
     if (
-        manifest.get("schema") != RECORDING_SCHEMA
-        or close.get("schema") != CLOSE_SCHEMA
+        manifest.get("schema") != (SOURCE3_MANIFEST if source3 else RECORDING_SCHEMA)
+        or close.get("schema") != (SOURCE3_CLOSE if source3 else CLOSE_SCHEMA)
         or close.get("status") != "closed"
         or not isinstance(closed_at, str)
         or not closed_at
@@ -127,10 +134,22 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
         or close.get("timeline_id") != timeline_id
     ):
         return None
+    if source3 and (
+        type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 3
+        or type(manifest.get("source_schema_version")) is not int
+        or manifest["source_schema_version"] != 3
+        or manifest.get("capture_profile_id") != SOURCE3_PROFILE
+        or close.get("accounting_complete") is not True
+        or re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("recorder_source_revision", ""))) is None
+    ):
+        return None
     return {
         "session_id": session_id,
         "timeline_id": timeline_id,
-        "closed_at": closed_at[:64],
+        **({"created_at": closed_at[:64], "recording_type": "source3",
+            "source_profile": SOURCE3_PROFILE,
+            "recorder_source_revision": manifest["recorder_source_revision"]}
+           if source3 else {"closed_at": closed_at[:64], "recording_type": "legacy_human"}),
         "manifest_sha256": _sha256(manifest_bytes or b""),
         "close_sha256": _sha256(close_bytes or b""),
     }
@@ -202,7 +221,15 @@ class LocalRecordingCatalog:
             )
 
         try:
-            candidates, unsealed, truncated = self._scan(root)
+            source3_supported = getattr(tool, "supports_source_v3", lambda: False)() is True
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return self._result(status="tool_unavailable", observed_at=observed_at,
+                                error_code="collection_tool_registration_unavailable")
+        try:
+            candidates, unsealed, truncated = self._scan(
+                root, tool_release_id=release_id,
+                source3_supported=source3_supported,
+            )
         except OSError:
             return self._result(
                 status="recordings_unavailable", observed_at=observed_at,
@@ -279,7 +306,8 @@ class LocalRecordingCatalog:
             return (root, "current_runtime") if root is not None else (None, None)
         return None, None
 
-    def _scan(self, root: Path) -> tuple[list[dict[str, Any]], int, bool]:
+    def _scan(self, root: Path, *, tool_release_id: str | None = None,
+              source3_supported: bool = False) -> tuple[list[dict[str, Any]], int, bool]:
         candidates: list[dict[str, Any]] = []
         unsealed = 0
         truncated = False
@@ -298,8 +326,9 @@ class LocalRecordingCatalog:
                 metadata = _closed_session(directory)
                 if metadata is None:
                     manifest = directory / "recording-manifest.json"
-                    close = directory / "session-close-receipt.json"
-                    if manifest.exists() and not close.exists():
+                    if (manifest.exists()
+                            and not (directory / "session-close-receipt.json").exists()
+                            and not (directory / "source-close-receipt.json").exists()):
                         unsealed += 1
                     continue
                 # The path stays in this process. Only the opaque candidate ID
@@ -307,21 +336,33 @@ class LocalRecordingCatalog:
                 material = "\0".join((str(root), entry.name,
                                        metadata["manifest_sha256"],
                                        metadata["close_sha256"]))
+                if metadata["recording_type"] == "source3":
+                    material += "\0" + str(tool_release_id)
                 candidate_id = _sha256(material.encode("utf-8"))
                 server_value = {
                     "recordings_root": root,
                     "source_directory": directory,
+                    "tool_release_id": tool_release_id,
+                    **({"source3_tool_supported": source3_supported}
+                       if metadata["recording_type"] == "source3" else {}),
                     **metadata,
                 }
                 candidates.append({
                     "candidate_id": candidate_id,
                     "session_id": metadata["session_id"],
                     "timeline_id": metadata["timeline_id"],
-                    "closed_at": metadata["closed_at"],
+                    **{key: metadata[key] for key in (
+                        "closed_at", "created_at", "recording_type", "source_profile")
+                       if key in metadata},
+                    **({"import_supported": source3_supported,
+                        "import_reason": (None if source3_supported
+                                          else "source3_tool_support_required")}
+                       if metadata["recording_type"] == "source3" else {}),
                     "state": "close_metadata_present_pending_bundle_verification",
                     "_server": server_value,
                 })
-        candidates.sort(key=lambda item: (item["closed_at"], item["session_id"]))
+        candidates.sort(key=lambda item: (
+            item.get("closed_at", item.get("created_at", "")), item["session_id"]))
         return candidates, unsealed, truncated
 
     @staticmethod

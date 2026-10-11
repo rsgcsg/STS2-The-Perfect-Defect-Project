@@ -1,8 +1,10 @@
 # New Engineer Guide
 
-Start with the [complete project handoff (中文)](NEW_MEMBER_HANDOFF.zh-CN.md)
-for accounts, first installation, collection, research and operator access.
-This page is the short engineering path to a legitimate first project PR.
+Start with README → [CURRENT](memory/CURRENT.md) → the active task packet and
+owning specification. This page is the short engineering path to a legitimate
+first project PR. Use the [member handoff (中文)](NEW_MEMBER_HANDOFF.zh-CN.md)
+only for the accounts, installation, collection or operator role you actually need;
+a source contributor does not need to complete every collector/production step.
 If you only collect/view SpireAgent data, use the
 [collection workbench route](ANNOTATOR_COLLECTION.md#default-project-workflow); building
 Platform is not a collector prerequisite.
@@ -104,21 +106,23 @@ not qualify rebuilt bytes.
 3. Add a faithful regression when behavior changes; if existing coverage is
    exact, explain why.
 4. Follow machine-readable style and the nearest stable code pattern.
-5. Run the lowest affected suite, owning component check, and root portable
-   check.
+5. Run the lowest affected suite while developing; on the stable committed
+   candidate, use the selected checks from [TESTING](TESTING.md).
 6. Run `npm run project:closeout` and review every reported impact.
 7. Update canonical docs or an ADR only when their truth changed.
 8. Open a PR to `develop` using the repository template and latest head.
 
-At minimum:
+For the completed change:
 
 ```bash
-npm run project:check
-npm run check:governance
-npm run check
+npm run check:plan -- --base origin/develop --run
 npm run project:closeout
 git diff --check
 ```
+
+The planner selects docs, Python or full checks from actual changes; governance,
+contracts and unknown impact still select full. Initial environment verification
+above runs full once. Do not repeat it for every edit or copy an earlier PASS.
 
 Game-bound behavior also requires the exact-game and runtime gates named by the
 owning component. Do not deploy merely to validate a G0 change.

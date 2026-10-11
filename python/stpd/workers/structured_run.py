@@ -19,13 +19,12 @@ from typing import Any
 import torch
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..canonical import semantic_hash
-from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
 from ..fullrun.structured_sequences import (
     MAX_SOURCE_BYTES,
     SOURCE_SCHEMA,
@@ -34,12 +33,47 @@ from ..fullrun.structured_sequences import (
 )
 from ..models.structured_m2 import GRAPH_ID
 from ..models.structured_training import StructuredTrainingConfig, train_structured_model
-from ..policy.structured_export import ROOT, export_structured_package
+from ..native_graph_spec import NativeGraphControl, optional_control
+from ..structured_code_scope import LEGACY_SCOPE, ROOT, SCOPED_RUN_SCHEMA, TRAINING_SCOPE
+from ..structured_profiles import (
+    CONTROL_SCOPES,
+    NATIVE_SCOPES,
+    ORDERED_SCOPE,
+    common_sampled_source,
+    native_experiment,
+    native_input_schema,
+    native_run_schema,
+    native_source_schema,
+    parse_dataset,
+    profile_projection,
+    qualification,
+    source_verification,
+    validate_profile,
+    verify_training_partition,
+)
 from .checkpoint_codec import encode_checkpoint
 from .reporting import RunReporter
 
 RUN_SCHEMA = "stpd/structured-m2-run-v1"
 CHECKPOINT_SCHEMA = "stpd/structured-m2-training-checkpoint-v1"
+
+
+def checked_training_execution_policy(
+    value: object, dataset: StructuredDataset, code_scope: str,
+    model_control: NativeGraphControl | None,
+) -> dict[str, Any]:
+    """Deployment policy is supported only by the existing sampled package view."""
+    from ..ordered_source_spec import SAMPLED_VIEW, checked_view
+    from ..policy.native_operational_outcome import checked_execution_policy
+
+    policy = checked_execution_policy(value)
+    sampled = common_sampled_source(dataset, code_scope)
+    if code_scope == ORDERED_SCOPE:
+        source = decode_json(dataset.source_bytes)
+        sampled = checked_view(source["projection_spec"], source["target_spec"]) == SAMPLED_VIEW
+    if not sampled or model_control != NativeGraphControl():
+        raise BoundaryError("structured_run", "execution_policy_sampled_view_required")
+    return policy
 
 
 def prepare_structured_run(
@@ -49,23 +83,79 @@ def prepare_structured_run(
     config: StructuredTrainingConfig,
     *,
     source_id: str | None = None,
+    operation_id: str | None = None,
+    code_scope: str = LEGACY_SCOPE,
+    model_control: NativeGraphControl | None = None,
+    execution_policy: dict[str, Any] | None = None,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
+    model_control = optional_control(model_control)
+    if (model_control is not None) != (code_scope in CONTROL_SCOPES):
+        raise BoundaryError("structured_run", "control_scope_mismatch")
+    native = validate_profile(dataset, code_scope)
+    policy = (checked_training_execution_policy(
+        execution_policy, dataset, code_scope, model_control)
+        if execution_policy is not None else None)
+    common = common_sampled_source(dataset, code_scope)
+    if common and model_control != NativeGraphControl():
+        raise BoundaryError("structured_run", "sampled_k1d96_carry_required")
+    if code_scope == ORDERED_SCOPE:
+        from ..fullrun.ordered_source import verify_ordered_source_partition
+
+        if source_id is None:
+            raise BoundaryError("structured_run", "typed_source3_partition_required")
+        verified = verify_ordered_source_partition(store, source_id)
+        if verified.dataset != dataset or verified.split != "train":
+            raise BoundaryError("structured_run", "source3_partition_dataset_binding")
+    elif common:
+        verify_training_partition(store, source_id, dataset, code_scope)
+    scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
+    if (
+        parse_dataset(dataset.source_bytes, code_scope) != dataset
+        or scoped
+        and operation_id is None
+    ):
+        raise BoundaryError("structured_run", "unsupported_code_scope")
+    execution_parameters: dict[str, Any] = {}
+    if operation_id is not None:
+        from spireagent.json_boundary import digest
+
+        from ..models.structured_engine import execution_identity
+
+        digest(operation_id, "structured_run.operation_id", length=32)
+        torch.set_num_threads(config.cpu_threads)
+        identity = execution_identity(
+            dataset, config, code_scope=code_scope, model_control=model_control
+        )
+        if (
+            scoped
+            and producer.uv_lock_sha256 != identity["code_identity"]["dependency_lock_sha256"]
+        ):
+            raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
+        execution_parameters = {"operation_id": operation_id, "execution_identity": identity}
+    source_info = {
+        "schema": native_source_schema(code_scope, dataset) if native else SOURCE_SCHEMA,
+        "source_kind": dataset.source_kind,
+        "source_sha256": dataset.source_sha256,
+        "qualification": qualification(dataset),
+        **(
+            {
+                "input_spec": dataset.input_spec.value(),
+                "verification_identity": source_verification(dataset),
+                "code_identity": execution_parameters["execution_identity"]["code_identity"],
+            }
+            if native and dataset.input_spec
+            else {}
+        ),
+    }
     if source_id is None:
         payload = store.put_payload("source", io.BytesIO(dataset.source_bytes), "application/json")
         source = Manifest(
             "dataset",
             producer,
             payloads=(payload,),
-            parameters=FrozenObject.of(
-                {
-                    "schema": SOURCE_SCHEMA,
-                    "source_kind": dataset.source_kind,
-                    "source_sha256": dataset.source_sha256,
-                    "qualification": "engineering_only",
-                }
-            ),
+            parameters=FrozenObject.of(source_info),
         )
         store.publish(source)
     else:
@@ -75,6 +165,15 @@ def prepare_structured_run(
             payload.size > MAX_SOURCE_BYTES
             or payload.sha256 != dataset.source_sha256
             or b"".join(store.read_payload(payload)) != dataset.source_bytes
+            or native
+            and code_scope != ORDERED_SCOPE and not common
+            and (
+                source.kind != "dataset"
+                or source.parameters.value() != source_info
+                or {p.role for p in source.payloads} != {"source"}
+                or source.parents
+                or payload.media_type != "application/json"
+            )
         ):
             raise BoundaryError("structured_run", "source_payload_binding")
     training_input = Manifest(
@@ -84,19 +183,27 @@ def prepare_structured_run(
         (payload,),
         FrozenObject.of(
             {
-                "schema": "stpd/structured-m2-training-input-v1",
+                "schema": native_input_schema(code_scope)
+                if native
+                else "stpd/structured-m2-training-input-v1",
                 "source_sha256": dataset.source_sha256,
-                "projection": {
-                    "id": INPUT_ID,
-                    "version": PROJECTION_VERSION,
-                    "I": False,
-                    "F": False,
-                },
+                "projection": profile_projection(dataset, code_scope),
+                **(
+                    {
+                        "input_spec": dataset.input_spec.value(),
+                        "verification_identity": source_verification(dataset),
+                        "code_identity": execution_parameters["execution_identity"][
+                            "code_identity"
+                        ],
+                    }
+                    if native and dataset.input_spec
+                    else {}
+                ),
                 "splits": {
                     split: [run.run_id for run in dataset.runs if run.split == split]
                     for split in ("train", "dev", "test")
                 },
-                "qualification": "engineering_only",
+                "qualification": qualification(dataset),
             }
         ),
     )
@@ -107,9 +214,12 @@ def prepare_structured_run(
         (Parent("training_input", training_input.artifact_id),),
         parameters=FrozenObject.of(
             {
-                "schema": "stpd/experiment-v1",
-                "purpose": "s0_agent_teacher_imitation",
-                "graph_id": GRAPH_ID,
+                **(
+                    native_experiment(code_scope)
+                    if native
+                    else {"schema": "stpd/experiment-v1", "purpose": "s0_agent_teacher_imitation"}
+                ),
+                "graph_id": GRAPH_ID if model_control is None else model_control.id,
                 "config": asdict(config),
             }
         ),
@@ -124,11 +234,21 @@ def prepare_structured_run(
         ),
         parameters=FrozenObject.of(
             {
-                "schema": RUN_SCHEMA,
+                "schema": (
+                    native_run_schema(code_scope)
+                    if native
+                    else SCOPED_RUN_SCHEMA
+                    if code_scope == TRAINING_SCOPE
+                    else "stpd/structured-m2-run-v2"
+                    if operation_id is not None
+                    else RUN_SCHEMA
+                ),
                 "config": asdict(config),
                 "source_sha256": dataset.source_sha256,
                 "torch_version": torch.__version__,
                 "partition": "train",
+                **execution_parameters,
+                **({"execution_policy": policy} if policy is not None else {}),
             }
         ),
     )
@@ -147,6 +267,8 @@ def run_structured_job(
     source_id: str | None = None,
 ) -> dict[str, Any]:
     """Train once and publish model/checkpoint/results; never overwrite/retry a run."""
+    from ..policy.structured_export import export_structured_package
+
     config.validate()
     if (
         not isinstance(dataset, StructuredDataset)

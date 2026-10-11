@@ -1,0 +1,771 @@
+{
+  "schema": "sts2.player-environment/native-logical-public-domain-fixtures-1",
+  "cases": [
+    {
+      "name": "schema_null_properties_null",
+      "valid": true,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": null,
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "schema_null_properties_set",
+      "valid": true,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": null,
+            "properties": {
+              "name": "card",
+              "visible_cost": 1
+            }
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "schema_set_properties_null",
+      "valid": true,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": "native.card.public-1",
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "schema_set_properties_set",
+      "valid": true,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": "native.card.public-1",
+            "properties": {
+              "name": "card",
+              "visible_cost": 1
+            }
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "kind_number",
+      "valid": false,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": 1,
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": null,
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "properties_schema_number",
+      "valid": false,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": 1,
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "basis_boolean",
+      "valid": false,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": true,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": false
+            },
+            "properties_schema": null,
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    },
+    {
+      "name": "visible_number",
+      "valid": false,
+      "wire": {
+        "protocol_version": "1.0.0",
+        "schema": "sts2.player-environment/native-logical-observation-1",
+        "input_profile": "native-logical-v1",
+        "snapshot_id": "snapshot-fixture",
+        "revision": 1,
+        "observed_at": "1970-01-01T00:00:00+00:00",
+        "status": "observed",
+        "persistent": {
+          "content_schema": "public-persistent-fixture",
+          "content": {
+            "text": "你好 / 🐉 / café / é"
+          }
+        },
+        "interaction": {
+          "interaction_id": "interaction-fixture",
+          "kind": "selector",
+          "stage": "ready",
+          "prompt": null,
+          "content_schema": "public-surface-fixture",
+          "content": {
+            "surface": {
+              "kind": "selector",
+              "focus_referent_id": null
+            },
+            "context": {
+              "kind": "public-fixture"
+            }
+          },
+          "capabilities": []
+        },
+        "referents": [
+          {
+            "referent_id": "public-card",
+            "role": "card",
+            "kind": "card",
+            "label": null,
+            "state": {
+              "visible": 1,
+              "enabled": null,
+              "selected": null,
+              "focused": null,
+              "observation_basis": "logical-public"
+            },
+            "properties_schema": null,
+            "properties": null
+          }
+        ],
+        "completeness": {
+          "status": "complete",
+          "included": [
+            "persistent",
+            "interaction",
+            "referents",
+            "catalog"
+          ],
+          "missing": [],
+          "full_reference_complete": true
+        },
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "information_policy": {
+          "id": "fair-player",
+          "scope": "entered-native-page",
+          "includes_hidden_information": false,
+          "unknown_field_behavior": "explicit"
+        },
+        "owner_occurrence": {
+          "owner_id": "owner-fixture",
+          "occurrence_id": "occurrence-fixture",
+          "binding_revision": "binding-fixture",
+          "focus_referent_id": null,
+          "focus_occurrence": null
+        },
+        "catalog": {
+          "catalog_ref": "catalog-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "status": "complete",
+          "total_count": 0,
+          "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+          "ordering_semantics": "native_public_order",
+          "access_methods": [
+            "catalog",
+            "resolve"
+          ],
+          "scope_id": "scope-fixture",
+          "stream_generation": "stream-fixture"
+        }
+      }
+    }
+  ]
+}

@@ -78,6 +78,44 @@ internal static class LiveObservationReader
         GameBuildIdentity game,
         Func<LiveObservation?>? specializedSurface = null,
         bool rewardPageProfile = false)
+        => ApplyRequiredContextCompleteness(BuildCore(entities, game, specializedSurface, rewardPageProfile));
+
+    // A combat context is shared by ordinary combat and nested input owners.
+    // Required context failures must not disappear when a selector is complete.
+    internal static LiveObservation ApplyRequiredContextCompleteness(LiveObservation observation)
+    {
+        IReadOnlyList<string> contextMissing = observation.Context switch
+        {
+            CombatLiveContext context => context.CaptureMissing,
+            UnknownLiveContext context => context.CaptureMissing,
+            _ => Array.Empty<string>()
+        };
+        if (contextMissing.Count == 0)
+            return observation;
+        string[] missing = observation.Completeness.Missing.Concat(contextMissing)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        return observation with
+        {
+            Signature = StableIdentityHash.Object(new { observation.Signature, missing }),
+            Readiness = observation.Readiness == "settling" ? "settling" : "unsupported",
+            Surface = new UnsupportedSurface(observation.Surface.Kind,
+                contextMissing[0], "Required public combat facts could not be captured."),
+            Completeness = observation.Completeness with
+            {
+                PlayerVisibleSemantics = "partial",
+                InteractionDiscovery = "empty_fail_closed",
+                Missing = missing
+            },
+            InputOwnership = new InputOwnership("none_fail_closed", null,
+                "Required public combat context facts are incomplete.")
+        };
+    }
+
+    private static LiveObservation BuildCore(
+        NativeEntityRegistry entities,
+        GameBuildIdentity game,
+        Func<LiveObservation?>? specializedSurface,
+        bool rewardPageProfile)
     {
         IReadOnlyList<ILiveSurfaceReader> providers = CreateReaders(rewardPageProfile);
         ActiveSurfaceSnapshot snapshot;

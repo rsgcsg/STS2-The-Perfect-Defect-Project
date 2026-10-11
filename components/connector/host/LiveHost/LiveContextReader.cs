@@ -47,6 +47,12 @@ internal static class LiveContextReader
                 runState?.CurrentRoom?.GetType().Name ?? "no_active_run_context",
                 "This context has not yet received a complete player-visible projection.");
         }
+        catch (PublicCombatCaptureException ex)
+        {
+            return new UnknownLiveContext("unknown", ex.Missing,
+                "Required public combat facts could not be captured.")
+            { CaptureMissing = new[] { ex.Missing } };
+        }
         catch (Exception ex)
         {
             return new UnknownLiveContext(
@@ -97,10 +103,11 @@ internal static class LiveContextReader
         PlayerCombatState playerCombat = player.PlayerCombatState
             ?? throw new InvalidOperationException("Player combat state is unavailable.");
 
-        VisibleCombatPlayer visiblePlayer = BuildPlayer(player, playerCombat, entities);
+        var missing = new List<string>();
+        VisibleCombatPlayer visiblePlayer = BuildPlayer(player, playerCombat, entities, missing);
         VisibleEnemy[] enemies = combat.Enemies
             .Where(enemy => enemy.IsAlive)
-            .Select(enemy => BuildEnemy(enemy, entities))
+            .Select(enemy => BuildEnemy(enemy, entities, missing))
             .ToArray();
         bool playPhase = playerCombat.Phase == PlayerTurnPhase.Play
                          && CombatManager.Instance.IsPartOfPlayerTurn(player)
@@ -119,7 +126,10 @@ internal static class LiveContextReader
             combat.CurrentSide.ToString().ToLowerInvariant(),
             playPhase,
             visiblePlayer,
-            enemies);
+            enemies)
+        {
+            CaptureMissing = Array.AsReadOnly(missing.Distinct(StringComparer.Ordinal).ToArray())
+        };
     }
 
     public static VisibleCard BuildCard(
@@ -178,35 +188,68 @@ internal static class LiveContextReader
             unplayableReason);
     }
 
-    public static IReadOnlyList<VisibleStatus> BuildStatuses(Creature creature)
+    internal const string RequiredPowerCaptureMissing = "public_combat_power_facts";
+    internal const string RequiredHealthCaptureMissing = "public_combat_health_display";
+
+    internal sealed class PublicCombatCaptureException(string missing) : InvalidOperationException(missing)
+    {
+        internal string Missing { get; } = missing;
+    }
+
+    private static IReadOnlyList<VisibleStatus> BuildStatuses(Creature creature, ICollection<string> missing)
+    {
+        CombatStatusCapture captured = CaptureStatuses(creature.Powers,
+            power => power.IsVisible,
+            power => new VisibleStatus(power.Id.Entry,
+                ConnectorMod.SafeGetText(() => power.Title), power.DisplayAmount,
+                power.Type.ToString(), null),
+            power =>
+            {
+                HoverTip tip = power.HoverTips.OfType<HoverTip>()
+                    .FirstOrDefault(value => value.Id == power.Id.ToString());
+                return string.IsNullOrWhiteSpace(tip.Description)
+                    ? ConnectorMod.StripRichTextTags(power.DumbHoverTip.Description)
+                    : ConnectorMod.StripRichTextTags(tip.Description);
+            });
+        foreach (string reason in captured.Missing) missing.Add(reason);
+        return captured.Statuses;
+    }
+
+    internal sealed record CombatStatusCapture(IReadOnlyList<VisibleStatus> Statuses,
+        IReadOnlyList<string> Missing);
+
+    // Required visible scalar facts are independent of optional rich tooltip
+    // text. The same capture is used by legacy Read-rich and native profiles.
+    internal static CombatStatusCapture CaptureStatuses<T>(IEnumerable<T> powers,
+        Func<T, bool> isVisible, Func<T, VisibleStatus> scalarFacts,
+        Func<T, string?> description)
     {
         var result = new List<VisibleStatus>();
-        foreach (PowerModel power in creature.Powers)
+        bool requiredFailed = false;
+        try
         {
-            if (!power.IsVisible)
-                continue;
-            try
+            foreach (T power in powers)
             {
-                HoverTip hoverTip = power.HoverTips
-                    .OfType<HoverTip>()
-                    .FirstOrDefault(tip => tip.Id == power.Id.ToString());
-                string? description = string.IsNullOrWhiteSpace(hoverTip.Description)
-                    ? ConnectorMod.StripRichTextTags(power.DumbHoverTip.Description)
-                    : ConnectorMod.StripRichTextTags(hoverTip.Description);
-                result.Add(new VisibleStatus(
-                    power.Id.Entry,
-                    ConnectorMod.SafeGetText(() => power.Title),
-                    power.DisplayAmount,
-                    power.Type.ToString(),
-                    description));
-            }
-            catch
-            {
-                // An individual transitioning power is omitted; completeness is
-                // evaluated by the owning surface rather than fabricating text.
+                VisibleStatus scalar;
+                try
+                {
+                    if (!isVisible(power)) continue;
+                    scalar = scalarFacts(power);
+                }
+                catch
+                {
+                    requiredFailed = true;
+                    continue;
+                }
+                string? optional = null;
+                try { optional = description(power); }
+                catch { /* Optional text cannot erase required public scalars. */ }
+                result.Add(scalar with { Description = optional });
             }
         }
-        return result;
+        catch { requiredFailed = true; } // An incomplete native roster is also missing.
+        return new(Array.AsReadOnly(result.ToArray()), requiredFailed
+            ? new[] { RequiredPowerCaptureMissing } : Array.Empty<string>());
     }
 
     public static IReadOnlyList<VisibleCombatPotionState> BuildPotionStates(
@@ -251,7 +294,8 @@ internal static class LiveContextReader
     private static VisibleCombatPlayer BuildPlayer(
         Player player,
         PlayerCombatState combat,
-        NativeEntityRegistry entities)
+        NativeEntityRegistry entities,
+        ICollection<string> missing)
     {
         bool playPhase = combat.Phase == PlayerTurnPhase.Play
                          && CombatManager.Instance.IsPartOfPlayerTurn(player)
@@ -276,8 +320,8 @@ internal static class LiveContextReader
             combat.DrawPile.Cards.Count,
             combat.DiscardPile.Cards.Count,
             combat.ExhaustPile.Cards.Count,
-            BuildStatuses(player.Creature),
-            BuildCompanions(combat, entities),
+            BuildStatuses(player.Creature, missing),
+            BuildCompanions(combat, entities, missing),
             BuildPotionStates(player, entities, playPhase),
             orbs,
             combat.OrbQueue?.Capacity);
@@ -300,27 +344,43 @@ internal static class LiveContextReader
 
     private static IReadOnlyList<VisibleCombatCompanion> BuildCompanions(
         PlayerCombatState combat,
-        NativeEntityRegistry entities)
+        NativeEntityRegistry entities,
+        ICollection<string> missing)
     {
         return combat.Pets.Select(companion =>
         {
             MonsterModel model = companion.Monster
                 ?? throw new InvalidOperationException("A player combat pet has no monster model.");
             bool healthBarVisible = model.IsHealthBarVisible;
+            bool numbersAvailable = HealthNumbersAvailable(companion.HpDisplay, healthBarVisible);
             return new VisibleCombatCompanion(
                 entities.GetId(companion, "companion"),
                 model.Id.Entry,
                 ConnectorMod.SafeGetText(() => model.Title),
                 companion.IsAlive,
                 healthBarVisible,
-                healthBarVisible ? companion.CurrentHp : null,
-                healthBarVisible ? companion.MaxHp : null,
+                numbersAvailable ? companion.CurrentHp : null,
+                numbersAvailable ? companion.MaxHp : null,
                 companion.IsAlive ? companion.Block : 0m,
-                companion.IsAlive ? BuildStatuses(companion) : Array.Empty<VisibleStatus>());
+                companion.IsAlive ? BuildStatuses(companion, missing) : Array.Empty<VisibleStatus>(),
+                HealthDisplayMode(companion.HpDisplay),
+                numbersAvailable);
         }).ToArray();
     }
 
-    private static VisibleEnemy BuildEnemy(Creature creature, NativeEntityRegistry entities)
+    internal static bool HealthNumbersAvailable(HpDisplay mode, bool healthBarVisible) =>
+        healthBarVisible && mode.ShowsNumbers();
+
+    internal static string HealthDisplayMode(HpDisplay mode) => mode switch
+    {
+        HpDisplay.Normal => "normal",
+        HpDisplay.InfiniteWithNumbers => "infinite_with_numbers",
+        HpDisplay.InfiniteWithoutNumbers => "infinite_without_numbers",
+        _ => throw new PublicCombatCaptureException(RequiredHealthCaptureMissing)
+    };
+
+    internal static VisibleEnemy BuildEnemy(Creature creature, NativeEntityRegistry entities,
+        ICollection<string> missing)
     {
         var intents = new List<VisibleIntent>();
         if (creature.Monster?.NextMove is MoveState move)
@@ -349,16 +409,21 @@ internal static class LiveContextReader
             }
         }
 
+        bool healthBarVisible = creature.Monster?.IsHealthBarVisible ?? true;
+        bool numbersAvailable = HealthNumbersAvailable(creature.HpDisplay, healthBarVisible);
         return new VisibleEnemy(
             entities.GetId(creature, "enemy"),
             creature.CombatId,
             creature.Monster?.Id.Entry ?? "unknown",
             ConnectorMod.SafeGetText(() => creature.Monster?.Title),
-            creature.CurrentHp,
-            creature.MaxHp,
+            numbersAvailable ? creature.CurrentHp : null,
+            numbersAvailable ? creature.MaxHp : null,
             creature.Block,
-            BuildStatuses(creature),
-            intents);
+            BuildStatuses(creature, missing),
+            intents,
+            healthBarVisible,
+            HealthDisplayMode(creature.HpDisplay),
+            numbersAvailable);
     }
 
     private static string? ReadNodeText(Node? owner, string path)

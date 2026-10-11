@@ -18,7 +18,8 @@ internal sealed record TextMenuLeaf(
     string? SubjectReferentId,
     IReadOnlyList<PlayerEnvironmentBoundActionArgument> Arguments,
     [property: JsonIgnore] Func<NativeInputResult> Dispatch,
-    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeWitness = null);
+    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeWitness = null,
+    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeSourceWitness = null);
 
 internal sealed record TextMenuFrame(
     PlayerEnvironmentSnapshot Page, string OwnerKey, IReadOnlyList<TextMenuLeaf> Leaves)
@@ -33,6 +34,14 @@ internal sealed record TextMenuFrame(
 
     [JsonIgnore]
     internal bool CardPlayCatalogComplete { get; init; }
+
+    // Only the new native adapter supplies this exact private membership proof.
+    // Legacy windows/public flags cannot certify a full logical action relation.
+    [JsonIgnore]
+    internal NativeLogicalGridState? LogicalGridProof { get; init; }
+
+    [JsonIgnore]
+    internal NativeLogicalDeckState? LogicalDeckProof { get; init; }
 }
 
 internal sealed record TextMenuChoice(TextMenuAction Action, TextMenuLeaf? Leaf, string? TargetCursor);

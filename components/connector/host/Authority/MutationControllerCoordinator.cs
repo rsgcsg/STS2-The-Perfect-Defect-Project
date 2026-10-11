@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using STS2Connector.LiveHost.Contracts;
+using System.Threading;
 namespace STS2Connector.Authority;
 
-internal sealed class MutationControllerCoordinator
+internal sealed class MutationWatchCapacityException : Exception { }
+
+internal sealed partial class MutationControllerCoordinator
 {
     public const int DefaultLeaseTtlMs = 30_000;
     public const int RecommendedRenewalMs = 10_000;
@@ -20,11 +22,19 @@ internal sealed class MutationControllerCoordinator
     private readonly Dictionary<string, string> _sessionByInstance = new(StringComparer.Ordinal);
     private MutableLease? _controller;
     private long _nextGeneration;
+    private readonly Dictionary<long, Action> _controlWatches = new();
+    private long _nextWatch;
+    private Timer? _watchTimer;
+    private const int MaxControlWatches = 128;
 
     public MutationControllerCoordinator(
         string runtimeInstanceId,
         int leaseTtlMs = DefaultLeaseTtlMs,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        Func<long>? monotonicClock = null,
+        int clientIdleTtlMs = DefaultClientIdleTtlMs,
+        bool enableDeadlineTimer = true,
+        int maxClientSpentRequests = MaxClientSpentRequests)
     {
         if (string.IsNullOrWhiteSpace(runtimeInstanceId))
             throw new ArgumentException("A runtime instance id is required.", nameof(runtimeInstanceId));
@@ -34,10 +44,18 @@ internal sealed class MutationControllerCoordinator
         _runtimeInstanceId = runtimeInstanceId;
         _leaseTtl = TimeSpan.FromMilliseconds(leaseTtlMs);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        if (clientIdleTtlMs <= 0) throw new ArgumentOutOfRangeException(nameof(clientIdleTtlMs));
+        _clientIdleTtlMs = clientIdleTtlMs;
+        _monotonicClock = monotonicClock ?? (() => Environment.TickCount64);
+        _enableDeadlineTimer = enableDeadlineTimer;
+        if (maxClientSpentRequests is <= 0 or > MaxClientSpentRequests)
+            throw new ArgumentOutOfRangeException(nameof(maxClientSpentRequests));
+        _maxClientSpentRequests = maxClientSpentRequests;
     }
 
     public MutationClientRegistrationResult Register(MutationClientRegistrationRequest request)
     {
+        ValidateRegistration(request);
         lock (_gate)
         {
             DateTimeOffset now = _clock();
@@ -50,7 +68,7 @@ internal sealed class MutationControllerCoordinator
                     throw new InvalidOperationException(
                         "client_instance_id is already registered with different product metadata.");
 
-                existing.Touch(now);
+                TouchClient(existing, now);
                 return new MutationClientRegistrationResult(
                     MutationControlContract.ProtocolVersion,
                     _runtimeInstanceId,
@@ -72,6 +90,8 @@ internal sealed class MutationControllerCoordinator
                 now);
             _clientsBySession[sessionId] = client;
             _sessionByInstance[instanceId] = sessionId;
+            client.Lifetime = new(_runtimeInstanceId, sessionId);
+            TouchClient(client, now);
             return new MutationClientRegistrationResult(
                 MutationControlContract.ProtocolVersion,
                 _runtimeInstanceId,
@@ -89,6 +109,7 @@ internal sealed class MutationControllerCoordinator
                 MutationControlContract.ProtocolVersion,
                 _runtimeInstanceId,
                 _clientsBySession.Values
+                    .Where(client => !client.Lifetime.IsClosed)
                     .Select(client => client.ToRecord())
                     .OrderBy(client => client.RegisteredAt)
                     .ToArray(),
@@ -109,7 +130,10 @@ internal sealed class MutationControllerCoordinator
             if (_controller != null)
             {
                 if (string.Equals(_controller.ClientSessionId, activeClient.ClientSessionId, StringComparison.Ordinal))
+                {
+                    TouchClient(activeClient, now);
                     return Accepted("controller_already_held", "This client already holds the controller lease.", activeClient);
+                }
                 return Rejected(
                     "controller_lease_held",
                     $"Mutation control is currently held by {_clientsBySession[_controller.ClientSessionId].ProductName}.");
@@ -122,6 +146,7 @@ internal sealed class MutationControllerCoordinator
                 activeClient.ClientSessionId,
                 now,
                 now + _leaseTtl);
+            TouchClient(activeClient, now);
             return Accepted("controller_acquired", "Mutation control was acquired for this Host runtime.", activeClient);
         }
     }
@@ -139,6 +164,7 @@ internal sealed class MutationControllerCoordinator
                 return Rejected("controller_lease_stale", "The controller lease id or generation is no longer current.");
 
             _controller!.ExpiresAt = now + _leaseTtl;
+            TouchClient(activeClient, now);
             return Accepted("controller_renewed", "Mutation control was renewed.", activeClient);
         }
     }
@@ -155,7 +181,8 @@ internal sealed class MutationControllerCoordinator
             if (!MatchesCurrentLease(request))
                 return Rejected("controller_lease_stale", "The controller lease id or generation is no longer current.");
 
-            _controller = null;
+            RevokeController();
+            TouchClient(activeClient, now);
             return new MutationLeaseResult(
                 MutationControlContract.ProtocolVersion,
                 _runtimeInstanceId,
@@ -190,6 +217,7 @@ internal sealed class MutationControllerCoordinator
             }
 
             MutableLease activeController = _controller!;
+            TouchClient(activeClient, now);
             return MutationAdmission.Allow(new MutationAttribution(
                 _runtimeInstanceId,
                 activeClient.ClientSessionId,
@@ -199,6 +227,60 @@ internal sealed class MutationControllerCoordinator
                 activeClient.ProductVersion,
                 activeController.LeaseId,
                 activeController.Generation));
+        }
+    }
+
+    // This accepted return is the input-start linearization boundary. The
+    // caller retains the immutable admission, then dispatches outside _gate.
+    // A later release/expiry prevents new starts; it cannot undo this start.
+    public MutationAdmission TryBegin(MutationAuthorizationRequest request)
+    {
+        lock (_gate) return Authorize(request);
+    }
+
+    public bool TryWatch(MutationAuthorizationRequest request, Action lost, out IDisposable? watch)
+    {
+        ArgumentNullException.ThrowIfNull(lost);
+        lock (_gate)
+        {
+            if (!ValidateActiveControl(request).Accepted) { watch = null; return false; }
+            if (_controlWatches.Count >= MaxControlWatches) throw new MutationWatchCapacityException();
+            long id = checked(++_nextWatch);
+            _controlWatches.Add(id, lost);
+            _watchTimer ??= new Timer(_ => { lock (_gate) ExpireController(_clock()); }, null, 25, 25);
+            watch = new ControlWatch(this, id);
+            return true;
+        }
+    }
+
+    private void RevokeController()
+    {
+        _controller = null;
+        Action[] callbacks = _controlWatches.Values.ToArray();
+        _controlWatches.Clear();
+        _watchTimer?.Dispose(); _watchTimer = null;
+        foreach (Action callback in callbacks)
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                // Cross the authority gate before invoking another owner.
+                lock (_gate) { }
+                try { callback(); } catch { /* Observer failure grants no control. */ }
+            });
+    }
+
+    private sealed class ControlWatch(MutationControllerCoordinator owner, long id) : IDisposable
+    {
+        private MutationControllerCoordinator? coordinator = owner;
+        public void Dispose()
+        {
+            var value = Interlocked.Exchange(ref coordinator, null);
+            if (value == null) return;
+            lock (value._gate)
+            {
+                value._controlWatches.Remove(id);
+                if (value._controlWatches.Count == 0)
+                { value._watchTimer?.Dispose(); value._watchTimer = null; }
+            }
         }
     }
 
@@ -221,8 +303,7 @@ internal sealed class MutationControllerCoordinator
     {
         if (sessionId != null && _clientsBySession.TryGetValue(sessionId, out client))
         {
-            client.Touch(now);
-            return true;
+            return !client.Lifetime.IsClosed;
         }
         client = null;
         return false;
@@ -236,8 +317,9 @@ internal sealed class MutationControllerCoordinator
 
     private void ExpireController(DateTimeOffset now)
     {
+        ExpireClients(now);
         if (_controller != null && now >= _controller.ExpiresAt)
-            _controller = null;
+            RevokeController();
     }
 
     private MutationLeaseResult Accepted(
@@ -287,6 +369,8 @@ internal sealed class MutationControllerCoordinator
         public string ProductVersion { get; }
         public DateTimeOffset RegisteredAt { get; }
         public DateTimeOffset LastSeenAt { get; private set; }
+        internal MutationClientLifetime Lifetime = null!;
+        internal long IdleDeadline;
 
         public bool Matches(MutationClientRegistrationRequest request) =>
             string.Equals(ProductId, request.ProductId, StringComparison.Ordinal)

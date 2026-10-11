@@ -1,0 +1,23 @@
+{
+  "schema": "sts2.human-annotator/recording-performance-profile-1",
+  "session_id": "session-fixture",
+  "generated_at": "2026-10-08T20:40:30.1769+00:00",
+  "phases": [
+    {
+      "phase": "close_evidence_durable_flush",
+      "count": 1,
+      "sampled_count": 1,
+      "dropped_sample_count": 0,
+      "mean_us": 3798,
+      "p50_us": 3798,
+      "p95_us": 3798,
+      "p99_us": 3798,
+      "max_us": 3798,
+      "total_us": 3798
+    }
+  ],
+  "non_claims": [
+    "Stopwatch timings are source/runtime diagnostics, not gameplay evidence.",
+    "A profile does not prove absence of game-frame stalls without an owner canary."
+  ]
+}

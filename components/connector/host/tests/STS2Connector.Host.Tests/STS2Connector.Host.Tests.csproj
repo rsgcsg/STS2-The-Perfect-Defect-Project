@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../STS2Connector.Host.csproj" />
+    <Compile Include="../../../../../apps/game-mod/ConnectorNativeLogicalInspectionDeparture.cs" Link="NativePublication/ConnectorNativeLogicalInspectionDeparture.cs" />
   </ItemGroup>
 
   <ItemGroup>

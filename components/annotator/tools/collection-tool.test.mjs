@@ -4,7 +4,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { canonical, copyCollectionSetup, inventory, publishCollectionTool, setupFiles } from "./publish-collection-tool.mjs";
+import crypto from "node:crypto";
+import { canonical, collectionIdentity, copyCollectionSetup, inventory, publishCollectionTool, setupFiles } from "./publish-collection-tool.mjs";
+
+test("Source3 capability is authenticated by the publisher identity and keeps legacy support", () => {
+  const identity = collectionIdentity({ workspaceRevision: "a".repeat(40),
+    componentSourceRevision: "b".repeat(40), componentTreeRevision: "c".repeat(40) }, []);
+  assert.equal(identity.supported_recording_schema, "sts2.human-annotator/recording-manifest-2");
+  assert.equal(identity.output_schema, "sts2.human-annotator/session-bundle-3");
+  assert.deepEqual(identity.source_v3_support, {
+    schema: "sts2.evidence/source3-collection-support-1", command: "pack-source-v3",
+    recording_schema: "sts2.annotator/source-session-manifest-3", source_profile: "native-logical-source-v3",
+    bundle_schema: "sts2.annotator/source-session-bundle-3", type_id: "source-session-bundle-v3"
+  });
+  const release = value => crypto.createHash("sha256").update(canonical(value)).digest("hex");
+  const old = { ...identity }; delete old.source_v3_support;
+  assert.notEqual(release(identity), release(old));
+  assert.notEqual(release(identity), release({ ...identity,
+    source_v3_support: { ...identity.source_v3_support, command: "pack-session" } }));
+});
 
 test("release identity sorts nested keys and binds exact dependency bytes", () => {
   assert.equal(canonical({ z: [{ b: 2, a: 1 }], a: "你好" }), '{"a":"你好","z":[{"a":1,"b":2}]}');

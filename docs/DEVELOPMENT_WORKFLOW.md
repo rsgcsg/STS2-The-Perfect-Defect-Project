@@ -19,7 +19,10 @@ versions of those procedures into campaigns or incident notes.
 
 日常三个固定入口：`check:plan -- --base origin/develop --run` 选择检查，
 `project:closeout` 提醒影响，PR 完成审查和集成。命令前均为 `npm run`。
-开发过程中先跑最小忠实回归；待改动稳定后再跑计划检查，不在每次改一行后重复全仓。
+测试创建、维护、最小忠实回归、执行依赖和速度改进由
+[TESTING](TESTING.md#test-design-and-maintenance) 统一维护；待改动稳定后再跑计划检查。
+冻结候选和启动昂贵检查前，先运行 `npm run project:closeout`，检查拼接后的完整文档。
+该入口复用 CURRENT 的既有安全和实际 UTF-8 字节容量规则，超限直接失败；仅审新增段落不算通过。
 普通 topic PR 总是执行所选检查；合并/正式晋级允许按 TESTING 的回执规则复用同内容的已执行结果，
 并重新核对当前 Git 身份。手动 full 是强制重新执行入口。
 
@@ -52,6 +55,25 @@ main/develop, force-push, bypass required CI or reuse an already merged topic br
 Root AGENTS.md and Engineering Governance own G0-G6; historical STPD classes are not a
 second governance system. A PR may cross components when one causal change requires it.
 
+### Shared baseline and independent increments
+
+For parallel work, pin one reviewed shared base and the contracts/examples each packet
+consumes. Each writer has a separate topic/worktree and private mutable state. Disjoint
+implementation, data inventory and review may proceed once their actual prerequisites
+are stable; a queued full CI job is not a universal dependency. TESTING owns diagnostics
+that may overlap isolated CI and the unchanged selected merge gates.
+
+The supervisor owns shared refs/contract changes/BOM and reconciles changed dependencies
+before integration. Independently review useful increments and integrate them regularly;
+a final system gate does not require stockpiling every compatible repair. A dependent
+unmerged candidate must be explicit. Do not let temporary workstreams become permanent
+component branches, or mutate a frozen build/profile used by another consumer.
+
+Legacy migration follows Governance's [consumer migration rule](ENGINEERING_GOVERNANCE.md#preserve-one-product-while-migrating-consumers):
+restore one real consumer path with parity and rollback, reuse common application/control/
+data/task owners, then evolve a declared profile. Keep unique old PR increments available
+until their callers and evidence are reconciled; closing all old PRs is not a delivery goal.
+
 ## Normal change and release sequence
 
 Before implementation, use the [governance investigation and placement rule](ENGINEERING_GOVERNANCE.md#investigate-before-placement-iterate-after-the-boundary-is-clear)
@@ -62,6 +84,15 @@ re-auditing all history for every edit or asking the human to relay routine repa
 Integrate reviewed increments regularly; do not stockpile all work until the final
 baseline gate. The baseline task index coordinates future work, not authority to
 merge, run or publish it.
+
+For a behavioral packet, record the observable guarantee, first owning fact,
+actual producer/consumer path, one falsifying example, faithful lowest-cost gate,
+mocked seams and stronger unproved claim. On failure use Governance's
+[classification rules](ENGINEERING_GOVERNANCE.md#classify-failures-before-choosing-a-repair)
+before choosing a local fix, contract change, boundary redesign or measured scope
+tradeoff. A repeated failure must improve its discovery path, not just add another
+outer-layer workaround. The selected check inventory and aggregate requirement
+remain in TESTING; task-specific real-attempt budgets remain in the active packet.
 
 1. Create a topic branch from current origin/develop; record exact base/head and owner.
    Implement the first owning correction, add the cheapest faithful regression, run the
@@ -201,15 +232,10 @@ outside Git. New work and incident reports belong in this repository only.
 
 ## 长任务与用户交接
 
-主要训练、完整 CI、长编码／构建启动后，确认任务可脱离当前对话持续运行并且日志可查，
-就结束当前回复并交接，不持续轮询。预计超过约两分钟的等待默认采用此方式；短回归可当场完成。
-若进程不能可靠存活，给出精确的人类启动命令，不能只留下会随会话消失的进程。
+等待、观察者和恢复交接统一由 [AI collaboration](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)
+维护：约五分钟是被动等待检查点，不是主动实施时限，也不要求将每个长检查交给用户。
+优先使用有真实任务身份、有限窗口的观察者，继续独立授权工作；没有可靠观察机制就如实交接。
+保留失败、取消和 unknown，恢复先核原任务，不能以重跑代替结果核对。
 
-交接必须包含：任务名称/ID、源码或数据/配置身份、当前状态、日志路径或页面、
-最少人工步骤（例如保持电脑唤醒）、成功/失败/需要操作的识别方式，以及下次恢复的动作。
-用户可回复“完成，继续”或“失败，检查”，Agent 再自行核对结果，无需用户抄长日志。
-不自动启动下一批主要训练；阶段预算和原有授权仍有效，不重复索要已授予权限。
-等待期间没有审查、合并或运行成功声明；正常检查、精确身份、Human 与部署 gate 不因交接减少。
-后续 Agent 先核对相同任务的终态，保留失败/取消/unknown，不能以重新启动替代恢复。
 本机一次性任务必须明确禁用退出后自动重启；macOS 使用显式 RunAtLoad/KeepAlive 配置，
-不要把 launchctl submit 当作一次性任务保证。原结果防覆盖仍需保留，但不能用它代替正确的进程生命周期。
+不要把 launchctl submit 当作一次性任务保证。原结果防覆盖不能代替进程生命周期管理。

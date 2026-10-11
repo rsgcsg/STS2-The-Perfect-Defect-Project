@@ -6,6 +6,48 @@ This is the owning orchestration guide for `workbench.local_models`,
 remain authoritative. This flow does not make arbitrary downloaded checkpoints
 executable and does not qualify Human data or model game performance.
 
+The existing `LocalModelExport.start` owner accepts the explicit closed
+`compatibility_profile="native-evidence-rc27-to-rc29-v1"` for a supported original
+sampled native Model. Ordinary calls keep strict original export behavior. The
+same export operation records original and derived IDs, and journals the derived
+identity before immutable publication. It then uses the ordinary native export
+and verification path, preserving any previous completed original receipt.
+The existing clean-source identity owner captures the committed source/lock
+producer and revalidates it immediately before derived publication intent;
+dirty source or a changed producer fails before any derived publication.
+Workspace inspection and download caches remain read-only. Explicit compatible
+publication opens a writable store through the existing Dataset workspace owner,
+requiring the same marker-bound root and original Model bytes as the reader.
+Missing ownership, mismatched roots or read-only publication access rejects
+before derived intent; method names alone never establish write authority.
+
+An operator can call `reconcile_native_compatibility(operation_id,
+original_model_id=..., derived_model_id=...)` against the existing export lock.
+It preserves the active interrupted journal bytes and writes one immutable
+receipt under `model-export-reconciliations`. That receipt binds the exact old
+journal bytes/hash, IDs, profile, store root, old producer, current reconciliation
+producer and observation time. If already present, the same receipt and original
+observation are revalidated and reused. A present derived Manifest is verified
+and exported through the ordinary native path, with no republishing; an
+incompatible current loader leaves the interruption fenced.
+
+An absent Manifest is recorded only as `manifest_absent_at_reconciliation`.
+It does not prove that no publication or orphan payload ever existed, and no
+payload is removed. The old outcome remains interrupted. A separately explicit
+`start(original_id, compatibility_profile=..., prior_native_reconciliation=
+receipt_sha256)` may start a new migration only when the original current journal,
+receipt, workspace and IDs still match and the new clean producer differs from
+the old one. Its new operation and derived IDs must differ, and the new journal
+retains the prior receipt link. A Manifest appearing after the observation blocks
+this path until its own bytes are reconciled. No other pending operation or model
+family inherits this exception; startup and status never retry a migration.
+An interruption after publication intent remains pending/unknown. A caller may
+explicitly reconcile the recorded derived ID if its CAS Manifest exists; it
+cannot automatically repeat the original migration or infer publication from
+current files. This owner-call path adds no service, registry, trainer or UI
+operation. Candidate publication is distinct from the original/target numerical
+parity and native qualification gates in the native Model guide.
+
 ## Prepare and load
 
 An operator can explicitly change one private text Runtime profile while the
@@ -65,6 +107,34 @@ This method starts an asynchronous local operation. Existing `status()` reports
 `operation.status`, `preparation_stage` and `readiness`. After fixing a displayed
 prerequisite, failed preparation can be retried. An active or unresolved Runtime
 must first be stopped/recovered before preparing a different one.
+
+Public-snapshot D-Simple M0 registration now defaults to the explicit
+`ready-standard-summary-v1` task, shown as **至结算页**. Its config-v2 and adapter
+1.1.0 pin the exact `stpd/public-m0-task-spec-v1` descriptor in both config and
+manifest. This is a new Agent program composition using the same Model artifact,
+renderer and unchanged neural scorer; it does not retrain or rewrite model bytes.
+The catalog exposes `task_spec` and `agent_version` for that selection.
+
+The task consumes only a complete interactive generic Snapshot with its original
+ordered action catalog. After the normal public representation/binding checks,
+the exact standard `game_over` ready summary (win or loss, summary stage, return
+enabled, advance disabled, main-menu/timeline destination and typed public
+score/floor/ascension) produces full-length zero placeholders and no selected
+index. These zeros are **program abstention**, not neural scores. Existing Runtime
+Auto handling of `policy_abstained` returns to Human and releases control; the
+task does not choose a return-to-menu action. Intro/animation continues through
+the original scorer, and malformed summary facts fail closed. Nonterminal inputs
+keep the original scorer and complete catalog.
+
+Low-level `bind_public_m0_export` still defaults to `task=None`; config-v1 and
+adapter 1.0.0 keep their original task-free behavior. Explicit
+`LocalModelRegistration.register(model_id, task=None)` registers that baseline,
+and `status(model_id, task=None)` queries it. Default registration/status selects
+the declared summary composition and never adopts or mutates a legacy binding.
+The catalog labels a newly registered task-free selection **无任务基线**. Each
+selection retains its own config/manifest and can be loaded through the existing
+common owner. A task descriptor or green source test does not prove a native
+summary journey, decision quality, whole-game coverage or G2/V1 acceptance.
 
 ## Recorder-to-model handoff
 

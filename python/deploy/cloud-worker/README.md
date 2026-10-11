@@ -113,7 +113,11 @@ Persist `submitting` plus the request/target/attempt before calling `ModalProvid
 Persist the returned ModalCall before reporting submitted. SDK errors during submit mean
 `submission_unknown`: the remote invocation might exist. There is no automatic retry, and
 provider inspection/terminal reconciliation is required before a new attempt. `poll` is
-non-blocking and receipt-bound; timeout only means no result yet, not proof of worker health.
+non-blocking and receipt-bound. The locked SDK's polling timeout means no result
+yet, not proof of worker health. Its distinct `FunctionTimeoutError` is reported
+as `execution_timeout`; transport failures remain `result_unavailable`. Neither
+error manufactures a terminal receipt or permits resubmission. The Hub retains
+the exact call handle for its existing terminal reconciliation.
 `cancel` requests cancellation but does not manufacture a terminal result. Keep the call ID
 for operator reconciliation if the provider reports an ambiguous cancellation or result.
 

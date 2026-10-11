@@ -1,3 +1,10 @@
+> Historical receipt, 2026-09-12: the two-repository assessment below describes
+> that exact baseline. The active project now uses one source repository; see
+> [migration](../../../docs/MONOREPO_MIGRATION.md) and
+> [CURRENT](../../../docs/memory/CURRENT.md). Native/research authorities and old
+> source/runtime/data identities remain separate; this receipt is not rewritten
+> or transferred to the new baseline.
+
 # B pipeline architecture and operational closeout review
 
 Review baseline: Platform `79fdb2b186bb9cc8a76ddc6a1b00c2493c6916fb`, STPD

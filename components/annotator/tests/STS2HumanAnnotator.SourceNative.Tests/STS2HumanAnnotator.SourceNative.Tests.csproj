@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework><AssemblyName>STS2HumanAnnotator.SourceNative.Tests</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable><IsTestProject>true</IsTestProject>
+    <STS2GameDir Condition="'$(STS2GameDir)' == '' and '$(STS2_GAME_DIR)' != ''">$(STS2_GAME_DIR)</STS2GameDir>
+    <STS2GameDataDir Condition="'$(STS2GameDataDir)' == '' and '$(OS)' == 'Windows_NT'">$(STS2GameDir)/data_sts2_windows_x86_64</STS2GameDataDir>
+    <STS2GameDataDir Condition="'$(STS2GameDataDir)' == '' and $([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))">$(STS2GameDir)/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64</STS2GameDataDir>
+    <STS2GameDataDir Condition="'$(STS2GameDataDir)' == '' and '$(OS)' != 'Windows_NT' and !$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))">$(STS2GameDir)/data_sts2_linuxbsd_x86_64</STS2GameDataDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/><PackageReference Include="xunit" Version="2.9.2"/>
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets><IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets></PackageReference>
+    <ProjectReference Include="../../src/STS2HumanAnnotator.Core/STS2HumanAnnotator.Core.csproj"/>
+    <ProjectReference Include="../../../connector/host/STS2Connector.Host.csproj"/>
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/SourceRecordingWorkerV2.cs" Link="SourceRecordingWorkerV2.cs"/>
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.SourceInput.cs" Link="RecorderRuntime.SourceInput.cs"/>
+    <Reference Include="sts2"><HintPath>$(STS2GameDataDir)/sts2.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="GodotSharp"><HintPath>$(STS2GameDataDir)/GodotSharp.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+</Project>

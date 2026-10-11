@@ -19,6 +19,7 @@ public static class PlayerEnvironmentContract
     public const string ReceiptSchema = "sts2.player-environment/receipt-1";
     public const string ReadSchema = "sts2.player-environment/read-1";
     public const string ControlSchema = "sts2.player-environment/control-1";
+    public const string ClientRevocationSchema = "sts2.player-environment/client-revoke-1";
     public const string NativePageEvidenceSchema =
         "sts2.player-environment/native-page-evidence-1";
     public const string NativePageEvidenceProfile = "native_pages.v1";
@@ -164,6 +165,16 @@ public sealed record PlayerEnvironmentClientRegistrationRequest(
     string? ProductId,
     string? ProductName,
     string? ProductVersion);
+
+public sealed record PlayerEnvironmentClientRevocationRequest(
+    string RuntimeInstanceId, string ClientSessionId);
+
+/// <summary>Permanent closure of this original target only. Controller=null
+/// does not describe another client's controller or prove global Human control.</summary>
+public sealed record PlayerEnvironmentClientRevocationResponse(
+    string ProtocolVersion, string Schema, string RuntimeInstanceId,
+    string ClientSessionId, string Status, bool Closed,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] PlayerEnvironmentControllerLease? Controller);
 
 public sealed record PlayerEnvironmentControllerLeaseRequest(
     string? ClientSessionId,

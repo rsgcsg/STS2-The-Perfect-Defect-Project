@@ -10,6 +10,7 @@ GET  /api/player-environment/snapshot
 GET  /api/player-environment/text-menu/observation-context
 GET  /api/player-environment/reads/{read_id}?expected_snapshot_id=...
 POST /api/player-environment/clients/register
+POST /api/player-environment/clients/revoke
 GET  /api/player-environment/controller
 POST /api/player-environment/controller/acquire|renew|release
 POST /api/player-environment/actions
@@ -18,6 +19,112 @@ POST /api/player-environment/evidence/native-pages/sessions
 GET  /api/player-environment/evidence/native-pages/sessions/{session_id}
 POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|recover
 ```
+
+## Original client lifetime and final revocation (source foundation)
+
+An original client has a 30-minute idle deadline measured by the Host's
+monotonic clock. Valid registration, owned control operations and explicit
+owned passive subscription renewal extend it;
+invalid lease attempts, passive control watches (including capacity denial),
+and passive state/result lookups do not. Expiry permanently
+closes that original session and revokes only its owned lease, including while
+no request or poll is arriving. Closed records remain runtime tombstones within
+the existing 4096-client capacity. A later explicit registration receives a new
+session identity; it does not reopen an old session.
+
+`POST /api/player-environment/clients/revoke` accepts exactly
+`runtime_instance_id` and `client_session_id`: two required original opaque ASCII
+identifiers of at most 128 characters in a body of at most 1 KiB. The call uses
+the existing Authority gate directly and does not wait for the game thread.
+An HTTP 200 acknowledgement has protocol `1.0.0`, schema
+`sts2.player-environment/client-revoke-1`, exact original identity echoes,
+`status=client_revoked`, `closed=true`, and `controller=null`. The null controller
+means the target owns no lease; another client's global lease may still exist.
+The same closed target can be acknowledged again. Wrong runtime, unknown target,
+malformed body, missing/duplicate/extra fields or oversized body cannot assert
+closure. A missing or invalid acknowledgement retains consumer uncertainty.
+
+This foundation additionally exposes private original-client lifetime handles
+and post-Authority closure callbacks for the existing request/publication owners.
+The shared request owner below consumes these lifetime handles. Owned source
+renewal and recording accounting remain separate producer integration work.
+These interfaces and source tests do not claim game/runtime qualification.
+
+## Original request and terminal byte lifetime (source candidate)
+
+All Player Environment profiles use one existing runtime-global request namespace.
+An admitted original ID is permanently spent within that runtime, including when
+its queue is cancelled or its terminal bytes expire. Limits are 65,536 spent IDs
+per original client and per runtime. Matching duplicates return the original
+pending state or byte-identical terminal; they do not enqueue work or extend client
+idle time. Conflicting profile/action/client fingerprints return a conflict.
+An expired original result returns HTTP 410 `result_expired` and cannot be retried
+or revived by renewing the client or controller. Pending/started results are never
+retired as though their outcome was known.
+
+New IDs require a live original client/controller, bounded request shape, available
+ID/sender capacity and a physical result reservation before admission and queueing.
+Capacity or invalid-client denial spends no ID. A client closure cancels only its
+unstarted requests, removes their original queued jobs and releases HTTP waits
+without another game-thread drain. A start that already won the existing Authority boundary may
+finish its actual outcome after closure; the original in-flight POST sender may
+receive those bytes while later lookups report expiry. Successful control release
+keeps its original client/passive registration alive.
+
+Original terminal retention lasts 30 monotonic minutes after sealing, independently
+of client renewal. Results retain frozen UTF-8 segments rather than typed outcome
+or successor graphs. The original POST and replay GET write those exact segments
+with reference-counted sender loans. Retirement retains its actual backing-array
+charge until the final sender finishes; it cannot reclaim a still-writing buffer.
+The result-only arena owns at most 512 MiB of byte-array capacity, including bounded
+reusable free segments. This limit is separate from public capture memory, source
+and game graphs, CLR metadata, network buffers and process RSS.
+
+The closed terminal encoder requires the signed .NET 9 `System.Text.Json` identity
+and a successful read-only private `JsonElement.GetRawValue` ABI probe. It borrows
+existing JSON bytes synchronously and emits scalars incrementally through charged
+scratch/output blocks, with no serializer/pool/whole-document-copy fallback.
+Unsupported framework identity rejects new admission before allocating an ID.
+Native terminal output is at most 2 MiB with a 4 MiB reservation; other profiles
+use 8 MiB output and 16 MiB reservation. These source bounds and portable serializer
+parity are not measurements of loaded-game peak memory or performance.
+
+Applied text-only navigation/selection first computes the complete mandatory
+successor without changing its private state and freezes the entire result. Only
+then can the original Authority start and state commit occur. Capacity failure
+preserves cursor, selection, revision, sequence and native state. Applied text
+successors are never omitted. For actual native input, only the optional immediate
+post-input diagnostic view may be omitted with explicit
+`successor_payload_capacity_exceeded`; original delivery, action, attribution and
+known stages remain intact. No result claims native Commit or causal settlement.
+An overlarge
+pre-input selected-action body may use the existing truthful `action=null` rejection
+shell: request/snapshot IDs and the namespace's original immutable request retain
+the submitted bound-action identifier. No partial NativeAction is invented and no
+input or text effect begins. After input starts, action facts cannot be omitted.
+
+## Passive owner admission and original closure (source candidate)
+
+Public subscription Renew validates the exact original client/subscription/scope and
+cursor before touching the bound Authority idle deadline. Wrong ownership, expired
+subscription or malformed cursor cannot touch. A permanently closed original client
+cannot renew: its matching subscription is removed and the reply is
+`subscription_expired`. No renewal acquires a controller or changes another lease.
+
+Actual Host Hub and Store bind the same lifetime dependency and no-touch Authority
+activity predicate. Attach and public Retain recheck that original client under their
+resource-owner gate immediately before allocation. Current's retained seal does the
+same under Store. Post-Authority closure cleanup takes those same gates, so it cannot
+finish first and then miss a later resource allocation. Final service checks reject a
+response when closure has already won. Native reads/JSON encoding never hold Authority.
+
+An initial standalone Current pin identifies its original client in existing Store
+entry metadata. Closure drops that client's initial pins and public reader handles;
+other client handles and existing catalog/byte readers retain their original reference
+counts and backing-byte charge. Publication/source captures and private source/Hub pins
+keep their separate owner semantics. Source/recording accounting still belongs to its
+own producer. Explicit unbound standalone portable owners retain their prior semantics;
+production NativeLogicalService always binds the real original-client activity check.
 
 ## Snapshot
 
@@ -78,6 +185,48 @@ enabled End Turn input while an earlier action is queued or executing. The Host
 therefore derives combat actionability from the current native hand/control
 state, excludes cards already moved to the native play queue, and binds every
 remaining action to that exact visible UI state.
+
+### Combat health and power facts
+
+Current combat enemy and companion facts use the same public health eligibility.
+`health_bar_visible` is the native semantic health exposure (including
+`MonsterModel.IsHealthBarVisible`), not a tween-alpha measurement.
+`hp_display_mode` is `normal`, `infinite_with_numbers`, or
+`infinite_without_numbers`, from the native `Creature.HpDisplay` value.
+`hp_numbers_available` is true only when health exposure is eligible and native
+`HpDisplay.ShowsNumbers()` permits numbers. `hp` and `max_hp` are nullable numeric
+fields: both are explicitly null when numbers are unavailable. Zero, a hidden
+numeric sentinel and a previously remembered value are not substitutes for null.
+Normal and `infinite_with_numbers` retain actual public logical numbers even if
+the currently mounted label is older. That difference alone does not imply
+settling or withdraw otherwise admitted controls.
+An unsupported native HP mode fails capture with
+`public_combat_health_display`; it is not treated as Normal or as successful
+number suppression, including when a nested selector owns input.
+
+These fields appear identically in combat context and its mirrored enemy or
+companion referent properties. The context/referent wire permits JSON null;
+the Host's `VisibleEnemy` typed contract now uses nullable HP/max HP and the
+explicit mode/availability fields. Current supported public profiles use this
+shared correction. Historical frozen bytes retain their original producer and
+exposure identity; they are not rewritten or retroactively qualified. Transport
+schema/profile names and the immutable 13-seam publication definition are
+unchanged. This information fix does not add continuous L34 event coverage.
+
+Visible powers require a captured roster, native visibility, definition, the native
+`DisplayAmount` scalar and type. This scalar is not a certificate of the current
+mounted amount label. Failure in those required facts reports
+`public_combat_power_facts` in completeness and fails the input owner closed,
+including nested selectors using that combat context. Hidden native powers are
+ineligible and do not invoke scalar/detail projection. Rich description and title
+text remain optional; missing tooltip text cannot erase captured required scalar
+facts. Successful legacy rich descriptions remain available under their existing
+profile, while native/text-v2 continue to remove unopened bodies. Host-private
+capture accounting is not serialized into gameplay context.
+
+Consumers must handle unavailable health explicitly. Treating null as zero or
+deriving damage from a suppressed numeric value is outside this public contract;
+research reward semantics and historical-data compatibility remain consumer owned.
 
 `reads[]` advertises all bounded, non-authorizing information reads. Consumers
 send the opaque `read_id`; C rejects stale snapshots and arbitrary fields.

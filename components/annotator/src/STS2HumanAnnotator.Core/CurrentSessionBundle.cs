@@ -40,6 +40,10 @@ public static class SessionBundlePacker
         if (packerSourceRevision.Length != 40 || !packerSourceRevision.All(Uri.IsHexDigit))
             throw new InvalidDataException("Packer source revision must be an exact Git SHA.");
         string source = Path.GetFullPath(recordingDirectory);
+        CurrentRecordingManifest sourceManifest = Read<CurrentRecordingManifest>(
+            Path.Combine(source, "recording-manifest.json"));
+        if (sourceManifest.SourceSchemaVersion != null || sourceManifest.Schema == SourceSessionContract.ManifestSchema)
+            throw new InvalidDataException("A source session requires the generic source bundle; Human packing is forbidden.");
         string destination = Path.GetFullPath(outputDirectory);
         if (destination == source || destination.StartsWith(source + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new InvalidDataException("A bundle must not modify or be nested inside its immutable source session.");
@@ -242,7 +246,7 @@ public static class SessionBundlePacker
             throw new InvalidDataException("Current bundle/export requires a sealed, closed session.");
     }
 
-    private static JsonObject RecursiveChecksums(string directory)
+    internal static JsonObject RecursiveChecksums(string directory)
     {
         var result = new JsonObject();
         foreach (string file in Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
@@ -254,7 +258,7 @@ public static class SessionBundlePacker
         return result;
     }
 
-    private static void CopyDirectory(string source, string destination)
+    internal static void CopyDirectory(string source, string destination)
     {
         foreach (string directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories)
                      .Prepend(source))
@@ -277,7 +281,7 @@ public static class SessionBundlePacker
         }
     }
 
-    private static void WriteChecksums(string directory)
+    internal static void WriteChecksums(string directory)
     {
         string content = string.Join("\n", Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
             .Where(path => Path.GetFileName(path) != "checksums.sha256")
@@ -286,7 +290,7 @@ public static class SessionBundlePacker
         Write(Path.Combine(directory, "checksums.sha256"), content);
     }
 
-    private static bool DirectoriesEqual(string first, string second)
+    internal static bool DirectoriesEqual(string first, string second)
     {
         string[] firstFiles = Directory.GetFiles(first, "*", SearchOption.AllDirectories)
             .Select(path => Path.GetRelativePath(first, path).Replace('\\', '/'))
@@ -303,7 +307,7 @@ public static class SessionBundlePacker
         JsonSerializer.Deserialize<T>(File.ReadAllText(path), EvidenceJson.Options)
         ?? throw new InvalidDataException($"JSON file is empty: {path}");
 
-    private static void ValidateIdentifier(string value, string name)
+    internal static void ValidateIdentifier(string value, string name)
     {
         if (value.Length is < 3 or > 64
             || !value.All(character => char.IsLower(character) || char.IsDigit(character)

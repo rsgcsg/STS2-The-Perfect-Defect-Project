@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -287,3 +288,234 @@ def test_registration_loop_close_interrupts_backoff():
     loop.close(timeout=1)
     assert calls == ["3" * 32]
     assert loop.last_result["status"] == "unavailable"
+
+@pytest.fixture
+def signed_bridge(tmp_path, monkeypatch):
+    """Real registrar/Application HTTP over a strictly signed game-protocol fixture."""
+    import hmac
+
+    from test_native_workbench_access import paired_app
+
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.developer_server import configuration_id, create_server
+    from spireagent.workbench.native_workbench_access import (
+        ACK_SCHEMA,
+        BINDING_FIELDS,
+        CLOSE_SCHEMA,
+        CURRENT_SCHEMA,
+        NativePair,
+        NativeWorkbenchAccess,
+    )
+
+    app, _, _selected, secret, _ = paired_app(tmp_path, monkeypatch)
+    app.native_access = NativeWorkbenchAccess(app)
+    backend = create_server(app)
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+    url = f"http://127.0.0.1:{backend.server_port}/"
+    atomic_json(app.config.state_dir / "runtime.json", {"instance_id": app.instance_id,
+        "configuration_id": configuration_id(app.config), "port": backend.server_port})
+    legacy = {"schema": "sts2.platform/workbench-open-status-1", "status": "registered",
+        "runtime_instance_id": "fixture-current-game", "workbench_instance_id": "f" * 32,
+        "workbench_url": "http://127.0.0.1:23456/"}
+    before = dict(legacy)
+    lock = threading.RLock()
+    accepted, release, close_seen = threading.Event(), threading.Event(), threading.Event()
+    release.set()
+    state = {"current": None, "retired": set(), "drop_ack": False}
+    calls = []
+
+    def context(pair):
+        return (pair.runtime_instance_id, pair.workbench_instance_id,
+                pair.configuration_id, pair.workbench_url)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def reply(self, value, status=200):
+            raw = json.dumps(value).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                self.wfile.write(raw)
+
+        def do_GET(self):
+            calls.append((self.path, None))
+            if self.path == "/v1/workbench/status":
+                self.reply(legacy)
+                return
+            assert self.path == "/v1/workbench/native-status"
+            with lock:
+                pair = state["current"]
+                if pair is None or any(self.headers.get(k) != v
+                                       for k, v in pair.headers(secret).items()):
+                    self.reply({"error": "native_pair_changed"}, 409)
+                    return
+                self.reply({"schema": CURRENT_SCHEMA, **pair.to_dict(),
+                            "signature": pair.sign(secret, "native-current-v1")})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append((self.path, body))
+            assert self.headers.get("Origin") is None and self.headers.get("Cookie") is None
+            if self.path == "/v1/workbench/native-register":
+                assert set(body) == {"schema", "signature", *BINDING_FIELDS}
+                pair = NativePair.from_dict({k: body[k] for k in BINDING_FIELDS})
+                assert body["schema"] == "sts2.platform/native-workbench-pair-1"
+                assert hmac.compare_digest(
+                    body["signature"], pair.sign(secret, "native-register-v1"))
+                with lock:
+                    if context(pair) in state["retired"]:
+                        self.reply({"error": "native_context_retired"}, 409)
+                        return
+                    current = state["current"]
+                    assert current is None or context(current) == context(pair)
+                    state["current"] = pair
+                accepted.set()
+                assert release.wait(3)
+                if state["drop_ack"]:
+                    state["drop_ack"] = False
+                    self.close_connection = True
+                    return
+                self.reply({"schema": ACK_SCHEMA, **pair.to_dict(),
+                            "signature": pair.sign(secret, "native-register-ack-v1")})
+                return
+            assert self.path == "/v1/workbench/native-unregister"
+            pair = NativePair.from_dict(body)
+            assert all(self.headers.get(k) == v for k, v in pair.headers(secret).items())
+            with lock:
+                current = state["current"]
+                if current is not None and current != pair:
+                    self.reply({"error": "native_pair_conflict"}, 409)
+                    return
+                state["current"] = None
+                state["retired"].add(context(pair))
+            close_seen.set()
+            self.reply({"schema": CLOSE_SCHEMA, "status": "closed" if current else "already_closed",
+                        "binding": pair.to_dict()})
+
+    game = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    game_thread = threading.Thread(target=game.serve_forever, daemon=True)
+    game_thread.start()
+    monkeypatch.setattr(NativeWorkbenchRegistrar, "address", f"http://127.0.0.1:{game.server_port}")
+    try:
+        yield app, url, secret, state, calls, accepted, release, close_seen, legacy, before
+    finally:
+        release.set()
+        backend.shutdown()
+        backend.server_close()
+        backend_thread.join(timeout=2)
+        game.shutdown()
+        game.server_close()
+        game_thread.join(timeout=2)
+        app.close()
+
+
+def test_real_registrar_pairs_beside_foreign_legacy_and_closes_only_its_signed_peer(signed_bridge):
+    from urllib.request import Request, urlopen
+
+    app, url, secret, state, calls, _, _, _, legacy, before = signed_bridge
+    registrar = NativeWorkbenchRegistrar()
+    assert registrar.register(url, app.instance_id)["status"] == "conflict"
+    assert registrar.register_native(
+        url, app.instance_id, app.native_access) == {"native_status": "paired"}
+    pair = app.native_access.current()
+    # Real Application access validates its own saved/runtime configuration and
+    # confirms the actual registrar peer before projecting this native view.
+    request = Request(url + "api/native-workbench/v1/view?page=play", headers=pair.headers(secret))
+    with urlopen(request, timeout=3) as response:
+        assert json.load(response)["binding"] == pair.to_dict()
+    loop = native_workbench.WorkbenchRegistrationLoop(url, app.instance_id,
+        registrar=registrar, access=app.native_access)
+    loop.close()
+    assert loop.cleanup_result["status"] == "confirmed"
+    assert state["current"] is None and legacy == before
+    assert not any(path in {"/v1/workbench/register", "/v1/workbench/unregister"}
+                   for path, _ in calls)
+
+
+def test_lost_ack_reuses_same_candidate_then_exact_close_preserves_foreign_legacy(signed_bridge):
+    app, url, _, state, calls, _, _, _, legacy, before = signed_bridge
+    registrar = NativeWorkbenchRegistrar()
+    state["drop_ack"] = True
+    assert registrar.register_native(
+        url, app.instance_id, app.native_access)["native_status"] == "unavailable"
+    assert app.native_access.current() is None and state["current"] is not None
+    assert registrar.register_native(
+        url, app.instance_id, app.native_access)["native_status"] == "paired"
+    registrations = [body for path, body in calls if path == "/v1/workbench/native-register"]
+    assert len(registrations) == 2 and registrations[0] == registrations[1]
+    loop = native_workbench.WorkbenchRegistrationLoop(url, app.instance_id,
+        registrar=registrar, access=app.native_access)
+    loop.close()
+    assert loop.cleanup_result["status"] == "confirmed" and legacy == before
+
+
+def test_late_ack_after_close_and_join_timeout_cannot_reinstall_and_closes_pending_candidate(
+    signed_bridge,
+):
+    app, url, _, state, calls, accepted, release, close_seen, legacy, before = signed_bridge
+    release.clear()
+    loop = native_workbench.WorkbenchRegistrationLoop(
+        url, app.instance_id, access=app.native_access)
+    loop.start()
+    assert accepted.wait(2)
+    loop.close(timeout=0.01)
+    assert app.native_access.current() is None
+    assert loop.cleanup_result["status"] == "unconfirmed"
+    release.set()
+    assert close_seen.wait(3)
+    loop._thread.join(timeout=3)
+    assert not loop._thread.is_alive() and app.native_access.current() is None
+    assert loop.last_result["native_reason"] == "native_lifecycle_closed"
+    assert loop.cleanup_result["status"] == "confirmed"
+    assert loop.cleanup_result["candidate_count"] == 1 and legacy == before
+    assert state["current"] is None
+    assert len([path for path, _ in calls if path == "/v1/workbench/native-unregister"]) == 1
+
+
+def test_shutdown_snapshots_current_and_possibly_accepted_pending_renewal(signed_bridge):
+    import time
+
+    from spireagent.workbench.native_workbench_access import NativePair
+
+    app, url, secret, state, _, accepted, release, close_seen, _, _ = signed_bridge
+    registrar = NativeWorkbenchRegistrar()
+    pair = NativePair("fixture-current-game", app.instance_id,
+        native_workbench_configuration(app), url, "1" * 32, int(time.time()) + 50)
+    registrar._request("POST", "/v1/workbench/native-register", body={"schema":
+        "sts2.platform/native-workbench-pair-1", **pair.to_dict(),
+        "signature": pair.sign(secret, "native-register-v1")})
+    app.native_access.install(pair, registrar)
+    accepted.clear()
+    release.clear()
+    loop = native_workbench.WorkbenchRegistrationLoop(url, app.instance_id,
+        registrar=registrar, access=app.native_access)
+    loop.start()
+    assert accepted.wait(2)
+    assert state["current"] != pair
+    loop.close(timeout=0.01)
+    release.set()
+    assert close_seen.wait(3)
+    loop._thread.join(timeout=3)
+    assert loop.cleanup_result["status"] == "confirmed"
+    assert loop.cleanup_result["candidate_count"] == 2
+    assert state["current"] is None and app.native_access.current() is None
+
+
+def native_workbench_configuration(app):
+    from spireagent.workbench.developer_server import configuration_id
+    return configuration_id(app.config)
+
+
+def test_signed_registrar_refuses_arbitrary_callback_port_before_signing_post(signed_bridge):
+    app, url, _secret, _state, calls, *_ = signed_bridge
+    registrar = NativeWorkbenchRegistrar()
+    wrong = "http://127.0.0.1:1/" if url != "http://127.0.0.1:1/" else "http://127.0.0.1:2/"
+    result = registrar.register_native(wrong, app.instance_id, app.native_access)
+    assert result == {"native_status": "unavailable", "native_reason": "native_workbench_changed"}
+    assert [path for path, _ in calls] == ["/v1/workbench/status"]
+    assert app.native_access.current() is None

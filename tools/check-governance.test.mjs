@@ -139,3 +139,24 @@ test("the root portable gate must compose the exact governance command", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("CURRENT capacity measures final physical UTF-8 bytes including CRLF", () => {
+  const root = fixture();
+  try {
+    const header = "Resolve live GitHub refs. Current sources override this file. Remaining Platform non-claims\n";
+    const boundary = header + "x".repeat(8192 - Buffer.byteLength(header));
+    write(root, "docs/memory/CURRENT.md", boundary);
+    assert.deepEqual(currentContextFindings(root), []);
+    const crlf = boundary.replace(/\n/gu, "\r\n");
+    write(root, "docs/memory/CURRENT.md", crlf);
+    const oversized = currentContextFindings(root).find(item => item.code === "current-context-oversized");
+    assert.ok(oversized, "normalizing line endings must not hide a physical byte above the limit");
+    assert.match(oversized.message, /8193.*8192/u);
+    const multibyte = header + "雪".repeat(2702);
+    assert.ok(multibyte.length < 8192 && Buffer.byteLength(multibyte) > 8192);
+    write(root, "docs/memory/CURRENT.md", multibyte);
+    assert.ok(currentContextFindings(root).some(item => item.code === "current-context-oversized"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

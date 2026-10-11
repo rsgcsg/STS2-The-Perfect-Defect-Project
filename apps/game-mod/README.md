@@ -35,6 +35,13 @@ Restore with:
 npm run game-mod:rollback
 ```
 
+Build and deployment require the package, native manifest, initializer literal
+and project version to agree. Loaded verification separately compares the actual
+initializer version with the manifest of the exact installed or packaged artifact.
+Matching SHA/MVID and source provenance do not waive a version mismatch.
+The current project uses one unconditional literal version. Conditional or
+executable MSBuild version selection is unsupported until deliberately reviewed.
+
 After cold load, click the visible Platform launcher to open the two-tab Workspace; `Escape`
 also closes it. Verification requires one exact `STS2_PLATFORM` Modset, one
 common loaded SHA/MVID for Connector/Annotator/UI, component-specific embedded
@@ -141,3 +148,47 @@ request prevents older preparation/mode responses from submitting a late Auto/Ti
 Already submitted actions remain owned by Runtime/Connector and require their actual
 receipt. Test records can be shared separately from Human collection; native victory
 and full-run qualification are not inferred from Runtime termination.
+
+### Source recording application entry
+
+The existing bridge additionally exposes GET `/v1/tasks/recording/status` and
+POST `/v1/tasks/recording/command`. These are local application lifecycle commands,
+not gameplay input. New mutations reject Origin, cookies, Transfer-Encoding,
+wrong Host/non-loopback peers, unknown or duplicate fields and JSON bodies over
+4096 bytes. Read and queue admission are bounded. Mutations run on the existing
+native main-thread queue; runtime identity is compared there immediately before
+the typed Recorder call, which atomically compares the expected session.
+Model preparation now chooses command-1/2/3 according to the current legacy,
+Source1 or Source2/3 profile and uses that same queue.
+
+The POST exact envelope is `{schema,runtime_instance_id,recording_session_id,command}`
+with schema `sts2.platform/recording-request-1`; the session is explicitly nullable.
+Its exact command fields are `{schema,command_id,kind,capture_profile_id,source_declaration,expected_source_segment_id}`.
+Schema is `sts2.ai-platform/recording-command-3`, command ID a UUID, and kind one
+of `start_new_session`, `pause`, `resume`, `change_source`, `close`. Unused fields
+are explicitly null. Start requires profile `native-logical-source-v3` and an
+explicit declaration. ChangeSource requires that declaration and the observed
+exact segment, with no profile. Pause/Resume/Close carry none of those optional
+values. Declaration is exactly `{source_kind,actor_id,declaration_id,machine_verifiable}`;
+existing kinds are `declared_human`, `agent_native_ui`, `agent_protocol`, `unknown`,
+identifiers use the Recorder's bounded ASCII rule, and machine_verifiable is false.
+Source changes are Paused-only under the owner contract.
+
+The path-free status schema `sts2.platform/recording-status-1` has exactly
+`schema,runtime_instance_id,recording_session_id,recording_lifecycle,capture_profile_id,closeout_status,source,health,non_claims`.
+Source is nullable or the current epoch/segment/declaration and owner observation,
+input, pending, epoch, gap and accounting counts/error. Health contains
+`append_health,disk_health,error`; public errors contain only sanitized codes.
+No raw stream bytes, native operands or recording directories are exposed.
+Result schema `sts2.platform/recording-result-1` has exactly
+`schema,command_id,accepted,pending,code,status`. Pending Close is not durable Closed.
+
+`NativeTasks.recording_status(connector_endpoint)` and
+`recording_command(connector_endpoint, observed, kind, source_declaration=...)`
+are the typed Python entry. They compare the configured public Connector's
+runtime identity, preserve the observed session/segment and issue each command
+once with proxy/redirect avoidance. Lost or malformed responses remain unknown;
+a subsequent status read is not proof that the original command executed and
+does not retry it. Source declaration never attests Human origin. These new
+source/test interfaces require their own clean package/install/load and bounded
+physical/protocol canaries before runtime qualification.

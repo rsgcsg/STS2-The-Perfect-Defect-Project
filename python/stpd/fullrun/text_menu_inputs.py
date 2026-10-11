@@ -16,8 +16,8 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 
 from ..canonical import semantic_hash
-from .platform_bundle3 import _SemanticProjection
 from .representation import reject_leakage
+from .semantic_projection import _SemanticProjection
 
 INPUT_PROFILE = "text-menu-v1"
 SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1"

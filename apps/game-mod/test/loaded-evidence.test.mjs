@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateLoadedEvidence, extractGameProcessIds } from "../loaded-evidence.mjs";
+import { evaluateLoadedEvidence, evaluateCollectionLoadedEvidence, extractGameProcessIds } from "../loaded-evidence.mjs";
 
 function fixture() {
   const artifact = { sha256: "artifact", module_version_id: "mvid" };
   return {
     installed: {
+      schema: "sts2.platform/game-mod-installed-provenance-1",
       artifact,
+      manifest: { version: "0.2.0-rc.32" },
       source: {
         platform: { source_revision: "platform", source_digest_sha256: "platform-digest" },
         components: {
@@ -37,6 +39,7 @@ function fixture() {
       }
     },
     platformIdentity: {
+      version: "0.2.0-rc.32",
       loaded_at: "2026-08-29T08:34:12.649Z",
       artifact_sha256: "artifact",
       module_version_id: "mvid",
@@ -59,6 +62,33 @@ function fixture() {
 
 test("Ready without a recording session is coherent loaded evidence", () => {
   assert.deepEqual(evaluateLoadedEvidence(fixture()), { ready: true, errors: [] });
+});
+
+test("loaded product version must match its installed manifest despite equal bytes and source", () => {
+  for (const version of ["0.2.0-rc.31", undefined]) {
+    const evidence = fixture();
+    evidence.platformIdentity.version = version;
+    for (const evaluate of [evaluateLoadedEvidence, evaluateCollectionLoadedEvidence]) {
+      assert.deepEqual(evaluate(evidence), {
+        ready: false, errors: ["platform_loaded_version_mismatch"]
+      });
+    }
+  }
+  const evidence = fixture();
+  delete evidence.installed.manifest;
+  assert.equal(evaluateLoadedEvidence(evidence).ready, false);
+});
+
+test("build provenance uses its own packaged manifest version for passive collection", () => {
+  const evidence = fixture();
+  evidence.installed.schema = "sts2.platform/game-mod-build-provenance-1";
+  evidence.installed.package = { manifest: evidence.installed.manifest };
+  delete evidence.installed.manifest;
+  assert.deepEqual(evaluateCollectionLoadedEvidence(evidence), { ready: true, errors: [] });
+  evidence.installed.package.manifest.version = "0.2.0-rc.31";
+  assert.deepEqual(evaluateCollectionLoadedEvidence(evidence), {
+    ready: false, errors: ["platform_loaded_version_mismatch"]
+  });
 });
 
 test("process records expose exact PIDs on Unix and Windows", () => {
