@@ -9,6 +9,7 @@ import json
 import uuid
 from collections import Counter
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from test_artifact_store_v1 import PRODUCER
@@ -729,5 +730,224 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
             binding_root=models.entry_root(selected),
         )
         assert manifest["representation"]["input_schema"] == "sts2.player-environment/snapshot-1"
+    finally:
+        torch.set_num_threads(previous)
+
+
+def test_actual_historical_app_pause_resume_uses_checkpoint_without_second_warm_start(
+    pair_originals, monkeypatch
+):
+    import torch
+
+    from spireagent.source import source_identity
+    from spireagent.workbench.developer import ROOT
+    from spireagent.workbench.local_training import LocalTrainingService
+    from spireagent.workbench.recipes import structured as adapter
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    store, owner, project, original, selection, samples, rows, old_inputs = _original_encoded(
+        pair_originals
+    )
+    producer = source_identity(ROOT)
+    previous = torch.get_num_threads()
+    torch.set_num_threads(2)
+    try:
+        initial_model, _ = _one_update_original_model(store, samples, rows, old_inputs, producer)
+        source_id = publish_historical_source(owner, store, original, selection, producer, "b" * 32)
+        config = HistoricalM0Config(
+            initial_model.artifact_id, steps=2, seed=107, checkpoint_every_boundaries=1
+        )
+        request = TrainingRequest(
+            uuid.uuid4().hex,
+            RECIPE,
+            source_id,
+            config.to_dict(),
+            limits={"wall_seconds": 120, "scratch_bytes": 512 * 1024**2},
+        )
+        service = LocalTrainingService(project)
+        original_child = adapter._private_child
+        observed: dict[str, Any] = {"pause": None, "next_reservation": False, "exits": []}
+
+        def real_child_with_parent_observer(command, *args, **kwargs):
+            on_line = kwargs["on_stdout_line"]
+            on_exit = kwargs["on_exited"]
+
+            def line(raw):
+                message = json.loads(raw)
+                if message["kind"] == "reserve_artifact" and observed.get("awaiting_checkpoint"):
+                    # The actual child is blocked in reserve_artifact until this
+                    # callback ACKs. Pause intent was durably written at step 1.
+                    assert message["details"]["role"] == "payload"
+                    current = service.status(message["operation_id"])["operation"]
+                    assert current["requested_action"] == "pause"
+                    assert current["progress"]["completed"] == 1
+                    observed.update(awaiting_checkpoint=False, next_reservation=True)
+                on_line(raw)
+                if message["kind"] == "event":
+                    event = store.get_manifest(message["details"]["event_id"])
+                    info = event.parameters.value()
+                    if (
+                        info["kind"] == "step"
+                        and info["details"]["optimizer_updates"] == 1
+                        and observed["pause"] is None
+                    ):
+                        observed["trigger"] = event
+                        observed["pause"] = service.pause(
+                            message["operation_id"], message["attempt_id"]
+                        )
+                        observed["awaiting_checkpoint"] = True
+
+            def exited(code, forced, seconds):
+                observed["exits"].append((code, forced, seconds))
+                on_exit(code, forced, seconds)
+
+            kwargs.update(on_stdout_line=line, on_exited=exited)
+            # Preserve the actual production command, channel and computation.
+            return original_child(command, *args, **kwargs)
+
+        monkeypatch.setattr(adapter, "_private_child", real_child_with_parent_observer)
+        service.start(request)
+        assert service._thread is not None
+        service._thread.join(timeout=120)
+        assert not service._thread.is_alive()
+        paused = service.status()["operation"]
+        assert observed["next_reservation"] and observed["pause"] is not None
+        assert paused["status"] == "paused" and paused["progress"]["completed"] == 1
+        assert paused["worker_state"] == "terminal"
+        assert paused["domain_completion_state"] == "not_completed"
+        assert paused["requested_action"] == "pause"
+        assert paused["child_exit"]["exit_code"] == 0 and paused["child_exit"]["forced"] is False
+        run_id, input_id = paused["run_id"], paused["input_id"]
+        first_attempt = paused["attempt_id"]
+        inputs = store.get_manifest(input_id)
+        checkpoint = store.get_manifest(paused["checkpoint_id"])
+        checkpoint_info = checkpoint.parameters.value()
+        state = decode_checkpoint(b"".join(store.read_payload(checkpoint.payload("checkpoint"))))
+        assert checkpoint_info["step"] == state["step"] == 1
+        assert checkpoint_info["attempt"] == first_attempt
+        assert checkpoint_info["data_identity"] == state["data_identity"]
+        assert checkpoint_info["initialization"] == inputs.parameters.value()["initialization"]
+        assert state["optimizer"]["state"]
+        assert all(float(slot["step"]) == 1 for slot in state["optimizer"]["state"].values())
+        reporter = ObjectStoreRunReporter(store, store.blobs)
+        assert reporter.completed(run_id) is None
+        path = owner.path.parent / "local-training-operation.json"
+        paused_journal = path.read_bytes()
+        manifests_before_wrong_resume = store.manifest_ids()
+        with pytest.raises(BoundaryError, match="checkpoint_run_initialization_mismatch"):
+            service.resume(
+                paused["operation_id"],
+                first_attempt,
+                initial_model.parent("checkpoint"),
+                uuid.uuid4().hex,
+                request.limits,
+            )
+        assert path.read_bytes() == paused_journal
+        assert store.manifest_ids() == manifests_before_wrong_resume
+
+        _, summary = require_historical_source(owner, store, source_id)
+        unavailable_hashes = {
+            initial_model.payload("weights").sha256,
+            old_inputs.payload("rows").sha256,
+        } | {source["archive_sha256"] for source in summary["datasets"][0]["sources"]}
+        protected_hashes = {
+            payload.sha256
+            for manifest in (store.get_manifest(source_id), inputs, checkpoint)
+            for payload in manifest.payloads
+        }
+        assert unavailable_hashes.isdisjoint(protected_hashes)
+        held_indexes = []
+        try:
+            for sha in sorted(unavailable_hashes):
+                index = store.blobs.root / "payload-indexes/v1" / (sha + ".json")
+                hidden = index.with_suffix(".resume-proof-unavailable")
+                assert index.is_file() and not index.is_symlink() and not hidden.exists()
+                before = index.read_bytes()
+                index.rename(hidden)
+                held_indexes.append((index, hidden, before))
+            # Original private synthetic body indexes are unavailable. No old
+            # archives/whole rows/initial weights can be hydrated by this resume.
+            resumed = service.resume(
+                paused["operation_id"],
+                first_attempt,
+                checkpoint.artifact_id,
+                uuid.uuid4().hex,
+                request.limits,
+            )["operation"]
+            assert resumed["operation_id"] == paused["operation_id"]
+            assert resumed["run_id"] == run_id and resumed["input_id"] == input_id
+            assert resumed["attempt_id"] != first_attempt
+            assert service._thread is not None
+            service._thread.join(timeout=120)
+            assert not service._thread.is_alive()
+            completed = service.status()["operation"]
+            assert completed["status"] == "completed", completed
+            assert completed["progress"]["completed"] == 2
+            assert completed["worker_state"] == "terminal"
+            assert completed["run_id"] == run_id and completed["input_id"] == input_id
+            assert completed["child_exit"]["exit_code"] == 0
+            assert completed["child_exit"]["forced"] is False
+            assert completed["limits"] == paused["limits"] == request.limits
+            assert completed["elapsed_seconds"] >= (
+                paused["elapsed_seconds"] + completed["child_exit"]["elapsed_seconds"]
+            )
+            assert completed["elapsed_seconds"] < request.limits["wall_seconds"]
+            assert completed["artifact_reserved_bytes"] >= paused["artifact_reserved_bytes"]
+            assert all(not index.exists() for index, _, _ in held_indexes)
+            final_checkpoint = store.get_manifest(completed["checkpoint_id"])
+            final_info = final_checkpoint.parameters.value()
+            final_state = decode_checkpoint(
+                b"".join(store.read_payload(final_checkpoint.payload("checkpoint")))
+            )
+            assert final_info["step"] == final_state["step"] == 2
+            assert final_info["attempt"] == completed["attempt_id"]
+            assert final_info["initialization"] == checkpoint_info["initialization"]
+            assert (
+                final_info["data_identity"]
+                == final_state["data_identity"]
+                == state["data_identity"]
+            )
+            assert final_state["optimizer"]["param_groups"] == state["optimizer"]["param_groups"]
+            assert final_state["optimizer"]["state"].keys() == state["optimizer"]["state"].keys()
+            assert all(
+                float(slot["step"]) == 2 for slot in final_state["optimizer"]["state"].values()
+            )
+            events = [event.parameters.value() for event in reporter.events(run_id)]
+            assert [event["step"] for event in events] == list(range(1, len(events) + 1))
+            assert [
+                event["details"]["optimizer_updates"] for event in events if event["kind"] == "step"
+            ] == [1, 2]
+            starts = [event for event in events if event["kind"] == "started"]
+            resumes = [event for event in events if event["kind"] == "resumed"]
+            assert len(starts) == len(resumes) == 1
+            assert starts[0]["attempt"] == first_attempt
+            assert resumes[0]["attempt"] == completed["attempt_id"]
+            assert resumes[0]["details"]["optimizer_updates"] == 1
+            loadings = [event for event in events if event["kind"] == "loading"]
+            assert [event["details"]["resume"] for event in loadings] == [
+                None,
+                checkpoint.artifact_id,
+            ]
+            result = reporter.completed(run_id)
+            assert result is not None
+            assert result.parent("training_input") == input_id
+            assert [
+                manifest.artifact_id
+                for identity in store.manifest_ids()
+                if (manifest := store.get_manifest(identity)).kind == "run_result"
+                and manifest.parent("run") == run_id
+            ] == [result.artifact_id]
+            durable = json.loads(path.read_bytes())
+            assert durable["attempts"][0]["attempt_id"] == first_attempt
+            assert durable["attempts"][0]["writer_terminal"] is True
+            assert durable["writer_terminal"] is True
+            assert len(observed["exits"]) == 2
+            assert all(code == 0 and forced is False for code, forced, _ in observed["exits"])
+        finally:
+            recreated = [index for index, _, _ in held_indexes if index.exists()]
+            for index, hidden, _ in held_indexes:
+                hidden.replace(index)
+            assert all(index.read_bytes() == before for index, _, before in held_indexes)
+            assert not recreated, "Resume recreated a forbidden original body index"
     finally:
         torch.set_num_threads(previous)
