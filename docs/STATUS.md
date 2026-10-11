@@ -32,10 +32,12 @@ native outcome or Auto2 cause proof. The [previous closeout](plans/BASELINE_BOUN
 retains restoration/parity, paired TRAIN fits, data limits and original Auto1/Auto2
 valid sealed failures. They do not establish basic strategy or full G2/V1 approval.
 
-Old draft PR171 publishes repaired74260b61; CI38100661045 remains in progress:
-Linux1/2 passed, Windows1/2 running. Prior CI380957 on f3 failed Windows1/2 with Linux1/2 passed. Accepted945/648
-fixture/setup repairs stay on the old delivery topic; new-source checks and normal
-develop integration remain separate. Aggregate provider spend remains USD0 within the same USD20 envelope.
+PR171 head74260b61 passed all four OS leaves and portable in CI38100661045,
+then normally merged into develop09440e80 with the same tested tree. Merge
+CI38104068580 reused its execution receipt but failed committed patch hygiene:
+one extra EOF blank line in a test. A separate bounded hygiene repair is active;
+this does not erase the completed source tests or count as a passed merge gate.
+New-source checks remain separate. Provider spend is USD0 in the same USD20 envelope.
 Historical observations below retain their original identities and limits.
 
 ## Earlier G2/V1 candidate, observed 2026-10-09

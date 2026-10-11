@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from test_local_training import _ready
@@ -441,6 +442,67 @@ def test_wrong_or_v1_checkpoint_rejected_before_new_attempt(tmp_path, monkeypatc
     assert set(store.manifest_ids()) == artifacts
 
 
+def _cancel_after_observed_advance(service, store, value, record, phases):
+    assert record["phase"] == "chunk_advanced"
+    assert record["operation_id"] == value["operation_id"]
+    assert record["attempt_id"] == value["attempt_id"]
+    assert record["event_id"] == value["details"]["event_id"]
+    assert record["checkpoint_id"] == store.get_manifest(
+        record["event_id"]).parameters.value()["details"]["checkpoint_id"]
+    assert record["requested_action_before"] == "continue"
+    assert record["progress"]["boundary"] >= 1
+    # The verified child record is already visible to the parent before this
+    # actual cancel call. A coarse monotonic clock may give both events one tick.
+    phases["advance_observed_before_cancel"] = {
+        "record": record.copy(), "observed_at": time.monotonic(),
+    }
+    service.cancel(value["operation_id"], value["attempt_id"])
+    phases["cancel_requested_at"] = service._cancel_requested_monotonic
+
+
+def _assert_advance_precedes_cancel(record, phases, diagnostic):
+    observed = phases["advance_observed_before_cancel"]
+    assert observed["record"] == record, diagnostic
+    assert (record["observed_at"] <= observed["observed_at"]
+            <= phases["cancel_requested_at"]), diagnostic
+
+
+def test_checkpoint_advance_causal_marker_accepts_quantized_clock(monkeypatch):
+    stamp = 1845.281
+    monkeypatch.setattr(time, "monotonic", lambda: stamp)
+    value = {"operation_id": "1" * 32, "attempt_id": "2" * 32,
+             "details": {"event_id": "3" * 64}}
+    record = {"operation_id": value["operation_id"], "attempt_id": value["attempt_id"],
+              "event_id": value["details"]["event_id"], "checkpoint_id": "4" * 64,
+              "phase": "chunk_advanced", "requested_action_before": "continue",
+              "progress": {"boundary": 1}, "observed_at": stamp}
+    phases, cancelled = {}, []
+    store = SimpleNamespace(get_manifest=lambda _: SimpleNamespace(
+        parameters=FrozenObject.of({"details": {"checkpoint_id": record["checkpoint_id"]}})))
+    service = SimpleNamespace(_cancel_requested_monotonic=None)
+
+    def cancel(operation_id, attempt_id):
+        assert phases["advance_observed_before_cancel"]["record"] == record
+        cancelled.append((operation_id, attempt_id))
+        service._cancel_requested_monotonic = time.monotonic()
+
+    service.cancel = cancel
+    _cancel_after_observed_advance(service, store, value, record, phases)
+    assert cancelled == [(value["operation_id"], value["attempt_id"])]
+    assert phases["cancel_requested_at"] == record["observed_at"]
+    _assert_advance_precedes_cancel(record, phases, "quantized clock still preserves causality")
+    # Equal timestamps require the exact prior observation; later or rebound
+    # records cannot acquire ordering merely because the clock has low precision.
+    with pytest.raises(AssertionError):
+        _assert_advance_precedes_cancel(
+            {**record, "attempt_id": "5" * 32}, phases, "rebound child")
+    later = {**record, "observed_at": stamp + 1}
+    with pytest.raises(AssertionError):
+        _assert_advance_precedes_cancel(later, {
+            **phases, "advance_observed_before_cancel": {"record": later, "observed_at": stamp},
+        }, "child observed after cancel")
+
+
 def test_checkpoint_notification_does_not_hold_child_before_parent_cancel(tmp_path, monkeypatch):
     service, request, owner, store = ready(tmp_path, monkeypatch)
     phases, advanced = {}, []
@@ -465,22 +527,14 @@ def test_checkpoint_notification_does_not_hold_child_before_parent_cancel(tmp_pa
             if not advanced:
                 threading.Event().wait(0.005)
         record = advanced[0]
-        assert record["operation_id"] == value["operation_id"]
-        assert record["attempt_id"] == value["attempt_id"]
-        assert record["event_id"] == value["details"]["event_id"]
-        assert record["checkpoint_id"] == store.get_manifest(
-            record["event_id"]).parameters.value()["details"]["checkpoint_id"]
-        assert record["requested_action_before"] == "continue"
-        assert record["progress"]["boundary"] >= 1
-        service.cancel(value["operation_id"], value["attempt_id"])
-        phases["cancel_requested_at"] = service._cancel_requested_monotonic
+        _cancel_after_observed_advance(service, store, value, record, phases)
 
     checkpoint_child(monkeypatch, on_line=message, phases=phases, allow_advance=True)
     service.start(request)
     saved = settle(service)
     diagnostic = cancellation_diagnostic(service, owner, saved, phases)
     assert len(advanced) == 1, diagnostic
-    assert advanced[0]["observed_at"] < phases["cancel_requested_at"], diagnostic
+    _assert_advance_precedes_cancel(advanced[0], phases, diagnostic)
     assert saved["requested_action"] == "cancel", diagnostic
     assert saved["selected_result"] is False and saved["worker_state"] == "terminal", diagnostic
     assert saved["domain_completion_state"] != "completed" and "result_id" not in saved, diagnostic

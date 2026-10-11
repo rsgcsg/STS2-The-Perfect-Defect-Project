@@ -32,14 +32,15 @@ The same aggregate USD20 GPU envelope continues, observed spend USD0 and no prov
 No new training/paid job is allocated to this packet. Production/main/release/destructive
 permissions and user-only full G2/V1 approval have not changed.
 
-## Prior round delivered; integration gate pending
+## Prior delivery merged; integration hygiene correction pending
 
-PR171 now publishes repaired old-topic head `74260b61`; it remains draft.
-CI38100661045 remains in progress: Linux1/2 passed, Windows1/2 are running. Prior CI380957 on f3 failed
-both Windows leaves with both Linux leaves passed. Accepted test-only945/648 fixes
-remain separate from this topic, whose explicit dependent base is f3. Verify fresh
-full checks and normal develop integration before importing that merge; preserve
-component provenance and do not transfer CI to new source.
+PR171 head74260b61 passed full CI38100661045: all four Linux/Windows leaves and
+portable. Normal develop merge09440e80 preserves the exact tested tree and component
+provenance. Merge CI38104068580 accepted that executed receipt but failed committed
+patch hygiene on one extra EOF blank line in test_public_m0_policy_port.py.
+A separate bounded repair is active; executable CI success and this failed gate
+remain distinct. The current topic imports develop09440 normally, without promoting
+the old CI to new source or any runtime/strategy claim.
 
 ## Exact candidate loaded; Auto3 closed incomplete
 
@@ -83,19 +84,28 @@ its wording does not prove a paused-action bug. The inspected controller-release
 not cancel already-delivered native card actions. Failed Auto2 polling frames are absent,
 so the precise readiness failure remains unknown.
 
-## Remaining Platform non-claims
+## Current owning follow-ups and non-claims
 
-Source/build/package/install/caller/load and independent Auto3 audit are complete at
-their bounded levels; the original attempt remains failed and its allowance consumed.
-Autonomous continuation now has two active source owners: Connector's private exact
-availability proof/sticky20s window/final-profile mapper, and application's bounded
-terminal-tail reason projection with all outcome axes preserved. No Runtime production,
-queue gate, timer extension or new profile. The rc31 package/pin may remain if actual
-SDK/schema compatibility is unchanged; Root verifies identities without forced lockstep.
-Any later candidate
-needs its own source/artifact/runtime gates and distinct attempt envelope; this packet
-allocates no further native run. Root retains shared identity/BOM/install and resource
-ownership. No old delivered/unknown request is replayed or historical input backfilled.
+Connector withdrawal repair968c866e is independently accepted and integrated:
+762 Host,25 focused,232 SDK and126 portable checks passed at the author source.
+Root candidate versions/build/install and any distinct native validation remain
+pending; installed Mod41 remains the actual Auto3 artifact. Application reason repair
+f78f32c7 is integrated with42 checks; only the exact terminal handoff reason/reference
+is added, never a changed task/outcome or rewritten original Auto3 report.
+
+The [unified abstraction reconciliation](../evidence/UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md)
+joins233 historical user messages and current code. Shared owners/results exist;
+a common executable startup contract is not yet delivered. AgentComposition and
+AgentRunRequest A+B implementation is active in an isolated worktree: PublicM2
+stateful and model-less Teacher must use the same existing service/registry.
+ADR-0016 direction is under adoption review; this is not G1/G2/V1 acceptance.
+
+No Runtime production change, queue gate, timer extension or new environment profile
+is allocated to the withdrawal repair. Preserve the rc31 package/pin when its actual
+SDK/schema contract remains compatible. Any later runtime candidate needs its own
+source/artifact/caller gates and distinct bounded attempt; Auto3 is closed and its
+allowance consumed. Root owns shared identity/BOM/install and the heavy slot.
+No delivered/unknown request is replayed or historical input backfilled.
 
 Broader meaningful data, independent strategy evaluation, current-game/A0 and M2 history
 qualification, full SC/SX/product coverage,30 attempts,recovery/performance,10k meaningful
