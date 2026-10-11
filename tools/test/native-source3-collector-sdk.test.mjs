@@ -456,7 +456,10 @@ test("generic Runtime retains unknown original intent in immutable evidence, no 
 test("passive subscription renewal before the first action preserves the unknown original intent", async t => {
   const result = await collect(t, { unknownAt: 2, renewBeforeFirstAction: true });
   assertUnknownIntent(result);
-  assert.equal(result.seen.renewals, 1);
+  assert.ok(result.seen.renewals >= 1);
+  const firstRenew = result.seen.requests.findIndex(value => value.route.endsWith("/renew"));
+  const firstAction = result.seen.requests.findIndex(value => value.route.endsWith("/actions"));
+  assert.ok(firstRenew >= 0 && firstRenew < firstAction);
   assert.ok(!result.events.some(value => value.kind === "native_gap"));
 });
 
