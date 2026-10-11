@@ -13,6 +13,8 @@ import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-cl
 import {
   readJson,
   requestHostShutdown,
+  requestHostProvenance,
+  requestHostPreparation,
   shippedRuntimeLaunch,
   snapshotIsInteractive,
   stopChild,
@@ -23,6 +25,7 @@ import { readDiskIdentity } from "./game-installation.mjs";
 import { requireSupportedRuntime } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
+import { validateNativeSpeed, prepareNativeSpeedBeforeBootstrap } from "./native-speed.mjs";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:15526";
 
@@ -72,9 +75,16 @@ export function evaluateHeadlessCapabilities(
   capabilities,
   expectedProtocol = SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL
 ) {
+  return evaluateShippedCapabilities(capabilities, "headless", expectedProtocol);
+}
+
+export function evaluateShippedCapabilities(capabilities, displayMode = "headless",
+  expectedProtocol = SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL) {
+  if (!["headless", "native-ui"].includes(displayMode)) throw new Error("unsupported_shipped_display_mode");
   const errors = [];
+  const expectedHostKind = displayMode === "headless" ? "headless" : "live_ui";
   if (capabilities?.protocol_version !== expectedProtocol) errors.push("protocol_mismatch");
-  if (capabilities?.host?.host_kind !== "headless") errors.push("host_kind_not_headless");
+  if (capabilities?.host?.host_kind !== expectedHostKind) errors.push(`host_kind_not_${expectedHostKind}`);
   if (!["exact_player_environment_only", "exact_platform_modset"]
     .includes(capabilities?.game?.modset?.status)) {
     errors.push("unsupported_modset");
@@ -189,8 +199,10 @@ export async function runHeadlessHost({
   timeoutMs = 90_000,
   mirrorLogs = false,
   sharedProfileAcknowledged = false,
-  isolatedProfileId = null
+  isolatedProfileId = null,
+  nativeSpeed = null
 }) {
+  validateNativeSpeed(nativeSpeed);
   const launchProfile = resolveLaunchProfile({
     localRoot,
     isolatedProfileId,
@@ -210,7 +222,8 @@ export async function runHeadlessHost({
   const stderrFile = path.join(sessionDirectory, "stderr.log");
   const launch = shippedRuntimeLaunch(installation, {
     launchProfile,
-    connectorEndpoint: endpoint
+    connectorEndpoint: endpoint,
+    nativeSpeed
   });
   const { child, args } = launch;
   if (launch.hostControlToken == null) {
@@ -247,7 +260,8 @@ export async function runHeadlessHost({
     stderr_file: stderrFile,
     disk_identity: diskIdentity,
     compatibility,
-    loaded_identity: null
+    loaded_identity: null,
+    requested_native_speed: nativeSpeed
   };
   writeJson(files.current, record);
   writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
@@ -266,10 +280,17 @@ export async function runHeadlessHost({
     if (!snapshotIsInteractive(snapshot)) {
       throw new Error("The real runtime loaded but did not mount an interactive Player Environment decision.");
     }
+    const nativeSpeedProvenance = await prepareNativeSpeedBeforeBootstrap({ nativeSpeed, launchProfile,
+      runtimeInstanceId: capabilitiesResult.value.host.runtime_instance_id,
+      prepare: () => requestHostPreparation({ endpoint, hostControlToken: launch.hostControlToken,
+        expectedRuntimeInstanceId: capabilitiesResult.value.host.runtime_instance_id, timeoutMs }),
+      observeProvenance: () => requestHostProvenance({ endpoint, hostControlToken: launch.hostControlToken,
+        expectedRuntimeInstanceId: capabilitiesResult.value.host.runtime_instance_id, timeoutMs }) });
     record = {
       ...record,
       status: "ready",
       ready_at: new Date().toISOString(),
+      native_speed: nativeSpeedProvenance,
       loaded_identity: {
         protocol: capabilitiesResult.value.protocol_version,
         host: capabilitiesResult.value.host,

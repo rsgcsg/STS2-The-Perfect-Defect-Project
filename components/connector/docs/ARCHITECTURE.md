@@ -66,6 +66,18 @@ through STS2's own `NGame.DebugSeedOverride` seam; provenance then compares it
 with the game-owned run RNG seed. The token and seed metadata are not published
 through capabilities, SDK, MCP, Snapshot, Read or BoundAction.
 
+The same private Host-control plane also supports bounded `/api/host-control/prepare`
+for the existing Host's closed native speed run configuration. It accepts only
+the process-local token and exact runtime, applies the frozen desired typed
+native preference once after boot at an isolated unobstructed main menu, and
+requires immediate readback. The existing provenance route remains read-only
+and reports nested `native_speed` readiness, actual getter and prepared profile
+binding, including later drift. No request can choose a mode/property/path or
+native operand. Normal, Fast and Instant share the same public contract. Host
+Runtime owns launch isolation, configuration and qualification; see its
+owning monorepo specification at `components/host-runtime/docs/ARCHITECTURE.md`,
+section "Native speed run configuration".
+
 Game and artifact admission precede UI actionability. A sealed tuple may enter
 normal authority; a known candidate needs exact game ID and source-revision
 process opt-ins. Empty, partial, mismatched and unknown identities fail closed.
