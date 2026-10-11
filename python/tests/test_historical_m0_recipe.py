@@ -492,8 +492,8 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
         assert operation["status"] == "completed", terminal
         assert operation["worker_state"] == "terminal"
         assert operation["progress"]["completed"] == 1
+        inherited = owner.ledger.dataset(source_id)[1]
         with owner.transaction() as db:
-            inherited = owner.ledger.dataset(source_id)[1]
             uses = {
                 row[0]
                 for row in db.execute(
