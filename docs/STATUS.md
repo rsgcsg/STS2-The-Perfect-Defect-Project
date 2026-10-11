@@ -4,6 +4,29 @@ This page indexes claims, not live service state. Each observation keeps its dat
 source and scope; refresh its owning status/identity before an operational action.
 CURRENT owns the active task and next step, and the execution matrix owns progress.
 
+## Auto5 and current repair boundary, observed 2026-10-11
+
+Frozen6dc0f722 loaded exact Runtime32/code95b769a2 and unchanged Mod42/artifact2ef3dcf7.
+Auto5 closed as a valid sealed **tainted incomplete failure**:126.630s,109 submissions,
+86 delivered/23 known stale,355 events,78 prior-frame joins/31 unknown. Three reward
+cards and later rooms do not prove strategy or Summary. The original common request,
+composition, preparation, run and immutable evaluation are exactly bound; independent
+auditb778cf99 accepted integrity/association while retaining the failure.
+
+Final End Turn was delivered; all41 subsequent diagnostic polls were complete newer
+settling observations over10.820s, followed by `successor_not_stable`. This establishes
+the exhausted readiness-wait policy, not native delivery uncertainty or a native stall.
+The game was closed before eventual readiness was established. Maximum consecutive
+stale refusals was2, so this run does not demonstrate the new stale window's benefit.
+Stop released/unloaded; Host exited0 unforced and strict process discovery was empty.
+No additional game is allocated. Source-only Auto waiting and application admission
+compatibility repairs are now active in separate worktrees; see the
+[current packet](plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto5-closure-and-current-repair-packet).
+
+PR174's fresh CI38115573320 passed Linux1 and failed Linux2 with10 Python failures;
+Windows remained running at this observation. Frozen6dc is not eligible for merge.
+Earlier source/package/installation claims below remain limited to their own snapshots.
+
 ## Common execution and finite recovery source candidate, 2026-10-11
 
 Reviewed a164+b507 unify effective Agent composition/request through existing owners.

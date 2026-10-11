@@ -1,5 +1,11 @@
 # Agent run completion and native input order — 2026-10-11
 
+Current decision: see [Auto5 closure and current repair packet](#auto5-closure-and-current-repair-packet).
+PR174 at6dc failed its Linux2 source gate; Auto5 is closed tainted/incomplete.
+Two reviewed-direction source repairs are active; no new game is allocated.
+
+## Prior Auto3 preparation snapshot
+
 Status: accepted source is assembled with version/BOM candidate `0817351f`;
 Runtime package pin is committed at `f0ed46d9`. Final local Runtime checks and
 Connector/Mod builds and independent package/artifact reviews passed. The existing
@@ -476,3 +482,82 @@ Runtime installer into the existing common model state. Actual installed content
 code95b769a2 and source9b092a51 match the pin. This is installation only. The retained
 rc31 archivee58b448b and original pin provide rollback; no Model/weights or historical
 Agent evidence were modified. Final frozen caller and actual load gates remain required.
+
+
+## Auto5 closure and current repair packet
+
+The user renewed autonomous integrated engineering, including foreseeable future
+compositions, under the same cumulative USD20 GPU envelope (USD0/no job). Preserve
+ADR-0016's distinction between common logical roles and actually supported components,
+profiles and resources; do not claim a universal executor for hypothetical workloads.
+
+The one Auto5 at frozen6dc0f722 ran with original d6/program/Host/seed and exact
+Runtime32/Mod42. It closed failed/tainted after126.630s:109 submissions,86 delivered/
+23 known stale,355 sealed events; typed verification passed with no findings.
+Contentc3188d9c/events91241710 and independent auditb778cf99 preserve78 prior joins/
+31 unknown, three reward cards and later3 combat/2 event interaction IDs. No Summary.
+Requeste4350fc9/compositiona3587e66 binds preparation01ac5fd0, runed8e616d and immutable
+evaluatione9a5d92d. Operation failed for recorded taint; Task/terminal remain unknown.
+Stop released/unloaded, signed Host exited0 unforced/HTTP200, strict processes were
+empty and caller7450 exited1. Original attempts remain immutable; no new Auto follows.
+
+Private diagnostics1e29d24c (11,042bytes, complete/no truncation) bind the final known
+End Turn delivery352 to41 valid complete newer combat settling observations, sequences
+291–303 over10.820s, then release353/taint354/Stop355. All were rejected solely for
+settling; the last changed watermark arrived after10s. Native input was delivered;
+this does not prove native completion, a stall or eventual readiness. Earlier Auto2
+lacks this trace and keeps its unknown cause. Auto5 never exceeded two consecutive
+stales, so it does not prove the operational benefit of rc32's separate recovery window.
+
+### Accepted direction: Auto post-delivery waiting, source only
+
+Independent native and Runtime contract reviews establish a pre/post-delivery waiting
+asymmetry. Root selects the existing in-flight loop and lifecycle owner, without a
+new pending manager, protocol replacement or arbitrary larger timeout. Scope is Auto
+with Snapshot1, including M0 and PublicM2/Decision4 independent of Host/model identity.
+Text-v1/v2, Managed text, native Agent and synchronous One-Step keep existing policies;
+their different caller/representation contracts need their own migration evidence.
+
+After a correlated durably recorded delivered Receipt, qualified waiting requires
+same schema/session/environment, a different Snapshot newer than the original basis,
+status settling, complete Snapshot AND complete consistent catalog through existing
+SDK validation. Repeated newer watermarks qualify; native phase/HP/queue guesses do not.
+Waiting neither calls the Model nor submits, offers history, publishes a successor or
+renews any budget. The original absolute Auto deadline/epoch/Stop fences remain final.
+Cumulative unusable polls consume the configured finite rejection allowance, never
+reset by intervening settling; identity/profile/sequence and transport errors retain
+strict behavior. Positive bounded yielding prevents zero-backoff timer starvation.
+
+Only a later valid non-settling observation gets the unchanged successor event and
+PublicM2 previous-action association, followed by ordinary next-input admission.
+Global expiry retains its exact budget handoff; known Receipt delivery never becomes
+permission to retry. One-Step keeps its bound because synchronous callers have their
+own finite command waits. Manual synchronous Auto ticks retain unknown-command/no-retry
+semantics; this change does not promise unchanged caller latency.
+
+Private diagnostics must distinguish total polls from cumulative unusable allowance
+and qualifying settling, preserving64 rows/32KiB/16 failure records/default-off limits.
+A faithful original-source RED uses decoded complete empty settling for more than41
+polls with repeated newer watermarks, then an explicitly synthetic ready frame; that
+fixture never backfills Auto5. Negatives cover mixed unusable polls, deadline/Stop/late
+responses, evidence/release failure, no inference/submission/history while waiting,
+Port4 eventual association and unchanged other profiles. Exact package/install/caller
+and a new explicit attempt decision remain later gates after source acceptance.
+
+### Concurrent application compatibility repair and delivery
+
+Fresh PR174 CI38115573320 passed Linux1 but failed Linux2 with10 Python failures in
+native recording/model admission and persisted-endpoint command tests; Windows were
+still running at this snapshot. The original failing logs are retained. Inspection
+found request/composition resolution preceding the existing recording reservation
+check. Root authorizes reusing that same pure local guard under the same lock before
+resolution, retaining atomic `_begin` recheck. Positive fixtures must contain real
+registered originals and mandatory Runtime status fields; existing control/endpoint
+assertions and strict manifest/hash validation remain unchanged.
+
+Both source packets depend explicitly on6dc/current develop09440e80 in separate owned
+branches. Root owns versions/BOM/pins and integration; one heavy local slot is allocated
+only when commands are ready. Read exact code and faithful regressions independently,
+then batch accepted corrections before one fresh required CI candidate. Do not merge
+failed6dc or reuse its Linux1 PASS as a changed-head verdict. No main/release, training,
+paid job, Human/scientific/strategy qualification or full G1/G2/V1 approval is added.
