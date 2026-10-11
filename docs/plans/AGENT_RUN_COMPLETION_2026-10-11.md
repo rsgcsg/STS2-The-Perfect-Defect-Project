@@ -744,17 +744,26 @@ component versions/contracts and historical package/load records remain unchange
 Repository/closeout checks passed; a fresh full hosted candidate remains required.
 Earlier6dd/abbf failures and local baeb acceptance retain their exact original scope.
 
-Separately, Root's local native candidateec0152a1 includes accepted Episode/Host29
-and Runtime34/Evidence30 source/package gates. App40 cases and two synthetic
-Teacher/M2 process cases passed; the first explicit-archive invocation failed the
-old33 pin before Root selected the existing current-source package fixture. The
-existing original8eb model now has an immutable policy3 derivativee894751a, with
-unchanged weight bytes and exact43-tensor/three-forward/reset CPU parity. Runtime34
-was installed through the existing owner, preserving old stopped session and33
-rollback, with loaded=false/activated=false. This separate work is not PR176 native
-qualification. A same-instance ordinary prepare → genuine registration → cold load
-→ explicitly allocated Auto → owning finish remains pending; no new game result,
-new fit, Human evidence, strategy or default promotion follows from local gates.
+Third full [CI38158218735](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38158218735)
+at a33 failed only Windows1's SDK10000-action case:6.861s versus default5s runner;
+other OS leaves passed. Original exhausted phase is unknown. The previously failing
+Store readiness case passed this time, without explaining its earlier cause.
+A faithful local phase experiment retained the old5s case and all assertions:
+468ms total,36.4ms fixture,385.5ms actual SDK assembly of137 pages and28.6ms assertions.
+Reviewed1376e034 changes only this large functional case's runner bound to15s;
+count/order/bytes/Unicode/budgets/disposal and all SDK deadlines remain unchanged.
+Its added1000ms unfinished-stream negative verifies one request and cancellation.
+Actual two-file39 tests and SDK typecheck passed in3.988s. This is test strategy,
+not a Windows performance fix; fresh full hosted acceptance remains required.
+
+Separately, Root b055 includes Host30 source/package acceptance and the preserved
+Auto4 at4e. Auto4 loaded Runtime34/Host29/Mod43 and genuine policy3 derivativee894,
+with unchanged original weights and accepted43-tensor/three-forward/reset parity.
+Its typed Task completed at natural-loss Summary,floor5/score50; the entire attempt
+failed from private retired-runtime observation and real driver−15 cleanup_unknown.
+Original reserved unknown remains. Host30 repairs the reproduced exit-wait resource
+leak; actual fresh native close is pending. None of this qualifies PR176, new fit,
+Human evidence, strategy or ordinary default.
 
 The user retains final V1 data/Agent selection. The reviewed private proposal is
 awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
