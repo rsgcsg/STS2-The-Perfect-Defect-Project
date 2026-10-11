@@ -75,9 +75,8 @@ The first owning next fact is Connector's supported ready/no-current-command gap
 following exact native button withdrawal; Runtime follows its existing observed
 handoff contract. The earlier same-gap successor was followed by round2 evidence;
 no final queued-action execution or Auto2 cause is proved. Root accepted both bounded
-follow-up scopes; Connector design received independent architecture review. Each
-implementation still requires independent code review; source owners are active,
-with no new implementation receipt or extra run claimed yet.
+follow-up scopes; both implementations are now independently reviewed and integrated
+as recorded below. No additional native run has been allocated or claimed.
 
 The canceled-Defend log can also result from ordinary native execution-time revalidation;
 its wording does not prove a paused-action bug. The inspected controller-release path does
@@ -88,8 +87,8 @@ so the precise readiness failure remains unknown.
 
 Connector withdrawal repair968c866e is independently accepted and integrated:
 762 Host,25 focused,232 SDK and126 portable checks passed at the author source.
-Root candidate versions/build/install and any distinct native validation remain
-pending; installed Mod41 remains the actual Auto3 artifact. Application reason repair
+Root candidate Connector23/Mod42 versions and BOM are committed; build/install and
+any distinct native validation remain pending. Installed Mod41 remains the Auto3 artifact. Application reason repair
 f78f32c7 is integrated with42 checks; only the exact terminal handoff reason/reference
 is added, never a changed task/outcome or rewritten original Auto3 report.
 
@@ -106,6 +105,8 @@ SDK/schema contract remains compatible. Any later runtime candidate needs its ow
 source/artifact/caller gates and distinct bounded attempt; Auto3 is closed and its
 allowance consumed. Root owns shared identity/BOM/install and the heavy slot.
 No delivered/unknown request is replayed or historical input backfilled.
+
+## Remaining Platform non-claims
 
 Broader meaningful data, independent strategy evaluation, current-game/A0 and M2 history
 qualification, full SC/SX/product coverage,30 attempts,recovery/performance,10k meaningful
