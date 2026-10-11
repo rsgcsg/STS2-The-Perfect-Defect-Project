@@ -726,7 +726,7 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
             ROOT,
             models.entry_path(selected, "config"),
             models.entry_path(selected, "manifest"),
-            binding_root=project.state_dir,
+            binding_root=models.entry_root(selected),
         )
         assert manifest["representation"]["input_schema"] == "sts2.player-environment/snapshot-1"
     finally:
