@@ -58,27 +58,43 @@ fresh observation and complete menu (an atomic context for the required
 stateful v2 port), asks the policy again, and uses new decision and request
 IDs. It never reuses the old bound action, request or scores; a fresh policy
 decision may choose the same semantic action.
-Three consecutive stale submissions hand back to Human; an applied text menu
-navigation or native delivery resets that count. Other unapplied results,
-unknown delivery, evidence or release failure, and cancellation do not continue
-Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
+For generic Snapshot1 and the retryable text-menu-v2 path, the first correlated,
+explicitly retryable known stale result anchors a per-episode absolute monotonic
+10,000 ms recovery window before Evidence or controller-release latency. Each
+retry releases control, waits a positive adaptive cooldown of 250, 500, then
+1,000 ms (capped at 1,000 ms and clamped to remaining local and global time),
+and obtains a fresh complete observation, fresh scores and new decision/request
+IDs. A tick before cooldown eligibility returns `not_admitted` with reason
+`stale_submission_cooldown` and performs no environment or policy work.
 
-For generic Snapshot1 and the existing retryable text-menu-v2 path, the first
-and second consecutive, correlated known stale non-deliveries release control
-and schedule monotonic 250 ms and 500 ms cooldowns before the next observation.
-A tick before eligibility returns the existing `not_admitted` shape with reason
-`stale_submission_cooldown`; it makes no capability, observation, policy or
-submission call and consumes no additional call/submission budget. Equality at
-cooldown eligibility permits a fresh complete bundle, new decision/request identities
-and fresh scoring. The existing server tick loop drives this without a sleep
-inside the serialized owner or an additional timer.
+New observations, changing fair-player facts, catalogs, scores and tokens never
+renew the window. Only an accepted delivered/applied result in the original live
+recovery epoch and authorization, before expiry wins, resets the episode; an
+applied text menu navigation counts as progress at this layer. A genuinely new
+Auto authorization starts a new allowance. Redundant Auto commands and cycling
+between autonomous modes within one active authorization do not refill it.
+The existing total time, policy-call and submission wallets remain unchanged,
+and every fresh attempt is charged normally. Generic Snapshot1 retains its
+optional Evidence writer compatibility; v2 still requires a writer for retry.
 
-Stop, Human recovery and finite authorization expiry retain priority. A late
-result from an old recovery epoch cannot arm a cooldown; a new authorized Auto,
-delivery, Stop or Human handoff clears it. The three-stale ceiling, receipt
-correlation, explicit retry admission and evidence/release failure behavior
-remain unchanged. This is operational backpressure, not a readiness or effect
-settlement proof. The separately declared native Agent 8/3 policy is unchanged.
+The shared Runtime lifecycle owner schedules the earlier global or local
+absolute deadline. Local expiry itself fences and cancels pending policy work,
+serializes Human/controller release and records `handoff_to_human` with exactly
+`{reason: "stale_recovery_exhausted"}`, even while idle without another tick or
+status read. Global expiry wins equality. Admission checks enforce expiry before
+environment work, after observation/policy awaits and before acquisition/submit.
+An already submitted request is still owed its actual correlated result and
+Evidence classification before final release; a late delivered result cannot
+revive Auto or reset an expired window. Failed handoff Evidence writes taint.
+Unknown/partial delivery, correlation failure, nonretryable rejection, failed
+Evidence/release, Stop, Human recovery and identity/epoch drift retain their
+strict handoff/taint behavior. Delivery-successor wait exhaustion never retries.
+
+This finite allowance is an operational cost/scope choice, not proof of native
+readiness, effect settlement, eventual delivery or eventual game summary. It
+replaces the generic/v2 three-stale cutoff; the native-logical Agent's separately
+declared 8/3 policy and global timer remain unchanged. It needs a newly qualified
+Runtime package before live use; historical runs and artifacts remain immutable.
 
 Before observation, each Connector Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
@@ -473,8 +489,7 @@ semantics are unchanged. Diagnostics do not establish native causal settlement.
 The source candidate keeps Auto active after a correlated `not_delivered` receipt
 only when `reason_code=stale_snapshot` and the Connector explicitly allows a fresh
 snapshot retry. The controller is released and the next tick reacquires a complete
-bundle, rescores it and creates new decision/request IDs. Three consecutive stale
-submissions return to Human. Other non-delivery, unsupported decisions and all
+bundle, rescores it and creates new decision/request IDs within the finite recovery window described above. Its expiry returns to Human. Other non-delivery, unsupported decisions and all
 unknown delivery retain existing handoff/taint behavior; no old action is replayed.
 
 After delivered input, the default bounded observation wait is 41 samples at a
