@@ -26,11 +26,17 @@ def native_episode_command(
     selection: str | None = None,
     operation: str = "prepare-and-takeover",
     run_profile: str = "short",
+    expected_instance_id: str | None = None,
 ) -> dict[str, Any]:
-    """Closed client of the one running Application; never spawns a Host itself."""
+    """Call one Application, optionally fenced to its original instance.
+
+    The instance guard is local; it adds no HTTP body field or Host command.
+    """
     current = running(config)
     if current is None:
         raise BoundaryError("native_episode", "open_workbench_first")
+    if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
+        raise BoundaryError("native_episode", "application_instance_mismatch")
     base = f"http://127.0.0.1:{current['port']}"
     opener = build_opener(ProxyHandler({}), NoRedirect())
 
@@ -105,9 +111,13 @@ def model_command(
     new_runtime_profile: Path | None = None,
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
+    expected_instance_id: str | None = None,
 ) -> dict[str, Any]:
+    """Call one Application, or install offline without an instance guard."""
     generation_action = action in {"initialize-runtime-generation",
                                    "upgrade-runtime-generation", "rollback-runtime-generation"}
+    if expected_instance_id is not None and (generation_action or runtime_archive is not None):
+        raise BoundaryError("local_model", "expected_instance_requires_running_command")
     if generation_action:
         if runtime_profile is None:
             raise BoundaryError("local_model", "runtime_generation_arguments_required")
@@ -236,6 +246,8 @@ def model_command(
     current = running(config)
     if current is None:
         raise BoundaryError("local_model", "open_workbench_first")
+    if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
+        raise BoundaryError("local_model", "application_instance_mismatch")
     route = "/api/local-models"
     body = None
     if action == "status":
