@@ -1,6 +1,6 @@
 """Real common Runtime CLI/Teacher/Decision4 children; synthetic World/backend.
 
-Requires an explicit existing rc33 archive, never builds or downloads a Runtime.
+Reuses the existing exact-archive or current-source public preflight owner.
 The PublicM2 fixture counts tensor writes and loads no real weights or NN.
 """
 # ruff: noqa: F811 -- pytest fixture parameters shadow imported fixture functions.
@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from native_episode_world import NativeEpisodeWorld
+from test_local_models import public_native_preflight  # noqa: F401 -- shared real package owner
 from test_native_episode_application import (
     ROOT,
     capabilities,
@@ -26,9 +27,9 @@ from test_native_episode_application import (
 
 from spireagent.json_boundary import json_bytes
 from spireagent.package_identity import directory_sha256
-from spireagent.workbench.developer import atomic_json, combination
+from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.local_model_registration import REGISTRY
-from spireagent.workbench.runtime_install import install_runtime, validate_runtime_install
+from spireagent.workbench.runtime_install import validate_runtime_install
 
 
 @pytest.fixture
@@ -73,47 +74,58 @@ def native_endpoint(world):
 
 
 @pytest.fixture(scope="module")
-def installed_runtime33(tmp_path_factory):
-    # Prepare this unchanged dependency once, before either Actor uses15527.
-    # Reinstalling between cases needlessly crosses the old installer's plain
-    # bind check while the preceding HTTP connection may still be TIME_WAIT.
+def installed_native_runtime(public_native_preflight):
+    # The existing owner accepts an exact reviewed archive for bounded local
+    # replay, or prepares the current real source package for ordinary CI. It
+    # installs once before either Actor uses15527; never reinstall between cases.
+    service, _manifests, temporary = public_native_preflight
     supplied = os.environ.get("STPD_TEST_NATIVE_RUNTIME_ARCHIVE")
-    assert supplied, "Set the explicit reviewed rc33 archive; this fixture never builds/downloads"
-    archive = Path(supplied).resolve()
-    pin = json.loads((ROOT / "python/configs/developer/local-policies-v1.json").read_bytes())[
-        "runtime_package"
-    ]
-    connector = next(
-        item
-        for item in combination()["node_packages"]
-        if item["package"] == "@rsgcsg/sts2-connector-client"
-    )
-    assert pin["version"] == "0.1.0-rc.33"
+    if supplied:
+        archive = Path(supplied).resolve()
+    else:
+        report = json.loads((temporary / "package/policy-runtime-package.json").read_bytes())
+        archive = temporary / "package" / report["filename"]
+    pin = service.registry()["runtime_package"]
     before = hashlib.sha256(archive.read_bytes()).hexdigest()
     assert before == pin["release_asset_sha256"]
-    reused = os.environ.get("STPD_TEST_NATIVE_RUNTIME_NODE_MODULES")
-    if reused:
-        source = Path(reused).resolve()
-    else:
-        directory = tmp_path_factory.mktemp("native-episode-rc33-dependency")
-        result = install_runtime(directory, pin, connector, archive=archive)
-        assert result["status"] == "runtime_installed"
-        source = directory / "runtime/node_modules"
-    validate_runtime_install(source, pin, connector)
+    source = service.directory / "runtime/node_modules"
+    validate_runtime_install(source, pin, service._connector_pin())
     content = directory_sha256(source)
-    yield source, archive, before
+
+    # Same source-test root/catalog and exact adapter closure pattern as the
+    # existing common Runtime tests. Only immutable code/metadata/dependencies
+    # are reused; every Application keeps its own mutable operation/Actor state.
+    from stpd.policy.native_teacher_agent import CODE_FILES
+    from stpd.public_m2_policy_installation import ADAPTER_SOURCE_CLOSURE
+
+    closure = set(CODE_FILES) | set(ADAPTER_SOURCE_CLOSURE)
+    expected = {}
+    for name in sorted(closure):
+        original, target = ROOT / "python" / name, service.root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, target)
+        expected[name] = hashlib.sha256(original.read_bytes()).hexdigest()
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == expected[name]
+    yield source, archive, before, pin, service.root
     assert directory_sha256(source) == content
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == before
+    assert {
+        name: hashlib.sha256((service.root / name).read_bytes()).hexdigest()
+        for name in sorted(closure)
+    } == expected
 
 
 @pytest.fixture
-def runtime33(native_app, installed_runtime33):
+def native_runtime(native_app, installed_native_runtime):
     app = native_app[0]
-    source, archive, before = installed_runtime33
+    source, archive, before, pin, source_root = installed_native_runtime
+    # Use the original source-test configuration, never alter the production
+    # catalog or mock package verification/readiness/launch ownership.
+    app.models.root = source_root
+    assert app.models.registry()["runtime_package"] == pin
     target = app.models.directory / "runtime/node_modules"
     shutil.copytree(source, target)
     assert directory_sha256(target) == directory_sha256(source)
-    pin = app.models.registry()["runtime_package"]
     actual = app.models._runtime_package()
     assert actual["version"] == pin["version"]
     yield app, archive, before
@@ -212,13 +224,13 @@ def common_finish(app, ready, startup, reference, raw, host_before, log, world):
 
 
 def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
-    runtime33, world, native_app
+    native_runtime, world, native_app
 ):
     from spireagent.workbench.native_teacher_support import ADAPTER, installation_config
     from stpd.policy.native_teacher_agent import descriptor, write_artifact
     from stpd.policy.native_teacher_manifest import teacher_manifest
 
-    app = runtime33[0]
+    app = native_runtime[0]
     folder = app.models.private_root / "fixture-teacher"
     folder.mkdir(parents=True)
     artifact = write_artifact(folder / "program.json")
@@ -251,7 +263,7 @@ def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
 
 
 def test_owned_episode_common_public_m2_process_preserves_ordinal_and_w_then_stop(
-    runtime33, world, native_app, tmp_path, monkeypatch
+    native_runtime, world, native_app, tmp_path, monkeypatch
 ):
     # Only this test imports Torch. Existing numerical fixture uses additions
     # over a synthetic memory tensor; no trained weights, forward, fit or game.
@@ -260,7 +272,7 @@ def test_owned_episode_common_public_m2_process_preserves_ordinal_and_w_then_sto
     import stpd.public_m2_policy_installation as installation
     from spireagent.workbench.local_model_registration import _requirements
 
-    app = runtime33[0]
+    app = native_runtime[0]
     export, _model = metadata_export(tmp_path)
     folder = app.models.private_root / "fixture-public-m2"
     folder.mkdir(parents=True)
