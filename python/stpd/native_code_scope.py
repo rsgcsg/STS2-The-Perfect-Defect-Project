@@ -159,7 +159,8 @@ def compatibility_original_identity() -> dict[str, str]:
 def _operational_evidence_only_lock_delta(original: str, target: str) -> None:
     """Separate closed target; the historical rc27→rc29 checker stays strict."""
     try:
-        baseline, current = copy.deepcopy(tomllib.loads(original)), copy.deepcopy(tomllib.loads(target))
+        baseline = copy.deepcopy(tomllib.loads(original))
+        current = copy.deepcopy(tomllib.loads(target))
         for value, version, revision in (
             (baseline, "0.1.0rc27", "cd319ba9146eddb39bb09439fc9b2e366061360e"),
             (current, OPERATIONAL_EVIDENCE_VERSION, OPERATIONAL_EVIDENCE_REVISION),
@@ -178,7 +179,8 @@ def _operational_evidence_only_lock_delta(original: str, target: str) -> None:
                             "?subdirectory=components%2Fevidence&rev=" + revision)
             if record["source"] != {"git": expected_git + "#" + revision}:
                 raise ValueError
-            requirements = [r for r in project[0]["metadata"]["requires-dist"] if r.get("name") == _EVIDENCE]
+            requirements = [r for r in project[0]["metadata"]["requires-dist"]
+                            if r.get("name") == _EVIDENCE]
             if len(requirements) != 1 or requirements[0].get("git") != expected_git:
                 raise ValueError
             record["version"] = "<reviewed-evidence-version>"
@@ -187,7 +189,8 @@ def _operational_evidence_only_lock_delta(original: str, target: str) -> None:
         if baseline != current:
             raise ValueError
     except (ValueError, KeyError, TypeError, AttributeError) as error:
-        raise BoundaryError("native_compatibility", "not_exact_operational_evidence_only_lock_delta") from error
+        raise BoundaryError("native_compatibility",
+                            "not_exact_operational_evidence_only_lock_delta") from error
 
 
 def checked_native_compatibility_proof(value: object) -> dict[str, Any]:
@@ -294,7 +297,8 @@ def native_operational_compatibility_proof(origin: Producer) -> dict[str, Any]:
                                    ORIGINAL_EXPORT_REVISION + ":python/" + relative],
                                   check=True, capture_output=True, timeout=10).stdout
         except (OSError, subprocess.SubprocessError) as error:
-            raise BoundaryError("native_compatibility", "original_git_source_unavailable") from error
+            raise BoundaryError("native_compatibility",
+                                "original_git_source_unavailable") from error
     return checked_native_operational_compatibility_proof({
         "profile": OPERATIONAL_COMPATIBILITY_PROFILE,
         "original_export_producer": origin.to_dict(),

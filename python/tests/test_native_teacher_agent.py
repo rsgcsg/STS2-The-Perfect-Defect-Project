@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.fullrun.native_structured_inputs import native_catalog_digest
 from stpd.native_graph_spec import NativeGraphControl
 from stpd.native_sampled_carry_spec import sampled_agent_execution_policy, sampled_agent_spec
+from stpd.policy import native_execution_policy as execution_contract
 from stpd.policy import native_operational_outcome_v2 as continuous_contract
 from stpd.policy import native_teacher_agent as module
 from stpd.policy.native_operational_outcome import (
@@ -977,7 +978,7 @@ class ContinuousStrictTeacherTests(unittest.TestCase):
             "BoundaryError": BoundaryError,
             "load_native_package": lambda path: (metadata, SimpleNamespace(model_control=control)),
             "SAMPLED_INPUT_SPEC": SAMPLED_INPUT_SPEC,
-            "checked_execution_policy": __import__("stpd.policy.native_execution_policy", fromlist=["checked_execution_policy"]).checked_execution_policy,
+            "checked_execution_policy": execution_contract.checked_execution_policy,
             "sampled_agent_execution_policy": sampled_agent_execution_policy,
         }
         # Production composition guard; package loading is the declared mocked

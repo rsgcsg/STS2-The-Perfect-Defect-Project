@@ -16,9 +16,9 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from stpd.native_code_scope import (
     COMMON_MODEL_SCHEMA,
     COMPATIBILITY_PROFILE,
-    OPERATIONAL_COMPATIBILITY_PROFILE,
     COMPATIBILITY_REPOSITORY,
     COMPATIBLE_MODEL_SCHEMA,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     ORIGINAL_EXPORT_REVISION,
     ORIGINAL_LOCK_SHA256,
     TARGET_LOCK_SHA256,
@@ -65,8 +65,16 @@ def settled(service):
     return service.status()["operation"]
 
 
-def install_publisher(service, original, derived, records, module, *, fail=None,
-                      selected_profile=COMPATIBILITY_PROFILE):
+def install_publisher(
+    service,
+    original,
+    derived,
+    records,
+    module,
+    *,
+    fail=None,
+    selected_profile=COMPATIBILITY_PROFILE,
+):
     def publish(store, original_id, *, producer, profile, before_publish):
         assert original_id == original.artifact_id
         assert profile == selected_profile and producer == derived.producer
@@ -89,11 +97,27 @@ def install_publisher(service, original, derived, records, module, *, fail=None,
     module.publish_native_compatible_model = publish
 
 
-def test_explicit_operational_profile_reaches_existing_owner_and_exact_completed_receipt(service, monkeypatch):
+def test_explicit_operational_profile_reaches_existing_owner_and_exact_completed_receipt(
+    service, monkeypatch
+):
     selected, original, derived, records, module = service
-    derived = replace(derived, parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA,
-                              "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE}))
-    install_publisher(selected, original, derived, records, module, selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    derived = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {
+                "schema": COMPATIBLE_MODEL_SCHEMA,
+                "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE,
+            }
+        ),
+    )
+    install_publisher(
+        selected,
+        original,
+        derived,
+        records,
+        module,
+        selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE,
+    )
     monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
     selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
     result = settled(selected)
@@ -104,9 +128,24 @@ def test_explicit_operational_profile_reaches_existing_owner_and_exact_completed
 
 def test_pending_profile_cannot_be_changed_to_another_supported_intent(service, monkeypatch):
     selected, original, derived, records, module = service
-    derived = replace(derived, parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA,
-                              "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE}))
-    install_publisher(selected, original, derived, records, module, fail="intent_only", selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    derived = replace(
+        derived,
+        parameters=FrozenObject.of(
+            {
+                "schema": COMPATIBLE_MODEL_SCHEMA,
+                "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE,
+            }
+        ),
+    )
+    install_publisher(
+        selected,
+        original,
+        derived,
+        records,
+        module,
+        fail="intent_only",
+        selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE,
+    )
     monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
     selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
     assert settled(selected)["status"] == "interrupted"
@@ -116,7 +155,9 @@ def test_pending_profile_cannot_be_changed_to_another_supported_intent(service, 
     assert selected._path().read_bytes() == before
 
 
-def test_selected_operational_profile_cannot_publish_borrowed_legacy_derivative(service, monkeypatch):
+def test_selected_operational_profile_cannot_publish_borrowed_legacy_derivative(
+    service, monkeypatch
+):
     selected, original, _, _, _ = service
     install_publisher(*service, selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
     monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)

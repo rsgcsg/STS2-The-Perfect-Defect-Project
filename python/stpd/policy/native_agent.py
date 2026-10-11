@@ -112,7 +112,8 @@ def adapter_identity(
         "id": ADAPTER_ID,
         "version": ADAPTER_VERSION if execution_policy is None else (
             KNOWN_STALE_WINDOW_ADAPTER_VERSION
-            if policy["schema"] == KNOWN_STALE_WINDOW_POLICY_SCHEMA else OWNED_STALE_ADAPTER_VERSION),
+            if policy["schema"] == KNOWN_STALE_WINDOW_POLICY_SCHEMA
+            else OWNED_STALE_ADAPTER_VERSION),
         "protocol": PROTOCOL,
         "code_sha256": native_code_sha256(ROOT, graph=graph),
     }

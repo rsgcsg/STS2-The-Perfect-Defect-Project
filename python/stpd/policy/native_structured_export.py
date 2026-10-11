@@ -27,9 +27,9 @@ from ..models.structured_m2 import StructuredM2
 from ..models.structured_weights import encode_structured_weights, load_structured_weights
 from ..native_code_scope import (
     COMPATIBILITY_PROFILE,
-    OPERATIONAL_COMPATIBILITY_PROFILE,
     COMPATIBLE_MODEL_SCHEMA,
     GRAPH_MODEL_SCHEMA,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     checked_native_compatibility_proof,
     checked_native_operational_compatibility_proof,
     compatibility_original_identity,
@@ -652,8 +652,9 @@ def _compatible_manifest(encoded: bytes) -> dict[str, Any]:
         "compatibility": compatibility,
     }
     if operational:
-        body["agent_spec"] = sampled_agent_spec(
-            package_control(original), execution_policy=known_stale_window_policy())
+        body["agent_spec"] = ordered_native_agent_spec(
+            package_control(original), view=SAMPLED_VIEW,
+            execution_policy=known_stale_window_policy())
     body.pop("model_id")
     expected = {**body, "model_id": semantic_hash(body)}
     if encoded != json_bytes(value) or value != expected:
@@ -894,8 +895,9 @@ def publish_native_compatible_model(
         "compatibility": compatibility,
     }
     if operational:
-        body["agent_spec"] = sampled_agent_spec(
-            package_control(original), execution_policy=known_stale_window_policy())
+        body["agent_spec"] = ordered_native_agent_spec(
+            package_control(original), view=SAMPLED_VIEW,
+            execution_policy=known_stale_window_policy())
     body.pop("model_id")
     package = {**body, "model_id": semantic_hash(body)}
     encoded = json_bytes(package)

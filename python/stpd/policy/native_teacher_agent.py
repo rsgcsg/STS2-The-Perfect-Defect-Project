@@ -19,7 +19,6 @@ from typing import Any, TextIO
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from stpd.fullrun.native_structured_inputs import PROFILE, SCOPE
 from stpd.fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
-from stpd.policy.native_operational_outcome import emitted_intention
 from stpd.policy.native_execution_policy import (
     CONTINUOUS_STRICT_POLICY_SCHEMA,
     KNOWN_STALE_WINDOW_POLICY_SCHEMA,
@@ -27,6 +26,7 @@ from stpd.policy.native_execution_policy import (
     checked_next_input,
     manifest_execution_policy,
 )
+from stpd.policy.native_operational_outcome import emitted_intention
 from stpd.policy.native_public_teacher import (
     CONTINUOUS_STRICT_TEACHER_VERSION,
     OWNED_STALE_TEACHER_VERSION,
@@ -161,7 +161,8 @@ def teacher_agent_spec(*, execution_policy: dict[str, Any] | None = None) -> dic
                 "id": TEACHER_ID,
                 "version": (
                     KNOWN_STALE_WINDOW_TEACHER_VERSION if window else (
-                        CONTINUOUS_STRICT_TEACHER_VERSION if continuous else OWNED_STALE_TEACHER_VERSION)
+                        CONTINUOUS_STRICT_TEACHER_VERSION
+                        if continuous else OWNED_STALE_TEACHER_VERSION)
                 ),
             },
             execution_policy=policy,

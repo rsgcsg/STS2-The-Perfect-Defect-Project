@@ -18,8 +18,8 @@ from spireagent.workbench.managed_local_workspace import create_managed_workspac
 from stpd.native_code_scope import (
     COMMON_MODEL_SCHEMA,
     COMPATIBILITY_PROFILE,
-    OPERATIONAL_COMPATIBILITY_PROFILE,
     COMPATIBLE_MODEL_SCHEMA,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
 )
 
 

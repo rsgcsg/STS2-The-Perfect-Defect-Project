@@ -751,7 +751,8 @@ class LocalModelExport:
                         derived.parent("original_model") != original_id
                         or derived.producer.to_dict() != compatibility["export_producer"]
                         or (compatibility["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
-                            and derived.parameters.value().get("compatibility_profile") != compatibility["profile"])
+                            and derived.parameters.value().get("compatibility_profile")
+                            != compatibility["profile"])
                     ):
                         raise BoundaryError("local_model_export", "reconciliation_intent_mismatch")
                     destination = _destination(self.config, derived_id, native=True)
@@ -1107,7 +1108,8 @@ class LocalModelExport:
         from spireagent.workbench.developer_server import instance_lock
 
         identity = digest(model_id, "local_model_export.model_id")
-        if compatibility_profile is not None and compatibility_profile not in NATIVE_COMPATIBILITY_PROFILES:
+        if (compatibility_profile is not None
+                and compatibility_profile not in NATIVE_COMPATIBILITY_PROFILES):
             raise BoundaryError("local_model_export", "unsupported_native_compatibility_profile")
         if prior_native_reconciliation is not None:
             digest(prior_native_reconciliation, "local_model_export.reconciliation_receipt")
@@ -1120,7 +1122,8 @@ class LocalModelExport:
                               prior_native_reconciliation, compatibility_profile)
                              if prior_native_reconciliation is not None else None)
             if (previous.get("status") == "pending" and compatibility_profile is not None
-                    and previous.get("native_compatibility", {}).get("profile") != compatibility_profile):
+                    and previous.get("native_compatibility", {}).get("profile")
+                    != compatibility_profile):
                 raise BoundaryError("local_model_export", "compatibility_intent_mismatch")
             if (previous["status"] == "pending" and self.thread is not None
                     and self.thread.is_alive()):
@@ -1235,7 +1238,8 @@ class LocalModelExport:
                     raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
                 if prior_receipt is not None:
                     self._checked_absent_reconciliation(current, identity,
-                                                       prior_receipt["receipt_sha256"])
+                                                       prior_receipt["receipt_sha256"],
+                                                       compatibility_profile)
                 destination = _destination(self.config, identity, memory=memory,
                                            structured=structured, native=native,
                                            public_m0=public_m0, public_m2=public_m2)
@@ -1355,7 +1359,8 @@ class LocalModelExport:
 
                 def before_publish(derived: Manifest) -> None:
                     if (compatibility["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
-                            and derived.parameters.value().get("compatibility_profile") != compatibility["profile"]):
+                            and derived.parameters.value().get("compatibility_profile")
+                            != compatibility["profile"]):
                         raise BoundaryError("local_model_export", "compatibility_profile_mismatch")
                     if source_identity(ROOT) != Producer.decode(compatibility["export_producer"]):
                         raise BoundaryError("local_model_export", "compatibility_source_changed")
