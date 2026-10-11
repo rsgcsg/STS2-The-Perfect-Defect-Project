@@ -2172,6 +2172,8 @@ class LocalModelService:
     def _evaluation_handoff(self) -> None:
         from sts2_platform_evidence import verify_agent_run_evidence
 
+        from .agent_task_outcome import project
+
         startup = self.state["startup"]
         if startup.get("schema") == AGENT_STARTUP:
             self._native_operation_handoff(startup)
@@ -2196,6 +2198,7 @@ class LocalModelService:
             "budget_summary": None,
             "budget_end_reason": None,
             "terminal_screen_observation": None,
+            "agent_task_outcome": project(result, native=False, text_terminal=_terminal_screen),
         }
         if result.value is not None:
             report.update(
@@ -2316,8 +2319,11 @@ class LocalModelService:
     def _native_operation_handoff(self, startup: dict[str, Any]) -> None:
         from sts2_platform_evidence import verify_agent_session_run_evidence
 
+        from .agent_task_outcome import project
+
         directory = self.directory / "agent-runs" / startup["run_id"]
         result = verify_agent_session_run_evidence(directory, startup)
+        package, package_reason = self._original_native_composition(result)
         report: dict[str, Any] = {
             "schema": "stpd/local-native-agent-operation-handoff-v1",
             "selection_id": self.state["selection_id"], "run_id": startup["run_id"],
@@ -2331,6 +2337,8 @@ class LocalModelService:
             "human_origin": "not_claimed", "native_coverage": "not_qualified",
             "tainted": None, "pending_request": None, "agent_state": None,
             "submission_attempt_count": None, "request_outcome_counts": None,
+            "agent_task_outcome": project(result, native=True, native_package=package,
+                                          package_reason=package_reason),
         }
         if result.value is not None:
             raw = (directory / "events.jsonl").read_bytes()
@@ -2383,6 +2391,52 @@ class LocalModelService:
                 raise BoundaryError("local_model", "evaluation_identity_collision") from None
         with self.lock:
             self.state["evaluation"] = report
+
+    def _original_native_composition(self, result: Any) -> tuple[bytes | None, str | None]:
+        """Read original hash-bound package metadata through the registered owner.
+
+        A current/default Task is never substituted for the sealed run. This
+        reads small JSON only; domain neural loaders and weight bytes stay out.
+        """
+        if result.status != "pass" or result.value is None:
+            return None, "evidence_not_verified"
+        try:
+            from .native_agent_support import _config
+
+            original = dict(result.value.agent_manifest)
+            entry = self.selection(original["manifest_id"])
+            registered = _object_file(self.entry_path(entry, "manifest"))
+            if canonical_json(registered) != canonical_json(original):
+                return None, "original_registered_manifest_unavailable"
+            config = _config(self.entry_path(entry, "config"))
+            artifact = original["artifact"]
+            export = Path(config["export_path"])
+            metadata = export / "model.json"
+            if (artifact != {"id": config["package_model_id"],
+                             "path": str(metadata.resolve()),
+                             "sha256": config["package_manifest_sha256"]}
+                    or any(parent.is_symlink() for parent in metadata.parents)
+                    or metadata.is_symlink() or not metadata.is_file()
+                    or metadata.stat().st_size > JSON_LIMIT):
+                return None, "original_package_metadata_unavailable"
+            with metadata.open("rb") as handle:
+                raw = handle.read(JSON_LIMIT + 1)
+            if len(raw) > JSON_LIMIT or hashlib.sha256(raw).hexdigest() != artifact["sha256"]:
+                return None, "original_package_metadata_changed"
+            package = decode_json(raw)
+            if (not isinstance(package, dict)
+                    or package.get("model_id") != artifact["id"]
+                    or package.get("agent_spec") != config["agent_spec"]
+                    or package.get("input_spec") != config["input_spec"]
+                    or package.get("input_spec") != original["input"]["input_spec"]
+                    or package.get("weights", {}).get("sha256") != config["weights_sha256"]
+                    or package.get("agent_spec", {}).get("id") != original["agent"]["id"]
+                    or package.get("agent_spec", {}).get("version") !=
+                    original["agent"]["version"]):
+                return None, "original_composition_binding_changed"
+            return raw, None
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, BoundaryError):
+            return None, "original_composition_binding_unavailable"
 
     def close(self) -> None:
         self.observer_stop.set()
