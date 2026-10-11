@@ -109,7 +109,6 @@ def _model_details(export_path: Path, model_id: str | None = None) -> tuple[Any,
     renderer = info.get("source_renderer")
     if (
         info.get("schema") != token_decision.PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
-        or info.get("input_schema") != "stpd/stage1a-light-action-m0-public-input-v1"
         or info.get("source_view_schema") not in {LEGACY_VIEW_SCHEMA, VIEW_SCHEMA}
         or renderer not in (IDENTITY, COMPACT_IDENTITY)
     ):

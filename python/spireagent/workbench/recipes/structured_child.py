@@ -289,7 +289,13 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     for name in ("TMPDIR", "TMP", "TEMP"):
         os.environ[name] = str(args.scratch_dir)
     tempfile.tempdir = str(args.scratch_dir)
-    from spireagent.workbench.trusted_recipes import REWARD_M0_RECIPE
+    from spireagent.workbench.trusted_recipes import HISTORICAL_M0_RECIPE, REWARD_M0_RECIPE
+
+    if operation["recipe"] == HISTORICAL_M0_RECIPE:
+        from spireagent.workbench.recipes.historical_m0 import run_historical_child
+
+        run_historical_child(args, channel, store, fence, current_producer)
+        return
 
     if operation["recipe"] == REWARD_M0_RECIPE:
         from spireagent.workbench.recipes.reward_m0 import run_reward_child

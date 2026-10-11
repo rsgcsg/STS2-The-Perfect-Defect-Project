@@ -45,8 +45,9 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 应用组织任务、资源和产物。一个用户可以只录制、分析或运行，不必每次走完整条链。
 
 ```text
-在线：当前世界/Host＋Connector 环境合同 ↔ Runtime–Agent 端口 ↔ 完整 Agent
-                                                            └ 可选 Model
+在线：世界 ↔ Host 能力接口 ↔ Connector 通信/映射 ↔ Agent 交互协议标准 ↔ 完整 Agent
+                                                               └ 可选 Model
+       Runtime–Agent 端口承载本次程序通信、消费和指令
                  实际 capture/witness/offer/consume/input/result
                                   ↓
 研究：不可变原始记录 → 验证＋来源/成员/use/split → Projection＋InputSpec＋TargetSpec
@@ -83,6 +84,13 @@ Recorder 是在声明 seam 捕获事实的能力；Record 是留下的不可变�
 与起点的一次组合；相同 JSON 不证明两个 Host 行为等价。这里不用 H 简称 Host，
 历史 Human 输入观察 H 保留原义。旧设计的 P/A 是协议核心/环境接口的示意，
 不是新增组件，也不等于历史方案 A 或动作集合 A(S)。
+
+Connector 的上层角色是连接 Agent 面向的协议标准与 Host 能力接口；当前同名组件
+包含部分 Host 接入、公开投影、映射和端点，Native Foundation 提供底层 seam。
+Host 抽象是提供世界能力的角色，Host Runtime 只是其进程/隔离/恢复工具。
+一个组件支持两个协议是可比较的实现方案，不是强制双轨。M0/M2 是模型/记忆选择，
+不决定协议；现有 Public M0 用 generic Snapshot1/Decision1（inputProfile 为 null），
+`public-snapshot-m0-v1` 是应用组合名；Public M2 用 Snapshot1/Decision4。
 
 面向 Agent 的环境接口与 Runtime–Agent 程序端口分开：前者由 Connector 提供游戏交互能力；
 后者是 Policy Runtime 与 Agent 程序之间的消息合同。当前通用
