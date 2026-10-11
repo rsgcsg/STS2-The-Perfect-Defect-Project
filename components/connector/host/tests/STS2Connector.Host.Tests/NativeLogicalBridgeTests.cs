@@ -148,6 +148,25 @@ public sealed class NativeLogicalBridgeTests
         Assert.Equal("delivered", delivered.Delivery); Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, logs);
     }
     [Fact]
+    public void EndTurnPossibleRequestFailureRetainsUnknownAndOriginalReplayNeverCallsAgain()
+    {
+        using var fixture = new Fixture();
+        fixture.Frame = fixture.Frame with { Leaves = fixture.Frame.Leaves.Select(l => l with
+            { Verb = "end_turn", Label = "End turn" }).ToArray() };
+        int nativeRequests = 0;
+        fixture.OnDispatch = () => fixture.Outcome = NativeEndTurnInput.Deliver(() =>
+            { nativeRequests++; throw new InvalidOperationException("after possible end turn request"); });
+        var current = fixture.Current();
+        var action = Assert.Single(fixture.Owner.Store.Catalog(current.Capture!.CaptureId).Actions);
+        var request = new PlayerEnvironmentActionRequest("end-turn-original", current.Capture.SnapshotId, action.ActionId,
+            fixture.Client.Client.ClientSessionId, fixture.Lease.ControllerLeaseId, fixture.Lease.ControllerGeneration, NativeLogicalContract.Profile);
+        var result = fixture.Submit(request);
+        Assert.Equal("unknown", result.Delivery); Assert.Equal("never_automatic", result.Retry);
+        Assert.Equal("native_end_turn_input_unknown", result.Reason);
+        RequestTestDriver.AssertWireEqual(result, fixture.Submit(request));
+        Assert.Equal(1, fixture.Dispatches); Assert.Equal(1, nativeRequests);
+    }
+    [Fact]
     public void LaterSourceCallbackCannotEncodeAheadOfAnOlderCapturedCurrent()
     {
         using var fixture = new Fixture();

@@ -58,6 +58,24 @@ namespace STS2HumanAnnotator.SourceNative.Tests
         private static async Task Ready(SourceNativeProducerTests.Fixture f) =>
             Assert.True(await Task.Run(() => SpinWait.SpinUntil(() => f.Worker.Status.Observations >= 1, TimeSpan.FromSeconds(3))));
 
+        [Fact]
+        public async Task ProtocolEndTurnButtonCallbackCannotCreateNativeUiSourceAliasOrHumanStage()
+        {
+            using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+            f.Invoke(() =>
+            {
+                // This is the same lexical original-request scope used by
+                // NativeLogicalExecutor around the native button callback.
+                using var original = NativeSourceInputProvider.ProtocolDispatch(new object());
+                var callback = RecorderRuntime.TestCallback(f.PhysicalOwner, "EndPlayerTurnAction");
+                Assert.False(callback.Entered); Assert.Null(callback.SourceInvocation);
+                Assert.False(RecorderRuntime.SourceInputAccepted(callback));
+            });
+            await f.Close(); Passed(f);
+            Assert.Empty(f.Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl"));
+            Assert.False(File.Exists(Path.Combine(f.Store.DirectoryPath, "decisions.jsonl")));
+        }
+
         [Theory]
         [InlineData("MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen.SelectHolder", "NChooseACardSelectionScreen.SelectHolder", false)]
         [InlineData("MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen.SkipButton.Released", "NChooseACardSelectionScreen.OnSkipButtonReleased", true)]

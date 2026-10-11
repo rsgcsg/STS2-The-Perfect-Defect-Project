@@ -222,7 +222,7 @@ internal static partial class NativeUiActionRuntime
                 "end_turn",
                 "commit",
                 "End turn",
-                "PlayerCmd.EndTurn+NEndTurnButton.CanTurnBeEnded guards",
+                "NEndTurnButton.CallReleaseLogic+exact-current-owner+seen-FTUE+not-Undo guards",
                 Array.Empty<ActionEntityBinding>()));
         }
         return commands;
@@ -1212,8 +1212,11 @@ internal static partial class NativeUiActionRuntime
         LiveObservation draft,
         NativeUiActionDescriptor action)
     {
-        return new NativeUiBoundAction(
-            BuildCandidate(action, "player_environment_native_binding"));
+        var candidate = BuildCandidate(action, "player_environment_native_binding");
+        if (action.Kind == "end_turn" && draft.EndTurnBindingIdentity is { } exact)
+            candidate = candidate with { CandidateId = "candidate_" + StableIdentityHash.Object(new
+                { candidate.CandidateId, nativeBinding = exact })[..20] };
+        return new NativeUiBoundAction(candidate);
     }
 
     private static NativeUiActionCandidate BuildCandidate(
@@ -2149,7 +2152,7 @@ internal static partial class NativeUiActionRuntime
                     operands.GetValueOrDefault("target_id")),
             "end_turn" => CombatTurnSurfaceReader.StartDirectEndTurn(
                 Entities,
-                surface.RoomEntityId),
+                surface.RoomEntityId, draft.EndTurnBinding),
             _ => NativeInputResult.Rejected(
                 "command_not_supported",
                 "This command is not supported by the combat direct resolver.")

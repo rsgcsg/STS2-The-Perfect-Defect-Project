@@ -186,6 +186,38 @@ therefore derives combat actionability from the current native hand/control
 state, excludes cards already moved to the native play queue, and binds every
 remaining action to that exact visible UI state.
 
+End Turn is one completed logical native gesture, delivered through the exact
+current `NEndTurnButton.CallReleaseLogic`. The native button withdraws input,
+captures the player's turn number and requests its own `EndPlayerTurnAction` in
+the existing player queue. Earlier accepted inputs retain native queue order;
+the queued action independently checks its captured turn before ending it.
+Delivery proves only acceptance of this native input request, not enqueue,
+execution, Commit, cancellation of another input or next-turn settlement.
+The profile does not synthesize physical press/release signals or a hold timer;
+the same completed-gesture seam serves ordinary and long-press preferences.
+
+Capture and delivery require the same live room, player, hand, button and native
+combat state, current enabled play readiness, no held-card/peek operation, and
+the player not already ready to end the turn (the native Undo branch is a
+different interaction). The read-only native
+`SaveManager.SeenFtue("can_play_cards_ftue")` gate must be true. An unseen or
+unreadable FTUE gate is explicit unsupported/partial with no action authority
+across Snapshot, text-menu-v1/v2 and native-logical capture; removing End Turn
+from an otherwise complete catalog would misstate completeness. Connector never
+marks FTUE seen, changes preferences, runs the mutating FTUE predicate or copies
+its playable-card logic. Native inputs may still independently cancel at their
+own execution-time checks. This source correction does not establish the cause
+of a historical successor timeout.
+
+The offered snapshot and End Turn action identity include an opaque digest of
+the exact private owner tuple and captured turn. Replacing the button, combat
+state or turn while public facts remain identical invalidates the old snapshot
+and action handle before any callback. Rebuilding a fresh binding does not admit
+an old offered handle. The digest uses existing opaque native identities; native
+references, their private aliases and captured turn values are never public
+operands or information facts. Text/native leaves inherit the same exact binding
+identity from the shared BoundAction projection.
+
 ### Combat health and power facts
 
 Current combat enemy and companion facts use the same public health eligibility.
