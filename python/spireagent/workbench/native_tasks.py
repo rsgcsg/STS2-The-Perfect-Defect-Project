@@ -322,6 +322,9 @@ class NativeTasks:
             raise BoundaryError("local_model", "runtime_connector_binding_required") from None
 
     def connector_instance(self, connector_endpoint: object) -> str:
+        return self.connector_capabilities(connector_endpoint)["host"]["runtime_instance_id"]
+
+    def connector_capabilities(self, connector_endpoint: object) -> dict[str, Any]:
         address = self.bound_connector(connector_endpoint)
         request = Request(
             address + "/api/player-environment/capabilities",
@@ -350,7 +353,7 @@ class NativeTasks:
             identity = host.get("runtime_instance_id") if isinstance(host, dict) else None
             if not isinstance(identity, str) or not identity:
                 raise ValueError
-            return identity
+            return value
         except (HTTPError, URLError, OSError, ValueError, TypeError):
             raise BoundaryError("local_model", "connector_identity_unavailable") from None
 

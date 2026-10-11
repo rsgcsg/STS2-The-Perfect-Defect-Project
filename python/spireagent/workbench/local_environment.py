@@ -23,8 +23,10 @@ from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.package_identity import PackageIdentityError, validate_installed_package
 from spireagent.source import REPOSITORY
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
+from spireagent.workbench import native_episode_binding as native_binding
 from spireagent.workbench.developer import ProjectConfig, atomic_json, tool_identity
 
 SCHEMA = "stpd/local-managed-environment-v1"
@@ -478,7 +480,9 @@ def _public_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
 
 class LocalEnvironmentService:
     def __init__(
-        self, config: ProjectConfig, *,
+        self,
+        config: ProjectConfig,
+        *,
         audit: Callable[[Path, Path], dict[str, str]] = _audit,
         client_factory: Callable[[list[str], Path, dict[str, Any]], Any] | None = None,
         seed_normalizer: Callable[[Path, dict[str, Any], object], str] | None = None,
@@ -496,6 +500,1108 @@ class LocalEnvironmentService:
         self.cleanup_confirmed = False
         self.stop_outcome_unknown = False
         self.record = self._load_journal()
+        # Native reservation uses the Model admission lock after Application
+        # binding. Managed records/locks and their persisted bytes remain separate.
+        self.native_lock = threading.RLock()
+        self.native_record = self._load_native_resource()
+        self.native_client: Any | None = None
+        self.native_worker: threading.Thread | None = None
+        self.native_application_instance_id: str | None = None
+        self.native_configuration_id: Callable[[], str] | None = None
+        self.native_admit_prepare: Callable[[], None] | None = None
+        self.native_actor_lost: Callable[[dict[str, Any]], None] | None = None
+        self.native_client_factory: Callable[..., Any] = self._public_native_client
+        self.native_capabilities: Callable[[str], dict[str, Any]] = self._native_capabilities
+        self._native_endpoint: str | None = None
+        self.native_finish_done = threading.Event()
+        self.native_finish_done.set()
+        self._managed_start_reservation = False
+
+    def _load_native_resource(self) -> dict[str, Any]:
+        path = self.config.state_dir / native_binding.RESOURCE_FILE
+        if not path.exists() and not path.is_symlink():
+            history = self.config.state_dir / native_binding.OPERATION_DIRECTORY
+            if history.exists() or history.is_symlink():
+                return {
+                    "schema": native_binding.RESOURCE_SCHEMA,
+                    "phase": "recovery_required",
+                    "error_code": "native_history_pointer_missing",
+                }
+            return {"schema": native_binding.RESOURCE_SCHEMA, "phase": "idle"}
+        try:
+            if not _ordinary(path, directory=False) or path.stat().st_size > 65536:
+                raise ValueError
+            value = decode_json(path.read_bytes())
+            if not isinstance(value, dict) or value.get("schema") != native_binding.RESOURCE_SCHEMA:
+                raise ValueError
+            self._validate_native_request(value)
+            if value.get("finish_complete") is True or value.get("phase") in {"closed", "failed"}:
+                return self._native_recorded_terminal(value)
+            if value.get("phase") not in {"idle", "closed", "failed"}:
+                return {
+                    **value,
+                    "phase": "recovery_required",
+                    "error_code": "previous_native_resource_unknown",
+                }
+            return value
+        except (OSError, ValueError, StoreError):
+            return {
+                "schema": native_binding.RESOURCE_SCHEMA,
+                "phase": "recovery_required",
+                "error_code": "native_resource_record_invalid",
+            }
+
+    def _native_operation_store(self, *, create: bool = False) -> tuple[LocalBlobStore, str] | None:
+        """Reuse Environment's immutable bytes owner; no process/authority registry."""
+        root = self.config.state_dir / native_binding.OPERATION_DIRECTORY
+        existed = root.exists() or root.is_symlink()
+        if not existed and not create:
+            return None
+        if (
+            self.config.state_dir.is_symlink()
+            or not _ordinary(self.config.state_dir, directory=True)
+            or existed
+            and not _ordinary(root, directory=True)
+        ):
+            raise BoundaryError("native_episode", "native_operation_store_unsafe")
+        store = LocalBlobStore(root, create=create, readonly=not create)
+        if not existed:
+            identity = {
+                "schema": native_binding.OPERATION_STORE_SCHEMA,
+                "generation_id": uuid.uuid4().hex,
+            }
+            store.put_if_absent("identity.json", json_bytes(identity))
+        try:
+            identity = decode_json(store.get("identity.json"))
+            if (
+                not isinstance(identity, dict)
+                or set(identity) != {"schema", "generation_id"}
+                or identity["schema"] != native_binding.OPERATION_STORE_SCHEMA
+            ):
+                raise ValueError
+            generation = digest(
+                identity["generation_id"], "native_episode.operation_store", length=32
+            )
+        except (OSError, ValueError, StoreError) as error:
+            raise BoundaryError("native_episode", "native_operation_store_unavailable") from error
+        return store, generation
+
+    @staticmethod
+    def _native_request_value(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema": native_binding.REQUEST_SCHEMA,
+            "intent_id": record["intent_id"],
+            "environment_ref": record["environment_ref"],
+            "preparation": record["preparation"],
+            "preparation_sha256": hashlib.sha256(json_bytes(record["preparation"])).hexdigest(),
+            "generation_id": record["generation_id"],
+            "application_instance_id": record["application_instance_id"],
+            "configuration_id": record["configuration_id"],
+            "profile_sha256": record["profile_sha256"],
+            "operation_store_generation_id": record["operation_store_generation_id"],
+        }
+
+    def _read_native_request(self, intent: str) -> dict[str, Any] | None:
+        retained = self._native_operation_store()
+        if retained is None:
+            return None
+        store, generation = retained
+        try:
+            raw = store.get(f"requests/{intent}.json")
+        except StoreError as error:
+            if error.code == "object_not_found":
+                try:
+                    store.get(f"results/{intent}.json")
+                except StoreError as result_error:
+                    if result_error.code == "object_not_found":
+                        return None
+                    raise BoundaryError(
+                        "native_episode", "native_original_result_unavailable"
+                    ) from result_error
+                # Retention loss cannot turn an already completed intent into
+                # permission to reset another world with that old identifier.
+                raise BoundaryError("native_episode", "native_original_request_missing") from error
+            raise BoundaryError("native_episode", "native_original_request_unavailable") from error
+        try:
+            value = decode_json(raw)
+            fields = {
+                "schema",
+                "intent_id",
+                "environment_ref",
+                "preparation",
+                "preparation_sha256",
+                "generation_id",
+                "application_instance_id",
+                "configuration_id",
+                "profile_sha256",
+                "operation_store_generation_id",
+            }
+            if (
+                len(raw) > 65536
+                or not isinstance(value, dict)
+                or set(value) != fields
+                or value["schema"] != native_binding.REQUEST_SCHEMA
+                or json_bytes(value) != raw
+            ):
+                raise ValueError
+            for key in (
+                "intent_id",
+                "environment_ref",
+                "generation_id",
+                "application_instance_id",
+                "operation_store_generation_id",
+            ):
+                digest(value[key], "native_episode." + key, length=32)
+            digest(value["configuration_id"], "native_episode.configuration")
+            body = native_binding.preparation_body(value["preparation"])
+            if body["ownership"] == "owned":
+                digest(value["profile_sha256"], "native_episode.profile")
+            elif value["profile_sha256"] is not None:
+                raise ValueError
+            if (
+                value["intent_id"] != intent
+                or value["operation_store_generation_id"] != generation
+                or body["intent_id"] != intent
+                or value["preparation_sha256"]
+                != hashlib.sha256(json_bytes(value["preparation"])).hexdigest()
+            ):
+                raise ValueError
+            if store.get(f"operations/{value['environment_ref']}/request.json") != raw:
+                raise ValueError
+            return value
+        except (OSError, ValueError, KeyError, TypeError, StoreError) as error:
+            raise BoundaryError("native_episode", "native_original_request_invalid") from error
+
+    def _native_request_for_ref(self, ref: str) -> dict[str, Any] | None:
+        retained = self._native_operation_store()
+        if retained is None:
+            return None
+        store, _generation = retained
+        try:
+            raw = store.get(f"operations/{ref}/request.json")
+        except StoreError as error:
+            if error.code == "object_not_found":
+                return None
+            raise BoundaryError("native_episode", "native_original_request_unavailable") from error
+        try:
+            value = decode_json(raw)
+            if not isinstance(value, dict) or len(raw) > 65536:
+                raise ValueError
+            intent = digest(value["intent_id"], "native_episode.intent_id", length=32)
+            original = self._read_native_request(intent)
+            if (
+                original is None
+                or original["environment_ref"] != ref
+                or json_bytes(original) != raw
+            ):
+                raise ValueError
+            return original
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise BoundaryError("native_episode", "native_original_request_invalid") from error
+
+    def _validate_native_request(self, record: dict[str, Any]) -> dict[str, Any]:
+        try:
+            intent = digest(record["intent_id"], "native_episode.intent_id", length=32)
+            expected = self._native_request_value(record)
+            original = self._read_native_request(intent)
+            if (
+                original is None
+                or json_bytes(original) != json_bytes(expected)
+                or record["request_sha256"] != hashlib.sha256(json_bytes(original)).hexdigest()
+            ):
+                raise ValueError
+            return original
+        except (OSError, ValueError, KeyError, TypeError, StoreError) as error:
+            raise BoundaryError(
+                "native_episode", "native_original_request_changed_or_missing"
+            ) from error
+
+    def _accept_native_request(self, record: dict[str, Any]) -> None:
+        retained = self._native_operation_store(create=True)
+        assert retained is not None
+        store, generation = retained
+        record["operation_store_generation_id"] = generation
+        request = self._native_request_value(record)
+        raw = json_bytes(request)
+        record["request_sha256"] = hashlib.sha256(raw).hexdigest()
+        # Reserve the sole live pointer before immutable publication. A crash at
+        # either write leaves a fenced original reservation, never an apparently
+        # idle pointer alongside an accepted request whose handle was forgotten.
+        atomic_json(self.config.state_dir / native_binding.RESOURCE_FILE, record)
+        store.put_if_absent(f"requests/{record['intent_id']}.json", raw)
+        # Same immutable bytes have the two operation-owned lookup names. This
+        # is not another binding map; old finish never scans or waits behind all
+        # historical requests while B's admission/Stop lock is held.
+        store.put_if_absent(f"operations/{record['environment_ref']}/request.json", raw)
+
+    def _native_existing_intent(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        if self.native_record.get("intent_id") == body["intent_id"]:
+            if json_bytes(self.native_record.get("preparation")) != json_bytes(body):
+                raise BoundaryError("native_episode", "preparation_intent_conflict")
+            self._validate_native_request(self.native_record)
+            return self.native_episode_status()
+        request = self._read_native_request(body["intent_id"])
+        if request is not None:
+            if json_bytes(request["preparation"]) != json_bytes(body):
+                raise BoundaryError("native_episode", "preparation_intent_conflict")
+            return self._native_original_operation(request)
+        if self.native_record.get("phase") == "idle":
+            retained = self._native_operation_store()
+            if retained is not None and retained[0].keys("requests/"):
+                raise BoundaryError("native_episode", "native_history_pointer_missing")
+        return None
+
+    def _native_original_operation(self, request: dict[str, Any]) -> dict[str, Any]:
+        ref = request["environment_ref"]
+        if self.native_record.get("environment_ref") == ref:
+            self._validate_native_request(self.native_record)
+            return self.native_episode_status()
+        retained = self._native_operation_store()
+        assert retained is not None
+        store, _generation = retained
+        terminal = False
+        try:
+            raw = store.get(f"results/{request['intent_id']}.json")
+            terminal = True
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise BoundaryError(
+                    "native_episode", "native_original_result_unavailable"
+                ) from error
+            path = store.root / "operations" / ref / "status.json"
+            if (
+                not _ordinary(store.root / "operations", directory=True)
+                or not _ordinary(path.parent, directory=True)
+                or not _ordinary(path, directory=False)
+            ):
+                return {
+                    **request,
+                    "schema": native_binding.RESOURCE_SCHEMA,
+                    "phase": "recovery_required",
+                    "preparation_outcome": "unknown",
+                    "admission_context": None,
+                    "actor": None,
+                    "cleanup": None,
+                    "error_code": "native_original_operation_incomplete",
+                }
+            raw = path.read_bytes()
+        try:
+            value = decode_json(raw)
+            if (
+                len(raw) > 65536
+                or not isinstance(value, dict)
+                or value.get("schema") != native_binding.RESOURCE_SCHEMA
+                or json_bytes(self._validate_native_request(value)) != json_bytes(request)
+            ):
+                raise ValueError
+            if terminal:
+                if not (value.get("finish_complete") is True or value.get("phase") == "failed"):
+                    raise ValueError
+                return native_binding.detached(value)
+            # No live handle is reconstructed from an old mutable status file.
+            return {
+                **value,
+                "phase": "recovery_required",
+                "error_code": "historical_native_resource_unknown",
+            }
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise BoundaryError("native_episode", "native_original_result_invalid") from error
+
+    def _native_recorded_terminal(self, record: dict[str, Any]) -> dict[str, Any]:
+        """A mutable closed pointer alone cannot erase failed final publication."""
+        try:
+            request = self._validate_native_request(record)
+            retained = self._native_operation_store()
+            assert retained is not None
+            raw = retained[0].get(f"results/{request['intent_id']}.json")
+            result = decode_json(raw)
+            if (
+                len(raw) > 65536
+                or not isinstance(result, dict)
+                or json_bytes(result) != raw
+                or not (result.get("finish_complete") is True or result.get("phase") == "failed")
+                or json_bytes(self._validate_native_request(result)) != json_bytes(request)
+            ):
+                raise ValueError
+            expected = {
+                key: value
+                for key, value in record.items()
+                if key not in {"persistence_error", "recorded_phase", "recovery_reason"}
+            }
+            if record.get("recorded_phase") is not None:
+                expected["phase"] = record["recorded_phase"]
+            if json_bytes(expected) != raw:
+                raise ValueError
+            return native_binding.detached(result)
+        except (OSError, ValueError, StoreError):
+            # Keep the original known cleanup/Task facts. No Host close, Actor
+            # Stop, terminal rewrite or fresh admission is inferred on reload.
+            return {
+                **record,
+                "recorded_phase": record.get("recorded_phase", record.get("phase")),
+                "phase": "recovery_required",
+                "recovery_reason": "native_terminal_result_unavailable",
+                "persistence_error": "native_operation_persistence_unconfirmed",
+            }
+
+    def _archive_native_terminal(self) -> None:
+        record = self.native_record
+        if record.get("environment_ref") is None:
+            return
+        if not (record.get("finish_complete") is True or record.get("phase") == "failed"):
+            raise BoundaryError("native_episode", "native_original_resource_not_terminal")
+        self._validate_native_request(record)
+        retained = self._native_operation_store(create=True)
+        assert retained is not None
+        store, _generation = retained
+        # A write diagnostic is independent of the original resource/cleanup
+        # facts. Retrying local publication never changes the immutable result.
+        result = {key: value for key, value in record.items() if key != "persistence_error"}
+        store.put_if_absent(f"results/{record['intent_id']}.json", json_bytes(result))
+
+    def bind_native_application(
+        self,
+        *,
+        lock: Any,
+        application_instance_id: str,
+        configuration_id: Callable[[], str],
+        admit_prepare: Callable[[], None],
+        actor_lost: Callable[[dict[str, Any]], None],
+    ) -> None:
+        self.native_lock = lock
+        self.native_application_instance_id = application_instance_id
+        self.native_configuration_id = configuration_id
+        self.native_admit_prepare = admit_prepare
+        self.native_actor_lost = actor_lost
+
+    def _save_native(self) -> None:
+        if (
+            self.config.state_dir.is_symlink()
+            or (self.config.state_dir / native_binding.RESOURCE_FILE).is_symlink()
+        ):
+            raise BoundaryError("native_episode", "native_resource_owner_unsafe")
+        self._validate_native_request(self.native_record)
+        retained = self._native_operation_store(create=True)
+        assert retained is not None
+        store, _generation = retained
+        parent = store.root / "operations" / self.native_record["environment_ref"]
+        for directory in (store.root / "operations", parent):
+            if directory.exists() or directory.is_symlink():
+                if not _ordinary(directory, directory=True):
+                    raise BoundaryError("native_episode", "native_original_operation_unsafe")
+            else:
+                directory.mkdir(mode=0o700)
+        target = parent / "status.json"
+        if target.is_symlink():
+            raise BoundaryError("native_episode", "native_original_operation_unsafe")
+        atomic_json(target, self.native_record)
+        atomic_json(self.config.state_dir / native_binding.RESOURCE_FILE, self.native_record)
+
+    def _try_save_native(self, *, terminal: bool = False) -> bool:
+        """Like Managed _try_save: storage failure must not skip owned cleanup."""
+        self.native_record.pop("persistence_error", None)
+        try:
+            self._save_native()
+            if terminal:
+                self._archive_native_terminal()
+            return True
+        except (OSError, ValueError, StoreError):
+            self.native_record["persistence_error"] = "native_operation_persistence_unconfirmed"
+            return False
+
+    def native_episode_status(self) -> dict[str, Any]:
+        # No Host-driver RPC: recorded facts remain valid only at their original
+        # admission point; Runtime/Connector own active Actor observations.
+        with self.native_lock:
+            if self.native_record.get("finish_complete") is True or self.native_record.get(
+                "phase"
+            ) in {"closed", "failed"}:
+                return self._native_recorded_terminal(self.native_record)
+            return native_binding.detached(self.native_record)
+
+    def native_admission_guard(self, context: dict[str, Any] | None, action: str) -> None:
+        """Pure atomic guard under the shared Model lock; never waits on HTTP."""
+        with self.native_lock:
+            phase = self.native_record.get("phase")
+            if self.native_record.get("finish_complete") is True or phase in {"closed", "failed"}:
+                phase = self._native_recorded_terminal(self.native_record)["phase"]
+            if phase not in native_binding.RESERVED_PHASES:
+                if context is not None:
+                    raise BoundaryError("native_episode", "resource_unavailable")
+                return
+            if action == "recording" or context is None:
+                raise BoundaryError("native_episode", "native_resource_reserved")
+            checked = native_binding.checked_context(context)
+            self._validate_native_request(self.native_record)
+            if phase not in {"ready", "actor-associated"} or checked != self.native_record.get(
+                "admission_context"
+            ):
+                raise BoundaryError("native_episode", "resource_binding_changed")
+            if action == "creation" and (
+                phase != "ready" or self.native_record.get("actor") is not None
+            ):
+                raise BoundaryError("native_episode", "resource_already_associated")
+            if self._native_configuration() != self.native_record["configuration_id"] or (
+                self.native_record.get("profile_sha256") is not None
+                and self._read_native_profile()[1] != self.native_record["profile_sha256"]
+            ):
+                raise BoundaryError("native_episode", "configuration_changed")
+
+    def native_episode_context(self, environment_ref: object) -> dict[str, Any]:
+        with self.native_lock:
+            if environment_ref != self.native_record.get("environment_ref"):
+                raise BoundaryError("native_episode", "foreign_resource")
+            value = self.native_record.get("admission_context")
+            if not isinstance(value, dict):
+                raise BoundaryError("native_episode", "resource_not_ready")
+            self.native_admission_guard(value, "control")
+            return native_binding.checked_context(value)
+
+    def _read_native_profile(self) -> tuple[dict[str, Any], str]:
+        path = self.config.state_dir / native_binding.PROFILE_FILE
+        try:
+            if (
+                not _ordinary(self.config.state_dir, directory=True)
+                or self.config.state_dir.resolve() != self.config.state_dir
+                or not _ordinary(path, directory=False)
+                or path.stat().st_size > 16384
+            ):
+                raise ValueError
+            raw = path.read_bytes()
+            value = decode_json(raw)
+            fields = {
+                "schema",
+                "host_package_directory",
+                "host_package_pin",
+                "game_directory",
+                "template_id",
+                "endpoint",
+                "installed_tuple",
+                "preparation_timeout_seconds",
+                "cleanup_timeout_seconds",
+                "default_speed",
+                "candidate_admission",
+            }
+            if (
+                not isinstance(value, dict)
+                or set(value) != fields
+                or value["schema"] != native_binding.PROFILE_SCHEMA
+            ):
+                raise ValueError
+            for name in ("host_package_directory", "game_directory"):
+                location = Path(value[name])
+                if (
+                    not location.is_absolute()
+                    or location.resolve() != location
+                    or not _ordinary(location, directory=True)
+                ):
+                    raise ValueError
+            if value["template_id"] != "defect-a0-s0":
+                raise ValueError
+            from .native_tasks import NativeTasks
+
+            value["endpoint"] = NativeTasks.bound_connector(value["endpoint"])
+            if value["endpoint"] != NativeTasks.bound_connector(
+                self.config.platform_url or "http://127.0.0.1:15526"
+            ):
+                raise ValueError
+            if not isinstance(value["installed_tuple"], dict) or set(
+                value["installed_tuple"]
+            ) != native_binding.TUPLE_FIELDS | {"game_assembly_sha256"}:
+                raise ValueError
+            _validate_private_pin(value["host_package_pin"])
+            if (
+                not isinstance(value["candidate_admission"], dict)
+                or set(value["candidate_admission"]) != {"game", "connector"}
+                or any(
+                    not isinstance(item, str) or item not in {"sealed", "exact_canary"}
+                    for item in value["candidate_admission"].values()
+                )
+            ):
+                raise ValueError
+            for name, low, high in (
+                ("preparation_timeout_seconds", 5, 120),
+                ("cleanup_timeout_seconds", 5, 45),
+            ):
+                if type(value[name]) is not int or not low <= value[name] <= high:
+                    raise ValueError
+            return value, hashlib.sha256(raw).hexdigest()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise BoundaryError("native_episode", "native_profile_required_or_invalid") from error
+
+    def _native_configuration(self) -> str:
+        if self.native_configuration_id is None or self.native_application_instance_id is None:
+            raise BoundaryError("native_episode", "application_owner_required")
+        return self.native_configuration_id()
+
+    @staticmethod
+    def _native_capabilities(endpoint: str) -> dict[str, Any]:
+        from .native_tasks import NativeTasks
+
+        return NativeTasks().connector_capabilities(endpoint)
+
+    def _verify_native_package(self, profile: dict[str, Any]) -> None:
+        try:
+            _validate_private_pin(profile["host_package_pin"])
+            validate_installed_package(
+                Path(profile["host_package_directory"]),
+                profile["host_package_pin"],
+                required_paths=(
+                    "tools/reference-pe-driver.mjs",
+                    "consumers/python/sts2_headless/client.py",
+                ),
+            )
+        except (OSError, ValueError, PackageIdentityError) as error:
+            raise BoundaryError("native_episode", "native_host_package_unavailable") from error
+
+    def _public_native_client(
+        self,
+        command: list[str],
+        profile: dict[str, Any],
+        *,
+        on_started: Callable[[Any], None],
+        on_exit: Callable[[], None],
+    ) -> Any:
+        from spireagent.host_runtime_client import activate_host_runtime_client
+
+        activate_host_runtime_client(
+            Path(profile["host_package_directory"]), profile["host_package_pin"]
+        )
+        api = importlib.import_module("sts2_headless")
+        client_type = getattr(api, "ReferencePlayerEnvironment", None)
+        if client_type is None:
+            raise HostClientPreparationError("native_bootstrap_handoff_capability_required")
+        return client_type(
+            command,
+            response_timeout_seconds=profile["preparation_timeout_seconds"],
+            on_started=on_started,
+            on_exit=on_exit,
+        )
+
+    def prepare_native_episode(self, value: object) -> dict[str, Any]:
+        body = native_binding.preparation_body(value)
+        with self.native_lock:
+            existing = self._native_existing_intent(body)
+            if existing is not None:
+                return existing
+        if body["ownership"] == "owned" and body["speed"] == "default":
+            raise BoundaryError("native_episode", "qualified_default_unavailable")
+        configuration = self._native_configuration()
+        profile, profile_sha = (
+            self._read_native_profile() if body["ownership"] == "owned" else (None, None)
+        )
+        if profile is not None:
+            self._verify_native_package(profile)
+            seed = self.seed_normalizer(
+                Path(profile["host_package_directory"]), profile["host_package_pin"], body["seed"]
+            )
+            if seed != body["seed"]:
+                raise BoundaryError("native_episode", "canonical_seed_required")
+            if body["speed"] == "default":
+                # No accepted mode+presentation+tuple basis exists in this first
+                # slice. Syntax or an operator boolean cannot manufacture it.
+                raise BoundaryError("native_episode", "qualified_default_unavailable")
+            else:
+                effective_speed = body["speed"]
+        else:
+            effective_speed = None
+        with self.native_lock:
+            existing = self._native_existing_intent(body)
+            if existing is not None:
+                return existing
+            if self.native_record.get("phase") in native_binding.RESERVED_PHASES:
+                raise BoundaryError("native_episode", "native_resource_reserved")
+            if self.native_admit_prepare is None:
+                raise BoundaryError("native_episode", "application_owner_required")
+            self.native_admit_prepare()  # Existing Source/Model guard, same lock.
+            if self._managed_start_reservation or self.record.get("status") in ACTIVE | UNRESOLVED:
+                raise BoundaryError("native_episode", "managed_resource_active")
+            # Original terminal facts survive replacing the sole live pointer.
+            self._archive_native_terminal()
+            ref = uuid.uuid4().hex
+            self.native_record = {
+                "schema": native_binding.RESOURCE_SCHEMA,
+                "phase": "preparing",
+                "environment_ref": ref,
+                "generation_id": uuid.uuid4().hex,
+                "intent_id": body["intent_id"],
+                "preparation": body,
+                "configuration_id": configuration,
+                "profile_sha256": profile_sha,
+                "application_instance_id": self.native_application_instance_id,
+                "actor": None,
+                "admission_context": None,
+                "cleanup": None,
+                "preparation_outcome": "pending",
+                "cleanup_timeout_seconds": profile["cleanup_timeout_seconds"]
+                if profile is not None
+                else 30,
+                "world_mutation_offered": False,
+                "default_basis": None,
+            }
+            self.native_client = None
+            try:
+                self._accept_native_request(self.native_record)
+                self._save_native()  # Both original request and status precede spawn/control.
+            except (OSError, ValueError, StoreError) as error:
+                self.native_record.update(
+                    phase="recovery_required", error_code="native_operation_persistence_failed"
+                )
+                with suppress(OSError, ValueError):
+                    atomic_json(
+                        self.config.state_dir / native_binding.RESOURCE_FILE, self.native_record
+                    )
+                raise BoundaryError(
+                    "native_episode", "native_operation_persistence_failed"
+                ) from error
+            self.native_worker = threading.Thread(
+                target=self._prepare_native_worker,
+                args=(ref, profile, effective_speed),
+                daemon=True,
+            )
+            self.native_worker.start()
+            return self.native_episode_status()
+
+    def _require_native_prepare(self, ref: str) -> dict[str, Any]:
+        with self.native_lock:
+            if (
+                self.native_record.get("environment_ref") != ref
+                or self.native_record.get("phase") != "preparing"
+            ):
+                raise BoundaryError("native_episode", "preparation_superseded")
+            if self._native_configuration() != self.native_record["configuration_id"] or (
+                self.native_record.get("profile_sha256") is not None
+                and self._read_native_profile()[1] != self.native_record["profile_sha256"]
+            ):
+                raise BoundaryError("native_episode", "configuration_changed")
+            self._validate_native_request(self.native_record)
+            return native_binding.detached(self.native_record)
+
+    def _native_driver_exited(self, ref: str) -> None:
+        callback = None
+        with self.native_lock:
+            if (
+                self.native_record.get("environment_ref") != ref
+                or self.native_record.get("finish_complete") is True
+                or self.native_record.get("phase") in {"closing", "closed", "failed"}
+            ):
+                return
+            self.native_record.update(
+                phase="unknown",
+                error_code="owned_driver_exited",
+                preparation_outcome="unknown"
+                if self.native_record.get("phase") == "preparing"
+                else self.native_record.get("preparation_outcome"),
+            )
+            callback = self.native_record.get("admission_context")
+            with suppress(OSError, ValueError, StoreError):
+                self._save_native()
+        if callback is not None and self.native_actor_lost is not None:
+            self.native_actor_lost(callback)  # Nonblocking existing exact Actor Stop dispatch.
+
+    def _prepare_native_worker(
+        self, ref: str, profile: dict[str, Any] | None, speed: str | None
+    ) -> None:
+        offered = False
+        client = None
+        try:
+            record = self._require_native_prepare(ref)
+            if self._native_configuration() != record["configuration_id"]:
+                raise BoundaryError("native_episode", "configuration_changed")
+            body = record["preparation"]
+            if profile is None:
+                from .native_tasks import NativeTasks
+
+                endpoint = NativeTasks.bound_connector(
+                    self.config.platform_url or "http://127.0.0.1:15526"
+                )
+                caps = self.native_capabilities(endpoint)
+                tuple_value = native_binding.installed_tuple(caps)
+                runtime = native_binding.identifier(caps["host"]["runtime_instance_id"])
+                self._native_unheld(endpoint, runtime)
+                binding = self._native_base_binding(
+                    record, runtime, endpoint, tuple_value, "attached"
+                )
+            else:
+                self._verify_native_package(profile)
+                if self._read_native_profile()[1] != record["profile_sha256"]:
+                    raise BoundaryError("native_episode", "configuration_changed")
+                endpoint = profile["endpoint"]
+                command = [
+                    "node",
+                    str(Path(profile["host_package_directory"]) / "tools/reference-pe-driver.mjs"),
+                    "--game-dir",
+                    profile["game_directory"],
+                    "--template",
+                    profile["template_id"],
+                    "--endpoint",
+                    endpoint,
+                    "--native-speed",
+                    speed,
+                    "--display-mode",
+                    body["display_mode"],
+                    "--character",
+                    "DEFECT",
+                    "--ascension",
+                    "0",
+                    "--timeout-ms",
+                    str(profile["preparation_timeout_seconds"] * 1000),
+                    "--request-timeout-ms",
+                    "30000",
+                    "--expected-installed-tuple",
+                    json_bytes(profile["installed_tuple"]).decode(),
+                ]
+                if profile["candidate_admission"]["game"] == "exact_canary":
+                    command.append("--experimental-build")
+                if profile["candidate_admission"]["connector"] == "exact_canary":
+                    command.append("--experimental-connector")
+
+                def started(current: Any) -> None:
+                    with self.native_lock:
+                        self._require_native_prepare(ref)
+                        self.native_client = current
+
+                client = self.native_client_factory(
+                    command,
+                    profile,
+                    on_started=started,
+                    on_exit=lambda: self._native_driver_exited(ref),
+                )
+                self._require_native_prepare(ref)
+                if (
+                    client.ready.get("bootstrap_handoff")
+                    != "sts2.host-runtime/reference-bootstrap-handoff-1"
+                ):
+                    raise BoundaryError(
+                        "native_episode", "native_bootstrap_handoff_capability_required"
+                    )
+                offered = True
+                with self.native_lock:
+                    self._require_native_prepare(ref)
+                    self.native_record["world_mutation_offered"] = True
+                    self._save_native()
+                client.reset(body["seed"])
+                identity = dict(client.episode_identity())
+                runtime = native_binding.identifier(identity["host"]["runtime_instance_id"])
+                tuple_value = native_binding.installed_tuple(
+                    {
+                        "protocol_version": identity["protocol"],
+                        "execution_available": True,
+                        "host": identity["host"],
+                        "game": identity["game"],
+                    },
+                    identity["disk"]["sts2_assembly"]["sha256"],
+                )
+                if tuple_value != profile["installed_tuple"]:
+                    raise BoundaryError("native_episode", "installed_tuple_changed")
+                provenance = identity["episode_provenance"]
+                if (
+                    provenance.get("verdict") != "provenance_pass"
+                    or provenance.get("actual_seed") != body["seed"]
+                ):
+                    raise BoundaryError("native_episode", "owned_seed_unproven")
+                handoff = dict(client.release_bootstrap(runtime))
+                binding = self._native_base_binding(record, runtime, endpoint, tuple_value, "owned")
+                observed_speed, owned_profile = identity["native_speed"], identity["profile"]
+                if (
+                    observed_speed.get("ready") is not True
+                    or observed_speed.get("effective") != speed
+                ):
+                    raise BoundaryError("native_episode", "owned_speed_unproven")
+                binding.update(
+                    host_package_pin=profile["host_package_pin"],
+                    profile={
+                        "template_id": owned_profile["template_id"],
+                        "template_payload_sha256": owned_profile["template_payload_sha256"],
+                        "generation_id": owned_profile["generation_id"],
+                        "isolation": "isolated_local_profile",
+                    },
+                    presentation={
+                        "requested": body["display_mode"],
+                        "observed_host_kind": identity["host"]["host_kind"],
+                    },
+                    speed={
+                        "requested": speed,
+                        "effective": observed_speed["effective"],
+                        "before": observed_speed["before"],
+                        "basis": "native_typed_readback",
+                    },
+                    handoff=handoff,
+                )
+                binding["speed"]["configured_default"] = (
+                    None
+                    if record["default_basis"] is None
+                    else {
+                        "mode": speed,
+                        "qualification_ref": record["default_basis"]["qualification_ref"],
+                        "basis": "operator_accepted_exact_package_and_tuple",
+                    }
+                )
+            context = native_binding.checked_context(
+                {
+                    "schema": native_binding.ADMISSION_SCHEMA,
+                    "environment_ref": ref,
+                    "binding": binding,
+                }
+            )
+            with self.native_lock:
+                self._require_native_prepare(ref)
+                if self._native_configuration() != record["configuration_id"]:
+                    raise BoundaryError("native_episode", "configuration_changed")
+                if (
+                    profile is not None
+                    and self._read_native_profile()[1] != record["profile_sha256"]
+                ):
+                    raise BoundaryError("native_episode", "configuration_changed")
+                self._native_endpoint = endpoint
+                self.native_record.update(
+                    phase="ready", admission_context=context, preparation_outcome="completed"
+                )
+                self._save_native()
+        except Exception as error:
+            cleanup = None
+            if client is None:
+                with self.native_lock:
+                    if self.native_record.get("environment_ref") == ref:
+                        client = self.native_client
+            if client is not None:
+                with suppress(Exception):
+                    client.close(force=True)
+                cleanup = dict(client.close_receipt())
+            cleanup_uncertain = getattr(error, "cleanup_confirmed", None) is False or (
+                cleanup is not None
+                and (
+                    cleanup.get("cleanup_error") is not None
+                    or cleanup.get("driver_exit_code") is None
+                    or cleanup.get("forced_fallback") is True
+                )
+            )
+            with self.native_lock:
+                if (
+                    self.native_record.get("environment_ref") == ref
+                    and self.native_record.get("finish_complete") is not True
+                    and self.native_record.get("phase") not in {"closing", "closed"}
+                ):
+                    self.native_record.update(
+                        phase="unknown" if offered or cleanup_uncertain else "failed",
+                        preparation_outcome="unknown" if offered else "failed",
+                        error_code=error.code
+                        if isinstance(error, BoundaryError)
+                        else "native_preparation_unknown",
+                        cleanup=cleanup,
+                    )
+                    self._try_save_native(terminal=self.native_record["phase"] == "failed")
+
+    @staticmethod
+    def _native_base_binding(
+        record: dict[str, Any],
+        runtime: str,
+        endpoint: str,
+        tuple_value: dict[str, Any],
+        ownership: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema": native_binding.BINDING_SCHEMA,
+            "ownership": ownership,
+            "application_instance_id": record["application_instance_id"],
+            "configuration_id": record["configuration_id"],
+            "generation_id": record["generation_id"],
+            "runtime_instance_id": runtime,
+            "endpoint_binding_sha256": hashlib.sha256(endpoint.encode()).hexdigest(),
+            "installed_tuple": tuple_value,
+            "initialization": "fresh_seeded_defect_a0"
+            if ownership == "owned"
+            else "cold_current_segment",
+        }
+
+    def _native_unheld(self, endpoint: str, runtime: str) -> None:
+        from .native_tasks import NativeTasks
+
+        tasks = NativeTasks()
+        from urllib.request import Request
+
+        with tasks.opener.open(
+            Request(
+                endpoint + "/api/player-environment/controller",
+                headers={"Accept": "application/json"},
+            ),
+            timeout=2,
+        ) as response:
+            raw = response.read(65537)
+        value = decode_json(raw)
+        if (
+            len(raw) > 65536
+            or not isinstance(value, dict)
+            or value.get("protocol_version") != "1.0.0"
+            or value.get("schema") != "sts2.player-environment/control-1"
+            or value.get("runtime_instance_id") != runtime
+            or set(value)
+            - {"protocol_version", "schema", "runtime_instance_id", "clients", "controller"}
+            or not isinstance(value.get("clients"), list)
+            or any(
+                not isinstance(client, dict)
+                or any(
+                    not isinstance(client.get(key), str) or not client[key]
+                    for key in ("client_session_id", "client_instance_id")
+                )
+                for client in value["clients"]
+            )
+            or value.get("controller") is not None
+        ):
+            raise BoundaryError("native_episode", "attached_control_unavailable")
+
+    def authorize_native_episode(self, value: object) -> dict[str, Any]:
+        context = native_binding.checked_context(value)
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            record = native_binding.detached(self.native_record)
+            endpoint = self._native_endpoint
+        if endpoint is None or self._native_configuration() != record["configuration_id"]:
+            raise BoundaryError("native_episode", "configuration_changed")
+        if (
+            record["profile_sha256"] is not None
+            and self._read_native_profile()[1] != record["profile_sha256"]
+        ):
+            raise BoundaryError("native_episode", "configuration_changed")
+        caps = self.native_capabilities(endpoint)
+        expected = context["binding"]["installed_tuple"]
+        actual = native_binding.installed_tuple(caps, expected.get("game_assembly_sha256"))
+        if (
+            caps["host"]["runtime_instance_id"] != context["binding"]["runtime_instance_id"]
+            or actual != expected
+        ):
+            raise BoundaryError("native_episode", "runtime_or_installed_tuple_changed")
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            if self.native_record["generation_id"] != record["generation_id"]:
+                raise BoundaryError("native_episode", "resource_binding_changed")
+        return {"endpoint": endpoint, "admission_context": context}
+
+    def associate_native_actor(
+        self, context: dict[str, Any], run_id: str, request_ref: dict[str, Any] | None
+    ) -> None:
+        with self.native_lock:
+            self.native_admission_guard(context, "creation")
+            self.native_record.update(
+                phase="actor-associated", actor={"run_id": run_id, "request": request_ref}
+            )
+            self._save_native()
+
+    def begin_native_finish(
+        self, environment_ref: object
+    ) -> tuple[dict[str, Any], Any | None, bool]:
+        with self.native_lock:
+            if environment_ref != self.native_record.get("environment_ref"):
+                ref = digest(environment_ref, "native_episode.environment_ref", length=32)
+                retained = self._native_operation_store()
+                if retained is not None:
+                    # Environment owns these immutable original requests. An old
+                    # finish is a recorded-result read, never Stop of the live B.
+                    request = self._native_request_for_ref(ref)
+                    if request is not None:
+                        return self._native_original_operation(request), None, False
+                raise BoundaryError("native_episode", "foreign_resource")
+            if (
+                self.native_record.get("finish_complete") is True
+                or self.native_record.get("phase") in {"closed", "failed"}
+                or self.native_record.get("recorded_phase") in {"closed", "failed"}
+            ):
+                return self.native_episode_status(), None, False
+            if self.native_record.get("phase") == "closing":
+                return self.native_episode_status(), None, False
+            if self.native_record.get("phase") == "preparing":
+                self.native_record.update(
+                    preparation_outcome="unknown"
+                    if self.native_record.get("world_mutation_offered")
+                    else "failed",
+                    error_code="native_preparation_canceled",
+                )
+            self.native_record["phase"] = "closing"
+            self.native_finish_done.clear()
+            # Exact Actor/Host cleanup remains mandatory after a write fault.
+            self._try_save_native()
+            return self.native_episode_status(), self.native_client, True
+
+    def close_native_after_actor(
+        self, record: dict[str, Any], client: Any | None, actor: dict[str, Any]
+    ) -> dict[str, Any]:
+        owned = record["preparation"]["ownership"] == "owned"
+        cleanup: dict[str, Any] = (
+            {"status": "owned_close_pending", "host_close": "pending"}
+            if owned
+            else {"status": "attached_detached", "host_close": "not_applicable"}
+        )
+        phase = "closed"
+        if (
+            actor.get("status") == "unknown"
+            or record.get("actor") is not None
+            and actor.get("status") == "not_associated"
+        ):
+            cleanup = {"status": "actor_containment_unknown", "host_close": "not_attempted"}
+            phase = "unknown"
+        elif record["preparation"]["ownership"] == "owned":
+            if client is None:
+                cleanup = {"status": "cleanup_unknown", "host_close": "owned_handle_unavailable"}
+                phase = "recovery_required"
+            else:
+                force = record.get("admission_context") is None
+                cleanup["host_close"] = (
+                    "eof_containment_requested" if force else "close_rpc_requested"
+                )
+                try:
+                    client.close(force=force, timeout_seconds=record["cleanup_timeout_seconds"])
+                except Exception as error:
+                    cleanup = {"status": "cleanup_unknown", "error": type(error).__name__}
+                receipt = dict(client.close_receipt())
+                cleanup.update(receipt)
+                close = receipt.get("close_result")
+                expected = (
+                    record.get("admission_context", {})
+                    .get("binding", {})
+                    .get("runtime_instance_id")
+                    if isinstance(record.get("admission_context"), dict)
+                    else None
+                )
+                disposition = native_binding.native_exit_disposition(
+                    close.get("exit")
+                    if isinstance(close, dict) and close.get("type") == "close_result"
+                    else None,
+                    expected,
+                )
+                cleanup.update(disposition)
+                if (
+                    disposition["native_exit_disposition"] == "unknown"
+                    or receipt.get("cleanup_error") is not None
+                ):
+                    cleanup["status"] = "cleanup_unknown"
+                    cleanup["host_close"] = "unconfirmed"
+                    phase = "unknown"
+                    if (
+                        record.get("world_mutation_offered") is False
+                        and receipt.get("driver_exit_code") == 0
+                        and receipt.get("forced_fallback") is False
+                    ):
+                        cleanup["status"] = "driver_stopped_before_world_offer"
+                        cleanup["host_close"] = "not_started_no_native_close"
+                        phase = "closed"
+                else:
+                    cleanup["status"] = "owned_child_exit_observed"
+                    cleanup["host_close"] = (
+                        "observed_graceful"
+                        if disposition["native_exit_disposition"] == "graceful"
+                        else "known_non_graceful_exit"
+                    )
+        with self.native_lock:
+            if self.native_record.get("environment_ref") != record["environment_ref"]:
+                raise BoundaryError("native_episode", "resource_binding_changed")
+            self.native_record.update(
+                phase=phase, cleanup=cleanup, actor_finish=actor, finish_complete=True
+            )
+            try:
+                self._try_save_native(terminal=True)
+                return self.native_episode_status()
+            finally:
+                self.native_finish_done.set()
 
     def _load_journal(self) -> dict[str, Any]:
         path = self.config.state_dir / JOURNAL_FILE
@@ -1307,10 +2413,19 @@ class LocalEnvironmentService:
         return {"source_revision": identity["source_revision"],
                 "uv_lock_sha256": identity["uv_lock_sha256"]}
 
-    def start(self, scenario_id: object, *, scene_artifact_id: object | None = None
-              ) -> dict[str, Any]:
-        with self.lifecycle_lock:
-            return self._start_locked(scenario_id, scene_artifact_id=scene_artifact_id)
+    def start(
+        self, scenario_id: object, *, scene_artifact_id: object | None = None
+    ) -> dict[str, Any]:
+        with self.native_lock:
+            if self.native_record.get("phase") in native_binding.RESERVED_PHASES:
+                raise BoundaryError("native_episode", "native_resource_reserved")
+            self._managed_start_reservation = True
+        try:
+            with self.lifecycle_lock:
+                return self._start_locked(scenario_id, scene_artifact_id=scene_artifact_id)
+        finally:
+            with self.native_lock:
+                self._managed_start_reservation = False
 
     def _start_locked(
         self, scenario_id: object, *, scene_artifact_id: object | None = None

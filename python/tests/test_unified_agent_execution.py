@@ -158,7 +158,7 @@ def test_unadmitted_request_rejected_before_publish(change, tmp_path):
 def service(tmp_path, monkeypatch):
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     instance = LocalModelService(config)
-    monkeypatch.setattr(instance, "_require_model_admission", lambda: None)
+    monkeypatch.setattr(instance, "_require_model_admission", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(instance, "_run_profile", lambda *_args: True)
     monkeypatch.setattr(instance, "composition", lambda _identity: m2())
     monkeypatch.setattr(

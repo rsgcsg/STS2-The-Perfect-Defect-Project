@@ -1,5 +1,27 @@
 # Operations
 
+## Native episode bootstrap transfer
+
+The existing reference driver ready line still means only that its process is
+ready. Its additive bootstrap-handoff capability must be present before a
+consumer's first reset. `release_bootstrap` calls the existing exact controller
+release, returns original runtime/unheld proof and fences reset/step/reacquire
+for that driver lifetime. Ordinary legacy behavior is unchanged until transfer.
+An optional closed expected installed tuple is resolved by a trusted caller and
+forwarded through the existing driver/factory. Host-owned disk and installed
+artifact/sidecar checks reject drift before native spawn; actual loaded
+capabilities reject remaining tuple/Modset drift before speed preparation,
+controller registration or bootstrap. Omitting it preserves legacy behavior.
+After transfer an application uses the same Connector/Runtime interface for its
+Actor; it sends no Host-driver status/observe/provenance/gameplay RPC while that
+Actor is associated. Explicit owned close follows exact Actor Stop/seal and
+returns the actual native exit receipt separately from driver termination.
+EOF/cancel aborts preparation through the existing factory signal before waiting
+queued work. Transport uncertainty quarantines the owned process and never
+authorizes Agent startup or automatic reset/retry. Attached personal games have
+no owned driver, bootstrap receipt or Host-close permission. Source support is
+distinct from package/install/runtime and mode/presentation qualification.
+
 ## Install
 
 ```bash
