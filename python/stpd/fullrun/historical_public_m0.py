@@ -62,6 +62,18 @@ def _fail(code: str) -> NoReturn:
     raise BoundaryError("historical_public_m0", code)
 
 
+def _model_body(value: object) -> None:
+    """Bound the producer's exact UTF-8 body, preserving whitespace and newlines."""
+    if not isinstance(value, str) or not value:
+        _fail("frozen_selected_state_text_required")
+    try:
+        raw = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise BoundaryError("historical_public_m0", "invalid_selected_state_utf8") from error
+    if len(raw) > MAX_ROW_BYTES:
+        _fail("frozen_selected_state_bytes_limit")
+
+
 def originals(value: object) -> dict[str, Any]:
     obj = object_fields(
         value,
@@ -713,15 +725,7 @@ def verify_relation(store: ArtifactStore, identity: str) -> VerifiedHistoricalRe
                 or decode_action(action) != action_text
             ):
                 _fail("frozen_selected_action_encoding_mismatch")
-        state_text = sample["state_text"]
-        if not isinstance(state_text, str) or not state_text:
-            _fail("frozen_selected_state_text_required")
-        try:
-            state_bytes = state_text.encode("utf-8", errors="strict")
-        except UnicodeEncodeError as error:
-            raise BoundaryError("historical_public_m0", "invalid_selected_state_utf8") from error
-        if len(state_bytes) > MAX_ROW_BYTES:
-            _fail("frozen_selected_state_bytes_limit")
+        _model_body(sample["state_text"])
         # This is the producer's multiline model body, not an identifier. Do
         # not strip/normalize its newlines; the H/encoding proof binds all bytes.
         for name in ("surface", "family"):

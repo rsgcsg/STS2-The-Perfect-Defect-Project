@@ -17,6 +17,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from stpd.canonical import semantic_hash
 from stpd.fullrun.features import ModelSample
 from stpd.fullrun.historical_public_m0 import (
+    _model_body,
     compile_relation,
     relation_manifest,
     verify_relation,
@@ -25,7 +26,7 @@ from stpd.fullrun.light_action_inputs import _state_codec, fit_state_bpe
 from stpd.fullrun.light_action_row_storage import decoded_rows, prepare_rows
 from stpd.fullrun.public_inputs import COMPACT_IDENTITY
 from stpd.fullrun.token_format import input_texts
-from stpd.historical_m0_spec import ORDER_CONTRACT
+from stpd.historical_m0_spec import MAX_ROW_BYTES, ORDER_CONTRACT
 from stpd.light_action_codec import SPEC, SPEC_BYTES, SPEC_SHA256, encode_action
 from stpd.stage1a_recipes import LIGHT_ACTION_M0_GRAPH
 
@@ -230,6 +231,23 @@ def frozen_byte_fixture(archive, relation):
     }
     frozen = replace(relation, value=value, samples=samples)
     return frozen, relation_manifest(archive, frozen, PRODUCER, "b" * 64)
+
+
+@pytest.mark.parametrize("value", [None, 3, {}, b"body"])
+def test_model_body_requires_text_without_normalizing_producer_bytes(value):
+    with pytest.raises(BoundaryError, match="state_text_required"):
+        _model_body(value)
+
+
+def test_model_body_limits_utf8_bytes_and_rejects_invalid_unicode():
+    body = "[STPD_STATE]\n公开正文\n[/STPD_STATE]"
+    before = body.encode("utf-8")
+    _model_body(body)
+    assert body.encode("utf-8") == before
+    with pytest.raises(BoundaryError, match="bytes_limit"):
+        _model_body("含" * (MAX_ROW_BYTES // 3 + 1))
+    with pytest.raises(BoundaryError, match="invalid_selected_state_utf8"):
+        _model_body("\ud800")
 
 
 @pytest.mark.parametrize("compressed", [False, True])
