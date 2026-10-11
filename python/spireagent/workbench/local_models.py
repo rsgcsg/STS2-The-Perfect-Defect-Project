@@ -2579,7 +2579,7 @@ class LocalModelService:
             and runtime.get("run_id") == run_id
             and runtime.get("lifecycle") == "stopped"
         )
-        return json.loads(
+        return cast(dict[str, Any], json.loads(
             json.dumps(
                 {
                     "status": "stopped"
@@ -2597,7 +2597,7 @@ class LocalModelService:
                     if run_id is not None
                     else "not_applicable",
                     "evaluation_reference": {
-                        "schema": evaluation.get("schema"),
+                        "schema": cast(dict[str, Any], evaluation).get("schema"),
                         "run_id": run_id,
                         "sha256": hashlib.sha256(json_bytes(evaluation)).hexdigest(),
                         "owner": "LocalModelService",
@@ -2606,7 +2606,7 @@ class LocalModelService:
                     else None,
                 }
             )
-        )
+        ))
 
     def native_episode_driver_lost(self, context: dict[str, Any]) -> None:
         """Exit notification fences/stops only the still-associated original."""

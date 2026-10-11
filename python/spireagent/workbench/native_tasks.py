@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
@@ -322,7 +322,9 @@ class NativeTasks:
             raise BoundaryError("local_model", "runtime_connector_binding_required") from None
 
     def connector_instance(self, connector_endpoint: object) -> str:
-        return self.connector_capabilities(connector_endpoint)["host"]["runtime_instance_id"]
+        return cast(
+            str, self.connector_capabilities(connector_endpoint)["host"]["runtime_instance_id"]
+        )
 
     def connector_capabilities(self, connector_endpoint: object) -> dict[str, Any]:
         address = self.bound_connector(connector_endpoint)
