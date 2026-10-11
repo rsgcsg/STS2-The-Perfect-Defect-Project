@@ -1,7 +1,7 @@
-# Current project context — continuous Agent execution
+# Current project context — Agent completion and Native Host
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; lead worktree
-`SpireAgent-g1-s0-integration`, topic `codex/agent-run-completion`.
+`SpireAgent-g1-s0-integration`, topic `codex/public-m0-goal-delivery`.
 The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
 Resolve live GitHub refs and original owner records before acting;
 current source and owner records override this file.
@@ -10,70 +10,70 @@ current source and owner records override this file.
 
 Deliver reasonable continuous real-game play and one composition/change logic for
 old, new and foreseeable planned implementations. Start at the
-[active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#runtime33-candidate-and-one-fresh-auto6-envelope),
+[active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection),
 [abstraction reconciliation](../evidence/UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md),
 [ADR-0016](../adr/0016-agent-composition-and-execution-request.md) and
 [G2/V1 matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
-Task, Agent composition, environment/resource binding, execution and result keep
-existing owners. Current trusted zero/one-model support is narrower than the logical
-future composition space; there is no arbitrary plugin/placement scheduler.
+Task, Agent composition, environment/resource binding, execution and results retain
+existing owners. Current trusted zero/one-model support is narrower than future
+logical composition; arbitrary plugins and general placement are not implemented.
 
-Same cumulative USD20 GPU envelope, observed USD0/no provider job. No training is
-allocated now. Main/release/destructive scope and final G1/G2/V1 approval are unchanged.
-New workers default Sol6.1/high; Astra/high only for material high-risk/direction or
-repeated unresolved failures, at most two concurrently. Existing workers may finish.
+Native windowed/headless are presentations of one Host. Normal, Fast and Instant
+must use the same environment/Agent contracts. Project-managed Instant is the target
+default after exact runtime qualification; the current installed candidate has not
+received that promotion. Mod, CLI and Workbench expose shared owning APIs.
 
-## Current source and installed candidate
+Same cumulative USD20 GPU envelope, observed USD0/no provider job. No training or
+additional game is allocated now. Main/release/destructive scope and final G1/G2/V1
+approval remain unchanged. New workers default Sol6.1/high; Astra/high only for
+material high-risk/direction or repeated unresolved failures, at most two concurrent.
 
-Accepted source increments are normally merged: admission4a5449d1 (152 related
-checks), Windows fixture2b3915a0 (seven path cases plus two actual service cases),
-Runtime9756d147 (488 checks/three existing optional skips, typecheck/build/package).
-Each has independent review; original failures and timed-out checks are retained.
-Runtime metadata sourcefb906728/tree d1995c97/version0.1.0-rc.33 and current BOM
-pointers are independently accepted; historical identities remain unchanged.
+## Integrated source and actual Auto6
 
-Root packaged exact archive6c87e66b/content8317363d/code4ffd923b from clean52e64880;
-registry97b7593e pins it. The compiled package passed54 synthetic settling polls over
-13.5s simulated time to an interactive child, and a real100ms original-owner expiry
-while observation remained pending, without GET/second tick. Both sealed typed
-verifications passed;730 package files stayed unchanged. Root Teacher/PublicM2 service
-checks also passed against that archive. Independent package receiptf42a5f74 accepted.
+PR174 exact8f45c5ad passed full CI38118653994: both Linux leaves, both Windows leaves
+and portable. Normal develop merge471cbdbb preserves the exact tree; integration
+CI38121970826 also passed using its verified execution receipt. Earlier failing CI
+remains failed. Accepted source includes common Agent execution, native input-order,
+finite stale recovery and qualified settling under the original Auto deadline.
 
-The existing installer now confirms Runtime33 installed, loadedfalse/activatedfalse.
-Mod42 remains artifact2ef3dcf7/MVIDddf4c579, compiled Connector1c7f78ce. Bundled SDK
-production bytes96862d42 are unchanged despite test-only whole-component provenanceb3dd.
-Runtime32 archive/pin and Mod42/Mod41 owner receipts remain rollback. Installation does
-not establish a Runtime33 native load or game outcome.
+Auto6 at frozen8f45 loaded Runtime33/archive6c87e66b/content8317363d/code4ffd923b and
+unchanged Mod42/artifact2ef3dcf7/MVIDddf4c579. It reached natural loss Summary at floor11,
+score161, ascension0 after294.473s.273 program calls/272 submissions yielded209 deliveries
+and63 known stale refusals; five reward takes used the declared program.886 events
+sealed and typed-verified;194 prior-frame joins are known and79 remain unknown.
+Stop released/unloaded untainted; Host exited0 unforced, caller exited0 and strict
+process discovery was empty. Independent audit28fb41ed accepted the original records.
+This closes that one attempt, not strategy quality or permission for another game.
 
-## Last actual game and next finite attempt
+## Mechanical Goal reader candidate
 
-Auto5 at frozen6dc0f722/Runtime32 failed incomplete and tainted after126.630s:
-109 submissions,86 delivered/23 known stale,355 typed-verified events,78 prior-frame
-joins/31 unknown, three reward cards, no Summary. Exact common request/run/evaluation
-association was verified. Final End Turn was delivered, then41 complete newer settling
-polls over10.820s exhausted the former wait policy. Native eventual readiness remains
-unknown. No three-stale burst occurred. Stop released/unloaded; Host exited0 unforced,
-strict process discovery was empty and caller exited1. Its failure is immutable.
+Reviewed b9289132 is normally merged on this topic from develop471. Its existing
+application result reader recognizes only the declared legacy M0/Port1/Snapshot1 Task:
+complete prior sealed public observation, exact session/snapshot/catalog, zero/null
+abstention and the owned final handoff/Stop. Conflicts, later activity and absent proof
+fail closed. It does not claim M0 consumed that observation or fill missing inputs.
+Original-reader RED,89 passing outcome cases and scoped mypy are independently verified.
 
-Root allocates ONE fresh Auto6 after final frozen caller/installed-tuple review,
-strict idle discovery and normal cold-load/Human/control gates. Same original d6 model,
-explicit reward program, project/export, Host/seed and Mod42; Runtime33 is the changed
-runtime. Limits remain2000 submissions/4000 program calls/1800s Auto,1830s caller,
-2160s Host andCPU2. No dispatch has occurred at this snapshot; final argv/source and
-consumer digest must be fixed before execution. Original delivery is never retried.
+A fresh private projection through the existing application owner produced reportd31939d1:
+mechanical Task completed, operation task_ended, observed loss, strategy not_assessed.
+Exact witness882→883→885→886 and original requestf503 are verified. Old reportcb93 stays
+unknown and immutable; all nine original seal/request/evaluation/session files retain
+their hashes. No new game or inference occurred. This new source still requires its own
+selected full CI; PR174's green result is not a changed-source pass.
 
-## CI and next integration gate
+## Next engineering gates
 
-PR174 at6dc is draft and unmergeable: CI38115573320 ended failed. Linux1 passed;
-Linux2 and Windows2 failed the same ten admission/endpoint cases; Windows1 failed two
-common Runtime service cases. Actual Windows path routing was defective; the first
-child stderr was not recorded and remains unknown. Reviewed local repairs do not
-constitute Windows success. Batch this accepted candidate and run one fresh selected
-full dual-OS gate; no borrowed green result or failing-head merge.
+A separate reviewed Native Host candidatea196 adds isolated desired-speed preparation
+and native-ui/headless factory support. Host307 checks plus4 existing optional skips,
+Python24, exact Connector769 and SDK232 passed; exact-game builds passed. Its temporary
+rc42 ABI build is neither installed Mod42 nor final packaging. Versions/BOM, final
+package/rollback, three-mode/two-presentation runtime checks and default Instant remain
+pending. Extend the existing Application episode use case after that owning contract
+is fixed; do not create a second executor or policy loop.
 
 ## Remaining Platform non-claims
 
-Basic reasonable whole-game ability, causal settlement, Human/research success,
-old Auto2 cause and full G1/G2/V1 remain unproved. Data split/exposure limits and
-small Defect development coverage remain. Merges, synthetic checks and installations
-never promote themselves to native or strategy qualification.
+Runtime32 archive/pin and Mod42/Mod41 owner receipts remain rollback. Basic reasonable
+whole-game ability, causal settlement, Human/research success and full G1/G2/V1 remain
+unproved. Defect development coverage and historical exposure limits remain. No merge,
+synthetic check, installation or natural loss promotes itself to strategy qualification.
