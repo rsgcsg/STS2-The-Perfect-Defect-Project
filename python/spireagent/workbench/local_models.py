@@ -737,6 +737,10 @@ class LocalModelService:
         if (not isinstance(identity, str) or not isinstance(operation, str)
                 or not isinstance(profile, str)):
             raise BoundaryError("agent_run_request", "invalid_request")
+        # Admission owns Source/model exclusion before any original metadata read.
+        # _begin repeats the same pure guard atomically before intent/dispatch.
+        with self.lock:
+            self._require_model_admission()
         effective = self.agent_request(identity, operation, profile,
                                        native_context=native_context)
         request = checked(value, effective)
@@ -1448,6 +1452,8 @@ class LocalModelService:
 
     def start(self, identity: str, run_profile: str = "short", *,
               _agent_request: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self.lock:
+            self._require_model_admission()
         request = _agent_request or self.agent_request(identity, "start", run_profile)
         self._run_profile(identity, run_profile)
         intent = self.intent_generation
@@ -1494,6 +1500,8 @@ class LocalModelService:
         Only the existing bounded, hash-pinned Runtime installer is automatic.
         Adapter/weights/backend requirements remain explicit owning readiness checks.
         """
+        with self.lock:
+            self._require_model_admission()
         request = agent_request or self.agent_request(identity,
             "prepare-and-takeover" if takeover else "prepare-and-load", run_profile,
             **({"native_context": native_context} if native_context is not None else {}))
