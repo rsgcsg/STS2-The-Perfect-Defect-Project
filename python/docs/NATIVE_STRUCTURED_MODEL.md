@@ -233,6 +233,30 @@ methods, including retain/renew/release required by full-reference retention and
 subscription lifecycle. Missing lifecycle methods reject binding rather than
 silently repairing the caller's requirements.
 
+The explicitly selected native execution policy3 declares a fixed 10,000ms
+known-stale recovery episode under the original Runtime Auto wallet. The shared
+pure `native_execution_policy` decoder accepts the closed declarations for
+policies1/2/3 using the unchanged original outcome/Next grammar; its disposable
+validation sentinel is never a published selection or Model input. Learned
+policy3 packages declare sampled AgentSpec1.3.0 and adapter1.2.0. Teacher policy3
+declares Agent1.8.0/Teacher1.0.12 and the same original input contract. Neither
+declaration changes numeric features, weights, W update rules or task meaning.
+
+`native-known-stale-window-operational-v1` is a separate explicit immutable
+compatibility profile. Its proof retains the original 39 source hashes and
+exact rc27→rc29 dependency delta, permits changes only to `native_code_scope`,
+`native_sampled_carry_spec`, `native_structured_export` and `native_agent`, and
+adds only the shared pure policy decoder to the executable closure. Current
+graph code scope is version2; every other original model, feature and numeric
+source file must remain byte equal. A new derivative retains the original
+weights payload, InputSpec, numeric graph and provenance while binding a new
+AgentSpec, package, producer and complete current code identity. The old
+`native-evidence-rc27-to-rc29-v1` proof/inventory and two-path exception remain
+strict; latest executable source can reject that old profile. Historical
+verification and rollback use their original archived source/reader/packages.
+This source contract authorizes no original export replacement, actual weights
+export, model inference, training, installation or native attempt.
+
 Production registration uses the Connector-owned fixed publication-profile-v1
 13-seam target, version 1 and complete_at_seam for every required entry. The
 application consumes its public SDK/profile identity; the current advertised

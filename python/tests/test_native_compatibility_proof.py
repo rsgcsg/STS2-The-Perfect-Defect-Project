@@ -25,11 +25,14 @@ def proof():
 
 
 def test_fixed_original_inventory_and_complete_evidence_lock_delta(proof):
-    assert [row["path"] for row in proof["source_files"]] == list(scope.PATHS)
+    assert [row["path"] for row in proof["source_files"]] == list(scope.LEGACY_PATHS)
     assert len(proof["source_files"]) == 39
     assert semantic_hash(proof["source_files"]) == scope.ORIGINAL_SOURCE_SHA256
-    assert scope.checked_native_compatibility_proof(proof) == proof
-    assert scope.compatibility_original_identity()["scope"] == scope.GRAPH_SCOPE
+    # Latest executable closure deliberately changed its operational decoder;
+    # the archived old proof cannot waive those new source bytes.
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        scope.checked_native_compatibility_proof(proof)
+    assert scope.compatibility_original_identity()["scope"] == scope.LEGACY_GRAPH_SCOPE
     scope._evidence_only_lock_delta(proof["original_lock"], (ROOT / "uv.lock").read_text())
 
 

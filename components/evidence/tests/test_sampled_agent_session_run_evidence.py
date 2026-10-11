@@ -887,6 +887,7 @@ class ContinuousStrictAgentSessionEvidenceTests(unittest.TestCase):
             (
                 "sts2.policy-runtime/agent-execution-policy-1",
                 "sts2.policy-runtime/agent-execution-policy-2",
+                "sts2.policy-runtime/agent-execution-policy-3",
             ),
         )
         for schema in SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS:
@@ -895,6 +896,10 @@ class ContinuousStrictAgentSessionEvidenceTests(unittest.TestCase):
                 f.f.agent["execution_policy"] = copy.deepcopy(
                     f.owned["execution_policy"]
                 )
+            elif schema.endswith("-3"):
+                f.f.agent["execution_policy"] = json.loads(
+                    (ROOT / "policy-runtime/contracts/fixtures/native-known-stale-window-v3.json").read_bytes()
+                )["execution_policy"]
             f.terminal(f.submission(), delivery="delivered")
             f.stop()
             self.assertEqual(
@@ -991,6 +996,51 @@ class ContinuousStrictAgentSessionEvidenceTests(unittest.TestCase):
                 mutation(f)
                 f.f.write()
                 self.verify(f, False)
+
+class KnownStaleWindowAgentSessionEvidenceTests(unittest.TestCase):
+    def fixture(self):
+        f = OwnedStaleEvidenceFixture(); self.addCleanup(f.close)
+        f.f.agent["execution_policy"] = json.loads(
+            (ROOT / "policy-runtime/contracts/fixtures/native-known-stale-window-v3.json").read_bytes()
+        )["execution_policy"]
+        return f
+
+    def verify(self, f, passed=True):
+        result = verify_agent_session_run_evidence(f.directory)
+        self.assertEqual(result.passed, passed, result.findings)
+        return result
+
+    def test_policy3_burst_and_lifetime_counts_are_accounting_not_archival_ceilings(self):
+        f = self.fixture()
+        for i in range(9):
+            if i: f.sample("inspect_b" if i % 2 else "map_a")
+            f.terminal(f.submission(), defer=True)
+        f.sample("map_c"); f.terminal(f.submission(), delivery="delivered"); f.stop()
+        summary = self.verify(f).value.terminal_summary
+        self.assertEqual((summary["known_stale_rejections"], summary["known_delivered"],
+                          summary["consecutive_known_stale_rejections"]), (9, 1, 0))
+        self.assertFalse(summary["live_eligibility_proved"])
+        f.f.agent["execution_policy"] = copy.deepcopy(f.owned["execution_policy"])
+        f.f.write(); self.verify(f, False)
+
+    def test_local_reason_and_late_original_accounting_do_not_claim_monotonic_proof(self):
+        f = self.fixture(); attempt = f.submission()
+        f.f.add("handoff_to_human", reason="known_stale_recovery_exhausted",
+                autonomy_budget=f.f.budget, controller="released")
+        f.terminal(attempt); f.stop("known_stale_recovery_exhausted")
+        summary = self.verify(f).value.terminal_summary
+        self.assertEqual(summary["known_stale_rejections"], 1)
+        self.assertFalse(summary["live_eligibility_proved"])
+
+    def test_closed_policy3_and_exact_deferred_original_counters_remain_required(self):
+        mutations = [lambda f: f.f.agent["execution_policy"].update(known_stale_recovery_window_ms=9999),
+                     lambda f: f.f.agent["execution_policy"].update(known_stale_recovery_window_ms=True),
+                     lambda f: f.f.agent["execution_policy"].update(max_known_stale_rejections=8),
+                     lambda f: f.f.event("native_stale_decision_deferred")["payload"].update(known_stale_rejections=999)]
+        for mutation in mutations:
+            f = self.fixture(); f.terminal(f.submission(), defer=True); f.stop()
+            mutation(f); f.f.write(); self.verify(f, False)
+
 
 if __name__ == "__main__":
     unittest.main()

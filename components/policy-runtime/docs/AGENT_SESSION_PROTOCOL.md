@@ -807,3 +807,74 @@ live_eligibility_proved (false). Counters are nonboolean nonnegative integers.
 original_submission_count counts recorded intents; it does not prove SDK start
 or used-budget attempts. Collector retains Runtime's budget attempt count
 separately. Unknown/incomplete evidence supplies no guessed verified summary.
+
+### Explicit native known-stale recovery policy3
+
+The additive `sts2.policy-runtime/agent-execution-policy-3` replaces the lifetime
+and consecutive stopping ceilings only when selected before initialization:
+
+```json
+{"execution_policy":{"schema":"sts2.policy-runtime/agent-execution-policy-3",
+ "current_mode":"reader_owned_v1","known_stale":"fresh_changed_current_v1",
+ "operational_outcome":"known_not_started_v1",
+ "known_stale_recovery_window_ms":10000}}
+```
+
+All five fields and exact values are required. No count fields, booleans, zero,
+extras or inferred defaults. [Policy3 conformance vectors](../contracts/fixtures/native-known-stale-window-v3.json)
+include first-result anchoring, equality, global precedence and late-result cases.
+Absence and policies1/2 retain their existing grammar and stopping behavior;
+generic public/text/Managed execution is unchanged. Runtime, port/replacement,
+immutable AgentSpec/package, manifest and supported Evidence reader must agree
+on the explicitly selected policy; unsupported consumers reject without downgrade.
+
+In live Auto, the first original attributed known `not_started` result anchors
+one absolute monotonic 10,000 ms recovery episode before `native_result` Evidence
+latency. The original epoch and authorization generation bind it. Subsequent
+refusals, captures/facts/catalogs, queries, exact ACK/Next, renewal, unchanged Await,
+scoring and redundant mode commands never reanchor. The existing changed-NativeUnit,
+complete Current/C, exact ConsumeACK, completed Next and independent new selection
+remain mandatory. Mechanical IDs/time and an unchanged unit permit no fresh choice.
+No old request/action/basis/scores/W replay or native binding relaxation occurs.
+No new delay/cooldown, queue/quiet-frame rule, native predicate or manager is added.
+
+Original terminal results are correlated and counted exactly once before owner
+continuation checks, including late/reconciled results. Total and consecutive
+counts remain accounting. Known delivered input closes an episode only while
+its original epoch/generation and unexpired Auto authorization are live; it
+still resets consecutive accounting under the existing rule. Late delivered
+results cannot revive Auto or refund expiry. Input delivery, including browsing,
+is operational progress here, not effect/task/strategy progress.
+
+The shared lifecycle owner schedules the earlier original global or local
+deadline. Equality belongs to global `autonomy_budget_exhausted`. Earlier local
+expiry freezes the original wallet, fences the epoch, cancels Next/query/Await/
+read-only work, enters Human and serializes original-result/evidence/reader/control
+cleanup with one `known_stale_recovery_exhausted` handoff, without another tick/GET.
+A later global clock cannot replace the earlier winner. An already-started submit
+still owes its actual original result; cancellation never fabricates `not_started`.
+Native Stop retains immediate control revocation and original-result accounting.
+Old cleanup/results cannot own a newer cancellation scope or lease.
+
+Every real policy call/submission remains charged to the existing finite wallet;
+no episode, successful delivery or resource renewal refunds its counters or global
+deadline. New authorization uses existing session/segment admission only, without
+clearing uncertain child state, ended segments or W. Stop/Human/source/control/
+evidence reasons stay sticky. Unknown/partial/pending/transport-after-start,
+correlation, incomplete Current and evidence/reader/control release failures retain
+strict terminal behavior with no automatic retry/reload.
+
+Typed Evidence keeps its original deferred payload/counter joins and validates
+policy3's declared structural owner/prefix state. It does not independently prove
+live monotonic expiry or native settlement. Runtime fake-clock/timer acceptance
+owns that proof. There are no ad hoc clock fields or new Model/W inputs.
+The learned and Teacher consumers require new explicitly versioned operational
+AgentSpec/adapter/code/package identity. InputSpec137, numeric features and weights
+remain unchanged; more consumed inputs still change actual recurrent history and
+data/evaluation distribution. Historical artifacts, records and source/reader pins
+remain immutable. Selecting a compatible new Agent is not relabelling the old one.
+
+This 10-second allowance is an explicit engineering cost/scope choice, not a native
+latency, eventual delivery, Summary, Human, strategy or full G1/G2/V1 guarantee.
+Source support allocates no game or installation; final immutable package/caller
+qualification remains a separate owner gate.

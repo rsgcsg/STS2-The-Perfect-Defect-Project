@@ -19,6 +19,10 @@ from stpd.canonical import semantic_hash
 from stpd.models.structured_m2 import StructuredM2
 from stpd.native_code_scope import (
     COMPATIBILITY_PROFILE,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
+    OPERATIONAL_TARGET_LOCK_SHA256,
+    OPERATIONAL_EVIDENCE_VERSION,
+    OPERATIONAL_EVIDENCE_REVISION,
     COMPATIBILITY_REPOSITORY,
     ORIGINAL_EXPORT_REVISION,
     ORIGINAL_LOCK_SHA256,
@@ -41,6 +45,7 @@ from stpd.ordered_source_spec import (
 )
 from stpd.policy import native_structured_export as owner
 from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+from stpd.policy.native_execution_policy import known_stale_window_policy
 from stpd.structured_code_scope import exporter_runtime, inference_runtime
 
 
@@ -69,9 +74,16 @@ def original(tmp_path, monkeypatch):
 
     def recorded_proof(actual):
         assert actual == origin
-        return copy.deepcopy(proof)
+        return {**copy.deepcopy(proof), "profile": OPERATIONAL_COMPATIBILITY_PROFILE,
+                "target_scope": owner.native_code_identity(graph=True)["scope"],
+                "target_lock_sha256": OPERATIONAL_TARGET_LOCK_SHA256,
+                "target_evidence": {"version": OPERATIONAL_EVIDENCE_VERSION,
+                                    "source_revision": OPERATIONAL_EVIDENCE_REVISION},
+                "changed_paths": ["stpd/native_code_scope.py", "stpd/native_sampled_carry_spec.py",
+                                  "stpd/policy/native_agent.py", "stpd/policy/native_structured_export.py"],
+                "new_paths": ["stpd/policy/native_execution_policy.py"]}
 
-    monkeypatch.setattr(owner, "native_compatibility_proof", recorded_proof)
+    monkeypatch.setattr(owner, "native_operational_compatibility_proof", recorded_proof)
     parents = []
     for role, kind in (
         ("run", "run"),
@@ -179,7 +191,7 @@ def test_actual_managed_workbench_migration_uses_writable_owner_and_preserves_re
     monkeypatch.setattr(application, "source_identity", lambda root: target_producer())
     reader = service._source(old.artifact_id)
     assert reader.blobs.readonly
-    service.start(old.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
+    service.start(old.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
     service.thread.join(timeout=10)
     assert not service.thread.is_alive()
     operation = service.status()["operation"]
@@ -209,7 +221,7 @@ def test_new_identity_same_tensor_bytes_and_original_provenance_and_parent(origi
         store,
         old.artifact_id,
         producer=target_producer(),
-        profile=COMPATIBILITY_PROFILE,
+        profile=OPERATIONAL_COMPATIBILITY_PROFILE,
         before_publish=lambda value: callbacks.append((value.artifact_id, store.manifest_ids())),
     )
     assert callbacks and new.artifact_id not in callbacks[0][1]
@@ -223,7 +235,6 @@ def test_new_identity_same_tensor_bytes_and_original_provenance_and_parent(origi
         "graph",
         "projection",
         "input_spec",
-        "agent_spec",
         "state_format_version",
         "source",
         "training",
@@ -233,6 +244,7 @@ def test_new_identity_same_tensor_bytes_and_original_provenance_and_parent(origi
         "runtime",
     ):
         assert package[field] == original_package[field]
+    assert package["agent_spec"] == sampled_agent_spec(NativeGraphControl(), execution_policy=known_stale_window_policy())
     assert package["producer"] == target_producer().to_dict()
     assert package["provenance"]["training_producer"]["uv_lock_sha256"] == ORIGINAL_LOCK_SHA256
     receipt = owner.export_native_model(store, new.artifact_id, tmp_path / "derived")
@@ -253,6 +265,13 @@ def test_strict_original_package_keeps_rejecting_current_environment(original, t
         owner.load_native_package(target)
 
 
+def test_legacy_evidence_only_profile_does_not_waive_new_operational_source(original):
+    store, old, _, _ = original
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        owner.publish_native_compatible_model(
+            store, old.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE)
+
+
 @pytest.mark.parametrize(
     "field",
     ["input_spec", "agent_spec", "state_format_version", "training", "qualification", "weights"],
@@ -260,7 +279,7 @@ def test_strict_original_package_keeps_rejecting_current_environment(original, t
 def test_rehashed_semantic_changes_are_not_an_evidence_only_migration(original, field):
     store, old, _, _ = original
     derived = owner.publish_native_compatible_model(
-        store, old.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE
+        store, old.artifact_id, producer=target_producer(), profile=OPERATIONAL_COMPATIBILITY_PROFILE
     )
     package = copy.deepcopy(package_for(store, derived))
     if isinstance(package[field], dict):
@@ -274,7 +293,7 @@ def test_rehashed_semantic_changes_are_not_an_evidence_only_migration(original, 
 def test_wrong_original_parent_and_changed_nested_original_payload_are_rejected(original):
     store, old, _, _ = original
     new = owner.publish_native_compatible_model(
-        store, old.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE
+        store, old.artifact_id, producer=target_producer(), profile=OPERATIONAL_COMPATIBILITY_PROFILE
     )
     package = package_for(store, new)
     forged = replace(
@@ -300,11 +319,11 @@ def test_unsupported_profile_recursive_parent_wrong_runtime_or_weight_bytes_fail
             store, old.artifact_id, producer=target_producer(), profile="unknown"
         )
     new = owner.publish_native_compatible_model(
-        store, old.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE
+        store, old.artifact_id, producer=target_producer(), profile=OPERATIONAL_COMPATIBILITY_PROFILE
     )
     with pytest.raises(BoundaryError, match="original_sampled_trained_model_required"):
         owner.publish_native_compatible_model(
-            store, new.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE
+            store, new.artifact_id, producer=target_producer(), profile=OPERATIONAL_COMPATIBILITY_PROFILE
         )
     package = package_for(store, new)
     changed = copy.deepcopy(package)

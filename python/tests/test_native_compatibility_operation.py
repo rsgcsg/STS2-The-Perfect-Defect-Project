@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from stpd.native_code_scope import (
     COMMON_MODEL_SCHEMA,
     COMPATIBILITY_PROFILE,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     COMPATIBILITY_REPOSITORY,
     COMPATIBLE_MODEL_SCHEMA,
     ORIGINAL_EXPORT_REVISION,
@@ -63,10 +65,11 @@ def settled(service):
     return service.status()["operation"]
 
 
-def install_publisher(service, original, derived, records, module, *, fail=None):
+def install_publisher(service, original, derived, records, module, *, fail=None,
+                      selected_profile=COMPATIBILITY_PROFILE):
     def publish(store, original_id, *, producer, profile, before_publish):
         assert original_id == original.artifact_id
-        assert profile == COMPATIBILITY_PROFILE and producer == derived.producer
+        assert profile == selected_profile and producer == derived.producer
         intent = service._read()
         assert intent["status"] == "pending" and intent["model_id"] == original_id
         assert intent["native_compatibility"]["original_model_id"] == original_id
@@ -84,6 +87,43 @@ def install_publisher(service, original, derived, records, module, *, fail=None)
         return derived
 
     module.publish_native_compatible_model = publish
+
+
+def test_explicit_operational_profile_reaches_existing_owner_and_exact_completed_receipt(service, monkeypatch):
+    selected, original, derived, records, module = service
+    derived = replace(derived, parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA,
+                              "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE}))
+    install_publisher(selected, original, derived, records, module, selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
+    selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    result = settled(selected)
+    assert result["status"] == "completed"
+    assert result["compatibility_profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
+    assert selected._read()["native_compatibility"]["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
+
+
+def test_pending_profile_cannot_be_changed_to_another_supported_intent(service, monkeypatch):
+    selected, original, derived, records, module = service
+    derived = replace(derived, parameters=FrozenObject.of({"schema": COMPATIBLE_MODEL_SCHEMA,
+                              "compatibility_profile": OPERATIONAL_COMPATIBILITY_PROFILE}))
+    install_publisher(selected, original, derived, records, module, fail="intent_only", selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
+    selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    assert settled(selected)["status"] == "interrupted"
+    before = selected._path().read_bytes()
+    with pytest.raises(BoundaryError, match="compatibility_intent_mismatch"):
+        selected.start(original.artifact_id, compatibility_profile=COMPATIBILITY_PROFILE)
+    assert selected._path().read_bytes() == before
+
+
+def test_selected_operational_profile_cannot_publish_borrowed_legacy_derivative(service, monkeypatch):
+    selected, original, _, _, _ = service
+    install_publisher(*service, selected_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    monkeypatch.setattr(owner, "_native_package", lambda *args, **kwargs: 20)
+    selected.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE)
+    result = settled(selected)
+    assert result["status"] == "failed" and result["error_code"] == "compatibility_profile_mismatch"
+    assert "derived_model_id" not in result
 
 
 def test_same_operation_retains_both_ids_and_original_completed_receipt(service, monkeypatch):

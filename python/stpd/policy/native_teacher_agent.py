@@ -20,8 +20,9 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, obj
 from stpd.fullrun.native_structured_inputs import PROFILE, SCOPE
 from stpd.fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
 from stpd.policy.native_operational_outcome import emitted_intention
-from stpd.policy.native_operational_outcome_v2 import (
+from stpd.policy.native_execution_policy import (
     CONTINUOUS_STRICT_POLICY_SCHEMA,
+    KNOWN_STALE_WINDOW_POLICY_SCHEMA,
     checked_execution_policy,
     checked_next_input,
     manifest_execution_policy,
@@ -48,6 +49,8 @@ AGENT_ID = "stpd-native-public-program-teacher"
 AGENT_VERSION = "1.5.0"
 OWNED_STALE_AGENT_VERSION = "1.6.0"
 CONTINUOUS_STRICT_AGENT_VERSION = "1.7.0"
+KNOWN_STALE_WINDOW_AGENT_VERSION = "1.8.0"
+KNOWN_STALE_WINDOW_TEACHER_VERSION = "1.0.12"
 RECHECK_TIMEOUT_MS = 250
 ACT_QUERY_INTERVAL_MS = 250
 MAX_MESSAGE_BYTES = 96 * 1024 * 1024
@@ -74,6 +77,7 @@ CODE_FILES = (
     "stpd/policy/native_teacher_agent.py",
     "stpd/policy/native_operational_outcome.py",
     "stpd/policy/native_operational_outcome_v2.py",
+    "stpd/policy/native_execution_policy.py",
     "stpd/policy/native_task.py",
 )
 INPUT_BODY = {
@@ -149,12 +153,15 @@ def teacher_agent_spec(*, execution_policy: dict[str, Any] | None = None) -> dic
     if execution_policy is not None:
         policy = checked_execution_policy(execution_policy)
         continuous = policy["schema"] == CONTINUOUS_STRICT_POLICY_SCHEMA
+        window = policy["schema"] == KNOWN_STALE_WINDOW_POLICY_SCHEMA
         spec.update(
-            version=CONTINUOUS_STRICT_AGENT_VERSION if continuous else OWNED_STALE_AGENT_VERSION,
+            version=KNOWN_STALE_WINDOW_AGENT_VERSION if window else (
+                CONTINUOUS_STRICT_AGENT_VERSION if continuous else OWNED_STALE_AGENT_VERSION),
             teacher={
                 "id": TEACHER_ID,
                 "version": (
-                    CONTINUOUS_STRICT_TEACHER_VERSION if continuous else OWNED_STALE_TEACHER_VERSION
+                    KNOWN_STALE_WINDOW_TEACHER_VERSION if window else (
+                        CONTINUOUS_STRICT_TEACHER_VERSION if continuous else OWNED_STALE_TEACHER_VERSION)
                 ),
             },
             execution_policy=policy,

@@ -18,6 +18,7 @@ from spireagent.workbench.managed_local_workspace import create_managed_workspac
 from stpd.native_code_scope import (
     COMMON_MODEL_SCHEMA,
     COMPATIBILITY_PROFILE,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     COMPATIBLE_MODEL_SCHEMA,
 )
 
@@ -198,6 +199,16 @@ def test_no_pending_family_or_old_producer_can_bypass_the_bound_receipt(
             prior_native_reconciliation=requested,
         )
     assert service._path().read_bytes() == raw
+
+
+def test_new_profile_cannot_borrow_an_old_profile_absence_receipt(interrupted):
+    service, _, original, _, _, _ = interrupted
+    receipt = reconcile(interrupted)
+    before = service._path().read_bytes()
+    with pytest.raises(BoundaryError, match="reconciliation_receipt_mismatch"):
+        service.start(original.artifact_id, compatibility_profile=OPERATIONAL_COMPATIBILITY_PROFILE,
+                      prior_native_reconciliation=receipt["receipt_sha256"])
+    assert service._path().read_bytes() == before
 
 
 def test_separate_explicit_new_intent_links_receipt_and_cannot_republish_old_id(

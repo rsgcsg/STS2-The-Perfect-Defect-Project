@@ -977,7 +977,7 @@ class ContinuousStrictTeacherTests(unittest.TestCase):
             "BoundaryError": BoundaryError,
             "load_native_package": lambda path: (metadata, SimpleNamespace(model_control=control)),
             "SAMPLED_INPUT_SPEC": SAMPLED_INPUT_SPEC,
-            "checked_execution_policy": checked_execution_policy,
+            "checked_execution_policy": __import__("stpd.policy.native_execution_policy", fromlist=["checked_execution_policy"]).checked_execution_policy,
             "sampled_agent_execution_policy": sampled_agent_execution_policy,
         }
         # Production composition guard; package loading is the declared mocked
@@ -986,8 +986,8 @@ class ContinuousStrictTeacherTests(unittest.TestCase):
             compile(ast.Module(body=[function], type_ignores=[]), "actual-native-composer", "exec"),
             namespace,
         )
-        # The unchanged learned v1 parser rejects policy2 before creating any
-        # manifest, even though the new Teacher explicitly supports policy2.
+        # The current shared parser can read policy2, but this original policy1
+        # immutable package cannot be upgraded by a composition argument.
         with self.assertRaises(BoundaryError):
             namespace["bind_native_agent"](
                 Path("unused-existing-package"),
