@@ -99,11 +99,11 @@ ORIGINAL_EXPORT_REVISION = "9c1c14f447f7f6dd03c50f78ed8380da74e6a82f"
 ORIGINAL_SOURCE_SHA256 = "516782ca56d9a1c8ad218804fd111731507175bd93855f0896a6e608387c25b2"
 ORIGINAL_LOCK_SHA256 = "46eb838668b984bc4f0cab203a7b3c759115cf05fe2107b21a1730dd9808feea"
 TARGET_LOCK_SHA256 = "6a14b4e84cd6317f474c0d247a7a99138d21e8f300b8f3c42199db5e5f270cd3"
-# Explicit interim source/test basis. Root must finalize these independently
-# with the new policy3 Evidence release before an actual compatible export.
-OPERATIONAL_TARGET_LOCK_SHA256 = "6a14b4e84cd6317f474c0d247a7a99138d21e8f300b8f3c42199db5e5f270cd3"
-OPERATIONAL_EVIDENCE_VERSION = "0.1.0rc29"
-OPERATIONAL_EVIDENCE_REVISION = "ba05adce73d067f4fb400fb2ac3af6a2b2279a80"
+# Exact policy3 reader target. The archival rc27-to-rc29 basis above stays frozen.
+# Package parity and installed/native qualification remain separate gates.
+OPERATIONAL_TARGET_LOCK_SHA256 = "25e801bb0e0eb0b0fc6098ec77b1c3664fa2cdde349e5d13e3462ea3c05d8960"
+OPERATIONAL_EVIDENCE_VERSION = "0.1.0rc30"
+OPERATIONAL_EVIDENCE_REVISION = "3988448dbb486d830a4e36f6a92049960fdc2e73"
 _MIGRATION_OWNERS = frozenset({
     "stpd/native_code_scope.py", "stpd/policy/native_structured_export.py"})
 _OPERATIONAL_MIGRATION_OWNERS = frozenset({

@@ -244,11 +244,15 @@ declaration changes numeric features, weights, W update rules or task meaning.
 
 `native-known-stale-window-operational-v1` is a separate explicit immutable
 compatibility profile. Its proof retains the original 39 source hashes and
-exact rc27→rc29 dependency delta, permits changes only to `native_code_scope`,
+exact rc27→rc30 dependency delta, permits changes only to `native_code_scope`,
 `native_sampled_carry_spec`, `native_structured_export` and `native_agent`, and
 adds only the shared pure policy decoder to the executable closure. Current
 graph code scope is version2; every other original model, feature and numeric
-source file must remain byte equal. A new derivative retains the original
+source file must remain byte equal. The operational target is Evidence0.1.0rc30
+at source `3988448dbb486d830a4e36f6a92049960fdc2e73`, with complete lock SHA256
+`25e801bb0e0eb0b0fc6098ec77b1c3664fa2cdde349e5d13e3462ea3c05d8960`. Only the Evidence package
+and root Evidence Git requirement differ from the original lock; the historical
+rc29 target constants and validator remain unchanged. A new derivative retains the original
 weights payload, InputSpec, numeric graph and provenance while binding a new
 AgentSpec, package, producer and complete current code identity. The old
 `native-evidence-rc27-to-rc29-v1` proof/inventory and two-path exception remain
