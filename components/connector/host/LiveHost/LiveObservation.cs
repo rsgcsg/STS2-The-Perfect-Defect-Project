@@ -26,6 +26,10 @@ internal sealed record LiveObservation(
     internal STS2Connector.NativeUi.NativeEndTurnInput.Binding? EndTurnBinding { get; init; }
     [JsonIgnore]
     internal string? EndTurnBindingIdentity { get; init; }
+    [JsonIgnore]
+    internal CombatAvailabilityEvidence? CombatAvailabilityEvidence { get; init; }
+    [JsonIgnore]
+    internal CombatWithdrawalProof? CombatWithdrawal { get; init; }
     public InputOwnership InputOwnership { get; init; } = new(
         "current_ui_owned",
         Surface.Kind,

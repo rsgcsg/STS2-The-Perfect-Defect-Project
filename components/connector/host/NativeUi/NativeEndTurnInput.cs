@@ -47,33 +47,40 @@ internal static class NativeEndTurnInput
     // value only: no reflective invocation or write to native state is allowed.
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_combatState")]
     private static extern ref CombatState? ButtonCombatState(NEndTurnButton button);
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "get_CanTurnBeEnded")]
+    internal static extern bool ReadCanTurnBeEnded(NEndTurnButton button);
+
+    internal static Binding? CaptureOwner(NCombatRoom room, NPlayerHand hand, Player player)
+    {
+        var run = RunManager.Instance.DebugOnlyGetState();
+        var combat = CombatManager.Instance.DebugOnlyGetState();
+        var button = room.Ui.EndTurnButton;
+        if (run?.CurrentRoom is not CombatRoom modelRoom || combat == null
+            || !ReferenceEquals(NCombatRoom.Instance, room) || !ReferenceEquals(NPlayerHand.Instance, hand)
+            || !ReferenceEquals(room.Ui.Hand, hand) || !ReferenceEquals(LocalContext.GetMe(run), player)
+            || !ReferenceEquals(LocalContext.GetMe(combat), player) || !ReferenceEquals(ButtonCombatState(button), combat)
+            || !ReferenceEquals(player.Creature.CombatState, combat) || player.PlayerCombatState == null
+            || !ConnectorMod.IsLiveNode(room) || !ConnectorMod.IsLiveNode(hand) || !ConnectorMod.IsLiveNode(button)) return null;
+        return new(modelRoom, room, player, hand, button, combat, player.PlayerCombatState.TurnNumber);
+    }
+
+    internal static bool? ReadFtueSeen()
+    { try { return SaveManager.Instance.SeenFtue(Ftue); } catch { return null; } }
 
     internal static Binding? Capture(NCombatRoom room, NPlayerHand hand, Player player, out string? missing)
     {
         missing = BindingUnavailable;
         try
         {
-            var run = RunManager.Instance.DebugOnlyGetState();
-            var button = room.Ui.EndTurnButton;
-            var combat = CombatManager.Instance.DebugOnlyGetState();
-            if (run?.CurrentRoom is not CombatRoom modelRoom || combat == null
-                || !ReferenceEquals(NCombatRoom.Instance, room)
-                || !ReferenceEquals(NPlayerHand.Instance, hand) || !ReferenceEquals(room.Ui.Hand, hand)
-                || !ReferenceEquals(LocalContext.GetMe(run), player)
-                || !ReferenceEquals(LocalContext.GetMe(combat), player)
-                || !ReferenceEquals(ButtonCombatState(button), combat)
-                || !ReferenceEquals(player.Creature.CombatState, combat)
-                || !ConnectorMod.IsLiveNode(room) || !ConnectorMod.IsLiveNode(hand)
-                || !ConnectorMod.IsLiveNode(button)) return null;
+            var owner = CaptureOwner(room, hand, player);
+            if (owner == null) return null;
             if (ReadinessMissing(CombatTurnSurfaceReader.IsActionablePlayerTurn(player),
-                hand.IsInCardSelection, button.IsEnabled,
+                hand.IsInCardSelection, owner.Button.IsEnabled,
                 CombatManager.Instance.IsPlayerReadyToEndTurn(player), true) != null) return null;
-            bool? seen;
-            try { seen = SaveManager.Instance.SeenFtue(Ftue); }
-            catch { seen = null; }
+            bool? seen = ReadFtueSeen();
             missing = ReadinessMissing(true, false, true, false, seen);
             return seen == true
-                ? new(modelRoom, room, player, hand, button, combat, player.PlayerCombatState!.TurnNumber)
+                ? owner
                 : null;
         }
         catch { missing ??= BindingUnavailable; return null; }

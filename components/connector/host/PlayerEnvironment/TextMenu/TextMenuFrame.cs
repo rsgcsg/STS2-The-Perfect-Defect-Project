@@ -42,6 +42,8 @@ internal sealed record TextMenuFrame(
 
     [JsonIgnore]
     internal NativeLogicalDeckState? LogicalDeckProof { get; init; }
+    [JsonIgnore]
+    internal STS2Connector.LiveHost.CombatWithdrawalProof? CombatWithdrawal { get; init; }
 }
 
 internal sealed record TextMenuChoice(TextMenuAction Action, TextMenuLeaf? Leaf, string? TargetCursor);

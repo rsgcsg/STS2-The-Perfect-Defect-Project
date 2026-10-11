@@ -172,6 +172,9 @@ internal static class LiveObservationReader
                     "unknown"));
         }
 
+        // Cheap lifecycle identity only. Never enumerate the obscured lower
+        // owner's availability or reset its budget from a modal/overlay capture.
+        CombatInputAvailability.ObserveNativeLifecycle();
         ActiveSurfaceResolution resolution = ActiveInputResolver.Resolve(
             snapshot,
             providers,

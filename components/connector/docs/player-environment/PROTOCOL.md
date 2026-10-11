@@ -186,6 +186,31 @@ therefore derives combat actionability from the current native hand/control
 state, excludes cards already moved to the native play queue, and binds every
 remaining action to that exact visible UI state.
 
+An exact active combat owner can temporarily withdraw all current gameplay
+commands while its native End Turn control is disabled and the supported native
+Play source remains open. This is bounded no-input only after complete command
+discovery, exact run/combat/player/turn and live room/hand/button ownership,
+native hand/control readiness, no superseding modal/selection, and a seen
+playable-card FTUE. Empty C or a disabled button alone supplies no such proof.
+This observation says nothing about queued actions, execution or causal settlement.
+
+One private monotonic window starts at the first qualified withdrawal and expires
+at20 seconds. Its key is the genuine run/combat/local-player/turn lifecycle;
+control replacement, public fact changes, successful captures, profile switches,
+information leaves and Snapshot revisions do not renew it. Overlay, incomplete
+capture and FTUE failures retain an existing deadline without publishing this
+settling proof. Only complete active gameplay-command recovery or a genuine
+lifecycle replacement resets it. Expiry remains sticky for that lifecycle.
+
+Each profile classifies its own final complete relation. Macro Snapshot C0 uses
+`settling` before expiry and explicit `visible_unsupported` after expiry. Text,
+text-v2 and native-logical classify after all native gameplay/information leaves
+and semantic additions: real remaining leaves stay interactive, including after
+macro expiry; a true no-leaf relation uses the same bounded proof. Their discovery
+is not suppressed by globally changing shared ready state. The private discrete
+pending/expired state participates in identity before publication; continuous
+elapsed time and native references never enter wire facts or action operands.
+
 End Turn is one completed logical native gesture, delivered through the exact
 current `NEndTurnButton.CallReleaseLogic`. The native button withdraws input,
 captures the player's turn number and requests its own `EndPlayerTurnAction` in

@@ -24,6 +24,12 @@ explicit unsupported/partial across all current input profiles, never a filtered
 complete catalog. The native Undo-ready branch is outside this End Turn action.
 These are source obligations; delivery alone proves neither queued execution nor
 next-turn settlement.
+Complete active combat gameplay-input withdrawal has one sticky20-second native
+lifecycle bound. Macro empty C settles only under that exact proof and fails
+explicitly unsupported on expiry. Text/native profiles finish their own full
+relations first; enabled information or gameplay leaves remain interactive.
+Modal, selector, incomplete/unknown capture and FTUE precedence remain fail-closed,
+and neither richer leaves nor profile polling renew the macro withdrawal budget.
 The opt-in text menu publishes a mouse-held card operation only for
 single-enemy targeting while the current `NTargetManager` retains the exact
 `NMouseCardPlay` exit predicate and its targeting signal connection. Its
