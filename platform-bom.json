@@ -34,9 +34,9 @@
     },
     "policy_runtime": {
       "version": "0.1.0-rc.33",
-      "source_revision": "fb906728b6a0bffc945d358ea3db647eb0c92fda",
-      "component_tree_revision": "d1995c976d07bbdc36737f25e2a545d59081482f",
-      "component_source_digest_sha256": "c3f4b1c286153b92b61b506dd800028e70f2d7928cd1f60574f49d448d3a1154"
+      "source_revision": "0f79a7355ed84f2ff444037d19c3fa429244bc29",
+      "component_tree_revision": "b48a8a9c04dac6354af2b9277d0b09967f94350e",
+      "component_source_digest_sha256": "c0f18c617ec4fd6fb3657a1d789be82d8e71898e65c11ec74069c65ebc98ae22"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
