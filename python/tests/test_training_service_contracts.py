@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -135,7 +136,7 @@ def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch):
             assert released.wait(3)
         callback(raw)
 
-    checkpoint_child(monkeypatch, on_line=message, phases=phases)
+    checkpoint_child(monkeypatch, on_line=message, phases=phases, diagnose_exit=True)
     started = service.start(request)["operation"]
     assert entered.wait(15)
     with pytest.raises(BoundaryError, match="stale_operation_attempt"):
@@ -184,10 +185,60 @@ def test_source_json_and_unverified_agent_provenance_cannot_admit_training(tmp_p
         service.start(replace(request, placement_id="/tmp/worker"))
 
 
-def child_script(monkeypatch, body, *, on_line=None, phases=None):
+def child_script(monkeypatch, body, *, on_line=None, phases=None, diagnose_exit=False):
     original = adapter_module._private_child
     script = "import sys\nfrom spireagent.workbench.recipes import structured_child as child\n"
-    script += body+"\nraise SystemExit(child.main(sys.argv[1:]))\n"
+    if diagnose_exit:
+        script += body + """
+_fixture_main_code = child.main(sys.argv[1:])
+try:
+    _fixture_main_returned_at = time.monotonic()
+    from pathlib import Path
+    _fixture_args = sys.argv[1:]
+    _fixture_operation = _fixture_args[_fixture_args.index('--operation-id') + 1]
+    _fixture_attempt = _fixture_args[_fixture_args.index('--attempt-id') + 1]
+    _fixture_directory = Path(_fixture_args[_fixture_args.index('--operation-file') + 1]).parent
+    _fixture_trace = _fixture_directory / ('fixture-checkpoint-' + _fixture_attempt + '.jsonl')
+    with _fixture_trace.open('ab') as _fixture_stream:
+        _fixture_stream.write(json_bytes({
+            'operation_id': _fixture_operation, 'attempt_id': _fixture_attempt,
+            'phase': 'main_return', 'observed_at': _fixture_main_returned_at,
+            'exit_code': _fixture_main_code,
+        }))
+except Exception:
+    pass  # Best-effort private diagnostics never replace the actual main code.
+raise SystemExit(_fixture_main_code)
+"""
+        original_popen = subprocess.Popen
+
+        class ObservedPopen(original_popen):
+            def observe(self, phase, observed_at, **details):
+                try:
+                    values = phases.setdefault("process_observations", [])
+                    if len(values) < 16:
+                        command = self.args
+                        values.append({
+                            "phase": phase, "observed_at": observed_at, "pid": self.pid,
+                            "known_returncode": self.returncode,
+                            "operation_id": command[command.index("--operation-id") + 1],
+                            "attempt_id": command[command.index("--attempt-id") + 1],
+                            **details,
+                        })
+                except Exception:
+                    pass
+
+            def wait(self, *args, **kwargs):
+                code = super().wait(*args, **kwargs)
+                self.observe("wait_returned", time.monotonic(), exit_code=code)
+                return code
+
+            def kill(self):
+                self.observe("kill_entered", time.monotonic())
+                return super().kill()
+
+        monkeypatch.setattr(subprocess, "Popen", ObservedPopen)
+    else:
+        script += body+"\nraise SystemExit(child.main(sys.argv[1:]))\n"
 
     def injected(command, *args, **kwargs):
         if phases is not None:
@@ -206,11 +257,23 @@ def child_script(monkeypatch, body, *, on_line=None, phases=None):
             def observed(raw):
                 value = json.loads(raw)
                 if value["kind"] == "terminal":
-                    phases.setdefault("terminals", []).append({
+                    terminal = {
                         "attempt_id": value["attempt_id"], "state": value["details"]["state"],
                         "observed_at": time.monotonic(),
-                    })
-                callback_line(raw)
+                    }
+                    phases.setdefault("terminals", []).append(terminal)
+                try:
+                    callback_line(raw)
+                except BaseException as error:
+                    if diagnose_exit and value["kind"] == "terminal":
+                        with suppress(Exception):
+                            terminal["callback_error_at"] = time.monotonic()
+                            terminal["callback_error_type"] = type(error).__qualname__[:128]
+                    raise
+                else:
+                    if diagnose_exit and value["kind"] == "terminal":
+                        with suppress(Exception):
+                            terminal["callback_completed_at"] = time.monotonic()
 
             kwargs["on_stdout_line"] = observed
         if on_line is not None:
@@ -224,7 +287,7 @@ def child_script(monkeypatch, body, *, on_line=None, phases=None):
 
 
 def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False,
-                     expected_action="cancel"):
+                     expected_action="cancel", diagnose_exit=False):
     assert expected_action in {"cancel", "pause"}
     # Parent notification does not hold the actual child at a numerical boundary.
     # Gate this fixture's first checkpoint on the existing exact journal control;
@@ -298,7 +361,8 @@ child.ChildChannel.emit = channel_emit
 if ALLOW_ADVANCE:
     StructuredTrainingEngine.advance_chunk = advance
 """.replace("ALLOW_ADVANCE", repr(allow_advance)).replace("EXPECTED_ACTION", repr(expected_action))
-    return child_script(monkeypatch, body, on_line=on_line, phases=phases)
+    return child_script(monkeypatch, body, on_line=on_line, phases=phases,
+                        diagnose_exit=diagnose_exit)
 
 
 def cancellation_diagnostic(service, owner, operation, phases):

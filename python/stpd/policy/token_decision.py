@@ -40,6 +40,16 @@ from ..fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
 from ..fullrun.text_menu_inputs import SNAPSHOT_SCHEMA as TEXT_MENU_SCHEMA
 from ..fullrun.text_menu_inputs import project_text_menu_snapshot
 from ..fullrun.token_inputs import FORMAT, encode_texts
+from ..historical_m0_spec import (
+    DIAGNOSTIC_SCOPE,
+    INITIALIZATION_SCHEMA,
+)
+from ..historical_m0_spec import (
+    INPUT_FORMAT as HISTORICAL_M0_INPUT_FORMAT,
+)
+from ..historical_m0_spec import (
+    INPUT_SCHEMA as HISTORICAL_M0_INPUT_SCHEMA,
+)
 from ..light_action_codec import SPEC as LIGHT_ACTION_CODEC_SPEC
 from ..light_action_codec import SPEC_BYTES as LIGHT_ACTION_CODEC_BYTES
 from ..light_action_codec import SPEC_SHA256 as LIGHT_ACTION_CODEC_SHA256
@@ -158,13 +168,16 @@ def check_light_action_m0_model(
     model_schema = info.get("schema")
     canonical = model_schema == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
     public = model_schema == PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
+    historical = public and info.get("input_schema") == HISTORICAL_M0_INPUT_SCHEMA
     expected_model_schema = (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA if canonical else
                              PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA if public else
                              LIGHT_ACTION_M0_MODEL_SCHEMA)
     expected_input_schema = (CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA if canonical else
+                             HISTORICAL_M0_INPUT_SCHEMA if historical else
                              PUBLIC_LIGHT_ACTION_M0_INPUT_SCHEMA if public else
                              LIGHT_ACTION_M0_INPUT_SCHEMA)
     expected_input_format = (CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT if canonical else
+                             HISTORICAL_M0_INPUT_FORMAT if historical else
                              PUBLIC_LIGHT_ACTION_M0_INPUT_FORMAT if public else
                              LIGHT_ACTION_M0_INPUT_FORMAT)
     if (model.kind != "model" or model_schema != expected_model_schema
@@ -307,6 +320,41 @@ def check_light_action_m0_model(
         raise BoundaryError("token_policy", "light_action_adapter_config_mismatch")
     if recipe.backbone != "pl" and (names or info.get("adapter_config") is not None):
         raise BoundaryError("token_policy", "light_action_adapter_inventory_mismatch")
+    if historical:
+        relation = object_fields(info.get("historical_relation"), {
+            "source_id", "original_input_id", "mapping_sha256", "original_admission_receipt_id",
+            "historical_public_receipt_id",
+        }, "historical_m0.model_relation")
+        for name, identity in relation.items():
+            digest(identity, "historical_m0." + name)
+        initialization = object_fields(info.get("initialization"), {
+            "schema", "mode", "model_id", "weights_sha256", "original_training_input_id",
+            "original_admission_receipt_id", "graph", "dtype", "state_codec", "action_codec",
+            "source_renderer", "backbone", "inherited_exposure", "optimizer",
+            "rng_cursor_plan", "memory",
+        }, "historical_m0.initialization")
+        for name in ("model_id", "weights_sha256", "original_training_input_id",
+                     "original_admission_receipt_id"):
+            digest(initialization[name], "historical_m0." + name)
+        if (initialization["schema"] != INITIALIZATION_SCHEMA
+                or initialization["mode"] != "model_weights_new_run"
+                or initialization["graph"] != info["graph"]
+                or initialization["dtype"] != "float32"
+                or initialization["state_codec"] != state_codec
+                or initialization["action_codec"] != action_codec
+                or initialization["source_renderer"] != COMPACT_IDENTITY
+                or initialization["backbone"] != backbone
+                or initialization["inherited_exposure"]
+                != "all_original_codec_and_model_training_ancestry"
+                or initialization["optimizer"] != "fresh"
+                or initialization["rng_cursor_plan"] != "new_run"
+                or initialization["memory"] != "stateless_M0"
+                or relation["original_input_id"] != initialization["original_training_input_id"]
+                or relation["original_admission_receipt_id"]
+                != initialization["original_admission_receipt_id"]
+                or relation["source_id"] not in info["training_binding"]["dataset_ids"]
+                or info.get("scope") != DIAGNOSTIC_SCOPE):
+            raise BoundaryError("token_policy", "historical_initialization_or_relation_mismatch")
     return config, info
 
 

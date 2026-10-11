@@ -1,9 +1,10 @@
 # Agent run completion and native input order — 2026-10-11
 
-Current decision: see [Runtime33 candidate and one fresh Auto6 envelope](#runtime33-candidate-and-one-fresh-auto6-envelope).
-Three source repairs and the exact Runtime33 package are independently accepted;
-Runtime33 is installed but not native-loaded. One fresh Auto6 awaits final caller gates.
-PR174 old6dc CI ended failed; a fresh candidate gate remains required.
+Current decision: see [Current integration and completed attempts](#current-integration-and-completed-attempts).
+PR175 is integrated; frozen e479 execution and unmerged Data/Native Application
+candidates have separate identities and gates. Auto7 completed a mechanical natural
+loss attempt; Native137 attempt2 was censored with Task unproved. Earlier sections
+retain their original snapshots and do not allocate another attempt.
 
 ## Prior Auto3 preparation snapshot
 
@@ -635,3 +636,178 @@ mandatory. Any failure closes this single allocation; no automatic extra game fo
 The frozen bounded diagnostic may overlap isolated CI under TESTING's existing rules;
 full dual-OS success remains required for merge. GPU spend remainsUSD0/no job; no new
 training, data-use, publication or final qualification permission is implied.
+
+## Auto6 result and mechanical Goal projection
+
+PR174 exact8f45c5ad passed full dual-OS/portable CI38118653994 and was normally merged
+as develop471cbdbb with identical tree. Integration CI38121970826 passed its current
+identity/verified execution-reuse route. All earlier failed jobs remain failed.
+
+The single allocated Auto6 loaded exact Runtime33/archive6c87e66b/code4ffd923b and
+unchanged Mod42/artifact2ef3dcf7. It reached natural loss Summary at floor11,score161,
+ascension0:294.473s,273 program calls,272 unique submissions,209 delivered/63 known
+stale, five declared reward-program takes and886 typed-verified sealed events.
+Stop released/unloaded untainted; Host exited0 unforced/HTTP200, caller exited0 and
+strict process discovery was empty. Independent audit28fb41ed accepted requestf503,
+composition1ecc,run e023 and evaluationcb93 binding.194 prior-frame joins are known;
+79 remain unknown. The run proves bounded operational continuity to natural loss,
+not a win, decision quality, broad mechanism coverage or causal settlement.
+
+Original AppTaskOutcome cb93 correctly retained Task/terminal unknown under its old
+reader. Reviewed application-only b9289132 now recognizes the closed legacy M0 Task
+from an exact complete prior sealed observation, catalog-bound zero/null abstention
+and the owned final handoff/Stop. Conflicting same-ID bodies, wrong binding, missing
+proof or later substantive activity refuse completion. Existing cleanup/taint/budget
+precedence and independent terminal observation remain. It creates no consumed-input
+or training proof and never fills other missing frame joins. Actual original-reader
+RED,89 outcome checks and scoped mypy passed independent review; old183 assertions
+and intermediate failures remain preserved. This source is normally merged on the
+separate Goal delivery topic from471; it requires fresh selected full CI.
+
+Root used the existing LocalModelService evaluation owner with fresh private copies
+of the original sealed bundle and bound request. New reportd31939d1 records Task
+completed/operation task_ended/observed loss/strategy not_assessed, with exact witness
+882→883→885→886 and body digest745a5dfd. Independent review verified canonical report
+identity, original requestf503 and preservation of all nine original seal/request/
+evaluation/session files. Oldcb93 remains immutable and unknown. Projection is a
+new derived evaluation, not an alteration of the frozen run or another game/NN run.
+
+The latest owner direction requires one Native Host with windowed/headless presentation
+and fully supported Normal/Fast/Instant; default project-managed Instant follows exact
+qualification. Candidatea196 is separately source-reviewed and exact-build checked,
+with no installed/runtime/default promotion. Its Host preparation writes the typed
+native preference after safe isolated mainmenu readiness and verifies readback; it
+does not patch time scale, waits, RNG or game rules. Final identity/package/rollback
+and bounded runtime gates remain separate. An ordinary episode application use case
+must reuse existing Host, Runtime and common Agent owners; private qualification
+analysis is not a second gameplay service. No additional game or training is allocated
+by this documentation. USD20 envelope remains cumulative, observed USD0/no paid job.
+
+## Current integration and completed attempts
+
+[PR175](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/175) at
+06e32e9c8931733d9741f3a3d2c63d443239fe27 was normally merged as develop
+32298949711e886beb483614b87eb806160fc349. Fresh full
+[CI38130462706](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38130462706)
+passed four OS leaves and portable. Merge
+[CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
+passed fresh repository/identity checks and portable aggregation through verified
+same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
+qualifies Root's different frozen e479 execution source or unmerged candidates.
+
+Independently reviewed original Auto7 at e479 loaded Runtime33/code4ffd923b and
+Mod43/artifactf56b3240 in explicit headless Instant. It reached mechanical natural
+loss Summary at floor11/score161/A0 after52.094s Auto elapsed:154 program calls,
+153 delivered submissions,zero stale/unknown delivery and466 sealed typed-verified
+events. Stop released/unloaded untainted, with Host/caller exit0 unforced. Original
+application Task/terminal remain unknown; no new Goal-reader projection or actual
+consumed-input witness was created. Auto6/7 differ in delivered trajectory and
+operating tuple; the elapsed values are not a fixed-trajectory speedup benchmark.
+
+The latest Native137 Auto3 diagnostic at frozen e479 completed 23 program calls/
+submissions: 15 delivered and 8 known not_started stale refusals in 5837ms Auto elapsed.
+It hit the existing limit of eight total known stale refusals; Task remains unproved and the
+operation censored. All eight recorded native rejection diagnostics report
+`public_facts_changed` with expected/projected Snapshot IDs equal; one detail is
+truncated at the path-count limit. These are execution diagnostics, not proof that
+a particular protocol/Agent/Connector repair is correct. The ongoing policy3 source
+work does not rewrite these originals. Cleanup was graceful/unforced exit0, with
+Root outer elapsed 39.3798s, no errors, remaining owned processes or strict game
+processes. Outer wall and Auto elapsed are different counters; cleanup completion
+does not prove Task, strategy, training admission or causal settlement.
+
+### Current work and dependency order
+
+The completed historical M0 candidate 48f1fc6d passed seven actual synthetic
+application cases: 13.875s supervisor wall/13.34s pytest, exit 0 and no remaining owned
+processes. They exercise the ordinary training/export/registration seam and explicit
+pause/resume ownership, with bounded selected-input verification. Final independent
+review accepts 48f for PR preparation in that source/synthetic App scope; full CI and
+integration remain pending. This is not a real-corpus fit, high-quality dataset or
+strategy result. Earlier failures remain preserved. The current Native137 trained Model
+is available for operational diagnosis; retraining is not required to make it new.
+
+Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
+hosted head 6ddc9256 failed three OS leaves in full
+[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
+The owning TokenRanking regression repair at local baeb8958 is independently
+accepted with its original RED and one Reward/seven historical green cases;
+no latest-head hosted success is claimed. Two unchanged Windows test failures
+remain under a separate bounded diagnostic-only investigation. Episode f7fdbd1c's
+36 Application cases and final bounded synthetic common-process seam are independently
+accepted. Teacher retains the original passing test receipt/assertions, with its
+old raw temporary artifacts unavailable; final PublicM2 originals are independently
+verified. This is not a new two-case aggregate PASS or native/NN qualification.
+The default-CI process fixture lacked the supplied archive environment. The author
+is correcting that through the existing source-package owner and adding actual
+HTTP/CLI entry coverage; these new deltas are unexecuted. Legacy/root checks,
+metadata and CI remain pending. Native policy3's versioned per-episode recovery is under source
+implementation. No new game, inference, install or strategy result follows.
+
+The user retains final V1 data/Agent selection. The reviewed private proposal is
+awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
+specification or permission to start the dependent implementation/data/fit.
+Proposal option A/A+ is distinct from the workstream letters below.
+
+The selected finite dependency graph is:
+
+```text
+A: native stale diagnosis/repair + reusable ordinary Episode prepare/run/Stop
+B: final V1 choice STOP -> allocated source/use work -> fixed small training view
+B eligible view + recipe -> bounded CPU fit -> ordinary exported Model (parallel A)
+A usable execution + exported Model -> register/load -> actual game evaluation
+C: GPU backend/cost preparation (read-only now, parallel)
+   static/CPU compatibility -> bounded GPU smoke -> actual backend/cost evidence
+   passed smoke + useful data + budget -> real GPU fit / scale
+D: architecture, compatibility, specifications and required CI across all stages
+```
+
+| Workstream | Now / entry condition | Exit and next consumer |
+| --- | --- | --- |
+| A — reliable running | Continue authorized native policy3 source/failure-contract work and Episode source/process/identity/integration gates, preserving Auto3 and the existing trained Model. | Pass the affected owning gates and independent review, exposing reusable ordinary execution/cleanup. Existing-model diagnosis/evaluation proceeds only under its actual requirements/allocation, without B or new training. |
+| B — useful data | STOP at the user's final V1 choice. Human/native, program, existing/derived and Solver candidates were compared, but the current proposal does not authorize a selected batch, new collector/adapter or fit. | After explicit selection and bounded allocation, verify source/rights, target quality/method, fair basis/complete-C mapping, groups/use; fix the declared Input/Target view. Its eligible view + recipe may train/export alongside A. Actual Human participation is a separate stop for its dependent branch. |
+| A+exported Model — game evaluation | A usable Runtime/application path and the exported Model are ready. B's fit needs only its own eligible view/recipe, initialization, identity and finite allocation; it does not wait for A's running repair. | Register/load through the ordinary owners and perform an actual new-seed learned game evaluation, retaining fit metrics and all Run/checkpoint/Model/export ancestry. Natural win/loss and censor/unknown remain distinct. Poor fit or strategy redirects data/model work without erasing engineering evidence or claiming quality. |
+| C — GPU and cost | Separate read-only backend/cost preparation is parallel now; no backend build/provider job is claimed. Static/CPU contract preparation defines the bounded GPU smoke and checkpoint/export/inference comparisons. | The allocated smoke establishes actual CUDA, checkpoint/export compatibility and measured cost; synthetic data may test this before real data is ready. Passed smoke + useful admitted data + a finite budget allow real GPU fit/scale within the same cumulative USD20. Actual GPU qualification is an output of the smoke, not its circular prerequisite. |
+| D — coherent changes | Apply the selected architecture/change rules, historical consumer/reader obligations, cheapest faithful checks and required exact-head CI throughout A/B/C. | Integrate independently reviewed useful increments. Architecture cleanup is not a prerequisite to game/data work whose own prerequisites hold; required gates are not waived or borrowed from another source. |
+
+STOP is branch-specific: the pending V1 choice stops its new implementation,
+collection, training and auxiliary development. Existing authorized native/Episode
+and PR176 repair/diagnostic/CI delivery work continues. No failed hosted head is
+merged, and local repair acceptance does not substitute for latest-head CI. GPU
+and auxiliary execution still require the selected finite task/allocation; cumulative
+GPU spend remains USD0. If a branch needs actual Human participation, it returns
+the concrete entry and missing evidence while independent work proceeds. Root
+ends the round only when every branch is complete or waiting on user/external
+conditions, with an honest handoff rather than fictional background continuation.
+
+External-source and GPU assignments are preparation, not execution receipts. Source
+builders, generated labels, actual data-use/fit and provider work each require their
+own verified readiness and bounded allocation. The lead coordinates the one heavy/
+native slot while read-only and disjoint source work proceeds in parallel. The next
+handoff names completed evidence, active blockers and one actual next consumer;
+documents, a job plan or a new dataset ID are not a substitute for that delivery.
+
+Existing requirements, mechanism/coverage obligations and failure lessons remain;
+dependencies are reordered rather than deferred away. Historical M0/M2 recovery
+is a composition/cost probe, not a requirement to restore the entire old M2 chain
+before A/B or to collect/retrain solely for novelty. Broader data quality and G2/V1
+work remain open. This update grants no extra game, real-data fit, paid compute or
+final approval; observed GPU spend is USD0 with no provider job, under the same
+cumulative USD20 envelope.
+
+The selected project convergence retains a common ExecutionRuntime kernel and
+the current separate supervisor as the default. Policy Runtime remains the
+component name; the logical Agent/interaction-standard/Connector/Host chain is
+not a process layout. For architecture cleanup, first extract narrow native Agent/environment dependencies
+while retaining REST/NDJSON implementations; no completed extraction or IPC
+bottleneck is claimed here; that refactoring is not a prerequisite to unrelated
+game/data work. Future SDK-direct/in-process substitution requires a
+real capability/cost need and the same execution owner/request/permission/evidence,
+with common Stop/deadline, late-response, unknown and state/consumption guarantees.
+AgentProgram keeps strategy and optional Models; Runtime keeps its controlled-run
+duties and no inference/legality. All old/new/future combinations follow the
+[selected change rules](../ARCHITECTURE.md#selected-convergence-and-change-rules).
+Host core/extensions are clarified through actual use cases and owning contracts;
+this does not add a universal API, require permanent legacy drivers or authorize
+a new run-management framework. Dependent source work and final verification
+remain owning implementation gates, not completed by this document.

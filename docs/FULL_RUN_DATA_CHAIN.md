@@ -2,6 +2,8 @@
 
 Current authority is the exact source and schema, not a historical green
 report. ADR-0006 owns decision identity; ADR-0007 owns delivery and disposition.
+The table describes the Human causal/compatibility recording lane; it is not
+a universal grammar or training prerequisite for all project records.
 
 | Data | Current writer and purpose | Consumers / retention |
 | --- | --- | --- |
@@ -18,6 +20,18 @@ report. ADR-0006 owns decision identity; ADR-0007 owns delivery and disposition.
 | session bundle 3 | Canonical export, complete immutable raw session, hashed producer audit and identity | Evidence typed verifier and transfer; default collection format |
 | decision record 2 / bundle 2 | Explicit restricted compatibility projection after canonical append | STPD human_annotator importer and existing Evidence reader; retain until consumer migration |
 | trace 1–3 / canonical 2 / action-space 1–2 / ledger 1–2 / record and bundle 1 | Original schema-specific historical evidence | Archival readers and regression fixtures; no new producer, no upgrade of bytes or claims |
+
+Native [Source3](../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) uses the
+existing Annotator Recorder/store/worker with the Connector's frozen public facts
+and original input bases. Its ordered captures/declarations do not become
+canonical-3 causal proof. Policy Runtime separately writes actual Agent protocol
+offers, stored sampled inputs and event/ACK/directive/result joins through
+`AgentRunEvidence`; see [original sample evidence](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md#original-sample-evidence).
+Source3 is an optional collection overlay, not a prerequisite for direct Agent
+records. Their distinct [Source3 research views](../python/docs/research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
+and [direct sampled admission](../python/docs/NATIVE_AGENT_SAMPLED_ADMISSION.md)
+retain their own source proof, projection and use rules. None rewrites the
+canonical-3/trace-4 or restricted record-2/archive roles above.
 
 The internal inline semantic event is a validator representation, not another
 current durable stream. Historical fixture writers live in tests. Exact weak-key

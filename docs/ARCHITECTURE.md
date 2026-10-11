@@ -18,13 +18,120 @@ strategy-free integration tools. It does not own policy inference, reward,
 models, training or research authority.
 
 The [baseline specification](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)
-maps one set of logical roles to these components. The Host capability contract
-connects a concrete world; Host Runtime is its process/lifecycle component.
-Connector implements the public interaction contract and Agent-facing environment
-interface. The separate Runtime-to-Agent port transports a complete Agent's
-consumption and directives. These roles do not prescribe separate services.
-Model denotes an optional computation component with fixed or learned parameters;
-research owns its training targets through TargetSpec.
+maps one set of logical roles to these components:
+
+```text
+Agent <-> Agent interaction standard <-> Connector mapping <-> Host capability contract <-> world
+  program, acquisition, input/history/state, choosing/timing, optional Models
+
+Execution context: composition + Task + actual resources/instances + permission
+                   finite budgets, Stop, original request/result/evidence association
+```
+
+The Agent interaction standard fixes the selected public information, operations,
+ordering and failure semantics. Connector maps that contract to the capabilities
+of a concrete Host; the Agent need not know Host implementation objects. The SDK
+is an implementation library for this environment interface, not another game
+protocol. The Runtime-to-Agent program port is a separate message boundary for
+consumption, queries and directives. JSON, HTTP or NDJSON transport alone does
+not define a different interaction standard. Model denotes an optional computation
+component with fixed or learned parameters; research owns targets through TargetSpec.
+
+The execution context cuts across these roles; it is not a new service, controller
+or registry. Workbench, Host Runtime, Policy Runtime and SDK currently implement
+their assigned parts. Policy Runtime supplies the current supervised execution
+path, not a permanently required process hop in every possible Agent deployment.
+A trusted SDK-direct or in-process driver is architecturally possible, but a complete
+ordinary product path for it is not established by the existing SDK probes. It must
+retain admission, finite budgets, expiry/Stop, control release, unknown fencing,
+actual consumption/state boundaries and original evidence under the same owners.
+A Host lease or HTTP timeout alone does not supply those guarantees. Blocking or
+crashing an Agent must not disable enforcement; isolation or external supervision
+is chosen from that failure model. The Runtime must not add undeclared browsing,
+input history or choosing strategy outside the complete Agent.
+
+These are logical roles, not mandatory separate processes. [ADR-0016](adr/0016-agent-composition-and-execution-request.md)
+owns composition, execution requests and migration. Existing scoring and Agent-session
+drivers preserve their original semantics while used; this is not a requirement to
+retain both forever. Retirement follows actual consumer, parity, rollback and archival
+reader needs, without rewriting old records, identities or qualification.
+
+### Selected convergence and change rules
+
+Retain one ExecutionRuntime kernel and the current separately supervised process
+as the default deployment. ExecutionRuntime names the controlled-execution role;
+the existing component remains Policy Runtime. Renaming it or eliminating a process
+hop is not a delivery goal. The selected default is:
+
+```text
+Agent process <-> AgentProgramPort (current NDJSON implementation)
+              <-> ExecutionRuntime <-> Connector SDK <-> Connector <-> Host/world
+```
+
+AgentProgramPort is the complete Agent's program boundary, distinct from the
+Agent-facing environment contract above. AgentProgram owns acquisition, strategy,
+choosing/timing and optional Models; current trusted execution supports zero or
+one Model. Runtime owns its admission, budgets/expiry/Stop, controller lifecycle,
+unknown fencing, consumption association and evidence duties. It owns neither
+inference nor gameplay legality; Connector and STS2 retain their authorities.
+The complete Agent may include a declared compatibility driver's fixed timing
+or legacy acquisition semantics. The process diagram does not move that behavior
+out of the Agent definition or authorize changing it during migration.
+
+For architecture cleanup, first extract narrow Agent-port and environment dependencies within the native
+execution owner, keeping REST and NDJSON as current implementations. This is the
+selected next convergence, not a completed source change or a general SDK-direct
+migration. This refactoring order does not block game/data work whose own prerequisites
+are satisfied. There is no benchmark establishing IPC as the principal cost. A later
+SDK-direct/in-process driver needs a real capability or measured cost reason, and
+the same execution owner/request/permission/evidence with common Stop/deadline,
+late-response, unknown and consumption/state guarantees. It must not create an
+independent run-management loop or substitute a Host lease for the user's budget.
+
+Every current, historical and future implementation follows the same change rules:
+
+| Change | Owning treatment |
+| --- | --- |
+| Representation or transport only | Adapt within the existing SDK/port/Input owner; preserve information/exposure order, actions/cancel, consumption/reset and error semantics. |
+| Capability or interaction meaning | Revise the owning versioned protocol/profile and its producer/consumer, recording and migration checks. Do not hide changes in an adapter. |
+| Component implementation substitution | Match declared requirements and run conformance, including failure and lifecycle guarantees; behavioral/native equivalence needs its own scoped evidence. |
+| Repeated duplicate authority, unexpressible real use case or unacceptable measured cost | Revisit the responsible abstraction under ADR-0016 and governance, with a minimal migration and retirement plan rather than preserving implementation shape. |
+
+These rules apply to the selected execution kernel and the logical interaction
+chain independently of deployment. Host core/extensions below are normative
+obligations to make explicit through real use cases and owning machine contracts;
+they do not declare a universal API already implemented or require every optional
+capability. Default supervision and legacy compatibility drivers do not freeze
+the architecture against evidence-backed future substitution or retirement.
+
+### Host capabilities and requirement matching
+
+Host means the concrete world's capabilities, not the Host Runtime process launcher.
+Native Foundation supplies native semantic/lifecycle seams; Connector binds public
+facts and operations; Host Runtime owns process isolation, preparation and recovery.
+Native UI and headless presentation of the same official game are configurations
+of one Host, not two independent implementations proving portability.
+
+| Contract part | Required distinction |
+| --- | --- |
+| Core obligations | Actual world/implementation/instance/generation identity; versioned capabilities, scope and limits; request/result, known failure, unknown and cancellation meanings; exact observation/object binding and revalidation for each advertised interaction. Unsupported capabilities remain explicit. |
+| Optional extensions | Structured catalogs/Resolve, focus/preview, ordered events/history, synchronous step, save/restore/fork/reset, scenario preparation and resource controls are advertised only where implemented. Management and privileged research capabilities have separate permission/information scopes. |
+| Requirement matching | Agent declares interaction/Input/history/state needs; Connector declares the Host capabilities and mapping needed to realize that contract, including omissions, failures and cost. Task/runner separately declares management needs. The actual request binds a supported tuple; missing requirements reject before side effects rather than silently changing Agent semantics. |
+
+Conformance has separate levels: structure/message checks, owning mapping positive
+and negative cases, selected mechanism/scenario behavior, and exact-build differential
+or runtime evidence when native compatibility is claimed. Equal JSON, seed, SDK or
+one trajectory does not prove whole-game rules, RNG, timing or performance equivalence.
+Delivery, execution, effect, Commit and causal successor remain distinct in an
+asynchronous native Host; a synchronous step extension cannot silently collapse them.
+
+Current capabilities/profile contracts, native seams, Managed services and Host
+scenario tools implement concrete parts of this mapping. The replaceable minimal
+core, extension and requirement-admission map is still distributed, not a completed
+universal Host API. The native execution kernel also still binds concrete REST
+environment and NDJSON port implementations. Narrow dependency interfaces or shared
+SDK release verification are possible owning improvements; this document does not
+claim they or a new direct driver have been delivered.
 
 ## Accepted native logical interaction direction
 
@@ -64,13 +171,14 @@ Native:       STS2 -> Native Foundation -> Connector / Annotator
 Environment:  game-side Host <-> Connector <-> consumer
 Host control: Host Runtime <-> STS2 process lifecycle
 Evidence:     Annotator -> immutable bundle -> verify/store/transfer/receive -> consumer
-Policy:       external adapter -> Policy Runtime -> Connector
+Policy:       current supervised Agent -> Policy Runtime -> Connector
 Operations:   typed application services -> CLI / Workbench / one in-game Live UI
 ```
 
 The planes may share exact environment identity, but not mutation authority or
 transport semantics. The Platform is not a strategy, reward, training, or
-research service.
+research service. This diagram names current component paths; it does not turn
+their deployment layout into a permanent upper-level interaction standard.
 
 ## Recording Application Plane
 
@@ -269,7 +377,33 @@ Shared JSON, package/source identity and artifact storage live below application
 imports Hub or Workbench. Hub composes explicit research jobs, permission services and
 a provider-neutral compute interface; the Modal adapter retains provider call handles.
 Workbench supervises the policy process; S1 requirements and launch arguments belong
-to its model adapter. Unknown delivery never becomes an automatic retry.
+to its model adapter in that existing profile. This is the current deployment,
+not a requirement that every Agent be a scoring Model or a separate process.
+Unknown delivery never becomes an automatic retry.
+
+Human, program Agents and external sources participate in one declared data and
+composition chain:
+
+```text
+source/world/actor/information -> immutable records and verified original facts
+  -> use/split + declared Projection/InputSpec/TargetSpec -> training Run/attempt
+  -> checkpoint/Model -> export/Agent composition -> current execution/result
+```
+
+Record origin, actor, information regime, target method/quality and use/exposure
+are separate facts. A projection declares reexpression, omissions, history/reset
+and target assumptions; it does not change originals or create missing Human,
+Commit or successor proof. Runtime originals can supply machine samples through
+the existing direct-source contract; Source3 capture is an optional, different
+witness rather than a mandatory second recording of every Agent run. Supported
+sources and recipes remain bounded by their owning validators; this chain does
+not admit arbitrary data by declaration alone. Offline privileged teachers may
+provide explicitly qualified research targets, but their private/search/future
+facts must not enter fair student inputs or ordinary online Agent capabilities.
+Model training ancestry, current input/Agent compatibility and task/strategy
+evaluation are independently verified. Reuse existing store, curation, training,
+export and execution owners; neither new sources nor a new Model require another
+upper-level framework.
 
 One `python/uv.lock` governs the Python environment. Hub installs cloud/data dependencies;
 worker images additionally install training dependencies. These are explicit build

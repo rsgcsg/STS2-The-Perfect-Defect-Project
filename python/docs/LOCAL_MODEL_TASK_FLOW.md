@@ -432,8 +432,35 @@ Public M2 Port4 records full qualified public input and exact decision/control
 association. Its supported ready-summary Task is read from the sealed Policy
 Manifest and uses the existing domain predicate; matching declared program-zero
 abstention proves recorded mechanical completion. Terminal win/loss remains an
-observation and does not prove numerical W behavior. Public M0 Port1 lacks that
-full-input witness: ordinary abstention/Stop is never promoted to completion.
+observation and does not prove numerical W behavior. Public M0 Port1 has a closed
+legacy mechanical Goal mapping for the sealed `stpd-public-m0-decision-adapter`,
+`decision-only-ndjson-1` and exact owning `ready-standard-summary-v1` TaskSpec.
+After the existing typed Evidence verifier and bounded immutable-file checks,
+the application may join a prior sealed Snapshot1 `successor` or
+`receipt.successor` to a later original decision. The body must be complete,
+interactive and public under the existing input validator, from the same recorded
+Runtime/environment and exact Snapshot ID. All prior bodies for that ID must
+agree except their top-level observation time; future observations never supply
+the join. The independently derived complete ordered candidate digest and count
+must match the full zero-placeholder score vector, null selection/resolved action
+and abstain disposition. The owning ready-summary predicate must hold.
+
+Mechanical completion additionally requires the exact `policy_abstained` handoff
+and its terminal Stop tail. Only controller release may precede that handoff;
+after it, controller release and recorded cleanup failure/taint may precede Stop.
+Later decisions, modes, submissions or other substantive activity invalidate the
+earlier end join. Recorded failure/uncertainty/budget precedence remains separate
+in `operation_end`; completed Task followed by failed cleanup stays completed
+Task and failed operation. Qualified original terminal win/loss observation is
+independent of whether this declared Task/end join succeeds.
+
+The witness basis is `prior_sealed_public_observation`, not consumed input,
+Port1 input instrumentation, numerical inference/history or native causal proof.
+Missing, future-only, conflicting, foreign, incomplete, unsupported or mismatched
+facts remain unknown/unproved. Ordinary M0 abstention/Stop without the original
+witness is never promoted to completion. A new application projection receives
+its own content-based evaluation ID; prior evaluations and sealed inputs remain
+immutable. No live Current, replay, extra witness writer or caller backfill is used.
 Existing text terminal observations retain their original meaning and do not
 invent a Task descriptor.
 

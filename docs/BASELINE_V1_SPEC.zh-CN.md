@@ -43,6 +43,52 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 把允许的公开信息与操作实现为交互合同，完整 Agent 据此取得信息并行动，Model
 承担其中的计算。记录保存实际发生的事实；研究把记录变成有声明的输入与目标；
 应用组织任务、资源和产物。一个用户可以只录制、分析或运行，不必每次走完整条链。
+以下是完整逻辑关系；图中连接不表示各个具体实现已经完成或取得同一资格。
+
+```text
+应用：Task / Experiment + 资源、权限、预算与调度
+                       ↓ 本次请求与解析
+                 ExecutionContext
+                 ├ 绑定 AgentComposition、Goal/Task、起点与实际实例
+                 └ 绑定交互 profile、Connector、Host、资源及实现 driver/package
+
+在线：完整 Agent ↔ Agent 面向的环境交互合同 ↔ Connector 通信/映射 ↔ Host 能力合同 ↔ 世界
+      └ program + Input/取得/history/state + 零到多个 optional Models
+
+      既有 Runtime owner 横向贯穿：授权 / 有限预算 / Stop / 投递与 unknown / 消费 / 证据
+      当前默认部署：独立受监督的 Policy Runtime + Runtime–Agent 程序端口
+      Host Runtime 另管游戏进程、隔离与恢复；部署方式不合并这些责任
+
+原件：native / Runtime / Human / external 记录
+      └ 声明 actor、capture/proof、可得信息；保留 capture/witness/offer/consume/input/result
+                       ↓
+      同一 Store / Curation owner：Source 与证明、权限、相关来源组、use/split/Gold
+                       ↓
+      Projection + InputSpec（声明信息范围；fair student 排除隐藏量）
+                       + TargetSpec（可另准入 privileged 离线标签）
+                       ↓
+      Recipe ＋ 初始化 → TrainRun / attempt → checkpoint / Model
+                       ↓
+      AgentComposition → ExecutionContext → Run / eval / result
+                                             ├ 新原件回到 Store / Curation
+                                             └ 结果反馈 Task / Experiment 与后续研究
+```
+
+图中的共同角色不要求每次走完整流程：只录制、分析、复用已有 Model 或运行已有
+Agent 都可以。当前受信执行入口支持零或一个 Model；多 Model 是可表达的方向，
+尚未实现通用受信执行。应用调用各领域既有 owner，不另建通用 scheduler、许可或训练账本；
+逻辑 ExecutionContext 固定本次解析关系，实际 IDs 和终态仍由原回执关联。环境交互
+合同、Runtime–Agent 端口、记录 grammar 与 Model Input/Target 各有自己的版本与语义，
+不能因图中连接或同样使用 JSON 就统称一个协议。Runtime 的选定内核/部署方向及变更
+规则见 [ARCHITECTURE](ARCHITECTURE.md#selected-convergence-and-change-rules)。
+
+Recorder 是在声明 seam 捕获事实的能力；Record 是留下的不可变原件，可以没有动作或
+合格后继。记录格式固定保存事实及引用的语义，JSONL/archive/Parquet 是物理载体；
+它不等于环境合同、Runtime–Agent 消息或 Model 输入。记录连到原 Host 的边是生产来源，
+离线读取不要求启动旧 Host；需要重执行时另核旧实现。原件到训练输入的边证明具体
+投影/标签/成员关系；Model 到当前 Agent/环境的边证明实际输入、行动与状态兼容。
+各对象声明 requires/provides/guarantees，由相邻 owner 验证这条边，不能以相同 JSON、
+当前仓库 SHA 或父产物 hash 代替关系证明。
 
 | 层／对象 | 负责的事实 | 连接与边界 |
 | --- | --- | --- |
@@ -61,6 +107,20 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 与起点的一次组合；相同 JSON 不证明两个 Host 行为等价。这里不用 H 简称 Host，
 历史 Human 输入观察 H 保留原义。旧设计的 P/A 是协议核心/环境接口的示意，
 不是新增组件，也不等于历史方案 A 或动作集合 A(S)。
+
+Connector 的上层角色是连接 Agent 面向的协议标准与 Host 能力接口；当前同名组件
+包含部分 Host 接入、公开投影、映射和端点，Native Foundation 提供底层 seam。
+Host 抽象是提供世界能力的角色，Host Runtime 只是其进程/隔离/恢复工具。
+一个组件支持两个协议是可比较的实现方案，不是强制双轨。M0/M2 是模型/记忆选择，
+不决定协议；现有 Public M0 用 generic Snapshot1/Decision1（inputProfile 为 null），
+`public-snapshot-m0-v1` 是应用组合名；Public M2 用 Snapshot1/Decision4。
+
+工程方向已选定为统一 ExecutionRuntime 角色与内核，保留 Policy Runtime 组件名；
+当前默认仍采用独立受监督的 Runtime 进程。待实现的收敛先采用 native 窄接口，
+解开具体 REST/NDJSON 耦合；SDK-direct/in-process 是未来同一执行 owner 内的
+可替换 driver，须满足共同预算、Stop、unknown、证据及消费合同，并由真实需求推动。
+实施与调整按 [ARCHITECTURE 的选定收敛和变更规则](ARCHITECTURE.md#selected-convergence-and-change-rules)，
+此选择不改变当前协议语义或表示内核收敛已经完成。
 
 面向 Agent 的环境接口与 Runtime–Agent 程序端口分开：前者由 Connector 提供游戏交互能力；
 后者是 Policy Runtime 与 Agent 程序之间的消息合同。当前通用
@@ -88,9 +148,10 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 [ADR-0016](adr/0016-agent-composition-and-execution-request.md)为 **Accepted（仅架构/迁移范围）**：
 统一对象、组合、生命周期保证与替换判据，不要求一个 wire、一个大类或三个登记系统。
 既有共同应用/控制/store 已成立，`AgentTaskOutcome` 共同结果投影已实现；共同可执行
-`AgentComposition`／`AgentRunRequest` 的当前 P1 A+B 已授权实施、未验收。以下采纳方向
-的具体实现仍需验证，不表示新
-产品能力、公开 wire 或 G1/G2/V1 通过声明；既有 owner、ID 与资格保持原义。
+`AgentComposition`／`AgentRunRequest` 的 P1 A+B 已进入当前主线源码实现（[PR174](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/174)）。
+这更新共同应用接缝的源码状态；各 driver/profile/消费者的真实进程执行、自然任务与
+更高资格仍按 owning 原件逐项核验。源码集成不表示所有组合或部署方式已支持，也不
+表示公开 wire、G1/G2/V1 或用户最终批准通过；既有 owner、ID 与资格保持原义。
 
 | 必须分开的层次 | 声明内容 | 身份／执行边界 |
 | --- | --- | --- |
@@ -126,6 +187,7 @@ Agent-session**：前者保留原消费/reset，后者 `models=[]` 而不伪造�
 | 控制权、预算、进程端口、取消、结果核对和 Stop | Runtime driver；复用同一控制 owner，不在 Agent 外暗补策略，也不把 Runtime 嵌入另一个 Agent Runtime |
 | 改变公开范围、取得时点、动作粒度、中间机会、取消或失败含义 | versioned environment profile/owning contract；需要公平性、生产者/消费者、记录与迁移验证 |
 | 原始记录的重表达、截断、上下文或目标选择 | 研究投影/InputSpec/TargetSpec；保留原来源、缺口、分母与 use/split，明确它是派生训练假设 |
+| 记录 grammar、捕获范围或新增证明事实 | owning Recorder/Evidence 格式与 reader；保留原字节和归档含义，不自动修改在线端口 |
 | Goal／验收终点变化 | 任务 owner 的版本化目标与 profile-specific witness binding；Agent 策略、操作终态、胜负与质量独立 |
 | 上层组合/执行抽象本身变化 | 只有合法用例确实无法表达、反复跨层分支/重复权威或有证据的不可接受成本才触发；版本化、最小迁移及退出/退休条件见 ADR-0016 |
 
@@ -143,10 +205,16 @@ Agent-session**：前者保留原消费/reset，后者 `models=[]` 而不伪造�
 不以“统一”强制全仓重写或保留没有实际消费者收益的适配。
 
 旧 decision-only 端口与 native Agent-session 可以作为同一平台的不同 driver 并存。
-恢复 Public M2 必须保持原 segment/ordinal/digest、每个新观察一次 W 更新及 reset 规则；
+选择恢复 Public M2 时必须保持原 segment/ordinal/digest、每个新观察一次 W 更新及 reset 规则；
 改变消费/ACK 或 sampled exposure 时声明新 Agent/InputSpec，权重可复用，资格不自动继承。
 当前 strict whole-basis 复验继续有效；观察身份与意图有效性是否解耦，只能由实际拒绝证据、
 明确 profile 与负例决定，不能静默换句柄、删复验或用稳定轮次/queue-idle猜原生就绪。
+
+先按具体用途与收益选择保留、适配或替换：语义不变且关系已证明可用 adapter 或等价
+组件实现；输入/历史/权重/chooser/timing 改变时声明新的 Model/Agent 绑定；公开范围、
+行动机会或失败含义改变才修 owning 环境协议。只有合法用例无法表达、重复高风险权威
+或实测成本反例才修上层设计。统一责任不要求完整恢复所有旧 M2 训练入口；未选用的
+旧可执行入口可按消费者退出条件退休，原记录、权重、身份和必要归档 reader 保留。
 
 ## 3. 默认交互语义与场景范围
 
@@ -238,9 +306,39 @@ AI 功能录制不能填 `human_origin_attested=True`，旧 Human bundle 保持�
 不判定原件由人操作；机器来源须显式选匹配 cohort。验证完整性不自动授权训练，
 应用成功预留 train 分组也不表示已经拟合或登记实际 TrainingUse。
 
+来源判断保留五个独立维度，不以一个 human/teacher/verified 标记代替：
+
+| 维度 | 要回答的问题 |
+| --- | --- |
+| actor 声明 | 谁/什么程序操作，是否未知；声明不等于 Human 身份证明 |
+| capture/proof 能力 | 原件实际证明了观察、绑定、投递、消费还是 causal successor |
+| 可用信息范围 | 原 actor/teacher 与 student 各能取得什么，何时取得，历史/reset 如何定义 |
+| 目标含义与质量 | 实际选择、弱示范、预算内 solver 结果或实测后果；正确绑定不证明高质量 |
+| 用途资格 | 原件/权限、相关来源组、use/split/Gold 是否允许这次训练或评价 |
+
+未知权限、不可验证原件或来源仍拒绝训练。已验证原件缺 game/Mod/ascension 等特定
+元数据时，由声明的 Target/use 判定可用范围；不借当前 Host 补值、不绕过要求这些字段
+的 strict lane。明确的 historical-transfer N 用途与当前游戏/A0、因果 Z、独立测试声明
+分别判定。privileged teacher 可作为另行准入的离线标签来源，student 输入仍须公平；
+预测或 best-found 不是实际后继或最优性证明。
+
 在线客户端与 Annotator 复用 Connector 公开冻结事实。observation、native input witness、delivery、Commit/causal、持久化位置和来源各有身份；新事件流不建立第二个 causal tracker。focus 输入前观察不能包含之后 preview。公开可得、实际显示和心理知识分开；无动作观察不伪造 Wait 标签。
 
 ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/消费、reset、假设、mask 和排除分母。允许明确有损/重表达监督，不冒充保真 Human 时机模仿。旧数据可只适用局部 N；缺浏览/preview/前缀时不补完整 sequence。用途/Gold/lineage 继续由既有 owner 判定。
+
+已有旧 Public H-BC 路径把 owner 验证的原 H/动作 proof，经固定 allocation 投影为
+同循环生成的 sample/disposition，再按原表示/codec 编码、训练并导出 Model；完整 Agent
+另绑定程序、目标和当前环境。原 loader 重投影并比较派生字节，encoded row 不含 occurrence
+本身不证明历史损坏。新 subset 必须证明原成员 tuple→included sample→encoded row 的
+精确关系、原 split/label/C 与继承曝光，可放在既有派生 manifest；不能只凭行数/文本/hash
+相同或重新 allocation。详细合同见 [Public H-BC](adr/0013-public-human-observation-bc.md)
+及 [数据路由](../python/docs/DATA_AND_PROVENANCE.md)。
+
+旧 Public M2 的数值/export/consumer 恢复不等于原 sequence/segment/training producer 已
+接回现行 Workbench trusted recipe；[现存恢复范围](../python/docs/PUBLIC_M2_RESTORATION.md)
+与 [Source3/native sampled 路径](../python/docs/research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
+保持不同图、InputSpec、消费史及来源身份。未恢复的旧路径不自动成为必做路线，也不声称
+所有历史已核对或所有未来组合已实现。
 
 已实现 Source3 publication-memory 视图仍只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 精确匹配才提供 N。显式 recorded-capture 预训练视图保留独立 recipe 和曝光假设。两者的旧身份/准入规则不因新方向改变。
 
@@ -257,6 +355,13 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 ## 7. 学习与共同应用服务
 
 同一 source→use preflight→input/run→attempt→checkpoint/result→Agent 包→注册→实际运行→报告保留全身份链。复用 ArtifactStore/RunReporter/CurationLedger/operations/registry；索引不代替原件或任务终态。
+
+训练产物保留 ancestry；Agent 通过已有可信加载及必要的导出合同引用具体 Model，
+固定计算或无模型程序不强制经过训练或导出。本次 Task、Agent、Model、record/schema/protocol、
+训练 run 和实际环境实例的 IDs 各自保留。能加载旧参数
+不证明当前输入/状态兼容，兼容运行不证明数据准入、同分布或策略质量；换 Agent 的
+取得/历史/选择/时机也不自动要求新环境 wire。共同执行关系见
+[Agent 合同](../python/docs/AGENT_EXECUTION_CONTRACT.md)。
 
 一个 training service/journal 负责 operation/attempt。静态可信 recipe/Agent 注册选择代码内准备、执行、验证、导出与加载适配；请求或下载 manifest 不能指定模块、shell、任意程序。legacy/token/memory/structured 保留旧身份，公共 owner 不复制全部领域编排。研究验证不进入 storage 或 UI。
 

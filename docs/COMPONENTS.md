@@ -8,6 +8,16 @@ The table below owns component placement and authority; the execution packet and
 STATUS separately track implementation and qualification. Historical proposals
 do not move these boundaries or establish current capability.
 
+[Architecture](ARCHITECTURE.md#product-boundary) maps the logical Agent interaction
+standard through Connector to Host capabilities, with an execution context across
+those roles. Host is not synonymous with Host Runtime; SDK is an implementation
+library, and the Runtime-to-Agent program port is distinct from the environment
+interface. The table names current components, not mandatory deployment hops.
+The [selected convergence](ARCHITECTURE.md#selected-convergence-and-change-rules)
+retains a common ExecutionRuntime kernel and separately supervised default;
+Policy Runtime remains the component name. Native dependency-interface extraction
+precedes any future SDK-direct driver, under the same execution guarantees.
+
 > Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection
 > examples. Acceptance covers that upper-level direction and its stated
@@ -26,11 +36,11 @@ do not move these boundaries or establish current capability.
 | Component | Path | Owns | Must not own |
 |---|---|---|---|
 | Native Foundation | `components/native-foundation` | STS2-owned semantic decisions, native lifecycle, process-local owner lineage | transport, evidence, public action authority, input execution |
-| Connector | `components/connector` | Player Environment, native binding/execution, REST/MCP, SDK | process lifecycle, strategy, annotation |
+| Connector | `components/connector` | Player Environment contract and mapping to Host capabilities, native binding/execution, REST/MCP, SDK implementation | process lifecycle, strategy, annotation |
 | Host Runtime | `components/host-runtime` | discovery, isolation, launch/reset/stop, headless/managed experiments, qualification | gameplay legality, research models |
 | Annotator | `components/annotator` | native interaction/source recording; native-human witness and one semantic causal tracker for their declared contracts; derived Decision/canonical projections, audit/export/bundle, workstation | action authority, research admission, a second causal adjudicator |
 | Platform Evidence | `components/evidence` | typed verification, content identity, immutable store, transfer/receiver receipts | research eligibility, corpus policy, mutation |
-| Policy Runtime | `components/policy-runtime` | policy process boundary, Human/Shadow/One-Step/Auto, controller lifecycle, stale/Receipt/successor and Agent-run evidence | model inference, legality, native operands, candidate filtering |
+| Policy Runtime | `components/policy-runtime` | current supervised Agent drivers, Human/Shadow/One-Step/Auto, controller lifecycle, finite budgets/Stop, stale/Receipt/successor and Agent-run evidence | model inference, legality, native operands, candidate filtering |
 | Platform diagnostic API | `apps/workbench` | typed live status, explicit filesystem fallback, bounded Policy Runtime commands | gameplay submission, evidence admission, model loading |
 | Platform Live UI | `apps/ingame-ui` | in-game Environment/Policy/Human Data/Diagnostics presentation and typed application commands | packaging/deployment, direct BoundAction submission, legality, recording writes |
 | Platform Game Mod | `apps/game-mod` | one manifest/DLL, explicit component initialization, exact build/install/load/rollback provenance | gameplay legality, Human witness semantics, UI domain logic |
@@ -64,6 +74,10 @@ copy or wrap either implementation.
 The versioned Host Runtime package is the public programmatic boundary for its
 Node driver/CLI and strategy-free Python client. Consumers provide external
 candidate artifacts; they do not import a sibling source checkout.
+The broader Host capability contract includes native/Connector facts beyond this
+launcher. Its core/extension/Agent-and-Task requirement mapping remains distributed
+across owning contracts; shared API conformance does not establish cross-Host behavior
+or native qualification. See [Host capabilities](ARCHITECTURE.md#host-capabilities-and-requirement-matching).
 
 The versioned Evidence Python package is the portable evidence-integrity
 boundary. It verifies current and explicitly archival Human bundles and owns
@@ -80,6 +94,13 @@ scores. Its selection still binds the original Connector catalog through an exac
 handle or unique Resolve. Both branches share one control/lifecycle owner. Workbench
 and Live UI issue only typed Runtime or Annotator application commands. STS2
 loads one `STS2_PLATFORM` manifest; logical authority does not follow DLL count.
+
+SDK-direct or in-process Agent execution is a possible deployment within that
+same execution context, not a second protocol or a currently qualified ordinary
+product driver. It must preserve the existing admission, expiry/Stop, unknown,
+state/consumption and evidence guarantees. Existing drivers need not be retained
+forever; [ADR-0016](adr/0016-agent-composition-and-execution-request.md) governs
+consumer migration and retirement without rewriting historical artifacts.
 
 The [baseline specification](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)
 owns the common upper terms. Host capability, Agent-facing environment interface
