@@ -21,35 +21,39 @@ describe("native logical facade and whole capture", () => {
     } finally { await source.controller.close(); }
   });
 
-  it.each([0, 200, 500, 10000])("assembles one coherent capture and all %i ordered actions", async count => {
-    const source = await nativeHarness(count);
-    const budget = measuredBudget();
-    try {
-      const full = await source.session.getFullCurrent({ budget, chunkBytes: count >= 10000 ? 1024 * 1024 : 1024, pageLimit: 73 });
-      expect(full.actions).toEqual(source.actions);
-      expect(full.serializedObservation).toBe(source.serialized);
-      expect(createHash("sha256").update(full.serializedObservation).digest("hex")).toBe(source.capture.sha256);
-      const unicodeStart = Buffer.byteLength(source.serialized.split("中文完整")[0]!, "utf8");
-      expect(unicodeStart % 1024).toBe(1023);
-      expect(source.calls.filter(call => call.url.pathname.endsWith("/current"))).toHaveLength(1);
-      expect(source.calls.find(call => call.url.pathname.endsWith("/current"))?.body)
-        .toEqual({ client_session_id: "client-fixture", eager_scope: [...NATIVE_LOGICAL_SCOPE], expected_snapshot_id: null });
-      expect(source.calls.find(call => call.url.pathname.endsWith("/read"))?.body.cursor).toBe("fresh-reader-0");
-      expect(source.calls.filter(call => call.url.pathname.endsWith("/catalog"))).toHaveLength(Math.max(1, Math.ceil(count / 73)));
-      expect(budget.calls[0]).toEqual(["observation", source.bytes.length]);
-      expect(budget.active).toBeGreaterThan(source.bytes.length);
-      const identity = source.controller.clientIdentity();
-      await full.dispose();
-      await full.dispose();
-      expect(budget.active).toBe(0);
-      expect(() => full.observation).toThrow(/disposed/u);
-      expect(() => full.actions).toThrow(/disposed/u);
-      expect(() => full.serializedObservation).toThrow(/disposed/u);
-      expect(source.calls.filter(call => call.url.pathname.endsWith("/release"))).toHaveLength(1);
-      expect(source.controller.clientIdentity()).toEqual(identity);
-      expect(source.calls.some(call => call.url.pathname.includes("/controller/"))).toBe(false);
-    } finally { await source.controller.close(); }
-  });
+  // The 10k relation stresses complete byte/order verification and cleanup.
+  // Its 15s runner bound preserves per-request SDK deadlines.
+  for (const count of [0, 200, 500, 10000]) {
+    it(`assembles one coherent capture and all ${count} ordered actions`, async () => {
+      const source = await nativeHarness(count);
+      const budget = measuredBudget();
+      try {
+        const full = await source.session.getFullCurrent({ budget, chunkBytes: count >= 10000 ? 1024 * 1024 : 1024, pageLimit: 73 });
+        expect(full.actions).toEqual(source.actions);
+        expect(full.serializedObservation).toBe(source.serialized);
+        expect(createHash("sha256").update(full.serializedObservation).digest("hex")).toBe(source.capture.sha256);
+        const unicodeStart = Buffer.byteLength(source.serialized.split("中文完整")[0]!, "utf8");
+        expect(unicodeStart % 1024).toBe(1023);
+        expect(source.calls.filter(call => call.url.pathname.endsWith("/current"))).toHaveLength(1);
+        expect(source.calls.find(call => call.url.pathname.endsWith("/current"))?.body)
+          .toEqual({ client_session_id: "client-fixture", eager_scope: [...NATIVE_LOGICAL_SCOPE], expected_snapshot_id: null });
+        expect(source.calls.find(call => call.url.pathname.endsWith("/read"))?.body.cursor).toBe("fresh-reader-0");
+        expect(source.calls.filter(call => call.url.pathname.endsWith("/catalog"))).toHaveLength(Math.max(1, Math.ceil(count / 73)));
+        expect(budget.calls[0]).toEqual(["observation", source.bytes.length]);
+        expect(budget.active).toBeGreaterThan(source.bytes.length);
+        const identity = source.controller.clientIdentity();
+        await full.dispose();
+        await full.dispose();
+        expect(budget.active).toBe(0);
+        expect(() => full.observation).toThrow(/disposed/u);
+        expect(() => full.actions).toThrow(/disposed/u);
+        expect(() => full.serializedObservation).toThrow(/disposed/u);
+        expect(source.calls.filter(call => call.url.pathname.endsWith("/release"))).toHaveLength(1);
+        expect(source.controller.clientIdentity()).toEqual(identity);
+        expect(source.calls.some(call => call.url.pathname.includes("/controller/"))).toBe(false);
+      } finally { await source.controller.close(); }
+    }, count === 10000 ? 15000 : undefined);
+  }
 
   it("reserves each page before HTTP and shrinks to its actual wire bytes", async () => {
     const budget = measuredBudget();

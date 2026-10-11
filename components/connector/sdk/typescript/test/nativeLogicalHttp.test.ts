@@ -73,6 +73,19 @@ describe("native logical synthetic HTTP boundary", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("retains the 1000ms request deadline for an unfinished response stream", async () => {
+    let reads = 0;
+    let cancelled = false;
+    const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 1000, (async () => {
+      reads++;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"schema":')); },
+        cancel() { cancelled = true; } }));
+    }) as typeof fetch);
+    await expect(client.nativeLogicalRequest("read", { capture_id: "capture", cursor: "cursor", max_bytes: 10 })).rejects.toThrow(/timeout/iu);
+    expect(reads).toBe(1);
+    expect(cancelled).toBe(true);
+  });
+
   it("rejects over-budget encoded bodies, duplicate fields and invalid UTF8 before exposing records", async () => {
     for (const body of [Buffer.from('{"x":1,"x":2}'), Buffer.from([0xff])]) {
       const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000, (async () => new Response(body)) as typeof fetch);
