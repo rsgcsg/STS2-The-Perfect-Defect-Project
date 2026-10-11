@@ -22,6 +22,14 @@ the Host Runtime launcher. Policy Runtime is the current supervised implementati
 not a mandatory permanent process hop. A complete ordinary SDK-direct driver
 and the minimal replaceable Host core/extension map remain unfinished.
 
+[Selected convergence](../ARCHITECTURE.md#selected-convergence-and-change-rules)
+retains one ExecutionRuntime kernel and current separate supervision as default,
+without renaming Policy Runtime. The next architecture refactoring is narrow native Agent-port/
+environment dependencies; REST/NDJSON remain implementations. A later SDK-direct
+driver needs an actual capability/cost case and the same owner, budget/Stop,
+unknown, late-response, consumption/state and evidence guarantees; IPC is not a
+proved main bottleneck. This documentation does not implement that extraction.
+
 Native UI/headless are presentations of one official-game Host. Speed/presentation
 must preserve the selected contracts; scoped runtime evidence does not establish
 all Host equivalence or a qualified ordinary application default. Current trusted

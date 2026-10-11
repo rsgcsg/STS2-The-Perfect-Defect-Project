@@ -56,6 +56,54 @@ drivers preserve their original semantics while used; this is not a requirement 
 retain both forever. Retirement follows actual consumer, parity, rollback and archival
 reader needs, without rewriting old records, identities or qualification.
 
+### Selected convergence and change rules
+
+Retain one ExecutionRuntime kernel and the current separately supervised process
+as the default deployment. ExecutionRuntime names the controlled-execution role;
+the existing component remains Policy Runtime. Renaming it or eliminating a process
+hop is not a delivery goal. The selected default is:
+
+```text
+Agent process <-> AgentProgramPort (current NDJSON implementation)
+              <-> ExecutionRuntime <-> Connector SDK <-> Connector <-> Host/world
+```
+
+AgentProgramPort is the complete Agent's program boundary, distinct from the
+Agent-facing environment contract above. AgentProgram owns acquisition, strategy,
+choosing/timing and optional Models; current trusted execution supports zero or
+one Model. Runtime owns its admission, budgets/expiry/Stop, controller lifecycle,
+unknown fencing, consumption association and evidence duties. It owns neither
+inference nor gameplay legality; Connector and STS2 retain their authorities.
+The complete Agent may include a declared compatibility driver's fixed timing
+or legacy acquisition semantics. The process diagram does not move that behavior
+out of the Agent definition or authorize changing it during migration.
+
+For architecture cleanup, first extract narrow Agent-port and environment dependencies within the native
+execution owner, keeping REST and NDJSON as current implementations. This is the
+selected next convergence, not a completed source change or a general SDK-direct
+migration. This refactoring order does not block game/data work whose own prerequisites
+are satisfied. There is no benchmark establishing IPC as the principal cost. A later
+SDK-direct/in-process driver needs a real capability or measured cost reason, and
+the same execution owner/request/permission/evidence with common Stop/deadline,
+late-response, unknown and consumption/state guarantees. It must not create an
+independent run-management loop or substitute a Host lease for the user's budget.
+
+Every current, historical and future implementation follows the same change rules:
+
+| Change | Owning treatment |
+| --- | --- |
+| Representation or transport only | Adapt within the existing SDK/port/Input owner; preserve information/exposure order, actions/cancel, consumption/reset and error semantics. |
+| Capability or interaction meaning | Revise the owning versioned protocol/profile and its producer/consumer, recording and migration checks. Do not hide changes in an adapter. |
+| Component implementation substitution | Match declared requirements and run conformance, including failure and lifecycle guarantees; behavioral/native equivalence needs its own scoped evidence. |
+| Repeated duplicate authority, unexpressible real use case or unacceptable measured cost | Revisit the responsible abstraction under ADR-0016 and governance, with a minimal migration and retirement plan rather than preserving implementation shape. |
+
+These rules apply to the selected execution kernel and the logical interaction
+chain independently of deployment. Host core/extensions below are normative
+obligations to make explicit through real use cases and owning machine contracts;
+they do not declare a universal API already implemented or require every optional
+capability. Default supervision and legacy compatibility drivers do not freeze
+the architecture against evidence-backed future substitution or retirement.
+
 ### Host capabilities and requirement matching
 
 Host means the concrete world's capabilities, not the Host Runtime process launcher.

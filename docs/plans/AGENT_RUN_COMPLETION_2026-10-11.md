@@ -729,3 +729,20 @@ are the actual prerequisites; complete historical restoration is not.
 Broader mechanism, data/quality and G2/V1 obligations remain open. This update grants
 no extra game, real-data fit, paid compute or final approval; the USD20 envelope
 remains cumulative with observed USD0/no provider job.
+
+The selected project convergence retains a common ExecutionRuntime kernel and
+the current separate supervisor as the default. Policy Runtime remains the
+component name; the logical Agent/interaction-standard/Connector/Host chain is
+not a process layout. For architecture cleanup, first extract narrow native Agent/environment dependencies
+while retaining REST/NDJSON implementations; no completed extraction or IPC
+bottleneck is claimed here; that refactoring is not a prerequisite to unrelated
+game/data work. Future SDK-direct/in-process substitution requires a
+real capability/cost need and the same execution owner/request/permission/evidence,
+with common Stop/deadline, late-response, unknown and state/consumption guarantees.
+AgentProgram keeps strategy and optional Models; Runtime keeps its controlled-run
+duties and no inference/legality. All old/new/future combinations follow the
+[selected change rules](../ARCHITECTURE.md#selected-convergence-and-change-rules).
+Host core/extensions are clarified through actual use cases and owning contracts;
+this does not add a universal API, require permanent legacy drivers or authorize
+a new run-management framework. Dependent source work and final verification
+remain owning implementation gates, not completed by this document.

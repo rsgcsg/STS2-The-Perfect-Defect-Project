@@ -13,6 +13,10 @@ standard through Connector to Host capabilities, with an execution context acros
 those roles. Host is not synonymous with Host Runtime; SDK is an implementation
 library, and the Runtime-to-Agent program port is distinct from the environment
 interface. The table names current components, not mandatory deployment hops.
+The [selected convergence](ARCHITECTURE.md#selected-convergence-and-change-rules)
+retains a common ExecutionRuntime kernel and separately supervised default;
+Policy Runtime remains the component name. Native dependency-interface extraction
+precedes any future SDK-direct driver, under the same execution guarantees.
 
 > Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection
