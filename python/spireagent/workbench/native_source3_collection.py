@@ -993,6 +993,7 @@ class OwnedPipeChild:
             cwd=ROOT.parent,
         )
         self.incoming: queue.Queue[Any] = queue.Queue(maxsize=2)
+        self._terminal_error: BaseException | None = None
         self.stderr_bytes = 0
         self.reader_done = threading.Event()
         self.write_lock = threading.Lock()
@@ -1053,11 +1054,16 @@ class OwnedPipeChild:
             self.process.stdin.flush()
 
     def receive(self, timeout: float = 0.25) -> dict[str, Any] | None:
+        # Cache only after the ordered terminal marker is consumed, so every
+        # earlier queued message remains observable before permanent pipe EOF.
+        if self._terminal_error is not None:
+            raise self._terminal_error
         try:
             value = self.incoming.get(timeout=timeout)
         except queue.Empty:
             return None
         if isinstance(value, BaseException):
+            self._terminal_error = value
             raise value
         if not isinstance(value, dict):
             raise fail("child_pipe_object_required")
