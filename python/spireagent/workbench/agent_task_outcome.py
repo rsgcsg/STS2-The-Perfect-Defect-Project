@@ -130,7 +130,10 @@ def _composition(manifest: Mapping[str, Any], native: bool) -> dict[str, Any]:
         "manifest_id": manifest.get("manifest_id"),
         "agent": dict(manifest.get("agent" if native else "policy", {})),
         "adapter": dict(manifest.get("adapter", {})),
-        "runtime_artifact": dict(manifest.get("artifact", {})),
+        "runtime_artifact": {
+            "id": manifest.get("artifact", {}).get("id"),
+            "sha256": manifest.get("artifact", {}).get("sha256"),
+        },
         "models": (
             None
             if native

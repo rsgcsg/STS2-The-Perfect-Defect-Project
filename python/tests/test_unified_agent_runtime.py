@@ -113,6 +113,16 @@ def test_same_common_service_real_start_control_stop_and_original_request(
         )
     identity = registered["selection_id"]
     request = service.agent_request(identity, "start")
+    manifest_path = service.entry_path(service.selection(identity), "manifest")
+    original_manifest = manifest_path.read_bytes()
+    manifest = json.loads(original_manifest)
+    original_artifact_path = str((manifest_path.parent / manifest["artifact"]["path"]).resolve())
+    assert original_artifact_path not in json.dumps(request)
+    assert request["composition"]["implementation"]["runtime_artifact"] == {
+        "id": manifest["artifact"]["id"],
+        "sha256": manifest["artifact"]["sha256"],
+    }
+
     models = request["composition"]["semantic_definition"]["models"]
     assert models == [] if family == "teacher" else len(models) == 1
     world = tmp_path / "world.json"
@@ -210,6 +220,9 @@ def test_same_common_service_real_start_control_stop_and_original_request(
         report = stopped["evaluation"]
         assert report["evidence_verification"] == "pass", report
         assert report["agent_execution"]["status"] == "bound"
+        assert original_artifact_path not in json.dumps(report)
+        assert manifest_path.read_bytes() == original_manifest
+
         assert report["agent_run_request"] == original_ref
         assert (service.directory / original_ref["path"]).read_bytes() == raw
         assert report["agent_execution"]["run_id"] == loaded["startup"]["run_id"]

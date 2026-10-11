@@ -114,7 +114,9 @@ def describe(
     }
     implementation = {
         "adapter": dict(manifest.get("adapter", {})),
-        "runtime_artifact": artifact,
+        # Durable output identity; private launch paths remain in the hash-bound
+        # original manifest/config and are never copied into public composition.
+        "runtime_artifact": {"id": artifact.get("id"), "sha256": artifact.get("sha256")},
         "original_manifest_id": manifest.get("manifest_id"),
         "manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
         "config_sha256": hashlib.sha256(canonical_json(config).encode()).hexdigest(),

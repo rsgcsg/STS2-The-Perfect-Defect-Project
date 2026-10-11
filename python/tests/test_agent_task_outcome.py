@@ -815,6 +815,9 @@ def test_native_application_resolves_only_exact_original_composition(
     manifest_path.write_text(json.dumps(f.agent))
     entry = {
         "id": f.agent["manifest_id"],
+        "label": "Native learned metadata fixture",
+        "adapter": "stpd-native-structured-m2-agent",
+        "runtime_profile": "native-logical-v1",
         "config": config_path.relative_to(service.private_root).as_posix(),
         "manifest": manifest_path.relative_to(service.private_root).as_posix(),
     }
@@ -822,6 +825,15 @@ def test_native_application_resolves_only_exact_original_composition(
     monkeypatch.setattr(
         service, "selection", lambda identity: entry if identity == entry["id"] else None
     )
+    original_manifest = manifest_path.read_bytes()
+    composition = service.composition(entry["id"])
+    request = service.agent_request(entry["id"], "start")
+    assert composition["implementation"]["runtime_artifact"] == {
+        "id": f.agent["artifact"]["id"], "sha256": f.agent["artifact"]["sha256"],
+    }
+    assert str(package_dir) not in json.dumps(composition)
+    assert str(package_dir) not in json.dumps(request)
+    assert manifest_path.read_bytes() == original_manifest
     bound, reason = service._original_native_composition(verified)
     assert bound == raw and reason is None
     copied = service.directory / "agent-runs" / f.run["run_id"]
