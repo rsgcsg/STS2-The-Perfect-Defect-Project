@@ -728,21 +728,33 @@ strategy result. Earlier failures remain preserved. The current Native137 traine
 is available for operational diagnosis; retraining is not required to make it new.
 
 Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
-hosted head 6ddc9256 failed three OS leaves in full
-[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
-The owning TokenRanking regression repair at local baeb8958 is independently
-accepted with its original RED and one Reward/seven historical green cases;
-no latest-head hosted success is claimed. Two unchanged Windows test failures
-remain under a separate bounded diagnostic-only investigation. Episode f7fdbd1c's
-36 Application cases and final bounded synthetic common-process seam are independently
-accepted. Teacher retains the original passing test receipt/assertions, with its
-old raw temporary artifacts unavailable; final PublicM2 originals are independently
-verified. This is not a new two-case aggregate PASS or native/NN qualification.
-The default-CI process fixture lacked the supplied archive environment. The author
-is correcting that through the existing source-package owner and adding actual
-HTTP/CLI entry coverage; these new deltas are unexecuted. Legacy/root checks,
-metadata and CI remain pending. Native policy3's versioned per-episode recovery is under source
-implementation. No new game, inference, install or strategy result follows.
+retains failed [CI38148835498](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38148835498)
+at abbf7e2c: Windows1 failed, both Linux leaves and Windows2 passed. The missing
+C# typed empty-Store readiness at10s remains causally unknown; prepared DLL and
+original phases do not establish compilation/Torch or a Windows performance cause.
+The original60s faulthandler locates the extra120s in Python's consumed-EOF drain.
+Reviewed80f87ad1 makes the consumed FIFO terminal exception persistent, preserving
+queued messages, unknown classification, original finish and all deadlines. Actual
+original RED and repaired four-case GREEN passed their expected outcomes; integrated
+owner tests55 +62 subtests passed. Reviewed8c25801f retains same-Error pre-cleanup
+pending/events and post-close bounded raw stderr/actual exit; four actual Node
+lifecycle tests and TypeScript passed. The outer Python/Node/C# diagnostic serializer
+has static review only. Seven current Connector BOM fields advance test provenance;
+component versions/contracts and historical package/load records remain unchanged.
+Repository/closeout checks passed; a fresh full hosted candidate remains required.
+Earlier6dd/abbf failures and local baeb acceptance retain their exact original scope.
+
+Separately, Root's local native candidateec0152a1 includes accepted Episode/Host29
+and Runtime34/Evidence30 source/package gates. App40 cases and two synthetic
+Teacher/M2 process cases passed; the first explicit-archive invocation failed the
+old33 pin before Root selected the existing current-source package fixture. The
+existing original8eb model now has an immutable policy3 derivativee894751a, with
+unchanged weight bytes and exact43-tensor/three-forward/reset CPU parity. Runtime34
+was installed through the existing owner, preserving old stopped session and33
+rollback, with loaded=false/activated=false. This separate work is not PR176 native
+qualification. A same-instance ordinary prepare → genuine registration → cold load
+→ explicitly allocated Auto → owning finish remains pending; no new game result,
+new fit, Human evidence, strategy or default promotion follows from local gates.
 
 The user retains final V1 data/Agent selection. The reviewed private proposal is
 awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical

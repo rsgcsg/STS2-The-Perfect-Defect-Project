@@ -1,8 +1,9 @@
 # Current project context — Host/Agent contracts and learning delivery
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Current develop is
-`32298949711e886beb483614b87eb806160fc349`; Root's execution checkout remains
-frozen `e47964dce760061474aab701da65eeebf0f43959`. These are different sources.
+`32298949711e886beb483614b87eb806160fc349`. Root's separate local native candidate
+is `ec0152a1`; `e47964dce760061474aab701da65eeebf0f43959` remains the source of
+the last actual game. This PR176 source and Root's native candidate are distinct.
 The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
 Resolve live GitHub refs and original owner records before acting; exact source
 and owner records override this file.
@@ -66,19 +67,23 @@ ordinary training/export/registration and explicit pause/resume ownership. Final
 independent review accepts 48f for PR preparation in that source/synthetic App scope;
 full CI/integration, real-corpus fit and data/strategy quality remain pending.
 
-[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) hosted
-6ddc9256 failed three leaves in
-[CI38140712473](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38140712473).
-Its TokenRanking regression repair at local baeb8958 has independent acceptance
-with one Reward and seven historical cases passing; this is not a latest hosted
-pass. Two unchanged Windows test failures remain under bounded diagnostic work.
-Episode f7fdbd1c's 36 Application cases and bounded synthetic common-process seam
-have independent acceptance: Teacher retains prior passing receipt/assertions only
-(old raw artifacts unavailable); final PublicM2 originals are verified. No new
-two-case aggregate PASS is claimed. The default-CI fixture lacked the supplied
-archive environment; the author is using the existing source-package owner and
-adding actual HTTP/CLI entry coverage. These new deltas are unexecuted. Legacy/root,
-metadata and CI remain pending; no installed/native/default or strategy qualification.
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) at
+abbf7e2c failed [CI38148835498](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38148835498):
+Windows1 failed; Linux1/2 and Windows2 passed. Missing typed Store readiness within
+10s remains unexplained. The original stack separately proves an extra 120s drain
+after consumed EOF. Reviewed80f87ad1 preserves ordered terminal failure; its real
+RED and four-case GREEN pass, then integrated owner55 +62 subtests pass. Reviewed
+8c25801f retains bounded original backend diagnostics; four lifecycle tests and
+TypeScript pass. Seven current Connector BOM fields reflect test-only provenance;
+versions/contracts/recorded artifacts stay unchanged. A fresh full hosted gate is
+required; original CI failures remain failed and no Windows cause is invented.
+
+Root's separate Episode/Host29/Runtime34 source and package gates passed, including
+40 App and two synthetic common-process cases. Existing8eb weights have a new
+immutable policy3 derivative with exact43-tensor/three-forward/reset CPU parity.
+Runtime34 was installed through its owner with old session and rollback preserved,
+loaded=false/activated=false. Ordinary native preparation/registration/execution
+is still pending; none of these local facts grants this PR native qualification.
 
 Run A and B in parallel: A diagnoses the Native137 stale block with its existing
 trained Model and completes reusable ordinary Episode prepare/run/Stop/typed close;
