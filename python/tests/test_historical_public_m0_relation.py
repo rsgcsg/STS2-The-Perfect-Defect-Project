@@ -101,7 +101,7 @@ def synthetic_originals(tmp_path, monkeypatch=None, compressed=False):
                 row["split"],
                 "combat_turn",
                 "fixture",
-                "same public state",
+                "same public\nstate\n含义",
                 ("first", "second"),
                 ("first-key", "second-key"),
                 index % 2,
@@ -218,7 +218,9 @@ def synthetic_originals(tmp_path, monkeypatch=None, compressed=False):
 
 def frozen_byte_fixture(archive, relation):
     """Unadmitted storage fixture; no configured owner holds this placeholder proof."""
-    samples = tuple(replace(sample, state_text="same public state") for sample in relation.samples)
+    samples = tuple(
+        replace(sample, state_text="same public\nstate\n含义") for sample in relation.samples
+    )
     sample_bytes = b"".join(json_bytes(sample.to_dict()) for sample in samples)
     value = {
         **relation.value,
