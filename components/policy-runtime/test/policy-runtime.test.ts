@@ -2035,7 +2035,10 @@ describe("continuous native decision recovery", () => {
     expect(scorer).toHaveBeenCalledTimes(2);
     clock = 850;
     await runtime.tick();
-    expect(runtime.status().mode).toBe("human"); // bounded repeated stale failures
+    expect(runtime.status().mode).toBe("auto");
+    clock = 10_100; // Absolute first-stale anchor, never renewed by fresh catalogs.
+    expect(await runtime.tick()).toMatchObject({ reason: "stale_recovery_exhausted" });
+    expect(runtime.status().mode).toBe("human");
     expect(requests).toHaveLength(3);
     expect(new Set(requests.map(request => request.requestId)).size).toBe(3);
     expect(sleep).not.toHaveBeenCalled();
