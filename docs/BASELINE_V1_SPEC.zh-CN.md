@@ -83,12 +83,13 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 
 共享抽象须由默认结构 M2 和另一实际查询/结构请求消费者共同检验。历史合成例子只能提供反例。新增机制扩 owning adapter，不另建模型仓库、原生动作队列、许可账本或因果 tracker。
 
-### 共同组合与本次执行：拟议合同边界
+### 共同组合与本次执行：已采纳方向与实现边界
 
-[ADR-0016](adr/0016-agent-composition-and-execution-request.md)为 **Proposed**：
+[ADR-0016](adr/0016-agent-composition-and-execution-request.md)为 **Accepted（仅架构/迁移范围）**：
 统一对象、组合、生命周期保证与替换判据，不要求一个 wire、一个大类或三个登记系统。
 既有共同应用/控制/store 已成立，`AgentTaskOutcome` 共同结果投影已实现；共同可执行
-`AgentComposition`／`AgentRunRequest` 启动合同尚未因此落地。以下是拟议方向，不是新
+`AgentComposition`／`AgentRunRequest` 的当前 P1 A+B 已授权实施、未验收。以下采纳方向
+的具体实现仍需验证，不表示新
 产品能力、公开 wire 或 G1/G2/V1 通过声明；既有 owner、ID 与资格保持原义。
 
 | 必须分开的层次 | 声明内容 | 身份／执行边界 |
@@ -97,15 +98,16 @@ Act/Await/Abstain/Close，scores 可选；旧评分端口仍按旧 Manifest 要�
 | 本次请求与解析绑定 | 组合/Goal 引用、初始条件、环境/资源选择、授权与有限预算、实现 driver/package | 固定本次 intent，现有领域 owner 准备/执行；实际 Host/Runtime/attempt IDs 由原回执关联，不再建控制器或 scheduler |
 | 产物与来源 | 原 Model/参数、程序/实现产物、Input/Target、Source/use、code/lock 与原件 | 复用现有 store/registry/IDs；同义或同数值不抹去不同 provenance，无关提交不应成为语义变化 |
 
-拟议同一描述必须实际驱动 catalog、readiness、启动和结果引用，不能仅在展示层镜像。
+同一描述必须实际驱动 catalog、readiness、启动和结果引用，不能仅在展示层镜像。
 旧入口先翻译为该请求，保留并显示**各入口实际已有** Task/program/profile/budget 默认值；
 不假定所有旧端口默认相同。不可拆的旧包用 `legacy_bound_composition` 引用原件，
-缺元数据保持 unknown，不虚构新的 Model/Goal。训练在同一执行引用框架中使用有类型的
-Recipe/InputSpec/TargetSpec/初始化 workload，仍由原训练 owner 执行，不假扮游戏 Agent。
+缺元数据保持 unknown，不虚构新的 Model/Goal。训练的 Recipe/InputSpec/TargetSpec/初始化
+workload 是同框架的未来映射，仍由原训练 owner 执行，不假扮游戏 Agent；它不属于
+当前 P1 A+B 或首个结构门。具体实施合同见现有 [Local model task flow](../python/docs/LOCAL_MODEL_TASK_FLOW.md)。
 
 现有 TaskSpecs 中混合的策略和端口见证要求保持其旧身份/行为/包绑定，包括第5节的
 既有 TaskSpec 版本。新 Goal 关系必须显式映射，不能回写历史或将旧默认重新解释。
-拟议共同启动的首个结构门至少覆盖 **Public M2 有状态 decision-only** 与 **无模型 Teacher
+共同启动的首个结构门至少覆盖 **Public M2 有状态 decision-only** 与 **无模型 Teacher
 Agent-session**：前者保留原消费/reset，后者 `models=[]` 而不伪造权重；同一描述经过
 真实选取/预检/领域启动/Stop/结果接缝。此门不替代默认结构 M2、全场景或真实游戏资格。
 用户举例是设计探针，不是完整选项表；新增合法组合按需求扩拥有的能力，不预建全部组合。

@@ -1,26 +1,28 @@
 # ADR-0016: Agent composition and execution request
 
-Status: Proposed
+Status: Accepted (architecture and migration scope only)
 
 Date: 2026-10-11
 
 ## Decision status and scope
 
-本提案给一个项目采用同一对象模型、组合规则、生命周期保证和替换判据。推荐在现有
-应用内形成可执行的 `AgentComposition` 与有类型的 `ExecutionRequest`；游戏分支称
-`AgentRunRequest`，训练仍是 Recipe workload。它不是一个 universal step、统一 wire、
-通用工作流引擎或额外平台。字段与迁移须经过独立设计/owner 审查，`Proposed` 不授予
-启动、原生操作、数据 use/训练、付费、发布或 G1/G2/V1 资格。
+独立架构审查与 Root 已采纳本决策的有限架构/迁移方向：同一对象模型、组合规则、
+生命周期保证与替换判据，在现有应用内形成可执行 `AgentComposition` 与有类型的
+`ExecutionRequest`；游戏分支称 `AgentRunRequest`。具体编码/执行路径仍需独立代码
+审查与 owning 验证。训练是未来 Recipe workload 映射，不属于当前 P1 A+B 或首个结构门。
+这里不建立 universal step、统一 wire、通用工作流引擎或额外平台。`Accepted` 仅表示
+上述决策被采纳，不表示实现完成或授予额外启动、原生操作、use/训练、付费、发布及
+G1/G2/V1 资格。
 
 [基线第2节](../BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)拥有共同术语/责任；
-本 ADR 拥有拟议描述/请求及后续变更规则。具体环境、端口、Model/Input/Target 合同和
-原件仍由既有 owner 维护。正在推进的 owning 修复不等待一次全局重构。
+本 ADR 拥有已采纳的描述/请求方向及后续变更规则。具体环境、端口、Model/Input/Target
+合同和原件仍由既有 owner 维护。正在推进的 owning 修复不等待一次全局重构。
 
 ## Problem and exact grounding
 
 [最高层源码审计](../evidence/PROJECT_ARCHITECTURE_AUDIT_2026-10-11.md)说明已有共同
 权威、应用入口和产物基础；不能把“共用启动服务”当作所有组合已有共同启动合同。
-本提案的第一缺口是 **应用选择/预检/启动/结果没有统一采用同一完整组合描述**。
+本决策针对的第一缺口是 **应用选择/预检/启动/结果没有统一采用同一完整组合描述**。
 
 - [AgentTaskOutcome](../../python/spireagent/workbench/agent_task_outcome.py)已经
   实现共同结果解释；它读取已封存原件，不是共同 startup contract，不能继续把该结果
@@ -36,7 +38,7 @@ Date: 2026-10-11
 - 历史 public/native TaskSpecs 固定了当时的 strategy、最终观察消费或端口结束表达。
   保留其身份是必要的；把这些混合绑定永久当成唯一 Goal 抽象则限制合法组合替换。
 
-## Proposed decision
+## Accepted architecture and migration decision
 
 ### 1. 定义、绑定、原件是三层，不强制三套登记
 
@@ -55,7 +57,7 @@ Date: 2026-10-11
 
 ### 2. AgentComposition 的同一有类型描述
 
-拟议 `spireagent/agent-composition-v1` 描述由可信代码/已验证 manifest 解析；下表固定
+已采纳的 `spireagent/agent-composition-v1` 描述方向由可信代码/已验证 manifest 解析；下表固定
 首版必须回答的语义字段，具体编码由实现 owner 在两个结构门前审查冻结。它不是
 当前新增的公开 wire，也不接受任意动态插件、反射路径或无类型配置 blob。
 
@@ -111,11 +113,12 @@ native 的原 body/ACK/Close 分别留在组合/兼容端口绑定，不能硬�
 
 ### 4. 同一 ExecutionRequest，领域 workload 保持有类型
 
-拟议 `spireagent/execution-request-v1` 固定一次意图；`AgentRunRequest` 是其游戏
+已采纳的 `spireagent/execution-request-v1` 方向固定一次意图；`AgentRunRequest` 是其游戏
 workload 的有类型视图，不再保存第二份冲突请求。共享的是引用/权限/资源/预算和结果
-关联规则，领域 payload 与执行 owner 不合并。
+关联规则，领域 payload 与执行 owner 不合并。当前 P1 A+B 只推进 Agent 描述与游戏
+请求；本表的训练列不要求当前修改 LocalTrainingService/recipe 或统一训练启动。
 
-| 请求部分 | 游戏 `agent_run` | 训练 `training` |
+| 请求部分 | 游戏 `agent_run` | 训练 `training`（未来映射，非当前 P1/首门） |
 | --- | --- | --- |
 | `workload` | composition/selection ref、独立 Goal ref（可显式空）、witness binding、合法 state initialization ref | recipe、InputSpec/Input ref、TargetSpec、initialization/checkpoint ref、原 use/partition refs；可有明确导出默认组合 |
 | `environment_request` | 实际支持的 Host/profile/起点选择；实例/generation/episode 由原 owner 准备 | 无需假游戏环境；只有真实 recipe 需要时引用其领域条件 |
@@ -128,7 +131,7 @@ workload 的有类型视图，不再保存第二份冲突请求。共享的是�
 的 ID 写成 ready，也不反向修改 intent。预算记录 units/owner/cumulative scope，不能
 靠新请求/恢复重置同一授权额度。资源标签与同源代码不证明行为/数值/恢复等价。
 
-训练走现有 LocalTrainingService/recipe/compute owner，不调用虚构 Agent.step。
+未来训练映射继续走现有 LocalTrainingService/recipe/compute owner，不调用虚构 Agent.step。
 改变数据/Target/初始化产生其应有新 Run；从旧 checkpoint 初始化新任务与恢复同一
 checkpoint 身份分开。旧 recipe 固定的部署策略保持 provenance；若实际 Input/数值/状态
 兼容，可形成新 Agent composition/package 引用原 Model，而不是伪装重新训练或 resume。
@@ -191,7 +194,10 @@ manifest/producer fixtures 与原服务进程 seam，不为了设计先跑训练
 | Teacher：model-less Agent-session | 同一 schema 的 `models=[]` 到真实 manifest/driver/owner；无假 Model/weights/download，Consume/ACK/Close 与脚本 state 明示；该入口若仍强制 model_id，不能宣称结构门完成 |
 | 旧入口与独立结果 | 表示各自实际 Task/program/default；同一高层 Goal 经显式 legacy witness mapping，M0 缺见证仍 unknown，Task 完成与后续 cleanup failure 可共存 |
 | 正常/负例公共接缝 | 未支持组合、wrong artifact/driver/history、重复/stale、Stop/cancel/unknown/recovery；用最低真实 producer-reader 层验证，不以 mock controller 宣称 native 顺序 |
-| 训练 workload | 原 recipe/Input/Target/use/init/Run 从共同请求引用准确传递；不需要 Agent Model/Goal，不丢 checkpoint/授权规则或改变学习身份 |
+
+训练 workload 的验证留给未来独立增量：准确传递原 recipe/Input/Target/use/init/Run，
+保持 checkpoint/授权与学习身份，不要求 Agent Model/Goal。它不在上表的当前 P1 A+B
+或首个结构门中。
 
 随后映射 M0 固定 chooser 与 native learned 组合，沿实际 caller 验证；不把首门升级
 为所有 Actor/GUI/Host/资源能力或真正合理整局。工程可组合、环境可执行、数据可用、
@@ -236,9 +242,12 @@ manifest/producer fixtures 与原服务进程 seam，不为了设计先跑训练
 新 Model/训练、付费资源、一般 scheduler、第二 controller/许可/use/store/因果权威，
 不废弃全部旧端口，不改变当前安装，也不标记 G1/G2/V1 或基本策略通过。
 
-## Remaining decisions before implementation
+## Implementation and later refinement
 
-独立 review/Root 需确认：首版 descriptor 与共同请求的具体可信解析/存储引用（在既有
-owner 内）、legacy Goal/witness 映射与各真实默认值、首个 Public M2/Teacher caller 和
-结构门范围。确认后只冻结这些实际消费者所需 schema/版本/adapter；剩余组合不是
-前置清单，现有 owning 修复和更高资格工作继续保持自己的授权与证据。
+当前 P1 A+B 已授权实施、尚未验收；具体接口、原 API/默认值、启动/结果接缝及实施
+约束由现有 [Local model task flow](../../python/docs/LOCAL_MODEL_TASK_FLOW.md) 拥有，
+不在 ADR 再维护一份实现清单。实现 owner 仍须以实际 Public M2/Teacher caller 验证
+可信描述/请求引用、legacy Goal/witness 映射与真实默认值，再冻结具体编码和兼容版本。
+训练 workload 是未来另行 owning 映射，不是当前 P1 或首门的前置。剩余组合不是强制
+清单，existing unknown、原 identity/byte/pin 校验及 archived readers 规则保持；采纳
+方向不改变当前失败/资格，其他 owning 修复和更高资格工作保留其授权与证据。
