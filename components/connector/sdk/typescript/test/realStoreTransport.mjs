@@ -40,7 +40,7 @@ export async function openRealStoreTransport(options = {}) {
   const backend = (options.backendFactory ?? spawnBackend)();
   trace("backend_spawned");
   const pending = [], stderr = [], requests = [];
-  let failure, exited = false, afterReply, beforeRequest, stderrBytes = 0;
+  let failure, exited = false, afterReply, beforeRequest, stderrBytes = 0, stderrObservedBytes = 0;
   const fail = error => {
     trace("backend_failure");
     failure ??= error;
@@ -53,6 +53,7 @@ export async function openRealStoreTransport(options = {}) {
     resolve({ code, signal });
   }));
   backend.stderr.on("data", value => {
+    stderrObservedBytes += value.length;
     const bytes = Buffer.from(value).subarray(0, Math.max(0, 65536 - stderrBytes));
     if (bytes.length) { stderr.push(bytes); stderrBytes += bytes.length; }
   });
@@ -126,7 +127,17 @@ export async function openRealStoreTransport(options = {}) {
         return stopBackend(false);
       } };
   } catch (error) {
+    // Keep the unresolved command before close rejects/removes it. Spawning or
+    // writing to a local pipe is not a typed producer acknowledgement.
+    const beforeCleanup = { backend_pid: backend.pid ?? null, events: events.slice(-12),
+      pending_operations: pending.map(value => value.operation).slice(0, 12) };
     server?.closeAllConnections(); server?.close();
-    await stopBackend(true); throw error;
+    const cleanup = await stopBackend(true);
+    // The same Error still owns the failure. Preserve bounded original bytes
+    // after actual close has drained stderr, separately from any display view.
+    error.realStoreStartupDiagnostics = { before_cleanup: beforeCleanup, cleanup,
+      stderr_original: Buffer.concat(stderr), stderr_bytes: stderrObservedBytes,
+      stderr_retained_bytes: stderrBytes, stderr_truncated: stderrObservedBytes > stderrBytes };
+    throw error;
   }
 }
