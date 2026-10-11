@@ -49,8 +49,8 @@ allowance is consumed. No additional game is allocated.
 - **Runtime32** source9b092a51 contains the independently accepted finite recovery
   window. Combined461 tests/3 existing optional skips and repository gates passed.
   Archiveccaf03a4/contentd21ed735/code95b769a2 passed actual compiled four-stale recovery
-  and idle-expiry probes with both typed seals. It is pinned; owner installation and
-  any actual use remain separately recorded. Mod42 and SDK production bytes are unchanged.
+  and idle-expiry probes with both typed seals. Owner installation is verified as32;
+  actual game use remains separately recorded. Mod42/SDK production bytes are unchanged.
 - **Common composition/request** sourcea164+b507 is independently accepted and merged.
   Actual Teacher and PublicM2 process paths use the same service/registry/Stop/result
   owners. All270 application-owner tests passed with exact rc32; fresh descriptors and

@@ -470,3 +470,9 @@ After any failure retain the exact cause/unknowns and cleanup, then reassess; no
 automatic game attempt is allocated. Summary, reasonable strategy, Human and full
 G1/G2/V1 acceptance remain distinct. Rollback uses the retained rc31 archive/pin and
 existing Mod42/Mod41 owner receipts, not a source reset masquerading as deployment.
+
+Owner install update: the exact rc32 archiveccaf03a4 was installed through the existing
+Runtime installer into the existing common model state. Actual installed contentd21ed735,
+code95b769a2 and source9b092a51 match the pin. This is installation only. The retained
+rc31 archivee58b448b and original pin provide rollback; no Model/weights or historical
+Agent evidence were modified. Final frozen caller and actual load gates remain required.
