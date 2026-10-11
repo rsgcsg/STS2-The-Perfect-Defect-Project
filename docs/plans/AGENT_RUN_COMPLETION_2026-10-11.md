@@ -313,3 +313,46 @@ Keep the broader G2/V1 requirements and user approval in the original execution
 matrix. Public M0 closure scope, full Agent product selection, downloaded Public
 model reuse and general resource placement remain later audit recommendations,
 not mandatory additions to this bounded packet.
+
+
+## Distinct withdrawal candidate and next bounded observation
+
+After closed Auto3, Root integrated independently accepted Connector repair968c866e
+and application reason repairf78f32c7. The Connector alone owns the sticky20s
+run/combat/player/turn availability window; Runtime receives supported settling
+with no current command and retains its existing limits. Complete richer native
+actions remain available. This is a source correction, not proof of Auto2's cause
+or a guarantee that later native actions execute.
+
+Connector1.3.0-rc.23 and Mod0.2.0-rc.42 source1c7f78ce/BOM are the new candidate.
+Clean builda42089fd produced Mod2ef3dcf7/MVIDddf4c579 and Connector526d6748/
+MVID41bbabf5. Root repository/version/build gates passed after correcting a missing
+CURRENT boundary heading and stale current-component BOM pointers; both failed
+records remain preserved. Historical source/artifact/runtime entries were not
+relabelled. Runtime31 archivee58b448b, source82c9f166 and its original SDK package
+remain pinned; no Runtime rebuild or update is implied by Connector source drift.
+
+Root allocates at most **one distinct Auto4** after independent metadata/build and
+installed-consumer compatibility review, owner installation/rollback and final
+caller/identity checks. This follows the user's continued engineering authority
+and does not reopen Auto3. Retain the same original d6 Model, explicit reward
+program and M0SUMMARYPILOT111 seed:2000 submissions/4000 program calls/1800s
+autonomy,1830s caller and2160s Host bound. New request/source/Mod/run/output
+identities are mandatory. Freeze source and installed bytes while it runs; one
+local heavy slot,2CPU, no additional training or paid job.
+
+The narrow observation is whether genuine native withdrawal can wait within the
+existing Runtime contract and return to supported input, followed by measured
+progress or an honestly retained failure. Expiry/unsupported/unknown keeps the
+existing handoff/taint/Stop semantics; there is no replay, hidden-state probe,
+manual gameplay, longer timeout or synthesized summary. Preserve sealed evidence,
+original task/outcome, released control and signed unforced Host closure. A failure
+starts diagnosis with its new evidence, never an automatic extra Auto attempt.
+
+The separately authorized P1 A+B composition/request implementation continues in
+its isolated worktree. ADR-0016 accepts architecture/migration direction only;
+actual same-service Teacher/PublicM2 startup/Stop/result tests and independent
+source review determine its delivery. It need not delay this independent native
+observation, and its source cannot be imported during a frozen run. Training and
+general placement remain later scope. Cumulative paid GPU spend remains USD0 of
+the same USD20 envelope, with no provider job started.

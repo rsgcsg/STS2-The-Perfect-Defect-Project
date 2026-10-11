@@ -76,7 +76,7 @@ following exact native button withdrawal; Runtime follows its existing observed
 handoff contract. The earlier same-gap successor was followed by round2 evidence;
 no final queued-action execution or Auto2 cause is proved. Root accepted both bounded
 follow-up scopes; both implementations are now independently reviewed and integrated
-as recorded below. No additional native run has been allocated or claimed.
+as recorded below. One distinct Auto4 is now conditionally allocated in the active packet; no execution yet.
 
 The canceled-Defend log can also result from ordinary native execution-time revalidation;
 its wording does not prove a paused-action bug. The inspected controller-release path does
@@ -87,8 +87,8 @@ so the precise readiness failure remains unknown.
 
 Connector withdrawal repair968c866e is independently accepted and integrated:
 762 Host,25 focused,232 SDK and126 portable checks passed at the author source.
-Root candidate Connector23/Mod42 versions and BOM are committed; build/install and
-any distinct native validation remain pending. Installed Mod41 remains the Auto3 artifact. Application reason repair
+Root candidate Connector23/Mod42 versions and BOM are committed; clean builds and root gates passed. Independent metadata review, install and
+Auto4 remain pending. Installed Mod41 remains the Auto3 artifact. Application reason repair
 f78f32c7 is integrated with42 checks; only the exact terminal handoff reason/reference
 is added, never a changed task/outcome or rewritten original Auto3 report.
 
@@ -97,7 +97,7 @@ joins233 historical user messages and current code. Shared owners/results exist;
 a common executable startup contract is not yet delivered. AgentComposition and
 AgentRunRequest A+B implementation is active in an isolated worktree: PublicM2
 stateful and model-less Teacher must use the same existing service/registry.
-ADR-0016 direction is under adoption review; this is not G1/G2/V1 acceptance.
+ADR-0016 architecture/migration direction is adopted; this is not G1/G2/V1 acceptance.
 
 No Runtime production change, queue gate, timer extension or new environment profile
 is allocated to the withdrawal repair. Preserve the rc31 package/pin when its actual
