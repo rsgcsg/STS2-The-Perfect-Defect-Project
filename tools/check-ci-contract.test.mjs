@@ -26,6 +26,16 @@ test("CI contract rejects unscoped push duplication", () => {
   assert.ok(ciWorkflowErrors(source).includes("CI push trigger must be branch-scoped"));
 });
 
+test("CI contract requires an unconditional committed-patch barrier before routing every scope", () => {
+  const error = "CI plan must check the committed patch unconditionally before routing";
+  assert.ok(ciWorkflowErrors(currentSource().replace(" --check-patch", "")).includes(error));
+  assert.ok(ciWorkflowErrors(currentSource().replace("      - id: route\n",
+    "      - id: route\n        if: github.event_name == 'pull_request'\n")).includes(error));
+  assert.ok(ciWorkflowErrors(currentSource().replace(
+    "CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}",
+    "CHECK_BASE: HEAD")).includes("CI plan must retain the exact event comparison base"));
+});
+
 test("CI contract rejects replacing selected gates with a hand-picked subset", () => {
   const source = currentSource().replaceAll("run: node tools/check-plan.mjs execute", "run: npm --prefix components/annotator run test");
   assert.ok(ciWorkflowErrors(source).includes("Windows portability must run the selected root check"));
