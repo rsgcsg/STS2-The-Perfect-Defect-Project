@@ -687,10 +687,33 @@ one cumulative USD20 envelope.
 
 Complete the selected source/local/hosted checks, exact identity/BOM/rollback and
 independent review, canonical docs and draft PR171 delivery/report. CI380879 remains
-failed in all four leaves; fresh selected CI must retain exact source/observed status
-and is pending. Source integration cannot promote these receipts to Human, natural
+failed in all four leaves. CI38095716370 on f3 completed/failure: both Linux leaves
+passed, both Windows leaves failed, portable aggregate failed. Its CI merge checkout
+was `740abcaf2e2f7517624ff801203942f99367326d` over base4e16/headf3. A new full selected
+run is required for the following reviewed repairs; no prior green transfers. Source integration cannot promote these receipts to Human, natural
 summary, basic strategy or full G2/V1 acceptance. The final Auto2 attempt is closed;
 continue preserving its failure/unknowns and consumer source provenance.
+
+
+Windows repair `945c07c4` preserves exact UTF-8 fixture bytes on Windows and
+checks cancellation by the actual parent observation before cancel, allowing equal
+coarse clock ticks without weakening progress/identity checks. The clean candidate
+passed56 focused checks. Follow-up `64850707` prepares the actual immutable C#
+bridge once before each test class spends a collection budget, while each scenario
+still owns a fresh backend, empty Store, HTTP/SDK/Teacher chain. Normal collection
+remains30s, readiness10s and preparation60s;6 focused checks passed in8.54s, including
+the real post-preparation deadline and early-kill diagnostic cases. Both source diffs
+are independently accepted and normally merged on this old delivery topic.
+
+The controlled original-source32s build-delay probe reached the30s parent deadline,
+then typed readiness only at34.71s. It demonstrates a possible setup-budget failure;
+its POSIX exit0 does not explain the original Windows exit1, whose precise phase was
+not recorded. Bounded synchronous fixture phase records now survive abrupt exit.
+No production, CI, lock, component identity or request deadline is changed by these
+repairs. Actual Windows success still requires the new hosted run. Separately,
+Windows SIGTERM maps to process termination, so the current pipe owner cannot infer
+graceful Node cleanup merely from sending that signal; cross-platform cleanup
+qualification remains a later owning investigation, not a claim of this fixture fix.
 
 The latest user explicitly requests continuation after this closeout. The next phase
 is the full topmost architecture audit and external-reference comparison, followed

@@ -26,8 +26,9 @@ history. Runtime rc30 source/package/identity and independent review plus exact
 installation are accepted. Its separate M0 Auto2 made bounded reward progress but
 ended incomplete/tainted at `successor_not_stable`, without summary. Typed seal and
 Stop/signed Host cleanup and independent after-run review accept a valid sealed,
-tainted failure. All four recorded CI leaves failed;
-reviewed repairs require fresh selected CI. No Human/scientific, basic-strategy or
+tainted failure. CI380957 on f3 completed/failure: both Linux leaves passed and
+both Windows leaves failed. Independently reviewed test-only corrections945/648
+require fresh full selected CI; no hosted Windows pass is claimed. No Human/scientific, basic-strategy or
 full G2/V1 acceptance follows. Aggregate provider spend is USD0. The current scope
 finishes coherent delivery/report, then continues the newly requested architecture/
 external-reference audit and capability work. It adds no native replay to this packet.

@@ -61,8 +61,10 @@ reward-loop/strategy pass. The original13 pinned files and sealed bytes are pres
 The read-only legacy data inventory finds1537 TRAIN and8 DEV Defect decisions.
 Sequence-only segments do not qualify M2 history; gaps, exact recorded current-game/
 A0 identity and useful independent whole-game evaluation remain unresolved. No new
-Source/fit or partition reassignment follows from that inventory. All four leaves of
-the recorded CI attempt failed; reviewed repairs require fresh selected CI.
+Source/fit or partition reassignment follows from that inventory. CI380957 on f3
+completed/failure: Linux1/2 passed, Windows1/2 failed. Reviewed test-only repairs945
+and648 preserve exact bytes, causal cancel checks and separate bridge preparation
+from the unchanged collection budget. Fresh selected full CI remains required.
 
 ## Current closeout and next phase
 
@@ -81,10 +83,10 @@ candidate/attempt identities and the public/native protocol mapping; shared uppe
 controls retain distinct execution branches. No further training/provider work
 was started; aggregate spend remains USD0 within the cumulative USD20 envelope.
 
-The next phase is active: synthesize the read-only topmost architecture and legacy
-protocol audits with primary external references, then continue capability work.
-Investigate the common outcome/successor boundary from original Auto2 evidence and
-source before choosing any repair. Preserve source freezes for future consumers,
+The architecture audit and primary-reference comparison are complete. The separate
+`codex/agent-run-completion` topic continues common outcomes, bounded successor
+diagnostics and native End Turn input fidelity; it has independent source reviews
+and its own artifact/runtime gates. These new changes are not part of PR171. Preserve source freezes for future consumers,
 unknown/no-retry rules and distinct attempt identities. Pending diagnosis is not a
 fix or a new-game authorization inside this packet.
 
