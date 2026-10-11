@@ -1,79 +1,83 @@
-# Current project context — Agent completion and Native Host
+# Current project context — Host/Agent contracts and new learning chain
 
-Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; lead worktree
-`SpireAgent-g1-s0-integration`, topic `codex/public-m0-goal-delivery`.
+Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Current develop is
+`32298949711e886beb483614b87eb806160fc349`; Root's execution checkout remains
+frozen `e47964dce760061474aab701da65eeebf0f43959`. These are different sources.
 The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
-Resolve live GitHub refs and original owner records before acting;
-current source and owner records override this file.
+Resolve live GitHub refs and original owner records before acting; exact source
+and owner records override this file.
 
 ## Goal and routing
 
-Deliver reasonable continuous real-game play and one composition/change logic for
-old, new and foreseeable planned implementations. Start at the
-[active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection),
-[abstraction reconciliation](../evidence/UNIFIED_ABSTRACTION_RECONCILIATION_2026-10-11.md),
-[ADR-0016](../adr/0016-agent-composition-and-execution-request.md) and
-[G2/V1 matrix](../plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
-Task, Agent composition, environment/resource binding, execution and results retain
-existing owners. Current trusted zero/one-model support is narrower than future
-logical composition; arbitrary plugins and general placement are not implemented.
+Continue stable environment → new data/management → real training → Model/Agent
+→ execution/evaluation. Historical M0/M2 recovery tests composition/substitution
+and cost; it is not the goal or a prerequisite to all new learning. Read the
+[active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-integration-and-completed-attempts),
+[baseline](../BASELINE_V1_SPEC.zh-CN.md),
+[architecture](../ARCHITECTURE.md#product-boundary) and
+[ADR-0016](../adr/0016-agent-composition-and-execution-request.md).
+Agent interaction standard, Connector mapping and Host capabilities form one
+logical chain; execution context spans it. SDK is a library; Host is more than
+the Host Runtime launcher. Policy Runtime is the current supervised implementation,
+not a mandatory permanent process hop. A complete ordinary SDK-direct driver
+and the minimal replaceable Host core/extension map remain unfinished.
 
-Native windowed/headless are presentations of one Host. Normal, Fast and Instant
-must use the same environment/Agent contracts. Project-managed Instant is the target
-default after exact runtime qualification; the current installed candidate has not
-received that promotion. Mod, CLI and Workbench expose shared owning APIs.
+Native UI/headless are presentations of one official-game Host. Speed/presentation
+must preserve the selected contracts; scoped runtime evidence does not establish
+all Host equivalence or a qualified ordinary application default. Current trusted
+zero/one-model execution is narrower than the logical future composition space.
 
-Same cumulative USD20 GPU envelope, observed USD0/no provider job. No training or
-additional game is allocated now. Main/release/destructive scope and final G1/G2/V1
-approval remain unchanged. New workers default Sol6.1/high; Astra/high only for
-material high-risk/direction or repeated unresolved failures, at most two concurrent.
+## Integrated source and original results
 
-## Integrated source and actual Auto6
+[PR175](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/175) at06e32e9c
+was normally merged as32298949. Fresh full
+[CI38130462706](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38130462706)
+passed both Linux and both Windows leaves plus portable. Merge
+[CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
+passed fresh repository/identity checks and portable aggregation through verified
+same-tree reuse of that full execution receipt; OS leaves were skipped, not rerun.
+This is source/test evidence for that source, not frozen e479 or unmerged candidates.
+The merged Goal reader and derived Auto6 report retain original unknown records;
+[the packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection)
+keeps their exact prior scope.
 
-PR174 exact8f45c5ad passed full CI38118653994: both Linux leaves, both Windows leaves
-and portable. Normal develop merge471cbdbb preserves the exact tree; integration
-CI38121970826 also passed using its verified execution receipt. Earlier failing CI
-remains failed. Accepted source includes common Agent execution, native input-order,
-finite stale recovery and qualified settling under the original Auto deadline.
+Auto7 at frozen e479, Runtime33/code4ffd923b and Mod43/artifactf56b3240,
+explicit headless Instant, reached mechanical natural loss Summary:
+floor11/score161/A0,52.094s Auto elapsed,154 program calls/153 delivered submissions,
+zero stale/unknown delivery,466 sealed typed-verified events. Stop released/unloaded
+untainted; Host/caller exited0 unforced. Original application Task/terminal remain
+unknown; no new Goal projection or consumed-input proof was created. Comparison
+with Auto6 is not fixed-trajectory speedup, strategy or ordinary-default qualification.
 
-Auto6 at frozen8f45 loaded Runtime33/archive6c87e66b/content8317363d/code4ffd923b and
-unchanged Mod42/artifact2ef3dcf7/MVIDddf4c579. It reached natural loss Summary at floor11,
-score161, ascension0 after294.473s.273 program calls/272 submissions yielded209 deliveries
-and63 known stale refusals; five reward takes used the declared program.886 events
-sealed and typed-verified;194 prior-frame joins are known and79 remain unknown.
-Stop released/unloaded untainted; Host exited0 unforced, caller exited0 and strict
-process discovery was empty. Independent audit28fb41ed accepted the original records.
-This closes that one attempt, not strategy quality or permission for another game.
+Native137 attempt2 at the same frozen source/runtime/Mod had21 program calls and
+submissions:15 delivered/6 not_started stale refusals,5.231s Auto elapsed and311
+sealed typed-verified events. The original known-stale streak limit caused handoff;
+Task is unproved, operation censored, no ready Summary observed. Stop released,
+pending null, untainted; Host/caller exited0 unforced. Delivery does not prove Commit,
+causal settlement, policy quality or training admission. No cause is inferred here.
 
-## Mechanical Goal reader candidate
+## Active implementation and next gates
 
-Reviewed b9289132 is normally merged on this topic from develop471. Its existing
-application result reader recognizes only the declared legacy M0/Port1/Snapshot1 Task:
-complete prior sealed public observation, exact session/snapshot/catalog, zero/null
-abstention and the owned final handoff/Stop. Conflicts, later activity and absent proof
-fail closed. It does not claim M0 consumed that observation or fill missing inputs.
-Original-reader RED,89 passing outcome cases and scoped mypy are independently verified.
-
-A fresh private projection through the existing application owner produced reportd31939d1:
-mechanical Task completed, operation task_ended, observed loss, strategy not_assessed.
-Exact witness882→883→885→886 and original requestf503 are verified. Old reportcb93 stays
-unknown and immutable; all nine original seal/request/evaluation/session files retain
-their hashes. No new game or inference occurred. This new source still requires its own
-selected full CI; PR174's green result is not a changed-source pass.
-
-## Next engineering gates
-
-A separate reviewed Native Host candidatea196 adds isolated desired-speed preparation
-and native-ui/headless factory support. Host307 checks plus4 existing optional skips,
-Python24, exact Connector769 and SDK232 passed; exact-game builds passed. Its temporary
-rc42 ABI build is neither installed Mod42 nor final packaging. Versions/BOM, final
-package/rollback, three-mode/two-presentation runtime checks and default Instant remain
-pending. Extend the existing Application episode use case after that owning contract
-is fixed; do not create a second executor or policy loop.
+Historical M0 Data repairs selected H/public/codec proof, ordinary Model export/
+registration and bounded verification reuse within existing owners. Its current
+synthetic lifecycle gates are still active; no final source acceptance or new
+real-data fit follows from intermediate results. Native episode Application
+ownership/idempotency, typed close and actual process seams remain under repair/
+review; no completed ordinary default or SDK-direct promotion is claimed.
+Freeze the reviewed actual candidate and identities before each selected gate.
+Prioritize operational-block diagnosis and evaluation using qualified existing
+sources and the current Native137 Model. Then choose useful existing or new Human,
+program or privileged-teacher data by quality/coverage needs, and train/evaluate
+through the same owners. Collection or retraining is not required merely to make
+the work new; exact source/use, recipe and application prerequisites still apply.
+All mandatory broader G2/V1 work remains separately open.
 
 ## Remaining Platform non-claims
 
-Runtime32 archive/pin and Mod42/Mod41 owner receipts remain rollback. Basic reasonable
-whole-game ability, causal settlement, Human/research success and full G1/G2/V1 remain
-unproved. Defect development coverage and historical exposure limits remain. No merge,
-synthetic check, installation or natural loss promotes itself to strategy qualification.
+Same cumulative USD20 GPU envelope, observed USD0/no provider job. This handoff
+allocates no new game, real-data use/fit, paid compute, main/release or final G1/G2/V1
+approval. Root owns allocations, shared refs/BOM and the one heavy/native slot;
+workers use disjoint topics and independent review. Data quantity/quality needs
+and large-fit cost are reported before expanding work. Old failures, private
+originals, rollback receipts and exposure limits remain; no source merge or loss
+promotes itself to Human, research, strategy or full qualification.

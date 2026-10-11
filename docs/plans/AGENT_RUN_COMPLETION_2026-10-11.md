@@ -1,9 +1,10 @@
 # Agent run completion and native input order — 2026-10-11
 
-Current decision: see [Auto6 result and mechanical Goal projection](#auto6-result-and-mechanical-goal-projection).
-PR174 is integrated; its actual Auto6 reached a natural loss Summary. A separate
-reviewed reader candidate produces a new formal mechanical Goal report while preserving
-original evidence. Native speed qualification and decision quality remain pending.
+Current decision: see [Current integration and completed attempts](#current-integration-and-completed-attempts).
+PR175 is integrated; frozen e479 execution and unmerged Data/Native Application
+candidates have separate identities and gates. Auto7 completed a mechanical natural
+loss attempt; Native137 attempt2 was censored with Task unproved. Earlier sections
+retain their original snapshots and do not allocate another attempt.
 
 ## Prior Auto3 preparation snapshot
 
@@ -681,3 +682,50 @@ and bounded runtime gates remain separate. An ordinary episode application use c
 must reuse existing Host, Runtime and common Agent owners; private qualification
 analysis is not a second gameplay service. No additional game or training is allocated
 by this documentation. USD20 envelope remains cumulative, observed USD0/no paid job.
+
+## Current integration and completed attempts
+
+[PR175](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/175) at
+06e32e9c8931733d9741f3a3d2c63d443239fe27 was normally merged as develop
+32298949711e886beb483614b87eb806160fc349. Fresh full
+[CI38130462706](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38130462706)
+passed four OS leaves and portable. Merge
+[CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
+passed fresh repository/identity checks and portable aggregation through verified
+same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
+qualifies Root's different frozen e479 execution source or unmerged candidates.
+
+Independently reviewed original Auto7 at e479 loaded Runtime33/code4ffd923b and
+Mod43/artifactf56b3240 in explicit headless Instant. It reached mechanical natural
+loss Summary at floor11/score161/A0 after52.094s Auto elapsed:154 program calls,
+153 delivered submissions,zero stale/unknown delivery and466 sealed typed-verified
+events. Stop released/unloaded untainted, with Host/caller exit0 unforced. Original
+application Task/terminal remain unknown; no new Goal-reader projection or actual
+consumed-input witness was created. Auto6/7 differ in delivered trajectory and
+operating tuple; the elapsed values are not a fixed-trajectory speedup benchmark.
+
+Native137 attempt2 at the same frozen source, Runtime and Mod produced21 program
+calls/submissions,15 delivered and6 not_started stale refusals in5231ms Auto elapsed.
+The311 sealed typed-verified events retain21 exact sample/consume/ACK/directive joins.
+The final known-stale streak limit caused handoff: Task unproved, operation censored,
+no ready Summary observed. Stop released with pending null and no taint; Host/caller
+exit0 unforced closes the operation, not its Task. Recorded execution/effect remain
+unknown; no cause, strategy, training or causal-successor qualification is inferred.
+
+The next product/learning work uses the existing owners: Native episode Application
+admission/idempotency/typed close and actual process seams, and historical M0 Data
+selected-input proof/Model verification/export/registration with bounded scans.
+Their candidate gates remain active, not finally accepted here; ordinary default
+and SDK-direct execution are not promoted by these attempts. The unified
+[architecture](../ARCHITECTURE.md#product-boundary) permits different deployments
+while preserving one execution context and the owning guarantees. Historical
+M0/M2 recovery is a composition/cost probe, not a universal prerequisite to learning.
+Prioritize operational-block diagnosis and evaluation using qualified existing
+sources and the current Native137 Model. Then select useful existing or new Human,
+program or privileged-teacher data by quality/coverage needs for training/evaluation
+through the same owners. New collection or retraining is not a goal by itself.
+Source relation/use, recipe, application readiness and exact candidate identity
+are the actual prerequisites; complete historical restoration is not.
+Broader mechanism, data/quality and G2/V1 obligations remain open. This update grants
+no extra game, real-data fit, paid compute or final approval; the USD20 envelope
+remains cumulative with observed USD0/no provider job.
