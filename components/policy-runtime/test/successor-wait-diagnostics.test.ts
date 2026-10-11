@@ -8,6 +8,7 @@ import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Writable } from "node:stream";
 import { SuccessorWaitDiagnostics, successorWaitStderrSink, type SuccessorWaitDiagnostic } from "../src/successor-wait-diagnostics.js";
 import type { AnyDecisionBundle, PolicyManifest } from "../src/contracts.js";
 // @ts-expect-error Shared synthetic public-protocol fixtures are JavaScript.
@@ -53,7 +54,34 @@ describe("bounded successor failure sink", () => {
     expect(record.polls.at(-1)!.attempt).toBe(64);
   });
   it.each([undefined, "0", "true", "yes"])("keeps stderr opt-in disabled for %s", flag => {
-    expect(successorWaitStderrSink({ STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS: flag }, () => { throw new Error("unexpected write"); })).toBeUndefined();
+    const stream = new Writable({ write() { throw new Error("unexpected write"); } });
+    expect(successorWaitStderrSink({ STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS: flag }, stream)).toBeUndefined();
+    expect(stream.listenerCount("error")).toBe(0);
+  });
+  it("contains a later Writable error and disables further diagnostic writes with one listener", async () => {
+    let writes = 0;
+    const stream = new Writable({ write(_chunk, _encoding, done) {
+      writes += 1; queueMicrotask(() => done(new Error("synthetic EPIPE")));
+    } });
+    const sink = successorWaitStderrSink({ STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS: "1" }, stream)!;
+    expect(stream.listenerCount("error")).toBe(1);
+    const failed = once(stream, "error");
+    expect(() => sink({ diagnostic: "successor_wait_diagnostics_limit", failure_records_emitted: 16 })).not.toThrow();
+    await failed;
+    expect(stream.listenerCount("error")).toBe(1);
+    sink({ diagnostic: "successor_wait_diagnostics_limit", failure_records_emitted: 16 });
+    expect(writes).toBe(1);
+    expect(() => stream.emit("error", new Error("later pending error"))).not.toThrow();
+  });
+  it("contains a synchronous write throw without removing the pending-error listener", () => {
+    let writes = 0;
+    const stream = new Writable();
+    stream.write = () => { writes += 1; throw new Error("synchronous write failure"); };
+    const sink = successorWaitStderrSink({ STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS: "1" }, stream)!;
+    const record = { diagnostic: "successor_wait_diagnostics_limit" as const, failure_records_emitted: 16 as const };
+    expect(() => { sink(record); sink(record); }).not.toThrow();
+    expect(writes).toBe(1); expect(stream.listenerCount("error")).toBe(1);
+    expect(() => stream.emit("error", new Error("later pending error"))).not.toThrow();
   });
 });
 
@@ -67,7 +95,9 @@ describe("successor failure diagnostics through the actual generic CLI", () => {
     await writeFile(join(compiled, "package.json"), '{"type":"module"}');
   });
   afterAll(async () => { if (compiled) await rm(compiled, { recursive: true, force: true }); });
-  it.each(["0", "1"])("writes failure JSON only to actual stderr when the flag is %s", async flag => {
+  it.each([
+    ["default-off", "0", false], ["opt-in", "1", false], ["closed opt-in pipe", "1", true]
+  ] as const)("preserves actual CLI recovery and exit with %s stderr", async (_label, flag, closedPipe) => {
     const root = await mkdtemp(join(tmpdir(), "successor-cli-run-"));
     const m = publicManifest() as PolicyManifest;
     m.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-1"; m.adapter_config = {};
@@ -133,15 +163,21 @@ describe("successor failure diagnostics through the actual generic CLI", () => {
       });
       const headers = { "content-type": "application/json", "x-sts2-policy-run-id": startup.run_id,
         "x-sts2-game-instance-id": "runtime", "x-sts2-recovery-epoch": "0" };
+      if (closedPipe) {
+        const stderrClosed = once(child.stderr!, "close"); child.stderr!.destroy(); await stderrClosed;
+      }
       expect((await fetch(`${startup.address}/v2/mode`, { method: "POST", headers, body: '{"mode":"one_step"}' })).status).toBe(200);
       const response = await fetch(`${startup.address}/v2/tick`, { method: "POST", headers, body: '{"max_ticks":1}' });
       expect(response.status).toBe(200); const result = await response.json();
       expect(result.status, JSON.stringify(result)).toMatchObject({ tainted: true, controller: "released", mode: "human" });
+      const status = await (await fetch(`${startup.address}/status`)).json();
+      expect(status.status).toMatchObject({ tainted: true, controller: "released", mode: "human",
+        taint_reason: "unknown_successor_after_submit:successor_environment_identity_drift" });
       expect((await fetch(`${startup.address}/v2/stop`, { method: "POST", headers, body: "{}" })).status).toBe(200);
       const [code] = await closed; expect(code, stderr).toBe(0);
       expect(observations).toBe(2); expect(submits).toBe(1); expect(releases).toBe(1);
       expect(stdout).not.toContain("successor_wait_failure");
-      if (flag === "0") expect(stderr).toBe("");
+      if (flag === "0" || closedPipe) expect(stderr).toBe("");
       else {
         const lines = stderr.trim().split("\n"); expect(lines).toHaveLength(1);
         expect(JSON.parse(lines[0]!)).toMatchObject({ diagnostic: "successor_wait_failure", outcome: "error", poll_count: 1,

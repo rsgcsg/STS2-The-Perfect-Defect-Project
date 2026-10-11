@@ -1,4 +1,5 @@
 import type { AnyDecisionBundle } from "./contracts.js";
+import type { Writable } from "node:stream";
 
 type Observation = AnyDecisionBundle["observation"];
 export type SuccessorWaitCategory = "same_basis" | "settling" | "accepted" | "no_whole_bundle"
@@ -130,7 +131,18 @@ class SuccessorWaitTrace {
   }
 }
 
-export function successorWaitStderrSink(env: NodeJS.ProcessEnv, write: (line: string) => unknown): SuccessorWaitDiagnosticSink | undefined {
-  return env.STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS === "1"
-    ? record => { write(`${JSON.stringify(record)}\n`); } : undefined;
+export function successorWaitStderrSink(env: NodeJS.ProcessEnv, stderr: Pick<Writable, "write" | "on">): SuccessorWaitDiagnosticSink | undefined {
+  if (env.STS2_POLICY_RUNTIME_SUCCESSOR_DIAGNOSTICS !== "1") return undefined;
+  let disabled = false;
+  const disable = (): void => { disabled = true; };
+  // Created once by the generic CLI. Keep this sole listener until process exit:
+  // a write callback runs before its error event, which can also arrive after
+  // Runtime Stop. Removing the listener at either boundary would revive EPIPE.
+  stderr.on("error", disable);
+  return record => {
+    if (disabled) return;
+    try {
+      stderr.write(`${JSON.stringify(record)}\n`, error => { if (error) disable(); });
+    } catch { disable(); }
+  };
 }

@@ -122,7 +122,7 @@ async function main(): Promise<void> {
       autoBudget: options.autoBudget,
       runId: evidence.runId,
       evidence,
-      successorWaitDiagnosticSink: successorWaitStderrSink(process.env, line => process.stderr.write(line)),
+      successorWaitDiagnosticSink: successorWaitStderrSink(process.env, process.stderr),
       ...(managedClient ? { managedBindingSha256: managedClient.bindingSha256 } : {}),
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 }
     });

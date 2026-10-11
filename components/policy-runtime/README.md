@@ -460,7 +460,11 @@ Snapshot content, action operands, referents and Reads are excluded. Oversized
 strings are omitted with an explicit flag. Old rows are dropped with explicit
 counts; each JSON record is at most 32 KiB. At most 16 failure records and one
 explicit cap marker are sent per Runtime instance. Sink errors disable only
-diagnostics. The default remains off; the existing 41 attempts, 250 ms interval,
+diagnostics. The opt-in CLI writer handles both write callbacks and later stderr
+`error` events, including EPIPE. It owns one stderr error listener for this
+single-Runtime CLI process lifetime, so pending error events remain contained
+after Stop; the default-off path attaches no listener. No global exception
+handler is added. The default remains off; the existing 41 attempts, 250 ms interval,
 observations, control lifecycle, strict successor checks and unknown/taint
 semantics are unchanged. Diagnostics do not establish native causal settlement.
 
