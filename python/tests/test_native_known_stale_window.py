@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from native_compatibility_fixtures import historical_operational_source
 
 from spireagent.json_boundary import BoundaryError
 from stpd import native_code_scope as scope
@@ -60,6 +61,16 @@ def operational_proof():
         ],
         "new_paths": ["stpd/policy/native_execution_policy.py"],
     }
+
+
+@pytest.fixture
+def historical_policy3_source(tmp_path, monkeypatch):
+    target = historical_operational_source(tmp_path)
+    monkeypatch.setattr(scope, "ROOT", target)
+    # Every negative below starts from an actually accepted historical basis.
+    proof = operational_proof()
+    assert scope.checked_native_operational_compatibility_proof(proof) == proof
+    return target
 
 
 def test_shared_closed_declarations_and_new_versioned_specs_keep_numeric_input():
@@ -181,7 +192,9 @@ def test_actual_learned_composition_guard_requires_new_immutable_package_selecti
     assert not (tmp_path / "new-manifest").exists()
 
 
-def test_new_operational_proof_is_separate_and_old_latest_checker_remains_strict():
+def test_new_operational_proof_is_separate_and_old_latest_checker_remains_strict(
+    historical_policy3_source,
+):
     proof = operational_proof()
     assert scope.checked_native_operational_compatibility_proof(proof) == proof
     assert proof["source_files"] == OLD["source_files"]
@@ -191,6 +204,12 @@ def test_new_operational_proof_is_separate_and_old_latest_checker_remains_strict
         scope.checked_native_compatibility_proof(proof)
     with pytest.raises(BoundaryError):
         scope.checked_native_operational_compatibility_proof(OLD)
+
+
+def test_recorded_operational_proof_does_not_qualify_changed_current_source():
+    # The fixture above qualifies its exact archived target, never this checkout.
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        scope.checked_native_operational_compatibility_proof(operational_proof())
 
 
 @pytest.mark.parametrize(
@@ -205,7 +224,9 @@ def test_new_operational_proof_is_separate_and_old_latest_checker_remains_strict
         "target_evidence",
     ],
 )
-def test_caller_cannot_widen_operational_waiver_or_original_basis(field):
+def test_caller_cannot_widen_operational_waiver_or_original_basis(
+    field, historical_policy3_source,
+):
     proof = operational_proof()
     if field == "changed_paths":
         proof[field].append("stpd/models/structured_m2.py")
@@ -235,15 +256,10 @@ def test_caller_cannot_widen_operational_waiver_or_original_basis(field):
     ],
 )
 def test_even_rehashed_current_model_feature_or_original_outcome_changes_are_rejected(
-    tmp_path, monkeypatch, changed_path
+    historical_policy3_source, changed_path,
 ):
-    for path in (*scope.PATHS, "uv.lock"):
-        target = tmp_path / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((ROOT / path).read_bytes())
-    target = tmp_path / changed_path
+    target = historical_policy3_source / changed_path
     target.write_bytes(target.read_bytes() + b"\n# forbidden delta\n")
-    monkeypatch.setattr(scope, "ROOT", tmp_path)
     with pytest.raises(BoundaryError, match="inference_source_changed"):
         scope.checked_native_operational_compatibility_proof(operational_proof())
 

@@ -1,12 +1,13 @@
 # Current project context — dual learning chains and evidence boundaries
 
-Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop is1f8851dc after
-PR176. Root topic `codex/native-episode-continuation` has source assembly3c3a1d55:
-reviewed training closure/historical fixture26bff985 and portable Actor process
-witnessbd38f9c5 normally merged. PR177's last observed remote555ac466 failed
-CI38202087744 (Linux1/Windows1 failed; other leaves passed). New exact-head hosted
-results are pending; verify live refs before integration. Runtime34's immutable
-package pin is unchanged. Separate feature candidates below are not adopted.
+Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; develop1f8851dc.
+Current focus is ONLY PR177 CI repair. Remotee37e0cd2/CI38220016664 completed:
+Linux1/Windows1 passed; Linux2/Windows2 failed the same historical operational
+proof test. The strict rejection of changed source is correct. The test-only repair shares
+the exact historical fixture, validates each negative's baseline, and retains
+current-source rejection.
+Original local RED reproduced; reviewed fix passed43 pure+13 package tests in4.16s.
+Fresh exact-head full CI remains required. Runtime34 pin and other candidates unchanged.
 
 Resolve live GitHub refs and original owner records before acting; exact source
 and owner records override this file.
@@ -72,7 +73,7 @@ deadline/automatic negative; no production performance or historical-cause claim
 PR177 remote555 failures were narrowed to a missing native_execution_policy training
 closure, a historical fixture using the changed code scope, and an unwitnessed
 process-exit assumption. Root's contract gate passed51 cases; process gate passed14
-on macOS (2 real Node cases plus12 pure cases). Windows FFI/full CI is unverified;
+on macOS (2 real Node cases plus12 pure cases). New e37 OS leaf1 passed; full CI failed;
 the original Windows failure's cause remains unknown. Old failures stay preserved.
 The historical fixture uses exact archived scope bytes; current-source rejection
 remains strict. No package/runtime/native attempts were made by these repairs.

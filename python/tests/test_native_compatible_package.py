@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from native_compatibility_fixtures import historical_operational_source
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
@@ -61,28 +62,7 @@ def bounded_cpu():
 def historical_target_source(tmp_path, monkeypatch):
     """Current parser, explicitly frozen source-read context; no new-source qualification."""
     current = Path(__file__).resolve().parents[1]
-    target = tmp_path / "historical-target-source"
-    fixtures = Path(__file__).parent / "fixtures/native_compatibility"
-    proof = decode_json((fixtures / "evidence_rc27_basis.json").read_bytes())
-    for relative in (*scope_owner.PATHS, "uv.lock"):
-        raw = (
-            (fixtures / "evidence_rc27_structured_code_scope.py.txt").read_bytes()
-            if relative == "stpd/structured_code_scope.py"
-            else (current / relative).read_bytes()
-        )
-        destination = target / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(raw)
-    for row in proof["source_files"]:
-        if row["path"] not in scope_owner._OPERATIONAL_MIGRATION_OWNERS:
-            assert hashlib.sha256((target / row["path"]).read_bytes()).hexdigest() == row["sha256"]
-    # This is the reviewed pre-repair operational target, never today's changed source.
-    assert scope_owner.native_code_identity(target, graph=True)["source_sha256"] == (
-        "849219b978a0712647a09b025999a81c09b79d4b2b69f5c473db4856e4d223e9"
-    )
-    assert hashlib.sha256((target / "uv.lock").read_bytes()).hexdigest() == (
-        OPERATIONAL_TARGET_LOCK_SHA256
-    )
+    target = historical_operational_source(tmp_path)
     monkeypatch.setattr(scope_owner, "ROOT", target)
     monkeypatch.setattr(owner, "ROOT", target)
     return current

@@ -49,6 +49,26 @@ candidates have separate identities and gates. Auto7 completed a mechanical natu
 loss attempt; Native137 attempt2 was censored with Task unproved. Earlier sections
 retain their original snapshots and do not allocate another attempt.
 
+## Current CI-only repair after e37 result
+
+The user explicitly set other work aside to handle PR177 CI. Head e37e0cd2,
+CI38220016664: Linux1/Windows1 passed; Linux2/Windows2 each failed only
+`test_new_operational_proof_is_separate_and_old_latest_checker_remains_strict`.
+The only unapproved nonmigration difference against the archived39-row proof was
+structured_code_scope.py (historical16163c1f, current63bf3b79); production correctly
+rejected it. No migration waiver, model/numerical source, lock or CI policy changed.
+
+G1 test-fixture repair extracts the already reviewed historical-target helper for
+both pure proof and package consumers. It retains exact golden849219 and lock
+checks, establishes positive acceptance before each operational mutation negative,
+and separately rejects the unchanged historical proof against actual current source.
+This closes the overlooked pure consumer of the same fixture family; future changes
+to this fixture need both consumers' focused gates. Original RED reproduced in0.58s.
+Independent static review accepted; Root CPU2/hard60 gate passed43 pure cases with
+Torch blocked plus13 existing synthetic package cases, total4.16s, source unchanged,
+no signal/forced cleanup. The package cases do not fit a model or qualify gameplay.
+Latest-head repository/full-hosted checks and PR acceptance remain distinct.
+
 ## Finite closeout snapshot for this round
 
 The last source repair assembly is3c3a1d55, normal merges of26bff985 (training
