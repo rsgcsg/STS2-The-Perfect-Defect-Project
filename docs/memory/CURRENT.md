@@ -7,7 +7,9 @@ PR176's normal merge. Root's reviewed source assembly baseline is8b3aeb0e0fbba45
 repository/full-hosted gates remain separate. Runtime34's immutable package pin is
 unchanged. Native Host30 close qualification retains b055; actual Auto4 ran at4e643893.
 Auto7/Auto3 retain e479; no earlier game result qualifies a later candidate.
-App-default Platform is another historical repository. Exact live refs/records control.
+App-default Platform is another historical repository.
+Resolve live GitHub refs and original owner records before acting; exact source
+and owner records override this file.
 
 ## Goal, routing and branch stops
 
