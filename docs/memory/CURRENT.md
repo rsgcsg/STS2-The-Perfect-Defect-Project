@@ -13,6 +13,13 @@ and owner records override this file.
 
 ## Goal, routing and branch stops
 
+Current-round user boundary: stop before long training or missing-data collection
+expansion. ALL changes to this batch's complete Model plan require the user's
+explicit confirmation first: graph/Input/history/Target/loss/data selection,
+sampling/optimizer/training configuration. Discussion is not approval. The lead's
+unapproved4/16/32-window proposal was withdrawn; fixed4 remains. Preserve existing
+owner/API/GUI repairs; see the active packet's latest authority and stop table.
+
 Continue stable environment → useful data/management → training → Model/Agent
 → execution/evaluation through existing owners. Read the
 [active dependency order](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order),

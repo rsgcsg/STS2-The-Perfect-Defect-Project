@@ -1,5 +1,48 @@
 # Agent run completion and native input order — 2026-10-11
 
+## Latest user authority and this-round stop conditions
+
+This section supersedes earlier instructions to continue automatically into a
+first learning run. The long-term objective remains useful continuous real STS2
+play through the two selected complete learning chains and the same project
+owners. This round stops before long training; insufficient data is a branch
+stop, not permission to expand collection, relabel sources or lower the minimum.
+The USD20 GPU envelope is a maximum, not an instruction to spend it.
+
+Every change to this batch's complete Model plan must first be explained to the
+user and explicitly confirmed. This includes model structure, input/history and
+memory semantics, targets/losses, data selection/sampling, optimizer and training
+configuration. A research question, discussion or unaccepted code candidate is
+not approval. Present the existing plan, proposed delta, rationale, cost,
+alternatives, affected contracts and verification before dependent implementation.
+Do not infer approval from earlier general autonomy. Routine owner/monitor/UI
+repairs that preserve the agreed model semantics may continue.
+
+The lead mistakenly promoted a long-memory discussion into controlled4/16/32
+window implementation. The user rejected that choice. Its uncommitted additions
+were surgically withdrawn; the original fixed4 contract remains. Long-distance
+credit mechanisms, including1000+ dependencies, are research alternatives only.
+Keep forward memory, gradient reach and the supervised objective distinct; do not
+substitute a larger fixed window for an approved complete design. No new memory
+recipe, Model or training run was accepted through this proposal.
+
+| Workstream | This-round stop | Reason / next boundary |
+| --- | --- | --- |
+| Fresh Source3 | Recording entry and bounded source checks; truthful availability report | Known8 qualified N is below100; no automatic real collection expansion |
+| Historical structured data | Original verification, conversion and preflight within agreed Input | Model/Input/selection changes wait for explicit user confirmation; no long fit |
+| Model / training design | Preserve current plan; deliver concrete alternatives | User is final approver for all batch-plan changes |
+| Shared training monitor | Durable same-owner status/library/API/GUI mapping plus bounded checks | No second journal/dashboard authority; readiness precedes long fit |
+| Remote resources | Reusable lifecycle/recovery/budget/artifact path plus bounded source checks | Configuration is not CUDA/provider qualification; no paid long job this round |
+| Agent / recording / evidence | Existing-owner interfaces and faithful bounded checks | Source checks are not installed/load/Human/new-Model whole-game qualification |
+| Integration | Reviewed coherent commits and required gates, then normal develop PR integration where eligible | Failed/blocked candidates remain explicit; no main/release promotion |
+
+Counters must distinguish distinct qualified N, repeated labels/observations and
+actual optimizer updates. Preserve the>=100N/>=300actual-update first-learning
+requirements for a later allocated fit; this round does not satisfy them by
+running a small diagnostic. Keep long-game capability, task outcome, cleanup and
+source/CI acceptance separate. On a branch stop, preserve exact source, failure,
+ownership and the next actionable entry; independent non-model repairs continue.
+
 Current decision: see [Current integration and completed attempts](#current-integration-and-completed-attempts).
 PR175 is integrated; frozen e479 execution and unmerged Data/Native Application
 candidates have separate identities and gates. Auto7 completed a mechanical natural
