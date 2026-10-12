@@ -21,6 +21,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.replaceable_file import write_replaceable_json
 from spireagent.workbench.developer import ProjectConfig, combination
 from spireagent.workbench.local_training import LOCK_FILE, LocalTrainingService
+from spireagent.workbench.native_agent_support import native_package_execution_policy
 from spireagent.workbench.native_workbench_api import COMMAND_SCHEMA, PREFIX
 from spireagent.workbench.recipe_contracts import TrainingRequest, validate_limits
 from spireagent.workbench.recipes.structured import (
@@ -39,26 +40,49 @@ from spireagent.workbench.trusted_recipes import (
     validate_recipe_config,
 )
 from stpd.fullrun.ordered_source import OrderedSourceRef, publish_ordered_source_partition
+from stpd.native_graph_spec import NativeGraphControl
+from stpd.native_sampled_carry_spec import INPUT_SPEC, sampled_agent_spec
 from stpd.native_training_source_spec import RECIPE
 from stpd.ordered_source_spec import DEFAULT_RECIPE as FULL_REFERENCE_RECIPE
 from stpd.ordered_source_spec import PRETRAIN_VIEW, SAMPLED_RECIPE
 from stpd.ordered_source_spec import RECIPES as ORDERED_RECIPE_CONFIGS
+from stpd.policy.native_execution_policy import known_stale_window_policy
 from stpd.policy.native_operational_outcome import owned_current_known_stale_policy
+from stpd.policy.native_operational_outcome_v2 import progress_aware_strict_policy
 
 
+@pytest.mark.parametrize("declaration", [
+    pytest.param(owned_current_known_stale_policy(), id="policy1"),
+    pytest.param(progress_aware_strict_policy(), id="policy2"),
+    pytest.param(known_stale_window_policy(), id="policy3"),
+])
 @pytest.mark.parametrize("which", ["direct", "source3"])
-def test_parent_requires_exact_prior_train_reservation(tmp_path, original, which):
+def test_parent_requires_exact_prior_train_reservation(tmp_path, original, which, declaration):
     store, owner = setup_store(tmp_path)
     partition = publish(store, original)[2] if which == "direct" else source3(store)
+    request = TrainingRequest(
+        "1" * 32, RECIPE, partition.manifest.artifact_id, validate_recipe_config(RECIPE, {}),
+        execution_policy=declaration,
+    )
+    request = TrainingRequest.from_dict(request.to_dict())
     adapter = StructuredRecipeAdapter(RECIPE)
     with pytest.raises(BoundaryError, match="source_not_reserved_for_training"):
-        adapter.preflight(store, owner, partition.manifest.artifact_id)
+        adapter.preflight_request(store, owner, request)
     reserve = (
         owner.reserve_verified_native_agent_sampled_source if which == "direct"
         else owner.reserve_verified_ordered_source
     )
     reserve(store, partition.manifest.artifact_id)
-    assert adapter.preflight(store, owner, partition.manifest.artifact_id) == partition.dataset
+    assert adapter.preflight_request(store, owner, request) == partition.dataset
+    assert partition.dataset.input_spec.value() == INPUT_SPEC
+    # The actual pure package-policy owner consumes the same declared AgentSpec;
+    # numerical package generation/weights/export remain a separate gate.
+    control = NativeGraphControl()
+    package_metadata = {
+        "agent_spec": sampled_agent_spec(control, execution_policy=request.execution_policy),
+        "graph": {"model_control": control.to_dict()},
+    }
+    assert native_package_execution_policy(package_metadata) == declaration
     with owner.transaction() as db:
         assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone() == (0,)
 
@@ -112,19 +136,28 @@ def _policy_run(store, journal, *, policy=True, seed=0):
 
 
 @pytest.mark.parametrize("recipe", [RECIPE, SAMPLED_RECIPE])
-def test_request_optional_policy_is_closed_copied_and_separate_from_config(recipe):
+@pytest.mark.parametrize("selected", [
+    pytest.param(owned_current_known_stale_policy(), id="policy1"),
+    pytest.param(progress_aware_strict_policy(), id="policy2"),
+    pytest.param(known_stale_window_policy(), id="policy3"),
+])
+def test_request_optional_policy_is_closed_copied_and_separate_from_config(recipe, selected):
     request = TrainingRequest("1" * 32, recipe, "2" * 64, {})
     legacy = request.to_dict()
     assert "execution_policy" not in legacy
     assert TrainingRequest.from_dict(legacy).to_dict() == legacy
-    declaration = owned_current_known_stale_policy()
+    declaration = copy.deepcopy(selected)
     opted_in = replace(request, execution_policy=declaration)
-    declaration["max_known_stale_rejections"] = 7
+    counter = next(key for key in (
+        "max_known_stale_rejections", "max_consecutive_known_stale_rejections",
+        "known_stale_recovery_window_ms",
+    ) if key in declaration)
+    declaration[counter] -= 1
     wire = opted_in.to_dict()
-    assert wire["execution_policy"] == owned_current_known_stale_policy()
+    assert wire["execution_policy"] == selected
     decoded = TrainingRequest.from_dict(wire)
-    wire["execution_policy"]["max_known_stale_rejections"] = 6
-    assert decoded.to_dict()["execution_policy"] == owned_current_known_stale_policy()
+    wire["execution_policy"][counter] -= 2
+    assert decoded.to_dict()["execution_policy"] == selected
     assert decoded.config == request.config
     descriptor = describe_recipe(recipe)
     assert descriptor["execution_policy"]["default"] is None
@@ -133,17 +166,26 @@ def test_request_optional_policy_is_closed_copied_and_separate_from_config(recip
 
 
 @pytest.mark.parametrize("change", ["null", "bool", "zero", "mode", "extra", "recipe"])
-def test_invalid_request_policy_refuses_before_state_selection(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize("selected", [
+    pytest.param(owned_current_known_stale_policy(), id="policy1"),
+    pytest.param(known_stale_window_policy(), id="policy3"),
+])
+def test_invalid_request_policy_refuses_before_state_selection(
+    tmp_path, monkeypatch, change, selected,
+):
     service = LocalTrainingService(ProjectConfig(tmp_path, "", "", None, combination()))
     monkeypatch.setattr(service, "_selected", lambda: pytest.fail("state was selected"))
     request = TrainingRequest("1" * 32, RECIPE, "2" * 64, {}).to_dict()
-    policy = owned_current_known_stale_policy()
+    policy = copy.deepcopy(selected)
+    bound = ("known_stale_recovery_window_ms" if "known_stale_recovery_window_ms" in policy
+             else "max_known_stale_rejections")
     if change == "null":
         policy = None
     elif change == "bool":
-        policy["max_known_stale_rejections"] = True
+        policy[bound] = True
     elif change == "zero":
-        policy["max_consecutive_known_stale_rejections"] = 0
+        policy["max_consecutive_known_stale_rejections" if
+               "max_consecutive_known_stale_rejections" in policy else bound] = 0
     elif change == "mode":
         policy["current_mode"] = "invented"
     elif change == "extra":
@@ -151,7 +193,7 @@ def test_invalid_request_policy_refuses_before_state_selection(tmp_path, monkeyp
     else:
         request["recipe_id"] = STRUCTURED_RECIPE
     request["execution_policy"] = policy
-    with pytest.raises(BoundaryError):
+    with pytest.raises(BoundaryError, match="invalid_training_request"):
         service.start(request)
     assert not list(tmp_path.iterdir())
 
@@ -161,13 +203,34 @@ def test_invalid_request_policy_refuses_before_state_selection(tmp_path, monkeyp
     next(recipe for recipe, (_, _, view) in ORDERED_RECIPE_CONFIGS.items()
          if view == PRETRAIN_VIEW),
 ])
-def test_non_sampled_recipe_cannot_opt_in_before_state_selection(tmp_path, monkeypatch, recipe):
+@pytest.mark.parametrize("selected", [
+    pytest.param(owned_current_known_stale_policy(), id="policy1"),
+    pytest.param(known_stale_window_policy(), id="policy3"),
+])
+def test_non_sampled_recipe_cannot_opt_in_before_state_selection(
+    tmp_path, monkeypatch, recipe, selected,
+):
     service = LocalTrainingService(ProjectConfig(tmp_path, "", "", None, combination()))
     monkeypatch.setattr(service, "_selected", lambda: pytest.fail("state was selected"))
     request = TrainingRequest("1" * 32, recipe, "2" * 64, {}).to_dict()
     with pytest.raises(BoundaryError, match="invalid_training_request"):
-        service.start({**request, "execution_policy": owned_current_known_stale_policy()})
+        service.start({**request, "execution_policy": selected})
     assert not list(tmp_path.iterdir())
+
+
+def test_policy3_request_cannot_bind_an_original_policy1_run(tmp_path, monkeypatch):
+    _service, request, store, journal, path = _policy_metadata(tmp_path, monkeypatch)
+    request = replace(request, execution_policy=known_stale_window_policy())
+    journal["request"] = request.to_dict()
+    write_replaceable_json(path, journal)
+    run = _policy_run(store, journal)
+    before = path.read_bytes()
+    with pytest.raises(BoundaryError, match="training_execution_policy_mismatch"):
+        verify_run_execution_policy(run, journal)
+    fence = ReadOnlyAttemptFence(path, journal["operation_id"], journal["attempt_id"], 10, store)
+    with pytest.raises(BoundaryError, match="attempt_run_binding_mismatch"):
+        fence.bind_run(run)
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("policy", [False, True])
