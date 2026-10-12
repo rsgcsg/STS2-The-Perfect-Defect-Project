@@ -695,7 +695,7 @@ passed fresh repository/identity checks and portable aggregation through verifie
 same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
 qualifies the historical e479 game source or later unmerged candidates.
 
-Root's current clean local assembly on `codex/native-episode-continuation` is
+Root's reviewed source assembly baseline on `codex/native-episode-continuation` is
 8b3aeb0e0fbba45570f93e8365e4fb56ac71660b, after accepted combined-source3af,
 normal develop integration, reviewed930 test-precondition repair/818c Human
 product coverage and accepted f4dc policy3 admission normally merged8b3. Five Runtime source/test provenance fields were refreshed while
@@ -779,8 +779,9 @@ interpreter rejection. Its bounded local positive/negative checks passed; Root's
 normal integration and five Runtime test-provenance fields do not supply a fresh
 exact-head full CI result or change the installed Runtime34 artifact.
 
-Human product818c coverage passed four synthetic cases through existing Source3
-import/Curation/TrainingService/export/registration/composition owners. It permits
+Human product818c passed four synthetic import→preview→publish→typed verify→
+StructuredRecipeAdapter.preflight cases, with no actual fit/export/registration.
+It permits
 actor-declared Human sampled projection with fair student basis/full C/I-F off,
 without asserting `human_origin_attested`. This is source/synthetic product evidence,
 not actual new Human data or fit. Native policy3 admission had a stale v1-only
@@ -954,7 +955,7 @@ Old admitted-data fit does not wait for this new GUI/bridge mapping or fresh Hum
 | Reliable execution | Retain policy3 source gates, reusable ordinary Episode prepare/run/Stop, accepted packages and b055 close-only evidence. Preserve original Auto4 unknown. | Each selected arm's exported Model can register/load/run once its own exact requirements and finite allocation are satisfied; existing-model diagnosis needs no retraining for novelty. |
 | Current-format Source3 chain | Verify actual Source3 raw→decision_sample_carry/partition with its real actor, fair basis/full C/labels, rights/use, groups/exposure. Fresh native-ui Human Recording3 capture proceeds separately and waits only for the person. | Qualified small Source3 view/config enters real fit→checkpoint/Model→ordinary export/Agent/run. Existing machine-declared raw does not complete fresh Human capture; original continuity and exclusions remain reusable. |
 | Legacy-format H structured chain | Verify genuine original H/proof/full C/order/use; implement the selected typed Snapshot1 Input/source/recipe/Decision4 and Task binding, preserving prior exposure. No dependency on new Human participation. | Its qualified H view/config enters real fit/export/register/run through the same product owners; token PublicM2/textV2/direct native baselines are not substitutes. |
-| GPU/cost | Read-only compatibility/cost preparation is parallel; CPU/static contract work defines finite GPU smoke, checkpoint/export/inference comparison. | Actual allocated smoke establishes CUDA/backend and cost; useful admitted data+budget then permit scale within cumulative USD20. Preparation is no GPU receipt. |
+| GPU/common execution | Reuse historical successful GPU work through common TrainRun/provider/checkpoint/config/framework; verify exact old job/code/artifacts and extract compatible reusable mechanisms. Current structured CPU restriction remains until a checked backend adapter supports the same semantics. | Actual bounded backend/job/cancel/checkpoint/result/cost gates and finite allocation precede useful-data GPU scale within cumulative USD20; no new paid execution or greenfield-only framework is claimed. |
 | Coherent delivery | Apply common authority/change rules, historical consumers/readers and cheapest faithful checks across both arms. Root coordinates one heavy/native slot. | Independently reviewed useful source increments with fresh required exact-head gates; architecture cleanup does not hold ready independent work. |
 
 Each actual fit freezes original/source/use/Input IDs, target recipe/config,
@@ -971,6 +972,11 @@ failure/unknown rather than creating a new ID to escape ownership.
 
 The selected main arm must start with actual Source3 raw recording and its original
 capture/Input basis→`decision_sample_carry` projection→qualified partition/TrainingInput.
+Bounded availability inventory reports6 Source3 sessions/34raw-input upper bound;
+only the8N typed canary below is qualified so far. Other raw counts are not labelled
+eligibility and this bounded inventory proves no global absence. Discovery/collection
+continues toward>=100qualified N; no smaller first learning Run is substituted.
+
 Raw artifact `47c7611437fae7fe8a2de6c07f27c7e9b2e5875b1553ec4513d243a186edf881`
 is actual native-logical-source-v3/agent_protocol, Human origin false: archive73,561bytes/
 SHAc9ec67de…, original Recorder rc16/8d9745ee and gamev0.111.0/41cef1ea. Its live
@@ -1049,7 +1055,7 @@ preservation and budget; it still does not complete the Source3 recording chain.
 
 #### Old-format rich-Read conversion canary and first learning pool
 
-Proposed first whole TRAIN group is
+The verified old-format conversion canary group is
 `session-20260919T042850Z-e3d7f335df9d4dcf9e9f05d448bde635/run-0001`, source
 `9cd610b90dc25f3b0038b5caf90637fa4a9f28f6c94162acb0c80b887a8c7e4f`, original
 archive `a6e0c0f0c939f92e15a244528c81dde755722c3bae29d3a87e26d6848bb3a6ff`
@@ -1157,7 +1163,9 @@ STOP is branch-specific: Human participation affects only new Human capture;
 old data validation/recipe/config can progress independently. Root continues until
 all branches are completed or waiting on a concrete external/user condition,
 returning the exact next entry and missing evidence. A job plan or new dataset ID
-is no completed loop. The same GPU envelope remains USD20/spendUSD0, no provider
+is no completed loop. GPU integration follows the historical-success→common TrainRun/provider/checkpoint/
+config/framework reuse path. Exact compatibility/resource/job gates are pending;
+no new execution is claimed. The same envelope remains USD20/spendUSD0, no provider
 job; full character/mechanism coverage, about10k and agreed bounded comparisons,
 data quality and final G2/V1 approval remain open obligations.
 
