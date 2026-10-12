@@ -49,6 +49,34 @@ candidates have separate identities and gates. Auto7 completed a mechanical natu
 loss attempt; Native137 attempt2 was censored with Task unproved. Earlier sections
 retain their original snapshots and do not allocate another attempt.
 
+## Finite closeout snapshot for this round
+
+The last source repair assembly is3c3a1d55, normal merges of26bff985 (training
+closure/exact historical fixture) andbd38f9c5 (original process termination witness).
+Contract51 and macOS process14 local cases passed; actual Windows FFI/full latest-head
+CI remains separate. PR177 remote555/CI38202087744 was still failed at the last read.
+Do not borrow its other two green leaves as final acceptance or merge a failed head.
+
+Source3 6c9f4018, Evidence0e7ad48, Runtime8d593a34, dual-recording4dc4d527,
+monitor41081f0c and fixed4 factsf7d2125e have bounded local source receipts. They are
+separate candidates, not a new installed combination. Remote A c28561af/B b7af5f63
+are in a private source assembly for their existing budget/control defects. Root
+repairf9015b9c passed84 fake cases in2.23s with unchanged source/no forced cleanup;
+first two fixture failures remain. Final UI89bb4c4b passed339 browser cases in1.39s.
+A new design prerequisite stops the candidate instead of expanding this round.
+Legacy Model16 WIP/C0e31 remain frozen; no recipe hooks, paid job, long fit or new
+collection. Old1465 candidate N is not formal admission; Source3 still has8.
+
+Close this round after those existing tails, coherent source/PR handoff and the
+complete engineering-order proposal. External CI may remain explicitly pending;
+there is no indefinite polling or automatic continuation into training. The next
+engineering phases are reviewed PR177, separate coherent infrastructure delivery,
+explicit model/data/config confirmation, parallel data and backend qualification,
+per-arm preflight, allocated short numerical checks, a later allocated fit, export/
+registration/cold load, then bounded real game and separate quality evaluation.
+Long-memory research is optional to that capability path; its success is not a
+prerequisite for using an explicitly confirmed existing baseline.
+
 ## Prior Auto3 preparation snapshot
 
 Status: accepted source is assembled with version/BOM candidate `0817351f`;

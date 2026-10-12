@@ -1,13 +1,13 @@
 # Current project context — dual learning chains and evidence boundaries
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop is1f8851dc after
-PR176's normal merge. Root's reviewed source assembly baseline is8b3aeb0e0fbba45570f93e8365e4fb56ac71660b,
-`codex/native-episode-continuation`, including reviewed930 test preconditions,
-818c Human product coverage, accepted policy3f4dc normal merge8b3 and test provenance; exact-head
-repository/full-hosted gates remain separate. Runtime34's immutable package pin is
-unchanged. Native Host30 close qualification retains b055; actual Auto4 ran at4e643893.
-Auto7/Auto3 retain e479; no earlier game result qualifies a later candidate.
-App-default Platform is another historical repository.
+PR176. Root topic `codex/native-episode-continuation` has source assembly3c3a1d55:
+reviewed training closure/historical fixture26bff985 and portable Actor process
+witnessbd38f9c5 normally merged. PR177's last observed remote555ac466 failed
+CI38202087744 (Linux1/Windows1 failed; other leaves passed). New exact-head hosted
+results are pending; verify live refs before integration. Runtime34's immutable
+package pin is unchanged. Separate feature candidates below are not adopted.
+
 Resolve live GitHub refs and original owner records before acting; exact source
 and owner records override this file.
 
@@ -46,66 +46,67 @@ Freeze Uepoch from actual labelled TBPTT chunks, E=max(1,ceil(512/Uepoch)),
 max_updates=E*Uepoch; verify actual counters/coverage. Old13 TRAIN groups/1537
 candidate choices need rich-Read eligibility counts; current Source3 has only8.
 Bounded inventory found6 sessions/34raw-input upper bound, not34 qualified or
-confirmed global absence. Native Source3 discovery/collection continues.
+confirmed global absence. Source3 expansion waits for a later allocation.
 8/66 are conversion canaries, not first learning. Human/collection waits only its
 branch; direct137 is a separate baseline. Full G2/V1/~10k obligations remain.
 
-## Actual ordinary Auto4 — mixed result
+## Preserved execution and accepted prerequisites
 
-Actual ordinary Auto4 at4e643893 reached acknowledged ready Summary: Task
-completed/task_ended, natural Defect/A0 loss,floor5/score50, installed Evidence30
-verification accepted. Counts297Next/286Consume+ACK/285Acts=181delivered+104known
-not_started,0delivery unknown,11Await/1Close; all285 execution fields remain unknown.
-Delivery is no Commit/effect/causal proof. Auto74032ms/4222sealed events, known W,
-no pending/taint and unexhausted budget remain in the original packet.
+[Active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#actual-auto4-closeout-and-next-source-decision)
+retains original Auto4 at4e643893: acknowledged Summary/task_ended, natural Defect/A0
+loss floor5/score50;297Next/286Consume+ACK/285Acts (181delivered+104not_started),
+0delivery unknown. Execution/Commit remained unknown. Whole attempt FAILED: caller
+original_actor_changed, Host−15/forced_fallback, sealed Episode cleanup_unknown.
+Native child0/HTTP200 and no survivors do not repair that immutable failure.
 
-The WHOLE ATTEMPT FAILED: caller1 falsely flags original_actor_changed when retired
-same-run runtime=null; no replacement Actor proved. Native child0/unforced/HTTP200
-but Host driver−15/forced_fallback; immutable Episode phaseunknown/finish_complete/
-cleanup_unknown. Actor owned_process_contained/exit0/seal is separate. Outer104.510s/
-exit1 with no surviving owned/strict game process does not clean inner failure.
-Keep reserved unknown resource/failure; no clear/adopt/replay/overwrite. No new
-native attempt is allocated here; Auto7/Auto3 originals retain their own scopes.
-
-## Accepted prerequisites and current source gates
-
-The [active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order)
-retains detailed gates/rollback: Runtime34 archive30079e65/contenta8773f70/code87b5053f
-matches730 installed files and was loaded in Auto4 with Host29/Mod43; Evidence30
-compiled-reader scope is accepted without independent raw-fixture audit. Model
-e894/8eb unchanged weightsf1cd0183 retains CPU parity/export/registration, not new fit.
-
-Host30 b055 archive8b1eee01/content9b484200 and fresh close-only19.9233s/exit0 are
-accepted, with no Actor/Model association. Godot1090 ERROR lines remain; clean close
-is no error-free-game/Task/strategy claim or repair of Auto4's immutable unknown.
-The packet retains source/process/observer gates and old Runtime33 rollback.
+Runtime34 archive30079e65/contenta8773f70 matches730 installed files; Auto4 loaded it
+with Host29/Mod43. Host30 b055 close-only19.9233s/exit0 has no Actor/Model association;
+Godot1090 errors remain. Model e894/8eb weightsf1cd0183 retains prior CPU/export/
+registration evidence, not a new fit. Original records and Runtime33 rollback remain.
 
 [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) at27c96bca
 passed full [CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
 and was normally merged as1f8851dc; its merge CI passed in its own scope. Earlier
 failed CI remains failed. The large SDK fixture cap correction retains the1s SDK
 deadline/automatic negative; no production performance or historical-cause claim.
-PR1773bfd failed all four leaves at E501/Python-selector test preconditions. Reviewed
-930 fixes passed bounded local checks and are integrated into current Root; fresh
-exact-head full CI is not inferred. Human818c covers synthetic import/preview/publish/
-verify/recipe preflight, with no actual fit/export/registration or Human capture. f4dc policy1/2/3 delegation passed old RED+76pure
-guards/independent review and was normally merged8b3. Actual Source3 preview8N/8contexts/
-151459bytes passed; no partition publication/use/fit yet. Direct137 is not that arm.
+PR177 remote555 failures were narrowed to a missing native_execution_policy training
+closure, a historical fixture using the changed code scope, and an unwitnessed
+process-exit assumption. Root's contract gate passed51 cases; process gate passed14
+on macOS (2 real Node cases plus12 pure cases). Windows FFI/full CI is unverified;
+the original Windows failure's cause remains unknown. Old failures stay preserved.
+The historical fixture uses exact archived scope bytes; current-source rejection
+remains strict. No package/runtime/native attempts were made by these repairs.
 
-## Next owning handoff
+## Bounded source candidates and handoff
 
-Finish exact-head source/repository/full-CI gates. Preserve Auto4 failure/unknown;
-b055 used fresh state and does not repair Auto4 history.
-Human capture uses external Host30/native-ui→fresh App with NO AgentEpisode→Recording3;
-the AgentEpisode recording guard is intentional. Matching Mod43/tool setup and
-actual Root preparation remain separate. New Human input waits only for the person.
-Whole66 H/Read audit yields63 supervised N+3 masked contexts; neither meets100.
-Old source/recipe/Read-aware control/Task and dual-format UI remain implementation
-work, not accepted features. Close current PR177 before their separate feature PR.
-Source3 needs>=100; both fits need actual>=300 updates and ordinary export/run.
-GPU work reuses historical success through common TrainRun/provider/checkpoint/
-config/framework; compatibility and finite allocation are pending, no new job.
-Root's single heavy/native slot governs execution.
+Fresh Source3 `6c9f4018`: original RED,58 tests+71subtests,2 SDK off/on and1 strict
+DIRECT regression passed. Actual Source3 preview remains8N/8contexts; no new data.
+Evidence `0e7ad48`:86 tests passed. Runtime `8d593a34`:47 tests/typecheck plus final
+Runtime-to-Evidence/foreign-pin checks passed. These are source-only candidates;
+Root still owns future version/BOM/package and compatible integration gates.
+Dual recording `4dc4d527`:C#72/Python59/browser41 passed after preserving the first
+label-fixture failure. Monitor `41081f0c`:C#1/Python2/browser336 passed; continuous
+visible pending GETs stop on hidden/navigation/error/identity/terminal, never POST.
+Final successor-form89bb4c4b passed all339 browser cases in1.39s.
+Fixed4 metadata `f7d2125e`:62 pure tests passed, unchanged Engine/Config/chunk semantics;
+counts project existing source occurrence/actual events, with no fit/Torch.
+Remote A`c28561af` and B`b7af5f63` are assembled only in a separate source-gate topic.
+Root repairf9015b9c passed84 fake cases in2.23s; original fixture failures remain.
+No provider qualification. C`0e31b8c0` and legacy16 WIP remain frozen;
+C has unchecked initial_train P2 and recipe hooks are unavailable. No selected GPU
+configuration or model-plan approval is inferred from infrastructure work.
+
+This round ends after the already-open monitor mapping, remote control repair,
+and PR177 source/CI handoff. Do not start a new feature or wait indefinitely on
+external CI. Preserve blocked candidates and deliver the complete engineering-order
+proposal. Model-plan changes wait for the user; long fit and missing-data collection
+are outside this round. Separate feature PRs follow PR177, not bulk adoption here.
+
+Old13 TRAIN groups/1537 candidates were inspected as1465 eligible-looking N,72
+Read-missing masks and3 unlabelled H contexts; formal owner admission remains pending.
+Source3 has8<100; DIRECT137 is separate. Both future first fits still require>=100
+qualified distinct N and>=300 actual updates. Stable same-owner UI and exact backend
+qualification precede fit. Data shortage stops that arm, not the independent arm.
 
 ## Remaining Platform non-claims
 
