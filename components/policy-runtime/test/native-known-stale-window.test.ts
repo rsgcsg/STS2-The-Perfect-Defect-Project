@@ -218,10 +218,13 @@ describe("native policy3 causal continuous-goal falsifiers", () => {
       autonomy_budget: { submissions_used: 18, policy_calls_used: 18 } });
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
     const python = process.env.STS2_EVIDENCE_PYTHON ?? process.env.PYTHON;
-    if (!python) throw new Error("formal existing Python3.11 required for real typed verifier");
+    if (python === "") throw new Error("explicit Evidence Python interpreter must not be empty");
     const code = "import sys;sys.path.insert(0,sys.argv[2]);from sts2_platform_evidence import verify_agent_session_run_evidence;r=verify_agent_session_run_evidence(sys.argv[1]);assert r.passed,r.findings;s=r.value.terminal_summary;assert (s['known_stale_rejections'],s['known_delivered'])==(9,9);assert not s['live_eligibility_proved'];print('typed original counters9/9 PASS')";
-    expect(execFileSync(python, ["-c", code, f.evidence.directory,
-      fileURLToPath(new URL("../../evidence", import.meta.url))], { encoding: "utf8", timeout: 10000 })).toContain("PASS");
+    expect(execFileSync(process.execPath, [
+      fileURLToPath(new URL("../../../tools/run-python-component.mjs", import.meta.url)),
+      "components/evidence", "-c", code, f.evidence.directory,
+      fileURLToPath(new URL("../../evidence", import.meta.url))], { encoding: "utf8", timeout: 10000,
+      env: { ...process.env, ...(python !== undefined ? { PYTHON: python } : {}) } })).toContain("PASS");
   });
 
   it("continues three-plus short consecutive genuine changed-unit refusals before a fresh delivery", async () => {
