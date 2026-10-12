@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.6 工作稿，2026-10-11。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.7 工作稿，2026-10-12。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -31,7 +31,7 @@ G3 冻结、R1 正式发行、R2 规模科学比较仍按原定顺序；它们�
 | 默认研究候选改为当前决策采样、段内 learned carry | 先取得当前完整公开状态/C，同时让模型学习浏览、重访和进度；逐决策清空 W 会抹掉该任务信息 | **选定模式**，源码与验收进度由执行矩阵维护；旧 publication-memory 包保持旧义，真实样本/原生序列证明后才能成为可用默认 |
 | 记忆从实际消费历史学习 | Map→Inspect→Map 可以同页不同历史；固定 visited list 不能冒充模型能力 | I/F-off 为初始选择；只有真实反例和明确 InputSpec 才增加其他输入，不在执行器暗补策略 |
 | 训练视图可以重表达、截断或增强历史 | 原始记录、训练曝光和部署曝光不必逐项相同；不同有用假设可以实验 | 必须声明输入/目标/分段/重置和差异、保留分母，不能宣传为完整 Human 注意力或部署逐步重放 |
-| 先交付一条方便复用的实际路径 | 保存数据、选择已训模型、看一次建议和控制游戏是有明确目的的用例 | 同一应用 owner 和能力投影；已有安装/登记/数据不因再次使用重做，训练和操作仍有明确意图 |
+| 同一可复用路径跑新旧录制两类实例 | 两条完整链都要保存数据、训练/选择 Model、看建议和控制游戏 | 同一应用 owner 和能力投影；来源、Input/历史及完整 Agent 分别绑定，已有安装/登记/数据不因再次使用重做 |
 
 这些选择不等于已实现、已资格化或用户最终批准，也不删除完整范围内待验的机制。
 100–300 个合格选择的小批学习和一次自然整局尝试先给反馈；不把全部最终门禁变成
@@ -322,6 +322,62 @@ AI 功能录制不能填 `human_origin_attested=True`，旧 Human bundle 保持�
 分别判定。privileged teacher 可作为另行准入的离线标签来源，student 输入仍须公平；
 预测或 best-found 不是实际后继或最优性证明。
 
+### 并行的 Structured M2 完整学习链
+
+用户明确要求并行完成两条主链：**新完整录制→SDK/共同数据管理→训练→Model/Agent→真实运行**，
+以及 **旧录制→SDK/共同数据管理→训练→Model/Agent→真实运行**。两类原件都保留在新的 Workbench
+中，通过同一 ArtifactStore/Curation/use、TrainingService、Model export/registration 和执行/结果
+owner；不同来源、InputSpec、模型/记忆、完整 Agent 和环境合同保留各自身份。SDK 是实现库，
+GUI 主要映射同一 API/库用例；相同界面或 transport 不证明协议、消费史或训练语义相同。
+
+新链以当前 native Human exact-N 行为克隆、共享 Structured M2 对完整当前 C 评分为首批重点，
+保留既定 Defect/A0；本人完成真实示范，AI 不冒充 Human。已有当前格式 Source3 raw 可先
+完成该格式的真实链，保留其实际 actor声明，不能记为新 Human 录制。旧链独立审核已存在记录的原合同、
+用途/曝光、公开 basis/C、顺序/reset 和可训练目标后进入实际训练，不等新 Human 参与。
+此次旧格式主链选择 genuine old Human H Snapshot1及原件中实际 bound Read事实，经新的
+source-specific typed structured 投影接共享 S-M2-0/K1d96 carry、I/F-off、完整原 C 的 N-CE。
+同495KB archive已核all66 H/Read绑定与严格顺序，112次Read/47payloads；新严格投影为63N+
+3个missing-Read无标签上下文，保留原选择/proof，不补未来Read。新owning admission仍须过。当前Decision4
+public_stateful_profile要求reads=[]，不能把snapshot-only限制定为完整公平信息Agent；从具体
+需要冻结最小版本化Read/控制profile，在不改旧合同含义下复用ordinal/cache/reset机制。
+owning validator/recipe/export/adapter及现有Task/result-witness binding仍须实现验证。原H与S分开，
+不从 compact/token 数据补造 typed tree。Native Source3 sampled carry/AgentSession、旧
+LightActionPublicM2 的 K8/d384 恢复、text-menu-v2/S0 各留自己的图/Input/消费史；共享数值
+kernel 不证明语义相同或恢复全部旧链。首批具体配置及历史保留/适配理由见[现行执行包](plans/AGENT_RUN_COMPLETION_2026-10-11.md#parallel-structured-m2-full-chains)。
+
+共享数值基线 S-M2-0 采用 UTF-8 byte-field embedding32→CNN64→width96、typed
+scalar/null/bag/order nodes、entity-local pooling、一层稀疏 typed relation、gated
+observation-only K1×96 W 和完整 C 的 shared candidate-conditioned scorer。C/selected N
+不进入 observation writer；E=encode(X)，W按各 InputSpec 的 advance/reset 写入，随后全 C
+N-CE。可靠无标签上下文可携带 W；TBPTT4截梯度不重置前向 W。初批 fresh seed0、CPU
+float32/2threads/AdamW lr0.001，不依赖 tokenizer/pretrained/旧权重；K1是受支持基线，
+不把底层可见的 K8/reset preset 宣传为 sampled Agent 已支持。源字段/动作参数不能无声
+丢弃，必要图变更与包/身份必须版本化。新 Source3 首批真实 raw→sampled partition 计数和
+use仍需冻结。真实Source3raw的当前typed preview已得8N/8contexts/151,459编码bytes、无排除，
+但尚未发布partition/实际use/fit；不是Human/完整游戏证明，不能以direct Teacher137N替代。
+旧H66的新投影/recipe/包/控制仍在实现。8/66仅是转换canary，不满足首次学习门槛。
+
+用户最新硬门槛：**每条链首批至少100个不同原件绑定的合格监督N，且至少300次实际
+optimizer updates**。无标签contexts、polls、重复行/副本或重复epochs不增加独特数据量；
+仅配置cap300也不证明训练已达300。首批目标>=512updates并至少完成一次全cohort pass：
+从真实typed dataset的正监督TBPTT chunks计算Uepoch，E=max(1,ceil(512/Uepoch))，
+max_updates=E*Uepoch，再核实际report/epoch/覆盖计数。满足固定recipe范围才派发；若限制、
+失败或墙钟导致不足，门槛仍未完成，不能降标准或把checkpoint当达标Model。
+
+旧链学习批次选全部13 TRAIN组/1537原候选，经过Read-aware来源/用途/完整C/标签、顺序、
+missingness与去重验证后冻结真实eligibleN；66/63只是转换canary，原DEV8不当干净测试。
+Native链当前Source3仅8N，先发现/取得足够真实Source3再聚合>=100合格N；direct137可保留
+独立机器来源基线，不能替代Source3主链。Source3与旧链都独立完成管理→训练→Model→
+Agent→真实任务/结果。编码canary的300contexts/12MiB不限定学习批次或live Recorder；
+实际采集与训练仍有Root按真实数据/成本冻结的有限资源预算，不截字段、不伪造标签/历史。
+完整录制按Recording owner限制封存，Human参与只停止其支线。100–300首批反馈、约10k、
+保留有界比较与最终G2/V1义务不被这个最低门槛取代。
+
+Solver/privileged Teacher 保留未来 Source/TargetSpec 设计：私有搜索结果只能成为明确标签/适用
+metadata，student 输入仍公平；本轮两条实际主链不默认执行 Solver 标签或第三条训练。当前
+K1/d96/180,545参数是基线而非最强结论；能力、质量和成本反馈可修 owning Input/Model/Agent，
+历史设计仅是需核对的依据。完整角色/机制、约10k、有界比较和 G2/V1 最终批准义务保持。
+
 在线客户端与 Annotator 复用 Connector 公开冻结事实。observation、native input witness、delivery、Commit/causal、持久化位置和来源各有身份；新事件流不建立第二个 causal tracker。focus 输入前观察不能包含之后 preview。公开可得、实际显示和心理知识分开；无动作观察不伪造 Wait 标签。
 
 ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/消费、reset、假设、mask 和排除分母。允许明确有损/重表达监督，不冒充保真 Human 时机模仿。旧数据可只适用局部 N；缺浏览/preview/前缀时不补完整 sequence。用途/Gold/lineage 继续由既有 owner 判定。
@@ -337,8 +393,9 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 旧 Public M2 的数值/export/consumer 恢复不等于原 sequence/segment/training producer 已
 接回现行 Workbench trusted recipe；[现存恢复范围](../python/docs/PUBLIC_M2_RESTORATION.md)
 与 [Source3/native sampled 路径](../python/docs/research/SOURCE3_ORDERED_NATIVE_TRAINING.md)
-保持不同图、InputSpec、消费史及来源身份。未恢复的旧路径不自动成为必做路线，也不声称
-所有历史已核对或所有未来组合已实现。
+保持不同图、InputSpec、消费史及来源身份。此次明确选中的旧录制 Structured M2 完整链须
+补齐其实际训练接缝；未选历史组合仍按真实消费者需求决定保留/适配/退休，不能宣称所有历史
+已核对或所有未来组合已实现。
 
 已实现 Source3 publication-memory 视图仍只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 精确匹配才提供 N。显式 recorded-capture 预训练视图保留独立 recipe 和曝光假设。两者的旧身份/准入规则不因新方向改变。
 
