@@ -25,6 +25,7 @@ from ..fullrun.light_action_inputs import CANONICAL_SCHEMA as CANONICAL_LIGHT_AC
 from ..fullrun.light_action_inputs import SCHEMA as LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import LoadedLightActionInputs
 from ..fullrun.token_inputs import LoadedTokenInputs
+from ..historical_m0_spec import INPUT_SCHEMA as HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA
 from ..light_action_codec import SPEC_SHA256
 from ..models.losses import listwise_rank_loss
 from ..models.stage1a import (
@@ -306,6 +307,7 @@ class TokenRankingEngine:
             action_codec = info.get("action_codec")
             if (info.get("schema") not in {
                     LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+                    HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA,
             }
                     or info.get("graph") != LIGHT_ACTION_M0_GRAPH
                     or not isinstance(state_codec, dict)
@@ -362,8 +364,36 @@ class TokenRankingEngine:
         }
         if self.is_light_action_m0:
             identity_payload.update({"graph": recipe.graph, "recipe": recipe.recipe_id})
+        self.initialization = (
+            info.get("initialization")
+            if info.get("schema") == HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA else None
+        )
+        self.initialized = self.initialization is None
+        if info.get("schema") == HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA:
+            from ..historical_m0_spec import INITIALIZATION_SCHEMA
+
+            if (not isinstance(self.initialization, dict)
+                    or self.initialization.get("schema") != INITIALIZATION_SCHEMA
+                    or self.initialization.get("mode") != "model_weights_new_run"
+                    or self.initialization.get("backbone") != self.backbone
+                    or self.initialization.get("dtype") != "float32"
+                    or self.initialization.get("state_codec") != info.get("state_codec")
+                    or self.initialization.get("action_codec") != info.get("action_codec")):
+                raise BoundaryError("token_training", "warm_start_initialization_identity_mismatch")
+            identity_payload["initialization"] = self.initialization
         self.data_identity = semantic_hash(identity_payload)
         self.step = 0
+
+    def initialize_model_weights(self, raw: bytes, identity: dict[str, Any]) -> None:
+        """New-run weight initialization only; never imports optimizer/cursor/RNG."""
+        if (self.inputs.manifest.parameters.value().get("schema")
+                != HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA
+                or self.initialization is None or identity != self.initialization
+                or self.initialized or self.step != 0 or self.optimizer.state
+                or hashlib.sha256(raw).hexdigest() != identity.get("weights_sha256")):
+            raise BoundaryError("token_training", "warm_start_step_zero_identity_required")
+        restore_weights(self.model, raw, frozen=False, strict_frozen_core=True)
+        self.initialized = True
 
     def _weights(self) -> dict[str, Tensor]:
         return model_weights(self.model, frozen=self.frozen,
@@ -376,7 +406,16 @@ class TokenRankingEngine:
                         for a in row.actions)
         return cast(Tensor, self.model(state, actions))
 
+    def _require_initialized(self) -> None:
+        # Only the historical input introduces a weights-first contract. Other
+        # existing typed owners may provide their own constructor (Reward M0).
+        if (self.inputs.manifest.parameters.value().get("schema")
+                == HISTORICAL_LIGHT_ACTION_INPUT_SCHEMA
+                and getattr(self, "initialized", False) is not True):
+            raise BoundaryError("token_training", "warm_start_weights_required")
+
     def advance(self) -> float:
+        self._require_initialized()
         if self.step >= self.config.steps:
             raise BoundaryError("token_training", "exhausted")
         self.model.train()
@@ -406,6 +445,7 @@ class TokenRankingEngine:
         return float(loss.detach())
 
     def scores(self, index: int) -> tuple[float, ...]:
+        self._require_initialized()
         self.model.eval()
         with torch.no_grad():
             values = self._scores(index)
@@ -414,9 +454,11 @@ class TokenRankingEngine:
         return tuple(float(v) for v in values.cpu().tolist())
 
     def model_bytes(self) -> bytes:
+        self._require_initialized()
         return save(self._weights())
 
     def checkpoint(self) -> bytes:
+        self._require_initialized()
         return encode_checkpoint({
             "schema": (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if self.is_light_action_m0
                        else CHECKPOINT_SCHEMA),
@@ -465,3 +507,4 @@ class TokenRankingEngine:
                         strict_frozen_core=self.is_light_action_m0)
         self.optimizer.load_state_dict(optimizer)
         self.step = state["step"]
+        self.initialized = True

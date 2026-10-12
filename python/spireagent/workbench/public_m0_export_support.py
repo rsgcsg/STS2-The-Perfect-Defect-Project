@@ -33,6 +33,14 @@ def lineage(store: Any, owner: Any, model: Manifest, *, verify_payloads: bool = 
         config, info = check_light_action_m0_model(model)
         if info["schema"] != MODEL_SCHEMA:
             raise ValueError
+        from stpd.historical_m0_spec import INPUT_SCHEMA as HISTORICAL_INPUT_SCHEMA
+
+        if info["input_schema"] == HISTORICAL_INPUT_SCHEMA:
+            from spireagent.workbench.recipes.historical_m0 import historical_completed_lineage
+
+            return historical_completed_lineage(
+                store, owner, model, verify_payloads=verify_payloads,
+            )
         binding = info["training_binding"]
         run = store.get_manifest(model.parent("run"))
         source = store.get_manifest(model.parent("training_input"))

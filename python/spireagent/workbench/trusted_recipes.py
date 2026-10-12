@@ -7,6 +7,7 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.local_model_dependencies import recipe_dependencies_available
 from spireagent.workbench.memory_recipe import MEMORY_RECIPES
+from stpd.historical_m0_spec import RECIPE as HISTORICAL_M0_RECIPE
 from stpd.native_training_source_spec import RECIPE as NATIVE_SAMPLED_RECIPE
 from stpd.ordered_source_spec import RECIPES as ORDERED_RECIPE_CONFIGS
 from stpd.reward_m0_spec import RECIPE as REWARD_M0_RECIPE
@@ -20,11 +21,15 @@ STRUCTURED_RECIPES = frozenset({
 })
 MAX_TOTAL_ATTEMPTS = 32
 DEFAULT_CHECKPOINT_CADENCE = 100
-TYPED_RECIPES = frozenset({*STRUCTURED_RECIPES, REWARD_M0_RECIPE})
+TYPED_RECIPES = frozenset({*STRUCTURED_RECIPES, REWARD_M0_RECIPE, HISTORICAL_M0_RECIPE})
 TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *TYPED_RECIPES, *MEMORY_RECIPES})
 
 
 def typed_recipe_run_schema(recipe_id: str) -> str:
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        from stpd.historical_m0_spec import RUN_SCHEMA
+
+        return RUN_SCHEMA
     if recipe_id == REWARD_M0_RECIPE:
         from stpd.reward_m0_spec import RUN_SCHEMA
 
@@ -33,6 +38,8 @@ def typed_recipe_run_schema(recipe_id: str) -> str:
 
 
 def typed_recipe_checkpoint_schema(recipe_id: str) -> str:
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        return "stpd/stage1a-light-action-m0-checkpoint-v1"
     if recipe_id == REWARD_M0_RECIPE:
         from stpd.reward_m0_spec import CHECKPOINT_SCHEMA
 
@@ -43,6 +50,8 @@ def typed_recipe_checkpoint_schema(recipe_id: str) -> str:
 
 
 def typed_recipe_is_scoped(recipe_id: str) -> bool:
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        return False  # Preserve the exact new run producer on every resume.
     if recipe_id == REWARD_M0_RECIPE:
         return False  # New reward runs retain their exact original producer.
     return structured_recipe_is_scoped(recipe_id)
@@ -106,6 +115,30 @@ def structured_recipe_is_scoped(recipe_id: str) -> bool:
 def describe_recipe(recipe_id: str) -> dict[str, Any]:
     if recipe_id not in TRUSTED_RECIPES:
         raise BoundaryError("local_training", "unsupported_training_recipe")
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        from dataclasses import fields
+
+        from stpd.historical_m0_spec import DIAGNOSTIC_SCOPE, RELATION_SCHEMA, HistoricalM0Config
+
+        defaults = {field.name: field.default for field in fields(HistoricalM0Config)
+                    if field.name != "warm_start_model_id"}
+        return {
+            "recipe_id": recipe_id, "placement_ids": ["local-cpu"],
+            "numerical_devices": ["cpu", "mps"], "remote_execution": False,
+            "dependencies_available": recipe_dependencies_available(recipe_id),
+            "automatic_retry": False, "worker_isolation": "private_child-v1",
+            "supported_actions": ["cancel", "pause", "resume", "reconcile", "amend_wall_budget"],
+            "result_type": "train_only", "independent_evaluation": "not_run",
+            "diagnostic_evaluation": DIAGNOSTIC_SCOPE, "source_schema": RELATION_SCHEMA,
+            "initialization": "compatible_original_Model_weights_new_run_fresh_optimizer",
+            "config_required": {"warm_start_model_id": "immutable_original_Model_ArtifactID"},
+            "config_defaults": defaults,
+            "config_fields": {"steps": [1, 10000], "device": ["cpu", "mps"]},
+            "limits": {"wall_seconds": {"minimum": 1, "maximum": 3600},
+                       "scratch_bytes": {"minimum": 16 * 1024**2, "maximum": 1024**3,
+                                         "default": 512 * 1024**2}},
+            "cumulative_limits": True, "max_total_attempts": MAX_TOTAL_ATTEMPTS,
+        }
     if recipe_id == REWARD_M0_RECIPE:
         from stpd.reward_m0_spec import INPUT_SPECS, SOURCE_SCHEMA, RewardM0Config
 
@@ -257,6 +290,13 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
         raise BoundaryError("local_training", "unsupported_training_recipe")
     if not isinstance(config, dict):
         raise BoundaryError("local_training", "invalid_recipe_config")
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        from stpd.historical_m0_spec import HistoricalM0Config
+
+        try:
+            return HistoricalM0Config(**config).to_dict()
+        except TypeError as error:
+            raise BoundaryError("local_training", "invalid_recipe_config") from error
     if recipe_id == REWARD_M0_RECIPE:
         from stpd.reward_m0_spec import RewardM0Config
 
@@ -285,6 +325,10 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
 
 
 def recipe_adapter(recipe_id: str) -> Any:
+    if recipe_id == HISTORICAL_M0_RECIPE:
+        from spireagent.workbench.recipes.historical_m0 import HistoricalM0RecipeAdapter
+
+        return HistoricalM0RecipeAdapter(recipe_id)
     if recipe_id == REWARD_M0_RECIPE:
         from spireagent.workbench.recipes.reward_m0 import RewardM0RecipeAdapter
 

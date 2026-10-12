@@ -1,6 +1,14 @@
 import type { ChildProcess } from "node:child_process";
 import type { JsonObject } from "@rsgcsg/sts2-connector-client";
 export function prepareBridge(): string;
+export interface RealStoreStartupFailureDiagnostics {
+  before_cleanup: { backend_pid: number | null; events: { phase: string; operation: string | null; elapsed_ms: number }[]; pending_operations: string[] };
+  cleanup: { code: number | null; signal: NodeJS.Signals | null };
+  stderr_original: Buffer;
+  stderr_bytes: number;
+  stderr_retained_bytes: number;
+  stderr_truncated: boolean;
+}
 export interface RealStoreTransport {
   endpoint: string;
   requests: { operation: string; body: JsonObject }[];

@@ -131,6 +131,59 @@ original-snapshot export parity checks; see [the exact evidence record](evidence
 Next, D-Simple-PF uses the same allocation/view and update count as an engineering
 configuration comparison. Actual Workbench/Mod execution remains a separate pending gate.
 
+## Historical public M0 subset and new-run initialization
+
+The bounded historical route uses a new `stpd/historical-public-m0-relation-v1`
+over immutable dataset/allocation/public-view/original-input parents. Its selected
+members retain the full occurrence/run/archive/split/transition tuple. The relation
+binds included-disposition order to source sample order and encoded-row order under
+the reviewed original producer contract, plus exact stored/logical payload hashes,
+ordinal, row bytes, complete action-ID order/count and chosen index. It never
+reallocates, relabels old bytes, fits a new tokenizer or filters candidates.
+
+All original members/dispositions and encoded rows are checked, including exclusions
+and unselected rows, with independent stored/logical/line/count limits and streaming
+decompression. Missing, duplicate, aliased, reordered, changed-split/parent/catalog/
+label/codec input fails before a derivative or new use is written. The selected
+input is a new `stpd/stage1a-light-action-m0-historical-input-v1`, not canonical-v1.
+Original full reprojection loaders remain unchanged. An owning semantic/source
+admission receipt and the input relation prove different facts; missing applicable
+source proof reports not-ready and does not silently hydrate archives or reproject
+the entire old corpus. Required full verification is a separately bounded action.
+
+First explicit preparation additionally verifies only the selected original H/
+choice/proof objects with the existing public BC binder and reproduces each frozen
+token/action row byte-for-byte. Its closed selected-only context lives in the
+configured owner's existing receipt table; a canonical dataset receipt or claimed
+old producer SHA alone cannot supply this proof. The source then seals selected
+rows/samples and exact parent/payload references. Ordinary start, load, completion,
+export and registration recheck that proof and current use/Gold/index authority,
+reading selected bytes instead of rescanning the original corpus. Missing or stale
+proof requires explicit preparation; no second registry or automatic replay exists.
+
+The static `historical-public-light-action-m0-warm-start-v1` recipe is composed
+through existing Curation, LocalTrainingService, ArtifactStore and token worker.
+The configured owner checks historical admission/current permission and reserves
+the new operation before publication. Frozen codecs inherit all original TRAIN
+exposure; model initialization additionally inherits its full ancestry. Original
+DEV membership remains diagnostic, with no clean-held-out or current-game/A0 claim.
+The configured Curation owner applies its existing training-purpose DEV policy to
+verified selected run/archive references, including related-group and test/Gold
+checks. Diagnostic use is limited to selected DEV groups/sources; its evaluation
+reference binds the actual Model, historical source and training operation, so
+repeat admission is idempotent and another Model/source cannot borrow that use.
+
+This route supports only an explicit compatible Model-weight warm start: exact
+graph/public InputSpec/renderer/codecs/dtype and finite tensor inventory, loaded
+at step zero through the owning safe weight loader. It creates a new run, optimizer,
+RNG protocol/cursor/plan and data identity. It never resumes an old checkpoint on
+new data; ordinary checkpoint restore retains all exact identity checks. CPU/MPS,
+bounded child/attempt/control/publication and existing export/scorer contracts
+retain their owners. A recipe descriptor is not actual fit or runtime evidence;
+private old weights and real sources are not read by source-only validation.
+The resulting Model and export keep the existing public M0 contracts; the new
+Input relation and initialization are provenance, not another computation family.
+
 ## Compare completed token configurations
 
 `--store STORE compare-tokens --result REFERENCE_RESULT --result OTHER_RESULT`
