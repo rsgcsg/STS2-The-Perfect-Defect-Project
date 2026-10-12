@@ -12,6 +12,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
+import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -189,37 +192,255 @@ def common_start(app, ready, selection, world, log):
     return state["startup"], reference, raw, before
 
 
+def accepted_original_exit(exit_code, calls):
+    # Nonzero alone is also a crash signal. Require a successful original-process
+    # low-level call inside own terminate, joined to its actual exit disposition.
+    if any(call["method"] == "kill" for call in calls):
+        return False
+    if exit_code == 0:
+        return True
+    return any(
+        call["method"] == "terminate"
+        and call["outcome"] == "returned"
+        and (
+            exit_code == 1 and any(
+                api["original_handle"]
+                and api["exit_code"] == 1
+                and api["was_active"]
+                and api["outcome"] == "returned"
+                for api in call.get("winapi_calls", [])
+            )
+            or exit_code == -signal.SIGTERM and any(
+                api["original_pid"]
+                and api["signal"] == signal.SIGTERM
+                and api["not_known_exited"]
+                and api["outcome"] == "returned"
+                for api in call.get("os_kill_calls", [])
+            )
+        )
+        for call in calls
+    )
+
+
+@pytest.mark.parametrize(
+    "exit_code,method,method_outcome,original_handle,was_active,api_outcome",
+    [
+        (1, "terminate", "returned", False, True, "returned"),
+        (1, "terminate", "returned", True, True, "raised"),
+        (1, "terminate", "returned", True, False, "returned"),
+        (1, "terminate", "raised", True, True, "returned"),
+        (1, "kill", "returned", True, True, "returned"),
+        (2, "terminate", "returned", True, True, "returned"),
+        (None, "terminate", "returned", True, True, "returned"),
+    ],
+)
+def test_original_exit_rejects_incomplete_or_foreign_termination_witness(
+    exit_code, method, method_outcome, original_handle, was_active, api_outcome
+):
+    # Pure rejection classification only; these rows are not process evidence.
+    calls = [
+        {
+            "method": method,
+            "outcome": method_outcome,
+            "winapi_calls": [
+                {
+                    "original_handle": original_handle,
+                    "exit_code": 1,
+                    "was_active": was_active,
+                    "outcome": api_outcome,
+                }
+            ],
+        }
+    ]
+    assert not accepted_original_exit(exit_code, calls)
+
+
+def test_original_exit_without_containment_requires_natural_zero():
+    assert accepted_original_exit(0, [])
+    assert not accepted_original_exit(1, [])
+    assert not accepted_original_exit(-15, [])
+    assert not accepted_original_exit(None, [])
+    assert not accepted_original_exit(0, [{"method": "kill"}])
+
+
+@pytest.mark.parametrize(
+    "original_pid,sent_signal,not_known_exited,api_outcome",
+    [
+        (False, signal.SIGTERM, True, "returned"),
+        (True, signal.SIGINT, True, "returned"),
+        (True, signal.SIGTERM, False, "returned"),
+        (True, signal.SIGTERM, True, "raised"),
+    ],
+)
+def test_original_exit_rejects_incomplete_or_foreign_posix_witness(
+    original_pid, sent_signal, not_known_exited, api_outcome
+):
+    # Pure rejection rows; the real process tests must supply the positive witness.
+    calls = [
+        {
+            "method": "terminate",
+            "outcome": "returned",
+            "os_kill_calls": [
+                {
+                    "original_pid": original_pid,
+                    "signal": sent_signal,
+                    "not_known_exited": not_known_exited,
+                    "outcome": api_outcome,
+                }
+            ],
+        }
+    ]
+    assert not accepted_original_exit(-signal.SIGTERM, calls)
+
+
+def observed_finish(app, ready, startup):
+    original = app.models.process
+    assert original is not None
+    handle = getattr(original, "_handle", None)
+    calls, active = [], {}
+    winapi = getattr(subprocess, "_winapi", None)
+
+    def wrap_method(method):
+        actual = getattr(original, method)
+
+        def observe():
+            call = {
+                "method": method, "outcome": "offered", "winapi_calls": [], "os_kill_calls": []
+            }
+            calls.append(call)
+            thread_id = threading.get_ident()
+            active[thread_id] = call
+            try:
+                returned = actual()
+            except BaseException as error:
+                call.update(outcome="raised", error=type(error).__name__)
+                raise
+            else:
+                call["outcome"] = "returned"
+                return returned
+            finally:
+                active.pop(thread_id, None)
+
+        return observe
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(original, "terminate", wrap_method("terminate"))
+        patch.setattr(original, "kill", wrap_method("kill"))
+        if winapi is not None:
+            actual_terminate = winapi.TerminateProcess
+
+            def observe_winapi(target_handle, exit_code):
+                call = active.get(threading.get_ident())
+                if call is None:
+                    return actual_terminate(target_handle, exit_code)
+                api = {
+                    "original_handle": target_handle is handle,
+                    "exit_code": exit_code,
+                    "was_active": False,
+                    "outcome": "offered",
+                }
+                call["winapi_calls"].append(api)
+                try:
+                    api["was_active"] = (
+                        winapi.GetExitCodeProcess(target_handle) == winapi.STILL_ACTIVE
+                    )
+                except OSError as error:
+                    api["observation_error"] = type(error).__name__
+                try:
+                    returned = actual_terminate(target_handle, exit_code)
+                except BaseException as error:
+                    api.update(outcome="raised", error=type(error).__name__)
+                    raise
+                else:
+                    api["outcome"] = "returned"
+                    return returned
+
+            patch.setattr(winapi, "TerminateProcess", observe_winapi)
+        else:
+            actual_kill = os.kill
+
+            def observe_os_kill(target_pid, sent_signal):
+                call = active.get(threading.get_ident())
+                if call is None:
+                    return actual_kill(target_pid, sent_signal)
+                api = {
+                    "original_pid": target_pid == original.pid,
+                    "signal": sent_signal,
+                    "not_known_exited": original.returncode is None,
+                    "outcome": "offered",
+                }
+                call["os_kill_calls"].append(api)
+                try:
+                    returned = actual_kill(target_pid, sent_signal)
+                except BaseException as error:
+                    api.update(outcome="raised", error=type(error).__name__)
+                    raise
+                else:
+                    api["outcome"] = "returned"
+                    return returned
+
+            patch.setattr(os, "kill", observe_os_kill)
+        result = app.finish_native_episode(ready["environment_ref"])
+    runtime_log = app.models.directory / "runtime.log"
+    try:
+        with runtime_log.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - 8192))
+            tail = stream.read(8192).decode("utf-8", errors="replace")
+    except OSError as error:
+        size, tail = None, f"runtime.log unavailable: {type(error).__name__}"
+    exit_code = original.poll()
+    diagnostic = json.dumps(
+        {
+            "original_pid": original.pid,
+            "original_process_retained": app.models.process is original,
+            "original_handle": int(handle) if handle is not None else None,
+            "original_exit_code": exit_code,
+            "run_id": startup["run_id"],
+            "termination_calls": calls,
+            "actor_finish": json.dumps(result.get("actor_finish"), default=str)[:8192],
+            "runtime_log_bytes": size,
+            "runtime_log_tail": tail,
+        },
+        default=str,
+    )[:32768]
+    assert app.models.process is original, diagnostic
+    assert result["actor_finish"]["process_exit_code"] == exit_code, diagnostic
+    assert accepted_original_exit(exit_code, calls), diagnostic
+    return result, diagnostic
+
+
 def common_finish(app, ready, startup, reference, raw, host_before, log, world):
-    result = app.finish_native_episode(ready["environment_ref"])
-    assert result["phase"] == "closed", result
-    assert result["actor_finish"]["status"] == "stopped"
-    assert result["actor_finish"]["run_id"] == startup["run_id"]
-    assert result["actor_finish"]["seal"] == "available"
-    assert result["cleanup"]["native_exit_disposition"] == "graceful"
-    assert app.models.process.poll() == 0
-    assert not world.held
-    assert (app.models.directory / reference["path"]).read_bytes() == raw
+    result, diagnostic = observed_finish(app, ready, startup)
+    assert result["phase"] == "closed", diagnostic
+    assert result["actor_finish"]["status"] == "stopped", diagnostic
+    assert result["actor_finish"]["run_id"] == startup["run_id"], diagnostic
+    assert result["actor_finish"]["seal"] == "available", diagnostic
+    assert result["cleanup"]["native_exit_disposition"] == "graceful", diagnostic
+    assert not world.held, diagnostic
+    assert (app.models.directory / reference["path"]).read_bytes() == raw, diagnostic
     host_after = log.read_bytes()
-    assert host_after.startswith(host_before)
+    assert host_after.startswith(host_before), diagnostic
     tail = [json.loads(line)["event"] for line in host_after[len(host_before) :].splitlines()]
-    assert tail == ["close", "driver_finished"]
+    assert tail == ["close", "driver_finished"], diagnostic
     evaluation = app.models.state["evaluation"]
-    assert evaluation["evidence_verification"] == "pass", evaluation
-    assert evaluation["agent_execution"]["status"] == "bound"
-    assert evaluation["agent_execution"]["native_episode"]["status"] == "bound"
+    assert evaluation["evidence_verification"] == "pass", (diagnostic, evaluation)
+    assert evaluation["agent_execution"]["status"] == "bound", diagnostic
+    assert evaluation["agent_execution"]["native_episode"]["status"] == "bound", diagnostic
     events = [
         json.loads(line)
         for line in (app.models.directory / "agent-runs" / startup["run_id"] / "events.jsonl")
         .read_bytes()
         .splitlines()
     ]
-    assert "stopped" in [event["kind"] for event in events]
+    assert "stopped" in [event["kind"] for event in events], diagnostic
     assert all(
         "native_episode" not in json.dumps(event["payload"])
         for event in events
         if event["kind"]
         in {"agent_sample_next_requested", "agent_sample_input_stored", "public_decision_input"}
-    )
+    ), diagnostic
     return events
 
 
