@@ -15,6 +15,7 @@ from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
+from stpd import native_code_scope as scope_owner
 from stpd.canonical import semantic_hash
 from stpd.models.structured_m2 import StructuredM2
 from stpd.native_code_scope import (
@@ -26,7 +27,6 @@ from stpd.native_code_scope import (
     OPERATIONAL_TARGET_LOCK_SHA256,
     ORIGINAL_EXPORT_REVISION,
     ORIGINAL_LOCK_SHA256,
-    TARGET_LOCK_SHA256,
     compatibility_original_identity,
 )
 from stpd.native_graph_spec import NativeGraphControl
@@ -58,7 +58,38 @@ def bounded_cpu():
 
 
 @pytest.fixture
-def original(tmp_path, monkeypatch):
+def historical_target_source(tmp_path, monkeypatch):
+    """Current parser, explicitly frozen source-read context; no new-source qualification."""
+    current = Path(__file__).resolve().parents[1]
+    target = tmp_path / "historical-target-source"
+    fixtures = Path(__file__).parent / "fixtures/native_compatibility"
+    proof = decode_json((fixtures / "evidence_rc27_basis.json").read_bytes())
+    for relative in (*scope_owner.PATHS, "uv.lock"):
+        raw = (
+            (fixtures / "evidence_rc27_structured_code_scope.py.txt").read_bytes()
+            if relative == "stpd/structured_code_scope.py"
+            else (current / relative).read_bytes()
+        )
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw)
+    for row in proof["source_files"]:
+        if row["path"] not in scope_owner._OPERATIONAL_MIGRATION_OWNERS:
+            assert hashlib.sha256((target / row["path"]).read_bytes()).hexdigest() == row["sha256"]
+    # This is the reviewed pre-repair operational target, never today's changed source.
+    assert scope_owner.native_code_identity(target, graph=True)["source_sha256"] == (
+        "849219b978a0712647a09b025999a81c09b79d4b2b69f5c473db4856e4d223e9"
+    )
+    assert hashlib.sha256((target / "uv.lock").read_bytes()).hexdigest() == (
+        OPERATIONAL_TARGET_LOCK_SHA256
+    )
+    monkeypatch.setattr(scope_owner, "ROOT", target)
+    monkeypatch.setattr(owner, "ROOT", target)
+    return current
+
+
+@pytest.fixture
+def original(tmp_path, monkeypatch, historical_target_source):
     """Hand-built fixture asserts only synthetic own-byte package mechanics."""
     store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
     origin = Producer(COMPATIBILITY_REPOSITORY, ORIGINAL_EXPORT_REVISION, ORIGINAL_LOCK_SHA256)
@@ -169,7 +200,7 @@ def original(tmp_path, monkeypatch):
 
 
 def target_producer():
-    return Producer(COMPATIBILITY_REPOSITORY, "b" * 40, TARGET_LOCK_SHA256)
+    return Producer(COMPATIBILITY_REPOSITORY, "b" * 40, OPERATIONAL_TARGET_LOCK_SHA256)
 
 
 def test_actual_managed_workbench_migration_uses_writable_owner_and_preserves_readonly_inspection(
@@ -257,7 +288,7 @@ def test_new_identity_same_tensor_bytes_and_original_provenance_and_parent(origi
     owner.require_native_model_package(new, checked)
 
 
-def test_strict_original_package_keeps_rejecting_current_environment(original, tmp_path):
+def test_strict_original_package_keeps_rejecting_migration_target(original, tmp_path):
     _, _, package, raw = original
     target = tmp_path / "old"
     target.mkdir()
@@ -267,11 +298,34 @@ def test_strict_original_package_keeps_rejecting_current_environment(original, t
         owner.load_native_package(target)
 
 
-def test_legacy_evidence_only_profile_does_not_waive_new_operational_source(original):
+def test_legacy_evidence_only_profile_does_not_waive_new_operational_source(
+    original, historical_target_source, monkeypatch
+):
+    # The legacy proof's real Git read belongs to the repository, not the temporary tree.
+    monkeypatch.setattr(scope_owner, "ROOT", historical_target_source)
+    monkeypatch.setattr(owner, "ROOT", historical_target_source)
     store, old, _, _ = original
     with pytest.raises(BoundaryError, match="inference_source_changed"):
         owner.publish_native_compatible_model(
             store, old.artifact_id, producer=target_producer(), profile=COMPATIBILITY_PROFILE)
+
+
+def test_frozen_operational_profile_rejects_changed_current_source_without_publication(
+    original, historical_target_source, monkeypatch
+):
+    store, old, _, _ = original
+    proof = owner.native_operational_compatibility_proof(old.producer)
+    before = store.manifest_ids()
+    monkeypatch.setattr(scope_owner, "ROOT", historical_target_source)
+    monkeypatch.setattr(owner, "ROOT", historical_target_source)
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        scope_owner.checked_native_operational_compatibility_proof(proof)
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        owner.publish_native_compatible_model(
+            store, old.artifact_id, producer=target_producer(),
+            profile=OPERATIONAL_COMPATIBILITY_PROFILE,
+        )
+    assert store.manifest_ids() == before
 
 
 @pytest.mark.parametrize(
