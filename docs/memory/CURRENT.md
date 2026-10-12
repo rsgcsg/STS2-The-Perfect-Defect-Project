@@ -1,15 +1,13 @@
-# Current project context — ordinary Auto4 and remaining boundaries
+# Current project context — dual learning chains and evidence boundaries
 
-Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Remote develop is32298949.
-Root's reviewed code assembly is3af1a3d898a184649f7bbcfde2e5bf508187a4c3,
-`codex/native-episode-continuation`, after reviewed Data27 merge19584e1f and seven
-combined Connector BOM fields. Combined-source independent review is accepted;
-final Root repository/full-hosted gates remain pending. Native
-Host30 close qualification retains b055; actual Auto4 ran at4e6438932fe9cfb943634e1f047b3b5dfb390df4. Auto7/Auto3 retain e479,
-and none of those game outcomes qualifies a later candidate automatically.
-The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
-Resolve live GitHub refs and original owner records before acting; exact source
-and owner records override this file.
+Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop is1f8851dc after
+PR176's normal merge. Root's reviewed source assembly baseline is8b3aeb0e0fbba45570f93e8365e4fb56ac71660b,
+`codex/native-episode-continuation`, including reviewed930 test preconditions,
+818c Human product coverage, accepted policy3f4dc normal merge8b3 and test provenance; exact-head
+repository/full-hosted gates remain separate. Runtime34's immutable package pin is
+unchanged. Native Host30 close qualification retains b055; actual Auto4 ran at4e643893.
+Auto7/Auto3 retain e479; no earlier game result qualifies a later candidate.
+App-default Platform is another historical repository. Exact live refs/records control.
 
 ## Goal, routing and branch stops
 
@@ -19,98 +17,93 @@ Continue stable environment → useful data/management → training → Model/Ag
 [baseline](../BASELINE_V1_SPEC.zh-CN.md),
 [architecture](../ARCHITECTURE.md#selected-convergence-and-change-rules) and
 [ADR-0016](../adr/0016-agent-composition-and-execution-request.md).
-Selected architecture/finite DAG are unchanged: one ExecutionRuntime kernel/current
-supervision, no rename or hidden strategy; SDK is a library. History/architecture
-cleanup does not block ready independent engineering or mandate full old M2 restoration.
+One ExecutionRuntime kernel/current supervision; SDK is a library, GUI maps its API
+use cases. Historical implementation is checked for compatibility and useful migration.
 
-V1 choice remains pending: A is native-Human exact-N BC with one shared M2/full C;
-A+ adds only one bounded old/public/Solver auxiliary comparison before native
-fine-tuning. Neither is selected here; current K1/180k is not proved strongest or
-information-sufficient. The [plan's decision table](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#pending-v1-data-and-agent-choice)
-records their scope. Dependent collection/fit/auxiliary development STOP for the
-user's final choice. Actual Human participation stops only its dependent branch;
-existing authorized engineering continues. Root stops the round when all branches
-are complete or waiting on user/external conditions, with a concrete handoff.
+Latest user selected **two parallel Structured M2 full chains**: fresh complete
+Human recording→SDK/data management→training→Model/Agent→real run, and existing
+recording→the same owners→training→Model/Agent→real run. Preserve both in Workbench.
+The [baseline](../BASELINE_V1_SPEC.zh-CN.md#并行的-structured-m2-完整学习链)
+and [concrete configuration](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#parallel-structured-m2-full-chains)
+own selected batches, requirements and limits. Human native exact-N/full C and
+Defect/A0 remain the fresh arm's focus; old data is a second main arm, not an
+unselected auxiliary. Existing qualified old data may train without waiting for
+new Human participation. Solver remains future source/Target design, not this fit.
+
+Both first learning arms require **>=100 distinct qualified supervised N and
+>=300 ACTUAL optimizer updates**, with target>=512 and a whole cohort pass.
+Contexts/polls/repeated epochs are not new data; a cap is not executed steps.
+Freeze Uepoch from actual labelled TBPTT chunks, E=max(1,ceil(512/Uepoch)),
+max_updates=E*Uepoch; verify actual counters/coverage. Old13 TRAIN groups/1537
+candidate choices need rich-Read eligibility counts; current Source3 has only8.
+Bounded inventory found6 sessions/34raw-input upper bound, not34 qualified or
+confirmed global absence. Native Source3 discovery/collection continues.
+8/66 are conversion canaries, not first learning. Human/collection waits only its
+branch; direct137 is a separate baseline. Full G2/V1/~10k obligations remain.
 
 ## Actual ordinary Auto4 — mixed result
 
-One genuine ordinary Application/Host preparation, registration and cold Human load
-at4e led to one policy3 Auto. Independent original/installed-Evidence30 verification
-accepts ready-Summary Task completed/task_ended: natural Defect/A0 loss,floor5,score50.
-Counts: 297 Next,286 Consume+ACK,285 unique Act/results =181 delivered+104 known
-not_started,zero delivery unknown,11 Await,1 Close. All 285 execution fields remain
-unknown; delivery is not Commit/effect/causal-successor proof. Auto elapsed74032ms,
-4222 sealed events, no pending request/taint, known W and unexhausted budget.
+Actual ordinary Auto4 at4e643893 reached acknowledged ready Summary: Task
+completed/task_ended, natural Defect/A0 loss,floor5/score50, installed Evidence30
+verification accepted. Counts297Next/286Consume+ACK/285Acts=181delivered+104known
+not_started,0delivery unknown,11Await/1Close; all285 execution fields remain unknown.
+Delivery is no Commit/effect/causal proof. Auto74032ms/4222sealed events, known W,
+no pending/taint and unexhausted budget remain in the original packet.
 
-The entire attempt FAILED. Caller exits1 with false original_actor_changed after
-same-run stopped/unloaded status legitimately has runtime=null; no replacement
-Actor is proved. Native child close is exit0/unforced/runtime-bound HTTP200, but
-real Host driver exits−15/forced_fallback; immutable Episode finish is phase unknown,
-finish_complete=true, cleanup_unknown. Actor finish's owned_process_contained with
-exit0/seal is a separate classification. Root outer104.510s exits1 with no outer
-containment or surviving owned/strict game processes; that does not make inner
-cleanup clean. Preserve the failure and reserved unknown resource; do not clear,
-adopt, replay or overwrite it. No further native attempt is allocated by this handoff.
-Auto7/Auto3 originals and their strategy/causal/non-claim limits remain in the plan.
+The WHOLE ATTEMPT FAILED: caller1 falsely flags original_actor_changed when retired
+same-run runtime=null; no replacement Actor proved. Native child0/unforced/HTTP200
+but Host driver−15/forced_fallback; immutable Episode phaseunknown/finish_complete/
+cleanup_unknown. Actor owned_process_contained/exit0/seal is separate. Outer104.510s/
+exit1 with no surviving owned/strict game process does not clean inner failure.
+Keep reserved unknown resource/failure; no clear/adopt/replay/overwrite. No new
+native attempt is allocated here; Auto7/Auto3 originals retain their own scopes.
 
 ## Accepted prerequisites and current source gates
 
-Runtime34 package/build, compiled24 policy3 checks and actual ordinary installation
-have independent acceptance: archive30079e65/contenta8773f70/code87b5053f,730 installed
-files equal archive. The compiled tests used installed Evidence30 via a reviewed
-adapter; no independent raw compiled-fixture audit is claimed. Auto4 binds this
-actual loaded tuple with Host29 and unchanged Mod43. Old Runtime33 rollback remains.
+The [active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order)
+retains detailed gates/rollback: Runtime34 archive30079e65/contenta8773f70/code87b5053f
+matches730 installed files and was loaded in Auto4 with Host29/Mod43; Evidence30
+compiled-reader scope is accepted without independent raw-fixture audit. Model
+e894/8eb unchanged weightsf1cd0183 retains CPU parity/export/registration, not new fit.
 
-Genuine Model derivative e894 from original8eb,40-file closure849219b9 and unchanged
-weightsf1cd0183 is exported and accepted; fixed CPU parity covers all 43 tensors,
-three complete two-action catalogs and memory/reset. It adds policy3/AgentSpec
-identity, not training or strategy. Auto4 adds genuine registration/online evidence,
-not a general mathematical proof. Evidence30 pin3988448d/lock25e801bb, isolated
-reader identity and old27/29 artifacts remain distinct; originals are not upgraded.
+Host30 b055 archive8b1eee01/content9b484200 and fresh close-only19.9233s/exit0 are
+accepted, with no Actor/Model association. Godot1090 ERROR lines remain; clean close
+is no error-free-game/Task/strategy claim or repair of Auto4's immutable unknown.
+The packet retains source/process/observer gates and old Runtime33 rollback.
 
-Host29's prior source/package gate and79-file byte identity remain accepted.
-Host exit-wait cleanup030d967b has independent source/process acceptance after a
-faithful old RED and new GREEN; it clears only the wait's own timer/listener without
-relaxing Python's5s post-close bound. This reproduces/repairs the mechanism, not a
-witness of historical Auto4 active handles. Host30 is locally integrated atb055;
-its owner gate passed22.7999s: 319 Node passes+4 explicit proprietary skips,29 Python
-passes. Retained archive8b1eee01/content9b484200 has79 Host files and703 standalone
-dependency files preserved/matched; independent package review is accepted.
-
-Separate Host30 close-only execution atb055 completed19.9233s, Root/caller/App exit0:
-native child0/signalnull/unforced/runtime-bound HTTP200, driver0/no fallback/error,
-phaseclosed/finish_complete and no Actor/Model associated. Original279 pins stayed
-unchanged; no outer containment/signals/errors/owned or strict game survivors.
-Its after-run independent review is accepted. Native Godot's1090 ERROR lines are
-preserved; driver/outer cleanup error=null is not an error-free-game claim. This is the fresh-state lifecycle
-gate, not a second Agent Task or strategy run; Auto4 unknown remains immutable.
-The private observer's9 tests/30 negative subcases and independent review are accepted,
-recognizing bound retired-Actor reports while still rejecting Auto4 Host unknown.
-
-[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) now27c96bca has
-fresh full [CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
-in progress. CI3a33 finished failed only at the SDK10k case's5s whole-test cap/6.861s;
-other OS leaves passed. Reviewed1376 test-strategy correction was normally merged:
-only that large case gets15s, SDK1s request deadline and automatic negative retained;
-local39 tests+tsc passed. No production optimization or historical phase cause is
-claimed. Old6dd/abbf/a33 failures remain failed; no hosted full pass is inferred.
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) at27c96bca
+passed full [CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
+and was normally merged as1f8851dc; its merge CI passed in its own scope. Earlier
+failed CI remains failed. The large SDK fixture cap correction retains the1s SDK
+deadline/automatic negative; no production performance or historical-cause claim.
+PR1773bfd failed all four leaves at E501/Python-selector test preconditions. Reviewed
+930 fixes passed bounded local checks and are integrated into current Root; fresh
+exact-head full CI is not inferred. Human818c covers synthetic import/preview/publish/
+verify/recipe preflight, with no actual fit/export/registration or Human capture. f4dc policy1/2/3 delegation passed old RED+76pure
+guards/independent review and was normally merged8b3. Actual Source3 preview8N/8contexts/
+151459bytes passed; no partition publication/use/fit yet. Direct137 is not that arm.
 
 ## Next owning handoff
 
-Finish final Root repository/source/head/package closeout and selected full CI before integration.
-Keep actual Auto4 unknown as failure, not repaired
-history. The new close gate used a fresh legitimate state, not adoption/reuse of
-the reserved resource. Model/Runtime parity need not repeat for unaffected Host repair.
-Await PR176's current full CI and remaining exact-head gates; no failing head is
-merged. After V1 choice, eligible B view+recipe may CPU-fit/export alongside A;
-usable A+exported Model joins at game evaluation. GPU remains bounded preparation,
-then allocated compatibility/cost smoke before useful admitted data+budget for scale.
+Finish exact-head source/repository/full-CI gates. Preserve Auto4 failure/unknown;
+b055 used fresh state and does not repair Auto4 history.
+Human capture uses external Host30/native-ui→fresh App with NO AgentEpisode→Recording3;
+the AgentEpisode recording guard is intentional. Matching Mod43/tool setup and
+actual Root preparation remain separate. New Human input waits only for the person.
+Whole66 H/Read audit yields63 supervised N+3 masked contexts; neither meets100.
+Old source/recipe/Read-aware control/Task and dual-format UI remain implementation
+work, not accepted features. Close current PR177 before their separate feature PR.
+Source3 needs>=100; both fits need actual>=300 updates and ordinary export/run.
+GPU work reuses historical success through common TrainRun/provider/checkpoint/
+config/framework; compatibility and finite allocation are pending, no new job.
+Root's single heavy/native slot governs execution.
 
 ## Remaining Platform non-claims
 
-Same cumulative USD20 GPU envelope, observed USD0/no paid job. This handoff grants
-no new collection/fit/auxiliary work, game, spending, main/release or final G1/G2/V1
-approval. Task completion, attempt/cleanup, source/package/install/load, Human,
+Same cumulative USD20 GPU envelope, observed USD0/no paid job. Neither selected
+chain implies new capture/fit/game/GPU execution or final G1/G2/V1 approval.
+Main/release and extra spending are not granted by documentation.
+Task completion, attempt/cleanup, source/package/install/load, Human,
 research and strategy are separate. Floor5 loss is not basic reasonable whole-game
 quality, default-speed/full native qualification or benefit across seeds. Preserve
 original records, failed gates, rollback and source/use/exposure restrictions.

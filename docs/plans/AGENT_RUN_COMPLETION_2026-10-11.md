@@ -695,16 +695,16 @@ passed fresh repository/identity checks and portable aggregation through verifie
 same-tree reuse of that full execution receipt, with OS leaves skipped. Neither result
 qualifies the historical e479 game source or later unmerged candidates.
 
-Root's reviewed code assembly on `codex/native-episode-continuation` is
-3af1a3d898a184649f7bbcfde2e5bf508187a4c3 after reviewed Data27 merge19584e1f and
-seven combined Connector BOM fields. Host30/Runtime34/Evidence30/Model identities
-are unchanged; combined-source independent review is accepted, while final Root
-repository/selected full-hosted gates remain pending. Native close qualification
-below is exact b055, and Auto4 ran at4e6438932fe9cfb943634e1f047b3b5dfb390df4.
-Remote develop remains32298949. The following
-Auto7/Auto3 facts retain their original e479 execution source; it is preserved
-history, not Root's current checkout. Local integration is not develop merge,
-hosted CI or installed/runtime promotion.
+Root's reviewed source assembly baseline on `codex/native-episode-continuation` is
+8b3aeb0e0fbba45570f93e8365e4fb56ac71660b, after accepted combined-source3af,
+normal develop integration, reviewed930 test-precondition repair/818c Human
+product coverage and accepted f4dc policy3 admission normally merged8b3. Five Runtime source/test provenance fields were refreshed while
+immutable Runtime34 package/install pins stayed unchanged. Current exact-head
+repository/full-hosted gates remain separate. Native close qualification below is
+exact b055, and Auto4 ran at4e6438932fe9cfb943634e1f047b3b5dfb390df4.
+Develop is1f8851dc after PR176's normal merge. Auto7/Auto3 retain their original
+e479 source and cannot qualify later candidates. Local integration is not a fresh
+hosted pass or installed/runtime promotion.
 
 Independently reviewed original Auto7 at e479 loaded Runtime33/code4ffd923b and
 Mod43/artifactf56b3240 in explicit headless Instant. It reached mechanical natural
@@ -755,21 +755,40 @@ The completed historical M0 candidate 48f1fc6d passed seven actual synthetic
 application cases: 13.875s supervisor wall/13.34s pytest, exit 0 and no remaining owned
 processes. They exercise the ordinary training/export/registration seam and explicit
 pause/resume ownership, with bounded selected-input verification. Final independent
-review accepts 48f for PR preparation in that source/synthetic App scope; full CI and
-integration remain pending. This is not a real-corpus fit, high-quality dataset or
+review accepts48f in that source/synthetic App scope; later PR176 full CI and normal
+integration below establish their own source/test scope. This is not a real-corpus fit, high-quality dataset or
 strategy result. Earlier failures remain preserved. The current Native137 trained Model
 is available for operational diagnosis; retraining is not required to make it new.
 
-Current [PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176)
-is unmerged at27c96bcadc998c77911b9c34984caf00aa8a8b5f. Fresh full
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) at
+27c96bcadc998c77911b9c34984caf00aa8a8b5f passed fresh full
 [CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
-is in progress. CI3a33 finished failed only at SDK10k's5s whole-test cap/6.861s;
-all other OS leaves passed. The independently reviewed1376 test-strategy change
-was normally merged/pushed: only count10000 gets15s, all completeness/order/resource
-assertions and SDK1s request deadline are retained, with an automatic timeout negative.
-Local39 tests+tsc passed; this is no production performance fix or proof of the
-historical Windows phase. Python/diagnostics/real C# passes do not explain the old
-ready failure. Old6dd/abbf/a33 failures remain failed; no full pass is borrowed.
+and was normally merged as1f8851dc; the merge CI passed in its own receipt scope.
+CI3a33's Windows SDK10k5s whole-case failure/6.861s remains failed and its phases
+unknown. Reviewed1376 changes that case cap to15s, preserving completeness/order,
+resource assertions and SDK1s request deadline with an automatic timeout negative;
+local39 cases+tsc passed. This is a test-strategy correction, not a production
+performance repair or historical Windows-cause proof. Old6dd/abbf/a33 failures remain.
+
+PR1773bfd's original full CI failed all four OS leaves at two test preconditions:
+Python E501 and the Runtime test's assumption that a supported Python must be in
+custom variables. Reviewed930 changes only the offending Python line wrap and
+Runtime caller to the existing repository Python owner, preserving typed Evidence
+verification, counter/Stop assertions, original owner deadlines and explicit-invalid
+interpreter rejection. Its bounded local positive/negative checks passed; Root's
+normal integration and five Runtime test-provenance fields do not supply a fresh
+exact-head full CI result or change the installed Runtime34 artifact.
+
+Human product818c passed four synthetic import→preview→publish→typed verify→
+StructuredRecipeAdapter.preflight cases, with no actual fit/export/registration.
+It permits
+actor-declared Human sampled projection with fair student basis/full C/I-F off,
+without asserting `human_origin_attested`. This is source/synthetic product evidence,
+not actual new Human data or fit. Native policy3 admission had a stale v1-only
+parser in `trusted_recipes`; local cleanf4dc8519 delegates its existing wrapper to
+the policy1/2/3 owner, with faithful old RED and76 pure guards+Ruff/diff passing.
+Independent source review is accepted and Root normally merged8b3; actual source
+publication/use/numerical fit remains separate from that policy-admission repair.
 
 At Episode66707bd, 399 checks plus build passed in the bounded follow-up batch;
 the 6cf delta adds three type casts with scoped
@@ -835,72 +854,320 @@ and memory/reset equality against the retained original report. It is no fit or
 general mathematical proof. Auto4 adds genuine registration/online Task evidence;
 it does not promote the mechanical Teacher source or strategy quality. Next: finish
 the exact final source/head/package tuple and close out selected integration
-gates. Combined-source independent review is accepted; PR176's new full CI and
-final Root repository/full-hosted gates remain pending;
+gates. Combined-source independent review and PR176 full/merge CI are accepted in
+their exact scopes. PR177 repaired local source is integrated; fresh exact-head gates
+remain pending;
 no additional native attempt or interpretation of Auto4 cleanup is allocated here.
 
-The user retains final V1 data/Agent selection. The reviewed private proposal is
-awaiting explicit A/A+ or another direction; it is a proposal, not a new canonical
-specification or permission to start the dependent implementation/data/fit.
-Proposal option A/A+ is distinct from the workstream letters below.
+### Parallel Structured M2 full chains
 
-### Pending V1 data and Agent choice
+The latest user selected both **new complete recording→SDK→train/run** and
+**existing recording→SDK→train/run** as parallel main arms. Keep both original
+recordings visible in the new Workbench; the old arm may use existing qualified
+records now and does not wait for Human collection. The native Human exact-N/full-C
+focus remains, while old data is no longer an unselected auxiliary route.
+[The baseline](../BASELINE_V1_SPEC.zh-CN.md#并行的-structured-m2-完整学习链)
+owns this choice. Solver is future source/Target design only for this increment.
 
-| Proposal option | Proposed bounded delivery; both await the user's final choice |
-| --- | --- |
-| A | Native Human public pre-input bases and exact-N choices → BC → one shared M2 scoring the complete current C across the declared scenes. Check real capture, label quality/use and a small pilot before scale; existing Defect/A0 scope is retained, not reapproved here. |
-| A+ | The same native baseline plus only one bounded old-Human/public-log/Solver auxiliary lane, comparing auxiliary pretraining+native fine-tuning with the baseline. Derived partial targets need their matching declared grammar/masks; no fabricated native trajectory/full C or hidden teacher facts in fair student inputs. Stop an auxiliary lane without credible benefit. |
+Both arms reuse existing Store/Curation/use, trusted recipe/TrainingService/attempt,
+Model export/registration, AgentComposition/common request, ordinary Host/Runtime
+execution and original result owners. GUI maps these API/library use cases. They
+preserve each record/source identity and frozen Input/Target/Model/Agent/protocol;
+SDK and transport names do not certify information, history or behavior equivalence.
 
-Neither route is selected or implemented by this table. The current K1/d96,
-180,545-parameter model is a baseline, not proved strongest or information-sufficient.
-Representation, memory and planning may change through their existing owning
-Input/Model/Agent contracts; data volume alone does not establish capability.
+The new Human path is external Host30/native-ui→fresh Application with NO owned
+AgentEpisode→Recording3. The AgentEpisode recording guard is intentional; no bypass
+or guard repair is needed. Matching Mod43/tool setup and Root's genuine preparation
+are separate prerequisites. Preserve a complete original Recording under the actual
+Recorder's explicit limits. The prior300contexts/12MiB conversion budget is neither a learning-cohort cap nor
+live capture quota; the latest first-learning minimum is>=100qualifiedN per arm. Preserve
+context/exclusion denominators and exact labels; no truncation or300N-fit promise.
+Actual Human participation pauses this arm alone. A fixed old eligible cohort may
+independently train/export, then both exported Models join ordinary registration,
+load and bounded game evaluation when their own requirements hold.
 
-The selected finite dependency graph is:
+#### Configuration and historical decisions
 
-```text
-A: native stale diagnosis/repair + reusable ordinary Episode prepare/run/Stop
-B: final V1 choice STOP -> allocated source/use work -> fixed small training view
-B eligible view + recipe -> bounded CPU fit -> ordinary exported Model (parallel A)
-A usable execution + exported Model -> register/load -> actual game evaluation
-C: GPU backend/cost preparation (read-only now, parallel)
-   static/CPU compatibility -> bounded GPU smoke -> actual backend/cost evidence
-   passed smoke + useful data + budget -> real GPU fit / scale
-D: architecture, compatibility, specifications and required CI across all stages
-```
-
-| Workstream | Now / entry condition | Exit and next consumer |
+| Axis | Current native-format arm | Old-format public arm |
 | --- | --- | --- |
-| A — reliable running | Continue authorized native policy3 source/failure-contract work and Episode source/process/identity/integration gates, preserving Auto3 and the existing trained Model. | Pass the affected owning gates and independent review, exposing reusable ordinary execution/cleanup. Existing-model diagnosis/evaluation proceeds only under its actual requirements/allocation, without B or new training. |
-| B — useful data | STOP at the user's final V1 choice. Human/native, program, existing/derived and Solver candidates were compared, but the current proposal does not authorize a selected batch, new collector/adapter or fit. | After explicit selection and bounded allocation, verify source/rights, target quality/method, fair basis/complete-C mapping, groups/use; fix the declared Input/Target view. Its eligible view + recipe may train/export alongside A. Actual Human participation is a separate stop for its dependent branch. |
-| A+exported Model — game evaluation | A usable Runtime/application path and the exported Model are ready. B's fit needs only its own eligible view/recipe, initialization, identity and finite allocation; it does not wait for A's running repair. | Register/load through the ordinary owners and perform an actual new-seed learned game evaluation, retaining fit metrics and all Run/checkpoint/Model/export ancestry. Natural win/loss and censor/unknown remain distinct. Poor fit or strategy redirects data/model work without erasing engineering evidence or claiming quality. |
-| C — GPU and cost | Separate read-only backend/cost preparation is parallel now; no backend build/provider job is claimed. Static/CPU contract preparation defines the bounded GPU smoke and checkpoint/export/inference comparisons. | The allocated smoke establishes actual CUDA, checkpoint/export compatibility and measured cost; synthetic data may test this before real data is ready. Passed smoke + useful admitted data + a finite budget allow real GPU fit/scale within the same cumulative USD20. Actual GPU qualification is an output of the smoke, not its circular prerequisite. |
-| D — coherent changes | Apply the selected architecture/change rules, historical consumer/reader obligations, cheapest faithful checks and required exact-head CI throughout A/B/C. | Integrate independently reviewed useful increments. Architecture cleanup is not a prerequisite to game/data work whose own prerequisites hold; required gates are not waived or borrowed from another source. |
+| Recording/source | Actual Source3 raw recording→`decision_sample_carry` main chain; separately qualified direct native samples remain a baseline/comparison. Format does not certify operator or training eligibility. | Genuine old Human H Snapshot1/raw archive, preserving recording-manifest2/recorder0.3rc8/current human-full-run-read-rich-v4 identity; not canonical S and not reconstructed compact/token rows. |
+| SDK/environment | Native-logical public observations/full current C and actual acquisition/consume/ACK ordering. | Snapshot1 public view/full original C plus explicitly acquired, exact-bound permitted Read facts. Whole66 Read inventory is audited; selected advertised-kind acquisition/missingness needs implementation. |
+| Model | Existing shared structured K1/d96 carry numerical baseline, graph `stpd.native-m2.k1d96.carry.v1`. | New explicitly identified publicSnapshot1 structured profile using the shared S-M2-0/K1d96 carry numerical baseline; distinct Input/Model/Agent identity, not the old LightActionPublicM2. |
+| Input/history | I/F off, reliable sampled changed contexts advance W; identical reacquisition does not double-advance, real revisits remain; W0 at explicit reset/gap. | I/F off, ordered H/bound Read facts under declared segment/gap/reset and acquisition/missingness. Reuse Decision4 ordinal/cache only where this contract is preserved; whole66 bindings/order are audited; typed source admission and versioned stateful-Read implementation remain pending. No native ACK fabrication. |
+| Target | Source-specific exact original N, full C cross entropy, unlabelled reliable contexts retained. | N full-original-C cross entropy with exact H/member/action join; missing browse/prefix/complete-run facts are not manufactured. |
+| Complete Agent | Shared acquisition library, Model/Input/learned W plus declared chooser/timing/Task and AgentSession driver. | New public structured Agent binds legal Read acquisition, SDK projector/Input/history/Model, chooser/Task and supported stateful control. Current Port4 reads=[] prevents a full rich-Read capability claim; freeze the narrow owning extension from the actual audit. |
 
-STOP is branch-specific: the pending V1 choice stops its new implementation,
-collection, training and auxiliary development. Existing authorized native/Episode
-and PR176 repair/diagnostic/CI delivery work continues. No failed hosted head is
-merged, and local repair acceptance does not substitute for latest-head CI. GPU
-and auxiliary execution still require the selected finite task/allocation; cumulative
-GPU spend remains USD0. If a branch needs actual Human participation, it returns
-the concrete entry and missing evidence while independent work proceeds. Root
-ends the round only when every branch is complete or waiting on user/external
-conditions, with an honest handoff rather than fictional background continuation.
+The proposed common numerical baseline S-M2-0 uses UTF-8 byte-field embedding32→
+CNN64→width96, typed scalar/null/bag/order nodes, entity-local pooling, one sparse
+typed relation layer, gated observation-only K1×96 memory and a shared candidate-
+conditioned scorer across every original C member. Binding IDs/native operands
+remain metadata; C/selected N do not enter the observation writer. E=encode(X),
+W=write(W,E) under that profile's advance law, then full-C N-CE. Valid unlabelled
+contexts may carry W/later gradients. TBPTT4 detaches gradients without resetting
+forward W; CPU float32/AdamW/fresh seed0/no tokenizer/pretrained/warm-start is the
+initial baseline. Actual optimizer constructor overrides onlylr: installed Torch2.13
+AdamW defaults betas(0.9,0.999),eps1e-8,weight_decay0.01,amsgrad/maximize/capturable/
+differentiable=false,foreach/fused=None; no gradient clipping is added. Actual fit
+records runtime/backend/threads and optimizer state, not assumed interop2. N only: no Z/O/RL/planning promise. Source-specific projectors
+must preserve material scalar/reference/action-parameter distinctions; unsupported
+facts are declared limitations, not squeezed into guessed native refs or silently
+dropped. A necessary numeric feature change versions its owning graph/closure.
 
-External-source and GPU assignments are preparation, not execution receipts. Source
-builders, generated labels, actual data-use/fit and provider work each require their
-own verified readiness and bounded allocation. The lead coordinates the one heavy/
-native slot while read-only and disjoint source work proceeds in parallel. The next
-handoff names completed evidence, active blockers and one actual next consumer;
-documents, a job plan or a new dataset ID are not a substitute for that delivery.
+M0/M2 denotes model/state choice, not capture format or environment protocol.
+Human, machine Teacher and unknown origins remain separate from new/old format.
+The180,545-parameter native baseline is not proved strongest/information-sufficient. Native's
+complete Agent declares greedy full-C scoring, the shared public Map-travel Await
+rule, ready-Summary Close and policy3's fixed10,000ms known-stale recovery; timer/
+Result/reason data do not update W or scores. Old public's complete Agent needs
+greedy macro-C scoring, Snapshot1+declared legal Reads, exact stateful control and
+public Summary witness; the Read-aware scope is selected while exact descriptors/implementation are pending. Neither
+program or Goal is merely the numerical Model.
+Old LightActionPublicM217eb K8/d384 numeric/export/consumer restoration remains a
+separate historical model; its input graph and publisher are not this newly selected
+structured old-H arm. text-menu-v2/S0 is a retained third composition, not old-H or
+Source3 under another name. Existing compact/token0698 data cannot reconstruct the
+original typed Snapshot1 tree. Canonical prestate S had C0 in the inspected archive;
+use genuine H full C, not a fabricated native frame or missing action catalog.
 
-Existing requirements, mechanism/coverage obligations and failure lessons remain;
-dependencies are reordered rather than deferred away. Historical M0/M2 recovery
-is a composition/cost probe, not a requirement to restore the entire old M2 chain
-before A/B or to collect/retrain solely for novelty. Broader data quality and G2/V1
-work remain open. This update grants no extra game, real-data fit, paid compute or
-final approval; observed GPU spend is USD0 with no provider job, under the same
-cumulative USD20 envelope.
+History determines useful retention, adaptation or replacement, not preservation of
+every old schema. Changed exposure/chooser/timing needs new Agent/Input identity;
+changed environment meanings need their own versioned profile/contract. Shared owners
+do not copy legacy ancestry truth tables. The same numerical kernel does not prove
+same Input, learned W, source quality, deployment exposure or strategy.
+
+#### Workbench recording and reuse seam
+
+Both formats must remain accessible through the same Workbench use cases. Current
+legacy recorder/native controls still support `human-full-run-read-rich-v4`, but
+the shared recording HTTP parser accepts command3/Source3 only. A small existing
+parser/Python-composition mapping is needed for actual supported command1 legacy
+Start/lifecycle plus truthful loaded-bridge capability; Python alone cannot add that
+capability to Mod43. No new recording engine, controller or frontend command ledger.
+Capture profile and operator declaration stay separate. Pause/Resume/Close bind the
+actual active runtime/session/profile, not a pending dropdown; unknown is fenced,
+not retried through a different schema. Existing Source3 declaration rules stay strict;
+legacy Human import uses its actual attestation, Source3 false/machine-unverified
+origin cannot be promoted. Machine×legacy train admission is not yet established.
+Old admitted-data fit does not wait for this new GUI/bridge mapping or fresh Human.
+
+| Workstream | Entry and scope | Next verified consumer |
+| --- | --- | --- |
+| Reliable execution | Retain policy3 source gates, reusable ordinary Episode prepare/run/Stop, accepted packages and b055 close-only evidence. Preserve original Auto4 unknown. | Each selected arm's exported Model can register/load/run once its own exact requirements and finite allocation are satisfied; existing-model diagnosis needs no retraining for novelty. |
+| Current-format Source3 chain | Verify actual Source3 raw→decision_sample_carry/partition with its real actor, fair basis/full C/labels, rights/use, groups/exposure. Fresh native-ui Human Recording3 capture proceeds separately and waits only for the person. | Qualified small Source3 view/config enters real fit→checkpoint/Model→ordinary export/Agent/run. Existing machine-declared raw does not complete fresh Human capture; original continuity and exclusions remain reusable. |
+| Legacy-format H structured chain | Verify genuine original H/proof/full C/order/use; implement the selected typed Snapshot1 Input/source/recipe/Decision4 and Task binding, preserving prior exposure. No dependency on new Human participation. | Its qualified H view/config enters real fit/export/register/run through the same product owners; token PublicM2/textV2/direct native baselines are not substitutes. |
+| GPU/common execution | Reuse historical successful GPU work through common TrainRun/provider/checkpoint/config/framework; verify exact old job/code/artifacts and extract compatible reusable mechanisms. Current structured CPU restriction remains until a checked backend adapter supports the same semantics. | Actual bounded backend/job/cancel/checkpoint/result/cost gates and finite allocation precede useful-data GPU scale within cumulative USD20; no new paid execution or greenfield-only framework is claimed. |
+| Coherent delivery | Apply common authority/change rules, historical consumers/readers and cheapest faithful checks across both arms. Root coordinates one heavy/native slot. | Independently reviewed useful source increments with fresh required exact-head gates; architecture cleanup does not hold ready independent work. |
+
+Each actual fit freezes original/source/use/Input IDs, target recipe/config,
+initialization, CPU/update/wall/storage bounds and owner identity before execution.
+It reports exact unique N/context/multi-C distribution, updates, finite metrics,
+checkpoint/Model/export/Agent/Request/Task/result chain and actual terminal/censor.
+A new-data warm start is a new Run with inherited Model exposure and fresh
+optimizer/RNG/cursor/W unless explicitly supported otherwise; it is not resume of
+a different dataset. Natural win/loss, delivered actions, execution/Commit, fit
+improvement and strategy quality remain separate axes. Both arms preserve known
+failure/unknown rather than creating a new ID to escape ownership.
+
+#### Native-format conversion canary and first useful Source3 learning batch
+
+The selected main arm must start with actual Source3 raw recording and its original
+capture/Input basis→`decision_sample_carry` projection→qualified partition/TrainingInput.
+Bounded availability inventory reports6 Source3 sessions/34raw-input upper bound;
+only the8N typed canary below is qualified so far. Other raw counts are not labelled
+eligibility and this bounded inventory proves no global absence. Discovery/collection
+continues toward>=100qualified N; no smaller first learning Run is substituted.
+
+Raw artifact `47c7611437fae7fe8a2de6c07f27c7e9b2e5875b1553ec4513d243a186edf881`
+is actual native-logical-source-v3/agent_protocol, Human origin false: archive73,561bytes/
+SHAc9ec67de…, original Recorder rc16/8d9745ee and gamev0.111.0/41cef1ea. Its live
+owner64a97d…/ledger7010ac…/storea735c4… retains prior TRAIN exposure630b0a97…;
+no empty-ledger copy or clean-test relabel. Prior publication-memory8N/8inputs/
+27publications/35frames retain their old-view meanings.
+
+Actual typed current sampled preview at authorf4dc passed0.5593s outer/0.4734s domain:
+8N/8contexts/8 complete original catalogs, zero exclusions,151,459prospective encoded
+bytes/SHA5fedcbce…;27 model-unexposed publication frames are not consumed context.
+Admissionc5d0fc70… and preview6800a719… are ready with can_publish=true; original
+refs/exposure stayed unchanged and no Torch/partition publication/use/fit occurred.
+Qualification is source3_decision_sample_carry_N_reexpression_only, not Human,
+expert or whole-game qualification. The first harness path-alias failure before
+owner preview remains preserved. Actual partition/source ID, publication/use and
+recipe preflight still require their allocated owners; raw47c is not a TrainingRequest
+partition ID and direct47538f is not this owner's predecessor. Multi-C distribution
+and actual fit counts are not inferred from the8 complete-catalog count. Existing recipe
+`native-m2-k1d96-carry-N-sampled-v2`, graph `stpd.native-m2.k1d96.carry.v1`,
+Input `stpd-native-sampled-carry-v1`, I/F off/full C/sparse original N/context carry
+are the owning target binding; declaration and student reexpression do not certify
+Human origin, expert quality, full physical-game history or consumed learned W.
+
+This8N source is a conversion canary only; its earlier epochs1/cap32/wall180/
+scratch256 proposal is not the first learning batch and is not dispatched as a
+minimum-qualified experiment. Preserve the actual8N preview and continue bounded
+Source3 metadata availability/eligible-source discovery, then acquire further complete
+recording if needed. Do not assert an available>=100Source3 pool without actual
+owner counts. Select whole verified groups and freeze>=100 distinct qualified N,
+full C, contexts/exclusions/bytes/use/previous exposure before real training.
+Direct137 cannot silently fill the Source3 denominator. All learning settings and
+actual step acceptance follow the common hard gate below.
+
+Request and parent/private-child admission must delegate `trusted_recipes` to the
+existing strict policy1/2/3 owner, preserving current request/Run/attempt binding.
+Export a fresh policy3 fit directly; old9c/46eb compatibility is closed to original
+provenance and cannot upgrade a current producer. Whole-source/raw/use preflight,
+actual use/fit/private child terminal, Input/Run/checkpoint/Model/report and ordinary
+export/registration are real downstream gates. No actual new fit/Model/game/GPU
+is recorded by this configuration.
+
+For a full Task with a genuine zero-consumption cold Human gate followed by Auto,
+create the original **prepare-and-load/extended** common request:2000 submissions/
+4000calls/1,800,000ms autonomy. Load and verify this same Actor, then explicitly
+Auto; do not load short16 and later extend its wallet. Short16/32calls/60s is a
+separate bounded diagnostic profile, not a full-task load prelude. Root freezes
+actual Defect/A0/seed/presentation/speed/resource pins and caller/Host cleanup
+allowance when allocating the run. Root prefers headless+typed Instant for later AI
+evaluation where its exact owner/profile qualifies; native-ui/normal is for actual
+Human/visual canary. SeedM2ARMS20261012A remains proposed. Neither preference is
+a new execution or cross-presentation qualification receipt.
+
+Preserve original AgentRun samples/full C/proposal/ACK/Next/scores/state/Result/
+Summary/Close/Stop. Sample storage1024samples/3072files/512MiB and wallet may
+censor honestly. No simultaneous Source3 overlay bypasses the intentional
+AgentEpisode guard; future learned-source readmission needs its own reviewed
+relation. Raw Source3 main arm cannot be declared complete by substituting direct
+Teacher data. A single paired seed or equal field name does not establish quality,
+profile equivalence or equal macro/fine action denominators.
+
+#### Retained direct native baseline, not the Source3 main fit
+
+Existing whole TRAIN source
+`469ba748807a630f23cc2ee58e142d481e4159a5514aafd6141de1e862f2da95`,
+encoded SHA893d11aa…,9,132,290bytes/8.709230MiB, retains137N/342contexts/451offers/
+109readiness exclusions/134multi-C N/three prior groups. It is declared machine
+Teacher student reexpression, not Human, native-authenticity or expert/full-game
+proof. Source/use/group ancestry and prior operation47538f4d…/Model8eb remain.
+No shop/event/boss/terminal coverage or clean heldout is claimed. The Human300-context
+encoding cap does not apply to this separately retained immutable baseline.
+
+Its old168-update training/Model8eb and earlier low-cap proposal remain historical
+baselines, not satisfaction of the new300-actual-update floor. Optional further
+baseline fitting needs its own >=100N/actual-update gate, source/predecessor/journal
+preservation and budget; it still does not complete the Source3 recording chain.
+
+#### Old-format rich-Read conversion canary and first learning pool
+
+The verified old-format conversion canary group is
+`session-20260919T042850Z-e3d7f335df9d4dcf9e9f05d448bde635/run-0001`, source
+`9cd610b90dc25f3b0038b5caf90637fa4a9f28f6c94162acb0c80b887a8c7e4f`, original
+archive `a6e0c0f0c939f92e15a244528c81dde755722c3bae29d3a87e26d6848bb3a6ff`
+(495372compressed bytes/260entries/6,987,555 declared unpacked bytes).
+Whole66 audit verifies all H hashes/proof/session bindings, unique full-C selections,
+strict Snapshot.sequence14→125 and canonical action_sequence1→66. Catalogue sizes
+range1–24 across8 surfaces. Source H bytes1,553,293;112 captured Reads are deck66,
+piles43/shop3, with47 distinct payloads/338235bytes. All retained Read payload hashes,
+completeness/hidden-policy/session/fingerprint and pre-accept timestamps pass.
+Canonical S examples have C0 and remain forbidden substitutes for H.
+
+Three advertised selected Reads were not captured: action10/combat_piles and34/38/
+shop_catalog. The selected derivative retains66 contexts with63 supervised N and
+3 explicit not_captured/masked-N contexts; original choices/proofs stay in metadata.
+Do not use later payloads, erase context, or rewrite older Snapshot-only eligibility.
+This canary is useful conversion evidence, not the >=100N first learning batch.
+An original owning source verifier/research admission was not rerun by the audit.
+
+RunJournal records observed_in_progress,67 accepted semantic actions/5 invalidations/
+46 projection omissions, with no run start/end witness. Manifest says
+not_full_run_journal/not_human_validated; historical Human attestation and archive
+integrity are separate from current physical Human qualification.
+Declare W0 at the source segment start and reset on genuine gaps; this is student
+history reexpression, not complete Human attention or a natural complete-game record.
+Keep original members/rights/exposure together in TRAIN; no row-random heldout.
+
+The selected useful old learning pool is the entire13 original TRAIN groups /
+1537 candidate choices. Verify original archive availability, exact H/proof/full-C/
+selected-Read/order/member/group/use and deduplicate original N before freezing
+its actual rich-eligible count. Do not assume all1537 satisfy this richer Input;
+no diagnostic DEV8 promotion. If rich eligibility is<100, report the real exclusions
+and acquire another qualified cohort instead of manufacturing targets. Preserve
+all actual unlabelled contexts and original denominator/exposure. The66/63 canary's
+conditional17-update arithmetic is not an allocated learning Run.
+
+Read-aware acquisition is selected: request every currently advertised selected kind
+in {run_deck,combat_piles,shop_catalog} using SDK coherence. Missing advertised live
+Read/staleness fails the whole bundle before W/scoring; absent kind is explicit
+not_available/not_applicable, not empty content. Recorded3 not_captured contexts
+remain a separate training mask. Current Port4v1 requires reads=[] and static mandatory
+all-three Reads would break other scenes. Implement a separate versioned advertised-
+Read descriptor/branch using existing SDK prefetch and the already-Read-capable
+Decision4 bundle envelope; preserve old v1. Bound counts/bytes/time, zero-C Summary,
+repeat/ordinal/reset/unknown and history remain owning contract gates.
+
+Python old-H63N/new public structured source/recipe/package/adapter/Task binding,
+Runtime advertised-Read branch and dual-format GUI/bridge are concrete assigned
+implementation work; they are not accepted/registered features. Root closes current
+PR177's coherent CI/policy3/Human source changes before separate feature delivery.
+Do not put the new rich-Read semantics into old tokenizer/PublicM2/TextV2 schema names.
+
+The new source/typed snapshot+action/Read projection, scoped trusted recipe/package/export
+binding, public structured Decision4 adapter and same-owner Task/result-witness
+binding remain owning implementation gates.
+Do not restore the old token encoder/producer just to call it Structured M2, or silently
+feed new rows to old LightActionPublicM2. Current `agent_task_outcome._public_task` is
+closed to the original PublicM2 adapter ID/Decision4/public_m2_installation task tuple.
+The new trusted descriptor needs an explicit binding through that same owner using
+original public_decision_input/ordinal/cache/terminal-abstention/handoff checks;
+unknown stays unknown until supported, with no invented native Consume/ACK.
+Once qualified, use the same ordinary TrainingService/export/registration/AgentComposition/common request/Host/Runtime
+results as the native arm. Freeze exact compatible package/profile and finite game
+allocation; compare the proposed paired Defect/A0 seed/envelope only where supported.
+Preserve old H, new derived Input, Run/Model, public Agent inputs/directives/receipts,
+Task and cleanup; no false native Consume/ACK or Human origin claim is added.
+
+#### Both first learning gates and exact update configuration
+
+The latest explicit Human minimum is >=100 distinct qualified supervised N and
+>=300 ACTUAL optimizer updates in each chain. Contexts/polls/copies and repeated
+epoch label uses cannot increase unique data count; configuring cap300 is not proof
+of300 updates. Conversion8/66 canaries and previous tiny fits do not fulfill this gate.
+
+Freeze the actual prepared source's positive-supervised TBPTT chunk count Uepoch
+from existing StructuredTrainingEngine plan, including real resets/gaps/advance masks.
+Choose E=max(1,ceil(512/Uepoch)), epochs=E/max_updates=E*Uepoch; initial target>=512
+actual updates and at least one full cohort pass. Uepoch is not ceil(N/4) by assumption.
+Fixed recipe allows epochs1–100/max_updates1–10000; an unsupported result stops for
+more suitable data or explicit owning config work. Examples only:100N in25 labelled
+chunks needs21epochs/525targetupdates; old actual Uepoch is still pending all13-group
+verification. Actual worker counters/full-pass/completed-epoch/state/terminal must
+pass; trailing unlabelled chunks, wall/cancel/failed/unknown can prevent the full-pass
+claim even when a configured counter reaches its cap. No silent lowering or retry.
+
+Shared numeric settings remain scratch seed0, K1/d96 carry, I/F off, full-C N-CE,
+CPU2/float32/AdamWlr0.001/TBPTT4, checkpoint cadence100 with final checkpoint.
+Actual labels/N/context/multi-C counts, epochs/updates, unique data versus repeated
+label uses, finite initial/final TRAIN metrics, checkpoint/Model/export and exact
+source/owner/runtime identity are saved. Wall/scratch/caller cleanup allocation for
+this larger learning work is frozen from actual source/plan/cost before dispatch;
+old180s/256MiB canary budgets are not silently inherited as adequate for512 steps.
+Resume preserves original source/checkpoint/prior-writer/cumulative budgets; changed
+data is a new Run, not a reset of old unknown ownership.
+
+Training improvement is no whole-game strategy receipt. Each new Model still requires
+ordinary export→registration/composition→exact compatible package/install/load→
+original extended wallet/cold Human mode gate→explicit Auto→Task/results/Stop/Host.
+Capability can handle variable legal full C and observed-history memory across its
+supported scenes; basic reasonable whole-game quality needs actual multi-scene/new-
+seed evaluation and sufficient varied data. Loss Summary, censor/unknown, delivery,
+execution/Commit, cleanup and strategy are distinct. First hard-minimum fits do not
+replace about10k, coverage, K/Reset/backbone/N/Z/O or final G2/V1 approval obligations.
+
+STOP is branch-specific: Human participation affects only new Human capture;
+old data validation/recipe/config can progress independently. Root continues until
+all branches are completed or waiting on a concrete external/user condition,
+returning the exact next entry and missing evidence. A job plan or new dataset ID
+is no completed loop. GPU integration follows the historical-success→common TrainRun/provider/checkpoint/
+config/framework reuse path. Exact compatibility/resource/job gates are pending;
+no new execution is claimed. The same envelope remains USD20/spendUSD0, no provider
+job; full character/mechanism coverage, about10k and agreed bounded comparisons,
+data quality and final G2/V1 approval remain open obligations.
 
 The selected project convergence retains a common ExecutionRuntime kernel and
 the current separate supervisor as the default. Policy Runtime remains the
