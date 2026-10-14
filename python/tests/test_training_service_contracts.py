@@ -331,7 +331,8 @@ if (_fixture_main_code == 0 and _fixture_terminal ==
         class ObservedPopen(original_popen):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-                if processes is not None:
+                if (processes is not None and isinstance(self.args, (list, tuple))
+                        and tuple(self.args[1:3]) == ("-c", script)):
                     processes.append(self)
 
             def observe(self, phase, observed_at, **details):
