@@ -34,7 +34,7 @@ then keeps that child alive at a fixture shutdown fence. The original product
 cancellation timer must kill it. The test binds operation/attempt/PID and phase
 ordering, and requires actual nonzero wait, forced true, unknown domain result,
 retained checkpoint, no selected result and no automatic retry. Final cleanup
-uses only this fixture's actual Popen handles.
+uses only this fixture's actual Popen and pre-bound worker handles.
 
 Ordinary structured completion and HTTP cancellation retain their default child
 entry coverage. There are no mocked exits/clocks, deadline extensions, deleted
@@ -47,3 +47,28 @@ finish within one second under every Windows load, or eliminate every flake.
 Rollback reverts these test/helper changes and this summary together. Original
 failed Hosted artifacts stay immutable. No release, runtime, GPU, Human or
 model-quality claim follows from this test-only candidate.
+
+## Windows launcher and worker identities
+
+PR182 at `d1a2dbb6`, run `38602247594`, exposed a second fixture error:
+the new negative case required worker PID5944 to equal Popen PID7900.
+Windows venv redirectors may launch a separate interpreter. The original
+artifact did not retain its full phase JSON or worker-handle observations,
+so this run proves neither a surviving worker nor its absence. Its assertions
+after the PID mismatch were not executed and remain unqualified.
+
+The fixture now binds the worker's real PID/PPID, run, attempt, event and
+checkpoint before cancellation. It preserves Popen's separate launcher identity
+and verifies the direct or observed Windows parent/child relationship. Windows
+holds that worker's native process handle before cancel using CPython's native
+`_winapi` binding, which preserves Win64 HANDLE width. After the original SUT
+stop, only a signaled worker handle proves termination; an alive worker fails
+the test before cleanup. No PID is reopened after the kill, and worker exit
+code is not assumed to equal the launcher's code.
+
+Any fixture cleanup is separately labelled and cannot become SUT stop evidence.
+Bounded phase, ownership and liveness observations are also retained in JUnit
+properties, including on failure, so a temporary diagnostic pathname is no
+longer the only record. Production deadlines, clocks, runner and unknown
+semantics remain unchanged. A new head still needs its own Windows/Hosted gate;
+this source correction does not qualify the original failed run.

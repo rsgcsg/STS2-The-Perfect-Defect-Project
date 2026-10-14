@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +67,154 @@ def settle(service):
     service._thread.join(timeout=30)
     assert not service._thread.is_alive()
     return service.status()["operation"]
+
+
+class CheckpointWorkerObservation:
+    """Observe the fixture worker separately from a possible Windows launcher."""
+
+    def __init__(self, owner, store, processes, phases):
+        self.owner, self.store, self.processes, self.phases = owner, store, processes, phases
+        self.binding = None
+        self.handle = None
+        self.winapi = None
+        phases["worker_process"] = {"binding": None, "observations": [], "cleanup": []}
+
+    def bind_before_cancel(self, value):
+        if self.binding is not None:
+            assert (value["operation_id"], value["attempt_id"]) == (
+                self.binding["operation_id"], self.binding["attempt_id"])
+            return
+        trace = self.owner.path.parent / ("fixture-checkpoint-" + value["attempt_id"] + ".jsonl")
+        deadline = time.monotonic() + 5
+        # The machine stdout event may arrive before its child trace write closes.
+        while True:
+            raw = trace.read_bytes() if trace.exists() else b""
+            rows = [json.loads(line) for line in raw.splitlines()] if raw.endswith(b"\n") else []
+            checkpoints = [row for row in rows if row["phase"] == "checkpoint_emitted"]
+            if checkpoints:
+                break
+            assert time.monotonic() < deadline, "fixture worker trace did not close before cancel"
+            threading.Event().wait(0.005)
+        assert len(checkpoints) == 1 and len(self.processes) == 1
+        row, launcher = checkpoints[0], self.processes[0]
+        event = self.store.get_manifest(value["details"]["event_id"])
+        checkpoint = self.store.get_manifest(row["checkpoint_id"])
+        assert (row["operation_id"], row["attempt_id"], row["event_id"]) == (
+            value["operation_id"], value["attempt_id"], value["details"]["event_id"])
+        assert row["run_id"] == event.parent("run") == checkpoint.parent("run")
+        assert checkpoint.parameters.value()["attempt"] == row["attempt_id"]
+        assert type(row["pid"]) is int and row["pid"] > 0
+        assert type(row["ppid"]) is int and row["ppid"] > 0
+        direct = row["pid"] == launcher.pid
+        assert direct or os.name == "nt" and row["ppid"] == launcher.pid, rows
+        assert launcher.poll() is None, "fixture launcher exited before cancellation"
+        executable = Path(launcher.args[0])
+        self.binding = {
+            **row, "launcher_pid": launcher.pid,
+            "relation": "direct" if direct else "windows_launcher_parent",
+            "launcher_executable": str(executable),
+            "launcher_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            "observed_before_cancel_at": time.monotonic(),
+        }
+        configuration = executable.parent.parent / "pyvenv.cfg"
+        if configuration.is_file():
+            self.binding["pyvenv_cfg_sha256"] = hashlib.sha256(
+                configuration.read_bytes()).hexdigest()
+        self.phases["worker_process"]["binding"] = self.binding
+        if os.name == "nt":
+            # CPython's native C binding preserves HANDLE width on Win64. Do not
+            # use ctypes' default c_int return ABI or reopen a PID after the kill.
+            import _winapi
+
+            self.winapi = _winapi
+            self.handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x1000 | 0x0001,
+                                              False, row["pid"])
+            # Rights: SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE.
+            self.phases["worker_process"]["native_handle"] = {
+                "api": "_winapi", "pointer_bits": 64 if sys.maxsize > 2**32 else 32,
+                "opened_before_cancel_at": time.monotonic(), "inherited": False,
+            }
+        before = self.observe("before_cancel")
+        assert before["terminated"] is False, before
+
+    def observe(self, phase):
+        result = {"phase": phase, "observed_at": time.monotonic(),
+                  "bound": self.binding is not None, "terminated": None}
+        self.phases["worker_process"]["observations"].append(result)
+        if self.binding is not None:
+            result.update(worker_pid=self.binding["pid"],
+                          launcher_pid=self.binding["launcher_pid"],
+                          operation_id=self.binding["operation_id"],
+                          attempt_id=self.binding["attempt_id"])
+            if self.winapi is not None and self.handle is not None:
+                result["method"] = "preheld_native_worker_handle"
+                try:
+                    result["wait_result"] = self.winapi.WaitForSingleObject(self.handle, 0)
+                    result["exit_code"] = self.winapi.GetExitCodeProcess(self.handle)
+                except OSError as error:
+                    result["error"] = {"type": type(error).__qualname__,
+                                       "winerror": getattr(error, "winerror", None),
+                                       "errno": error.errno}
+                    raise
+                assert result["wait_result"] in {
+                    self.winapi.WAIT_OBJECT_0, self.winapi.WAIT_TIMEOUT}, result
+                result["terminated"] = result["wait_result"] == self.winapi.WAIT_OBJECT_0
+            elif os.name != "nt":
+                result["method"] = "direct_owned_popen"
+                result["exit_code"] = self.processes[0].poll()
+                result["terminated"] = result["exit_code"] is not None
+        return result
+
+    def cleanup(self):
+        # These are cleanup observations, never the preceding SUT stop evidence.
+        record = {"phase": "fixture_cleanup", "observed_at": time.monotonic(),
+                  "terminated_by_fixture": False}
+        self.phases["worker_process"]["cleanup"].append(record)
+        try:
+            if self.winapi is not None and self.handle is not None:
+                wait = self.winapi.WaitForSingleObject(self.handle, 0)
+                record["initial_wait_result"] = wait
+                if wait == self.winapi.WAIT_TIMEOUT:
+                    self.winapi.TerminateProcess(self.handle, 1)
+                    record["terminated_by_fixture"] = True
+                record["final_wait_result"] = self.winapi.WaitForSingleObject(self.handle, 5000)
+                record["exit_code"] = self.winapi.GetExitCodeProcess(self.handle)
+                assert record["final_wait_result"] == self.winapi.WAIT_OBJECT_0, record
+        finally:
+            try:
+                if self.winapi is not None and self.handle is not None:
+                    self.winapi.CloseHandle(self.handle)
+                    self.handle = None
+                    record["native_handle_closed"] = True
+            finally:
+                for process in self.processes:
+                    if process.poll() is None:
+                        process.kill()
+                        record["terminated_by_fixture"] = True
+                    code = process.wait(timeout=5)
+                    record.setdefault("launcher_exits", []).append({"pid": process.pid,
+                                                                    "exit_code": code})
+
+
+def fixture_failure_diagnostic(service, owner, phases, observer, error):
+    with suppress(Exception):
+        observer.observe("failure_before_fixture_cleanup")
+    phases["fixture_failure"] = {"type": type(error).__qualname__, "message": str(error)[:512]}
+    operation = service.status()["operation"]
+    return cancellation_diagnostic(service, owner, operation, phases, suffix="-failure")
+
+
+def fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request):
+    try:
+        observer.cleanup()
+    finally:
+        if service._thread is not None:
+            service._thread.join(timeout=5)
+        operation = service.status()["operation"]
+        diagnostic = cancellation_diagnostic(service, owner, operation, phases, suffix="-cleanup")
+        # JUnit properties retain the complete bounded observation on both a
+        # passing case and an early failure; a temporary pathname alone cannot.
+        pytest_request.node.user_properties.append(("fixture_process_observation", diagnostic))
 
 
 def test_capabilities_are_metadata_only_without_torch_import(tmp_path):
@@ -123,75 +273,93 @@ def test_actual_structured_service_training_result_use_and_idempotency(tmp_path,
         service.start(replace(request, config={"epochs": 2}))
 
 
-def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch):
+def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch, request):
+    pytest_request = request
     service, request, owner, store = ready(tmp_path, monkeypatch)
     entered, released = threading.Event(), threading.Event()
-    phases = {}
+    phases, processes = {}, []
+    observer = CheckpointWorkerObservation(owner, store, processes, phases)
 
     def message(raw, callback):
         value = json.loads(raw)
         if (value["kind"] == "event" and store.get_manifest(
                 value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
+            observer.bind_before_cancel(value)
             entered.set()
             assert released.wait(3)
         callback(raw)
 
     original_popen = subprocess.Popen
     original = checkpoint_child(monkeypatch, on_line=message, phases=phases,
-                                diagnose_exit=True, cancel_exit="cooperative")
-    started = service.start(request)["operation"]
-    assert entered.wait(15)
-    with pytest.raises(BoundaryError, match="stale_operation_attempt"):
-        service.cancel(started["operation_id"], "0" * 32)
-    ack = service.cancel(started["operation_id"], started["attempt_id"])["operation"]
-    phases["cancel_requested_at"] = service._cancel_requested_monotonic
-    assert ack["status"] == "pending" and ack["worker_state"] == "running"
-    assert ack["requested_action"] == "cancel" and ack["selected_result"] is False
-    with pytest.raises(BoundaryError, match="writer_still_running"):
-        service.reconcile(started["operation_id"], started["attempt_id"])
-    released.set()
-    cancelled = settle(service)
-    diagnostic = cancellation_diagnostic(service, owner, cancelled, phases)
-    assert cancelled["status"] == "cancelled", diagnostic
-    assert cancelled["worker_state"] == "terminal" and cancelled.get("checkpoint_id"), cancelled
-    assert cancelled["domain_completion_state"] == "not_completed"
-    assert cancelled["child_exit"]["forced"] is False
-    assert cancelled["child_exit"]["exit_code"] == 0
-    assert "result_id" not in cancelled
-    with pytest.raises(BoundaryError, match="cumulative_limits"):
-        service.resume(cancelled["operation_id"], cancelled["attempt_id"],
-                       cancelled["checkpoint_id"], "2" * 32, {"wall_seconds": 601})
-    # The opt-in fixture controls this cancelled child's OS-exit precondition.
-    # Resume must use the original adapter and its ordinary -m child entry.
-    monkeypatch.setattr(adapter_module, "_private_child", original)
-    monkeypatch.setattr(subprocess, "Popen", original_popen)
-    assert adapter_module._private_child is original
-    assert subprocess.Popen is original_popen
-    resumed = service.resume(cancelled["operation_id"], cancelled["attempt_id"],
-                             cancelled["checkpoint_id"], "2" * 32, request.limits)["operation"]
-    assert resumed["attempt_id"] != cancelled["attempt_id"]
-    completed = settle(service)
-    assert completed["status"] == "completed", completed
-    assert completed["run_id"] == cancelled["run_id"]
-    assert completed["selected_result"] is True
-    assert completed["child_exit"]["exit_code"] == 0
-    assert completed["child_exit"]["forced"] is False
-    assert not (owner.path.parent / (
-        "fixture-checkpoint-" + resumed["attempt_id"] + ".jsonl")).exists()
-    journal = json.loads((owner.path.parent / OPERATION_FILE).read_bytes())
-    assert journal["attempts"][-1]["writer_terminal"] is True
-    assert completed["elapsed_seconds"] >= cancelled["elapsed_seconds"]
+                                diagnose_exit=True, cancel_exit="cooperative", processes=processes)
+    try:
+        started = service.start(request)["operation"]
+        assert entered.wait(15)
+        assert observer.binding["operation_id"] == started["operation_id"]
+        assert observer.binding["attempt_id"] == started["attempt_id"]
+        assert observer.binding["run_id"] == service.status()["operation"]["run_id"]
+        with pytest.raises(BoundaryError, match="stale_operation_attempt"):
+            service.cancel(started["operation_id"], "0" * 32)
+        ack = service.cancel(started["operation_id"], started["attempt_id"])["operation"]
+        phases["cancel_requested_at"] = service._cancel_requested_monotonic
+        assert ack["status"] == "pending" and ack["worker_state"] == "running"
+        assert ack["requested_action"] == "cancel" and ack["selected_result"] is False
+        with pytest.raises(BoundaryError, match="writer_still_running"):
+            service.reconcile(started["operation_id"], started["attempt_id"])
+        released.set()
+        cancelled = settle(service)
+        worker_exit = observer.observe("post_sut_stop_before_fixture_cleanup")
+        diagnostic = cancellation_diagnostic(service, owner, cancelled, phases)
+        assert worker_exit["terminated"] is True, diagnostic
+        assert cancelled["status"] == "cancelled", diagnostic
+        assert cancelled["worker_state"] == "terminal" and cancelled.get("checkpoint_id"), cancelled
+        assert cancelled["domain_completion_state"] == "not_completed"
+        assert cancelled["child_exit"]["forced"] is False
+        assert cancelled["child_exit"]["exit_code"] == 0
+        assert "result_id" not in cancelled
+        with pytest.raises(BoundaryError, match="cumulative_limits"):
+            service.resume(cancelled["operation_id"], cancelled["attempt_id"],
+                           cancelled["checkpoint_id"], "2" * 32, {"wall_seconds": 601})
+        # The opt-in fixture controls this cancelled child's OS-exit precondition.
+        # Resume must use the original adapter and its ordinary -m child entry.
+        monkeypatch.setattr(adapter_module, "_private_child", original)
+        monkeypatch.setattr(subprocess, "Popen", original_popen)
+        assert adapter_module._private_child is original
+        assert subprocess.Popen is original_popen
+        resumed = service.resume(cancelled["operation_id"], cancelled["attempt_id"],
+                                 cancelled["checkpoint_id"], "2" * 32, request.limits)["operation"]
+        assert resumed["attempt_id"] != cancelled["attempt_id"]
+        completed = settle(service)
+        assert completed["status"] == "completed", completed
+        assert completed["run_id"] == cancelled["run_id"]
+        assert completed["selected_result"] is True
+        assert completed["child_exit"]["exit_code"] == 0
+        assert completed["child_exit"]["forced"] is False
+        assert not (owner.path.parent / (
+            "fixture-checkpoint-" + resumed["attempt_id"] + ".jsonl")).exists()
+        journal = json.loads((owner.path.parent / OPERATION_FILE).read_bytes())
+        assert journal["attempts"][-1]["writer_terminal"] is True
+        assert completed["elapsed_seconds"] >= cancelled["elapsed_seconds"]
+    except Exception as error:
+        raise AssertionError(fixture_failure_diagnostic(
+            service, owner, phases, observer, error)) from error
+    finally:
+        released.set()
+        fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request)
 
 
-def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monkeypatch):
+def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monkeypatch, request):
+    pytest_request = request
     service, request, owner, store = ready(tmp_path, monkeypatch)
     entered, released = threading.Event(), threading.Event()
     phases, processes = {}, []
+    observer = CheckpointWorkerObservation(owner, store, processes, phases)
 
     def message(raw, callback):
         value = json.loads(raw)
         if (value["kind"] == "event" and store.get_manifest(
                 value["details"]["event_id"]).parameters.value()["kind"] == "checkpoint"):
+            observer.bind_before_cancel(value)
             entered.set()
             assert released.wait(3)
         callback(raw)
@@ -201,11 +369,15 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
     try:
         started = service.start(request)["operation"]
         assert entered.wait(15)
+        assert observer.binding["operation_id"] == started["operation_id"]
+        assert observer.binding["attempt_id"] == started["attempt_id"]
+        assert observer.binding["run_id"] == service.status()["operation"]["run_id"]
         ack = service.cancel(started["operation_id"], started["attempt_id"])["operation"]
         phases["cancel_requested_at"] = service._cancel_requested_monotonic
         assert ack["status"] == "pending" and ack["requested_action"] == "cancel"
         released.set()
         stopped = settle(service)
+        worker_exit = observer.observe("post_sut_stop_before_fixture_cleanup")
         diagnostic = cancellation_diagnostic(service, owner, stopped, phases)
         trace = owner.path.parent / ("fixture-checkpoint-" + started["attempt_id"] + ".jsonl")
         records = [json.loads(line) for line in trace.read_bytes().splitlines()]
@@ -216,7 +388,12 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
         terminal = next(row for row in records if row["phase"] == "terminal_emitted")
         killed = next(row for row in phases["process_observations"]
                       if row["phase"] == "kill_entered")
-        assert len(processes) == 1 and returned["pid"] == killed["pid"] == processes[0].pid
+        assert worker_exit["terminated"] is True, diagnostic
+        assert len(processes) == 1 and killed["pid"] == processes[0].pid, diagnostic
+        assert returned["pid"] == held["pid"] == observer.binding["pid"], diagnostic
+        assert returned["ppid"] == held["ppid"] == observer.binding["ppid"], diagnostic
+        assert all(row.get("pid") == observer.binding["pid"] and
+                   row.get("ppid") == observer.binding["ppid"] for row in records), diagnostic
         assert killed["operation_id"] == started["operation_id"]
         assert killed["attempt_id"] == started["attempt_id"]
         assert terminal["state"] == "cancelled" and returned["exit_code"] == 0, diagnostic
@@ -236,15 +413,12 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
                                     "automatic_retry": False}
         assert service.status()["operation"]["attempt_id"] == started["attempt_id"]
         assert len(processes) == 1  # No second dispatch follows the unknown.
+    except Exception as error:
+        raise AssertionError(fixture_failure_diagnostic(
+            service, owner, phases, observer, error)) from error
     finally:
         released.set()
-        # Cleanup only actual Popen handles created by this fixture.
-        for process in processes:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
-        if service._thread is not None:
-            service._thread.join(timeout=5)
+        fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request)
 
 
 def test_source_json_and_unverified_agent_provenance_cannot_admit_training(tmp_path, monkeypatch):
@@ -299,7 +473,7 @@ try:
             'operation_id': _fixture_operation, 'attempt_id': _fixture_attempt,
             'phase': 'main_return', 'observed_at': _fixture_main_returned_at,
             'exit_code': _fixture_main_code,
-            'pid': child.os.getpid(),
+            'pid': child.os.getpid(), 'ppid': child.os.getppid(),
         }))
     _fixture_diagnostics_closed = True
 except Exception:
@@ -320,7 +494,7 @@ if (_fixture_main_code == 0 and _fixture_terminal ==
         _fixture_stream.write(json_bytes({
             'operation_id': _fixture_operation, 'attempt_id': _fixture_attempt,
             'phase': 'shutdown_hold_entered', 'observed_at': time.monotonic(),
-            'pid': os.getpid(),
+            'pid': os.getpid(), 'ppid': os.getppid(),
         }))
     while True:
         time.sleep(0.05)  # The original parent cancellation timer must kill us.
@@ -418,6 +592,7 @@ def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False,
     # Gate this fixture's first checkpoint on the existing exact journal control;
     # production publication, control polling and process exit stay authoritative.
     body = """
+import os
 import time
 from dataclasses import asdict
 from spireagent.json_boundary import json_bytes
@@ -435,6 +610,8 @@ def record(phase, **details):
         stream.write(json_bytes({
             'operation_id': fence.operation_id, 'attempt_id': fence.attempt_id,
             'event_id': first['event_id'], 'checkpoint_id': first['checkpoint_id'],
+            'run_id': first['run_id'], 'pid': os.getpid(), 'ppid': os.getppid(),
+            'executable': sys.executable, 'base_executable': sys._base_executable,
             'phase': phase, 'observed_at': time.monotonic(), **details,
         }))
 
@@ -460,7 +637,8 @@ def emit(self, event):
         assert checkpoint.parent('run') == current['run_id']
         assert checkpoint.parent('training_input') == current['input_id']
         assert checkpoint.producer == event.producer
-        first = {'fence': self.fence, 'event_id': identity, 'checkpoint_id': checkpoint_id}
+        first = {'fence': self.fence, 'event_id': identity, 'checkpoint_id': checkpoint_id,
+                 'run_id': current['run_id']}
         record('checkpoint_emitted', sequence=self.channel.sequence,
                requested_action=current['requested_action'])
         if not ALLOW_ADVANCE:
@@ -491,14 +669,15 @@ if ALLOW_ADVANCE:
                         processes=processes)
 
 
-def cancellation_diagnostic(service, owner, operation, phases):
-    path = owner.path.parent / ("fixture-checkpoint-" + operation["attempt_id"] + ".jsonl")
+def cancellation_diagnostic(service, owner, operation, phases, *, suffix=""):
+    attempt = operation.get("attempt_id", "unstarted")
+    path = owner.path.parent / ("fixture-checkpoint-" + attempt + ".jsonl")
     records = [json.loads(line) for line in path.read_bytes().splitlines()] if path.exists() else []
     raw = json_bytes({"operation": operation, "parent": phases, "child": records,
                       "failure": service._failure_diagnostic})
     assert len(raw) <= 65536, "bounded fixture cancellation diagnostic required"
     destination = owner.path.parent / (
-        "fixture-cancel-diagnostic-" + operation["attempt_id"] + ".json")
+        "fixture-cancel-diagnostic-" + attempt + suffix + ".json")
     with destination.open("xb") as stream:
         stream.write(raw)
     print("fixture_cancel_diagnostic=" + str(destination))
