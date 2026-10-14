@@ -27,7 +27,7 @@
 | Agent | 只消费声明的协议；每次从目录里选一个动作（或等待/结束）；不读隐藏状态、不自建合法性 | 程序、模型、记忆方式、选择规则 | 随机合法、d6 M0、Public M2、Structured M2、机械 Teacher |
 | 执行 | 有限预算、Stop、unknown 隔离、每局留原始记录 | 单独的 Policy Runtime 进程（Reference）或进程内批量驱动（Managed 评测/训练） | `components/policy-runtime`、`python/spireagent` |
 | 原始记录 | 不可变；声明来源五个维度（谁操作、证明了什么、可得信息、目标含义、用途权限） | 录制格式 | H/Snapshot1、Source3、AgentRun 样本 |
-| 数据集 / 训练 | 派生数据可从原件重建；每个 run 有 config + 代码版本 + 数据哈希 | 投影、Input、Target、模型、算法 | Store/Curation、LocalTrainingService、`python/stpd` |
+| 数据集 / 训练 | 派生数据可从原件重建，固定 manifest 与使用/曝光记录由 Store/Curation 保留；每个 run 有 config + 代码版本 + 数据哈希 | 投影、Input、Target、模型、算法 | Store/Curation、LocalTrainingService、`python/stpd` |
 | 评测 | 固定种子套件 + 同一个评测工具 + 完整分母 + 结果进 [SCOREBOARD](SCOREBOARD.md) | 被评测的 Agent | 现有 `stpd.evaluation`（B0–B7）+ 待建的套件执行器 |
 
 "协议"在本项目只指**环境协议**：Agent 能看到什么、能做什么、失败怎么表达。传输（HTTP、NDJSON、进程内调用）、
@@ -56,7 +56,7 @@ P1 可以大幅修改，名字不变，按修订号演进（r1、r2…）。Refe
 
 ## 4. 数据来源在框架里怎么放
 
-原始记录只有两类：
+训练来源按下面两类区分；它们不穷尽原件（见本节末）：
 
 | 类型 | 含义 | 例子 | 关键字段 |
 | --- | --- | --- | --- |
@@ -67,6 +67,11 @@ P1 可以大幅修改，名字不变，按修订号演进（r1、r2…）。Refe
 两类都通过投影变成训练样本。**特权信息只能进标签，不能进学生输入。** 例如在 Managed Host 上用存档/回读做搜索的
 战斗 solver 看得到隐藏 RNG，所以它是"特权标注"；学生模型照样只看 P1 观察。
 格式不全的外部数据（例如没有完整合法目录）可以作为声明了假设的弱标签使用，但必须单独标注用途，不能冒充完整样本。
+
+原件不止这两类：环境侧原件（冻结的 frame/Read、失败诊断、start/resume/end journal、close receipt）、Agent 交互原件
+（原始输入字节、提供/消费声明、ACK、directive/result 关联、被中断的 payload），以及可选的内部诊断和管理记录（协议、run 事件、
+结果、分析、用途与费用）。它们由各自 owner 保存，观察可以没有动作；训练投影按用途从中选择，不为此另建格式或服务。
+见 [FULL_RUN_DATA_CHAIN](FULL_RUN_DATA_CHAIN.md) 与 [AGENT_SESSION_PROTOCOL](../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md)。
 
 ## 5. 改哪一层，以及两个 Host 怎样比较
 
