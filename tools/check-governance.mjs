@@ -6,10 +6,22 @@ import { fileURLToPath } from "node:url";
 import { scriptIncludesGuard } from "./check-workspace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const CURRENT_CONTEXT_BUDGET_BYTES = 8 * 1024;
+export const CURRENT_CONTEXT_BUDGET_BYTES = 4 * 1024;
+export const CURRENT_REQUIRED_TOKENS = ["模型方案冻结", "以 GitHub 和原始记录为准"];
+export const PULL_REQUEST_REQUIRED_TOKENS = [
+  "Tier（`T1`/`T2`/`T3`）",
+  "Latest head SHA",
+  "做了什么",
+  "怎么验证",
+  "回滚"
+];
 
 const requiredPaths = [
+  "docs/ENGINEERING_RULES.zh-CN.md",
+  "docs/SYSTEM_MAP.zh-CN.md",
   "docs/ENGINEERING_GOVERNANCE.md",
+  "docs/SCOREBOARD.md",
+  "docs/DECISIONS.md",
   "docs/adr/README.md",
   ".agents/skills/README.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
@@ -57,7 +69,10 @@ export function requiredSurfaceFindings(workspaceRoot = root) {
 
 export function routeFindings(workspaceRoot = root) {
   const findings = [];
-  requireTokens(findings, workspaceRoot, "AGENTS.md", ["docs/ENGINEERING_GOVERNANCE.md"]);
+  requireTokens(findings, workspaceRoot, "AGENTS.md", [
+    "docs/ENGINEERING_RULES.zh-CN.md",
+    "docs/ENGINEERING_GOVERNANCE.md"
+  ]);
   requireTokens(findings, workspaceRoot, "README.md", [
     "docs/ENGINEERING_GOVERNANCE.md",
     ".agents/skills/README.md"
@@ -126,16 +141,7 @@ export function pullRequestTemplateFindings(workspaceRoot = root) {
   const canonical = ".github/PULL_REQUEST_TEMPLATE.md";
   if (!has(workspaceRoot, canonical)) return findings;
   const source = read(workspaceRoot, canonical).trim();
-  const requiredTokens = [
-    "Change class (`G0`-`G6`)",
-    "Owning fact / layer",
-    "latest head SHA",
-    "Test shape",
-    "Evidence level actually proved",
-    "Merge method",
-    "Remaining non-claims"
-  ];
-  for (const token of requiredTokens) {
+  for (const token of PULL_REQUEST_REQUIRED_TOKENS) {
     if (!source.includes(token)) {
       findings.push(finding("pull-request-template-field-missing", canonical, token));
     }
@@ -198,7 +204,7 @@ export function currentContextFindings(workspaceRoot = root) {
     findings.push(finding("current-context-oversized", relative,
       `final UTF-8 file is ${bytes.byteLength} > ${CURRENT_CONTEXT_BUDGET_BYTES} bytes; move detail to linked evidence`));
   }
-  for (const token of ["Resolve live GitHub refs", "override this file", "Remaining Platform non-claims"]) {
+  for (const token of CURRENT_REQUIRED_TOKENS) {
     if (!source.includes(token)) {
       findings.push(finding("current-context-safety-missing", relative, token));
     }

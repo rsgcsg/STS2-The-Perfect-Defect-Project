@@ -38,6 +38,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
+- [系统地图](docs/SYSTEM_MAP.zh-CN.md), [工程规则（两层制）](docs/ENGINEERING_RULES.zh-CN.md) and
+  [能力记分板](docs/SCOREBOARD.md): unified logic, daily rules and the only progress page.
+
 - [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
   abstract layers, full interaction target, I/F-off Agent and user approval gates.
 - [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
