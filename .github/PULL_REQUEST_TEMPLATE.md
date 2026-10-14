@@ -1,57 +1,22 @@
-## Change identity
+<!-- 规则见 docs/ENGINEERING_RULES.zh-CN.md。T2 填前四项即可；T1 另填下方 T1 部分。 -->
 
-- Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`
-- Base branch / exact base SHA:
-- Head branch / latest head SHA:
-- Workstream / primary owner:
-- Stable task ID / owning design and version (separate from change class):
-- Change class (`G0`-`G6`) and why:
-- Owning fact / layer:
+- Tier（`T1`/`T2`/`T3`）及原因：
+- Latest head SHA：
+- 推进哪个能力数字 / 消除哪个 T1 风险：
+- 做了什么：
+- 怎么验证（命令、CI、run 或 eval id）：
+- 会影响谁：
+- 回滚：
 
-## Problem and decision
+## 只有 T1 需要
 
-- Observed problem:
-- First causal defect or missing fact:
-- Implemented change:
-- Alternatives or hypotheses rejected:
-- Relevant history / producer-consumer path / existing mechanism reused:
-- Non-goals:
+- 碰到哪条硬核不变量，如何保持：
+- 独立审查人：
+- 原生改动是否跑过本机 exact-game 门（结果）：
+- 合并方式：改到 `components/` 或 `apps/` 用 normal merge。
 
-## Contracts and identity
+## 自查
 
-- Affected public contracts:
-- Component identity impact:
-- Cross-repository dependency and exact pin:
-- Merge method: normal merge for component source; squash permitted only when no component source changes.
-
-## Tests and evidence
-
-- Test shape and failure family covered:
-- Source/test commands and results:
-- Exact build/artifact/runtime/Human/cloud identities, when applicable:
-- Evidence level actually proved:
-- Latest-head CI/status SHA:
-- Remaining non-claims:
-
-## Delivery and next consumer
-
-- Artifact or capability delivered and how the next consumer uses it:
-- Actual external effects (or none):
-- Submitted / independently accepted / integrated / runtime-qualified scope:
-- Remaining decision or gate, owner and recovery/monitor when applicable:
-
-## Rollback
-
-Describe the source revert, artifact/runtime rollback, cloud rollback, or evidence
-quarantine path.
-
-## Checklist
-
-- [ ] The branch was based on current `origin/develop` or the documented release/hotfix base.
-- [ ] The change has one primary responsibility or one indivisible causal repair.
-- [ ] Authority and dependency direction remain intact; no second truth was added.
-- [ ] Behavior changes have a faithful regression, or the PR explains why existing coverage is exact.
-- [ ] Focused, root, and required higher evidence gates match the change class.
-- [ ] CI/evidence belongs to the latest head and does not inherit predecessor proof.
-- [ ] `npm run project:closeout` and `git diff --check` were reviewed.
-- [ ] No proprietary files, raw evidence, secrets, local artifacts, or model weights are committed.
+- [ ] 基于最新 `origin/develop`（或写明依赖的 topic）。
+- [ ] 一个 PR 一个目的。
+- [ ] 没有提交游戏文件、反编译源码、原始数据、权重、凭据或 `.local/`。
