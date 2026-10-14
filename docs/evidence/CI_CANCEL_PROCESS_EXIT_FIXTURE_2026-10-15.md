@@ -39,7 +39,10 @@ uses only this fixture's actual Popen handles.
 Ordinary structured completion and HTTP cancellation retain their default child
 entry coverage. There are no mocked exits/clocks, deadline extensions, deleted
 assertions or skipped tests. Focused tests and independent review assess this
-fixture boundary; selected full and Hosted gates remain separate before merge.
+fixture boundary; the selected Python source/test gate and hosted terminal
+evidence remain separate before merge. Removing default interpreter teardown
+from the positive fixture does not guarantee that durable cancellation writes
+finish within one second under every Windows load, or eliminate every flake.
 
 Rollback reverts these test/helper changes and this summary together. Original
 failed Hosted artifacts stay immutable. No release, runtime, GPU, Human or
