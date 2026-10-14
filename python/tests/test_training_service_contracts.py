@@ -137,9 +137,12 @@ class CheckpointWorkerObservation:
         before = self.observe("before_cancel")
         assert before["terminated"] is False, before
 
-    def observe(self, phase):
+    def observe(self, phase, *, timeout_ms=0):
+        assert type(timeout_ms) is int and 0 <= timeout_ms <= 5000
+        assert not self.phases["worker_process"]["cleanup"], "observe before fixture cleanup"
         result = {"phase": phase, "observed_at": time.monotonic(),
-                  "bound": self.binding is not None, "terminated": None}
+                  "bound": self.binding is not None, "terminated": None,
+                  "wait_timeout_ms": timeout_ms, "fixture_termination_attempted": False}
         self.phases["worker_process"]["observations"].append(result)
         if self.binding is not None:
             result.update(worker_pid=self.binding["pid"],
@@ -149,9 +152,11 @@ class CheckpointWorkerObservation:
             if self.winapi is not None and self.handle is not None:
                 result["method"] = "preheld_native_worker_handle"
                 try:
-                    result["wait_result"] = self.winapi.WaitForSingleObject(self.handle, 0)
+                    result["wait_result"] = self.winapi.WaitForSingleObject(self.handle, timeout_ms)
+                    result["wait_completed_at"] = time.monotonic()
                     result["exit_code"] = self.winapi.GetExitCodeProcess(self.handle)
                 except OSError as error:
+                    result["completed_at"] = time.monotonic()
                     result["error"] = {"type": type(error).__qualname__,
                                        "winerror": getattr(error, "winerror", None),
                                        "errno": error.errno}
@@ -161,39 +166,82 @@ class CheckpointWorkerObservation:
                 result["terminated"] = result["wait_result"] == self.winapi.WAIT_OBJECT_0
             elif os.name != "nt":
                 result["method"] = "direct_owned_popen"
-                result["exit_code"] = self.processes[0].poll()
+                process = self.processes[0]
+                if timeout_ms:
+                    with suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=timeout_ms / 1000)
+                result["exit_code"] = process.poll()
                 result["terminated"] = result["exit_code"] is not None
+        result["completed_at"] = time.monotonic()
         return result
 
     def cleanup(self):
-        # These are cleanup observations, never the preceding SUT stop evidence.
+        # Cleanup cannot supply or replace the preceding observer acceptance.
         record = {"phase": "fixture_cleanup", "observed_at": time.monotonic(),
-                  "terminated_by_fixture": False}
+                  "terminate_attempted": False, "terminate_succeeded": False}
         self.phases["worker_process"]["cleanup"].append(record)
+        errors = []
         try:
             if self.winapi is not None and self.handle is not None:
+                termination_error = None
                 wait = self.winapi.WaitForSingleObject(self.handle, 0)
                 record["initial_wait_result"] = wait
+                assert wait in {self.winapi.WAIT_OBJECT_0, self.winapi.WAIT_TIMEOUT}, record
                 if wait == self.winapi.WAIT_TIMEOUT:
-                    self.winapi.TerminateProcess(self.handle, 1)
-                    record["terminated_by_fixture"] = True
-                record["final_wait_result"] = self.winapi.WaitForSingleObject(self.handle, 5000)
+                    record["terminate_attempted"] = True
+                    try:
+                        self.winapi.TerminateProcess(self.handle, 1)
+                        record["terminate_succeeded"] = True
+                    except OSError as error:
+                        termination_error = error
+                        record["terminate_error"] = fixture_error(error)
+                # TerminateProcess is asynchronous. Even AccessDenied needs a
+                # subsequent signaled wait on this same handle to resolve a race.
+                wait = self.winapi.WaitForSingleObject(self.handle, 5000)
+                record["final_wait_result"] = wait
                 record["exit_code"] = self.winapi.GetExitCodeProcess(self.handle)
-                assert record["final_wait_result"] == self.winapi.WAIT_OBJECT_0, record
+                if termination_error is not None:
+                    resolved = (getattr(termination_error, "winerror", None) == 5 and
+                                wait == self.winapi.WAIT_OBJECT_0)
+                    record["access_denied_race_resolved"] = resolved
+                    if not resolved:
+                        errors.append(termination_error)
+                if wait != self.winapi.WAIT_OBJECT_0:
+                    errors.append(AssertionError(record))
+        except Exception as error:
+            record["native_cleanup_error"] = fixture_error(error)
+            errors.append(error)
         finally:
-            try:
-                if self.winapi is not None and self.handle is not None:
+            if self.winapi is not None and self.handle is not None:
+                try:
                     self.winapi.CloseHandle(self.handle)
-                    self.handle = None
                     record["native_handle_closed"] = True
-            finally:
-                for process in self.processes:
+                except Exception as error:
+                    record["handle_close_error"] = fixture_error(error)
+                    errors.append(error)
+                finally:
+                    self.handle = None
+            for process in self.processes:
+                launcher = {"pid": process.pid, "terminate_attempted": False,
+                            "terminate_succeeded": False}
+                record.setdefault("launcher_exits", []).append(launcher)
+                try:
                     if process.poll() is None:
+                        launcher["terminate_attempted"] = True
                         process.kill()
-                        record["terminated_by_fixture"] = True
-                    code = process.wait(timeout=5)
-                    record.setdefault("launcher_exits", []).append({"pid": process.pid,
-                                                                    "exit_code": code})
+                        launcher["terminate_succeeded"] = True
+                    launcher["exit_code"] = process.wait(timeout=5)
+                except Exception as error:
+                    launcher["cleanup_error"] = fixture_error(error)
+                    errors.append(error)
+            record["completed_at"] = time.monotonic()
+        if errors:
+            raise ExceptionGroup("fixture cleanup failed", errors)
+
+
+def fixture_error(error):
+    return {"type": type(error).__qualname__, "message": str(error)[:512],
+            "winerror": getattr(error, "winerror", None), "errno": getattr(error, "errno", None)}
 
 
 def fixture_failure_diagnostic(service, owner, phases, observer, error):
@@ -207,18 +255,134 @@ def fixture_failure_diagnostic(service, owner, phases, observer, error):
 
 
 def fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request):
+    primary_error = sys.exception()
+    errors = []
     try:
         observer.cleanup()
-    finally:
+    except Exception as error:
+        errors.append(error)
+        phases["fixture_cleanup_error"] = fixture_error(error)
+    try:
         if service._thread is not None:
             service._thread.join(timeout=5)
         operation = service.status()["operation"]
         diagnostic = cancellation_diagnostic(
             service, owner, operation, phases, suffix="-cleanup",
             child_attempt=observer.binding["attempt_id"] if observer.binding else None)
-        # JUnit properties retain the complete bounded observation on both a
-        # passing case and an early failure; a temporary pathname alone cannot.
-        pytest_request.node.user_properties.append(("fixture_process_observation", diagnostic))
+    except Exception as error:
+        errors.append(error)
+        phases["fixture_cleanup_diagnostic_error"] = fixture_error(error)
+        diagnostic = json.dumps({"parent": phases}, sort_keys=True)
+    # Retain cleanup failures even when the original test assertion must remain
+    # primary. A successful cleanup never changes a failed observer acceptance.
+    pytest_request.node.user_properties.append(("fixture_process_observation", diagnostic))
+    if errors:
+        pytest_request.node.user_properties.append(("fixture_cleanup_errors", json.dumps({
+            "primary_error": fixture_error(primary_error) if primary_error else None,
+            "cleanup_errors": [fixture_error(error) for error in errors],
+        }, sort_keys=True)))
+        if primary_error is None:
+            raise ExceptionGroup("fixture cleanup failed without a primary error", errors)
+
+
+class FixtureNativeWait:
+    """Unit-only API branch driver; never represents actual Windows evidence."""
+
+    WAIT_OBJECT_0, WAIT_TIMEOUT = 0, 258
+
+    def __init__(self, waits, winerror=None):
+        self.waits, self.winerror = iter(waits), winerror
+        self.wait_calls, self.terminate_calls, self.closed = [], [], []
+
+    def WaitForSingleObject(self, handle, timeout_ms):
+        self.wait_calls.append((handle, timeout_ms))
+        return next(self.waits)
+
+    def GetExitCodeProcess(self, handle):
+        return 0  # Exit zero alone must not resolve a nonsignaled native handle.
+
+    def TerminateProcess(self, handle, code):
+        self.terminate_calls.append((handle, code))
+        if self.winerror is not None:
+            error = PermissionError("unit-only native termination failure")
+            error.winerror = self.winerror
+            raise error
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+
+
+@pytest.mark.parametrize("final_wait", [0, 258])
+def test_fixture_observer_retains_immediate_timeout_before_bounded_wait(final_wait):
+    phases = {}
+    observer = CheckpointWorkerObservation(None, None, [], phases)
+    observer.binding = {"pid": 101, "launcher_pid": 102, "operation_id": "operation",
+                        "attempt_id": "attempt"}
+    observer.winapi = FixtureNativeWait([258, final_wait])
+    observer.handle = 987
+    immediate = observer.observe("post_sut_stop_before_fixture_cleanup")
+    assert immediate["terminated"] is False and immediate["exit_code"] == 0
+    bounded = observer.observe("bounded_async_exit_before_fixture_cleanup", timeout_ms=5000)
+    assert bounded["terminated"] is (final_wait == 0)
+    assert observer.winapi.wait_calls == [(987, 0), (987, 5000)]
+    assert observer.winapi.terminate_calls == []
+    assert immediate["terminated"] is False  # Later success cannot rewrite the snapshot.
+    assert bounded["observed_at"] <= bounded["completed_at"]
+    assert bounded["fixture_termination_attempted"] is False
+    assert phases["worker_process"]["cleanup"] == []
+
+
+@pytest.mark.parametrize(("winerror", "final_wait", "passes"), [
+    (None, 0, True), (5, 0, True), (5, 258, False), (6, 0, False), (None, 258, False),
+])
+def test_fixture_native_cleanup_requires_signaled_handle(winerror, final_wait, passes):
+    phases = {}
+    observer = CheckpointWorkerObservation(None, None, [], phases)
+    observer.winapi = FixtureNativeWait([258, final_wait], winerror)
+    observer.handle = 987
+    if passes:
+        observer.cleanup()
+    else:
+        with pytest.raises(ExceptionGroup, match="fixture cleanup failed"):
+            observer.cleanup()
+    record = phases["worker_process"]["cleanup"][0]
+    assert record["terminate_attempted"] is True
+    assert record["terminate_succeeded"] is (winerror is None)
+    assert record["final_wait_result"] == final_wait
+    assert record["exit_code"] == 0  # A zero code cannot rescue the timeout variants.
+    assert observer.winapi.wait_calls == [(987, 0), (987, 5000)]
+    assert observer.winapi.terminate_calls == [(987, 1)]
+    assert observer.winapi.closed == [987] and observer.handle is None
+    if winerror is not None:
+        assert record["terminate_error"]["winerror"] == winerror
+        assert record["access_denied_race_resolved"] is (winerror == 5 and final_wait == 0)
+
+
+@pytest.mark.parametrize("has_primary", [False, True])
+def test_fixture_cleanup_diagnostic_preserves_primary_error(monkeypatch, has_primary):
+    def failed_cleanup():
+        raise RuntimeError("unit-only secondary cleanup failure")
+
+    monkeypatch.setattr(sys.modules[__name__], "cancellation_diagnostic",
+                        lambda *args, **kwargs: json.dumps(args[3]))
+    service = SimpleNamespace(_thread=None, status=lambda: {"operation": {}})
+    observer = SimpleNamespace(binding=None, cleanup=failed_cleanup)
+    pytest_request = SimpleNamespace(node=SimpleNamespace(user_properties=[]))
+    primary = ValueError("unit-only primary contract assertion")
+    expected = ValueError if has_primary else ExceptionGroup
+    with pytest.raises(expected) as captured:
+        try:
+            if has_primary:
+                raise primary
+        finally:
+            fixture_cleanup_diagnostic(service, None, {}, observer, pytest_request)
+    if has_primary:
+        assert captured.value is primary
+    properties = dict(pytest_request.node.user_properties)
+    cleanup = json.loads(properties["fixture_cleanup_errors"])
+    assert cleanup["cleanup_errors"][0]["type"] == "RuntimeError"
+    assert (cleanup["primary_error"] is not None) is has_primary
+    assert "fixture_process_observation" in properties
 
 
 def test_capabilities_are_metadata_only_without_torch_import(tmp_path):
@@ -393,7 +557,7 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
         terminal = next(row for row in records if row["phase"] == "terminal_emitted")
         killed = next(row for row in phases["process_observations"]
                       if row["phase"] == "kill_entered")
-        assert worker_exit["terminated"] is True, diagnostic
+        assert worker_exit["bound"] is True, diagnostic
         assert len(processes) == 1 and killed["pid"] == processes[0].pid, diagnostic
         assert returned["pid"] == held["pid"] == observer.binding["pid"], diagnostic
         assert returned["ppid"] == held["ppid"] == observer.binding["ppid"], diagnostic
@@ -418,6 +582,14 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
                                     "automatic_retry": False}
         assert service.status()["operation"]["attempt_id"] == started["attempt_id"]
         assert len(processes) == 1  # No second dispatch follows the unknown.
+        phases["negative_contract_assertions_passed_at"] = time.monotonic()
+        # Unknown does not promise that every Windows descendant's process
+        # object is signaled at the instant its launcher wait returns. Preserve
+        # that immediate snapshot, then observe without any fixture termination.
+        asynchronous_exit = observer.observe("bounded_async_exit_before_fixture_cleanup",
+                                             timeout_ms=5000)
+        diagnostic = cancellation_diagnostic(service, owner, stopped, phases, suffix="-async-exit")
+        assert asynchronous_exit["terminated"] is True, diagnostic
     except Exception as error:
         raise AssertionError(fixture_failure_diagnostic(
             service, owner, phases, observer, error)) from error

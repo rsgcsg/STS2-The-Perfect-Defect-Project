@@ -64,11 +64,16 @@ checkpoint before cancellation. It preserves Popen's separate launcher identity
 and verifies the direct or observed Windows parent/child relationship. Windows
 holds that worker's native process handle before cancel using CPython's native
 `_winapi` binding, which preserves Win64 HANDLE width. After the original SUT
-stop, an immediate zero-timeout observation must find the worker handle
-signaled; an alive worker at that point fails before cleanup. This intentionally
-does not provide an extra post-stop grace or promise no Windows timing flakes.
-No PID is reopened after the kill, and worker exit
-code is not assumed to equal the launcher's code.
+stop, an immediate zero-timeout observation retains its actual value. The
+positive cooperative case still requires the real worker handle already
+signaled. The negative forced-unknown case checks all original unknown,
+forced-exit, no-result and no-retry assertions first, then performs one separate
+read-only wait of at most five seconds on that same pre-held handle. A timeout
+still fails; later fixture cleanup cannot rescue it. This is an observation of
+asynchronous worker exit without fixture intervention, not a promise that every
+worker handle was signaled at SUT return or within the product cancellation
+window. No PID is reopened after the kill, and worker exit code is not assumed
+to equal the launcher's code.
 
 Any fixture cleanup is separately labelled and cannot become SUT stop evidence.
 Bounded phase, ownership and liveness observations are also retained in JUnit
@@ -76,3 +81,27 @@ properties, including on failure, so a temporary diagnostic pathname is no
 longer the only record. Production deadlines, clocks, runner and unknown
 semantics remain unchanged. A new head still needs its own Windows/Hosted gate;
 this source correction does not qualify the original failed run.
+
+## Asynchronous forced exit and cleanup evidence
+
+PR182 at `a4cf9a3d`, run `38613654545`, failed its added immediate-signaled
+negative assertion. The original property records the bound Windows worker
+handle as Wait258 then exit0, while the owned launcher's receipt is forced
+exit1 and the operation correctly retains unknown/no-result/no-retry. Cleanup
+then attempted TerminateProcess and raised WinError5 before its final native
+wait, masking the first assertion. The worker's final handle state is unknown
+in that record; exit0, AccessDenied and a flag assigned after the failing call
+do not establish no intervention or final termination.
+
+The immediate-signaled condition was stronger than the original forced-unknown
+contract. Windows termination of another process is asynchronous. The revised
+negative test retains the immediate snapshot and separately bounds its native
+handle observation. This does not alter the product grace or promote the old
+failed run to success. Cleanup records termination attempted/succeeded/error
+separately and always remains distinct from observer acceptance. AccessDenied
+can be resolved as an exit race only by a subsequent actual signaled wait on
+the same handle. An original assertion remains primary when cleanup also fails;
+cleanup failure without an original error still fails, and both are retained
+in bounded JUnit properties. Unit branch checks exercise these diagnostic
+rules without claiming actual Windows execution. A new exact-head Windows
+source/test run remains required.
