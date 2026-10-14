@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from spireagent.json_boundary import BoundaryError
 
-from .agent_task_outcome import AgentTaskOutcome, _empty
+from .task_outcome import AgentTaskOutcome, _empty
 
 INDEX_SCHEMA = "spireagent/managed-evaluation-file-index-v1"
 SOURCE_FILES = (
@@ -22,7 +22,8 @@ SOURCE_FILES = (
     "stpd/evaluation/managed_suite.py",
     "stpd/evaluation/suites.py",
     "tools/evaluate_managed_suite.py",
-    "spireagent/workbench/managed_task_outcome.py",
+    "spireagent/managed_task_outcome.py",
+    "spireagent/task_outcome.py",
     "spireagent/workbench/agent_task_outcome.py",
     "uv.lock",
 )

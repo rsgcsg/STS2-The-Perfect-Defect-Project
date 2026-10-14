@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from spireagent.workbench.managed_task_outcome import managed_terminal
+from spireagent.managed_task_outcome import managed_terminal
 
 from .gates import PairedOutcome, paired_fixed_seed_report
 

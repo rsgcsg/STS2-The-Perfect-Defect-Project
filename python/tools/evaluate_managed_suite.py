@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from spireagent.workbench.managed_task_outcome import (  # noqa: E402
+from spireagent.managed_task_outcome import (  # noqa: E402
     INDEX_SCHEMA,
     SOURCE_FILES,
     TASK_SPEC,

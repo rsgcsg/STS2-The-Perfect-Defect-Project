@@ -11,49 +11,21 @@ import hashlib
 import json
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any
 
 from spireagent.encoding import canonical_json, semantic_hash
 from spireagent.json_boundary import BoundaryError
+from spireagent.task_outcome import SCHEMA as SCHEMA
+from spireagent.task_outcome import AgentTaskOutcome, _empty
+from spireagent.task_outcome import OperationEnd as OperationEnd
+from spireagent.task_outcome import TaskCompletion as TaskCompletion
+from spireagent.task_outcome import TerminalObservation as TerminalObservation
 
-SCHEMA = "spireagent/agent-task-outcome-v1"
 MAX_EVENTS_BYTES = 64 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 1024 * 1024
 
 
-class TaskCompletion(TypedDict):
-    status: Literal["completed", "unproved", "unknown"]
-    task_spec: dict[str, Any] | None
-    reason_codes: list[str]
-    witness: dict[str, Any] | None
-
-
-class OperationEnd(TypedDict):
-    status: Literal["task_ended", "censored", "failed", "unknown"]
-    reason_codes: list[str]
-    event_sequence: int | None
-    controller: str | None
-    tainted: bool | None
-    recorded_reason: str | None
-    budget: dict[str, Any] | None
-
-
-class TerminalObservation(TypedDict):
-    status: Literal["observed", "ambiguous", "not_observed", "unknown"]
-    result: Literal["win", "loss"] | None
-    ready_summary: bool | None
-    witnesses: list[dict[str, Any]]
-
-
-class AgentTaskOutcome(TypedDict):
-    schema: str
-    task_completion: TaskCompletion
-    operation_end: OperationEnd
-    terminal_observation: TerminalObservation
-    agent_composition: dict[str, Any]
-    evidence: dict[str, Any]
-    strategy_quality: Literal["not_assessed"]
 
 
 def _verified_bytes(value: Any, name: str, maximum: int) -> bytes:
@@ -96,34 +68,6 @@ def _file_reference(value: Any, name: str) -> dict[str, Any]:
     return {"path": name, "sha256": record["sha256"], "bytes": record["bytes"]}
 
 
-def _empty(verification: str) -> AgentTaskOutcome:
-    return {
-        "schema": SCHEMA,
-        "task_completion": {
-            "status": "unknown",
-            "task_spec": None,
-            "reason_codes": ["evidence_not_verified"],
-            "witness": None,
-        },
-        "operation_end": {
-            "status": "unknown",
-            "reason_codes": ["evidence_not_verified"],
-            "event_sequence": None,
-            "controller": None,
-            "tainted": None,
-            "recorded_reason": None,
-            "budget": None,
-        },
-        "terminal_observation": {
-            "status": "unknown",
-            "result": None,
-            "ready_summary": None,
-            "witnesses": [],
-        },
-        "agent_composition": {},
-        "evidence": {"verification": verification, "content_id": None, "events": None},
-        "strategy_quality": "not_assessed",
-    }
 
 
 def _composition(manifest: Mapping[str, Any], native: bool) -> dict[str, Any]:

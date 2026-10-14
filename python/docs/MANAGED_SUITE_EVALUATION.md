@@ -4,7 +4,7 @@ The research evaluator measures the random Agent's natural terminals, quality
 metrics and runtime costs over a declared full seed plan. It uses Host Runtime's
 `ManagedPlayerEnvironment` reset/observe/step/close and `FiniteActionView`; it does
 not introduce a Host controller, legality engine or operational evidence ledger.
-The owning read-only `spireagent.workbench.managed_task_outcome` reader produces
+The owning read-only `spireagent.managed_task_outcome` reader produces
 common `AgentTaskOutcome` only from its verified Managed raw grammar. The run
 retains an exact evaluation source snapshot, file index and external index SHA;
 the reader rechecks bytes, config TaskSpec, game/build/load tuple, reset/seed/runtime

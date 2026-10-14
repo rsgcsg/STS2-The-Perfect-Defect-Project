@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from test_managed_suite import snapshot
 
-from spireagent.workbench.managed_task_outcome import (
+from spireagent.managed_task_outcome import (
     INDEX_SCHEMA,
     SOURCE_FILES,
     TASK_SPEC,

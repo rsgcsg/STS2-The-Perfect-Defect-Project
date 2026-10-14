@@ -25,6 +25,7 @@ def test_shared_primitives_have_no_application_or_research_dependency():
     paths = [ROOT / "spireagent" / name for name in (
         "encoding.py", "json_boundary.py", "source.py", "artifact_contracts.py",
         "package_identity.py", "policy_files.py",
+        "task_outcome.py", "managed_task_outcome.py",
     )]
     paths.extend((ROOT / "spireagent/storage").rglob("*.py"))
     for path in paths:

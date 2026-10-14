@@ -190,7 +190,7 @@ required wire admission authority.
 
 ## Managed research evaluation results
 
-The adjacent `spireagent.workbench.managed_task_outcome` read-only projection
+The adjacent `spireagent.managed_task_outcome` read-only projection
 accepts the versioned raw Managed evaluation file-index grammar and externally
 retained index SHA, rechecks exact files/source/config and original episode joins,
 and then produces the common Task/terminal/operation shape. It does not run or
