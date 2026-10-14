@@ -24,6 +24,7 @@ from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
+    STRUCTURED_RECIPES,
     checked_recipe_execution_policy,
     structured_recipe_scope,
     typed_recipe_checkpoint_schema,
@@ -490,6 +491,7 @@ class StructuredRecipeAdapter:
         runs = {run.run_id for run in dataset.runs}
         source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
         scoped = typed_recipe_is_scoped(operation["recipe"])
+        structured_monitor = operation["recipe"] in STRUCTURED_RECIPES
         attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
                             source_identity(ROOT))
         expected_run_schema = typed_recipe_run_schema(operation["recipe"])
@@ -566,7 +568,7 @@ class StructuredRecipeAdapter:
                             or training.producer != run.producer
                             or training.parent("source") != source_id):
                         raise BoundaryError("local_training", "child_preparation_invalid")
-                    plan = recorded.get("training_plan")
+                    plan = recorded.get("training_plan") if structured_monitor else None
                     if plan is not None and (
                             plan["source_sha256"] != run.parameters.value()["source_sha256"]
                             or any(plan[field] != run.parameters.value()["config"][config_field]
@@ -613,11 +615,15 @@ class StructuredRecipeAdapter:
                                 or checkpoint.parameters.value().get("attempt") != attempt_id):
                             raise BoundaryError("local_training", "child_checkpoint_invalid")
                         update["checkpoint_id"] = cp_id
-                        update["last_checkpoint_at"] = time.time()
-                        update["checkpoint_progress"] = {
-                            "checkpoint_id":cp_id, "optimizer_updates":cp_info["optimizer_updates"],
-                            "boundaries":cp_info["boundary"], "epoch":cp_info["cursor"]["epoch"]}
-                    counters = event_details.get("accepted_counters")
+                        if structured_monitor:
+                            update["last_checkpoint_at"] = time.time()
+                            update["checkpoint_progress"] = {
+                                "checkpoint_id":cp_id,
+                                "optimizer_updates":cp_info["optimizer_updates"],
+                                "boundaries":cp_info["boundary"],
+                                "epoch":cp_info["cursor"]["epoch"]}
+                    counters = (event_details.get("accepted_counters")
+                                if structured_monitor else None)
                     if counters is not None:
                         if (not isinstance(counters, dict) or set(counters) != {
                                 "optimizer_updates", "label_uses", "observations", "boundaries",
@@ -642,9 +648,10 @@ class StructuredRecipeAdapter:
                             raise BoundaryError("local_training", "child_progress_invalid")
                         update["progress"] = {
                             "unit":"optimizer_update", "completed":updates,
-                            "total":recorded.get("training_plan", {}).get(
-                                "planned_optimizer_updates")}
-                        if (counters is None and info.get("kind") == "progress"
+                            "total":(recorded.get("training_plan", {}).get(
+                                "planned_optimizer_updates") if structured_monitor else None)}
+                        if (not structured_monitor
+                                or counters is None and info.get("kind") == "progress"
                                 and updates > recorded.get("progress", {}).get("completed", 0)):
                             update["last_progress_at"] = time.time()
                     service._advance(path, identity, **update)
@@ -739,8 +746,9 @@ class StructuredRecipeAdapter:
             completion = {"checkpoint_id": terminal["checkpoint_id"],
                           "progress": {"unit": "optimizer_update",
                                        "completed": terminal["optimizer_updates"],
-                                       "total":current().get("training_plan", {}).get(
-                                           "planned_optimizer_updates")}}
+                                       "total":(current().get("training_plan", {}).get(
+                                           "planned_optimizer_updates")
+                                           if structured_monitor else None)}}
             if terminal["state"] == "completed":
                 completion.update(result_id=terminal["result_id"], model_id=terminal["model_id"],
                                   evaluation_status="not_run", stage="completed")
