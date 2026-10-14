@@ -16,8 +16,9 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from spireagent.json_boundary import BoundaryError, text
 from spireagent.training_execution_contracts import (
@@ -57,6 +58,95 @@ def modal_gpu_matches(selector: str, wire_type: str, count: int) -> bool:
         and wire_type == selector
         and count == 1
     )
+
+
+@dataclass(frozen=True)
+class ModalCallOutput:
+    """A fresh original-call ACK; a returned None is distinct from pending."""
+
+    call_id: str
+    state: Literal["pending", "returned", "failed"]
+    value: object = None
+    failure_code: Literal["provider_call_terminated", "provider_execution_timeout"] | None = None
+
+
+async def poll_modal_original_call(
+    client: Any, call_id: str, *, budget: TrainingProviderBudget
+) -> ModalCallOutput:
+    """Read one original index without long polling, retries or consuming output.
+
+    Only the actual ACK's empty/unfinished shape means pending. RPC/wallet
+    timeout, expired output and malformed ACKs propagate to the caller's unknown
+    path; their exception classes cannot establish that the input is running.
+    """
+    from importlib.metadata import version
+
+    if version("modal") != MODAL_SDK_VERSION:
+        raise BoundaryError(_STAGE, "modal_sdk_version_mismatch")
+    api = importlib.import_module("modal_proto.api_pb2")
+    sdk = importlib.import_module("modal")
+    decode = importlib.import_module("modal._utils.function_utils")._process_result
+    original_call_id = text(call_id, _STAGE, maximum=128)
+    timeout = budget.timeout(30)
+    response = await asyncio.wait_for(
+        client.stub.FunctionGetOutputs(
+            api.FunctionGetOutputsRequest(
+                function_call_id=original_call_id,
+                timeout=0,
+                last_entry_id="0-0",
+                clear_on_success=False,
+                requested_at=time.time(),
+                start_idx=0,
+                end_idx=0,
+            ),
+            retry=None,
+            timeout=timeout,
+        ),
+        timeout=timeout,
+    )
+    budget.timeout(30)
+    if not isinstance(response, api.FunctionGetOutputsResponse):
+        raise BoundaryError(_STAGE, "original_output_response_required")
+    if not response.outputs:
+        if response.num_unfinished_inputs == 1:
+            return ModalCallOutput(original_call_id, state="pending")
+        if response.num_unfinished_inputs == 0:
+            raise sdk.exception.OutputExpiredError()
+        # This port admits one spawn input, unlike Modal's generic multi-input API.
+        raise BoundaryError(_STAGE, "original_output_binding_mismatch")
+    if (
+        len(response.outputs) != 1
+        or response.outputs[0].idx != 0
+        or response.num_unfinished_inputs != 0
+    ):
+        raise BoundaryError(_STAGE, "original_output_binding_mismatch")
+    output = response.outputs[0]
+    terminal_statuses = {
+        api.GenericResult.GENERIC_STATUS_SUCCESS, api.GenericResult.GENERIC_STATUS_FAILURE,
+        api.GenericResult.GENERIC_STATUS_TERMINATED, api.GenericResult.GENERIC_STATUS_TIMEOUT,
+        api.GenericResult.GENERIC_STATUS_INIT_FAILURE,
+        api.GenericResult.GENERIC_STATUS_INTERNAL_FAILURE,
+        api.GenericResult.GENERIC_STATUS_IDLE_TIMEOUT,
+        api.GenericResult.GENERIC_STATUS_MEMORY_MANAGER_EVICTION,
+    }
+    if not output.HasField("result") or output.result.status not in terminal_statuses:
+        raise BoundaryError(_STAGE, "original_output_binding_mismatch")
+    if output.result.status == api.GenericResult.GENERIC_STATUS_TERMINATED:
+        return ModalCallOutput(
+            original_call_id, state="failed", failure_code="provider_call_terminated"
+        )
+    if output.result.status == api.GenericResult.GENERIC_STATUS_TIMEOUT:
+        return ModalCallOutput(
+            original_call_id, state="failed", failure_code="provider_execution_timeout"
+        )
+    # Preserve the locked SDK's success/remote failure decoder, after ACK shape
+    # establishes that this is the one original terminal output.
+    value = await asyncio.wait_for(
+        decode(output.result, output.data_format, client.stub, client),
+        timeout=budget.timeout(30),
+    )
+    budget.timeout(30)
+    return ModalCallOutput(original_call_id, state="returned", value=cast(object, value))
 
 
 class ModalTrainingBackend(Protocol):
@@ -240,7 +330,7 @@ class ModalTrainingExecutor:
             result = self.backend.poll(attempt, handle, budget=budget)
             budget.timeout(30)
             if result is None:
-                return None  # Exact provider call is known-running.
+                return None  # Exact original call is known-unfinished (including queue/startup).
             if isinstance(result, KnownFailure):
                 if result.prepared_id != attempt.identity or result.handle != handle:
                     raise BoundaryError(_STAGE, "foreign_failure_receipt")
@@ -583,42 +673,32 @@ class SdkModalTrainingBackend:
         return TrainingCallHandle(app_ref, call.object_id)
 
     def poll(
-        self, attempt: PreparedTrainingAttempt, handle: TrainingCallHandle,
-        *, budget: TrainingProviderBudget,
+        self,
+        attempt: PreparedTrainingAttempt,
+        handle: TrainingCallHandle,
+        *,
+        budget: TrainingProviderBudget,
     ) -> bytes | KnownFailure | None:
         sdk = self._client()
         try:
-            call = sdk.FunctionCall.from_id(handle.call_id)
-            raw = self._await(lambda: call.get.aio(timeout=0), budget)
+            client = self._await(lambda: sdk.Client.from_env.aio(), budget)
+            output = self._await(
+                lambda: poll_modal_original_call(client, handle.call_id, budget=budget), budget
+            )
+            if output.state == "pending":
+                return None
+            if output.state == "failed":
+                if output.failure_code is None:
+                    raise BoundaryError(_STAGE, "original_terminal_failure_code_required")
+                return KnownFailure(attempt.identity, output.failure_code, handle)
+            raw = output.value
             if not isinstance(raw, bytes):
-                # A successful get is an original-call terminal observation, but
+                # A retained success is an original-call terminal observation, but
                 # a non-byte worker return violates this closed transport contract.
                 return KnownFailure(attempt.identity, "provider_worker_response_invalid", handle)
             return raw
-        except sdk.exception.FunctionTimeoutError:
-            return KnownFailure(attempt.identity, "provider_execution_timeout", handle)
-        except sdk.exception.TimeoutError:
-            return None
         except sdk.exception.ExecutionError:
             return KnownFailure(attempt.identity, "provider_worker_failed", handle)
-        except sdk.exception.RemoteError:
-            # SDK1.5.5 maps an empty TERMINATED result to RemoteError. Other
-            # RemoteErrors (e.g. server or decoding failures) remain unknown.
-            # Re-read only the original call's retained index-0 protobuf result,
-            # without retries or consuming/deleting outputs, before claiming terminal.
-            api = importlib.import_module("modal_proto.api_pb2")
-            client = self._await(lambda: sdk.Client.from_env.aio(), budget)
-            response = self._await(lambda: client.stub.FunctionGetOutputs(
-                api.FunctionGetOutputsRequest(function_call_id=handle.call_id,
-                    timeout=0, last_entry_id="0-0", clear_on_success=False,
-                    requested_at=time.time(), start_idx=0, end_idx=0),
-                retry=None, timeout=budget.timeout(30)), budget)
-            if (len(response.outputs) == 1 and response.num_unfinished_inputs == 0
-                    and response.outputs[0].idx == 0
-                    and response.outputs[0].result.status ==
-                    api.GenericResult.GENERIC_STATUS_TERMINATED):
-                return KnownFailure(attempt.identity, "provider_call_terminated", handle)
-            raise
 
     def recover_calls(
         self, attempt: PreparedTrainingAttempt, app_ref: TrainingAppRef,

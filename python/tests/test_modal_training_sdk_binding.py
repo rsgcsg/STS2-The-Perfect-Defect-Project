@@ -232,7 +232,6 @@ def test_actual_sdk_empty_terminated_result_requires_original_terminal_protobuf(
     status, unfinished, known
 ):
     import modal
-    from modal._utils.function_utils import _process_result
 
     from spireagent.training_execution_contracts import (
         KnownFailure,
@@ -270,24 +269,18 @@ def test_actual_sdk_empty_terminated_result_requires_original_terminal_protobuf(
     async def from_env():
         return client
 
-    async def get(timeout):
-        assert timeout == 0
-        # Locked SDK decoder, actual protobuf status. No fake RemoteError invention.
-        return await _process_result(result, api.DATA_FORMAT_PICKLE, client.stub, client)
-
-    call = SimpleNamespace(get=SimpleNamespace(aio=get))
     sdk = SimpleNamespace(
         exception=modal.exception,
         Client=SimpleNamespace(from_env=SimpleNamespace(aio=from_env)),
-        FunctionCall=SimpleNamespace(
-            from_id=lambda selected: call if selected == handle.call_id else None
-        ),
     )
     backend = SdkModalTrainingBackend(sdk=sdk)
     if known:
         outcome = backend.poll(attempt, handle, budget=TrainingProviderBudget(lambda: 30))
         assert isinstance(outcome, KnownFailure)
         assert outcome.code == "provider_call_terminated" and outcome.handle == handle
+    elif unfinished:
+        with pytest.raises(BoundaryError, match="original_output_binding_mismatch"):
+            backend.poll(attempt, handle, budget=TrainingProviderBudget(lambda: 30))
     else:
         with pytest.raises(modal.exception.RemoteError):
             backend.poll(attempt, handle, budget=TrainingProviderBudget(lambda: 30))
@@ -315,15 +308,29 @@ def test_successful_original_call_with_nonbyte_return_is_known_invalid_not_a_can
     )
     handle = TrainingCallHandle(ref, "fc-wire")
 
-    async def get(timeout):
-        assert timeout == 0
-        return {"unexpected": "worker_return"}
+    from modal._serialization import serialize_data_format
+
+    async def original_output(request, *, retry, timeout):
+        assert request.function_call_id == handle.call_id and request.timeout == 0
+        assert request.start_idx == request.end_idx == 0 and not request.clear_on_success
+        assert retry is None and timeout <= 30
+        response = api.FunctionGetOutputsResponse()
+        response.outputs.add(idx=0, data_format=api.DATA_FORMAT_PICKLE).result.CopyFrom(
+            api.GenericResult(
+                status=api.GenericResult.GENERIC_STATUS_SUCCESS,
+                data=serialize_data_format({"unexpected": "worker_return"}, api.DATA_FORMAT_PICKLE),
+            )
+        )
+        return response
+
+    client = SimpleNamespace(stub=SimpleNamespace(FunctionGetOutputs=original_output))
+
+    async def from_env():
+        return client
 
     sdk = SimpleNamespace(
         exception=modal.exception,
-        FunctionCall=SimpleNamespace(
-            from_id=lambda selected: SimpleNamespace(get=SimpleNamespace(aio=get))
-        ),
+        Client=SimpleNamespace(from_env=SimpleNamespace(aio=from_env)),
     )
     outcome = SdkModalTrainingBackend(sdk=sdk).poll(
         attempt, handle, budget=TrainingProviderBudget(lambda: 30)

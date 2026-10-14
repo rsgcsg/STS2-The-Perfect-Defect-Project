@@ -31,6 +31,24 @@ other approved selectors still require their exact wire value and count one.
 The public placement selector remains `A10`. Actual returned wire fields remain
 unchanged in evidence, and image, CPU, memory, rank, time and stop gates still apply.
 
+Original output reads are owned by `poll_modal_original_call`: one read-only
+index-0 `FunctionGetOutputs` request with timeout zero, no output consumption,
+no SDK retry and the original finite wallet/RPC bound. Only a fresh typed empty
+ACK with exactly one unfinished input means pending, including queue/startup;
+it is not proof of GPU execution. Empty/finished (expired), missing/malformed
+ACKs, unspecified/unknown status, RPC/wallet timeout and late ACK remain unknown.
+A single original terminal TIMEOUT or TERMINATED ACK retains its known failure.
+Returned values have a distinct outcome, so a successful None is invalid worker
+output rather than pending. The diagnostic and ordinary service share this owner.
+
+The local deployment still parses the typed attempt and checks source identity.
+Its serialized callback captures canonical prepared bytes and primitive transport
+caps/bindings only, so the injected interpreter needs no project module import.
+Exact bytes, sizes and payload hashes are checked before the fixed locked child;
+that child retains full Prepared/source/payload/domain validation. POSIX resource
+imports occur in the remote wrapper before fork; control-host serialization does
+not import `resource`. These checks do not qualify an image/device or candidate.
+
 The ordinary library constructor is `ModalTrainingExecutor(owner)`: it creates
 a lazy real `SdkModalTrainingBackend`. A trusted configured target/binding must be supplied
 by the application's supported configuration owner. Test backend injection is a

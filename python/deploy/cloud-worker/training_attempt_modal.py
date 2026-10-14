@@ -6,8 +6,8 @@ injected. Numerical worker runs in the image's locked checkout/venv.
 
 from __future__ import annotations
 
+import hashlib
 import os
-import resource
 import subprocess
 import tempfile
 from pathlib import Path
@@ -22,6 +22,21 @@ _attempt = PreparedTrainingAttempt.from_bytes(
 )
 if source_identity(Path(__file__).resolve().parents[2]) != _attempt.producer:
     raise ValueError("deployment_source_lock_mismatch")
+
+# The injected Modal interpreter need not import the project's installed classes.
+# Capture only canonical bytes and primitive transport caps from the locally
+# parsed/qualified attempt; the fixed locked child owns full schema/domain checks.
+_transport_binding = (
+    _attempt.to_bytes(),
+    _attempt.request_sha256,
+    _attempt.projection_sha256,
+    _attempt.limits.wall_seconds,
+    _attempt.limits.max_request_bytes,
+    _attempt.limits.max_projection_bytes,
+    _attempt.limits.max_candidate_bytes,
+    _attempt.placement.device == "cuda:0",
+    _attempt.runtime.value().get("cublas_workspace_config"),
+)
 
 app = modal.App(_attempt.app_name)
 image = modal.Image.from_id(_attempt.placement.image_object_id)
@@ -47,10 +62,31 @@ image = modal.Image.from_id(_attempt.placement.image_object_id)
     include_source=False,
 )
 def training_attempt(prepared: bytes, request: bytes, projection: bytes) -> bytes:
-    selected = PreparedTrainingAttempt.from_bytes(prepared)
-    if selected != _attempt or os.environ.get("STPD_IMAGE_PROFILE") != "worker":
+    (
+        frozen_prepared,
+        request_digest,
+        projection_digest,
+        wall_seconds,
+        max_request_bytes,
+        max_projection_bytes,
+        max_candidate_bytes,
+        cuda,
+        cublas,
+    ) = _transport_binding
+    if (
+        type(prepared) is not bytes
+        or prepared != frozen_prepared
+        or os.environ.get("STPD_IMAGE_PROFILE") != "worker"
+    ):
         raise ValueError("prepared_attempt_or_worker_image_mismatch")
-    selected.bind_payloads(request, projection)
+    for raw, digest, maximum in (
+        (request, request_digest, max_request_bytes),
+        (projection, projection_digest, max_projection_bytes),
+    ):
+        if type(raw) is not bytes or not 1 <= len(raw) <= maximum:
+            raise ValueError("payload_size_limit")
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError("prepared_payload_mismatch")
     with tempfile.TemporaryDirectory(prefix="training-projection-") as directory:
         root = Path(directory)
         (root / "attempt.json").write_bytes(prepared)
@@ -58,18 +94,20 @@ def training_attempt(prepared: bytes, request: bytes, projection: bytes) -> byte
         (root / "projection.bytes").write_bytes(projection)
         result_path = root / "candidate.bytes"
         worker_env = dict(os.environ)
-        if selected.placement.device == "cuda:0":
-            cublas = selected.runtime.value().get("cublas_workspace_config")
+        if cuda:
             if cublas != ":4096:8":
                 raise ValueError("qualified_cublas_workspace_required")
             # Set before the isolated numerical process imports Torch.
             worker_env["CUBLAS_WORKSPACE_CONFIG"] = cublas
 
+        # Import in the Linux wrapper before fork, never in the child preexec hook.
+        import resource
+
         def limits() -> None:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
             resource.setrlimit(
                 resource.RLIMIT_FSIZE,
-                (selected.limits.max_candidate_bytes, selected.limits.max_candidate_bytes),
+                (max_candidate_bytes, max_candidate_bytes),
             )
 
         completed = subprocess.run(
@@ -91,15 +129,15 @@ def training_attempt(prepared: bytes, request: bytes, projection: bytes) -> byte
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=selected.limits.wall_seconds,
+            timeout=wall_seconds,
             preexec_fn=limits,
             check=False,
         )
         if completed.returncode or not result_path.is_file() or result_path.is_symlink():
             raise RuntimeError("bounded_worker_failed_no_candidate")
-        if not 1 <= result_path.stat().st_size <= selected.limits.max_candidate_bytes:
+        if not 1 <= result_path.stat().st_size <= max_candidate_bytes:
             raise RuntimeError("candidate_size_limit")
         result = result_path.read_bytes()
-        if len(result) > selected.limits.max_candidate_bytes:
+        if len(result) > max_candidate_bytes:
             raise RuntimeError("candidate_size_changed")
         return result
