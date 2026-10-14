@@ -10,14 +10,17 @@ import {
 import { evaluateRuntimeCompatibility } from "./compatibility.mjs";
 import { canonicalizeEpisodeSeed, evaluateEpisodeProvenance } from "./episode-provenance.mjs";
 import { readDiskIdentity } from "./game-installation.mjs";
-import { evaluateHeadlessCapabilities } from "./headless-host.mjs";
+import { evaluateShippedCapabilities } from "./headless-host.mjs";
 import { chooseBoundAction } from "./journey-probe.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { resolveLaunchProfile } from "./profile-isolation.mjs";
 import { instantiateProfileTemplate } from "./profile-template.mjs";
+import { validateNativeSpeed, prepareNativeSpeedBeforeBootstrap, requireNativeSpeedProvenance } from "./native-speed.mjs";
+import { validateExpectedNativeTuple, requireExpectedNativeInstallation, requireExpectedNativeLoadedTuple } from "./native-episode-tuple.mjs";
 import {
   listGameProcesses,
   requestHostProvenance,
+  requestHostPreparation,
   resolveExperimentalConnectorCanary,
   shippedRuntimeLaunch,
   stopChild,
@@ -211,9 +214,15 @@ export async function startShippedPlayerEnvironmentEpisode({
   requestTimeoutMs = 30_000,
   experimentalBuildAcknowledged = false,
   experimentalConnectorAcknowledged = false,
+  nativeSpeed = null,
+  displayMode = "headless",
+  expectedInstalledTuple = null,
   signal = undefined
 }) {
   signal?.throwIfAborted();
+  validateNativeSpeed(nativeSpeed);
+  const expectedTuple = validateExpectedNativeTuple(expectedInstalledTuple);
+  if (!["headless", "native-ui"].includes(displayMode)) throw new Error("unsupported_shipped_display_mode");
   if (characterId !== null && (typeof characterId !== "string" || !characterId))
     throw new Error("reference_character_id_invalid");
   if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
@@ -226,6 +235,7 @@ export async function startShippedPlayerEnvironmentEpisode({
   }
 
   const diskIdentity = readDiskIdentity(installation);
+  requireExpectedNativeInstallation(expectedTuple, installation, diskIdentity);
   const runtimeEndpoint = endpoint ?? await allocateReferenceEndpoint();
   const compatibility = evaluateRuntimeCompatibility(diskIdentity);
   if (compatibility.status !== "supported_exact" && !experimentalBuildAcknowledged) {
@@ -263,6 +273,8 @@ export async function startShippedPlayerEnvironmentEpisode({
       launchProfile,
       connectorEndpoint: runtimeEndpoint,
       runSeed: canonicalSeed,
+      nativeSpeed,
+      displayMode,
       connectorCanary
     });
   } catch (error) {
@@ -289,12 +301,22 @@ export async function startShippedPlayerEnvironmentEpisode({
       throw new Error(`Reference Connector endpoint did not become ready: ${endpointResult.error}`);
     }
     capabilities = endpointResult.value;
-    const gate = evaluateHeadlessCapabilities(capabilities);
+    const gate = evaluateShippedCapabilities(capabilities, displayMode);
     if (!gate.ok) throw new Error(`Reference capability gate failed: ${gate.errors.join(", ")}`);
+    requireExpectedNativeLoadedTuple(expectedTuple, capabilities);
     const observations = await waitForInteractiveSnapshot(runtimeEndpoint, timeoutMs, childReference(child));
     lifecycle.assertActive();
     let snapshot = observations.at(-1)?.value;
     if (snapshot == null) throw new Error("Reference runtime did not mount an interactive snapshot.");
+
+    let nativeSpeedProvenance = await prepareNativeSpeedBeforeBootstrap({
+      nativeSpeed, launchProfile, runtimeInstanceId: capabilities.host.runtime_instance_id,
+      prepare: () => requestHostPreparation({ endpoint: runtimeEndpoint, hostControlToken: launch.hostControlToken,
+        expectedRuntimeInstanceId: capabilities.host.runtime_instance_id, timeoutMs: requestTimeoutMs }),
+      observeProvenance: () => requestHostProvenance({ endpoint: runtimeEndpoint, hostControlToken: launch.hostControlToken,
+        expectedRuntimeInstanceId: capabilities.host.runtime_instance_id, timeoutMs: requestTimeoutMs })
+    });
+    lifecycle.assertActive();
 
     const client = new PlayerEnvironmentRestClient(runtimeEndpoint, requestTimeoutMs);
     controller = new EnvironmentControllerSession(client, {
@@ -311,6 +333,8 @@ export async function startShippedPlayerEnvironmentEpisode({
       timeoutMs: requestTimeoutMs
     });
     lifecycle.assertActive();
+    nativeSpeedProvenance = requireNativeSpeedProvenance({ nativeSpeed, launchProfile,
+      runtimeInstanceId: capabilities.host.runtime_instance_id, response: provenanceResponse, preparedBinding: nativeSpeedProvenance });
     let provenance = evaluateEpisodeProvenance({
       requestedSeed: canonicalSeed,
       expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -325,6 +349,8 @@ export async function startShippedPlayerEnvironmentEpisode({
         timeoutMs: requestTimeoutMs
       });
       lifecycle.assertActive();
+      nativeSpeedProvenance = requireNativeSpeedProvenance({ nativeSpeed, launchProfile,
+        runtimeInstanceId: capabilities.host.runtime_instance_id, response, preparedBinding: nativeSpeedProvenance });
       provenance = evaluateEpisodeProvenance({
         requestedSeed: canonicalSeed,
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -405,6 +431,9 @@ export async function startShippedPlayerEnvironmentEpisode({
         game: capabilities.game,
         disk: diskIdentity,
         profile,
+        requested_native_speed: nativeSpeed,
+        requested_display_mode: displayMode,
+        get native_speed() { return nativeSpeedProvenance; },
         get episode_provenance() {
           return provenance;
         },
@@ -471,11 +500,21 @@ export class ShippedPlayerEnvironmentSession {
     this.startEpisode = startEpisode;
     this.episode = null;
     this.lastIdentity = null;
+    this.bootstrapTransferAttempted = false;
+    this.bootstrapHandoff = null;
+    this.lastNativeExit = null;
   }
 
   async reset(seed) {
+    if (this.bootstrapTransferAttempted) throw new Error("reference_bootstrap_transferred");
     await this.closeEpisode();
-    this.episode = await this.startEpisode({ ...this.options, seed });
+    this.lastNativeExit = null;
+    try {
+      this.episode = await this.startEpisode({ ...this.options, seed });
+    } catch (error) {
+      this.lastNativeExit = error?.host_exit ?? null;
+      throw error;
+    }
     this.lastIdentity = this.episode.identity;
     return this.episode.snapshot;
   }
@@ -494,7 +533,24 @@ export class ShippedPlayerEnvironmentSession {
   }
 
   submit(input) {
+    if (this.bootstrapTransferAttempted) throw new Error("reference_bootstrap_transferred");
     return this.requireEpisode().submit(input);
+  }
+
+  async releaseBootstrap(expectedRuntimeInstanceId) {
+    const episode = this.requireEpisode();
+    if (episode.identity?.host?.runtime_instance_id !== expectedRuntimeInstanceId)
+      throw new Error("reference_bootstrap_runtime_changed");
+    if (this.bootstrapHandoff != null) return this.bootstrapHandoff;
+    if (this.bootstrapTransferAttempted) throw new Error("reference_bootstrap_transfer_unknown");
+    this.bootstrapTransferAttempted = true;
+    const handoff = await episode.releaseController();
+    if (handoff?.schema !== "sts2.host-runtime/reference-controller-handoff-1"
+        || handoff.runtime_instance_id !== expectedRuntimeInstanceId || handoff.controller !== null
+        || handoff.basis !== "fresh_control_observation_after_close")
+      throw new Error("reference_bootstrap_release_unconfirmed");
+    this.bootstrapHandoff = handoff;
+    return handoff;
   }
 
   releaseController() {
@@ -512,10 +568,11 @@ export class ShippedPlayerEnvironmentSession {
   }
 
   async closeEpisode() {
-    if (this.episode == null) return null;
+    if (this.episode == null) return this.lastNativeExit;
     const current = this.episode;
     this.episode = null;
-    return current.close();
+    this.lastNativeExit = await current.close();
+    return this.lastNativeExit;
   }
 
   close() {

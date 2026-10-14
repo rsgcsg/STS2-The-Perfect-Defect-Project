@@ -41,6 +41,8 @@ for (const required of [
   "src/managed-player-environment.mjs",
   "src/managed-host-service.mjs",
   "src/project-identity.mjs",
+  "src/native-episode-tuple.mjs",
+  "tools/reference-pe-driver.mjs",
   "consumers/python/sts2_headless/__init__.py",
   "consumers/python/sts2_headless/client.py",
   "consumers/python/sts2_headless/managed_service.py",
@@ -76,8 +78,8 @@ const forbidden = [...files].filter((file) =>
   file.startsWith(".local/")
   || file.startsWith("test/")
   || file.startsWith("docs/evidence/")
-  || file.split("/").some((segment) => segment === "bin" || segment === "obj")
-  || /\.(?:dll|exe|pdb|pck|save)$/iu.test(file)
+  || file.split("/").some((segment) => segment === "bin" || segment === "obj" || segment === "__pycache__")
+  || /\.(?:dll|exe|pdb|pck|save|pyc|pyo)$/iu.test(file)
 );
 if (forbidden.length > 0) {
   throw new Error(`Host Runtime package contains forbidden files: ${forbidden.join(", ")}`);

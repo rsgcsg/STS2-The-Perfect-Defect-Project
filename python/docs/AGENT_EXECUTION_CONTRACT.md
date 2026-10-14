@@ -58,9 +58,61 @@ owner before the first dispatch side effect. It is not mutated when operation,
 startup, Runtime run or evidence identifiers arrive; existing session/result
 records contain those links. It creates no new journal/registry. Old runs without
 original requests stay legacy/unknown; no backfill into sealed Runtime evidence.
+
+### Ordinary native episode binding
+
+Application and its existing LocalEnvironmentService may prepare one owned
+native episode, release its bootstrap controller, and admit the existing common
+Agent request. A separate attached branch uses the configured existing endpoint
+as a fresh cold segment; it creates no Host, profile, seed or speed mutation and
+has no Host-close authority. `admission_context.native_episode` is a closed
+optional v1 binding by value, omitted for all legacy requests. It records the
+opaque resource reference, application/configuration generation, actual runtime
+and trusted endpoint binding, exact installed tuple and original handoff proof.
+Owned profile/presentation/speed facts require actual Host readback. Attached
+requests omit those facts. No private path/token/native operand or resource
+metadata enters a Model input. `native_intent` keeps its independent Mod-pair
+meaning and cannot be substituted for this binding.
+
+The existing Model admission lock serializes Source guard, native reservation,
+immutable request admission and the immediate pre-spawn recheck. Locks are
+released before Host/network waits and exact Actor Stop. A preparing, ready or
+associated native resource blocks a second prepare and unbound Actor creation;
+legacy behavior is unchanged when no native resource exists. Configuration,
+generation, runtime, original request or handoff drift rejects before new
+authorization. Attached current-start support is composition-specific; no past
+history/W or game-save resume is invented.
+
+Host preparation precedes Actor startup. Unknown preparation/handoff is retained
+and quarantined through the owned client, never retried or treated as admission.
+The reference driver advertises bootstrap handoff before reset; after transfer
+it refuses reset/step/reacquire. EOF/cancel reaches the factory AbortSignal before
+waiting its queue. While the Actor is associated, no Host-driver observer,
+provenance, gameplay or status RPC runs; existing bound Runtime/Connector reads
+remain the owners. A late driver exit may stop only its original Actor, and
+cannot affect a replacement. No continuous speed-monitoring claim is made.
+
+Explicit finish fences new admissions, stops/exits the exact Actor through the
+existing Model owner, seals its original result when available, then closes only
+the owned Host. Seal failure does not skip Host cleanup; independent Task facts,
+cleanup uncertainty and driver/native exit receipts remain separate. Attach
+only detaches. Repeated finish returns original cleanup facts. Controlled App
+shutdown preserves Actor-before-owned-Host ordering. Crash/EOF is containment,
+not a sealed result or proof of that order; persisted active resources reopen
+as recovery_required with no auto-adoption, reset or spawn.
 Selection/profile/goal/requirements changes require explicit re-admission; missing
 source/context/SDK capability remains blocked. UNKNOWN never permits automatic
 retry or reauthorization.
+
+Native preparation intent/result history stays under this Environment owner.
+It uses existing immutable local-byte publication and atomic operation records,
+with one live resource pointer, rather than another controller or binding
+registry. Original accepted typed bytes and body digest are durable before
+spawn; serial experiments do not overwrite old request/result identity. A
+historical duplicate or finish is a recorded-result read and cannot address the
+new live Actor/Host. Interrupted, missing or corrupt retained state has no
+reconstructed handle or fresh permission. History has no automatic retention
+expiry; storage loss never authorizes silently replaying an old world mutation.
 
 ## Result witness and original identity
 

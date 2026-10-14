@@ -3,9 +3,9 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-The typed Agent-session verifier accepts explicitly declared execution policy1
-and continuous strict policy2. Public
-`SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` advertises those two implemented
+The typed Agent-session verifier accepts explicitly declared execution policy1,
+continuous strict policy2, and fixed recovery-window policy3. Public
+`SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS` advertises all three implemented
 parsers as an immutable tuple. Policy2 retains original dispatch/result joins,
 changed-input ACK/Next fences and monotonic counters, with consecutive3 and
 recorded finite Runtime authorization; it removes only the separate lifetime
@@ -166,6 +166,23 @@ native capture or causal effects, establish Human origin, or admit research data
 Checksummed transfer uses this same typed verifier; generic file integrity cannot
 replace it. An installed consumer needs a release containing this additive API;
 the older rc.24 package does not acquire it from a source checkout edit.
+
+### Native recovery-window policy3
+
+The additive closed `sts2.policy-runtime/agent-execution-policy-3` declares
+`known_stale_recovery_window_ms:10000` with the existing reader-owned Current,
+fresh changed-unit and known-not-started outcome fields. The supported execution
+policy tuple must advertise it before a consumer selects it. Old policies1/2
+and immutable records retain their parsers and stopping rules.
+
+The existing native deferred event retains exact original dispatch/result,
+Auto/epoch/known-prefix, full consumption/ACK and truthful deduplicated total/
+consecutive joins. Policy3 imposes no count ceiling in this reader. Its finite
+live clock gate is a Runtime obligation; recorded structural owner state does not
+independently prove monotonic expiry. The existing handoff shape carries distinct
+`known_stale_recovery_exhausted` without fabricated delivery, clock telemetry or
+native effect/task/Human/strategy qualification. Final installed reader/pin support
+requires its own immutable package gate; no source fallback or archive rewrite.
 
 ### Opt-in owned Current and known stale results
 

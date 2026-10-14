@@ -59,7 +59,7 @@ def typed_recipe_is_scoped(recipe_id: str) -> bool:
 
 def checked_recipe_execution_policy(recipe_id: str, value: object) -> dict[str, Any]:
     from stpd.native_sampled_carry_spec import RECIPE as SAMPLED_RECIPE
-    from stpd.policy.native_operational_outcome import checked_execution_policy
+    from stpd.policy.native_execution_policy import checked_execution_policy
 
     if not isinstance(recipe_id, str) or recipe_id not in {NATIVE_SAMPLED_RECIPE, SAMPLED_RECIPE}:
         raise BoundaryError("local_training", "invalid_training_request")

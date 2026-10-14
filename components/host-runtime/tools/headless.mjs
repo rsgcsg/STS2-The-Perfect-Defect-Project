@@ -94,7 +94,8 @@ async function main() {
       timeoutMs: Number(option(args, "--timeout-ms", "90000")),
       mirrorLogs: args.includes("--verbose"),
       sharedProfileAcknowledged: args.includes("--shared-profile"),
-      isolatedProfileId: option(args, "--isolated-profile", null)
+      isolatedProfileId: option(args, "--isolated-profile", null),
+      nativeSpeed: option(args, "--native-speed", null)
     });
     return;
   }
@@ -348,7 +349,7 @@ async function main() {
   node tools/headless.mjs setup
   node tools/headless.mjs rollback --backup DIRECTORY
   node tools/headless.mjs doctor
-  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--timeout-ms 90000] [--endpoint URL] [--verbose]
+  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--native-speed normal|fast|instant] [--timeout-ms 90000] [--endpoint URL] [--verbose]
   node tools/headless.mjs status [--endpoint URL]
   node tools/headless.mjs stop [--endpoint URL]
   node tools/headless.mjs reset-profile --isolated-profile ID

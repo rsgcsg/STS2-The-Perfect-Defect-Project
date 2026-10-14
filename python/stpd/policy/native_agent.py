@@ -31,12 +31,13 @@ from ..native_sampled_carry_spec import (
 )
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
-from .native_operational_outcome import (
+from .native_execution_policy import (
+    KNOWN_STALE_WINDOW_POLICY_SCHEMA,
     checked_execution_policy,
     checked_next_input,
-    emitted_intention,
     manifest_execution_policy,
 )
+from .native_operational_outcome import emitted_intention
 from .native_structured_export import (
     MANIFEST_NAME,
     encode_native_weights,
@@ -56,6 +57,7 @@ PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 ADAPTER_ID = "stpd-native-structured-m2-agent"
 ADAPTER_VERSION = "1.0.0"
 OWNED_STALE_ADAPTER_VERSION = "1.1.0"
+KNOWN_STALE_WINDOW_ADAPTER_VERSION = "1.2.0"
 # Reserved mechanical support under the exact native profile/InputSpec and bounds.
 # These do not declare a game version, implemented mechanism, or capture coverage.
 SUPPORTED_INTERACTION_KINDS = ("*",)
@@ -105,10 +107,13 @@ def adapter_identity(
     *, graph: bool = False, execution_policy: dict[str, Any] | None = None
 ) -> dict[str, str]:
     if execution_policy is not None:
-        checked_execution_policy(execution_policy)
+        policy = checked_execution_policy(execution_policy)
     return {
         "id": ADAPTER_ID,
-        "version": ADAPTER_VERSION if execution_policy is None else OWNED_STALE_ADAPTER_VERSION,
+        "version": ADAPTER_VERSION if execution_policy is None else (
+            KNOWN_STALE_WINDOW_ADAPTER_VERSION
+            if policy["schema"] == KNOWN_STALE_WINDOW_POLICY_SCHEMA
+            else OWNED_STALE_ADAPTER_VERSION),
         "protocol": PROTOCOL,
         "code_sha256": native_code_sha256(ROOT, graph=graph),
     }

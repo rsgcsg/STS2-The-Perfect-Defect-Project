@@ -17,7 +17,7 @@ import { agentJsonByteLength } from "./agent-session-json.js";
 import { AgentConsumptionLedger, type AgentAcquisition, type AgentNativeUnitWitness } from "./agent-session-consumption.js";
 import { NdjsonAgentSessionPort, type AgentPortHandlers } from "./agent-session-port.js";
 import { AgentSessionError, sessionText, supportsProfileValue, validateAgentManifest, sameAgentExecutionPolicy,
-  isKnownStaleResult, AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA,
+  isKnownStaleResult, AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA, AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA,
   type AgentOperationalOutcome, type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
 import { canonicalStateMetadata, type AgentOpaqueState, type AgentStateMetadata } from "./agent-session-state.js";
 import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, AgentRuntimeTickResult,
@@ -80,6 +80,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private knownStaleRejections = 0;
   private consecutiveKnownStaleRejections = 0;
   private terminationReason: string | null = null;
+  private knownStaleWindow: { deadline: number; epoch: number; generation: number } | null = null;
   private basisId: string | null = null;
   private readonly samplePayloads = new Map<string, { bytes: Buffer; reservation: AgentByteReservation; offered: boolean;
     stored: boolean }>();
@@ -102,6 +103,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private renewalAbort: AbortController | null = null;
   private renewalHandoff: { gap: Record<string, unknown>; released: Promise<void> } | null = null;
   private releaseInFlight = 0;
+  private releaseOperation: Promise<void> | null = null;
   private renewalFailed = false;
   private readonly renewalAdvisories: Record<string, unknown>[] = [];
 
@@ -202,6 +204,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await earlyRelease;
       if (mode === "human") { this.owner.end("human_recovery"); await this.endSampleSegment("human_recovery"); }
       else if (this.mode === "human" || this.owner.state.state !== "active") {
+        this.knownStaleWindow = null;
         this.budgetFenced = false; this.budgetHandoff = null; this.terminationReason = null;
         this.owner.begin(() => this.expireBudget());
       }
@@ -217,6 +220,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.tickActive) return { type: "not_admitted", reason: "tick_in_progress", status: this.status() };
     this.tickActive = true;
     try { return await this.owner.serialize(async () => {
+      this.checkKnownStaleDeadline();
       await this.checkPreconditions(expected);
       if (this.mode === "human" || this.stopped || this.stopping) return { type: "human", status: this.status() };
       this.admitMutation();
@@ -288,6 +292,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       } catch (error) {
         if (offer.pending) this.agentUncertain = true;
         const reason = errorMessage(error);
+        if (this.windowHandoffOwnsCleanup())
+          return { type: "not_admitted", reason: this.terminationReason!, status: this.status() };
         await this.failClosed(reason);
         return { type: this.tainted ? "unknown" : "not_admitted", ...(this.tainted ? { error: reason } : { reason }), status: this.status() } as AgentRuntimeTickResult;
       } finally {
@@ -403,8 +409,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       : value.controller_lease_id === null ? "released" : "held";
   }
   private budgetStatus() { return this.owner.status(() => this.expireBudget()); }
-  private checkActive(epoch: number, signal: AbortSignal): void { this.owner.checkEpoch(epoch); signal.throwIfAborted(); }
+  private checkActive(epoch: number, signal: AbortSignal): void {
+    this.checkKnownStaleDeadline(); this.owner.checkEpoch(epoch); signal.throwIfAborted();
+  }
   private admitMutation(): void {
+    this.checkKnownStaleDeadline();
+    if (this.windowHandoffOwnsCleanup()) throw new RuntimeControlPreconditionError(this.terminationReason!, 409);
     if (this.sampleSegmentEnded) throw new RuntimeControlPreconditionError("runtime_sample_segment_ended", 409);
     if (this.pending) throw new RuntimeControlPreconditionError("runtime_pending_request_unresolved", 409);
     if (this.tainted) throw new RuntimeControlPreconditionError("runtime_tainted", 409);
@@ -415,6 +425,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private revoke(reason: "human_recovery" | "stopped"): void {
     this.terminationReason ??= reason;
+    this.knownStaleWindow = null;
     this.owner.advanceEpoch(); this.owner.cancelActive(reason); this.mode = "human"; this.owner.end(reason);
   }
   private async freshRuntime(): Promise<string> {
@@ -756,6 +767,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private async act(output: AgentDirectiveOutput, epoch: number, signal: AbortSignal): Promise<AgentRuntimeTickResult> {
     if (output.directive.type !== "act") throw new AgentSessionError("Act_required");
+    const submissionGeneration = this.owner.generation;
     const directive = output.directive, a = this.ledger.get(directive.basis_acquisition_id), descriptor = a.observation.catalog as Record<string, unknown>;
     if (directive.basis_acquisition_id !== this.basisId || descriptor.status !== "complete") throw new AgentSessionError("Act_requires_acknowledged_complete_relation");
     if (directive.scores && (a.catalog === null || directive.scores.catalog_digest !== descriptor.digest
@@ -821,8 +833,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await this.handoff("native_request_pending");
       return { type: "unknown", error: "native_request_pending", status: this.status() };
     }
-    const result = lookup.result.data; this.recordResult(result);
-    this.countOriginalTerminal(result, dispatchBinding);
+    const result = lookup.result.data, receivedAt = this.owner.monotonicNow(); this.recordResult(result);
+    const originalTerminal = this.countOriginalTerminal(result, dispatchBinding);
+    if (originalTerminal) this.updateKnownStaleWindow(result, epoch, submissionGeneration, receivedAt, dispatchBinding);
     await this.emit("native_result", { ...this.context(), result });
     if (result.delivery === "partially_delivered" || result.delivery === "unknown") {
       await this.taint(`native_delivery_${result.delivery}`); return { type: "unknown", error: `native_delivery_${result.delivery}`, status: this.status() };
@@ -834,7 +847,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         const policy = this.manifest.execution_policy!;
         const limit = policy.schema === "sts2.policy-runtime/agent-execution-policy-1"
           && this.knownStaleRejections >= policy.max_known_stale_rejections ? "known_stale_rejection_limit"
-          : this.consecutiveKnownStaleRejections >= policy.max_consecutive_known_stale_rejections ? "known_stale_streak_limit" : null;
+          : policy.schema !== AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA
+            && this.consecutiveKnownStaleRejections >= policy.max_consecutive_known_stale_rejections ? "known_stale_streak_limit" : null;
         if (limit) await this.handoff(limit);
         else {
           if (!this.ledger.consumptionId) throw new AgentSessionError("known_stale_requires_original_consumption");
@@ -858,8 +872,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (result.delivery === "delivered") return { type: "delivered", status: this.status() };
     return { type: "not_delivered", ...(optIn ? { reason: this.terminationReason ?? `native_delivery_${result.delivery}` } : {}), status: this.status() };
   }
-  private countOriginalTerminal(result: NativeLogicalResult, binding?: Readonly<NativeLogicalDispatchBinding>): void {
-    if (!this.manifest.execution_policy) return;
+  private countOriginalTerminal(result: NativeLogicalResult, binding?: Readonly<NativeLogicalDispatchBinding>): boolean {
+    if (!this.manifest.execution_policy) return false;
     if (!binding || !result.attribution || Object.keys(binding).some(key =>
       result.attribution![key as keyof NativeLogicalDispatchBinding] !== binding[key as keyof NativeLogicalDispatchBinding]))
       throw new AgentSessionError("original_terminal_dispatch_binding");
@@ -867,13 +881,88 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const known = this.countedTerminalResults.get(result.request_id);
     if (known !== undefined) {
       if (known !== fingerprint) throw new AgentSessionError("original_terminal_result_conflict");
-      return;
+      return false;
     }
     this.countedTerminalResults.set(result.request_id, fingerprint);
     if (result.delivery === "delivered") this.consecutiveKnownStaleRejections = 0;
     else if (isKnownStaleResult(result)) { this.knownStaleRejections++; this.consecutiveKnownStaleRejections++; }
+    return true;
   }
+  private updateKnownStaleWindow(result: NativeLogicalResult, epoch: number, generation: number, receivedAt: number,
+    binding?: Readonly<NativeLogicalDispatchBinding>): void {
+    const policy = this.manifest.execution_policy;
+    if (policy?.schema !== AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA) return;
+    // Accounting is already complete. A won expiry/old epoch cannot be refunded
+    // by the original result, including delivery received after Stop/release.
+    this.checkKnownStaleDeadline();
+    if (this.terminationReason || this.owner.epoch !== epoch || this.owner.generation !== generation
+        || this.owner.state.state !== "active" || this.mode !== "auto" || this.stopping || this.stopped
+        || this.agentUncertain || this.tainted || this.pending || this.sampleSegmentEnded || this.renewalFailed) return;
+    if (result.delivery === "delivered") {
+      this.knownStaleWindow = null;
+      this.scheduleNativeDeadline();
+    } else if (isKnownStaleResult(result) && binding && this.freshDecisionIneligibility(epoch, binding) === null
+        && this.knownStaleWindow === null) {
+      // Receipt-time anchor precedes the first native_result durable append.
+      this.knownStaleWindow = { deadline: receivedAt + policy.known_stale_recovery_window_ms,
+        epoch, generation };
+      this.scheduleNativeDeadline();
+    }
+  }
+  private scheduleNativeDeadline(): void {
+    const episode = this.knownStaleWindow;
+    this.owner.scheduleDeadline(() => this.expireBudget(), episode ? {
+      at: episode.deadline, onDeadline: () => this.checkKnownStaleDeadline()
+    } : undefined);
+  }
+  private checkKnownStaleDeadline(): void {
+    const episode = this.knownStaleWindow;
+    if (!episode || this.terminationReason || this.stopping || this.stopped || this.tainted
+        || this.owner.state.state !== "active" || episode.epoch !== this.owner.epoch
+        || episode.generation !== this.owner.generation || this.owner.monotonicNow() < episode.deadline) return;
+    // All original global wallet limits, including equality, have priority.
+    if (!this.owner.available()) { this.expireBudget(); return; }
+    this.terminationReason = "known_stale_recovery_exhausted";
+    this.knownStaleWindow = null;
+    this.budgetFenced = true;
+    this.owner.end("mode_changed"); // Freeze the earlier winner before any later status/global clock.
+    this.owner.advanceEpoch(); this.owner.cancelActive(this.terminationReason); this.mode = "human";
+    const generation = this.owner.generation;
+    // Retain native control revocation while an original submitted result is
+    // still owed. Serialized evidence/reader cleanup follows its classification.
+    const released = this.release().catch(() => undefined);
+    this.budgetHandoff = this.owner.serialize(async () => {
+      if (generation !== this.owner.generation) return;
+      const reason = this.terminationReason!;
+      const errors: unknown[] = [];
+      const attempt = async (operation: () => unknown | Promise<unknown>) => {
+        try { await operation(); } catch (error) { errors.push(error); }
+      };
+      await attempt(() => this.endSampleSegment(reason));
+      await attempt(() => this.sampleOfferEvidence);
+      await attempt(() => this.quiesceRenewal());
+      for (const id of new Set([...this.knownAcquisitions, ...this.readerLeases.keys()]))
+        await attempt(() => this.releaseAcquisition(id));
+      await released;
+      if (this.native.subscription) await attempt(() => this.native.detach());
+      this.ledger.close(); this.knownAcquisitions.clear(); this.knownActions.clear();
+      for (const held of this.actionReservations.values()) for (const reservation of held) reservation.release();
+      this.actionReservations.clear();
+      for (const payload of this.samplePayloads.values()) payload.reservation.release();
+      this.samplePayloads.clear();
+      this.port.close(); this.freshDecision = null;
+      if (errors.length) { this.tainted = true; this.taintReason ??= "known_stale_cleanup_failed"; }
+      await this.emit("handoff_to_human", { ...this.context(), reason,
+        autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
+    }).catch(error => { this.tainted = true; this.taintReason ??= `known_stale_handoff_failed:${errorMessage(error)}`; });
+  }
+  private windowHandoffOwnsCleanup(): boolean {
+    return this.manifest.execution_policy?.schema === AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA
+      && this.budgetFenced && this.terminationReason === "known_stale_recovery_exhausted";
+  }
+
   private freshDecisionIneligibility(epoch: number, binding: Readonly<NativeLogicalDispatchBinding>): string | null {
+    this.checkKnownStaleDeadline();
     if (this.terminationReason) return this.terminationReason;
     if (this.stopping || this.stopped) return "stopped";
     if (this.mode !== "auto" || this.owner.epoch !== epoch) return "human_recovery";
@@ -909,19 +998,29 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.ledger.recordGap(gap); await this.emit("native_gap", { ...this.context(), gap }); await this.handoff("native_source_gap");
   }
   private async release(): Promise<void> {
+    if (this.releaseOperation) return this.releaseOperation;
     const before = this.controllerStatus();
     this.releaseInFlight += 1;
-    try {
-      await this.controller.releaseControl();
-      if (before !== "released") await this.emit("controller_released", { ...this.context(), controller: "released" });
-    } catch (error) {
-      this.tainted = true; this.taintReason = "controller_release_unconfirmed";
-      await this.emit("controller_release_unknown", { ...this.context(), controller: "unknown", reason: errorMessage(error) }).catch(() => undefined);
-      throw error;
-    } finally { this.releaseInFlight -= 1; }
+    // SDK network deduplication alone cannot deduplicate Runtime evidence.
+    // Publish this same-owner flight before the SDK call and retain it through
+    // its one durable classification, including overlapping expiry/Stop/Human.
+    const flight = Promise.resolve().then(async () => {
+      try {
+        await this.controller.releaseControl();
+        if (before !== "released") await this.emit("controller_released", { ...this.context(), controller: "released" });
+      } catch (error) {
+        this.tainted = true; this.taintReason = "controller_release_unconfirmed";
+        await this.emit("controller_release_unknown", { ...this.context(), controller: "unknown", reason: errorMessage(error) }).catch(() => undefined);
+        throw error;
+      } finally { this.releaseInFlight -= 1; }
+    });
+    this.releaseOperation = flight;
+    try { await flight; } finally { if (this.releaseOperation === flight) this.releaseOperation = null; }
   }
   private async handoff(reason: string): Promise<void> {
+    if (this.windowHandoffOwnsCleanup()) return;
     this.terminationReason ??= reason;
+    this.knownStaleWindow = null;
     await this.endSampleSegment(this.manifest.execution_policy ? this.terminationReason : reason);
     this.mode = "human"; this.owner.end("mode_changed");
     await this.release().catch(() => undefined);
@@ -933,6 +1032,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     await this.emit("fail_closed", { ...this.context(), reason, agent_state: this.agentUncertain ? "uncertain" : "known" }).catch(() => undefined);
   }
   private async taint(reason: string): Promise<void> {
+    if (this.manifest.execution_policy?.schema === AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA) this.terminationReason ??= reason;
+    this.knownStaleWindow = null;
     await this.endSampleSegment(reason);
     this.tainted = true; this.taintReason = reason; this.mode = "human"; this.owner.end("mode_changed");
     await this.release().catch(() => undefined);
@@ -941,6 +1042,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private expireBudget(): void {
     if (this.budgetFenced || this.stopped) return;
     this.terminationReason ??= "autonomy_budget_exhausted";
+    this.knownStaleWindow = null;
     this.budgetFenced = true; this.owner.exhaust("deadline"); this.owner.advanceEpoch();
     this.owner.cancelActive("autonomy_budget_exhausted"); this.mode = "human";
     const released = this.release().catch(() => undefined);
@@ -1121,6 +1223,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     try { await this.options.evidence.append(kind, payload as unknown as Record<string, unknown>, this.now()); }
     catch (error) {
       this.tainted = true; this.taintReason = `agent_evidence_write_failed:${errorMessage(error)}`;
+      if (this.manifest.execution_policy?.schema === AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA) this.terminationReason ??= this.taintReason;
+      this.knownStaleWindow = null;
       this.mode = "human"; this.owner.end("mode_changed"); this.owner.cancelActive(error);
       // Evidence failure must not leave a held lease with its deadline cleared.
       // Direct SDK cleanup avoids recursive attempts to write failed evidence.

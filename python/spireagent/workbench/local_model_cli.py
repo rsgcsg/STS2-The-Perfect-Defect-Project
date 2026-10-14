@@ -14,6 +14,90 @@ from spireagent.workbench.developer_server import instance_lock, running
 from spireagent.workbench.hub_client import NoRedirect
 
 
+def native_episode_command(
+    config: ProjectConfig,
+    action: str,
+    *,
+    intent_id: str | None = None,
+    environment_ref: str | None = None,
+    seed: str | None = None,
+    display_mode: str = "headless",
+    speed: str = "default",
+    selection: str | None = None,
+    operation: str = "prepare-and-takeover",
+    run_profile: str = "short",
+    expected_instance_id: str | None = None,
+) -> dict[str, Any]:
+    """Call one Application, optionally fenced to its original instance.
+
+    The instance guard is local; it adds no HTTP body field or Host command.
+    """
+    current = running(config)
+    if current is None:
+        raise BoundaryError("native_episode", "open_workbench_first")
+    if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
+        raise BoundaryError("native_episode", "application_instance_mismatch")
+    base = f"http://127.0.0.1:{current['port']}"
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+
+    def call(route: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        request = Request(
+            base + route,
+            data=canonical_json(body).encode() if body is not None else None,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + current["control_token"],
+            },
+        )
+        try:
+            with opener.open(request, timeout=90) as response:
+                raw = response.read(1024 * 1024 + 1)
+            value = decode_json(raw)
+            if len(raw) > 1024 * 1024 or not isinstance(value, dict):
+                raise ValueError
+            return value
+        except (OSError, ValueError) as error:
+            raise BoundaryError(
+                "native_episode", "application_request_failed_check_original_status_no_retry"
+            ) from error
+
+    if action in {"prepare-owned", "attach"}:
+        from .native_episode_binding import preparation_body
+
+        body = {
+            "ownership": "owned" if action == "prepare-owned" else "attached",
+            "intent_id": intent_id,
+        }
+        if action == "prepare-owned":
+            body.update(seed=seed, display_mode=display_mode, speed=speed)
+        return call("/api/local-environment/native/prepare", preparation_body(body))
+    if action == "native-status":
+        return call("/api/local-environment/native", None)
+    if action == "native-finish":
+        return call(
+            "/api/local-environment/native/finish",
+            {"environment_ref": digest(environment_ref, "native_episode.reference", length=32)},
+        )
+    if action in {"agent-request", "run-agent"}:
+        if not isinstance(selection, str) or not selection:
+            raise BoundaryError("native_episode", "selection_required")
+        request = call(
+            "/api/local-models/request",
+            {
+                "selection_id": selection,
+                "operation": operation,
+                "run_profile": run_profile,
+                "native_episode_ref": digest(
+                    environment_ref, "native_episode.reference", length=32
+                ),
+            },
+        )
+        return (
+            request if action == "agent-request" else call("/api/local-models/run-agent", request)
+        )
+    raise BoundaryError("native_episode", "unsupported_application_action")
+
+
 def model_command(
     config: ProjectConfig,
     action: str,
@@ -27,9 +111,13 @@ def model_command(
     new_runtime_profile: Path | None = None,
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
+    expected_instance_id: str | None = None,
 ) -> dict[str, Any]:
+    """Call one Application, or install offline without an instance guard."""
     generation_action = action in {"initialize-runtime-generation",
                                    "upgrade-runtime-generation", "rollback-runtime-generation"}
+    if expected_instance_id is not None and (generation_action or runtime_archive is not None):
+        raise BoundaryError("local_model", "expected_instance_requires_running_command")
     if generation_action:
         if runtime_profile is None:
             raise BoundaryError("local_model", "runtime_generation_arguments_required")
@@ -158,6 +246,8 @@ def model_command(
     current = running(config)
     if current is None:
         raise BoundaryError("local_model", "open_workbench_first")
+    if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
+        raise BoundaryError("local_model", "application_instance_mismatch")
     route = "/api/local-models"
     body = None
     if action == "status":

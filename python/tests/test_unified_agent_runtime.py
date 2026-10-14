@@ -195,7 +195,7 @@ def test_same_common_service_real_start_control_stop_and_original_request(
 
     monkeypatch.setattr(local_models, "decode_json", capture_startup)
     monkeypatch.setattr(subprocess, "Popen", child_boundary)
-    monkeypatch.setattr(service, "_require_model_admission", lambda: None)
+    monkeypatch.setattr(service, "_require_model_admission", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service.native_tasks,
         "prepare_model",

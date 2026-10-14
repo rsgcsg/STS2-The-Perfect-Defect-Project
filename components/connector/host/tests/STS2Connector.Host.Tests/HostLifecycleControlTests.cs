@@ -57,4 +57,18 @@ public sealed class HostLifecycleControlTests
         Assert.False(
             HostRunSeedControl.EvaluateApplication("ABC", "headless", "OTHER", false).Allowed);
     }
+
+    [Fact]
+    public void IsolatedNativeUiSeedPermissionIsIndependentOfSpeedAndDoesNotAdmitUnmanagedUi()
+    {
+        HostSeedApplication allowed = HostRunSeedControl.EvaluateApplication("ABC", "macos", null, false,
+            isolatedNativeUi: true);
+        Assert.True(allowed.Allowed);
+        Assert.True(allowed.ShouldApply);
+        Assert.False(HostRunSeedControl.EvaluateApplication("ABC", "macos", null, false).Allowed);
+        Assert.False(HostRunSeedControl.EvaluateApplication("ABC", "macos", "OTHER", false,
+            isolatedNativeUi: true).Allowed);
+        Assert.False(HostRunSeedControl.EvaluateApplication("ABC", "macos", "ABC", true,
+            isolatedNativeUi: true).ShouldApply);
+    }
 }

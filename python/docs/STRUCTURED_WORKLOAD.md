@@ -208,7 +208,10 @@ entry. Browser and native training routes use the same request validator; their
 existing forms continue to omit the field. Status exposes a copied policy only
 for an explicitly opted-in request.
 
-The shared pure parser owns the closed six-field declaration:
+Training admission delegates to the existing shared pure `native_execution_policy`
+decoder for the closed policy1/2/3 declarations. The same parser is used for the
+request, parent Run check and private-child frozen selection; no caller supplies
+a decoder or widens the sampled-recipe allowlist. The retained policy1 example is:
 
 ```json
 {
@@ -221,8 +224,11 @@ The shared pure parser owns the closed six-field declaration:
 }
 ```
 
-Total accepts integer 1–16 and consecutive accepts integer
-1–min(total,4); booleans, extra fields and other modes fail. The example is an
+Policy1 total accepts integer 1–16 and consecutive accepts integer
+1–min(total,4). Policy2 fixes consecutive3 and has no total-counter field.
+Policy3 fixes `known_stale_recovery_window_ms=10000` and has neither counter
+field. Each schema rejects booleans, missing/extra fields and other modes; an
+older immutable Run remains bound to its original declaration. The example is an
 explicit choice, never an injected default. Same-intent request comparison
 includes policy presence and value. Request parsing and journal serialization
 copy the declaration, so changing a caller object or a returned snapshot cannot

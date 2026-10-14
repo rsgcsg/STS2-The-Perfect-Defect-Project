@@ -104,6 +104,53 @@ they do not declare a universal API already implemented or require every optiona
 capability. Default supervision and legacy compatibility drivers do not freeze
 the architecture against evidence-backed future substitution or retirement.
 
+#### Components, contracts, protocols, formats and deployment
+
+A component implements a bounded responsibility; it may be a library/module,
+application owner or separately supervised worker. A contract defines inputs,
+outputs and guarantees, including information/source meaning, state/reset,
+ordering, known failure, cancellation and unknown. A protocol defines the
+conversation that realizes a contract over time. A format encodes its data;
+equal JSON fields or bytes alone do not establish semantic compatibility.
+Deployment chooses processes, machines and resource isolation; it does not
+create a new logical authority or require one process per component.
+
+These distinctions apply to the existing roles in the
+[baseline](BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任) and
+[ADR-0016](adr/0016-agent-composition-and-execution-request.md):
+
+| Boundary | Existing owner | Contract that must remain explicit |
+| --- | --- | --- |
+| Recording reader/import | Annotator/Evidence and application Source import | Original facts, producer/origin, order, gaps, integrity and immutable references; research admission remains external. |
+| Projection/Input/Target | STPD research readers/projectors | Model-facing fields, legal information, action grain, history/advance/reset, targets/masks and declared loss or reexpression relative to original records. |
+| Model | Research numerical/inference code | Computation, parameter/state inventory, fixed Input/output semantics and transition law; E/W/N may be jointly trained internal modules, not platform services. |
+| Complete Agent | Declared Agent program/adapter and application composition | Acquisition, Model(s), history, timing/choice/Goal and required environment capabilities; outputs bind the unchanged complete source-owned action catalog. |
+| Learning | Research trusted recipe/engine plus application TrainingService | Frozen data/use, objective, actual update counting, operation/attempt authority, finite budgets, checkpoint and terminal/result identity. |
+| Remote execution/resources | Existing worker/provider adapters and shared training operations | Same TrainRun intent/data/config, real job/attempt, device compatibility, cancellation/recovery, cumulative cost and independently verified returned artifacts. |
+| Evaluation | Research metrics and application Task/result readers | Actual scene/run/exposure, completion/censor/unknown, delivery versus effect, quality/cost metrics and the evidence supporting each conclusion. |
+| Shared applications | Existing CLI/API/Workbench/native UI owners | The same use cases, capabilities, permissions and operation/result references; interfaces do not create another ledger, controller or training manager. |
+
+Decouple source format from model input through a declared projection, not by
+pretending all sources contain the same facts. Offline training need not run a
+live SDK; its projector and the Agent's online adapter must agree where matching
+input/history semantics are claimed. Preserve missingness, related-group exposure
+and original choice bindings. Model computation is separate from gameplay
+permission and the complete Agent; learned W is not hidden world state or a
+reconstruction of Human attention. Learning and evaluation keep different purposes.
+
+Within an existing environment contract, changing Agent acquisition, waiting or
+choosing is an Agent/composition change, not automatically a new environment
+protocol. Changing available information, action/cancel opportunities or failure
+meaning revises the owning interaction contract and affected consumers. Swapping
+CPU/local execution for a provider does not replace data/model management: reuse
+relevant historical successful mechanisms through the same TrainRun/checkpoint/
+config/result contracts and qualify the new backend. That convergence is selected;
+it does not assert a current structured GPU implementation or completed remote run.
+
+Use the change rules above to version the affected boundary and preserve actual
+consumers/readers. No new universal schema, global registry or additional service
+is implied by this map; unsupported combinations remain explicitly unsupported.
+
 ### Host capabilities and requirement matching
 
 Host means the concrete world's capabilities, not the Host Runtime process launcher.

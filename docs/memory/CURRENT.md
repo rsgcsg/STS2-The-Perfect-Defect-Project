@@ -1,116 +1,120 @@
-# Current project context — Host/Agent contracts and learning delivery
+# Current project context — dual learning chains and evidence boundaries
 
-Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Current develop is
-`32298949711e886beb483614b87eb806160fc349`. Root's separate local native candidate
-is `b0555b6a`; the last actual Auto4 ran at `4e643893`. This PR176 source and Root's native candidate are distinct.
-The app-default STS2-AI-PLATFORM checkout is historical, in another repository.
+Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; develop1f8851dc.
+Current focus is ONLY PR177 CI repair. Remotee37e0cd2/CI38220016664 completed:
+Linux1/Windows1 passed; Linux2/Windows2 failed the same historical operational
+proof test. The strict rejection of changed source is correct. The test-only repair shares
+the exact historical fixture, validates each negative's baseline, and retains
+current-source rejection.
+Original local RED reproduced; reviewed fix passed43 pure+13 package tests in4.16s.
+Fresh exact-head full CI remains required. Runtime34 pin and other candidates unchanged.
+
 Resolve live GitHub refs and original owner records before acting; exact source
 and owner records override this file.
 
-## Goal and routing
+## Goal, routing and branch stops
 
-Continue stable environment → useful data/management → real training → Model/Agent
-→ execution/evaluation. Historical M0/M2 recovery tests composition/substitution
-and cost; it is not the goal or a prerequisite to all new learning. Read the
+Current-round user boundary: stop before long training or missing-data collection
+expansion. ALL changes to this batch's complete Model plan require the user's
+explicit confirmation first: graph/Input/history/Target/loss/data selection,
+sampling/optimizer/training configuration. Discussion is not approval. The lead's
+unapproved4/16/32-window proposal was withdrawn; fixed4 remains. Preserve existing
+owner/API/GUI repairs; see the active packet's latest authority and stop table.
+
+Continue stable environment → useful data/management → training → Model/Agent
+→ execution/evaluation through existing owners. Read the
 [active dependency order](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#current-work-and-dependency-order),
 [baseline](../BASELINE_V1_SPEC.zh-CN.md),
-[architecture](../ARCHITECTURE.md#product-boundary) and
+[architecture](../ARCHITECTURE.md#selected-convergence-and-change-rules) and
 [ADR-0016](../adr/0016-agent-composition-and-execution-request.md).
-The [selected convergence](../ARCHITECTURE.md#selected-convergence-and-change-rules)
-retains a common ExecutionRuntime kernel/current separate supervision, without
-renaming Policy Runtime. Narrow native dependencies are the next architecture
-refactoring, not a game/data prerequisite. SDK is a library; Host exceeds its
-launcher. A future direct driver needs the same owner/guarantees and a real need;
-IPC is not a proved bottleneck. Core/extension mapping and direct product support
-remain unfinished. Native UI/headless are presentations of one official-game Host;
-scoped evidence does not prove all Host equivalence or an ordinary default.
+One ExecutionRuntime kernel/current supervision; SDK is a library, GUI maps its API
+use cases. Historical implementation is checked for compatibility and useful migration.
 
-## Integrated source and original results
+Latest user selected **two parallel Structured M2 full chains**: fresh complete
+Human recording→SDK/data management→training→Model/Agent→real run, and existing
+recording→the same owners→training→Model/Agent→real run. Preserve both in Workbench.
+The [baseline](../BASELINE_V1_SPEC.zh-CN.md#并行的-structured-m2-完整学习链)
+and [concrete configuration](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#parallel-structured-m2-full-chains)
+own selected batches, requirements and limits. Human native exact-N/full C and
+Defect/A0 remain the fresh arm's focus; old data is a second main arm, not an
+unselected auxiliary. Existing qualified old data may train without waiting for
+new Human participation. Solver remains future source/Target design, not this fit.
 
-[PR175](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/175) at06e32e9c
-was normally merged as32298949. Fresh full
-[CI38130462706](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38130462706)
-passed both Linux and both Windows leaves plus portable. Merge
-[CI38133560732](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38133560732)
-passed fresh repository/identity checks and portable aggregation through verified
-same-tree reuse of that full execution receipt; OS leaves were skipped, not rerun.
-This is source/test evidence for that source, not frozen e479 or unmerged candidates.
-The merged Goal reader and derived Auto6 report retain original unknown records;
-[the packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#auto6-result-and-mechanical-goal-projection)
-keeps their exact prior scope.
+Both first learning arms require **>=100 distinct qualified supervised N and
+>=300 ACTUAL optimizer updates**, with target>=512 and a whole cohort pass.
+Contexts/polls/repeated epochs are not new data; a cap is not executed steps.
+Freeze Uepoch from actual labelled TBPTT chunks, E=max(1,ceil(512/Uepoch)),
+max_updates=E*Uepoch; verify actual counters/coverage. Old13 TRAIN groups/1537
+candidate choices need rich-Read eligibility counts; current Source3 has only8.
+Bounded inventory found6 sessions/34raw-input upper bound, not34 qualified or
+confirmed global absence. Source3 expansion waits for a later allocation.
+8/66 are conversion canaries, not first learning. Human/collection waits only its
+branch; direct137 is a separate baseline. Full G2/V1/~10k obligations remain.
 
-Auto7 at frozen e479, Runtime33/code4ffd923b and Mod43/artifactf56b3240,
-explicit headless Instant, reached mechanical natural loss Summary:
-floor11/score161/A0,52.094s Auto elapsed,154 program calls/153 delivered submissions,
-zero stale/unknown delivery,466 sealed typed-verified events. Stop released/unloaded
-untainted; Host/caller exited0 unforced. Original application Task/terminal remain
-unknown; no new Goal projection or consumed-input proof was created. Comparison
-with Auto6 is not fixed-trajectory speedup, strategy or ordinary-default qualification.
+## Preserved execution and accepted prerequisites
 
-Native137 Auto3 at frozen e479 completed 23 calls/submissions: 15 delivered/8 known
-not_started stale refusals,5837ms Auto elapsed, stopping at the existing limit of
-eight total known stale refusals. Eight native rejection diagnostics report public_facts_changed with equal
-expected/projected Snapshot IDs; one path detail is truncated. Task is unproved,
-operation censored; the original observations remain unchanged. Versioned policy3
-per-episode recovery is now under source implementation; no new game, inference
-or installation is implied.
-Cleanup was graceful/unforced exit 0,39.3798s Root outer wall, no errors/remaining
-owned/strict game processes. These counters and diagnostics are not Task, strategy,
-training admission or causal-settlement evidence.
+[Active packet](../plans/AGENT_RUN_COMPLETION_2026-10-11.md#actual-auto4-closeout-and-next-source-decision)
+retains original Auto4 at4e643893: acknowledged Summary/task_ended, natural Defect/A0
+loss floor5/score50;297Next/286Consume+ACK/285Acts (181delivered+104not_started),
+0delivery unknown. Execution/Commit remained unknown. Whole attempt FAILED: caller
+original_actor_changed, Host−15/forced_fallback, sealed Episode cleanup_unknown.
+Native child0/HTTP200 and no survivors do not repair that immutable failure.
 
-## Active implementation and next gates
+Runtime34 archive30079e65/contenta8773f70 matches730 installed files; Auto4 loaded it
+with Host29/Mod43. Host30 b055 close-only19.9233s/exit0 has no Actor/Model association;
+Godot1090 errors remain. Model e894/8eb weightsf1cd0183 retains prior CPU/export/
+registration evidence, not a new fit. Original records and Runtime33 rollback remain.
 
-Historical M0 candidate 48f1fc6d passed seven actual synthetic application cases,
-13.875s supervisor wall/13.34s pytest, exit 0/owned processes empty. They exercise
-ordinary training/export/registration and explicit pause/resume ownership. Final
-independent review accepts 48f for PR preparation in that source/synthetic App scope;
-full CI/integration, real-corpus fit and data/strategy quality remain pending.
+[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) at27c96bca
+passed full [CI38162855507](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38162855507)
+and was normally merged as1f8851dc; its merge CI passed in its own scope. Earlier
+failed CI remains failed. The large SDK fixture cap correction retains the1s SDK
+deadline/automatic negative; no production performance or historical-cause claim.
+PR177 remote555 failures were narrowed to a missing native_execution_policy training
+closure, a historical fixture using the changed code scope, and an unwitnessed
+process-exit assumption. Root's contract gate passed51 cases; process gate passed14
+on macOS (2 real Node cases plus12 pure cases). New e37 OS leaf1 passed; full CI failed;
+the original Windows failure's cause remains unknown. Old failures stay preserved.
+The historical fixture uses exact archived scope bytes; current-source rejection
+remains strict. No package/runtime/native attempts were made by these repairs.
 
-[PR176](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/176) a33 failed
-[CI38158218735](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/38158218735):
-Windows1 SDK10k correctness case exceeded its default5s runner (6.861s); all other
-OS leaves passed. Its exhausted phase and the prior10s Store readiness cause remain
-unknown. Reviewed1376e034 gives only the10k case15s, preserving all assertions and
-SDK request deadlines; the new1000ms unfinished-stream negative proves cancellation
-without retry. Local39 tests/typecheck passed; seven current Connector BOM fields
-advance test provenance. Fresh full CI remains required. Earlier EOF/diagnostic
-repairs and original failed runs retain their exact evidence in the active plan.
+## Bounded source candidates and handoff
 
-Root's separate Auto4 reached acknowledged natural-loss Summary, floor5/score50,
-with typed Task completed. The attempt still failed: private caller misread retired
-runtime=null and Host driver exited−15 despite native exit0. Original unknown is
-preserved. Host30 source/package gate passed; fresh native close is not yet executed.
-These separate results do not qualify PR176, strategy or Human data.
+Fresh Source3 `6c9f4018`: original RED,58 tests+71subtests,2 SDK off/on and1 strict
+DIRECT regression passed. Actual Source3 preview remains8N/8contexts; no new data.
+Evidence `0e7ad48`:86 tests passed. Runtime `8d593a34`:47 tests/typecheck plus final
+Runtime-to-Evidence/foreign-pin checks passed. These are source-only candidates;
+Root still owns future version/BOM/package and compatible integration gates.
+Dual recording `4dc4d527`:C#72/Python59/browser41 passed after preserving the first
+label-fixture failure. Monitor `41081f0c`:C#1/Python2/browser336 passed; continuous
+visible pending GETs stop on hidden/navigation/error/identity/terminal, never POST.
+Final successor-form89bb4c4b passed all339 browser cases in1.39s.
+Fixed4 metadata `f7d2125e`:62 pure tests passed, unchanged Engine/Config/chunk semantics;
+counts project existing source occurrence/actual events, with no fit/Torch.
+Remote A`c28561af` and B`b7af5f63` are assembled only in a separate source-gate topic.
+Root repairf9015b9c passed84 fake cases in2.23s; original fixture failures remain.
+No provider qualification. C`0e31b8c0` and legacy16 WIP remain frozen;
+C has unchecked initial_train P2 and recipe hooks are unavailable. No selected GPU
+configuration or model-plan approval is inferred from infrastructure work.
 
-Run A and B in parallel: A diagnoses the Native137 stale block with its existing
-trained Model and completes reusable ordinary Episode prepare/run/Stop/typed close;
-B's V1 data/Agent proposal is awaiting the user's explicit final A/A+ or other
-choice (proposal options, not workstream letters); no source route is selected here.
-Dependent new data implementation,
-collection, training and auxiliary development stop at that branch boundary.
-After selection/allocation, B eligible view + recipe → CPU fit/export can proceed
-alongside A; A usable Runtime + exported Model joins at game evaluation, not training.
-Existing-model/runtime/Episode/PR176 work does not wait for B; novelty is not a goal.
+This round ends after the already-open monitor mapping, remote control repair,
+and PR177 source/CI handoff. Do not start a new feature or wait indefinitely on
+external CI. Preserve blocked candidates and deliver the complete engineering-order
+proposal. Model-plan changes wait for the user; long fit and missing-data collection
+are outside this round. Separate feature PRs follow PR177, not bulk adoption here.
 
-C prepares GPU backend/cost read-only in parallel: static/CPU compatibility →
-bounded GPU smoke proving actual CUDA/checkpoint/export/cost, with synthetic data
-allowed before real-data readiness → real fit/scale only with useful admitted data,
-passed smoke and budget within the same USD20. External CombatSolver producer
-and GPU work are assigned investigations, with no build/generated data/provider
-job claimed. D keeps architecture, historical compatibility, specifications and
-exact-head CI coherent throughout; it does not block already-ready game/data work.
-Freeze actual candidates and meet owning gates/allocation at each transition;
-ordinary default/SDK-direct promotion and broader G2/V1 remain open.
-Human participation stops only its dependent branch with a concrete handoff.
-Root stops the round when every branch is completed or waiting on user/external
-conditions; one pending choice does not pause independent authorized engineering.
+Old13 TRAIN groups/1537 candidates were inspected as1465 eligible-looking N,72
+Read-missing masks and3 unlabelled H contexts; formal owner admission remains pending.
+Source3 has8<100; DIRECT137 is separate. Both future first fits still require>=100
+qualified distinct N and>=300 actual updates. Stable same-owner UI and exact backend
+qualification precede fit. Data shortage stops that arm, not the independent arm.
 
 ## Remaining Platform non-claims
 
-Same cumulative USD20 GPU envelope, observed USD0/no provider job. This handoff
-allocates no new game, real-data use/fit, paid compute, main/release or final G1/G2/V1
-approval. Root owns allocations, shared refs/BOM and the one heavy/native slot;
-workers use disjoint topics and independent review. Data quantity/quality needs
-and large-fit cost are reported before expanding work. Old failures, private
-originals, rollback receipts and exposure limits remain; no source merge or loss
-promotes itself to Human, research, strategy or full qualification.
+Same cumulative USD20 GPU envelope, observed USD0/no paid job. Neither selected
+chain implies new capture/fit/game/GPU execution or final G1/G2/V1 approval.
+Main/release and extra spending are not granted by documentation.
+Task completion, attempt/cleanup, source/package/install/load, Human,
+research and strategy are separate. Floor5 loss is not basic reasonable whole-game
+quality, default-speed/full native qualification or benefit across seeds. Preserve
+original records, failed gates, rollback and source/use/exposure restrictions.

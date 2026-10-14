@@ -1,0 +1,65 @@
+{
+  "schema": "sts2.policy-runtime/native-known-stale-window-conformance-1",
+  "evidence_scope": "source_test_only_no_native_settlement",
+  "execution_policy": {
+    "schema": "sts2.policy-runtime/agent-execution-policy-3",
+    "current_mode": "reader_owned_v1",
+    "known_stale": "fresh_changed_current_v1",
+    "operational_outcome": "known_not_started_v1",
+    "known_stale_recovery_window_ms": 10000
+  },
+  "vectors": [
+    {
+      "id": "before",
+      "first_result_ms": 100,
+      "now_ms": 10099,
+      "global_deadline_ms": 60100,
+      "expected": "available"
+    },
+    {
+      "id": "equality",
+      "first_result_ms": 100,
+      "now_ms": 10100,
+      "global_deadline_ms": 60100,
+      "expected": "known_stale_recovery_exhausted"
+    },
+    {
+      "id": "global-earlier",
+      "first_result_ms": 100,
+      "now_ms": 6000,
+      "global_deadline_ms": 6000,
+      "expected": "autonomy_budget_exhausted"
+    },
+    {
+      "id": "global-equality",
+      "first_result_ms": 100,
+      "now_ms": 10100,
+      "global_deadline_ms": 10100,
+      "expected": "autonomy_budget_exhausted"
+    },
+    {
+      "id": "local-before-late-global",
+      "first_result_ms": 100,
+      "now_ms": 60100,
+      "global_deadline_ms": 60100,
+      "local_expiry_already_won": true,
+      "expected": "known_stale_recovery_exhausted"
+    },
+    {
+      "id": "late-delivery",
+      "first_result_ms": 100,
+      "now_ms": 10100,
+      "global_deadline_ms": 60100,
+      "original_result": "delivered",
+      "expected": "count_original_without_reset_or_revive"
+    }
+  ],
+  "preserved": {
+    "legacy_policy1": "lifetime_and_consecutive",
+    "legacy_policy2": "consecutive_three",
+    "generic": "unchanged",
+    "input_spec_numeric_features": "unchanged",
+    "operational_outcome": "outside_model_input_W_scores",
+    "new_delay": false
+  }
+}

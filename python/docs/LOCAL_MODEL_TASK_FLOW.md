@@ -57,6 +57,73 @@ parity and native qualification gates in the native Model guide.
 
 ## Prepare and load
 
+### Native episode preparation and explicit finish
+
+The existing Application exposes prepare/status/finish in its local-environment
+namespace and continues `/api/local-models/run-agent` for execution. Bodies
+select only owned or attached preparation, an intent ID, explicit canonical seed
+for the fixed Defect A0 owned start, and the existing closed presentation/speed
+choices. They cannot select a URL, executable, module, env, PID, token or path.
+An operator-owned `native-host-profile-v1.json` under the existing state root
+pins the installed public Host package, game installation/template/endpoint,
+exact loaded game/Mod tuple and finite preparation/cleanup limits. This first
+packet rejects `default` as `qualified_default_unavailable`; explicit
+Normal/Fast/Instant share the same native Host and public contracts. No accepted
+mode/presentation/package/tuple default basis is available here, and this
+configuration does not perform or prove six-cell qualification.
+Owned preparation derives the external Host state directory as
+`<ProjectConfig.state_dir>/native-host`; the request body and trusted profile do
+not add another caller-supplied path. The operator stages the existing template
+at `native-host/profile-templates/defect-a0-s0/{template.json,user-data/}` through
+the existing Host template owner. The directory must be canonical, ordinary and
+disjoint from the immutable installed package. The reference CLI receives
+`--local-root` and its actual ready readback must match both this local root and
+its `evidence` child before reset. An older CLI without the capability, or a
+wrong/unsafe root, rejects before offering native preparation. Package hashing
+still covers every installed file; mutable state is never excluded to make a
+modified installation pass. Template absence/drift remains an owning template
+failure, not permission to create replacement game state.
+The profile's closed `candidate_admission` selects `sealed` or `exact_canary`
+separately for game and Connector; only this trusted configuration can forward
+the existing process opt-ins. Its `installed_tuple` is checked by the Host before
+native spawn and against loaded capabilities before bootstrap. The profile pins
+game version/commit/assembly SHA, Host source/artifact SHA/MVID and Modset
+fingerprint. `default_speed` remains null and is not accepted as an authority
+declaration. A later default must consume the actual existing owner's accepted
+mode/presentation/package/tuple basis; no new qualification resolver/registry is
+introduced by this packet.
+
+`POST /api/local-environment/native/prepare`, `GET /api/local-environment/native`
+and `POST /api/local-environment/native/finish` expose that one lifecycle.
+The ordinary signed local control client and browser origin/CSRF rules apply.
+`POST /api/local-models/request` resolves a closed selection/operation/run profile
+and optional opaque `native_episode_ref` through the trusted owner; its effective
+v1 request is then submitted to the existing `/api/local-models/run-agent` route.
+
+One native preparation intent binds its canonical body before spawn; same
+intent/body returns its original resource operation, changed body conflicts.
+The same Environment owner retains immutable per-operation request/body digests
+and original terminal results through its existing LocalBlobStore primitive,
+with atomic recorded status and one live pointer. Completing A, then B, does not
+permit replaying A to reset another world. Finishing historical A returns its
+original recorded cleanup and cannot Stop or close active B. Original records
+survive service restart; active/partial records have no adopted process handle
+and remain recovery-required. There is no automatic history expiry or deletion.
+Missing or damaged retained identities fail closed instead of becoming fresh
+preparation authority. If an operator erases the whole project state, original
+results cannot be reconstructed; that is not an automatic retry/recovery path.
+Immutable request and recorded status publication both precede worker/process
+startup. Storage failure during finish does not skip exact owned cleanup and is
+reported separately from original Actor, native-child and driver exit facts.
+The public Host client is registered before readiness/reset awaits so finish
+can cancel it without queueing behind preparation. Ready is published only
+after exact bootstrap release and unheld-runtime proof. Unknown remains unknown
+and blocks Agent admission; no management retry/query framework is provided.
+Resource phase and original Actor/run results are distinct. Mode Human or panel
+closure does not auto-close the Host. Explicit finish and App shutdown use the
+same Actor Stop/seal then owned-close sequence. The existing Managed lifecycle,
+records and APIs retain their semantics.
+
 An operator can explicitly change one private text Runtime profile while the
 Workbench is closed and port 15527 is free. `developer model --action
 initialize-runtime-generation` is the first-install path when the selected

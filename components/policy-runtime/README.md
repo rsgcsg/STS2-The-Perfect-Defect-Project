@@ -22,6 +22,14 @@ unit, an advanced ConsumeACK, and a completed Next in the same accepted prefix.
 The original request/action/basis is never replayed. Unknown/partial delivery,
 source loss, Human/Stop, controller or budget loss still ends the path.
 
+Native sampled Agents may explicitly select the additive known-stale
+`agent-execution-policy-3`: a fixed 10,000 ms per-episode monotonic window under
+the original global wallet, with unchanged full Current/C, fresh changed-unit
+selection and unknown-delivery fences. The existing lifecycle owner expires an
+idle/blocked episode itself; no count-based ceiling, new sleep, legality or replay
+is introduced by that selection. Policies1/2, generic/text behavior and historical
+artifacts retain their contracts. See the [closed policy3 contract](docs/AGENT_SESSION_PROTOCOL.md#explicit-native-known-stale-recovery-policy3).
+
 The native port is exported from the package main entry. Pass the validated
 manifest policy explicitly; omission keeps the legacy five-field Next grammar.
 

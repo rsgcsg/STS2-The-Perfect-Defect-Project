@@ -457,11 +457,7 @@ def _native_requirements(value: Any, *, execution_policy: dict[str, Any] | None 
             raise ValueError
         methods = list(method_requirements)
         if execution_policy is not None:
-            if program_agent:
-                from stpd.policy.native_operational_outcome_v2 import checked_execution_policy
-            else:
-                from stpd.policy.native_operational_outcome import checked_execution_policy
-
+            from stpd.policy.native_execution_policy import checked_execution_policy
             checked_execution_policy(execution_policy)
             if "current_owned" not in methods:
                 methods.append("current_owned")

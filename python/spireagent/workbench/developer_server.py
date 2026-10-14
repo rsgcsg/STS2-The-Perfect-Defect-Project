@@ -258,8 +258,21 @@ class Application:
         )
         self.local_environment = LocalEnvironmentService(config)
         self.models = LocalModelService(
-            config, hub=self.hub,
+            config,
+            hub=self.hub,
             managed_target=self.local_environment.managed_runtime_target,
+            native_episode_resolver=self.local_environment.native_episode_context,
+            native_episode_authorizer=self.local_environment.authorize_native_episode,
+            native_episode_guard=self.local_environment.native_admission_guard,
+            native_episode_associate=self.local_environment.associate_native_actor,
+        )
+        self._native_episode_shutdown = False
+        self.local_environment.bind_native_application(
+            lock=self.models.lock,
+            application_instance_id=self.instance_id,
+            configuration_id=self.native_episode_configuration,
+            admit_prepare=self._admit_native_preparation,
+            actor_lost=self.models.native_episode_driver_lost,
         )
         # Presentation intent fence only; Recorder retains its sole command ledger/lifecycle.
         self._recording_intent_lock = self.models.lock
@@ -506,6 +519,63 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_environment", "running_configuration_mismatch")
+
+    def native_episode_configuration(self) -> str:
+        if self._native_episode_shutdown:
+            raise BoundaryError("native_episode", "application_closing")
+        self.check_environment_instance()
+        return configuration_id(self.config)
+
+    def _admit_native_preparation(self) -> None:
+        # Called only under the existing shared Model admission lock. Native
+        # reservation itself is committed by Environment before that lock exits.
+        self.models._require_source_admission()
+        if (
+            self._native_episode_shutdown
+            or self.models.closed
+            or self.models.state.get("status") in {"command_unknown", "recovery_required"}
+            or (
+                self.models.client is not None
+                or self.models.state.get("loaded") is True
+                or self.models.process is not None
+                and self.models.process.poll() is None
+                or self.models.thread is not None
+                and self.models.thread.is_alive()
+            )
+        ):
+            raise BoundaryError("native_episode", "actor_active_or_unknown")
+
+    def prepare_native_episode(self, value: object) -> dict[str, Any]:
+        self.check_environment_instance()
+        return self.local_environment.prepare_native_episode(value)
+
+    def native_episode_status(self) -> dict[str, Any]:
+        return self.local_environment.native_episode_status()
+
+    def finish_native_episode(self, environment_ref: object) -> dict[str, Any]:
+        record, client, first = self.local_environment.begin_native_finish(environment_ref)
+        if not first:
+            return record
+        actor: dict[str, Any] = {
+            "status": "not_associated",
+            "run_id": None,
+            "seal": "not_applicable",
+        }
+        context = record.get("admission_context")
+        try:
+            if isinstance(context, dict):
+                # No Environment lifecycle lock is held across Model Stop/seal.
+                actor = self.models.stop_native_episode_actor(
+                    context, timeout=record["cleanup_timeout_seconds"]
+                )
+        except (OSError, ValueError) as error:
+            actor = {
+                "status": "unknown",
+                "error_code": error.code
+                if isinstance(error, BoundaryError)
+                else "actor_stop_or_seal_failed",
+            }
+        return self.local_environment.close_native_after_actor(record, client, actor)
 
     def create_managed_local_workspace(self) -> dict[str, Any]:
         if self.config_path is None:
@@ -942,6 +1012,16 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        # The same Application admission lock fences an in-flight handler before
+        # this snapshot. Recovery/Stop remains enabled until its original owner
+        # finishes; no lock is held across Stop, sealing or Host cleanup.
+        with self.models.lock:
+            self._native_episode_shutdown = True
+            native = self.local_environment.native_episode_status()
+        if native.get("environment_ref") is not None and native.get("phase") != "closed":
+            with contextlib.suppress(OSError, ValueError):
+                self.finish_native_episode(native["environment_ref"])
+            self.local_environment.native_finish_done.wait(timeout=90)
         self.local_environment.close()
         self.evaluation_sharing.close()
         self.members.close()
@@ -1012,6 +1092,21 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             return body
 
         def model_action(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+            if path == "/api/local-models/request" and set(body) in (
+                {"selection_id", "operation", "run_profile"},
+                {"selection_id", "operation", "run_profile", "native_episode_ref"},
+            ):
+                app.check_environment_instance()
+                return app.models.agent_request(
+                    body["selection_id"],
+                    body["operation"],
+                    body["run_profile"],
+                    **(
+                        {"native_episode_ref": body["native_episode_ref"]}
+                        if "native_episode_ref" in body
+                        else {}
+                    ),
+                )
             if path == "/api/local-models/run-agent":
                 return app.models.run_agent(body)
             if path == "/api/local-models/prepare" and set(body) in (
@@ -1083,23 +1178,32 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
                 self.respond(200, json.dumps(_safe_value(app.snapshot())).encode())
-            elif parsed.path == "/api/local-environment" or parsed.path == (
-                "/api/local-environment/reports"
-            ) or parsed.path == (
-                "/api/local-environment/scenes"
-            ) or parsed.path == (
-                "/api/local-environment/comparisons"
-            ) or parsed.path.startswith(("/api/local-environment/reports/",
-                                          "/api/local-environment/events/",
-                                          "/api/local-environment/scenes/",
-                                          "/api/local-environment/comparisons/")):
-                if not self.authenticated_browser():
+            elif (
+                parsed.path == "/api/local-environment"
+                or parsed.path == ("/api/local-environment/reports")
+                or parsed.path == ("/api/local-environment/scenes")
+                or parsed.path == ("/api/local-environment/comparisons")
+                or parsed.path == ("/api/local-environment/native")
+                or parsed.path.startswith(
+                    (
+                        "/api/local-environment/reports/",
+                        "/api/local-environment/events/",
+                        "/api/local-environment/scenes/",
+                        "/api/local-environment/comparisons/",
+                    )
+                )
+            ):
+                if not self.authenticated_browser() and not (
+                    parsed.path == "/api/local-environment/native" and self.control_client()
+                ):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
                     if parsed.query:
                         raise ValueError
-                    if parsed.path == "/api/local-environment":
+                    if parsed.path == "/api/local-environment/native":
+                        value = app.native_episode_status()
+                    elif parsed.path == "/api/local-environment":
                         value = {
                             **app.local_environment.status(),
                             "csrf_token": app.account.csrf,
@@ -1564,55 +1668,77 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_native_request"}')
                 return
             if self.path.startswith("/api/local-environment/"):
-                if not self.browser_write():
+                if not self.browser_write() and not (
+                    self.path.startswith("/api/local-environment/native/") and self.control_client()
+                ):
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
-                    body = self.json_body(maximum=512)
-                    if self.path == "/api/local-environment/start" and set(body) == {
+                    native_route = self.path.startswith("/api/local-environment/native/")
+                    body = self.json_body(
+                        maximum=1024 if native_route else 512, reject_duplicate=native_route
+                    )
+                    if self.path == "/api/local-environment/native/prepare":
+                        value = app.prepare_native_episode(body)
+                    elif self.path == "/api/local-environment/native/finish" and set(body) == {
+                        "environment_ref"
+                    }:
+                        value = app.finish_native_episode(body["environment_ref"])
+                    elif self.path == "/api/local-environment/start" and set(body) == {
                         "scenario_id"
                     }:
                         app.check_environment_instance()
                         value = app.local_environment.start(body["scenario_id"])
                     elif self.path == "/api/local-environment/start" and set(body) == {
-                        "scenario_id", "scene_artifact_id"
+                        "scenario_id",
+                        "scene_artifact_id",
                     }:
                         app.check_environment_instance()
                         value = app.local_environment.start(
                             body["scenario_id"], scene_artifact_id=body["scene_artifact_id"]
                         )
                     elif self.path == "/api/local-environment/scenes/save" and set(body) in (
-                        {"name"}, {"name", "seed"}
+                        {"name"},
+                        {"name", "seed"},
                     ):
                         app.check_environment_instance()
                         value = app.local_environment.save_scene(
                             body["name"], **({"seed": body["seed"]} if "seed" in body else {})
                         )
                     elif self.path == "/api/local-environment/compare" and set(body) == {
-                        "scene_artifact_id", "report_artifact_ids"
+                        "scene_artifact_id",
+                        "report_artifact_ids",
                     }:
                         app.check_environment_instance()
                         value = app.local_environment.compare(
                             body["scene_artifact_id"], body["report_artifact_ids"]
                         )
                     elif self.path == "/api/local-environment/submit" and set(body) == {
-                        "session_id", "action_id", "expected_snapshot_id",
-                        "expected_game_continuity_id"
+                        "session_id",
+                        "action_id",
+                        "expected_snapshot_id",
+                        "expected_game_continuity_id",
                     }:
                         app.check_environment_instance()
                         value = app.local_environment.submit(
-                            body["session_id"], body["action_id"],
+                            body["session_id"],
+                            body["action_id"],
                             body["expected_snapshot_id"],
                             body["expected_game_continuity_id"],
                         )
-                    elif self.path == "/api/local-environment/stop" and set(body) == {
-                        "session_id"
-                    }:
+                    elif self.path == "/api/local-environment/stop" and set(body) == {"session_id"}:
                         value = app.local_environment.stop(body["session_id"])
-                    elif self.path == "/api/local-environment/resume" and set(body) == {
-                        "session_id", "service_instance_id", "runtime_instance_id",
-                        "game_continuity_id"
-                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                    elif (
+                        self.path == "/api/local-environment/resume"
+                        and set(body)
+                        == {
+                            "session_id",
+                            "service_instance_id",
+                            "runtime_instance_id",
+                            "game_continuity_id",
+                        }
+                        and all(isinstance(body[key], str) and body[key] for key in body)
+                    ):
                         app.check_environment_instance()
                         value = app.local_environment.resume(
                             expected_session_id=body["session_id"],
@@ -1620,12 +1746,20 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             expected_runtime_instance_id=body["runtime_instance_id"],
                             expected_game_continuity_id=body["game_continuity_id"],
                         )
-                    elif self.path == "/api/local-environment/close" and set(body) in ({
-                        "service_instance_id", "runtime_instance_id", "game_continuity_id"
-                    }, {"session_id", "service_instance_id", "runtime_instance_id",
-                        "game_continuity_id"}) and all(
-                            isinstance(body[key], str) and body[key] for key in body
-                        ):
+                    elif (
+                        self.path == "/api/local-environment/close"
+                        and set(body)
+                        in (
+                            {"service_instance_id", "runtime_instance_id", "game_continuity_id"},
+                            {
+                                "session_id",
+                                "service_instance_id",
+                                "runtime_instance_id",
+                                "game_continuity_id",
+                            },
+                        )
+                        and all(isinstance(body[key], str) and body[key] for key in body)
+                    ):
                         app.check_environment_instance()
                         value = app.local_environment.close_environment(
                             expected_session_id=body.get("session_id"),
@@ -1633,10 +1767,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             expected_runtime_instance_id=body["runtime_instance_id"],
                             expected_game_continuity_id=body["game_continuity_id"],
                         )
-                    elif self.path == "/api/local-environment/recover-control" and set(body) == {
-                        "session_id", "service_instance_id", "runtime_instance_id",
-                        "game_continuity_id"
-                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                    elif (
+                        self.path == "/api/local-environment/recover-control"
+                        and set(body)
+                        == {
+                            "session_id",
+                            "service_instance_id",
+                            "runtime_instance_id",
+                            "game_continuity_id",
+                        }
+                        and all(isinstance(body[key], str) and body[key] for key in body)
+                    ):
                         app.check_environment_instance()
                         value = app.local_environment.recover_control(
                             expected_session_id=body["session_id"],
@@ -1645,11 +1786,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             expected_game_continuity_id=body["game_continuity_id"],
                         )
                     elif self.path == "/api/local-environment/reports/import" and set(body) == {
-                        "report_artifact_id", "purpose"
+                        "report_artifact_id",
+                        "purpose",
                     }:
                         app.check_environment_instance()
                         value = app.local_managed_sources.import_report(
-                            body["report_artifact_id"], body["purpose"],
+                            body["report_artifact_id"],
+                            body["purpose"],
                         )
                     else:
                         raise ValueError

@@ -29,11 +29,14 @@ from ..native_code_scope import (
     COMPATIBILITY_PROFILE,
     COMPATIBLE_MODEL_SCHEMA,
     GRAPH_MODEL_SCHEMA,
+    OPERATIONAL_COMPATIBILITY_PROFILE,
     checked_native_compatibility_proof,
+    checked_native_operational_compatibility_proof,
     compatibility_original_identity,
     native_code_identity,
     native_code_sha256,
     native_compatibility_proof,
+    native_operational_compatibility_proof,
 )
 from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
 from ..native_code_scope import is_native_model_schema as is_native_model_schema
@@ -68,7 +71,7 @@ from ..ordered_source_spec import (
 from ..ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from ..ordered_source_spec import PACKAGE_SCHEMA as ORDERED_PACKAGE_SCHEMA
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
-from .native_operational_outcome import checked_execution_policy
+from .native_execution_policy import checked_execution_policy, known_stale_window_policy
 from .native_task import ready_summary_task_spec
 from .structured_export import GRAPH, MAX_MANIFEST_BYTES, MAX_WEIGHTS_BYTES, _regular_bytes
 
@@ -611,9 +614,11 @@ def _compatible_manifest(encoded: bytes) -> dict[str, Any]:
         {"profile", "original_model", "original_package", "proof"},
         "native_compatibility",
     )
-    if compatibility["profile"] != COMPATIBILITY_PROFILE:
+    operational = compatibility["profile"] == OPERATIONAL_COMPATIBILITY_PROFILE
+    if compatibility["profile"] not in (COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE):
         raise BoundaryError("native_compatibility", "unsupported_profile")
-    proof = checked_native_compatibility_proof(compatibility["proof"])
+    proof = (checked_native_operational_compatibility_proof(compatibility["proof"])
+             if operational else checked_native_compatibility_proof(compatibility["proof"]))
     original = _checked_native_manifest(
         json_bytes(compatibility["original_package"]),
         recorded_basis=compatibility_original_identity(),
@@ -646,6 +651,10 @@ def _compatible_manifest(encoded: bytes) -> dict[str, Any]:
         "export_runtime": platform,
         "compatibility": compatibility,
     }
+    if operational:
+        body["agent_spec"] = ordered_native_agent_spec(
+            package_control(original), view=SAMPLED_VIEW,
+            execution_policy=known_stale_window_policy())
     body.pop("model_id")
     expected = {**body, "model_id": semantic_hash(body)}
     if encoded != json_bytes(value) or value != expected:
@@ -706,7 +715,7 @@ def _native_model_parameters_checked(package: dict[str, Any], attempt: str) -> d
             "model_id": package["model_id"],
             "original_model_id": original.artifact_id,
             "original_package_id": package["compatibility"]["original_package"]["model_id"],
-            "compatibility_profile": COMPATIBILITY_PROFILE,
+            "compatibility_profile": package["compatibility"]["profile"],
             "graph_id": package["graph"]["id"],
             "input_spec": package["input_spec"],
             "agent_spec": package["agent_spec"],
@@ -837,7 +846,8 @@ def publish_native_compatible_model(
     before_publish: Callable[[Manifest], None] | None = None,
 ) -> Manifest:
     """Explicit immutable derivative; no fit, original mutation or auto upgrade."""
-    if profile != COMPATIBILITY_PROFILE:
+    operational = profile == OPERATIONAL_COMPATIBILITY_PROFILE
+    if profile not in (COMPATIBILITY_PROFILE, OPERATIONAL_COMPATIBILITY_PROFILE):
         raise BoundaryError("native_compatibility", "unsupported_profile")
     original_model = store.get_manifest(original_model_id)
     if (
@@ -845,7 +855,8 @@ def publish_native_compatible_model(
         or original_model.parameters.value().get("schema") != COMMON_MODEL_SCHEMA
     ):
         raise BoundaryError("native_compatibility", "original_sampled_trained_model_required")
-    proof = native_compatibility_proof(original_model.producer)
+    proof = (native_operational_compatibility_proof(original_model.producer)
+             if operational else native_compatibility_proof(original_model.producer))
     raw_original = _payload_bytes(
         store, original_model.payload("package_manifest"), MAX_MANIFEST_BYTES
     )
@@ -883,6 +894,10 @@ def publish_native_compatible_model(
         "export_runtime": exporter_runtime(),
         "compatibility": compatibility,
     }
+    if operational:
+        body["agent_spec"] = ordered_native_agent_spec(
+            package_control(original), view=SAMPLED_VIEW,
+            execution_policy=known_stale_window_policy())
     body.pop("model_id")
     package = {**body, "model_id": semantic_hash(body)}
     encoded = json_bytes(package)

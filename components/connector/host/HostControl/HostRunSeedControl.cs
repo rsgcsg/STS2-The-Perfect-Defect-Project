@@ -5,6 +5,8 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using STS2Connector.Authority;
 
 namespace STS2Connector.HostControl;
 
@@ -19,7 +21,10 @@ internal sealed record HostEpisodeProvenanceResponse(
     string RuntimeInstanceId,
     string? RequestedSeed,
     string? ActualSeed,
-    bool? SeedMatches);
+    bool? SeedMatches)
+{
+    public HostNativeSpeedProvenance? NativeSpeed { get; init; }
+}
 
 internal static class HostRunSeedControl
 {
@@ -51,11 +56,12 @@ internal static class HostRunSeedControl
         string? configuredSeed,
         string displayServer,
         string? currentOverride,
-        bool alreadyApplied)
+        bool alreadyApplied,
+        bool isolatedNativeUi = false)
     {
         if (configuredSeed == null)
             return new HostSeedApplication(true, false, "seed_not_configured", null);
-        if (!string.Equals(displayServer, "headless", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(displayServer, "headless", StringComparison.OrdinalIgnoreCase) && !isolatedNativeUi)
             return new HostSeedApplication(false, false, "seed_requires_headless_host", configuredSeed);
         if (currentOverride != null
             && !string.Equals(currentOverride, configuredSeed, StringComparison.Ordinal))
@@ -78,7 +84,10 @@ internal static class HostRunSeedControl
             _configuredSeed,
             DisplayServer.GetName(),
             game.DebugSeedOverride,
-            _applied);
+            _applied,
+            isolatedNativeUi: HostProfileControl.Enabled
+                && HostProfileControl.Observe(SaveManager.Instance).Verified
+                && EnvironmentIdentityRuntime.ExecutionAvailable(EnvironmentIdentityRuntime.ReadGame()));
         if (!decision.Allowed)
             return decision;
         if (decision.ShouldApply)
@@ -106,6 +115,6 @@ internal static class HostRunSeedControl
             runtimeInstanceId,
             _configuredSeed,
             actualSeed,
-            matches);
+            matches) { NativeSpeed = HostNativeSpeedControl.Observe(runtimeInstanceId) };
     }
 }

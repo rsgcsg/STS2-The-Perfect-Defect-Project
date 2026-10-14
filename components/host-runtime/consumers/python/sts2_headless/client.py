@@ -7,7 +7,7 @@ import json
 from queue import Empty, Queue
 import subprocess
 import threading
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 
@@ -139,7 +139,9 @@ class FiniteActionView:
 
 
 class ManagedPlayerEnvironment:
-    def __init__(self, command: Sequence[str], *, response_timeout_seconds: float = 120.0):
+    def __init__(self, command: Sequence[str], *, response_timeout_seconds: float = 120.0,
+                 on_started: Callable[["ManagedPlayerEnvironment"], None] | None = None,
+                 on_exit: Callable[[], None] | None = None):
         if not command:
             raise ValueError("A non-empty driver command is required.")
         if response_timeout_seconds <= 0:
@@ -159,6 +161,10 @@ class ManagedPlayerEnvironment:
         self._cleanup_done = threading.Event()
         self._cleanup_started = False
         self._forced_fallback = False
+        self._fallback_termination = False
+        self._close_response: dict[str, Any] | None = None
+        self._driver_exit_code: int | None = None
+        self._on_exit = on_exit
         self._exchange_lock = threading.RLock()
         self._stdout_lines: Queue[str | None] = Queue()
         self._stderr_tail: deque[str] = deque(maxlen=200)
@@ -167,6 +173,10 @@ class ManagedPlayerEnvironment:
         self._stdout_thread.start()
         self._stderr_thread.start()
         try:
+            if on_started is not None:
+                on_started(self)
+            if self._closed:
+                raise DriverError("Driver startup was canceled before readiness.")
             self.ready = self._read_message()
             if self.ready.get("type") != "ready":
                 raise DriverError(f"Driver did not become ready: {self.ready!r}")
@@ -190,6 +200,8 @@ class ManagedPlayerEnvironment:
         for line in self._process.stdout:
             self._stdout_lines.put(line)
         self._stdout_lines.put(None)
+        if self._on_exit is not None:
+            self._on_exit()
 
     def _drain_stderr(self) -> None:
         assert self._process.stderr is not None
@@ -243,7 +255,8 @@ class ManagedPlayerEnvironment:
                 raise error
             if response.get("type") == "error":
                 error = DriverError(str(response.get("message", "driver request failed")))
-                if command in {"reset", "step", "text_submit"}:
+                error.response = response
+                if command in {"reset", "step", "text_submit", "release_bootstrap"}:
                     self._quarantine_preserving(error)
                 raise error
             return response
@@ -352,7 +365,7 @@ class ManagedPlayerEnvironment:
         cleanup_reason: str | None = None
         try:
             if not force and self._process.poll() is None:
-                self._exchange("close")
+                self._close_response = self._exchange("close")
         finally:
             if self._process.poll() is None:
                 # EOF is the cross-platform request for Node to close the
@@ -365,6 +378,7 @@ class ManagedPlayerEnvironment:
                 except subprocess.TimeoutExpired:
                     # Terminating Node does not prove cleanup of its child.
                     cleanup_reason = "driver did not finish EOF cleanup before fallback termination"
+                    self._fallback_termination = True
                     self._process.terminate()
                     try:
                         code = self._process.wait(timeout=2)
@@ -375,6 +389,7 @@ class ManagedPlayerEnvironment:
                     cleanup_reason = "concurrent forced cleanup required fallback termination"
                 if code != 0:
                     cleanup_reason = f"driver exited with code {code}; native-child cleanup unconfirmed"
+                self._driver_exit_code = code
             except Exception as error:
                 cleanup_reason = f"driver cleanup failed: {error}; native-child cleanup unconfirmed"
             finally:
@@ -398,11 +413,67 @@ class ManagedPlayerEnvironment:
             except (OSError, ValueError):
                 pass
 
+    def close_receipt(self) -> Mapping[str, Any]:
+        """Original protocol result and process termination are independent facts."""
+        return json.loads(json.dumps({
+            "close_result": self._close_response,
+            "driver_exit_code": self._driver_exit_code,
+            "forced_fallback": self._forced_fallback or self._fallback_termination,
+            "cleanup_error": str(self._cleanup_error) if self._cleanup_error is not None else None,
+        }))
+
     def __enter__(self) -> "ManagedPlayerEnvironment":
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+class ReferencePlayerEnvironment(ManagedPlayerEnvironment):
+    """Owned native bootstrap client; Actor execution uses Connector/Runtime."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.world_mutation_offered = False
+        self.bootstrap_transfer_attempted = False
+        super().__init__(*args, **kwargs)
+
+    def release_bootstrap(self, expected_runtime_instance_id: str) -> Mapping[str, Any]:
+        if self.ready.get("bootstrap_handoff") != "sts2.host-runtime/reference-bootstrap-handoff-1":
+            raise DriverError("Driver does not advertise native bootstrap handoff.")
+        self.bootstrap_transfer_attempted = True
+        result = self._exchange("release_bootstrap", expected_runtime_instance_id=expected_runtime_instance_id)
+        handoff = result.get("handoff")
+        if (result.get("type") != "release_bootstrap_result" or not isinstance(handoff, dict)
+                or handoff.get("schema") != "sts2.host-runtime/reference-controller-handoff-1"
+                or handoff.get("runtime_instance_id") != expected_runtime_instance_id
+                or handoff.get("controller") is not None
+                or handoff.get("basis") != "fresh_control_observation_after_close"):
+            error = DriverError("Native bootstrap release was not proven.")
+            self._quarantine_preserving(error)
+            raise error
+        return handoff
+
+    def reset(self, seed: str) -> Mapping[str, Any]:
+        if self.ready.get("bootstrap_handoff") != "sts2.host-runtime/reference-bootstrap-handoff-1":
+            raise DriverError("Driver does not advertise native bootstrap handoff.")
+        if self.bootstrap_transfer_attempted: raise DriverError("Bootstrap has been transferred.")
+        self.world_mutation_offered = True
+        return super().reset(seed)
+
+    def step(self, bound_action_id: str, expected_snapshot_id: str,
+             request_id: str | None = None) -> Mapping[str, Any]:
+        if self.bootstrap_transfer_attempted: raise DriverError("Bootstrap has been transferred.")
+        return super().step(bound_action_id, expected_snapshot_id, request_id)
+
+    def close(self, force: bool = False, *, timeout_seconds: float | None = None) -> None:
+        previous = self._response_timeout_seconds
+        if not force and timeout_seconds is not None:
+            self._response_timeout_seconds = timeout_seconds
+        try: super().close(force)
+        finally: self._response_timeout_seconds = previous
+
+    def close_receipt(self) -> Mapping[str, Any]:
+        return {**super().close_receipt(), "world_mutation_offered": self.world_mutation_offered}
 
 
 class SyncVectorPlayerEnvironment:
