@@ -80,11 +80,16 @@ skips. Median process time was 3.700 versus 1.631 seconds, about 56% lower on th
 host. A separate construction probe measured 0.104 seconds versus 0.014 seconds
 for a full private clone, with zero clone `fsync` calls and an initially empty
 reads list. These are local warm observations, not portable performance promises.
+The preserved baseline copy was measured outside the project test tree and the
+candidate inside it, so pytest root discovery differed. No `conftest.py` exists;
+the project's pytest settings only set `testpaths`, and the original function
+ASTs/case collection were checked separately. Treat the pairs as bounded
+observations rather than a controlled benchmark.
 
 The existing CI-history analysis records this file's Windows shard-2 JUnit sum
 as 90.592 seconds in run `38238260618`, 132.955 in `38514773699`, and 283.142 in
-`38572213314`. The last leaf recorded approximately 2965.563 seconds of pytest
-before its incomplete/failing gate. JUnit sums include fixture phases and do not
+`38572213314`. The last historical gate did not complete successfully.
+JUnit testcase sums include fixture phases and do not
 profile Windows I/O. The repeated construction is a measured local cost source;
 its share of the observed Windows slowdown and the candidate's Windows benefit
 remain unmeasured. No claim is made that this file alone caused or resolves the
