@@ -263,37 +263,66 @@ class PairedOutcome:
 
 
 def paired_fixed_seed_report(
-    outcomes: Iterable[PairedOutcome], *, required_policies: Sequence[str]
+    outcomes: Iterable[PairedOutcome],
+    *,
+    required_policies: Sequence[str],
+    planned_seeds: Sequence[str],
 ) -> dict[str, Any]:
-    """B6 report builder; absent policies/seeds remain failures rather than imputed results."""
+    """B6 v1: the declared plan, never received rows, owns the denominator.
 
+    v0 callers must supply their original planned seeds explicitly. Historical
+    v0 reports are immutable; no inferred plan can repair missing observations.
+    """
+    policies, seeds = tuple(required_policies), tuple(planned_seeds)
+    for values, name in ((policies, "policies"), (seeds, "seeds")):
+        if len(values) != len(set(values)) or any(not isinstance(v, str) or not v for v in values):
+            raise ContractError(f"planned {name} must be unique non-empty strings")
     rows = list(outcomes)
-    by_seed: defaultdict[str, dict[str, PairedOutcome]] = defaultdict(dict)
+    by_seed: dict[str, dict[str, PairedOutcome]] = {seed: {} for seed in seeds}
     for row in rows:
+        if row.seed_root not in by_seed or row.policy_id not in policies:
+            raise ContractError("outcome outside declared fixed-seed plan")
         if row.policy_id in by_seed[row.seed_root]:
             raise ContractError("duplicate policy outcome for one fixed seed")
         by_seed[row.seed_root][row.policy_id] = row
     incomplete = {
-        seed: sorted(set(required_policies) - set(values))
+        seed: sorted(set(policies) - set(values))
         for seed, values in by_seed.items()
-        if set(values) != set(required_policies)
+        if set(values) != set(policies)
     }
     unknown_count = sum(row.unknown_delivery for row in rows)
     pipeline_failures = Counter(
         row.pipeline_failure for row in rows if row.pipeline_failure is not None
     )
-    verdict = "pass" if not incomplete and not unknown_count and not pipeline_failures else "fail"
+    unfinished = sum(not row.completed or row.terminal_outcome is None for row in rows)
+    verdict = (
+        "pass"
+        if (
+            seeds
+            and policies
+            and not incomplete
+            and not unknown_count
+            and not pipeline_failures
+            and not unfinished
+        )
+        else "fail"
+    )
     return {
-        "schema": "stpd/b6-fixed-seed-report-v0",
+        "schema": "stpd/b6-fixed-seed-report-v1",
         "verdict": verdict,
-        "seed_count": len(by_seed),
-        "required_policies": list(required_policies),
+        "seed_count": len(seeds),
+        "observed_seed_count": sum(bool(v) for v in by_seed.values()),
+        "planned_outcome_count": len(seeds) * len(policies),
+        "observed_outcome_count": len(rows),
+        "required_policies": list(policies),
+        "planned_seeds": list(seeds),
         "incomplete": incomplete,
         "unknown_delivery_count": unknown_count,
+        "unfinished_outcome_count": unfinished,
         "pipeline_failures": dict(sorted(pipeline_failures.items())),
         "completion_by_policy": {
             policy: sum(row.completed for row in rows if row.policy_id == policy)
-            for policy in required_policies
+            for policy in policies
         },
     }
 

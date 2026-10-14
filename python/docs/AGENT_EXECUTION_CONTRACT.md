@@ -187,3 +187,13 @@ The shared Teacher manifest factory lives in
 bridge and keeps its existing Host/control/data loop. The factory's fields are
 construction declarations, not a second wire validator. Runtime remains the
 required wire admission authority.
+
+## Managed research evaluation results
+
+The adjacent `spireagent.workbench.managed_task_outcome` read-only projection
+accepts the versioned raw Managed evaluation file-index grammar and externally
+retained index SHA, rechecks exact files/source/config and original episode joins,
+and then produces the common Task/terminal/operation shape. It does not run or
+change the world. This is scoped catalog-only engineering evidence and is never
+sealed Policy Runtime evidence. Old `project()` verification and native/public
+TaskSpecs remain unchanged. See [Managed suite evaluation](MANAGED_SUITE_EVALUATION.md).

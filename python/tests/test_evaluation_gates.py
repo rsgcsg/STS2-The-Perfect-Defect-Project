@@ -142,6 +142,7 @@ def test_b6_never_imputes_missing_policy_or_unknown_delivery() -> None:
             PairedOutcome("seed-1", "scheme1", False, None, unknown_delivery=True),
         ],
         required_policies=("teacher", "scheme1", "scheme2"),
+        planned_seeds=("seed-1",),
     )
     assert report["verdict"] == "fail"
     assert report["unknown_delivery_count"] == 1
