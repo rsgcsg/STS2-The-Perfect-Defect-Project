@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, text
 from spireagent.training_execution_contracts import (
     CandidateResult,
     KnownFailure,
@@ -427,7 +427,7 @@ class SdkModalTrainingBackend:
             or definition.retry_policy.retries != 0
         ):
             raise BoundaryError(_STAGE, "function_resource_or_image_mismatch")
-        return fid
+        return text(fid, _STAGE, maximum=128)
 
     def resolve(
         self, attempt: PreparedTrainingAttempt, *, budget: TrainingProviderBudget
@@ -571,7 +571,12 @@ class SdkModalTrainingBackend:
         sdk = self._client()
         try:
             call = sdk.FunctionCall.from_id(handle.call_id)
-            return self._await(lambda: call.get.aio(timeout=0), budget)
+            raw = self._await(lambda: call.get.aio(timeout=0), budget)
+            if not isinstance(raw, bytes):
+                # A successful get is an original-call terminal observation, but
+                # a non-byte worker return violates this closed transport contract.
+                return KnownFailure(attempt.identity, "provider_worker_response_invalid", handle)
+            return raw
         except sdk.exception.FunctionTimeoutError:
             return KnownFailure(attempt.identity, "provider_execution_timeout", handle)
         except sdk.exception.TimeoutError:

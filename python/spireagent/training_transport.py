@@ -20,6 +20,7 @@ from spireagent.json_boundary import (
     object_fields,
 )
 from spireagent.training_execution_contracts import (
+    CandidateResult,
     KnownFailure,
     PreparedTrainingAttempt,
     TrainingCallHandle,
@@ -228,7 +229,8 @@ def decode_candidate(raw: bytes, attempt: PreparedTrainingAttempt) -> tuple[Cand
         if _sha(blob) != key:
             raise BoundaryError(_STAGE, "candidate_blob_digest")
         blobs[key], cursor = blob, cursor + size
-    artifacts, used = [], set()
+    artifacts: list[CandidateArtifact] = []
+    used: set[str] = set()
     for entry in obj["manifests"]:
         row = object_fields(entry, {"id", "raw"}, _STAGE)
         if type(row["raw"]) is not str:
@@ -291,10 +293,10 @@ def _validate_observation(
         raise BoundaryError(_STAGE, "slice_counters_inconsistent")
 
 
-def decode_response(raw: bytes, attempt: PreparedTrainingAttempt, handle: TrainingCallHandle):
+def decode_response(
+    raw: bytes, attempt: PreparedTrainingAttempt, handle: TrainingCallHandle
+) -> CandidateResult:
     """Associate worker bytes with the actual saved provider call, not worker assertions."""
-    from spireagent.training_execution_contracts import CandidateResult
-
     handle.app_ref.bind(attempt)
     obj, candidate = _unpack(raw, _RESPONSE_MAGIC, attempt.limits.max_candidate_bytes)
     obj = object_fields(

@@ -6,8 +6,7 @@ existing TrainingService. The authorized diagnostic is synthetic local work with
 at most 1000 total optimizer executions and one Root-owned remote profile with a
 cumulative cost cap of USD 1, including image/startup/idle/cleanup. Root alone
 starts paid resources. No new model or first scientific training configuration is
-selected. Historical A/B/C budget and unexecuted-gate statements below describe
-those earlier source packets; they grant no additional budget or execution.
+selected. Historical A/B/C design notes grant no additional budget or execution.
 Current outcomes and exact source receipts are in the J-min handoff.
 
 `spireagent.training_execution_contracts` names immutable original Run/Input/

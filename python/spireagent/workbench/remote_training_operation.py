@@ -215,7 +215,7 @@ class ApplicationTrainingAttemptOwner:
         self._control_deadline_monotonic: float | None = None
 
     def current(self) -> dict[str, Any]:
-        value = self.service._read(self.path, self.owner.identity)
+        value: dict[str, Any] = self.service._read(self.path, self.owner.identity)
         if (
             value.get("schema") != REMOTE_OPERATION_SCHEMA
             or value.get("operation_id") != self.operation_id
@@ -248,15 +248,15 @@ class ApplicationTrainingAttemptOwner:
             and self.service._attempt_deadline_monotonic is not None
         )
         if active:
-            return max(0.0, self.service._attempt_deadline_monotonic - time.monotonic())
+            return max(0.0, float(self.service._attempt_deadline_monotonic) - time.monotonic())
         now = time.time()
         if now < max(value["attempt_started_at"], value["updated_at"]):
             raise BoundaryError("local_training", "clock_recovery_required")
         return max(
             0.0,
             min(
-                deadline - now,
-                effective_training_limits(value)["wall_seconds"] - value["elapsed_seconds"],
+                float(deadline) - now,
+                effective_training_limits(value)["wall_seconds"] - float(value["elapsed_seconds"]),
             ),
         )
 
@@ -421,8 +421,10 @@ def validate_remote_journal(value: dict[str, Any]) -> None:
     if deadline is not None:
         before = remote.get("elapsed_before_attempt")
         if (
-            type(deadline) not in {int, float}
+            not isinstance(deadline, (int, float))
+            or type(deadline) not in {int, float}
             or not math.isfinite(deadline)
+            or not isinstance(before, (int, float))
             or type(before) not in {int, float}
             or not math.isfinite(before)
             or before < 0
@@ -817,8 +819,11 @@ def finalize_remote(
         if hashlib.sha256(raw).hexdigest() != value["remote"].get("candidate_sha256"):
             raise BoundaryError("local_training", "remote_quarantine_mismatch")
         saved = value["remote"]
+        original_handle = port.load_call_handle(attempt.identity)
+        if original_handle is None:
+            raise BoundaryError("local_training", "remote_original_call_handle_required")
         candidate = CandidateResult(
-            port.load_call_handle(attempt.identity),
+            original_handle,
             raw,
             saved["candidate_finish_reason"],
             FrozenObject.of(saved["candidate_runtime"]),

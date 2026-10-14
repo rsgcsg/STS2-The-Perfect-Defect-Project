@@ -85,7 +85,10 @@ def build_structured_projection(
     return encode_projection(identity, parts, maximum)
 
 
-def _inputs(attempt: PreparedTrainingAttempt, request: bytes, projection: bytes):
+def _inputs(
+    attempt: PreparedTrainingAttempt, request: bytes, projection: bytes
+) -> tuple[dict[str, Any], StructuredWorkloadRequest, Any, StructuredTrainingConfig,
+           StructuredDevicePolicy, dict[str, bytes]]:
     attempt.bind_payloads(request, projection)
     if attempt.worker_capability != CAPABILITY:
         raise BoundaryError(STAGE, "unsupported_closed_capability")

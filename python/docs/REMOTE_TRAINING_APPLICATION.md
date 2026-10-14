@@ -6,8 +6,7 @@ existing TrainingService. The authorized diagnostic is synthetic local work with
 at most 1000 total optimizer executions and one Root-owned remote profile with a
 cumulative cost cap of USD 1, including image/startup/idle/cleanup. Root alone
 starts paid resources. No new model or first scientific training configuration is
-selected. Historical A/B/C budget and unexecuted-gate statements below describe
-those earlier source packets; they grant no additional budget or execution.
+selected. Historical A/B/C design notes grant no additional budget or execution.
 Current outcomes and exact source receipts are in the J-min handoff.
 
 Packet B is a G2 application/worker contract candidate based on PR177
@@ -40,8 +39,8 @@ containers. Cancel ACK records intent only; pause means the end of the currently
 bounded slice with a verified checkpoint. Parent death leaves a finite provider
 wall timeout and quarantined outputs. Unknown remains blocking without proof.
 
-The source packet supplies synthetic lifecycle regressions and a proposed finite
-CPU2 gate. It does not qualify an image, GPU numerical execution, provider account,
+The source packet supplies synthetic lifecycle regressions and the bounded
+J-min CPU/CUDA engineering gate. It does not qualify an image, GPU numerical execution, provider account,
 data use, paid allocation, production deployment, performance or model quality.
 Rollback removes the configured remote binding; immutable old local and remote
 records remain readable and an unknown remote attempt must still be reconciled.
@@ -66,13 +65,16 @@ Credentials remain in the provider's existing environment/profile.
 cap. Each durable prepare claim reserves its entire slice `max_cost_microusd`
 before an external side effect; unknown does not refund it and resume does not
 replenish it. This is a conservative grant ceiling, not a measured bill or an
-independent shared budget authority. Root retains the single round-wide USD20
-allocation across all jobs and owners. Retained request/projection/candidate bytes
+independent shared budget authority. Root owns this J-min campaign's cumulative USD 1 cap across image build,
+qualification, all training slices, startup/idle and cleanup. Historical A/B/C
+references to USD20 are not an authorization for this campaign. Retained request/projection/candidate bytes
 are charged against the same cumulative scratch envelope before writes.
 
-The proposed future numerical/provider CPU2 gate requires a separate Root
-allocation and any required human-confirmed ModelPlan. This round permits only
-the pure source fixtures below; steps 2-4 are not an execution authorization:
+The original A/B/C packet proposed the CPU2 gate below without provider execution.
+J-min now authorizes this existing numerical/backend path with synthetic fixtures,
+subject to Root's one cumulative USD 1 campaign and exact image/runtime gate.
+It authorizes no new model or first scientific training configuration. The same
+service/transport/adoption flow is used for the bounded CPU and CUDA checks:
 
 1. Run `python/tests/test_remote_training_application.py` on the assembled exact
    source with dependencies A/C and the recipe seam. These pure provider/domain
@@ -82,7 +84,8 @@ the pure source fixtures below; steps 2-4 are not an execution authorization:
    ordinary library entry above: CPU 2000 millicores, memory 8192 MiB, at most two
    optimizer updates/four boundaries, wall 30 s/startup 60 s, request 64 KiB,
    projection/candidate at most 16 MiB each, at most 32 artifacts, and a Root
-   allocated finite cost grant within the shared USD20 envelope. Use synthetic
+   allocated finite cost grant within the current cumulative USD 1 campaign,
+   including image build, startup, idle and cleanup. Use synthetic
    preverified TRAIN frames only and a fresh private original-owner store.
 3. Observe the original IDs, immutable grant, AppRef/handle, actual runtime,
    counters and candidate checkpoint; require provider terminal plus exact App
@@ -100,6 +103,7 @@ executed. J-min has subsequently executed the synthetic source tests; the actual
 provider/device gate remains separate until its exact receipt is recorded. The closeout
 planner selects full because this approved dependent branch contains prior work;
 Root owns the assembled exact-head test dispatch and independent review.
+The earlier CPU2 proposal is historical context, not an additional resource grant.
 
 ## Stable monitoring through the existing application
 
@@ -152,22 +156,25 @@ packet does not promise uninterrupted training across backend death. The browser
 watcher and labelled native rendering belong to their existing UI writer and
 must consume these same fields before claiming whole-product monitor readiness.
 
-The short proposed source gate is the 30 pure test functions (36 cases) in
-tests/test_remote_training_application.py, on Root's assembled exact source,
-with one bounded runner window (60 s), no Torch, provider SDK/calls or real data.
+The initial B packet's proposed source gate was 30 pure functions (36 cases) in
+tests/test_remote_training_application.py, without Torch or provider calls.
+J-min has expanded and executed those regressions and the real numerical recipe
+with a provider substitute. Current exact-head counts are execution receipts,
+not this historical proposed count.
 It covers ordinary typed Application configuration, closed/missing/stale bindings,
 same owner HTTP status, frozen plan versus cap/data/repetition, accepted timestamps
 and original identities after reopen, unknown current slice and metering, plus
 the existing lifecycle/stop/recovery/control/budget negatives. These fixtures were originally
 authored but unexecuted; J-min now exercises the assembled source and reports its
-exact local test receipts separately. Provider/numerical CPU2 qualification above remains a
-separate proposal; it does not follow from a source gate.
+exact local test receipts separately. Actual provider/device qualification remains a separate execution gate;
+it does not follow from the source tests.
 
-Latest owner boundary: this round stops at reviewed reusable source and short
-validation. No long fit, game run or provider allocation is authorized here.
-Data-insufficient branches stop before fitting. Any new model, Input/Target,
-history/window, recipe/configuration or device policy requires explanation and
-explicit human confirmation; the monitor preserves the already selected facts.
+Current J-min boundary: finish the reviewed reusable source, selected full gate,
+local synthetic diagnostic and Root's bounded USD 1 remote campaign. Long fits,
+game runs and real-data training remain outside this packet. The existing graph,
+Input/Target, history and fixed four-advance TBPTT semantics remain selected;
+independent batch execution and CUDA are the authorized numerical backend change.
+A new model or first scientific training configuration still needs user approval.
 
 ## Original wall budget and known no-effect control
 
@@ -217,10 +224,10 @@ that precondition rather than infer eligibility or verify receipts themselves.
 Original provider phase adds not_started/not_started_cleanup_pending; original
 deadline, cleanup reserve and explicit control observation are exposed as facts.
 
-The updated pure packet has 30 authored test functions (36 parametrized cases),
-including fake-clock deployment/input/submit/poll/cleanup accounting, pre-claim
-pause/cancel barriers, preserved uncertain prior claims, explicit control-only
-reconciliation, sealed successor admission and missing/foreign/unstopped/busy
-negatives. It remains unexecuted pending Root's single finite fake-only gate.
-All actual remote recipe/model/device qualification and long fitting remain
-unavailable or stopped this round; these lifecycle fixes do not choose a ModelPlan.
+The historical B gate listed 30 authored functions (36 parametrized cases).
+J-min has executed the expanded source regressions, including fake-clock
+prepare/input/submit/poll/cleanup accounting, pause/cancel barriers, uncertain
+prior claims, explicit control-only reconciliation and sealed successor admission.
+Actual provider/image/CUDA qualification and billing remain separately recorded
+in Root's campaign receipts. These lifecycle fixes choose no new ModelPlan and
+permit no long fit or real-data training.

@@ -163,7 +163,7 @@ def parse_numerical_projection(raw: bytes) -> StructuredDataset:
             or not 1 <= len(row["steps"]) <= MAX_STEPS_PER_RUN
         ):
             raise BoundaryError(STAGE, "projection_run_shape")
-        steps = []
+        steps: list[StructuredStep] = []
         for index, value in enumerate(row["steps"]):
             step = object_fields(
                 value, {"position", "frame", "chosen_action_id", "reset_before", "advance"}, STAGE

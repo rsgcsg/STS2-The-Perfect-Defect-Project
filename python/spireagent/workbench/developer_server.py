@@ -232,7 +232,7 @@ class Application:
         from spireagent.workbench.local_recordings import LocalRecordingCatalog
         from spireagent.workbench.local_training import LocalTrainingService
 
-        remote_bindings = ()
+        remote_bindings: tuple[Any, ...] = ()
         if config.remote_training is not None:
             from spireagent.workbench.developer import RemoteTrainingConfiguration
             from spireagent.workbench.remote_training_operation import RemoteTrainingBinding

@@ -187,3 +187,41 @@ def test_actual_sdk_empty_terminated_result_requires_original_terminal_protobuf(
         with pytest.raises(modal.exception.RemoteError):
             backend.poll(attempt, handle, budget=TrainingProviderBudget(lambda: 30))
     assert len(reads) == 1
+
+
+def test_successful_original_call_with_nonbyte_return_is_known_invalid_not_a_candidate():
+    import modal
+
+    from spireagent.training_execution_contracts import (
+        KnownFailure,
+        TrainingAppRef,
+        TrainingCallHandle,
+    )
+
+    attempt, _, _ = prepared_fixture()
+    ref = TrainingAppRef(
+        attempt.identity,
+        "ap-wire",
+        "fu-wire",
+        attempt.app_name,
+        attempt.placement.account_id,
+        attempt.placement.environment,
+        attempt.placement.image_object_id,
+    )
+    handle = TrainingCallHandle(ref, "fc-wire")
+
+    async def get(timeout):
+        assert timeout == 0
+        return {"unexpected": "worker_return"}
+
+    sdk = SimpleNamespace(
+        exception=modal.exception,
+        FunctionCall=SimpleNamespace(
+            from_id=lambda selected: SimpleNamespace(get=SimpleNamespace(aio=get))
+        ),
+    )
+    outcome = SdkModalTrainingBackend(sdk=sdk).poll(
+        attempt, handle, budget=TrainingProviderBudget(lambda: 30)
+    )
+    assert isinstance(outcome, KnownFailure) and outcome.handle == handle
+    assert outcome.code == "provider_worker_response_invalid"

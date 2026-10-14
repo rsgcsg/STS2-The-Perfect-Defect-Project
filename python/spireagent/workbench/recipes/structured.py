@@ -156,8 +156,11 @@ class StructuredRecipeAdapter:
     def __init__(self, recipe_id: str | None = None) -> None:
         self.recipe_id = recipe_id
 
-    def preflight(self, store: Any, owner: Any, source_id: str,
-                  *, with_monitor_facts: bool = False) -> Any:
+    def preflight(self, store: Any, owner: Any, source_id: str) -> Any:
+        return self._structured_preflight(store, owner, source_id)
+
+    def _structured_preflight(self, store: Any, owner: Any, source_id: str,
+                              *, with_monitor_facts: bool = False) -> Any:
         from stpd.fullrun.structured_sequences import (
             MAX_SOURCE_BYTES,
             SOURCE_SCHEMA,
@@ -270,7 +273,7 @@ class StructuredRecipeAdapter:
 
 
     def preflight_request(self, store: Any, owner: Any, request: TrainingRequest) -> Any:
-        return self.preflight(store, owner, request.source_id, with_monitor_facts=True)
+        return self._structured_preflight(store, owner, request.source_id, with_monitor_facts=True)
 
     def training_plan(self, store: Any, owner: Any, request: TrainingRequest,
                       *, prepared_dataset: Any = None) -> dict[str, Any]:

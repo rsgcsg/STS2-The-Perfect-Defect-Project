@@ -70,6 +70,7 @@ from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
     REWARD_M0_RECIPE,
+    STRUCTURED_RECIPES,
     TRUSTED_RECIPES,
     TYPED_RECIPES,
     describe_recipe,
@@ -886,7 +887,7 @@ class LocalTrainingService:
             adapter = recipe_adapter(request.recipe_id)
             dataset = adapter.preflight_request(store, owner, request)
             plan = None
-            if callable(getattr(adapter, "training_plan", None)):
+            if request.recipe_id in STRUCTURED_RECIPES:
                 plan = checked_training_plan(adapter.training_plan(
                     store, owner, request, prepared_dataset=dataset))
             if historical:
