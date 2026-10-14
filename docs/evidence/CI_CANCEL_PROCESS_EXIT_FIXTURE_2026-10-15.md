@@ -37,8 +37,10 @@ retained checkpoint, no selected result and no automatic retry. Final cleanup
 uses only this fixture's actual Popen and pre-bound worker handles.
 
 Ordinary structured completion and HTTP cancellation retain their default child
-entry coverage. There are no mocked exits/clocks, deadline extensions, deleted
-assertions or skipped tests. Focused tests and independent review assess this
+entry coverage. There are no mocked exits/clocks, deadline extensions or skipped
+tests. Original cancellation/resume and unknown/no-retry assertions remain;
+the incorrect single-PID assertion is replaced by launcher/worker identity and
+termination checks. Focused tests and independent review assess this
 fixture boundary; the selected Python source/test gate and hosted terminal
 evidence remain separate before merge. Removing default interpreter teardown
 from the positive fixture does not guarantee that durable cancellation writes
@@ -62,8 +64,10 @@ checkpoint before cancellation. It preserves Popen's separate launcher identity
 and verifies the direct or observed Windows parent/child relationship. Windows
 holds that worker's native process handle before cancel using CPython's native
 `_winapi` binding, which preserves Win64 HANDLE width. After the original SUT
-stop, only a signaled worker handle proves termination; an alive worker fails
-the test before cleanup. No PID is reopened after the kill, and worker exit
+stop, an immediate zero-timeout observation must find the worker handle
+signaled; an alive worker at that point fails before cleanup. This intentionally
+does not provide an extra post-stop grace or promise no Windows timing flakes.
+No PID is reopened after the kill, and worker exit
 code is not assumed to equal the launcher's code.
 
 Any fixture cleanup is separately labelled and cannot become SUT stop evidence.
