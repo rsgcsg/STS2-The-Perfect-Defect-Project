@@ -201,7 +201,9 @@ def fixture_failure_diagnostic(service, owner, phases, observer, error):
         observer.observe("failure_before_fixture_cleanup")
     phases["fixture_failure"] = {"type": type(error).__qualname__, "message": str(error)[:512]}
     operation = service.status()["operation"]
-    return cancellation_diagnostic(service, owner, operation, phases, suffix="-failure")
+    return cancellation_diagnostic(
+        service, owner, operation, phases, suffix="-failure",
+        child_attempt=observer.binding["attempt_id"] if observer.binding else None)
 
 
 def fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request):
@@ -211,7 +213,9 @@ def fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request)
         if service._thread is not None:
             service._thread.join(timeout=5)
         operation = service.status()["operation"]
-        diagnostic = cancellation_diagnostic(service, owner, operation, phases, suffix="-cleanup")
+        diagnostic = cancellation_diagnostic(
+            service, owner, operation, phases, suffix="-cleanup",
+            child_attempt=observer.binding["attempt_id"] if observer.binding else None)
         # JUnit properties retain the complete bounded observation on both a
         # passing case and an early failure; a temporary pathname alone cannot.
         pytest_request.node.user_properties.append(("fixture_process_observation", diagnostic))
@@ -310,6 +314,7 @@ def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch, r
         cancelled = settle(service)
         worker_exit = observer.observe("post_sut_stop_before_fixture_cleanup")
         diagnostic = cancellation_diagnostic(service, owner, cancelled, phases)
+        pytest_request.node.user_properties.append(("fixture_cancel_observation", diagnostic))
         assert worker_exit["terminated"] is True, diagnostic
         assert cancelled["status"] == "cancelled", diagnostic
         assert cancelled["worker_state"] == "terminal" and cancelled.get("checkpoint_id"), cancelled
@@ -669,12 +674,13 @@ if ALLOW_ADVANCE:
                         processes=processes)
 
 
-def cancellation_diagnostic(service, owner, operation, phases, *, suffix=""):
+def cancellation_diagnostic(service, owner, operation, phases, *, suffix="", child_attempt=None):
     attempt = operation.get("attempt_id", "unstarted")
-    path = owner.path.parent / ("fixture-checkpoint-" + attempt + ".jsonl")
+    trace_attempt = child_attempt if child_attempt is not None else attempt
+    path = owner.path.parent / ("fixture-checkpoint-" + trace_attempt + ".jsonl")
     records = [json.loads(line) for line in path.read_bytes().splitlines()] if path.exists() else []
     raw = json_bytes({"operation": operation, "parent": phases, "child": records,
-                      "failure": service._failure_diagnostic})
+                      "child_trace_attempt": trace_attempt, "failure": service._failure_diagnostic})
     assert len(raw) <= 65536, "bounded fixture cancellation diagnostic required"
     destination = owner.path.parent / (
         "fixture-cancel-diagnostic-" + attempt + suffix + ".json")
