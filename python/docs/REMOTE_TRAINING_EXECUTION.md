@@ -24,6 +24,13 @@ reply or persistence failure stays unknown. Restarted executors reconcile the
 original deterministic App or saved call; they never create another App/submit.
 An absent provider inventory row is not proof that creation never happened.
 
+Modal's adapter owns matching configured GPU selectors to returned resource
+fields. An `A10` request accepts wire `A10` or the observed Modal wire alias
+`A10G`, with exactly one GPU. `none` requires an empty wire GPU and count zero;
+other approved selectors still require their exact wire value and count one.
+The public placement selector remains `A10`. Actual returned wire fields remain
+unchanged in evidence, and image, CPU, memory, rank, time and stop gates still apply.
+
 The ordinary library constructor is `ModalTrainingExecutor(owner)`: it creates
 a lazy real `SdkModalTrainingBackend`. A trusted configured target/binding must be supplied
 by the application's supported configuration owner. Test backend injection is a

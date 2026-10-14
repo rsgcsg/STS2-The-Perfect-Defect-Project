@@ -1,14 +1,15 @@
 """Actual protobuf shapes from the locked SDK; no live client/provider calls."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from modal_proto import api_pb2 as api
 from training_executor_fixtures import prepared_fixture
 
-from spireagent.json_boundary import BoundaryError
-from spireagent.modal_training_executor import SdkModalTrainingBackend
+from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.modal_training_executor import SdkModalTrainingBackend, modal_gpu_matches
 from spireagent.training_execution_contracts import TrainingProviderBudget
 
 
@@ -99,6 +100,110 @@ def test_provider_protobuf_identity_and_resource_drift_reject(change):
         backend(attempt, layout, result)._function_identity(
             attempt, "ap-wire", budget=TrainingProviderBudget(lambda: 30)
         )
+
+
+def a10_attempt():
+    attempt, _, _ = prepared_fixture()
+    runtime = attempt.runtime.value()
+    runtime["device"] = "cuda:0"
+    return replace(
+        attempt,
+        placement=replace(attempt.placement, gpu="A10", device="cuda:0"),
+        runtime=FrozenObject.of(runtime),
+        limits=replace(attempt.limits, cpu_millicores=2000, memory_mib=8192),
+    )
+
+
+@pytest.mark.parametrize("wire_type", ["A10", "A10G"])
+def test_a10_original_function_consumer_accepts_observed_modal_wire_alias(wire_type):
+    # q05's original FunctionCreateResponse records A10G/count1, CPU2000/RAM8192.
+    # Reconstruct those resource fields in locked SDK FunctionGetResponse, which
+    # is the ordinary adapter's actual consumer; this fixture makes no RPC claim.
+    attempt = a10_attempt()
+    layout, result = replies(attempt)
+    gpu = result.function.ranked_functions[0].function.resources.gpu_config
+    gpu.gpu_type, gpu.count = wire_type, 1
+    assert (
+        backend(attempt, layout, result)._function_identity(
+            attempt, "ap-wire", budget=TrainingProviderBudget(lambda: 30)
+        )
+        == "fu-wire"
+    )
+    assert gpu.gpu_type == wire_type  # Preserve provider evidence, no normalization.
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "wrong_gpu",
+        "empty_gpu",
+        "zero_count",
+        "two_count",
+        "image",
+        "cpu",
+        "cpu_max",
+        "memory",
+        "memory_max",
+        "startup",
+        "timeout",
+        "rank",
+        "retries",
+    ],
+)
+def test_a10_wire_alias_does_not_hide_other_original_function_drift(defect):
+    attempt = a10_attempt()
+    layout, result = replies(attempt)
+    definition = result.function.ranked_functions[0].function
+    gpu = definition.resources.gpu_config
+    gpu.gpu_type, gpu.count = "A10G", 1
+    if defect == "wrong_gpu":
+        gpu.gpu_type = "H100!"
+    elif defect == "empty_gpu":
+        gpu.gpu_type = ""
+    elif defect == "zero_count":
+        gpu.count = 0
+    elif defect == "two_count":
+        gpu.count = 2
+    elif defect == "image":
+        definition.image_id = "im-drift"
+    elif defect == "cpu":
+        definition.resources.milli_cpu += 1
+    elif defect == "cpu_max":
+        definition.resources.milli_cpu_max = 0
+    elif defect == "memory":
+        definition.resources.memory_mb += 1
+    elif defect == "memory_max":
+        definition.resources.memory_mb_max = 0
+    elif defect == "startup":
+        definition.startup_timeout_secs += 1
+    elif defect == "timeout":
+        result.function.timeout_secs += 1
+    elif defect == "rank":
+        result.function.ranked_functions[0].rank = 1
+    else:
+        definition.retry_policy.retries = 1
+    with pytest.raises(BoundaryError):
+        backend(attempt, layout, result)._function_identity(
+            attempt, "ap-wire", budget=TrainingProviderBudget(lambda: 30)
+        )
+
+
+@pytest.mark.parametrize("selector", ["L4", "L40S", "A100-40GB", "A100-80GB", "H100!"])
+def test_other_modal_selectors_remain_exact(selector):
+    assert modal_gpu_matches(selector, selector, 1)
+    assert not modal_gpu_matches(selector, "A10G", 1)
+    assert not modal_gpu_matches(selector, selector, 2)
+
+
+def test_wire_alias_does_not_expand_public_selector_or_accept_invalid_count():
+    attempt = a10_attempt()
+    with pytest.raises(BoundaryError, match="unsupported_gpu"):
+        replace(attempt.placement, gpu="A10G")
+    assert not modal_gpu_matches("A10G", "A10G", 1)
+    assert not modal_gpu_matches("A10", "A10G", True)
+    assert modal_gpu_matches("none", "", 0)
+    assert not modal_gpu_matches("none", "A10G", 0)
+    assert not modal_gpu_matches("none", "", 1)
 
 
 def test_blocking_sdk_coroutine_uses_original_remaining_and_cancels():

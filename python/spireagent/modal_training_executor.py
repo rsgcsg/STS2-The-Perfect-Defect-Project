@@ -40,6 +40,25 @@ MODAL_SDK_VERSION = "1.5.5"
 _STAGE = "modal_training_executor"
 
 
+def modal_gpu_matches(selector: str, wire_type: str, count: int) -> bool:
+    """Match approved Modal selectors without rewriting the provider's wire facts.
+
+    Modal returns A10G for an A10 request. This one observed alias is confined
+    to the provider adapter; other approved GPU selectors remain exact.
+    """
+    if type(count) is not int:
+        return False
+    if selector == "none":
+        return wire_type == "" and count == 0
+    if selector == "A10":
+        return wire_type in {"A10", "A10G"} and count == 1
+    return (
+        selector in {"L4", "L40S", "A100-40GB", "A100-80GB", "H100!"}
+        and wire_type == selector
+        and count == 1
+    )
+
+
 class ModalTrainingBackend(Protocol):
     """Provider effects only. Durable intent and result meaning belong elsewhere."""
 
@@ -409,13 +428,12 @@ class SdkModalTrainingBackend:
             raise BoundaryError(_STAGE, "ranked_function_binding_mismatch")
         definition = ranked[0].function
         resources, scaling = definition.resources, result.function.autoscaler_settings
-        expected_gpu_count = 0 if attempt.placement.gpu == "none" else 1
-        expected_gpu = "" if expected_gpu_count == 0 else attempt.placement.gpu
         if (
             definition.image_id != attempt.placement.image_object_id
             or definition.function_name != "training_attempt"
-            or resources.gpu_config.gpu_type != expected_gpu
-            or resources.gpu_config.count != expected_gpu_count
+            or not modal_gpu_matches(
+                attempt.placement.gpu, resources.gpu_config.gpu_type, resources.gpu_config.count
+            )
             or resources.milli_cpu != attempt.limits.cpu_millicores
             or resources.milli_cpu_max != attempt.limits.cpu_millicores
             or resources.memory_mb != attempt.limits.memory_mib
