@@ -59,8 +59,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 The first completed instance is a bounded text-menu-v2 compatibility loop. Full
 G2/V1 implementation and verification continue against the retained requirements;
 only the user can approve those gates. Source/test, installed/loaded execution,
-Human origin and scientific results remain separate. The execution packet owns
-the current authorization, resources and approval boundary; it does not turn a proposed design or a branch into deployed capability.
+Human origin and scientific results remain separate. Current authorization, resources and approval
+boundaries are in [CURRENT](docs/memory/CURRENT.md) and the [active plan](docs/plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md); the historical execution packet keeps only its original scope, evidence and the obligations carried by section 5 of the active plan. Neither turns a proposed design or a branch into deployed capability.
 
 ## Workspace
 
