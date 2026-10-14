@@ -140,9 +140,7 @@ class TrainingRequest:
         }
         if (not isinstance(value, dict)
                 or not required <= set(value) <= required | {"execution_policy", "batch_policy"}
-                or value["schema"] not in {REQUEST_SCHEMA, REMOTE_REQUEST_SCHEMA}
-                or (value["schema"] == REQUEST_SCHEMA) !=
-                (value.get("placement_id") == LOCAL_PLACEMENT)):
+                or value["schema"] not in {REQUEST_SCHEMA, REMOTE_REQUEST_SCHEMA}):
             raise BoundaryError("local_training", "invalid_training_request")
         if "execution_policy" in value:
             from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
@@ -150,6 +148,8 @@ class TrainingRequest:
             checked_recipe_execution_policy(value["recipe_id"], value["execution_policy"])
         result = cls(**{key: item for key, item in value.items() if key != "schema"})
         result.validate()
+        if (value["schema"] == REQUEST_SCHEMA) != (result.placement_id == LOCAL_PLACEMENT):
+            raise BoundaryError("local_training", "invalid_training_request")
         return result
 
 

@@ -74,6 +74,19 @@ the owning training source/lock identity with the new device, projection, handle
 and shared transport files; it does not relabel CUDA source as an unchanged CPU
 closure.
 
+The ordinary Run preparation owner's optional remote branch imports the pure
+`structured_remote_contracts.py` declaration, so the numerical training inventory
+includes that file and the native training inventory inherits it. This adds no
+SDK, Workbench or provider lifecycle import to the numerical scope. The shared
+`structured_code_scope.py` registry is itself already part of inference and
+training identities: changing this registry changes both source digests once,
+even though the inference path set and model graph are unchanged. Exact package
+loading and checkpoint/proof checks keep rejecting mismatched historical
+identities; old artifacts remain bound to their original producer and code.
+Subsequent edits to the separate remote contract affect training identity only,
+as checked by source-mutation regressions. That isolation does not claim this
+registry change leaves prior inference identities unchanged.
+
 The tensor-tree codec normalizes model, optimizer and memory tensors to CPU bytes.
 The adapter adds explicit CUDA RNG bytes and retains CPU/Python/NumPy RNG state.
 Resume validates identity, parameter/optimizer inventories, cursor/counters, memory
