@@ -67,7 +67,7 @@ from ..structured_profiles import (
     trained_source,
     verify_training_partition,
 )
-from ..structured_workload_contracts import MAX_RESUME_ANCESTRY
+from ..structured_workload_contracts import MAX_RESUME_ANCESTRY, accepted_counters
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import (
@@ -822,6 +822,7 @@ def execute_structured_workload(
             cursor=asdict(engine.cursor),
             optimizer_updates=engine.updates,
             phase=engine.phase,
+            accepted_counters=accepted_counters(engine),
         )
         return checkpoint_id
 
@@ -865,7 +866,8 @@ def execute_structured_workload(
                 )
             guard()
             progress = engine.advance_chunk()
-            event("progress", **asdict(progress), durable_checkpoint_id=checkpoint_id)
+            event("progress", **asdict(progress), durable_checkpoint_id=checkpoint_id,
+                  accepted_counters=accepted_counters(engine))
             if (
                 engine.boundary % request.checkpoint_every_boundaries == 0
                 or engine.training_complete

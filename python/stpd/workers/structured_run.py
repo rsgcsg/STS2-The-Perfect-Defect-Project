@@ -87,6 +87,7 @@ def prepare_structured_run(
     code_scope: str = LEGACY_SCOPE,
     model_control: NativeGraphControl | None = None,
     execution_policy: dict[str, Any] | None = None,
+    remote_binding: dict[str, Any] | None = None,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
@@ -133,7 +134,29 @@ def prepare_structured_run(
             and producer.uv_lock_sha256 != identity["code_identity"]["dependency_lock_sha256"]
         ):
             raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
+        if remote_binding is not None:
+            from ..structured_remote_contracts import (
+                StructuredDevicePolicy,
+                freeze_remote_execution_identity,
+                remote_code_closure_sha256,
+            )
+            from ..structured_workload_contracts import StructuredBatchPolicy
+
+            binding = dict(remote_binding)
+            if (not scoped or set(binding) != {"runtime", "device_policy", "execution_binding_id",
+                                               "code_closure_sha256", "batch_policy"}
+                    or binding["code_closure_sha256"] != remote_code_closure_sha256(code_scope)):
+                raise BoundaryError("structured_run", "remote_numerical_binding_mismatch")
+            identity = freeze_remote_execution_identity(
+                identity, dataset, runtime=FrozenObject.of(binding["runtime"]),
+                device_policy=StructuredDevicePolicy.from_dict(binding["device_policy"]),
+                execution_binding_id=binding["execution_binding_id"],
+                code_closure_sha256=binding["code_closure_sha256"],
+                batch_policy=(None if binding["batch_policy"] is None else
+                              StructuredBatchPolicy.from_dict(binding["batch_policy"])))
         execution_parameters = {"operation_id": operation_id, "execution_identity": identity}
+    if remote_binding is not None and operation_id is None:
+        raise BoundaryError("structured_run", "remote_operation_identity_required")
     source_info = {
         "schema": native_source_schema(code_scope, dataset) if native else SOURCE_SCHEMA,
         "source_kind": dataset.source_kind,

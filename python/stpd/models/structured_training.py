@@ -48,7 +48,9 @@ def evaluate_runs(model: StructuredM2, runs: tuple[StructuredRun, ...]) -> dict[
                 if step.chosen_action_id is not None:
                     scores = model.score(step.frame, entities, memory)
                     target = step.frame.action_ids.index(step.chosen_action_id)
-                    loss = F.cross_entropy(scores.unsqueeze(0), torch.tensor([target]))
+                    loss = F.cross_entropy(
+                        scores.unsqueeze(0), torch.tensor([target], device=scores.device)
+                    )
                     losses.append(float(loss))
                     selected = int(scores.argmax())
                     labels += 1
@@ -142,7 +144,11 @@ def train_structured_model(
                 if step.chosen_action_id is not None:
                     scores = model.score(step.frame, entities, memory)
                     target = step.frame.action_ids.index(step.chosen_action_id)
-                    losses.append(F.cross_entropy(scores.unsqueeze(0), torch.tensor([target])))
+                    losses.append(
+                        F.cross_entropy(
+                            scores.unsqueeze(0), torch.tensor([target], device=scores.device)
+                        )
+                    )
             if not budget_reached and (advances or losses):
                 flush()
             if updates >= config.max_updates:
