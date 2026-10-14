@@ -4,14 +4,18 @@ Start with README → [CURRENT](memory/CURRENT.md) → the active task and ownin
 specification. Read only the route needed for the next decision. This is a map,
 not another requirements, identity or status registry.
 
-## 先读（2026-10-13 起）
+## 先读（2026-10-14 起）
 
-- [系统地图](SYSTEM_MAP.zh-CN.md)：分层、统一逻辑、当前组件和工具。
-- [工程规则（两层制）](ENGINEERING_RULES.zh-CN.md)：日常规则、评测、角色与决策权。
-- [能力记分板](SCOREBOARD.md)：唯一进展状态页。
+- [CURRENT](memory/CURRENT.md) → [活动计划](plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md)：当前组合、首个瓶颈、交付卡、旧要求处置。
+- [P1 环境协议（草案）](protocols/P1.zh-CN.md)。注意：历史任务表的"P1（现状审计）"和组合启动"P1-A/B"不是这个协议。
+- [系统地图](SYSTEM_MAP.zh-CN.md)：分层、每层统一什么、改哪一层。
+- [工程规则](ENGINEERING_RULES.zh-CN.md)：日常规则、评测、角色与决策权。
+- [能力记分板](SCOREBOARD.md)：能力结果；[STATUS](STATUS.md)：已实现与证据。
 - [决策记录](DECISIONS.md)、[工程日志](log/README.md)、[归档](archive/README.md)。
 
-## Current baseline
+## Historical baseline (2026-10-08 to 10-12; no longer dispatches work)
+
+Still-valid obligations from these files are mapped in the active plan, section 5.
 
 - [V1 specification](BASELINE_V1_SPEC.zh-CN.md): required outcomes, selected
   design, rationale, assumptions and unimplemented choices.

@@ -38,13 +38,13 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [系统地图](docs/SYSTEM_MAP.zh-CN.md), [工程规则（两层制）](docs/ENGINEERING_RULES.zh-CN.md) and
-  [能力记分板](docs/SCOREBOARD.md): unified logic, daily rules and the only progress page.
-
-- [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
-  abstract layers, full interaction target, I/F-off Agent and user approval gates.
-- [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
-  [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [CURRENT](docs/memory/CURRENT.md) and the [active plan](docs/plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md):
+  the selected combination, first bottleneck, next deliverables and authorization.
+- [系统地图](docs/SYSTEM_MAP.zh-CN.md), [工程规则](docs/ENGINEERING_RULES.zh-CN.md) and
+  [能力记分板](docs/SCOREBOARD.md): layers, daily rules and capability results.
+- Historical baseline (no longer dispatches work; still-valid obligations are mapped in the active plan):
+  [BASELINE_V1_SPEC](docs/BASELINE_V1_SPEC.zh-CN.md) and its
+  [execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
 - [Status and evidence](docs/STATUS.md): integrated source, candidate builds,
   installed/deployed observations and their separate qualification limits.
 - [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
