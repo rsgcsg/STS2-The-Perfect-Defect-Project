@@ -5,18 +5,22 @@ import { isJsonObject } from "./json.js";
 export function nativeCardSelectionProblems(snapshot: unknown): string[] {
   if (!isJsonObject(snapshot) || !isJsonObject(snapshot.interaction)
       || snapshot.interaction.kind !== "card_selection") return [];
-  const bound = snapshot.bound_actions;
-  if (!isJsonObject(bound) || bound.status !== "complete"
-      || !Array.isArray(bound.actions) || bound.actions.length === 0) return [];
   const content = snapshot.interaction.content;
-  if (!isJsonObject(content) || !isJsonObject(content.surface) || !isJsonObject(content.context))
-    return ["native card selection requires typed current content"];
-  const surface = content.surface;
   // This additive Managed extension does not redefine other Hosts' existing
   // card_selection contracts or historical readers.
-  if (surface.selector_profile == null) return [];
+  if (!isJsonObject(content) || !isJsonObject(content.surface)
+      || content.surface.selector_profile == null) return [];
+  const surface = content.surface;
+  const bound = snapshot.bound_actions;
+  // Unavailable/partial diagnostics carry no claim of an actionable catalog.
+  // A complete catalog must close even when every actual action was removed.
+  if (!isJsonObject(bound) || bound.status !== "complete") return [];
   if (surface.selector_profile !== "managed-command-selector-1")
     return ["native card selection requires its explicit Managed selector profile"];
+  if (!isJsonObject(content.context))
+    return ["native card selection requires typed current content"];
+  if (!Array.isArray(bound.actions))
+    return ["native card selection requires the complete current action catalog"];
   const cards = surface.cards;
   const text = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0
     && !/[{}]|\[img/iu.test(v);
@@ -50,10 +54,41 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
         || card.is_deselectable !== (manual && card.is_selected)))
     return ["native card selection purpose, bounds, flags or selected identities are inconsistent"];
   const ctx = content.context;
-  if (ctx.kind !== "selection" || !isJsonObject(ctx.combat) || ctx.combat.kind !== "combat"
-      || !isJsonObject(ctx.combat.player) || !text(ctx.combat.player.player_entity_id)
-      || !Array.isArray(ctx.combat.enemies) || !Number.isSafeInteger(ctx.combat.round))
-    return ["native card selection requires current post-prefix combat context"];
+  const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  const statusesComplete = (values: unknown): boolean => Array.isArray(values) && values.every((value) =>
+    isJsonObject(value) && ["definition_id", "name", "type", "description"].every((key) => text(value[key]))
+    && finite(value.amount));
+  const healthComplete = (value: Record<string, unknown>): boolean => {
+    if (typeof value.health_bar_visible !== "boolean"
+        || !["Normal", "InfiniteWithNumbers", "InfiniteWithoutNumbers"].includes(String(value.health_display))) return false;
+    const numbers = value.health_bar_visible && value.health_display !== "InfiniteWithoutNumbers";
+    return numbers ? finite(value.hp) && finite(value.max_hp) : value.hp === null && value.max_hp === null;
+  };
+  const creatureComplete = (value: unknown): value is Record<string, unknown> => isJsonObject(value)
+    && text(value.entity_id) && text(value.definition_id) && finite(value.block)
+    && healthComplete(value) && statusesComplete(value.statuses);
+  const persistent = snapshot.persistent;
+  const persistentContent = isJsonObject(persistent) ? persistent.content : null;
+  const owner = isJsonObject(persistentContent) && isJsonObject(persistentContent.player)
+    ? persistentContent.player.entity_id : null;
+  const hud = ctx.combat;
+  const player = isJsonObject(hud) ? hud.player : null;
+  if (ctx.kind !== "selection" || !isJsonObject(hud) || hud.kind !== "combat"
+      || !Number.isSafeInteger(hud.round) || (hud.round as number) < 1 || !text(hud.turn_owner)
+      || !isJsonObject(player) || !text(player.player_entity_id) || player.player_entity_id !== owner
+      || !["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+        "exhaust_pile_count", "orb_slots"].every((key) => finite(player[key]))
+      || !statusesComplete(player.statuses)
+      || !Array.isArray(player.orbs) || !player.orbs.every((orb) => isJsonObject(orb)
+        && ["entity_id", "definition_id", "name"].every((key) => text(orb[key]))
+        && finite(orb.passive) && finite(orb.evoke) && Array.isArray(orb.keywords)
+        && orb.keywords.every((tip) => isJsonObject(tip) && text(tip.name) && text(tip.description)))
+      || !Array.isArray(player.companions) || !player.companions.every((pet) => creatureComplete(pet)
+        && typeof pet.alive === "boolean")
+      || !Array.isArray(hud.enemies) || !hud.enemies.every((enemy) => creatureComplete(enemy) && text(enemy.name)
+        && Array.isArray(enemy.intents) && enemy.intents.every((intent) => isJsonObject(intent)
+          && ["type", "label", "title", "description"].every((key) => text(intent[key])))))
+    return ["native card selection requires complete current post-prefix combat context for the persistent player"];
   const referents = snapshot.referents;
   if (!Array.isArray(referents)) return ["native card selection requires current card referents"];
   const cardRefs = referents.filter((ref) => isJsonObject(ref) && ref.role === "card");

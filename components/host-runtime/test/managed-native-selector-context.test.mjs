@@ -127,3 +127,58 @@ test("Managed selector profile does not redefine Reference/legacy card-selection
   assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
   assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "unavailable");
 });
+
+
+test("marked selector SDK and menu require the whole current HUD and same persistent player", () => {
+  const baseline = project(selector()).snapshot;
+  const hud = baseline.interaction.content.context.combat;
+  hud.player.statuses = [{ definition_id: "STRENGTH", name: "Strength", amount: 1, type: "Buff", description: "Deal more damage." }];
+  hud.player.orbs = [{ entity_id: "orb-public", definition_id: "LIGHTNING", name: "Lightning", passive: 3, evoke: 8, keywords: [] }];
+  hud.player.companions = [{ entity_id: "pet-public", definition_id: "OSTY", alive: true,
+    hp: null, max_hp: null, block: 0, health_bar_visible: false, health_display: "Normal", statuses: [] }];
+  assert.doesNotThrow(() => decodePlayerSnapshot(baseline));
+  const mutations = [
+    s => { delete s.player.hp; }, s => { delete s.player.block; delete s.player.energy; },
+    s => { s.player.player_entity_id = "foreign-unbound-player"; },
+    ...["max_hp", "max_energy", "stars", "draw_pile_count", "discard_pile_count", "exhaust_pile_count", "orb_slots"].map(key => s => { delete s.player[key]; }),
+    s => { s.turn_owner = null; }, s => { s.round = 0; },
+    s => { s.player.statuses[0].amount = null; }, s => { s.player.statuses[0].description = null; },
+    s => { s.player.orbs[0].passive = null; }, s => { s.player.orbs[0].keywords = null; },
+    s => { s.player.companions[0].alive = null; }, s => { s.player.companions[0].hp = 5; },
+    s => { s.enemies[0].hp = null; }, s => { s.enemies[0].health_display = "unknown"; },
+    s => { s.enemies[0].intents = [{ type: "Attack" }]; }, s => { s.enemies[0].statuses = null; }
+  ];
+  for (const mutate of mutations) {
+    const snapshot = structuredClone(baseline); mutate(snapshot.interaction.content.context.combat);
+    assert.throws(() => decodePlayerSnapshot(snapshot), /native card selection/u);
+    assert.ok(nativeCardSelectionProblems(snapshot).length > 0);
+    assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "unavailable");
+  }
+  // Native hidden-health projection is explicit null, not a missing number.
+  const hidden = structuredClone(baseline);
+  Object.assign(hidden.interaction.content.context.combat.enemies[0], { health_bar_visible: false, hp: null, max_hp: null });
+  assert.doesNotThrow(() => decodePlayerSnapshot(hidden));
+  for (const mode of ["InfiniteWithNumbers", "InfiniteWithoutNumbers"]) {
+    const infinite = structuredClone(baseline);
+    Object.assign(infinite.interaction.content.context.combat.enemies[0], { health_display: mode,
+      ...(mode === "InfiniteWithoutNumbers" ? { hp: null, max_hp: null } : {}) });
+    assert.doesNotThrow(() => decodePlayerSnapshot(infinite));
+  }
+});
+
+test("complete marked selector cannot erase the entire expected catalog", () => {
+  const snapshot = structuredClone(project(selector()).snapshot);
+  Object.assign(snapshot.bound_actions, { actions: [], materialized_count: 0, total_count: 0 });
+  snapshot.status = "observed"; snapshot.interaction.capabilities = [];
+  assert.throws(() => decodePlayerSnapshot(snapshot), /native card selection/u);
+  assert.ok(nativeCardSelectionProblems(snapshot).length > 0);
+  // Unavailable marked diagnostics, including noncombat selectors, remain readable.
+  snapshot.bound_actions.status = "unavailable"; snapshot.status = "visible_unsupported";
+  snapshot.completeness.status = "partial";
+  snapshot.interaction.content.context.combat = null;
+  assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
+  assert.deepEqual(nativeCardSelectionProblems(snapshot), []);
+  delete snapshot.interaction.content.surface.selector_profile;
+  snapshot.bound_actions.status = "complete"; snapshot.status = "observed";
+  assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
+});

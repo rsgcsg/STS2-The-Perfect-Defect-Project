@@ -429,7 +429,13 @@ complete rendered card/hover details, native option count, per-card select/
 deselect state, selected entity IDs, bounds and native skip/manual-confirm flags.
 Its selection context includes the current post-parent combat HUD; it does not
 become a combat-turn action owner. Strict SDK consumers verify the card/referent/
-selection/action multiset. Incomplete historical or unknown-purpose selectors
+selection/action multiset, including when a complete catalog has zero actions.
+For this marked complete surface, every current HUD scalar and nested public
+status/orb/companion/enemy/intent fact is required; the HUD player entity must
+match the current persistent player. Enemy and companion HP numbers are finite
+only when native health visibility and display mode permit them, otherwise both
+HP fields are explicitly null. Unavailable marked diagnostics remain readable.
+Incomplete historical or unknown-purpose selectors
 remain readable without actions. This additive bounded mapping is not full P1
 or C1 admission. The owning Host [mapping](../../../host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md)
 records native capture, rendering, revalidation, abort and unsupported boundaries.
