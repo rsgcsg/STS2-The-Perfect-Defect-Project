@@ -73,7 +73,7 @@ class AuthFixtureDiagnostics:
                     self.observation_error(error)
                     raise
                 finally:
-                    self.observation("server-handler-returned", method="GET")
+                    self.observation("server-handler-exited", method="GET")
 
             def do_POST(self) -> None:
                 self.observation("server-handler-entered", method="POST")
@@ -83,7 +83,7 @@ class AuthFixtureDiagnostics:
                     self.observation_error(error)
                     raise
                 finally:
-                    self.observation("server-handler-returned", method="POST")
+                    self.observation("server-handler-exited", method="POST")
 
             def respond(self, code: int, value: bytes,
                         content_type: str = "application/json") -> None:
@@ -96,7 +96,7 @@ class AuthFixtureDiagnostics:
                 try:
                     super().finish()
                 finally:
-                    self.observation("server-finish-returned")
+                    self.observation("server-finish-exited")
 
         server.RequestHandlerClass = Observed
         original_error = server.handle_error
