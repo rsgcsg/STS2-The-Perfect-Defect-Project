@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
@@ -20,6 +21,15 @@ def _response_budget(value: float) -> None:
         raise BoundaryError("local_model", "bounded_response_timeout_required")
 
 
+def _response_remaining(deadline: float | None, default: float) -> float:
+    if deadline is None:
+        return default
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise BoundaryError("local_model", "response_allowance_exhausted")
+    return remaining
+
+
 def native_episode_command(
     config: ProjectConfig,
     action: str,
@@ -34,13 +44,18 @@ def native_episode_command(
     run_profile: str = "short",
     expected_instance_id: str | None = None,
     original_request: dict[str, Any] | None = None,
-    timeout_seconds: float = 90,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Call one Application, optionally fenced to its original instance.
 
     The instance guard is local; it adds no HTTP body field or Host command.
+    An explicit allowance covers all offers and elapsed health-fence time.
+    The existing readonly health probe keeps its own two-second response cap;
+    after it returns, an exhausted allowance cannot issue another request.
     """
-    _response_budget(timeout_seconds)
+    if timeout_seconds is not None:
+        _response_budget(timeout_seconds)
+    deadline = None if timeout_seconds is None else monotonic() + timeout_seconds
     if original_request is not None and action != "run-agent":
         raise BoundaryError("native_episode", "original_request_requires_run_agent")
     current = running(config)
@@ -60,8 +75,9 @@ def native_episode_command(
                 "Authorization": "Bearer " + current["control_token"],
             },
         )
+        remaining = _response_remaining(deadline, 90)
         try:
-            with opener.open(request, timeout=timeout_seconds) as response:
+            with opener.open(request, timeout=remaining) as response:
                 raw = response.read(1024 * 1024 + 1)
             value = decode_json(raw)
             if len(raw) > 1024 * 1024 or not isinstance(value, dict):
@@ -134,10 +150,16 @@ def model_command(
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
     expected_instance_id: str | None = None,
-    timeout_seconds: float = 25,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Call one Application, or install offline without an instance guard."""
-    _response_budget(timeout_seconds)
+    """Call one Application, or install offline without an instance guard.
+
+    Explicit online allowances use the same health/offer deadline as the native
+    helper. Offline install/generation keep their existing owner budgets.
+    """
+    if timeout_seconds is not None:
+        _response_budget(timeout_seconds)
+    deadline = None if timeout_seconds is None else monotonic() + timeout_seconds
     generation_action = action in {"initialize-runtime-generation",
                                    "upgrade-runtime-generation", "rollback-runtime-generation"}
     if expected_instance_id is not None and (generation_action or runtime_archive is not None):
@@ -309,10 +331,10 @@ def model_command(
             "Authorization": "Bearer " + current["control_token"],
         },
     )
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    remaining = _response_remaining(deadline, 25)
     try:
-        with build_opener(ProxyHandler({}), NoRedirect()).open(
-            request, timeout=timeout_seconds
-        ) as response:
+        with opener.open(request, timeout=remaining) as response:
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise ValueError

@@ -35,8 +35,10 @@ def test_original_request_cli_posts_preserved_request_once_without_regeneration(
         config, "run-agent", original_request=request, environment_ref="b" * 32,
         expected_instance_id="a" * 32, timeout_seconds=17,
     )
-    assert calls == [("http://127.0.0.1:12345/api/local-models/run-agent",
-                      canonical_json(original).encode(), 17)]
+    assert len(calls) == 1
+    assert calls[0][:2] == ("http://127.0.0.1:12345/api/local-models/run-agent",
+                           canonical_json(original).encode())
+    assert 0 < calls[0][2] <= 17
     assert request == original
 
 
@@ -468,3 +470,77 @@ def test_exit_or_stale_publication_cannot_replace_original_seal(tmp_path, fault)
         assert 2 <= clock.now < 2.1
         assert report["stop_reason"] == "suite_or_phase_wall_limit"
     assert report["episodes"][0]["cleanup_accepted"] is False
+
+
+@pytest.mark.parametrize("helper", ["native", "model"])
+def test_explicit_cli_allowance_expired_by_health_never_offers_request(
+    tmp_path, monkeypatch, helper,
+):
+    from spireagent.json_boundary import BoundaryError
+
+    clock, offered = Clock(), []
+    request = {"schema": "spireagent/agent-run-request-v1", "admission_context": {
+        "native_episode": {"environment_ref": "b" * 32}}}
+    original = copy.deepcopy(request)
+
+    def health(_config):
+        clock.sleep(0.03)
+        return {"instance_id": "a" * 32, "port": 12345, "control_token": "synthetic"}
+
+    class Transport:
+        def open(self, value, *, timeout):
+            offered.append((value.full_url, value.data, timeout))
+            return BytesIO(b'{"schema":"stpd/local-models-v1"}')
+
+    monkeypatch.setattr(local_model_cli, "monotonic", clock, raising=False)
+    monkeypatch.setattr(local_model_cli, "running", health)
+    monkeypatch.setattr(local_model_cli, "build_opener", lambda *_args: Transport())
+    with pytest.raises(BoundaryError, match="response_allowance_exhausted"):
+        if helper == "native":
+            local_model_cli.native_episode_command(
+                SimpleNamespace(state_dir=tmp_path), "run-agent", original_request=request,
+                environment_ref="b" * 32, timeout_seconds=0.01)
+        else:
+            local_model_cli.model_command(
+                SimpleNamespace(state_dir=tmp_path), "auto", timeout_seconds=0.01)
+    assert offered == []
+    assert request == original
+
+
+@pytest.mark.parametrize("request_seconds", [0.3, 1.0])
+def test_explicit_native_allowance_is_shared_by_health_and_both_offers(
+    tmp_path, monkeypatch, request_seconds,
+):
+    from spireagent.json_boundary import BoundaryError
+
+    clock, offered = Clock(), []
+
+    def health(_config):
+        clock.sleep(0.2)
+        return {"instance_id": "a" * 32, "port": 12345, "control_token": "synthetic"}
+
+    class Transport:
+        def open(self, value, *, timeout):
+            offered.append((value.full_url, timeout))
+            if value.full_url.endswith("/request"):
+                clock.sleep(request_seconds)
+            return BytesIO(b'{"schema":"stpd/local-models-v1"}')
+
+    monkeypatch.setattr(local_model_cli, "monotonic", clock, raising=False)
+    monkeypatch.setattr(local_model_cli, "running", health)
+    monkeypatch.setattr(local_model_cli, "build_opener", lambda *_args: Transport())
+
+    def command():
+        return local_model_cli.native_episode_command(
+            SimpleNamespace(state_dir=tmp_path), "run-agent", selection="existing-agent",
+            environment_ref="b" * 32, timeout_seconds=1.0)
+
+    if request_seconds == 1.0:
+        with pytest.raises(BoundaryError, match="response_allowance_exhausted"):
+            command()
+        assert len(offered) == 1
+    else:
+        command()
+        assert [item[1] for item in offered] == pytest.approx([0.8, 0.5])
+    assert offered[0][0].endswith("/request")
+    assert offered[0][1] == pytest.approx(0.8)
