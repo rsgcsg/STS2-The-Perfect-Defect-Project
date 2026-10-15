@@ -33,9 +33,9 @@ public static partial class ConnectorMod
                         SendApiError(response, 400, "invalid_snapshot_id", "Expected snapshot ID is invalid.");
                         return;
                     }
-                    var task = RunOnMainThread(() => p1Capture
-                        ? PlayerEnvironmentService.ReadCurrentP1Capture(expected)
-                        : PlayerEnvironmentService.ReadCurrentSealedObservation(expected));
+                    var task = p1Capture
+                        ? RunOnMainThread(() => PlayerEnvironmentService.ReadCurrentP1Capture(expected))
+                        : RunOnMainThread(() => PlayerEnvironmentService.ReadCurrentSealedObservation(expected));
                     SendJson(response, task.GetAwaiter().GetResult());
                     return;
                 case "read" when request.HttpMethod == "GET":
