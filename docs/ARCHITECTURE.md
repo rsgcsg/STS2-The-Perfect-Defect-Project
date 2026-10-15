@@ -192,6 +192,12 @@ claim they or a new direct driver have been delivered.
 
 ## Accepted native logical interaction direction
 
+This section records the retained ADR-0015/native-logical/text-menu profile
+direction. Its entered-page and inspect/defer/re-enter grain applies to those
+profiles. The current P1 direction uses [ADR-0017](adr/0017-p1-forward-decision-profile.md)
+and [P1](protocols/P1.zh-CN.md) for lawful information aggregation, forward macros
+and irreversible group decline; the older grain below does not constrain P1.
+
 [ADR-0015](adr/0015-native-logical-interaction.md) accepts WEB-01's upper-level
 direction and conditional examples. It does not itself define a wire contract
 or qualify an installed artifact, a complete game, or historical Human proof.
