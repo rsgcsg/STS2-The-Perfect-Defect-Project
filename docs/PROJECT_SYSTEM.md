@@ -48,11 +48,11 @@ is still current.
 | `docs/design/` | Alternatives, exploratory reasoning and superseded designs | A useful hypothesis or tradeoff needs retention; proposals do not become requirements by proximity |
 | dated evidence and review receipts | Exact source, method, result, failures and limits for one completed observation | Preserve original results; add a separately scoped correction/follow-up, never rewrite a failed run as a pass |
 
-The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) owns its stable IDs and
-dependencies. Its execution matrix owns active packets and required acceptance;
-CURRENT routes to it. Machine-readable manifests/BOM/store/use ledgers remain the
-owners of identity and data permissions. No parallel registry or status database
-is created for documentation convenience.
+The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) retains historical IDs and
+unresolved obligations. CURRENT names the one active plan and its supersession;
+an older execution matrix does not independently dispatch current work. Accepted
+decisions belong in their owner and linked rationale history. Manifests/BOM/store/
+use ledgers remain identity and data-permission owners, not prose status pages.
 
 ### Keeping a change aligned
 
@@ -73,10 +73,15 @@ For each coherent change, update the affected truth and its entry route together
    mismatches with an owner and next gate in the existing task. Do not quietly
    leave conflicting current instructions in separate guides.
 
-The lead integrating the change owns this reconciliation; the independent reviewer
-checks it. Private chat/checkpoints help execution but cannot be the only place
-containing a design needed by the next engineer. Public docs retain the conclusion,
-reason and reproducible route; private/raw evidence stays in authorized storage.
+The integrating lead is the one current-entry writer; material reconciliation
+receives non-author review under AI_COLLABORATION. In the code PR, update CURRENT,
+the task and decisions when active state, next work or selected behavior changes.
+Keep the parent consumer-visible delivery open after a source subtask finishes.
+Unselected private plans remain drafts; adopted conclusions and supersession go
+to these owners. Known explicit user decisions bind while docs catch up.
+Raw/private evidence stays in authorized storage.
+After integration, a reader starting at develop must recover the main line, current
+scope, next delivery and remaining obligations without private chat.
 
 A new idea belongs either in the owning specification as a selected decision or
 in its existing plan/design section as a hypothesis with rationale and a deciding

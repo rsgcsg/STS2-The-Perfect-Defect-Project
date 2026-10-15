@@ -80,8 +80,43 @@ caller was the B6 regression test and now supplies its plan. Historical v0
 reports are unchanged; a v0 report's missing plan cannot be reconstructed from
 its rows.
 
-Source/Test class: T1 for Stop/unknown and source-bound result verification;
-metrics and suite manifests are T2. Rollback removes the new CLI/reader/manifests
+Change class follows root G0–G6 by behavior and claim. Stop/unknown,
+source-bound results and evaluation denominators retain their owning guarantees. Rollback removes the new CLI/reader/manifests
 and restores B6 v0 caller/API together; existing historical reports remain
 unchanged. The source owner fixes the received-only B6 denominator, rather than
 changing native legality or weakening unsupported projection gates.
+
+## Selected capability targets
+
+These transfer the retained suite/capability definitions from the earlier PR178
+proposal into the evaluation owner. They are target definitions, not achieved
+results; report exact profile, Agent, game/Host tuple, exposure and complete plan.
+Existing manifests own the seeds. Suite names produce different seeds; a paired
+Host comparison must reuse the same manifest, not equal ordinals in two suites.
+
+| Suite | Purpose |
+| --- | --- |
+| smoke-20 | Managed bounded engineering regression; targeted mechanisms still required. |
+| dev-500 | Recorded development/model selection; no holdout claim. |
+| test-1000 | Declared holdout opening only; never training or tuning. |
+| ref-20 | Real-game owner; same manifest when comparing Hosts. |
+| gen-character-200 | Existing per-character generalization manifests; report character/version. |
+
+| Target | Required result, separately scoped |
+| --- | --- |
+| L0 environment | Managed random dev-500≥95% natural terminals, zero unknown/unrecovered stalls; Reference random ref-20 all20 natural terminals and confirmed cleanup. Advertised catalogs complete; mechanism support separately reported. |
+| L1 measurable baseline | Random and declared Agent distributions/costs on dev-500; paired same-manifest Reference/Managed first divergences and outcomes, not an automatic equivalence verdict. |
+| L2 first act | dev-500 median reaches act2. |
+| L3 wins | A0 test-1000 win rate≥5% and Wilson95% lower bound>2%. |
+| L4 project novice target | A0 test-1000 win rate≥15%. |
+| L5 project intermediate target | A10 win rate≥15%; freeze the A10 suite before use. |
+| L6 project top target | A10 win rate≥95%; same explicit suite/exposure requirements. |
+
+Human-level names are user-selected project reference labels, not independently
+measured human population benchmarks. No current P1 result reaches these targets.
+The later **P1 learned Agent** ref-20≥19/20 natural ends with zero unknown, stalls
+or unconfirmed cleanup is a separate engineering milestone; do not replace the
+original random Reference L0 all20 condition. Random battle canaries prove scoped
+execution, not learned strategy. Neither20/20 nor19/20 proves95% population reliability.
+Training/collection excludes reserved evaluation seeds under the actual owner
+admission; a query helper alone does not prove every existing job enforces it.

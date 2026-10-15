@@ -1,72 +1,65 @@
-# Current project context — P1 forward decision profile
+# Current project context — P1 real-consumer delivery
 
 模型方案冻结：开。New model/Input/Target/data/training configurations require
-explicit user confirmation; ordinary engineering and already authorized bounded
-mechanism checks continue. Resolve live GitHub refs and original owner records
-before acting; 以 GitHub 和原始记录为准, this snapshot can become stale.
-Exact source and owner records override this file.
+user confirmation. The [decision record](../DECISIONS.md) and [active P1 task](../plans/P1_FORWARD_2026-10-15.zh-CN.md)
+carry selected goals, supersession and authorization. Resolve live GitHub refs
+and owner records before acting; exact source and original evidence override this file.
 
-## Selected direction
+## Main line and next usable result
 
-One P1 learning/product main line. [P1](../protocols/P1.zh-CN.md) attaches currently
-entitled public information, including explicit offered reward groups; semantic
-intentions can include declared mechanical native steps. Effectful generation
-happens before its result is exposed. Hidden information stays hidden.
-[ADR-0017](../adr/0017-p1-forward-decision-profile.md) records the proposed exact
-contract and migration. The user selected the direction; source/runtime
-qualification and the concrete independent review remain separate.
+One versioned P1 chain: Reference/Managed → complete public information and semantic
+actions → actual Agent consumption/execution → original records → research data,
+training/evaluation → the same Workbench/Mod product. Old d6 uses an older input
+contract; its legacy ref-20 is not a prerequisite. Reuse its useful infrastructure.
 
-The sole new work order is [P1 forward plan](../plans/P1_FORWARD_2026-10-15.zh-CN.md).
-The former dual learning chains and old P1 all-navigation default are historical.
-Keep raw sources and useful readers/ports; do not rename old models/results P1.
+The current parent delivery is **ordinary-combat P1 through a real Agent, recorded
+on Reference and Managed, with at least one explained same-mechanism comparison**.
+Its source subtasks can finish separately; this parent stays open until the real
+consumer and required runtime evidence exist. A weak chooser needs targeted
+mechanism coverage, not only early-loss natural runs. Next: specify the complete
+combat example/shared mapping, then qualify capture
+and consumer execution before the bounded battle batches.
 
-## Current engineering facts
+## Verified starting facts and open work
 
-- PR180 test fixture optimization normally merged as develop 02636a94, exact
-  reviewed head 58d28fa9, same tree as its successful selected dual-OS gate.
-- P1 contract/Host-wire and native reward rules have bounded independent review.
-  Ordinary-combat C1 capture freezes, retains and validates required detail instances;
-  offline C1 archive comparison preserves declared typed alias relations and
-  reports unknown mappings as incomparable. It remains agent_admissible=false;
-  real paired captures, Managed C1 production and full P1/Source3 are unproved.
-- One integration topic combines reviewed C1/P1, Managed fair projection/AnyPlayer/
-  bounded choose-card and combat-pile selectors, D-min evaluation, Reference suite,
-  cancellation-fixture repair and CI stage/auth diagnostics plus cost-based sharding.
-  Component source parents use normal merges; new-tree gates are still required.
-- Integrated434 smoke-20:17 natural losses/3 selector censors/0 unknown, all20
-  native/driver closes confirmed. Colorless and Hologram child continuations ran.
-  A separate49e targeted Seeker episode passed its repaired empty-intent-label
-  boundary and naturally lost onfloor11; it does not rewrite the full20 result.
-  Deck-enchantment and incomplete rich text remain unavailable.
-- Reference rc34/d6 short canary:16 known deliveries, submission-limit censor,
-  Stop/seal/owned-process cleanup confirmed. Native errors remain; no natural
-  terminal/ref-20/P1/Human qualification follows. The installed Mod is unchanged.
-- PR187 first candidate434 full dual-OS CI passed:4445 Python nodes perOS and
-  all48 stages. The label/comparison follow-up requires its own selected gate.
-  PR184 transport failures, PR185 cancellation assertion/cap and PR186 stopped
-  failure remain archived; new green checks do not establish their root causes.
-- J-min original CUDA raw numerical qualification failed; ordinary remote
-  TrainingService loop remains incomplete. Configuration may be proposed first,
-  with J qualification as a launch condition, avoiding circular dependencies.
+- PR180 merged normally into develop02636a94. PR187/405ba001 passed its own full
+  dual-OS gate38724470159; it remains a candidate until reviewed integration.
+- C1 repair8c847f88 passed independent source/CLI attacks and is normally integrated
+  in this candidate; its new selected gate remains due. C1 stays agent_admissible=false;
+  it lacks full P1 information/semantic actions/occurrence and runtime qualification.
+- Historical Managed43417/3 and separate49e Seeker target retain their identities.
+  Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.
+  See STATUS; none establishes current P1 load/runtime qualification.
+- Managed C1 producer, real paired P1 data, semantic mapping and actual P1 Agent
+  consumption are still missing. Source3/old records are reusable assets, not
+  mandatory new-P1 input or automatically qualified demonstration data.
+- J-min remains a separate unintegrated candidate. Original numerical FAIL stays;
+  v2 and ordinary remote TrainingService are not qualified. No new fit is started.
 
-## User decisions and authority
+## Owners, authorization and checks
 
-Future Reference requests default explicitly to Instant; display mode is separate.
-Learned-Agent ref-20 milestone: at least 19/20 natural ends, zero unknown/stalls
-and confirmed cleanup. Mechanism coverage and strategy are separate metrics;
-the original Reference L0 all-20 condition is not silently changed.
+Codex owns implementation, integration and current-entry edits in the same code PR;
+Claude independently audits. Material changes require a non-author. At most two
+code writers, one shared-interface writer and one heavy local/native slot.
 
-PR180 merge was expressly authorized and performed. Current user authorizes
-careful implementation and validation in the declared owners. J-min cumulative
-USD1 includes failed attempts; no added scientific-training budget is inferred.
-No production release/deployment, raw-data deletion or historical cleanup is
-authorized by this snapshot. New training waits for the complete configuration.
+User authorizes ordinary engineering/PRs/CI, isolated reversible development-Mod
+installation and bounded unattended local Reference/Managed validation. Reviewed
+ordinary develop merges and clear absorbed/superseded PR closures are autonomous;
+do not ask again per PR. Ask for genuinely unresolved goals/authority/tradeoffs.
+No branch/worktree/data deletion, production release/deployment, hard-invariant
+change or expanded budget is inferred. J-min cumulative USD1 includes failures.
+
+The new develop baseline needs repaired C1, synchronized entries, non-author
+review and current selected checks. It need not await full P1 or training. Source
+integration never promotes package/load/runtime/Human/research evidence. Preserve
+unknown-no-retry, expiry-triggered cleanup and complete suite denominators.
 
 ## Remaining Platform non-claims
 
-Source/BOM/test, package/install/load, actual native/Human, research admission,
-strategy and cleanup claims remain distinct. Unknown is never automatically
-retried; declared macro prefixes and protocol commitments must survive reporting.
+P1 learned ref-20 targets≥19/20 natural ends with zero unknown/stalls/unconfirmed
+cleanup; the original Reference L0 all20 criterion remains separate. Random P1
+battle tests establish scoped engineering behavior, not learned strategy quality.
 
-Architecture: [roles](../ARCHITECTURE.md), [components](../COMPONENTS.md),
+Contracts: [P1](../protocols/P1.zh-CN.md), [Host/wire](../protocols/P1_HOST_AND_WIRE.zh-CN.md).
+Owners: [architecture](../ARCHITECTURE.md), [components](../COMPONENTS.md),
 [status](../STATUS.md), [testing](../TESTING.md), [workflow](../DEVELOPMENT_WORKFLOW.md).

@@ -2,7 +2,23 @@
 
 This page indexes claims, not live service state. Each observation keeps its date,
 source and scope; refresh its owning status/identity before an operational action.
-CURRENT owns the active task and next step, and the execution matrix owns progress.
+CURRENT owns the active task and next step; its linked active plan owns progress.
+Historical execution matrices retain their original observations and obligations.
+
+## P1 integration baseline candidate, observed 2026-10-16
+
+PR180 normally merged at02636a94. PR187/405ba001 full dual-OS run38724470159
+passed its own current source/test gate. Subsequent C1 trust-boundary counterexamples
+require a reviewed repair and fresh selected gate; green405 does not qualify it.
+The current [P1 delivery](plans/P1_FORWARD_2026-10-15.zh-CN.md) includes real capture,
+Agent consumption and paired Host records; it remains incomplete.
+
+Managed434 smoke20 retained17 natural losses/3 unsupported censors/0 recorded
+delivery unknown and20 confirmed closes. A separate49e Seeker target reached natural
+loss onfloor11 after120 deliveries. Reference rc34/d6 stopped at16 submissions;
+cleanup succeeded but native errors and full-run/P1 qualification remain open.
+These observations are separate from current source and installed/load identities.
+The older sections below are historical; they do not dispatch a second work queue.
 
 ## Auto6 and separate Goal reader candidate, observed 2026-10-11
 

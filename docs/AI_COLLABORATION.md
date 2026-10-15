@@ -34,8 +34,9 @@ Astra is reserved for a material architecture, direction or fundamental-risk rev
 at most two Astra workers may run simultaneously. It is not the ordinary default.
 Model/tool availability must be observed, not inferred from these names.
 Do not delegate merely to fill slots or hide chains of
-workers. The lead may implement, but its own implementation and documentation require a
-separate review just as worker changes do. The author cannot self-accept a candidate.
+workers. The lead may implement. Material changes, including its own, require non-author
+acceptance under the review section below; an ordinary author self-check is not
+independent acceptance.
 
 Each worker has one task, an exact baseline, bounded files, its own writable worktree and
 mutable environment, explicit checks and stop conditions. Reconcile existing A/B/C work
@@ -109,34 +110,20 @@ Each packet defines an authority envelope and a completion boundary:
 The default is no merge, production installation/restart/deployment, Steam mutation,
 real-data training, new budget or destructive data operation unless the packet explicitly
 names and authorizes it. A conditional integration packet may include a previously
-independently accepted exact PR merge and preparation of the next Draft PR; it must not
-merge the new unreviewed work. No admin bypass, force push or unbounded repair-until-green.
+exact PR merge accepted under its applicable review level and preparation of the
+next Draft PR; it must not merge work still lacking its required review. No admin bypass, force push or unbounded repair-until-green.
 When a failure is within the declared repair scope, diagnose and repair it locally rather
 than returning immediately; if it remains unexplained after a bounded diagnostic pass,
 return the evidence and smallest blocking question, not a wider speculative rewrite.
 
 ### Check economy without lowering required gates
 
-TESTING.md remains the sole owner of executable check selection and valid receipt reuse.
-A prompt is not a CI trigger or a reason to run full tests. During implementation, use the
-cheapest faithful targeted checks. Group directly related stable changes before one normal
-push to the existing PR; do not push every one-line intermediate edit. Separate unrelated
-work and do not hide failures to minimize the number of pushes.
-
-At candidate closeout, inspect actual diff, run closeout/hygiene and the existing planner.
-Normal topic PRs still execute every selected leaf gate on their current candidate and
-require portable. If full is selected, full is required; this policy never authorizes
-editing workflow/filters, reducing coverage, adding skips, copying another branch's green
-result or marking unfinished jobs successful. Green CI does not replace independent review.
-Use the existing exact-tree execution-receipt mechanism only in the integration/release
-contexts already permitted by TESTING.md, with its current-identity revalidation.
-
-Do not run an identical long local full suite concurrently with hosted full CI just to
-produce a second PASS. Retain specifically required local OS/native/install checks and
-state what hosted checks cannot prove. If a published candidate fails, repair only an
-already authorized, understood cause, then batch one new candidate; new head requires
-fresh applicable checks. Old successful evidence remains limited to its original identity.
-No waiting for CI between every file edit, and no acceptance/merge of a failing candidate.
+[TESTING](TESTING.md) owns check selection, execution dependencies and receipt reuse.
+Use focused faithful checks while editing, then batch the stable related candidate.
+Run closeout/hygiene and every current router-selected gate before acceptance;
+do not weaken coverage, borrow an ancestor's green or run a duplicate long local
+full suite alongside hosted full without a specific unresolved need. Preserve
+required local native/install checks and recheck affected claims after changes.
 
 ### One evidence return
 
@@ -150,61 +137,44 @@ unauthorized boundary only after architect review and explicit task authorizatio
 
 ## Mandatory independent review before acceptance
 
-Every worker return starts as submitted but unverified.
-This includes explanations, diagnosis, suggested plans, code, tests, claimed commands,
-installations, deployments and measured results. Confidence, a polished summary, a
-screenshot saying PASS, or the worker's own review is not acceptance. The same standard
-applies to the architect's earlier claims and its own GitHub documentation changes.
-Independent review means a new examination of authoritative material, not asking the
-same worker to restate that it is correct. It does not imply access to a second machine.
+Submitted work is not accepted evidence. The lead verifies actual code and records;
+its own verification is an author self-check, never independent acceptance.
+Material changes under [Governance section2](ENGINEERING_GOVERNANCE.md#2-change-classes-and-required-confidence)
+require a non-author; uncertain impact is material. Ordinary internal/editorial
+changes may be accepted by the author's short PR self-check: behavior/consumer,
+actual checks, effects, rollback and remaining work. Peer sampling is optional.
+No separate reviewer/report is required for every trivial edit; self-check is not
+independent acceptance. The current selected checks remain mandatory.
 
 ### Review the work actually done
 
-| Review question | Required examination |
-|---|---|
-| Did it solve the approved task? | Re-read the exact task and current approved design, list its acceptance conditions, and map each to implementation and evidence. Do not lower the target or rewrite the design merely to pass a completed patch. |
-| What actually changed? | Refresh base/head and inspect the complete changed-file list and diff, relevant full functions, callers and affected consumers, including tests, fixtures, locks, CI and configuration. Explain the before/after behavior and why the owning cause is repaired. |
-| What happened outside Git? | Reconcile reported builds, installs, package publications, service restarts, data/use-ledger mutations, training and spending separately. A clean worktree proves none of these; compare actual authorized effects with the task's non-goals. |
-| Are the tests meaningful? | Read assertions and fixtures, check that the failure can be caught on the real path, and inspect mocks, skips, weakened checks and changed tolerances. A regression should expose the old defect where reproducible; state when a before/after run is unavailable. |
-| Were the checks really executed? | Inspect the actual command, source/dirty-tree identity, selected scope, run/job/attempt, terminal status and useful log or report. Preserve failures, cancellations, skips and retries. A green aggregate does not prove skipped suites ran. |
-| Does the result match the running system? | When the claim requires it, reconcile source, build, package digest, installed identity, loaded Mod/runtime, model and input IDs, service observations and native receipts. Old bytes or another run cannot qualify new code. |
-| Did it preserve the product and research boundaries? | Check complete candidates, B/C input semantics, safe Human/Stop, unknown delivery, Human/Agent separation, data lineage and Gold/use protection, as relevant. Training completion, a small dev score, or a single delivered action cannot prove quality or full-scene coverage. |
+Read the original task, current design, full changed-file list/diff, affected
+functions, producer and actual consumers. Map acceptance conditions to evidence;
+do not lower them to fit a patch. Check fixtures, assertions, mocks, skips, locks
+and changed tolerances against production serialization and failure behavior.
+For a trust boundary, the reviewer chooses a falsifying example or metamorphic
+property independently, traces it through the producer/consumer and records the
+observed result. Existing faithful cases may be reused; source reasoning or an
+unexecuted case must be labelled, not presented as a passed test. No novel failing
+test is demanded merely for ceremony; uncovered material claims remain pending.
 
-Trace each load-bearing claim to a concrete source or receipt. An executable command in
-a prompt is not evidence that it ran. Review provided private receipts within authorized
-scope and identify them as provided evidence, not a direct local observation. If the
-architect cannot inspect a necessary artifact or runtime, mark that claim unverified and
-request one bounded diagnostic or human gate. Do not invent access or publish raw secrets,
-recordings or model weights to make review easier.
-
-Use risk-based reproduction and the cheapest faithful tests, not an automatic full-suite
-rerun for every handoff. New diagnostics and long runs require their own bounded task.
-The five-minute handoff rule still applies. Native Human steps follow technical checks;
-never ask a person to repeat gameplay blindly or treat their 'done' as verified success.
+Inspect actual command/head/scope/run/terminal results and external side effects.
+Installation, native/Human, data use, spending and model quality require their own
+records; clean Git and portable green do not prove them. Preserve failed attempts,
+missing access and uncertainty. Reproduce only what is needed to test the claim,
+without a duplicate full suite or indiscriminate whole-archive hash walk.
 
 ### Acceptance is a separate, scoped decision
 
-The architect returns a review receipt with:
-
-- task and reviewed base/head; the original acceptance conditions;
-- actual changes and external effects, with relevant file/function or receipt references;
-- independently inspected evidence versus worker-reported, missing or inaccessible evidence;
-- findings and their consequences, remaining required gates and an explicit verdict;
-- the accepted scope and the one next authorized task, or the blocking question.
-
-Use the plain verdicts: accepted for the stated scope, changes required, blocked by
-missing evidence/access, or still running. These are review labels, not new runtime
-schemas. A verified source/test gate may be accepted while installation or native/product
-acceptance is explicitly pending. Do not call the whole task or Stage 1a complete until
-all of its required conditions pass; optional follow-up polish must be distinguished from
-missing required work. Acceptance is not automatic permission to merge, publish, deploy,
-spend, change production data, or start the next training batch.
-
-New commits or changed inputs, configuration, dependencies or installed artifacts require
-an impact review of the previous verdict. Reuse only what remains valid under TESTING.md;
-never copy an ancestor's green result or extend an approval to unreviewed changes. The
-architect must understand and explain what the implementation does, not merely relay a worker's
-conclusion. If it cannot explain a critical path, that path is not accepted yet.
+Return reviewed base/head, task/consumer and conditions, personally inspected
+code/originals versus worker-reported, inaccessible or missing evidence,
+findings, actual effects/checks, accepted scope and remaining owner/gate. Label
+accepted for the stated scope, changes required, missing evidence/access or running.
+A source-only subtask may complete while the parent real-consumer capability stays
+open. Acceptance is not additional merge, release, deployment, training or spending
+or data-mutation authority; execute actions already authorized without requesting
+them again. An unexplained critical path cannot be accepted. Changed source, inputs, dependencies or artifacts require impact review and current
+applicable checks under TESTING, not automatic transfer of an old verdict.
 
 ### Design availability and branch discipline
 
@@ -221,12 +191,14 @@ packet is accepted. Requirements remain distinct from current implementation evi
 A documentation PR being present on GitHub does not put its files into develop, main or
 the worker's checkout. State the actual branch/commit and integration status in handoffs.
 Do not force-reset or merge another writer's branch just to read a design. Documentation
-changes by the architect remain reviewable candidates, not self-certified project gates.
+changes follow the same materiality rule; an author self-check never certifies a
+higher capability or an independent gate.
 
 ## Task packet and delivery format
 
 Owner refinement, 2026-10-06: use one stable task ID and one consumer-visible
-outcome. Baseline work uses the [P/E/G/V/R task index](plans/BASELINE_TASKS.zh-CN.md);
+outcome. Historical baseline IDs remain in the [P/E/G/V/R index](plans/BASELINE_TASKS.zh-CN.md);
+CURRENT and its active plan dispatch current work;
 subtasks retain the parent ID. Baseline task gates and engineering change classes
 are separate fields. Explanatory groupings never renumber active work.
 
@@ -338,19 +310,10 @@ before planning the next packet. Do not auto-start the next configuration or ano
 major training/evaluation job because the prior one ended. A previously authorized
 bounded pipeline may complete its declared steps; it cannot expand itself.
 
-Suggested Chinese handoff form:
-
-```text
-本轮交接：<任务与实际状态>
-执行位置／精确源码：<位置、分支、SHA>
-任务身份：<真实 ID；未启动则明确写未启动>
-监测窗口：<已验证页面或日志；未创建则不伪造>
-查看方法与终态：<方法；成功／失败／未知如何区分>
-你现在需要做：<最少必要操作>
-暂停／恢复：<现有 owner 入口；尚不支持则说明>
-回来时提供：<状态摘要或脱敏回执>
-下一步：先核对该结果，不自动启动下一批。
-```
+A normal user update can be six short fields: goal, completed work, result,
+failure/cause, next step and needed user decision. Link the existing task/evidence
+for exact identities and recovery; do not copy its full history into every update.
+Running/waiting work still supplies the real monitor and recovery fields above.
 
 ## Human and native gates
 

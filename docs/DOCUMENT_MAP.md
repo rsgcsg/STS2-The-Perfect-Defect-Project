@@ -2,6 +2,8 @@
 
 ## P1 forward decision profile
 
+- [Selected decisions and supersession](DECISIONS.md)
+
 - [P1 public information and decision grain](protocols/P1.zh-CN.md)
 - [P1 Host and wire mapping](protocols/P1_HOST_AND_WIRE.zh-CN.md)
 - [Offline C1 archival comparison](P1_CAPTURE_COMPARISON.md)
