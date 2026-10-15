@@ -37,9 +37,9 @@ def settled(service, *, join_timeout=10, diagnostic_timeout=20):
     assert service.thread is not None
     diagnostic = FixtureDiagnostics("native-agent-product-data")
     diagnostic.record("join-started", operation=operation_snapshot(service.operation))
-    started = time.monotonic()
+    started = time.perf_counter()
     service.thread.join(timeout=join_timeout)
-    join_elapsed = time.monotonic() - started
+    join_elapsed = time.perf_counter() - started
     alive_at_join = service.thread.is_alive()
     detail = diagnostic.record("join-ended", thread=thread_snapshot(service.thread),
                                alive_at_join=alive_at_join,
@@ -49,9 +49,9 @@ def settled(service, *, join_timeout=10, diagnostic_timeout=20):
     if alive_at_join:
         # Keep the original failed deadline. This bounded observation neither
         # retries the operation nor accepts a worker that completed too late.
-        diagnostic_started = time.monotonic()
+        diagnostic_started = time.perf_counter()
         service.thread.join(timeout=diagnostic_timeout)
-        diagnostic_elapsed = time.monotonic() - diagnostic_started
+        diagnostic_elapsed = time.perf_counter() - diagnostic_started
         diagnostic.record("after-failed-join", thread=thread_snapshot(service.thread),
                           diagnostic_timeout_seconds=diagnostic_timeout,
                           diagnostic_join_elapsed_seconds=diagnostic_elapsed,

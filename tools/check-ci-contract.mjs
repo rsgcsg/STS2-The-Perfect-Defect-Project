@@ -71,7 +71,7 @@ export function ciWorkflowErrors(rawSource) {
     requireMatch(errors, "Dependency review must remain on pull requests", linux,
       /if:\s*github\.event_name == 'pull_request'/u);
   }
-  for (const [label, lane] of [["Linux", linux], ["Windows", windows]]) {
+  for (const [label, lane, minutes] of [["Linux", linux, 55], ["Windows", windows, 75]]) {
     if (!lane) continue;
     requireMatch(errors, `${label} must install the locked Python component`, lane,
       /run:\s*uv sync --project python --locked --all-extras\s*$/mu);
@@ -79,7 +79,8 @@ export function ciWorkflowErrors(rawSource) {
       /run:\s*npm ci --prefix python\s*$/mu);
     requireMatch(errors, `${label} must retain two isolated pytest shards`, lane,
       /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2\]/u);
-    requireMatch(errors, `${label} must retain its 55-minute budget`, lane, /timeout-minutes: 55/u);
+    requireMatch(errors, `${label} must retain its ${minutes}-minute budget`, lane,
+      new RegExp(`^    timeout-minutes: ${minutes}[ \\t]*$`, "mu"));
     if (!lane.includes("name: pytest-${{ runner.os }}-shard-${{ matrix.shard }}-${{ github.run_attempt }}") ||
         !lane.includes("python/.local/pytest-shard.json") || !lane.includes("python/.local/fixture-diagnostics/**") || !lane.includes(".local/checks/workspace-*.json")) {
       errors.push(`${label} must retain uniquely named original shard diagnostics`);

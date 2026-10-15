@@ -172,6 +172,42 @@ class RealStoreCollectionTests(unittest.TestCase):
             for p in sorted(self.bridge_directory.rglob("*")) if p.is_file()
         }, self.bridge_output_hashes)
 
+    def test_dll_bundle_launches_without_apphost_and_keeps_typed_errors(self):
+        self.assert_bridge_unchanged()
+        outputs = self.bridge_output_hashes
+        stem = self.bridge_dll.stem
+        self.assertIn(stem + ".deps.json", outputs)
+        self.assertIn(stem + ".runtimeconfig.json", outputs)
+        self.assertNotIn(stem, outputs)
+        self.assertNotIn(stem + ".exe", outputs)
+        for fixture in ("native-logical-v1.json", "native-logical-owned-current-v1.json",
+                        "native-logical-public-domains-v1.json"):
+            self.assertIn(fixture, outputs)
+        dotnet = shutil.which(os.environ.get("STS2_OWNED_CURRENT_DOTNET", "dotnet"))
+        self.assertIsNotNone(dotnet)
+        commands = [{"operation": operation, "body": {}}
+                    for operation in ("stats", "not_a_bridge_operation", "stats")]
+        completed = subprocess.run(
+            [dotnet, str(self.bridge_dll)],
+            input=b"".join(json_bytes(command) for command in commands),
+            capture_output=True, timeout=10,
+            env={**os.environ, "DOTNET_PROCESSOR_COUNT": "2"},
+        )
+        print("real_store_bridge_dll_smoke=" + json.dumps({
+            "exit_code": completed.returncode,
+            "stdout_original": repr(completed.stdout), "stderr_original": repr(completed.stderr),
+        }))
+        self.assertEqual(completed.returncode, 0, repr(completed.stderr))
+        replies = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertEqual(len(replies), 3)
+        empty = {"charged_bytes": 0, "charged_buffers": 0, "handles": 0,
+                 "live_captures": 0, "now": 0}
+        self.assertEqual(replies[0], {"value": empty, "error": None})
+        self.assertEqual(replies[1]["error"]["code"], "bridge_error")
+        self.assertIsNone(replies[1]["value"])
+        self.assertEqual(replies[2], {"value": empty, "error": None})
+        self.assert_bridge_unchanged()
+
     @staticmethod
     def failure_diagnostic(result, proof, child_stderr=b"", phase_events=()):
         """Bound actual failures/phases; never dump the full generated report."""
