@@ -397,19 +397,19 @@ test("closeout rejects the assembled CURRENT before candidate checks and preserv
   const root = fixture();
   try {
     initializeGit(root);
-    const header = "Resolve live GitHub refs. Current sources override this file. Remaining Platform non-claims\n";
-    const initial = header + "x".repeat(4800);
-    const addition = "雪".repeat(1200);
-    assert.ok(Buffer.byteLength(initial) < 8192 && Buffer.byteLength(addition) < 8192);
+    const header = "模型方案冻结：开\n实时事实以 GitHub 和原始记录为准。\n";
+    const initial = header + "x".repeat(2400);
+    const addition = "雪".repeat(600);
+    assert.ok(Buffer.byteLength(initial) < 4096 && Buffer.byteLength(addition) < 4096);
     write(root, "docs/memory/CURRENT.md", initial);
     assert.match(formatCloseout(root), /Project closeout review/u);
     const assembled = initial + addition;
     const file = path.join(root, "docs/memory/CURRENT.md");
     write(root, "docs/memory/CURRENT.md", assembled);
-    assert.ok(Buffer.byteLength(assembled) > 8192);
+    assert.ok(Buffer.byteLength(assembled) > 4096);
     assert.ok(collectProjectSystemFindings(root).some(item => item.code === "current-context-oversized"),
       "the mandatory repository guard must reject the same assembled file without depending on manual closeout");
-    assert.throws(() => formatCloseout(root), /current-context-oversized.*8192/su);
+    assert.throws(() => formatCloseout(root), /current-context-oversized.*4096/su);
     assert.deepEqual(fs.readFileSync(file), Buffer.from(assembled));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

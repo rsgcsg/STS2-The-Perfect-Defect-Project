@@ -1,105 +1,43 @@
-# SpireAgent Project Engineering Guide
+# SpireAgent 工程指南（给人和 AI）
 
-## Mission
+## 使命
 
-Maintain one project for the STS2 environment, project applications and STPD research.
-One repository and workflow do not merge game, evidence, operational or research authority.
+做一个能稳定、连续地玩真实 STS2 并不断变强的 Agent，同时让项目易理解、易修改、易验证。
+能力进展看 `docs/SCOREBOARD.md`；当前选择和下一步看 `docs/memory/CURRENT.md`。
 
-## Required Read Order
+## 先读什么
 
-1. `README.md`
-2. `docs/memory/CURRENT.md`
-3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
-4. the relevant component `AGENTS.md` or guide and exact code/tests
+1. `docs/memory/CURRENT.md` 和活动计划 `docs/plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md`：当前组合、冻结开关、下一步。
+2. `docs/SYSTEM_MAP.zh-CN.md`：分层、每层统一什么、当前组件和工具。
+3. `docs/ENGINEERING_RULES.zh-CN.md`：日常规则（两层制、评测、文档写法、角色和决策权、任务包）。
+4. 要改 T1 范围时，再读 `docs/ENGINEERING_GOVERNANCE.md`、`docs/TESTING.md`、
+   `docs/DEVELOPMENT_WORKFLOW.md` 和所属组件的 AGENTS/README。
+5. 职责细节：`docs/ARCHITECTURE.md`、`docs/COMPONENTS.md`。
 
-Read the active task linked from CURRENT for its requirements, design version,
-allowed operations, resources and final approver. Task-specific budgets, branches,
-worker status and gate progress belong there, not in this instruction file.
-All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md); one lead
-coordinates disjoint writers and independently reviews evidence, including its
-own changes. Continue already authorized work and routine repairs without using
-the user as a relay. Only stop dependent work at a real unresolved boundary.
+实时事实（分支、PR、CI、安装、运行）以 GitHub 和原始记录为准，文档可能过时。
 
-Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and
-`docs/TESTING.md`. Read `docs/ENGINEERING_GOVERNANCE.md` when the task changes
-architecture, authority, a public contract, evidence/identity, cross-layer
-behavior, test strategy, Agent collaboration, Skill policy, or cloud/runtime
-promotion.
+## 硬核不变量（T1，永远严格）
 
-Normal work starts from current `origin/develop`, uses one short-lived topic
-branch and targets `develop` by pull request. Do not direct-push `main` or
-`develop`, share a writable branch between agents, or create permanent component
-develop lines. Ordinary tasks finish at reviewed develop integration; promote a selected
-batch to main only when release is in scope. Matching trees need no empty sync PR.
-TESTING.md owns scoped checks and verified execution reuse; never copy a green status
-or equate a branch head with the installed/deployed producer. Use `npm run project:context -- --component <name>` for a bounded
-routing map; load `docs/STATUS.md` and dated evidence only when current claims
-matter.
+- STS2 拥有规则、RNG、原生合法性与 Commit；不读隐藏状态，不做坐标/反射式输入。
+- Connector 发布完整有限的合法动作目录并在执行前复验；消费者不自建合法性、不构造原生操作数。
+- 回执分 delivered / not_delivered / unknown；unknown 永不自动重试。
+- Agent 只得到声明过的公平公开信息；特权信息只能进训练标签，不能进学生输入。
+- 原始录制不可变、来源可追溯；不覆盖、不删除失败记录。
+- 不提交游戏文件、反编译源码、原始 Human 数据、权重、凭据或 `.local/`。
 
-## Hard Shell
+## 日常流程
 
-- STS2 owns rules, RNG, effects, native legality and Commit.
-- Connector owns fair-player Snapshot, Read, complete finite BoundAction,
-  execute-time revalidation, Receipt and successor semantics.
-- Host Runtime owns process lifecycle, profile isolation, exact identity,
-  recovery and qualification tooling, not gameplay legality.
-- Annotator owns native-human witness correlation and immutable recording
-  evidence, not action authority or research admission.
-- Evidence owns typed verification and immutable transfer, not Human origin or
-  research admission.
-- Policy Runtime consumes Connector-owned finite actions and stays
-  model-neutral; it owns no inference, legality, or native operands.
-- Game Mod owns one production package, exact install/load identity, and
-  rollback; packaging never merges component authorities.
-- External consumers own strategy, research projection, training and
-  evaluation.
+- 从最新 `origin/develop` 开短 topic 分支，一个任务一个分支一个 worktree，PR 合入 develop。
+- 不 direct-push `main`/`develop`，不 force-push，不共用写分支。
+- PR 改到 `components/` 或 `apps/` 用 normal merge；其余可 squash。
+- 按 `docs/ENGINEERING_RULES.zh-CN.md` 第 2 节按行为影响判断 T1/T2/T3；CI 选择由 `check:plan` 决定，组件源身份照常更新。
+- 每轮结束用规则第 5 节的 10 行报告模板；“做到了”必须附 commit、run 或 eval id。
+- 自主决定的事在 `docs/DECISIONS.md` 记一行；规则第 6 节列出的事先问用户。
+- 角色：用户定目标和关键决定；计划与集成 owner 维护当前组合、规范和审查；实施与独立审查者调查、审计、实现、开 PR。
+  角色不绑定具体模型；作者不独立验收自己写的关键规则或公共契约。
 
-Platform components are the model-neutral foundation. `python/spireagent` owns
-project applications and shared infrastructure; `python/stpd` owns research.
-Both use declared component APIs. Platform must not import model, reward,
-training or research semantics. See docs/MONOREPO_MIGRATION.md for cutover gates.
-Root governance overrides historical repository workflow descriptions in imported docs.
+## 文档
 
-Never add hidden-state leakage, coordinate/index mutation, arbitrary reflection,
-a second legality engine, consumer-created native operands, silent fallback or
-automatic retry after an `unknown` delivery.
-
-## Component Identity
-
-The workspace commit is provenance, not a component semantic identity. Every
-component has its own path-scoped source revision, source digest, contract
-digest, version and artifact identity. An unrelated component edit must not
-silently change another component's source identity.
-
-The current path-scoped `source_revision` is commit provenance. A normal merge
-commit preserves the topic component revision; squash/rebase integration does
-not. Until that provenance contract is deliberately changed, any PR that
-changes component source uses a normal merge commit. Docs/governance-only PRs
-that do not change component source may be squashed. Never weaken BOM/identity
-checks merely to accommodate a provenance-rewriting merge method.
-
-## Change Loop
-
-Use real needs and evidence to revise designs; current implementation is not a
-reason to freeze a flawed abstraction. Record the chosen behavior, rationale,
-affected consumers and migration in the owning specification before dependent
-implementation. Proposals and historical alternatives do not silently become
-mandatory. Keep one canonical owner per fact; use PROJECT_SYSTEM for document
-placement and update the active handoff when work changes.
-
-Classify the change (`G0`-`G6`), identify the first incorrect fact and owning
-layer, preserve dependency direction, add the lowest-cost faithful regression,
-run the component and selected root gates defined in docs/TESTING.md, then report evidence at its exact level.
-Hosted CI must remain source/test-only; game-bound changes additionally use the
-local exact-game/build/runtime gates defined in `docs/TESTING.md`.
-
-Never commit game files, decompiled source, raw human data, `.local/`,
-credentials, model weights or installed artifacts. Worker or conversation
-output is not evidence until the lead verifies exact code, tests, refs, and
-runtime records.
-
-Record the base branch/SHA, latest head, workstream, change class, owning fact,
-cross-repository pin, evidence level, rollback and non-claims in every PR. A
-merge never promotes source/test evidence to build, loaded, runtime, Human or
-qualification evidence. Run `npm run project:closeout` before the PR so
-documentation, evidence, contract, version, and governance impacts stay visible.
+`AGENTS.md` ≤ 120 行，`docs/memory/CURRENT.md` ≤ 4 KB，规范文档 ≤ 300 行。一个事实只写一处。
+数字与单位、单词之间加空格，哈希最多 8 位。不写成段的免责和非声明。
+历史写进 `docs/log/`；不再有效的计划标明替代入口后归档，不按年龄自动移动或删除。

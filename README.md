@@ -38,10 +38,13 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
-  abstract layers, full interaction target, I/F-off Agent and user approval gates.
-- [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
-  [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [CURRENT](docs/memory/CURRENT.md) and the [active plan](docs/plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md):
+  the selected combination, first bottleneck, next deliverables and authorization.
+- [系统地图](docs/SYSTEM_MAP.zh-CN.md), [工程规则](docs/ENGINEERING_RULES.zh-CN.md) and
+  [能力记分板](docs/SCOREBOARD.md): layers, daily rules and capability results.
+- Historical baseline (no longer dispatches work; still-valid obligations are mapped in the active plan):
+  [BASELINE_V1_SPEC](docs/BASELINE_V1_SPEC.zh-CN.md) and its
+  [execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md).
 - [Status and evidence](docs/STATUS.md): integrated source, candidate builds,
   installed/deployed observations and their separate qualification limits.
 - [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
@@ -56,8 +59,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 The first completed instance is a bounded text-menu-v2 compatibility loop. Full
 G2/V1 implementation and verification continue against the retained requirements;
 only the user can approve those gates. Source/test, installed/loaded execution,
-Human origin and scientific results remain separate. The execution packet owns
-the current authorization, resources and approval boundary; it does not turn a proposed design or a branch into deployed capability.
+Human origin and scientific results remain separate. Current authorization, resources and approval
+boundaries are in [CURRENT](docs/memory/CURRENT.md) and the [active plan](docs/plans/P1_ROUND1_PLAN_2026-10-14.zh-CN.md); the historical execution packet keeps only its original scope, evidence and the obligations carried by section 5 of the active plan. Neither turns a proposed design or a branch into deployed capability.
 
 ## Workspace
 
