@@ -1255,6 +1255,118 @@ function currentSurface(state, ctx) {
         missing: exact ? [] : ["exact_current_deck_card_selection_binding"]
       };
     }
+    case "native_card_select": {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const selected = Array.isArray(state.selected_refs) ? state.selected_refs : [];
+      const refs = cards.map((card) => card?.native_ref);
+      const choose = state.origin === "choose_card";
+      const combat = state.origin === "combat_pile";
+      const manual = state.require_manual_confirmation;
+      const hud = state.combat_context;
+      const text = (value) => typeof value === "string" && value.trim().length > 0
+        && !/[{}]|\[img/iu.test(value);
+      const cardComplete = (card, depth = 0) => depth < 16 && plainObject(card)
+        && ["id", "name", "type", "cost", "rarity", "description", "target_type"].every((key) => text(card[key]))
+        && typeof card.is_upgraded === "boolean"
+        && Array.isArray(card.keywords) && card.keywords.every((tip) => text(tip?.name) && text(tip?.description))
+        && Array.isArray(card.card_previews) && card.card_previews.every((preview) => cardComplete(preview, depth + 1))
+        && (card.enchantment == null || text(card.enchantment) && text(card.enchantment_description));
+      const statusComplete = (values) => Array.isArray(values) && values.every((value) =>
+        text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
+      const hudComplete = plainObject(hud) && hud.player_ref === state.player?.native_ref
+        && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
+        && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+          "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
+        && statusComplete(hud.statuses) && Array.isArray(hud.orbs) && hud.orbs.every((orb) => text(orb?.native_ref)
+          && text(orb?.id) && text(orb?.name) && Number.isFinite(orb.passive) && Number.isFinite(orb.evoke)
+          && Array.isArray(orb.keywords) && orb.keywords.every((tip) => text(tip?.name) && text(tip?.description)))
+        && Array.isArray(hud.companions) && hud.companions.every((pet) => text(pet?.native_ref) && text(pet?.id)
+          && typeof pet.alive === "boolean" && typeof pet.health_bar_visible === "boolean" && text(pet.health_display)
+          && (pet.hp === null || Number.isFinite(pet.hp)) && (pet.max_hp === null || Number.isFinite(pet.max_hp))
+          && Number.isFinite(pet.block) && statusComplete(pet.statuses))
+        && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => text(enemy?.native_ref) && text(enemy?.id)
+          && text(enemy?.name) && typeof enemy?.health_bar_visible === "boolean" && text(enemy?.health_display)
+          && (enemy.hp === null || Number.isFinite(enemy.hp)) && (enemy.max_hp === null || Number.isFinite(enemy.max_hp))
+          && Number.isFinite(enemy.block) && statusComplete(enemy.statuses)
+          && Array.isArray(enemy.intents) && enemy.intents.every((intent) =>
+            ["type", "label", "title", "description"].every((key) => text(intent?.[key]))));
+      const exact = (choose || combat) && state.native_selector_complete === true
+        && Array.isArray(state.native_selector_missing) && state.native_selector_missing.length === 0
+        && text(state.selector_ref) && text(state.prompt) && state.stage === "choosing" && state.cancelable === false
+        && typeof manual === "boolean" && typeof state.can_skip === "boolean" && typeof state.can_confirm === "boolean"
+        && cards.length > 0 && cards.length + 2 <= ACTION_LIMIT && new Set(refs).size === cards.length
+        && cards.every((card) => text(card?.native_ref) && card.render_complete === true && cardComplete(card)
+          && typeof card.is_selected === "boolean" && typeof card.is_selectable === "boolean"
+          && typeof card.is_deselectable === "boolean")
+        && selected.length <= 1 && new Set(selected).size === selected.length && selected.every((ref) => refs.includes(ref))
+        && cards.every((card) => card.is_selected === selected.includes(card.native_ref)
+          && card.is_selectable === (!card.is_selected && selected.length === 0)
+          && card.is_deselectable === (manual && card.is_selected))
+        && state.max_select === 1 && state.can_confirm === (manual && selected.length === 1)
+        && (choose ? !manual && selected.length === 0 && cards.length <= 3 && state.display_pile === "none"
+          && state.min_select === (state.can_skip ? 0 : 1)
+          : !state.can_skip && state.min_select === 1 && ["draw", "discard", "exhaust"].includes(state.display_pile))
+        && hudComplete;
+      const publicCard = (card, id, depth = 0) => ({
+        ...visibleCombatCard(card, id), is_selected: card?.is_selected === true,
+        is_selectable: card?.is_selectable === true, is_deselectable: card?.is_deselectable === true,
+        keywords: Array.isArray(card?.keywords) ? card.keywords.map((tip) => ({ name: visibleText(tip?.name), description: visibleText(tip?.description) })) : [],
+        card_previews: depth < 16 && Array.isArray(card?.card_previews) ? card.card_previews.map((preview, index) =>
+          publicCard(preview, ctx.id("hover_card", id, depth, index), depth + 1)) : []
+      });
+      const referents = cards.map((card, index) => {
+        const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;
+        const id = unique ? ctx.entityId("card", card.native_ref) : ctx.id("unbound_card", index);
+        return ctx.referent({ role: "card", label: card?.name ?? "Unavailable card", occurrence: index, id,
+          enabled: exact && (card.is_selectable || card.is_deselectable), selected: card?.is_selected === true,
+          properties: publicCard(card, id) });
+      });
+      if (exact) {
+        for (let index = 0; index < cards.length; index++) {
+          const card = cards[index]; const referent = referents[index];
+          for (const [available, verb, operation] of [[card.is_selectable, "select", "select_native_card"],
+            [card.is_deselectable, "deselect", "deselect_native_card"]]) if (available) ctx.action({
+              verb, subject: referent, label: `${verb === "select" ? "Select" : "Deselect"} ${referent.label}`,
+              raw: { cmd: "action", action: operation, args: { selector_ref: state.selector_ref, card_ref: card.native_ref } }
+            });
+        }
+        if (state.can_skip) ctx.action({ verb: "skip", label: "Skip generated card choice",
+          raw: { cmd: "action", action: "skip_native_selection", args: { selector_ref: state.selector_ref } } });
+        if (state.can_confirm) ctx.action({ verb: "confirm", label: "Confirm card selection",
+          raw: { cmd: "action", action: "confirm_native_selection", args: {
+            selector_ref: state.selector_ref, selected_refs: selected.join(",") } } });
+      }
+      const publicHud = hudComplete ? {
+        kind: "combat", round: hud.round, turn_owner: hud.turn_owner,
+        player: { player_entity_id: ctx.entityId("player", hud.player_ref),
+          ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
+            "discard_pile_count", "exhaust_pile_count", "orb_slots"].map((key) => [key, hud[key]])),
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => ({
+            entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
+            name: visibleText(orb.name), passive: orb.passive, evoke: orb.evoke,
+            keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) })),
+          companions: hud.companions.map((pet) => ({
+            entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
+            hp: pet.hp, max_hp: pet.max_hp, block: pet.block, alive: pet.alive,
+            health_bar_visible: pet.health_bar_visible, health_display: pet.health_display,
+            statuses: (pet.statuses ?? []).map(visibleStatus) })) },
+        enemies: hud.enemies.map((enemy) => ({ entity_id: ctx.entityId("enemy", enemy.native_ref),
+          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), hp: enemy.hp, max_hp: enemy.max_hp,
+          block: enemy.block, health_bar_visible: enemy.health_bar_visible, health_display: enemy.health_display,
+          statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
+      } : null;
+      return { kind: "card_selection", stage: "choosing", prompt: state.prompt ?? null,
+        surface: { kind: "card_selection", selector_kind: state.origin ?? "unknown", stage: "choosing",
+          display_context: state.display_pile ?? null, cards: referents.map((item) => item.properties),
+          native_option_count: cards.length, min_select: state.min_select, max_select: state.max_select,
+          selected_count: selected.length, selected_card_entity_ids: referents.filter((_, index) => cards[index]?.is_selected).map((item) => item.referent_id),
+          require_manual_confirmation: manual, can_skip: state.can_skip, can_confirm: state.can_confirm, cancelable: false },
+        context: { kind: "selection", combat: publicHud }, complete: exact,
+        missing: exact ? [] : ["exact_native_selector_context_display_or_domain", ...(Array.isArray(state.native_selector_missing) ? state.native_selector_missing : [])],
+        visibleInformation: "current_native_selector_cards_and_current_post_prefix_combat_hud",
+        interactionDiscovery: "exact_synchronous_native_command_context_and_execute_time_current_domain",
+        hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "unoffered_draw_cards", "future_enemy_moves"] };
+    }
     case "card_select": {
       const cards = Array.isArray(state.cards) ? state.cards : [];
       const referents = cards.map((card, index) => ctx.referent({

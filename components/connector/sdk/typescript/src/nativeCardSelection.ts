@@ -1,0 +1,67 @@
+import { isJsonObject } from "./json.js";
+
+// Strict consumer boundary for the bounded Managed choose/combat selector
+// surface. Unsupported historical card_selection observations remain readable.
+export function nativeCardSelectionProblems(snapshot: unknown): string[] {
+  if (!isJsonObject(snapshot) || !isJsonObject(snapshot.interaction)
+      || snapshot.interaction.kind !== "card_selection") return [];
+  const bound = snapshot.bound_actions;
+  if (!isJsonObject(bound) || bound.status !== "complete"
+      || !Array.isArray(bound.actions) || bound.actions.length === 0) return [];
+  const content = snapshot.interaction.content;
+  if (!isJsonObject(content) || !isJsonObject(content.surface) || !isJsonObject(content.context))
+    return ["native card selection requires typed current content"];
+  const surface = content.surface;
+  const cards = surface.cards;
+  const text = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0
+    && !/[{}]|\[img/iu.test(v);
+  const cardComplete = (v: unknown, depth = 0): boolean => {
+    if (!isJsonObject(v) || depth >= 16) return false;
+    return ["entity_id", "definition_id", "name", "description", "cost", "type", "rarity", "target_type"]
+      .every((key) => text(v[key])) && typeof v.is_upgraded === "boolean"
+      && Array.isArray(v.keywords) && v.keywords.every((tip) => isJsonObject(tip)
+        && text(tip.name) && text(tip.description))
+      && Array.isArray(v.card_previews) && v.card_previews.every((card) => cardComplete(card, depth + 1));
+  };
+  if (!Array.isArray(cards) || cards.length === 0 || !cards.every((card) => cardComplete(card)))
+    return ["native card selection requires every strictly rendered card and hover detail"];
+  const values = cards.filter(isJsonObject);
+  const ids = values.map((card) => card.entity_id);
+  const selected = surface.selected_card_entity_ids;
+  const choose = surface.selector_kind === "choose_card";
+  const combat = surface.selector_kind === "combat_pile";
+  const manual = surface.require_manual_confirmation;
+  if (!(choose || combat) || new Set(ids).size !== ids.length || surface.native_option_count !== cards.length
+      || !Array.isArray(selected) || selected.length > 1 || new Set(selected).size !== selected.length
+      || selected.some((id) => !ids.includes(id)) || surface.selected_count !== selected.length
+      || surface.kind !== "card_selection" || surface.stage !== "choosing" || surface.cancelable !== false
+      || typeof manual !== "boolean" || typeof surface.can_skip !== "boolean"
+      || surface.max_select !== 1 || surface.can_confirm !== (manual && selected.length === 1)
+      || (choose ? manual || selected.length !== 0 || cards.length > 3 || surface.display_context !== "none"
+          || surface.min_select !== (surface.can_skip ? 0 : 1)
+        : surface.can_skip || surface.min_select !== 1 || !["draw", "discard", "exhaust"].includes(String(surface.display_context)))
+      || values.some((card) => card.is_selected !== selected.some((id) => id === card.entity_id)
+        || card.is_selectable !== (!card.is_selected && selected.length === 0)
+        || card.is_deselectable !== (manual && card.is_selected)))
+    return ["native card selection purpose, bounds, flags or selected identities are inconsistent"];
+  const ctx = content.context;
+  if (ctx.kind !== "selection" || !isJsonObject(ctx.combat) || ctx.combat.kind !== "combat"
+      || !isJsonObject(ctx.combat.player) || !text(ctx.combat.player.player_entity_id)
+      || !Array.isArray(ctx.combat.enemies) || !Number.isSafeInteger(ctx.combat.round))
+    return ["native card selection requires current post-prefix combat context"];
+  const referents = snapshot.referents;
+  if (!Array.isArray(referents)) return ["native card selection requires current card referents"];
+  const cardRefs = referents.filter((ref) => isJsonObject(ref) && ref.role === "card");
+  if (cardRefs.length !== cards.length || cardRefs.some((ref) => !isJsonObject(ref)
+      || !ids.includes(ref.referent_id))) return ["native card selection card/referent closure is incomplete"];
+  const expected = values.flatMap((card) => [
+    ...(card.is_selectable ? [`select:${card.entity_id}`] : []),
+    ...(card.is_deselectable ? [`deselect:${card.entity_id}`] : [])
+  ]);
+  if (surface.can_skip) expected.push("skip:");
+  if (surface.can_confirm) expected.push("confirm:");
+  const actual = bound.actions.map((action) => isJsonObject(action) && Array.isArray(action.arguments)
+    && action.arguments.length === 0 ? `${action.verb}:${action.subject_referent_id ?? ""}` : "invalid");
+  return JSON.stringify(expected.sort()) === JSON.stringify(actual.sort()) ? []
+    : ["native card selection must publish exactly every current card and permitted control"];
+}

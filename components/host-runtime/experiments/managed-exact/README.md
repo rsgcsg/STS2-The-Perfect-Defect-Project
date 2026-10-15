@@ -133,9 +133,12 @@ native target validity before `EnqueueManualUse`; the native `UsePotionAction`
 retains its later target validation. Missing, stale or foreign targets reject;
 multiple-player domains and other unsupported target families remain unavailable.
 This scoped binding does not implement every effect's child interaction.
-For example, Colorless Potion can deliver its parent use and open the existing
-unsupported `card_select` child; that choice stays pending, with no automatic
-selection, discard, retry or claim that the potion's whole effect completed.
+Colorless Potion may now open the bounded exact choose-card presentation when its
+complete native rendering/context is admitted; other generated cards can remain
+unsupported with explicit rendering/detail gaps. Hologram and Seeker Strike use
+the exact combat-pile adapter. Deck-enchantment and untyped selectors remain
+unsupported. See [selector context](../../docs/MANAGED_SELECTOR_CONTEXT.md).
+A delivered parent use is not a claim that its whole effect completed.
 Portable helper/projection tests and an exact build establish their stated
 source/test/build scope, not native UI parity, a gameplay journey or qualification.
 

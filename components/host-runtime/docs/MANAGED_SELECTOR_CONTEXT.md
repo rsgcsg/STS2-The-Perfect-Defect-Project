@@ -1,0 +1,57 @@
+# Bounded Managed choose and combat selectors
+
+This is an additive legacy Managed/text-menu capability. It does not implement
+full P1, C1 capture, native UI parity, Human evidence or research admission.
+
+The pinned native `FromChooseACardScreen` and innermost five-argument
+`FromCombatPile` command supply one synchronous, single-use callback frame.
+The frame carries the real player, selector, card objects and command preferences;
+combat additionally retains the exact pile and native filter. It closes when the
+native method returns its Task. Unknown, consumed, overlapping or mismatched frames
+never borrow another callback. The native command retains automatic paths that
+finish before a callback. Unscoped callbacks do not gain a Host auto-choice.
+
+Choose-card input uses the native canSkip flag independently of callback min0.
+It completes on one original offered card or an explicitly permitted skip.
+Combat support is bounded to Draw/Discard/Exhaust, min=max1, with ordinary click
+completion or real manual select/deselect/confirm. Unsupported preferences and
+other selector origins remain unavailable. Deck-enchantment is not admitted.
+
+The producer renders every offered card through the game's Normal preview and
+GetDescriptionForPile APIs in the actual owned context. A typed transaction saves
+and restores arbitrary prior preview/enchanted values and EnergyVar.ColorPrefix;
+clearing to base is not restoration. Unknown variable/context, unresolved text,
+inline images without a qualified text projection, affliction details without a
+qualified adapter and incomplete hover closure make the whole catalog unavailable.
+Native card hover previews recurse with explicit cycle/depth failure. No fallback
+localization template or manual variable substitution becomes complete.
+
+Every observation reads the current post-parent combat HUD from the same native
+player/combat owner. It does not copy a parent snapshot, pump native actions or
+advertise a free combat turn. Health numbers follow native display visibility.
+Draw candidates are already native-revealed; projection sorts public card facts
+while preserving original private bindings and distinct equal card instances.
+It never reveals the unoffered draw remainder, true draw order or RNG.
+
+A complete surface has selector_kind choose_card/combat_pile, display_context,
+all cards and their native-admitted flags, exact selected public entity IDs,
+full bounds/control flags and current combat context. The strict SDK checks
+card/referent/selection/catalog closure. Text-menu accepts only that bounded
+complete shape; historical untyped card_selection remains unsupported.
+
+Terminal input revalidates the current selector/run/player, complete original
+candidate domain, pile/filter and strict rendered display before returning exact
+original objects to the suspended callback. A changed domain rejects even if the
+requested card itself remains present. Lifecycle abort cancels the pending Task;
+it is not an empty successful native skip. Parent block/damage/potion consumption
+already applied before the selector is retained. Unknown delivery fences mutation
+and never retries the child or replays the parent.
+
+Validation for this source candidate consists of portable projection/strict SDK/
+text-menu tests, exact native model/renderer/core fixtures and an exact build.
+The native fixtures invoke the actual prefix/callback producer directly, without
+RunManager, a game loop, gameplay effects or GUI. They establish those bounded
+mechanisms, not execution of a live suspended native command or whole-game parity.
+A later explicitly allocated runtime canary must verify exact hook ordering and
+native continuation. No installed, loaded, journey, Human or strategy qualification
+is transferred from the previous candidate.
