@@ -8,6 +8,7 @@ import json
 import threading
 
 import pytest
+from reference_suite_diagnostics import retain_report_diagnostic
 from test_local_models import public_native_preflight as public_native_preflight
 from test_native_episode_application import native_app as native_app
 from test_native_episode_process import (
@@ -118,7 +119,7 @@ def suite_app(native_runtime, native_app, world, monkeypatch):
 
 
 def test_two_serial_http_episodes_use_original_request_auto_ack_seal_and_exact_finish(
-    tmp_path, suite_app, monkeypatch,
+    tmp_path, suite_app, monkeypatch, request,
 ):
     app, offers, host_log, world = suite_app
     manifest, sha = suite_manifest(tmp_path)
@@ -150,7 +151,9 @@ def test_two_serial_http_episodes_use_original_request_auto_ack_seal_and_exact_f
     report = run_suite(manifest, sha, client=client, run_dir=tmp_path / "reference-attempt",
                        selection="fixture-reference-teacher", run_profile="short", max_episodes=2,
                        limits=SuiteLimits(15, 20, 15, 90, 0.05, 10))
-    assert report["status"] == "completed", report
+    diagnostic = retain_report_diagnostic(
+        report, tmp_path / "reference-attempt", request.node.user_properties)
+    assert report["status"] == "completed", diagnostic
     assert len(report["episodes"]) == 20 and len(offers) == len(request_wires) == 2
     assert report["actor_started"] == 2 and world.submitted == 2
     assert len({row["generation_id"] for row in report["episodes"][:2]}) == 2
@@ -179,7 +182,7 @@ def test_two_serial_http_episodes_use_original_request_auto_ack_seal_and_exact_f
 
 
 def test_late_ready_and_accepted_http_reply_loss_never_reoffer_actor(
-    tmp_path, suite_app, monkeypatch,
+    tmp_path, suite_app, monkeypatch, request,
 ):
     app, offers, host_log, _world = suite_app
     manifest, sha = suite_manifest(tmp_path)
@@ -212,7 +215,9 @@ def test_late_ready_and_accepted_http_reply_loss_never_reoffer_actor(
     report = run_suite(manifest, sha, client=client, run_dir=tmp_path / "lost-attempt",
                        selection="fixture-reference-teacher", run_profile="short", max_episodes=2,
                        limits=SuiteLimits(15, 20, 15, 90, 0.05, 10))
-    assert report["status"] == "stopped", report
+    diagnostic = retain_report_diagnostic(
+        report, tmp_path / "lost-attempt", request.node.user_properties)
+    assert report["status"] == "stopped", diagnostic
     assert len(offers) == submits == 1
     assert status_reads >= 3
     assert report["stop_reason"] == "TimeoutError"
