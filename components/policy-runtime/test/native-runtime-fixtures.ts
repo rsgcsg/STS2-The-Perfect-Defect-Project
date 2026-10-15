@@ -16,10 +16,15 @@ import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import type { AgentManifest } from "../src/agent-session-contracts.js";
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { fixturePortCloser } from "./fixture-process.js";
+import { fixtureProgress } from "./fixture-progress.js";
+import { onTestFailed } from "vitest";
 
 const native = JSON.parse(readFileSync(new URL("../../connector/contracts/fixtures/native-logical-v1.json", import.meta.url), "utf8")).wire_samples as Record<string, JsonObject>;
 const agent = JSON.parse(readFileSync(new URL("../contracts/fixtures/agent-session-v1.json", import.meta.url), "utf8")).manifest as AgentManifest;
 export const CHILD = fileURLToPath(new URL("./fixtures/native-agent-child.mjs", import.meta.url));
+const PROGRESS_EVIDENCE_KINDS = ["native_session_attached", "mode_changed", "native_event_received", "native_acquisition_registered",
+  "agent_consumed", "native_event_batch_received", "agent_directive", "native_await_result", "controller_released",
+  "controller_release_unknown", "stopped", "runtime_tainted", "fail_closed", "autonomy_budget_exhausted"];
 export const METHODS = ["capabilities", "current", "read", "catalog", "resolve", "attach", "events", "await", "cancel_wait", "detach", "renew", "retain", "release", "submit", "result"];
 
 export class SyntheticNativeHttp {
@@ -166,18 +171,57 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
   deadlineMs?: number; maxPolicyCalls?: number; gapPolicy?: "handoff" | "explicit_reset";
   retentionMs?: number;
   monotonicNow?: () => number;
+  progress?: ReturnType<typeof fixtureProgress>;
   beforeInitialize?: (value: { source: SyntheticNativeHttp; port: NdjsonAgentSessionPort; evidence: AgentRunEvidence;
     environment: PlayerEnvironmentRestClient }) => void;
   numericalAgent?: { python: string; pythonPath: string; packagePath: string } } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "native-runtime-source-"));
-  const source = new SyntheticNativeHttp(options.count, options.status, options.retentionMs); await source.start();
+  let runtime: NativeAgentRuntimeOwner | undefined, port: NdjsonAgentSessionPort | undefined;
+  let source: SyntheticNativeHttp | undefined;
+  const progress = options.progress ?? fixtureProgress("native-runtime", true, undefined, true);
+  // Read primitive fixture fields only. status() can enforce a product deadline,
+  // so observation must never call it or inspect payloads/credentials/errors.
+  const context = () => {
+    const child = (port as unknown as { child?: { pid?: number; exitCode: number | null; signalCode: string | null; killed: boolean } } | undefined)?.child;
+    const state = runtime as unknown as { mode: string; stopped: boolean; stopping: boolean; tickActive: boolean;
+      pending: unknown; owner: { active: { controller: AbortController } | null } } | undefined;
+    return { source_started: Number(source?.server?.listening === true), http_requests: source?.requests.length ?? 0,
+      child_spawned: Number(child?.pid !== undefined), child_exit_observed: Number(child !== undefined && (child.exitCode !== null || child.signalCode !== null)),
+      child_kill_requested: Number(child?.killed === true), runtime_initialized: Number(runtime !== undefined),
+      runtime_mode: state ? ["human", "shadow", "one_step", "auto"].indexOf(state.mode) : -1,
+      runtime_stopped: Number(state?.stopped === true), runtime_stopping: Number(state?.stopping === true),
+      runtime_tick_active: Number(state?.tickActive === true), runtime_request_pending: Number(state?.pending != null),
+      runtime_active_aborted: Number(state?.owner?.active?.controller.signal.aborted === true) };
+  };
+  async function observed<T>(phase: string, work: () => Promise<T>, counts: Record<string, number> = {}): Promise<T> {
+    let end: (() => void) | undefined, failed = false;
+    try { end = progress.begin(phase, { ...context(), ...counts }); } catch { /* Observation only. */ }
+    try { return await work(); }
+    catch (error) { failed = true; throw error; }
+    finally {
+      try { end?.(); } catch { /* Observation only. */ }
+      try { progress("fixture-state", { ...context(), ...counts, operation_failed: Number(failed) }); } catch { /* Observation only. */ }
+    }
+  }
+  // Public Vitest API, registered before the first await. It only reveals the
+  // bounded snapshots; it does not cancel, Stop or retry the original fixture.
+  onTestFailed(async ({ task }) => {
+    try {
+      const errors = task.result?.errors ?? [];
+      progress("test-failed", { ...context(), error_count: errors.length,
+        whole_test_watchdog: Number(errors.some(error => typeof error.message === "string" && /^Test timed out in [0-9]+ms\./u.test(error.message))) });
+      await progress.flush(true);
+    } catch { /* Observation cannot replace the original failure. */ }
+  });
+  const root = await observed("setup-root", () => mkdtemp(join(tmpdir(), "native-runtime-source-")));
+  source = new SyntheticNativeHttp(options.count, options.status, options.retentionMs);
+  await observed("setup-http-listen", () => source!.start());
   let manifest = structuredClone(agent);
   manifest.support.interaction_kinds = ["*"]; manifest.support.action_verbs = ["*"];
   manifest.requirements.required_methods = [...METHODS];
   if (options.gapPolicy) manifest.input.gap_policy = options.gapPolicy;
   manifest.artifact.path = join(root, "package.json");
   const artifact = Buffer.from('{"scope":"programmed synthetic conformance only"}');
-  manifest.artifact.sha256 = createHash("sha256").update(artifact).digest("hex"); await writeFile(manifest.artifact.path, artifact);
+  manifest.artifact.sha256 = createHash("sha256").update(artifact).digest("hex"); await observed("setup-artifact", () => writeFile(manifest.artifact.path, artifact));
   if (options.child === "query") {
     manifest.input.history_mode = "scoped_query"; manifest.input.attachment.delivery_mode = "scoped";
     manifest.input.state_recovery = { mode: "none", max_state_bytes: 0, model_bindings: [] };
@@ -185,32 +229,48 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
   const manifestPath = join(root, "agent.json");
   if (options.numericalAgent) {
     const settings = join(root, "binding-settings.json");
-    await writeFile(settings, JSON.stringify({ requirements: manifest.requirements, support: manifest.support,
-      required_seams: manifest.input.attachment.required_seams }));
+    await observed("setup-numerical-settings", () => writeFile(settings, JSON.stringify({ requirements: manifest.requirements, support: manifest.support,
+      required_seams: manifest.input.attachment.required_seams })));
     const code = "import json,sys\nfrom pathlib import Path\nfrom stpd.policy.native_agent import bind_native_agent\ns=json.loads(Path(sys.argv[3]).read_text())\nbind_native_agent(Path(sys.argv[1]),Path(sys.argv[2]),manifest_id='native-numerical-source-fixture',**s)\n";
     execFileSync(options.numericalAgent.python, ["-c", code, options.numericalAgent.packagePath, manifestPath, settings],
       { env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" }, timeout: 30000 });
-    manifest = JSON.parse(await readFile(manifestPath, "utf8")) as AgentManifest;
-  } else await writeFile(manifestPath, JSON.stringify(manifest));
-  const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, mode: options.mode ?? "human",
-    runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
-  const port = options.numericalAgent ? NdjsonAgentSessionPort.spawn(options.numericalAgent.python,
+    manifest = JSON.parse(await observed("setup-numerical-manifest", () => readFile(manifestPath, "utf8"))) as AgentManifest;
+  } else await observed("setup-manifest", () => writeFile(manifestPath, JSON.stringify(manifest)));
+  const evidence = await observed("setup-evidence", () => AgentRunEvidence.createSession({ root, agentManifest: manifest, mode: options.mode ?? "human",
+    runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) }));
+  port = options.numericalAgent ? NdjsonAgentSessionPort.spawn(options.numericalAgent.python,
     ["-m", "stpd.policy.native_agent", "--package", options.numericalAgent.packagePath, "--manifest", manifestPath],
     manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: options.numericalAgent.pythonPath, OMP_NUM_THREADS: "2", MKL_NUM_THREADS: "2" } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [CHILD, manifestPath, options.child ?? "act"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   const closePort = fixturePortCloser(port);
-  let runtime: NativeAgentRuntimeOwner;
   const environment = new PlayerEnvironmentRestClient(source.address, 2000);
-  try { options.beforeInitialize?.({ source, port, evidence, environment });
-    runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence,
+  try { runtime = await observed("runtime-initialize", () => {
+    options.beforeInitialize?.({ source: source!, port: port!, evidence, environment });
+    const append = evidence.append.bind(evidence), transport = environment.nativeLogicalRequest.bind(environment);
+    const ready = port!.ready.bind(port), consume = port!.consume.bind(port), next = port!.next.bind(port);
+    evidence.append = (...args) => observed("durable-evidence-append", () => append(...args), { event_kind: PROGRESS_EVIDENCE_KINDS.indexOf(args[0]) });
+    environment.nativeLogicalRequest = (...args) => observed("sdk-transport", () => transport(...args), { method: METHODS.indexOf(args[0]) });
+    port!.ready = (...args) => observed("agent-ready", () => ready(...args));
+    port!.consume = (...args) => observed("agent-consume", () => consume(...args));
+    port!.next = (...args) => observed("agent-next", () => next(...args));
+    return PolicyRuntime.forAgent({ manifest, environment, port: port!, evidence,
     mode: options.mode ?? "human", monotonicNow: options.monotonicNow, runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) },
-    autoBudget: { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }
+    autoBudget: { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }); }
   catch (error) {
     const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8");
-    await closePort(); await source.close(); await rm(root, { recursive: true, force: true });
+    await observed("port-close", closePort); await observed("server-close", () => source!.close());
+    await observed("root-remove", () => rm(root, { recursive: true, force: true }));
     throw new Error(`actual conformance child startup failed: ${String(error)}\n${diagnostics}`, { cause: error });
   }
+  const tick = runtime.tick.bind(runtime), stop = runtime.stop.bind(runtime);
+  runtime.tick = (...args) => observed("runtime-tick", () => tick(...args));
+  runtime.stop = (...args) => observed("runtime-stop", () => stop(...args));
   return { root, source, manifest, manifestPath, runtime, port, evidence,
-    events: async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)),
-    close: async () => { await runtime.stop().catch(() => undefined); await closePort(); await source.close(); await rm(root, { recursive: true, force: true }); } };
+    events: () => observed("events-read", async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line))),
+    observe: <T>(phase: "tick-1" | "tick-2" | "events-read" | "archive", work: () => Promise<T>) => observed(phase, work),
+    close: async () => {
+      await runtime!.stop().catch(() => undefined);
+      await observed("port-close", closePort); await observed("server-close", () => source!.close());
+      await observed("root-remove", () => rm(root, { recursive: true, force: true }));
+    } };
 }
