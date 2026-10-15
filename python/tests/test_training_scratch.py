@@ -15,6 +15,124 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.local_training import OPERATION_FILE
 
 
+@pytest.mark.parametrize(("target", "phase", "scope", "entry"), [
+    ("current_file", "lstat", "current", "descendant"),
+    ("prior_file", "lstat", "prior", "descendant"),
+    ("current_root", "lstat", "current", "root"),
+    ("scan_open", "scandir_open", "current", "descendant"),
+    ("scan_iterate", "scandir_iterate", "current", "descendant"),
+])
+def test_original_inventory_os_failure_retains_scan_context_and_private_cause(
+    tmp_path, monkeypatch, target, phase, scope, entry,
+):
+    from spireagent.workbench import training_scratch as scratch
+    from spireagent.workbench.local_training import _safe_parent_failure
+
+    operation = {"attempt_id": "2"*32, "attempts": [{"attempt_id": "1"*32}],
+                 "scratch_name": "local-training-"+"2"*32+".scratch"}
+    prior = tmp_path/("local-training-"+"1"*32+".scratch")
+    current = tmp_path/operation["scratch_name"]
+    prior.mkdir()
+    current.mkdir()
+    for root in (prior, current):
+        (root/"private-child").mkdir()
+        (root/"private-file").write_bytes(b"data")
+    victim = (prior/"private-file" if target == "prior_file" else
+              current if target == "current_root" else
+              current/"private-child" if target.startswith("scan") else current/"private-file")
+    original = PermissionError(13, "DO-NOT-EXPORT-OS-MESSAGE", str(victim))
+    original.winerror = 5
+    lstat, scandir = Path.lstat, scratch.os.scandir
+
+    def failing_lstat(item, *args, **kwargs):
+        if item == victim and not target.startswith("scan"):
+            raise original
+        return lstat(item, *args, **kwargs)
+
+    class FailedIteration:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            raise original
+
+    def failing_scan(item):
+        if Path(item) == victim:
+            if target == "scan_open":
+                raise original
+            if target == "scan_iterate":
+                return FailedIteration()
+        return scandir(item)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", failing_lstat)
+        patch.setattr(scratch.os, "scandir", failing_scan)
+        with pytest.raises(BoundaryError) as caught:
+            scratch.retained_scratch_bytes(tmp_path/OPERATION_FILE, operation, active_attempt=True)
+    assert type(caught.value) is BoundaryError
+    assert caught.value.code == "scratch_inventory_invalid"
+    assert caught.value.__cause__ is original
+    diagnostic = _safe_parent_failure(caught.value, "preparing_run")
+    observed = diagnostic["scratch_inventory"]
+    assert (observed["scan_phase"], observed["attempt_scope"], observed["entry_scope"]) == (
+        phase, scope, entry)
+    assert observed["reason"] == "os_error" and observed["active_attempt"] is True
+    assert diagnostic["causes"] == [{"link": "cause", "exception_type": "builtins.PermissionError",
+                                     "errno": 13, "winerror": 5}]
+    assert "DO-NOT-EXPORT" not in json.dumps(diagnostic)
+    assert str(tmp_path) not in json.dumps(diagnostic)
+    # A later healthy sample cannot overwrite the original failure's context.
+    assert scratch.retained_scratch_bytes(tmp_path/OPERATION_FILE, operation) == 8
+    assert _safe_parent_failure(caught.value, "preparing_run") == diagnostic
+
+
+def test_real_child_scratch_rejection_keeps_unknown_and_original_parent_evidence(
+    tmp_path, monkeypatch,
+):
+    service, request, owner, store = ready(tmp_path, monkeypatch)
+    child_script(monkeypatch, """
+import time
+def bad_root(args, channel):
+    channel.emit('started')
+    args.scratch_dir.rmdir()
+    args.scratch_dir.write_text('PRIVATE-SCRATCH-SENTINEL')
+    while True:
+        time.sleep(0.05)
+child.run_child = bad_root
+""")
+    initial = service.start(request)["operation"]
+    assert service._thread is not None
+    service._thread.join(timeout=30)
+    assert not service._thread.is_alive()
+    path = owner.path.parent/OPERATION_FILE
+    journal = json.loads(path.read_bytes())
+    root = path.parent/journal["scratch_name"]
+    root.unlink()
+    root.mkdir()
+    operation = service.status()["operation"]
+    assert operation["status"] == "interrupted_unknown"
+    assert operation["error"] == {"code": "scratch_inventory_invalid", "automatic_retry": False}
+    assert operation["child_exit"]["forced"] is True and operation["worker_state"] == "terminal"
+    assert operation["budget_state"]["scratch_inventory_error"] is None
+    assert operation["limits"]["wall_seconds"] == 600
+    failure = service._failure_diagnostic
+    assert failure["scratch_inventory"]["reason"] == "entry_type"
+    assert failure["scratch_inventory"]["attempt_scope"] == "current"
+    assert failure["scratch_inventory"]["entry_scope"] == "root"
+    assert failure["scratch_inventory"]["file_type"] == "regular"
+    assert "PRIVATE-SCRATCH-SENTINEL" not in json.dumps(failure)
+    parent_log = path.parent/("local-training-"+initial["operation_id"]+"-parent-error.log")
+    assert b"scratch_inventory_invalid" in parent_log.read_bytes()
+    artifacts = set(store.manifest_ids())
+    assert service.start(request)["operation"]["attempt_id"] == initial["attempt_id"]
+    assert set(store.manifest_ids()) == artifacts
+    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+        service.start(replace(request, intent_id="2"*32))
+
+
 @pytest.mark.parametrize(("target", "active", "allowed"), [
     ("current_file", True, True),
     ("current_file", False, False),

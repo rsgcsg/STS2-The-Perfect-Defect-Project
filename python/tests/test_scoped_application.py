@@ -477,6 +477,8 @@ def test_scoped_current_event_cannot_use_a_coherent_foreign_producer(tmp_path):
 import json,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
+sys.path.append(sys.argv[5])
+from fixture_diagnostics import scoped_failure_snapshot
 from spireagent.artifact_contracts import Manifest,Producer
 from spireagent.json_boundary import BoundaryError,FrozenObject,json_bytes
 from spireagent.storage.local import LocalBlobStore
@@ -489,43 +491,57 @@ store=ManifestArtifactStore(LocalBlobStore(Path(sys.argv[4]),create=False))
 service=LocalTrainingService(ProjectConfig(Path(sys.argv[2]),'', '',None,combination()))
 original=adapter._private_child
 replaced=False
+injection_stage='not_seen'
+operation={}
+def diagnostic():
+    return scoped_failure_snapshot({
+        'parent_failure':service._failure_diagnostic,'replaced':replaced,
+        'injection_stage':injection_stage,'status':operation.get('status'),
+        'error_code':operation.get('error',{}).get('code')})
 def launch(command,*args,**kwargs):
     callback=kwargs['on_stdout_line']
     def line(raw):
-        global replaced
+        global replaced,injection_stage
         value=json.loads(raw)
         if value['kind']=='event' and not replaced:
+            injection_stage='event_received'
             event=store.get_manifest(value['details']['event_id'])
             producer=Producer(event.producer.repository,'f'*40,event.producer.uv_lock_sha256)
             info=event.parameters.value()
             forged=Manifest(event.kind,producer,event.parents,event.payloads,FrozenObject.of({
                 **info,'details':{**info.get('details',{}),'attempt_producer':producer.to_dict()}}))
             store.publish(forged)
+            injection_stage='forged_published'
             value['details']['event_id']=forged.artifact_id
             raw=json_bytes(value)
             replaced=True
+            injection_stage='substituted'
         callback(raw)
     return original(command,*args,**{**kwargs,'on_stdout_line':line})
 adapter._private_child=launch
-service.start(TrainingRequest('1'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
-service._thread.join(timeout=30)
-assert not service._thread.is_alive()
-operation=service.status()['operation']
-assert replaced and operation['status']=='interrupted_unknown',operation
-assert operation['error']['code']=='child_event_invalid',operation
-assert operation['child_exit']['forced'] is True
-assert operation['worker_state']=='terminal'
-before=store.manifest_ids()
-repeated=service.start(TrainingRequest('1'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
-assert repeated['operation']['attempt_id']==operation['attempt_id']
-assert repeated['operation']['status']=='interrupted_unknown'
-assert store.manifest_ids()==before
 try:
-    service.start(TrainingRequest('2'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
-    raise AssertionError('unknown writer retried')
-except BoundaryError as error:
-    assert error.code=='previous_training_outcome_unknown'
-print(json.dumps({'code':operation['error']['code'],'forced':operation['child_exit']['forced']}))
+    service.start(TrainingRequest('1'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
+    service._thread.join(timeout=30)
+    assert not service._thread.is_alive()
+    operation=service.status()['operation']
+    assert replaced and operation['status']=='interrupted_unknown',diagnostic()
+    assert operation['error']['code']=='child_event_invalid',diagnostic()
+    assert operation['child_exit']['forced'] is True
+    assert operation['worker_state']=='terminal'
+    before=store.manifest_ids()
+    repeated=service.start(TrainingRequest('1'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
+    assert repeated['operation']['attempt_id']==operation['attempt_id']
+    assert repeated['operation']['status']=='interrupted_unknown'
+    assert store.manifest_ids()==before
+    try:
+        service.start(TrainingRequest('2'*32,'structured-m2-cpu-v3',sys.argv[3],{'epochs':1}))
+        raise AssertionError('unknown writer retried')
+    except BoundaryError as error:
+        assert error.code=='previous_training_outcome_unknown'
+    print(json.dumps({'code':operation['error']['code'],'forced':operation['child_exit']['forced']}))
+except BaseException:
+    print('scoped_failure_diagnostic='+json.dumps(diagnostic(),sort_keys=True),flush=True)
+    raise
 """
     environment = {
         key: value
@@ -542,11 +558,18 @@ print(json.dumps({'code':operation['error']['code'],'forced':operation['child_ex
             str(tmp_path / "state"),
             source.manifest.artifact_id,
             str(owner.store_dir),
+            str(Path(__file__).parent),
         ],
         capture_output=True,
-        text=True,
         timeout=45,
         env=environment,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    if result.returncode != 0:
+        from fixture_diagnostics import scoped_supervisor_failure
+
+        failure = scoped_supervisor_failure(
+            result.stdout, result.stderr, result.returncode, tmp_path / "scoped-supervisor-failure")
+        # Raw original pipes stay in this private test attempt, including failures
+        # before the embedded supervisor can import/emit its diagnostic helper.
+        raise AssertionError(json.dumps(failure, sort_keys=True))
     assert json.loads(result.stdout) == {"code": "child_event_invalid", "forced": True}
