@@ -1289,7 +1289,8 @@ function currentSurface(state, ctx) {
           && (enemy.hp === null || Number.isFinite(enemy.hp)) && (enemy.max_hp === null || Number.isFinite(enemy.max_hp))
           && Number.isFinite(enemy.block) && statusComplete(enemy.statuses)
           && Array.isArray(enemy.intents) && enemy.intents.every((intent) =>
-            ["type", "label", "title", "description"].every((key) => text(intent?.[key]))));
+            ["type", "title", "description"].every((key) => text(intent?.[key]))
+            && (intent.label === "" || text(intent.label))));
       const exact = (choose || combat) && state.native_selector_complete === true
         && Array.isArray(state.native_selector_missing) && state.native_selector_missing.length === 0
         && text(state.selector_ref) && text(state.prompt) && state.stage === "choosing" && state.cancelable === false

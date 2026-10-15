@@ -174,3 +174,22 @@ test("complete marked selector cannot erase the entire expected catalog", () => 
   snapshot.bound_actions.status = "complete"; snapshot.status = "observed";
   assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
 });
+
+
+test("empty intent label is a native display value with required hover meaning", () => {
+  const state = selector();
+  state.combat_context.enemies[0].intents = [{ type: "Debuff", label: "", title: "Strategic",
+    description: "This enemy intends to apply a Debuff to you." }];
+  const valid = project(state).snapshot;
+  assert.equal(valid.bound_actions.status, "complete");
+  assert.equal(valid.interaction.content.context.combat.enemies[0].intents[0].label, "");
+  assert.equal(projectManagedTextMenuV1(valid).menu_actions.status, "complete");
+  for (const mutate of [s => { delete s.label; }, s => { s.label = null; },
+    s => { s.label = 0; }, s => { s.label = "{Damage}"; },
+    s => { s.title = ""; }, s => { s.description = null; }]) {
+    const invalid = structuredClone(state); mutate(invalid.combat_context.enemies[0].intents[0]);
+    const value = project(invalid).snapshot;
+    assert.equal(value.bound_actions.status, "unavailable");
+    assert.deepEqual(value.bound_actions.actions, []);
+  }
+});

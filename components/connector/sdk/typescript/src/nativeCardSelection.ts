@@ -87,7 +87,8 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
         && typeof pet.alive === "boolean")
       || !Array.isArray(hud.enemies) || !hud.enemies.every((enemy) => creatureComplete(enemy) && text(enemy.name)
         && Array.isArray(enemy.intents) && enemy.intents.every((intent) => isJsonObject(intent)
-          && ["type", "label", "title", "description"].every((key) => text(intent[key])))))
+          && ["type", "title", "description"].every((key) => text(intent[key]))
+          && (intent.label === "" || text(intent.label)))))
     return ["native card selection requires complete current post-prefix combat context for the persistent player"];
   const referents = snapshot.referents;
   if (!Array.isArray(referents)) return ["native card selection requires current card referents"];

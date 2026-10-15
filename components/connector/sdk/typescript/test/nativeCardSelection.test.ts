@@ -65,3 +65,17 @@ describe("marked Managed selector contract", () => {
     expect(() => decodePlayerSnapshot(unavailable)).not.toThrow();
   });
 });
+
+
+it("empty intent label is a native display value, never an absent label or hover", () => {
+  const value = structuredClone(baseline);
+  value.interaction.content.context.combat.enemies[0].intents = [{ type: "Debuff", label: "", title: "Strategic",
+    description: "This enemy intends to apply a Debuff to you." }];
+  expect(() => decodePlayerSnapshot(value)).not.toThrow();
+  for (const mutate of [(s: any) => { delete s.label; }, (s: any) => { s.label = null; },
+    (s: any) => { s.label = 0; }, (s: any) => { s.label = "{Damage}"; },
+    (s: any) => { s.title = ""; }, (s: any) => { s.description = null; }]) {
+    const invalid = structuredClone(value); mutate(invalid.interaction.content.context.combat.enemies[0].intents[0]);
+    expect(() => decodePlayerSnapshot(invalid)).toThrow(/native card selection/u);
+  }
+});

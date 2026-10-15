@@ -29,6 +29,8 @@ localization template or manual variable substitution becomes complete.
 Every observation reads the current post-parent combat HUD from the same native
 player/combat owner. It does not copy a parent snapshot, pump native actions or
 advertise a free combat turn. Health numbers follow native display visibility.
+A native intent may have no numeric label (an empty string); its type and hover
+title/description remain required. Missing/null labels are not accepted as empty.
 Draw candidates are already native-revealed; projection sorts public card facts
 while preserving original private bindings and distinct equal card instances.
 It never reveals the unoffered draw remainder, true draw order or RNG.
