@@ -53,4 +53,3 @@ export function renamePrivateCounters(value) {
   return typeof value === "string" && /^native-\d+$/u.test(value)
     ? `native-${Number(value.slice(7)) + 9000}` : value;
 }
-
