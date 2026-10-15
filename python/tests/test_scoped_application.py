@@ -9,7 +9,6 @@ import os
 import shutil
 import subprocess
 import sys
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -562,19 +561,15 @@ except BaseException:
             str(Path(__file__).parent),
         ],
         capture_output=True,
-        text=True,
         timeout=45,
         env=environment,
     )
     if result.returncode != 0:
-        from fixture_diagnostics import scoped_failure_snapshot
+        from fixture_diagnostics import scoped_supervisor_failure
 
-        failure = {}
-        for line in result.stdout.splitlines():
-            if line.startswith("scoped_failure_diagnostic=") and len(line) <= 16384:
-                with suppress(ValueError, TypeError):
-                    failure = scoped_failure_snapshot(json.loads(line.split("=", 1)[1]))
-        # The private traceback stays private; only this whitelist reaches CI.
-        raise AssertionError(json.dumps({"supervisor_exit": result.returncode, **failure},
-                                        sort_keys=True))
+        failure = scoped_supervisor_failure(
+            result.stdout, result.stderr, result.returncode, tmp_path / "scoped-supervisor-failure")
+        # Raw original pipes stay in this private test attempt, including failures
+        # before the embedded supervisor can import/emit its diagnostic helper.
+        raise AssertionError(json.dumps(failure, sort_keys=True))
     assert json.loads(result.stdout) == {"code": "child_event_invalid", "forced": True}

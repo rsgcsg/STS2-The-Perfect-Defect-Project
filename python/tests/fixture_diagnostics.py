@@ -5,6 +5,7 @@ configuration files or arbitrary directories, and never decides a test outcome.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -95,6 +96,8 @@ def scoped_failure_snapshot(value: object) -> dict[str, Any]:
     result["replaced"] = value.get("replaced") if type(value.get("replaced")) is bool else None
     parent = failure_snapshot(value.get("parent_failure"))
     if parent:
+        for key in ("errno", "winerror"):
+            parent[key] = parent.get(key) if type(parent.get(key)) is int else None
         for key, allowed in (
             ("exception_type", _SAFE_EXCEPTION_TYPES),
             ("stage", {"unavailable", "reserving", "allocating", "public_view", "tokenizing",
@@ -107,6 +110,8 @@ def scoped_failure_snapshot(value: object) -> dict[str, Any]:
         for key in ("origin", "owner_call"):
             point = parent.get(key)
             if isinstance(point, dict):
+                line = point.get("line")
+                point["line"] = line if type(line) is int and 0 < line <= 1_000_000 else None
                 for field, allowed in (
                     ("file", {"training_scratch.py", "local_training.py", "structured.py",
                               "research_process.py"}),
@@ -118,6 +123,47 @@ def scoped_failure_snapshot(value: object) -> dict[str, Any]:
                         point[field] = item if type(item) is str and item in allowed else "unknown"
     result["parent_failure"] = parent
     return result
+
+
+def scoped_supervisor_failure(
+    stdout: bytes, stderr: bytes, returncode: int, directory: Path,
+) -> dict[str, Any]:
+    """Retain in test tmp/scoped-supervisor-failure; publish only safe facts."""
+    diagnostic = scoped_failure_snapshot({})
+    found = False
+    for line in stdout.splitlines():
+        if line.startswith(b"scoped_failure_diagnostic=") and len(line) <= 16384:
+            with suppress(ValueError, TypeError):
+                value = json.loads(line.split(b"=", 1)[1])
+                if type(value) is dict:
+                    diagnostic = scoped_failure_snapshot(value)
+                    found = True
+    pipes = {}
+    for name, raw in (("stdout", stdout), ("stderr", stderr)):
+        retained = raw[:64 * 1024]
+        pipes[name] = {"captured_bytes": len(raw), "retained_bytes": None, "stored": False,
+                       "captured_sha256": hashlib.sha256(raw).hexdigest(),
+                       "retained_sha256": None,
+                       "truncated": len(retained) != len(raw)}
+    retention = "stored"
+    try:
+        directory.mkdir(mode=0o700)
+        for name, raw in (("stdout", stdout), ("stderr", stderr)):
+            descriptor = os.open(directory / (name + ".bin"),
+                                 os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(raw[:64 * 1024])
+                stream.flush()
+                os.fsync(stream.fileno())
+            pipes[name].update(stored=True, retained_bytes=min(len(raw), 64 * 1024),
+                               retained_sha256=hashlib.sha256(raw[:64 * 1024]).hexdigest())
+    except OSError:
+        # A private retention error must not replace the original supervisor FAIL.
+        retention = "unavailable"
+    return {"supervisor_exit": returncode if type(returncode) is int else None,
+            "diagnostic_found": found, **diagnostic,
+            "private_output": {"location": "test_tmp_scoped_supervisor_failure",
+                               "retention": retention, **pipes}}
 
 
 def thread_snapshot(thread: threading.Thread) -> dict[str, Any]:

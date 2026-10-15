@@ -15,6 +15,7 @@ from fixture_diagnostics import (
     failure_snapshot,
     operation_snapshot,
     scoped_failure_snapshot,
+    scoped_supervisor_failure,
     thread_snapshot,
 )
 
@@ -41,21 +42,87 @@ def test_scoped_original_failure_projection_excludes_unknown_values_and_private_
     assert observed["replaced"] is False and observed["injection_stage"] == "not_seen"
     assert observed["parent_failure"]["scratch_inventory"]["attempt_scope"] == "current"
     assert observed["parent_failure"]["causes"][0]["winerror"] == 5
+    assert observed["parent_failure"]["origin"]["line"] == 7
     assert private not in json.dumps(observed)
     value["injection_stage"] = private
     value["parent_failure"]["origin"].update(file=private, function=private)
+    value["parent_failure"].update(errno=private, winerror=private)
+    value["parent_failure"]["origin"]["line"] = private
     value["parent_failure"]["scratch_inventory"].update(scan_phase=private, entries=True)
     value["parent_failure"]["causes"] = [{"link": [], "exception_type": private,
                                           "errno": private, "winerror": True}] * 20
     observed = scoped_failure_snapshot(value)
     assert observed["injection_stage"] == "unknown"
     assert observed["parent_failure"]["origin"]["file"] == "unknown"
+    assert observed["parent_failure"]["origin"]["line"] is None
+    assert observed["parent_failure"]["errno"] is None
+    assert observed["parent_failure"]["winerror"] is None
     assert observed["parent_failure"]["scratch_inventory"]["scan_phase"] == "unknown"
     assert observed["parent_failure"]["scratch_inventory"]["entries"] is None
     assert len(observed["parent_failure"]["causes"]) == 4
     assert observed["parent_failure"]["causes"][0] == {
         "link": "unknown", "exception_type": "unknown", "errno": None, "winerror": None}
     assert private not in json.dumps(observed)
+
+
+@pytest.mark.parametrize("invalid_line", [True, 0, -1, 1_000_001])
+def test_scoped_failure_numeric_fields_do_not_accept_bool_or_unbounded_locations(invalid_line):
+    value = scoped_failure_snapshot({"parent_failure": {
+        "errno": True, "winerror": ["PRIVATE"],
+        "origin": {"line": invalid_line}, "owner_call": {"line": invalid_line},
+    }})["parent_failure"]
+    assert value["errno"] is None
+    assert "winerror" not in value or value["winerror"] is None
+    assert value["origin"]["line"] is None and value["owner_call"]["line"] is None
+
+
+def test_early_supervisor_import_failure_retains_original_bytes_outside_ci_projection(tmp_path):
+    import hashlib
+
+    result = subprocess.run(
+        [sys.executable, "-c", "raise ImportError('PRIVATE-IMPORT-FAILURE')"], capture_output=True)
+    assert result.returncode != 0
+    directory = tmp_path / "scoped-supervisor-failure"
+    value = scoped_supervisor_failure(result.stdout, result.stderr, result.returncode, directory)
+    assert value["diagnostic_found"] is False and value["parent_failure"] == {}
+    assert value["supervisor_exit"] == result.returncode
+    private = value["private_output"]
+    assert private["location"] == "test_tmp_scoped_supervisor_failure"
+    assert private["retention"] == "stored"
+    assert (directory / "stderr.bin").read_bytes() == result.stderr
+    assert (directory / "stdout.bin").read_bytes() == result.stdout
+    assert private["stderr"]["captured_sha256"] == hashlib.sha256(result.stderr).hexdigest()
+    assert private["stderr"]["retained_bytes"] == len(result.stderr)
+    assert private["stderr"]["stored"] is True
+    assert "PRIVATE" not in json.dumps(value) and str(tmp_path) not in json.dumps(value)
+
+
+def test_supervisor_pipe_retention_is_bounded_and_reprojects_diagnostic(tmp_path):
+    import hashlib
+
+    record = {"replaced": False, "injection_stage": "not_seen", "token": "PRIVATE-TOKEN",
+              "parent_failure": {"errno": "PRIVATE-ERRNO", "origin": {"line": "PRIVATE-LINE"}}}
+    stdout = b"scoped_failure_diagnostic=" + json.dumps(record).encode() + b"\n" + b"x"*70000
+    stderr = b"PRIVATE-RAW-STDERR\xff"*5000
+    directory = tmp_path / "scoped-supervisor-failure"
+    value = scoped_supervisor_failure(stdout, stderr, 1, directory)
+    assert value["diagnostic_found"] is True and value["replaced"] is False
+    assert value["parent_failure"]["errno"] is None
+    assert value["parent_failure"]["origin"]["line"] is None
+    assert "PRIVATE" not in json.dumps(value)
+    for name, raw in (("stdout", stdout), ("stderr", stderr)):
+        saved = (directory / (name + ".bin")).read_bytes()
+        assert saved == raw[:64*1024]
+        receipt = value["private_output"][name]
+        assert receipt["truncated"] is True and receipt["retained_bytes"] == 64*1024
+        assert receipt["captured_sha256"] == hashlib.sha256(raw).hexdigest()
+        assert receipt["retained_sha256"] == hashlib.sha256(saved).hexdigest()
+    unavailable = scoped_supervisor_failure(stdout, stderr, 1, directory)
+    assert unavailable["supervisor_exit"] == 1 and unavailable["diagnostic_found"] is True
+    assert unavailable["private_output"]["retention"] == "unavailable"
+    assert unavailable["private_output"]["stdout"]["stored"] is False
+    assert unavailable["private_output"]["stdout"]["retained_bytes"] is None
+    assert (directory / "stdout.bin").read_bytes() == stdout[:64*1024]
 
 
 def test_parent_failure_cause_chain_is_bounded_and_does_not_export_exception_attributes():
