@@ -29,6 +29,7 @@ try {
 } catch (error) {
   console.log(JSON.stringify({ schema: "sts2.project/p1-c1-comparison-1", verdict: "c1_incomparable", diagnostic_only: true,
     agent_admissible: false, creates_mutation_authority: false, p1_status: "unsupported", cross_host_qualification: "incomparable",
-    alignment_verified: false, first_difference: { path: "$", reason: error instanceof InputError ? error.message : "input_unavailable" } }, null, 2));
+    alignment_verified: false, relation_scope: "declared_typed_alias_relations_only",
+    extension_semantics: "literal_values_no_undeclared_relation_inference", first_difference: { path: "$", reason: error instanceof InputError ? error.message : "input_unavailable" } }, null, 2));
   process.exitCode = 20;
 }

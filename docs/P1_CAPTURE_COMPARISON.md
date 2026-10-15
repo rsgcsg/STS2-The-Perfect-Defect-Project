@@ -94,6 +94,20 @@ Only the closed contract-path and known referent-property schema policy in `tool
 aliases. Entity and referent aliases share the native public-entity namespace;
 Read-instance, legacy Read, action, interaction and Snapshot aliases have their
 own bijections. Repeated IDs cannot split; distinct IDs cannot collapse.
+Comparison covers declared typed alias relations only (`relation_scope`); undeclared
+relation inference is unsupported. Extension values are compared literally
+(`extension_semantics=literal_values_no_undeclared_relation_inference`). A nonnull
+referent `properties_schema` outside the finite supported map is incomparable,
+even if its property content is null or absent. A new schema needs explicit
+review of its producer meaning and alias relations. The current finite map covers
+`card`, `hand`, `enemy`, `companion`, `potion_state`, `orb`, `potion`,
+`playable_card`, `usable_potion`, `relic` and `player`, each under
+`sts2.player-environment/referent/<role>-1`. Ordinary combat emits the eight
+context/surface roles `playable_card`, `usable_potion`, `player`, `hand`,
+`companion`, `potion_state`, `orb` and `enemy`; the map also retains the already
+supported typed card/potion/relic shapes. A target-only referent with no property
+schema requires no property interpretation.
+
 Definition IDs, labels, descriptions and unknown extension locations remain literal,
 even when a field in an extension is named `entity_id`.
 No text substitution or kind/definition deduplication occurs. Known ordinary

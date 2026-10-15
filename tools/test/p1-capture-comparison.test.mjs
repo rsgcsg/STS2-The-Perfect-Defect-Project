@@ -28,6 +28,8 @@ test("actual SDK serializer → record → CLI keeps >8 details, bijections and 
   assert.equal(result.code, 0); assert.equal(result.result.verdict, "c1_scope_match");
   assert.equal(result.result.agent_admissible, false); assert.equal(result.result.p1_status, "unsupported");
   assert.equal(result.result.cross_host_qualification, "incomparable"); assert.equal(result.result.alignment_verified, false);
+  assert.equal(result.result.relation_scope, "declared_typed_alias_relations_only");
+  assert.equal(result.result.extension_semantics, "literal_values_no_undeclared_relation_inference");
   assert.equal(result.result.environment_alignment, "externally_asserted"); assert.equal(result.result.unsupported_sections.length, 5);
   assert.notEqual(result.result.provenance.reference.public_bytes_sha256, result.result.provenance.candidate.public_bytes_sha256);
   assert.equal(completeSyntheticScope().reads.filter(read => read.kind === "surface_card").length, 15);
@@ -240,7 +242,7 @@ test("orb-looking unknown extensions and unknown referent schemas remain literal
       for (const packet of [left, right]) packet.native_basis.referents.find(ref => ref.role === "orb").properties_schema = "sts2.player-environment/referent/unknown_orb-1";
       right.native_basis.referents.find(ref => ref.role === "orb").properties.entity_id = "opaque-right";
     }
-    assert.equal(cli(inputs(left, right)).result.verdict, "c1_scope_mismatch");
+    assert.equal(cli(inputs(left, right)).result.verdict, location === "unknown-schema" ? "c1_incomparable" : "c1_scope_mismatch");
   }
 });
 test("owned potion preview cannot lose a shared public card alias relation through CLI", () => {
@@ -250,4 +252,32 @@ test("owned potion preview cannot lose a shared public card alias relation throu
     card_previews: [structuredClone(left.reads[0].content.cards[0])] }];
   const right = structuredClone(left); right.native_basis.persistent.content.player.potions[0].card_previews[0].entity_id = "preview-split";
   const result = cli(inputs(left, right)); assert.equal(result.code, 10); assert.equal(result.result.verdict, "c1_scope_mismatch");
+});
+test("unknown structured referent schema is incomparable even with equal literal alias-looking values", () => {
+  const left = completeSyntheticScope(); const right = renamed(left);
+  for (const packet of [left, right]) {
+    packet.native_basis.referents[0].properties_schema = "sts2.player-environment/referent/future_card_link-1";
+    packet.native_basis.referents[0].properties = { entity_id: "card-0" };
+  }
+  const result = cli(inputs(left, right)); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+  assert.equal(result.result.first_difference.reason, "unsupported_referent_properties_schema");
+});
+
+test("unknown nonnull referent schema with no properties is still incomparable", () => {
+  for (const properties of [null, undefined]) {
+    const left = completeSyntheticScope(); const right = renamed(left);
+    for (const packet of [left, right]) {
+      packet.native_basis.referents[0].properties_schema = "sts2.player-environment/referent/future_card_link-1";
+      if (properties === undefined) delete packet.native_basis.referents[0].properties;
+      else packet.native_basis.referents[0].properties = properties;
+    }
+    const result = cli(inputs(left, right)); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+  }
+});
+test("equal alias-looking extension literals do not infer an undeclared entity relation", () => {
+  const left = completeSyntheticScope(); const right = renamed(left);
+  for (const packet of [left, right]) packet.native_basis.interaction.content.context.extension = { entity_id: "card-0" };
+  const result = cli(inputs(left, right)); assert.equal(result.code, 0); assert.equal(result.result.verdict, "c1_scope_match");
+  assert.equal(result.result.relation_scope, "declared_typed_alias_relations_only");
+  assert.equal(result.result.extension_semantics, "literal_values_no_undeclared_relation_inference");
 });

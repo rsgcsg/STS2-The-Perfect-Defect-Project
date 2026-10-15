@@ -4,6 +4,14 @@ import { readP1CaptureRecord, P1_CAPTURE_FULL_MISSING, P1_CAPTURE_SCOPE } from "
 export const P1_COMPARISON_DECLARATION = "sts2.project/p1-c1-comparison-declaration-1";
 export const sha256Text = text => createHash("sha256").update(text, "utf8").digest("hex");
 const MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
+const REFERENT_PROPERTY_PATHS = new Map(Object.entries({
+    card: [".entity_id"], hand: [".entity_id"], enemy: [".entity_id"], companion: [".entity_id"],
+    potion_state: [".entity_id"], orb: [".entity_id"], potion: [".entity_id"],
+    playable_card: [".entity_id", ".target_entity_ids[]"], usable_potion: [".entity_id", ".target_entity_ids[]"],
+    relic: [".entity_id", ".card_previews[].entity_id"],
+    player: [".player_entity_id", ".hand[].entity_id", ".companions[].entity_id", ".potion_states[].entity_id", ".orbs[].entity_id"]
+  }).map(([role, paths]) => [`sts2.player-environment/referent/${role}-1`, paths]));
+
 // Paths are bound to the current C1 and legacy Snapshot contracts. Unknown JSON
 // extension locations remain literal even if a field is named entity_id.
 function aliasPolicy(observation) {
@@ -33,20 +41,13 @@ function aliasPolicy(observation) {
     "$.reads.run_deck.content.cards[].entity_id",
     "$.reads.combat_piles.content.zones[].cards[].entity_id"
   ]);
-  const propertyPaths = new Map(Object.entries({
-    card: [".entity_id"], hand: [".entity_id"], enemy: [".entity_id"], companion: [".entity_id"],
-    potion_state: [".entity_id"], orb: [".entity_id"], potion: [".entity_id"],
-    playable_card: [".entity_id", ".target_entity_ids[]"], usable_potion: [".entity_id", ".target_entity_ids[]"],
-    relic: [".entity_id", ".card_previews[].entity_id"],
-    player: [".player_entity_id", ".hand[].entity_id", ".companions[].entity_id", ".potion_states[].entity_id", ".orbs[].entity_id"]
-  }).map(([role, paths]) => [`sts2.player-environment/referent/${role}-1`, paths]));
   return (key, path) => {
     const normalized = path.replace(/\[\d+\]/gu, "[]");
     if (entityPaths.has(normalized) && (!normalized.startsWith("$.native_basis.interaction.content.surface.")
         || observation.native_basis.interaction.content.surface.kind === "combat_turn")) return "entity";
     const property = /^\$\.native_basis\.referents\[(\d+)\]\.properties(.*)$/u.exec(path);
     if (property) {
-      const allowed = propertyPaths.get(observation.native_basis.referents[Number(property[1])]?.properties_schema);
+      const allowed = REFERENT_PROPERTY_PATHS.get(observation.native_basis.referents[Number(property[1])]?.properties_schema);
       if (allowed?.includes(property[2].replace(/\[\d+\]/gu, "[]"))) return "entity";
     }
     if (["$.source_snapshot_id", "$.native_basis.snapshot_id"].includes(normalized)) return "snapshot";
@@ -111,7 +112,8 @@ function verifyAssociation(side, input, full, declaration) {
 export async function compareP1CaptureRecords({ reference, candidate, declaration: declarationText } = {}) {
   const result = { schema: "sts2.project/p1-c1-comparison-1", verdict: "c1_incomparable",
     diagnostic_only: true, agent_admissible: false, creates_mutation_authority: false, p1_status: "unsupported",
-    capture_scope: P1_CAPTURE_SCOPE, environment_alignment: "externally_asserted",
+    capture_scope: P1_CAPTURE_SCOPE, relation_scope: "declared_typed_alias_relations_only",
+    extension_semantics: "literal_values_no_undeclared_relation_inference", environment_alignment: "externally_asserted",
     cross_host_qualification: "incomparable", alignment_verified: false,
     compared_sections: [], unsupported_sections: [...P1_CAPTURE_FULL_MISSING],
     provenance: {}, original_digests: {}, first_difference: null };
@@ -137,6 +139,9 @@ export async function compareP1CaptureRecords({ reference, candidate, declaratio
       if (Buffer.byteLength(input.record, "utf8") > MAX_DOCUMENT_BYTES) fail(`$.${side}.record`, "record_byte_bound_exceeded", true);
       try { full = await readP1CaptureRecord(input.record); } catch { fail(`$.${side}.record`, "strict_sdk_record_verification_failed", true); }
       result.provenance[side] = verifyAssociation(side, input, full, declaration);
+      for (const [index, referent] of full.observation.native_basis.referents.entries())
+        if (referent.properties_schema != null && !REFERENT_PROPERTY_PATHS.has(referent.properties_schema))
+          fail(`$.${side}.native_basis.referents[${index}].properties_schema`, "unsupported_referent_properties_schema", true);
       if (full.observation.scope_status !== "complete") fail(`$.${side}.scope_status`, "complete_c1_scope_required", true);
       records.push(full);
     }
