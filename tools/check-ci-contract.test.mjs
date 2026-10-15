@@ -47,6 +47,7 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["fail-fast: false", "fail-fast: true", "Linux must retain two isolated pytest shards"],
     ["shard: [1, 2]", "shard: [1]", "Linux must retain two isolated pytest shards"],
     ["timeout-minutes: 55", "timeout-minutes: 60", "Linux must retain its 55-minute budget"],
+    ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
     ["pattern: pytest-*-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
