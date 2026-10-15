@@ -157,7 +157,7 @@ test("session retains public object links, exact private bindings and snapshot-v
 });
 
 
-test("RunSimulator's actual fair-pile helper compiles without game files and feeds the strict public reader", async () => {
+test("RunSimulator's actual fair-pile and AnyPlayer helpers feed the strict public reader", async () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const patch = readFileSync(path.join(root, "experiments/managed-exact/patches/sts2-cli-d11aa88-v01110.patch"), "utf8");
   const additions = patch.split(/\r?\n/u).filter((line) => line.startsWith("+") && !line.startsWith("+++"))
@@ -202,6 +202,23 @@ test("RunSimulator's actual fair-pile helper compiles without game files and fee
     assert.equal(read.content.zones[0].cards.filter((value) => value.cost === "1").length, 2);
     assert.equal(new Set(read.content.zones[0].cards.map((value) => value.entity_id)).size, 3);
     assert.equal(JSON.stringify(publicBundle(projection)).includes("private_card_state"), false);
+
+    assert.match(stdout, /12 AnyPlayer target admission cases passed/u);
+    const targetLine = stdout.split(/\r?\n/u).find((line) => line.startsWith("any-player-target-json="));
+    assert.ok(targetLine, "the actual native admission helper emits its original target domain");
+    const targetDomain = JSON.parse(targetLine.slice("any-player-target-json=".length));
+    state.player.potions = [{ slot: 0, native_ref: "native-potion", id: "ENERGY_POTION",
+      name: "Energy Potion", description: "Gain 2 Energy.", keywords: [], card_previews: [],
+      hover_facts_complete: true, target_type: "AnyPlayer", usage: "CombatOnly",
+      can_use: true, can_discard: true, ...targetDomain }];
+    const withPotion = projectManagedCandidateDecision({ state, ...identity });
+    assert.equal(withPotion.snapshot.completeness.status, "complete");
+    assert.equal(withPotion.snapshot.bound_actions.status, "complete");
+    const use = withPotion.snapshot.bound_actions.actions.find((action) => action.verb === "use");
+    assert.deepEqual(use.arguments, [{ role: "target",
+      referent_id: withPotion.snapshot.persistent.content.player.entity_id }]);
+    assert.equal(withPotion.bindings.get(use.bound_action_id).raw_request.args.target_ref,
+      targetDomain.valid_target_refs[0]);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

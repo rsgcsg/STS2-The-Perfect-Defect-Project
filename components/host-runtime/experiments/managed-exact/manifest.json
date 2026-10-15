@@ -36,14 +36,14 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
+    "source_patch_sha256": "0f649da925da74a9c7134247ccd9a142ce6e86d7438c1f1c013aeba729dcd4ae",
+    "artifact_sha256": "f65f7872f5ee265e799ecf85a289c81eba9ba9ed622780cdb616f17bf3c1b9f5",
+    "artifact_mvid": "34600b22-7ea3-4cfb-a706-b02485d5dbbb"
+  },
+  "previous_candidate_build": {
     "source_patch_sha256": "8d266c2bea8045e48eb770d4029e8f9af70cfb814b71cc15891cdc41464e7526",
     "artifact_sha256": "68f465416dd46b6bd5eb25302914bfc9166473455d1fb95fac8bfc76d65329e0",
     "artifact_mvid": "43d34ef4-4cd3-4161-ac38-ee308fd7be3f"
-  },
-  "previous_candidate_build": {
-    "source_patch_sha256": "bf3ac3d1aadee5ce556687745d2d64d37d0eea47e2b67904ca7c97b080d8b89e",
-    "artifact_sha256": "dd726fba38f4fc097a57e9dd4a5fe7d220bd94ea3527e132be31a31c95963d93",
-    "artifact_mvid": "145c95e9-ace0-42b5-bb46-3fef292ac645"
   },
   "last_measured_build": {
     "source_patch_sha256": "56af273801537d4ff3968a8e513c072ec94d3b17e0e771868ede2002e120c770",
@@ -180,6 +180,12 @@
       "kind": "host_presentation_adapter",
       "risk": "medium",
       "effect": "rechecks current merchant room, removal entry, stock, and gold inside the deferred native purchase callback; after a successful native purchase only, marks the captured entry used as NMerchantCardRemoval would when its UI is absent"
+    },
+    {
+      "id": "exact_single_player_potion_target_binding",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "publishes AnyPlayer potion targets only for the exact sole current run Player and potion owner; binds that Player identity to its native Creature and rechecks native usability and IsValidTarget before EnqueueManualUse; generated selectors retain their separate supported or unsupported pending state"
     },
     {
       "id": "in_process_run_cleanup",
