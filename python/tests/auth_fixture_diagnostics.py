@@ -15,13 +15,20 @@ HEADER = "X-Synthetic-Test-Request"
 ROUTES = {
     "/", "/api/local-environment/native", "/api/local-environment/native/prepare",
     "/api/local-environment/native/finish", "/api/local-models/request",
-    "/api/local-models/run-agent",
+    "/api/local-models/run-agent", "/api/local-recordings/import/native-agent",
+    "/api/local-recordings/import", "/api/local-datasets/native-agent-preview",
+    "/api/local-datasets/publish",
 }
 
 
 class AuthFixtureDiagnostics:
-    def __init__(self, writer: FixtureDiagnostics | None = None) -> None:
-        self.writer = writer if writer is not None else FixtureDiagnostics("native-entry-http")
+    def __init__(self, writer: FixtureDiagnostics | None = None, *,
+                 fixture: str = "native-entry-http") -> None:
+        budgets = {"native-entry-http": 3, "native-agent-data-http": 5}
+        if fixture not in budgets:
+            raise ValueError("unsupported HTTP diagnostic fixture")
+        self.timeout = budgets[fixture]
+        self.writer = writer if writer is not None else FixtureDiagnostics(fixture)
         self.lock = threading.Lock()
 
     def record(self, stage: str, request_id: str, *, path: str = "", **fields: Any) -> None:
@@ -30,7 +37,7 @@ class AuthFixtureDiagnostics:
         try:
             selected = {key: value for key, value in fields.items()
                         if key in {"method", "auth", "body_length", "status", "error_class",
-                                   "errno", "winerror", "effects", "requests"}
+                                   "errno", "winerror", "effects", "requests", "timeout_seconds"}
                         and (value is None or type(value) in {str, int})}
             with self.lock:
                 self.writer.record(stage, request_id=request_id,
@@ -110,19 +117,23 @@ class AuthFixtureDiagnostics:
         server.handle_error = handle_error
 
     def exchange(self, opener: Any, request: Any, *, auth: str, body_length: int,
-                 effects: list, requests: list) -> Any:
+                 effects: list | None = None, requests: list | None = None,
+                 timeout: int = 3, include_status: bool = False) -> Any:
+        if type(timeout) is not int or timeout != self.timeout:
+            raise ValueError("unsupported fixture HTTP timeout")
         identity = uuid.uuid4().hex
         request.add_header(HEADER, identity)
         path = request.selector
         self.record("client-open-started", identity, path=path, method=request.get_method(),
-                    auth=auth if auth in {"browser", "bearer", "wrong-bearer", "none"} else "other",
-                    body_length=body_length)
+                    auth=auth if auth in {"browser", "bearer", "wrong-bearer", "none",
+                                          "browser-cookie", "browser-no-cookie"} else "other",
+                    body_length=body_length, timeout_seconds=timeout)
         try:
-            with opener.open(request, timeout=3) as response:
+            with opener.open(request, timeout=timeout) as response:
                 self.record("client-status-received", identity, path=path, status=response.status)
                 result = json.load(response)
                 self.record("client-body-decoded", identity, path=path)
-                return result
+                return (response.status, result) if include_status else result
         except BaseException as error:
             # Includes HTTPError without consuming/closing it before caller assertions.
             if isinstance(error, HTTPError):
@@ -130,5 +141,9 @@ class AuthFixtureDiagnostics:
             self.error("client-open-or-read-error", identity, path, error)
             raise
         finally:
-            self.record("client-exchange-ended", identity, path=path,
-                        effects=len(effects), requests=len(requests))
+            counters = {}
+            if effects is not None:
+                counters["effects"] = len(effects)
+            if requests is not None:
+                counters["requests"] = len(requests)
+            self.record("client-exchange-ended", identity, path=path, **counters)

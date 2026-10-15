@@ -25,7 +25,11 @@ class Writer:
         self.active -= 1
 
 
-def test_actual_http_denial_body_and_original_exception_are_preserved():
+@pytest.mark.parametrize("route, timeout, fixture", [
+    ("/api/local-models/run-agent", 3, "native-entry-http"),
+    ("/api/local-recordings/import/native-agent", 5, "native-agent-data-http"),
+])
+def test_actual_http_denial_body_and_original_exception_are_preserved(route, timeout, fixture):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -40,18 +44,18 @@ def test_actual_http_denial_body_and_original_exception_are_preserved():
             self.respond(403, b'{"error":"synthetic-denied"}')
 
     writer = Writer()
-    observer = AuthFixtureDiagnostics(writer)
+    observer = AuthFixtureDiagnostics(writer, fixture=fixture)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     observer.observe_server(server)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        request = Request(f"http://127.0.0.1:{server.server_port}/api/local-models/run-agent",
+        request = Request(f"http://127.0.0.1:{server.server_port}" + route,
                           data=b'{"secret":"never-record"}',
                           headers={"Authorization": "Bearer never-record"})
         with pytest.raises(HTTPError) as caught:
             observer.exchange(build_opener(ProxyHandler({})), request,
-                              auth="none", body_length=len(request.data), effects=[], requests=[])
+                              auth="none", body_length=len(request.data), timeout=timeout)
         assert caught.value.code == 403
         assert caught.value.read() == b'{"error":"synthetic-denied"}'
         caught.value.close()
@@ -63,14 +67,19 @@ def test_actual_http_denial_body_and_original_exception_are_preserved():
     assert "never-record" not in json.dumps(records)
     ids = {fields["request_id"] for _stage, fields in records}
     assert len(ids) == 1
+    assert all("effects" not in fields and "requests" not in fields
+               for _stage, fields in records)
+    assert any(fields.get("timeout_seconds") == timeout for _stage, fields in records)
+    assert all(fields["route"] == route for _stage, fields in records)
     assert any(stage == "server-response-written" and fields["status"] == 403
                for stage, fields in records)
     assert any(stage == "client-open-or-read-error" and fields["error_class"] == "HTTPError"
                for stage, fields in records)
 
 
+@pytest.mark.parametrize("timeout", [3, 5])
 @pytest.mark.parametrize("result", ["success", "abort", "decode"])
-def test_diagnostic_failure_preserves_result_and_exact_original_exception(result):
+def test_diagnostic_failure_preserves_result_and_exact_original_exception(result, timeout):
     class Broken:
         def record(self, *_args, **_fields):
             raise ValueError("diagnostic failed")
@@ -90,29 +99,32 @@ def test_diagnostic_failure_preserves_result_and_exact_original_exception(result
             return b'{"accepted":true}' if result == "success" else b"invalid-json"
 
     class Opener:
-        def open(self, request, timeout):
+        def open(self, request, **options):
             assert request.data == b"original-body"
-            assert timeout == 3
+            assert options == {"timeout": timeout}
             assert request.get_header("Authorization") == "original-token"
             if result == "abort":
                 raise original
             return Response()
 
-    observer = AuthFixtureDiagnostics(Broken())
+    observer = AuthFixtureDiagnostics(
+        Broken(), fixture="native-entry-http" if timeout == 3 else "native-agent-data-http")
     request = Request("http://127.0.0.1/api/local-models/run-agent", data=b"original-body",
                       headers={"Authorization": "original-token"})
     if result == "success":
-        assert observer.exchange(Opener(), request, auth="none", body_length=13,
-                                 effects=[], requests=[]) == {"accepted": True}
+        value = observer.exchange(Opener(), request, auth="none", body_length=13,
+                                  effects=[], requests=[], timeout=timeout,
+                                  include_status=timeout == 5)
+        assert value == ((200, {"accepted": True}) if timeout == 5 else {"accepted": True})
     elif result == "abort":
         with pytest.raises(ConnectionAbortedError) as caught:
             observer.exchange(Opener(), request, auth="none", body_length=13,
-                              effects=[], requests=[])
+                              effects=[], requests=[], timeout=timeout)
         assert caught.value is original
     else:
         with pytest.raises(json.JSONDecodeError):
             observer.exchange(Opener(), request, auth="none", body_length=13,
-                              effects=[], requests=[])
+                              effects=[], requests=[], timeout=timeout)
 
 
 def test_concurrent_client_server_observations_serialize_writer():
@@ -154,3 +166,18 @@ def test_server_observation_failure_preserves_original_handler_exception():
     with pytest.raises(OSError) as caught:
         handler.do_POST()
     assert caught.value is original
+
+
+@pytest.mark.parametrize("fixture, wrong_timeout", [
+    ("native-entry-http", 5), ("native-agent-data-http", 3),
+    ("native-entry-http", 30), ("native-agent-data-http", True),
+])
+def test_fixture_budget_cannot_be_widened_or_substituted(fixture, wrong_timeout):
+    class MustNotOpen:
+        def open(self, *_args, **_kwargs):
+            pytest.fail("invalid diagnostic configuration cannot open a request")
+
+    observer = AuthFixtureDiagnostics(Writer(), fixture=fixture)
+    with pytest.raises(ValueError, match="unsupported fixture HTTP timeout"):
+        observer.exchange(MustNotOpen(), Request("http://127.0.0.1/"), auth="none",
+                          body_length=0, timeout=wrong_timeout)
