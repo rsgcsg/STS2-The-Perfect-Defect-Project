@@ -18,7 +18,7 @@ const SUPPORTED_MANAGED_CARD_TARGET_TYPES = new Set([
   "AllAllies", "TargetedNoCreature", "Osty"
 ]);
 const SUPPORTED_MANAGED_POTION_TARGET_TYPES = new Set([
-  "None", "Self", "AnyEnemy", "AllEnemies", "RandomEnemy", "AllAllies"
+  "None", "Self", "AnyEnemy", "AllEnemies", "RandomEnemy", "AllAllies", "AnyPlayer"
 ]);
 const INFORMATION_POLICY = Object.freeze({
   id: "player_visible_v1",
@@ -1281,7 +1281,13 @@ function currentSurface(state, ctx) {
       const unsupportedCardTarget = rawHand.some((card) =>
         card.can_play === true && !supportsManagedCardTargetType(card.target_type));
       const unsupportedPotionTarget = rawPotions.some((potion) =>
-        potion.binding_supported !== true || !supportsManagedPotionTargetType(potion.target_type));
+        potion.binding_supported !== true || !supportsManagedPotionTargetType(potion.target_type)
+        || (potion.target_type === "AnyPlayer"
+          && (typeof potion.can_use !== "boolean"
+            || !Array.isArray(potion.valid_target_refs)
+            || potion.valid_target_refs.length > 1
+            || potion.valid_target_refs.some((nativeRef) => nativeRef !== state.player?.native_ref)
+            || (potion.can_use === true && potion.valid_target_refs.length !== 1))));
       const playWindowOpen = state.is_play_phase === true;
       const semanticFactsComplete = typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"
@@ -1388,10 +1394,47 @@ function currentSurface(state, ctx) {
         raw: { cmd: "action", action: "end_turn", args: { player_ref: state.player?.native_ref } }
       });
 
+      const playerEntityId = ctx.entityId("player", state.player?.native_ref);
+      const playerContext = {
+        player_entity_id: playerEntityId,
+        block: state.player?.block ?? 0,
+        energy: state.energy ?? 0,
+        max_energy: state.max_energy ?? 0,
+        hand: handEntries.map((entry) => entry.card),
+        draw_pile_count: state.draw_pile_count ?? 0,
+        discard_pile_count: state.discard_pile_count ?? 0,
+        exhaust_pile_count: state.exhaust_pile_count ?? 0,
+        statuses: (state.player_statuses ?? []).map(visibleStatus),
+        companions: state.companions ?? [],
+        potion_states: rawPotions.map((potion) => ({
+          entity_id: ctx.entityId("potion", potion.native_ref),
+          target_type: potion.target_type,
+          can_use: potion.can_use === true,
+          automatic: potion.usage === "Automatic"
+        })),
+        orbs: state.orbs ?? [],
+        orb_slots: state.orb_slots ?? 0
+      };
+      const playerReferent = ctx.referent({
+        role: "player",
+        label: null,
+        id: playerEntityId,
+        properties: playerContext,
+        includeEntityId: false
+      });
+      const targetEntriesForPotion = (potion) => potion.target_type === "AnyPlayer"
+        ? [{ raw: state.player, referent: playerReferent }]
+        : enemyEntries;
+      const targetIdsForPotion = (potion) => {
+        const byNative = new Map(targetEntriesForPotion(potion).map((entry) => [
+          entry.raw.native_ref, entry.referent.referent_id
+        ]));
+        return (Array.isArray(potion.valid_target_refs) ? potion.valid_target_refs : [])
+          .map((nativeRef) => byNative.get(nativeRef)).filter(Boolean);
+      };
+
       for (const [index, potion] of rawPotions.entries()) {
-        const targetIds = (potion.valid_target_refs ?? [])
-          .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
-          .filter(Boolean);
+        const targetIds = targetIdsForPotion(potion);
         const visiblePotion = {
           entity_id: ctx.entityId("potion", potion.native_ref),
           name: potion.name ?? null,
@@ -1405,22 +1448,22 @@ function currentSurface(state, ctx) {
           properties: visiblePotion
         });
         if (potion.can_use === true && potion.binding_supported === true) {
-          if (potion.target_type === "AnyEnemy") {
-            const validTargets = new Set(potion.valid_target_refs ?? []);
-            for (const { raw: enemy, referent: target } of enemyEntries) {
-              if (!validTargets.has(enemy.native_ref)) continue;
+          if (potion.target_type === "AnyEnemy" || potion.target_type === "AnyPlayer") {
+            const validTargets = new Set(Array.isArray(potion.valid_target_refs) ? potion.valid_target_refs : []);
+            for (const { raw: candidate, referent: target } of targetEntriesForPotion(potion)) {
+              if (!validTargets.has(candidate.native_ref)) continue;
               ctx.action({
                 verb: "use",
                 subject: potionReferent,
                 arguments: [{ role: "target", referent: target }],
-                label: `Use ${potionReferent.label} on ${target.label}`,
+                label: `Use ${potionReferent.label} on ${target.label ?? state.player?.name ?? "Player"}`,
                 raw: {
                   cmd: "action",
                   action: "use_potion",
                   args: {
                     potion_slot: potion.slot,
                     potion_ref: potion.native_ref,
-                    target_ref: enemy.native_ref
+                    target_ref: candidate.native_ref
                   }
                 }
               });
@@ -1452,34 +1495,6 @@ function currentSurface(state, ctx) {
         }
       }
 
-      const playerEntityId = ctx.entityId("player", state.player?.native_ref);
-      const playerContext = {
-        player_entity_id: playerEntityId,
-        block: state.player?.block ?? 0,
-        energy: state.energy ?? 0,
-        max_energy: state.max_energy ?? 0,
-        hand: handEntries.map((entry) => entry.card),
-        draw_pile_count: state.draw_pile_count ?? 0,
-        discard_pile_count: state.discard_pile_count ?? 0,
-        exhaust_pile_count: state.exhaust_pile_count ?? 0,
-        statuses: (state.player_statuses ?? []).map(visibleStatus),
-        companions: state.companions ?? [],
-        potion_states: rawPotions.map((potion) => ({
-          entity_id: ctx.entityId("potion", potion.native_ref),
-          target_type: potion.target_type,
-          can_use: potion.can_use === true,
-          automatic: potion.usage === "Automatic"
-        })),
-        orbs: state.orbs ?? [],
-        orb_slots: state.orb_slots ?? 0
-      };
-      ctx.referent({
-        role: "player",
-        label: null,
-        id: playerEntityId,
-        properties: playerContext,
-        includeEntityId: false
-      });
       const complete = identityComplete
         && semanticFactsComplete
         && !unsupportedCardTarget
@@ -1504,9 +1519,7 @@ function currentSurface(state, ctx) {
             .map((potion) => ({
               entity_id: ctx.entityId("potion", potion.native_ref),
               name: potion.name ?? null,
-              target_entity_ids: (potion.valid_target_refs ?? [])
-                .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
-                .filter(Boolean)
+              target_entity_ids: targetIdsForPotion(potion)
             }))
             : []
         },

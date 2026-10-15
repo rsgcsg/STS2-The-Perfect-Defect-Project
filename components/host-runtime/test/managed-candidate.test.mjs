@@ -44,10 +44,10 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "68f465416dd46b6bd5eb25302914bfc9166473455d1fb95fac8bfc76d65329e0");
-  assert.equal(manifest.expected_build.artifact_mvid, "43d34ef4-4cd3-4161-ac38-ee308fd7be3f");
-  assert.equal(manifest.previous_candidate_build.artifact_sha256, "dd726fba38f4fc097a57e9dd4a5fe7d220bd94ea3527e132be31a31c95963d93");
-  assert.equal(manifest.previous_candidate_build.artifact_mvid, "145c95e9-ace0-42b5-bb46-3fef292ac645");
+  assert.equal(manifest.expected_build.artifact_sha256, "f65f7872f5ee265e799ecf85a289c81eba9ba9ed622780cdb616f17bf3c1b9f5");
+  assert.equal(manifest.expected_build.artifact_mvid, "34600b22-7ea3-4cfb-a706-b02485d5dbbb");
+  assert.equal(manifest.previous_candidate_build.artifact_sha256, "68f465416dd46b6bd5eb25302914bfc9166473455d1fb95fac8bfc76d65329e0");
+  assert.equal(manifest.previous_candidate_build.artifact_mvid, "43d34ef4-4cd3-4161-ac38-ee308fd7be3f");
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);

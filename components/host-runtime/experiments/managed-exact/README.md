@@ -120,6 +120,25 @@ Connector SDK contract, snapshot-bound finite actions, Host-local operands,
 idempotent request ledger, stale refusal, and unknown-no-retry behavior. They
 remain partial until cross-Host differential and coverage gates pass.
 
+The combat potion catalog binds `AnyPlayer` through the exact current Player
+object and its native Creature in the existing single-player scope. The run
+must contain exactly one Player, identical to the current player and potion
+owner. Native `PotionModel.IsValidTarget` supplies the target domain independently
+of current usability; an unusable held potion keeps its visible facts, valid
+targets and any discard action without disabling other supported combat actions.
+The public use action targets the existing opaque player referent. Its private
+operand is the exact Player identity, never an index or an implicit Self/null
+target. Delivery rechecks the current domain, potion slot/object, usability and
+native target validity before `EnqueueManualUse`; the native `UsePotionAction`
+retains its later target validation. Missing, stale or foreign targets reject;
+multiple-player domains and other unsupported target families remain unavailable.
+This scoped binding does not implement every effect's child interaction.
+For example, Colorless Potion can deliver its parent use and open the existing
+unsupported `card_select` child; that choice stays pending, with no automatic
+selection, discard, retry or claim that the potion's whole effect completed.
+Portable helper/projection tests and an exact build establish their stated
+source/test/build scope, not native UI parity, a gameplay journey or qualification.
+
 The bounded Managed text-menu deck-upgrade page uses only the pinned
 `CardSelectCmd.FromDeckForUpgrade(Player, CardSelectorPrefs)` test-selector
 seam. A scoped exact invocation carries the game's full preferences to the
