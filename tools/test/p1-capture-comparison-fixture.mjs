@@ -22,11 +22,11 @@ export function completeSyntheticScope() {
       display_context: "combat_piles", parent_read_instance_id: null, availability: "available",
       content_schema: "sts2.player-environment/read/combat_piles-1", missing: [], content: { kind: "combat_piles",
         zones: ["draw", "discard", "exhaust"].map(zone => ({ zone, card_count: zone === "draw" ? 2 : 0,
-          ordering_semantics: "unordered_multiset", cards: zone === "draw" ? [deckCards[1], deckCards[2]] : [] })) } }
+          ordering_semantics: "unordered_multiset", cards: zone === "draw" ? structuredClone([deckCards[1], deckCards[2]]) : [] })) } }
   ];
   const detail = (content, context, parent, index) => ({ instance_id: `complete-detail-${index}`, kind: "surface_card", source_read_id: null,
     target_entity_id: content.entity_id, display_context: context, parent_read_instance_id: parent,
-    availability: "available", content_schema: "sts2.player-environment/p1-current-card-display-c1-1", content, missing: [] });
+    availability: "available", content_schema: "sts2.player-environment/p1-current-card-display-c1-1", content: structuredClone(content), missing: [] });
   const details = [...deckCards.map((card, index) => detail(card, "deck", "deck-read", index)),
     detail(deckCards[1], "draw", "piles-read", 12), detail(deckCards[2], "draw", "piles-read", 13), detail(deckCards[0], "hand", null, 14)];
   packet.reads = [...aggregates, ...details]; packet.scope_status = "complete";
@@ -44,7 +44,17 @@ export function completeSyntheticScope() {
   packet.native_basis.bound_actions.actions = [{ bound_action_id: "play-card", verb: "play",
     interaction_id: packet.native_basis.interaction.interaction_id, subject_referent_id: deckCards[0].entity_id,
     arguments: [{ role: "target", referent_id: deckCards[1].entity_id }], label: "Play Strike" }];
-  packet.native_basis.interaction.content.context = { kind: "combat", is_play_phase: true, player: { hand: [deckCards[0]] } };
+  packet.native_basis.reads = aggregates.map(read => ({ read_id: read.source_read_id, kind: read.kind,
+    target_referent_id: null, content_schema: read.content_schema, visibility_basis: "normal_player_read",
+    snapshot_bound: true, ordering_semantics: "unordered_multiset", hidden_by_policy: [] }));
+  // Fields follow CombatLiveContext/VisibleCombatPlayer, not a new P1 schema.
+  packet.native_basis.interaction.content.context = { kind: "combat", encounter_type: "normal", round: 1,
+    turn_owner: "player", is_play_phase: true, player: { player_entity_id: "player", block: 0, energy: 3,
+      max_energy: 3, hand: [structuredClone(deckCards[0])], draw_pile_count: 2, discard_pile_count: 0, exhaust_pile_count: 0,
+      statuses: [{ definition_id: "STRENGTH", name: "Strength", amount: 1, type: "Buff", description: "More damage." }],
+      companions: [], potion_states: [], orbs: [] }, enemies: [{ entity_id: "enemy", definition_id: "SLIME",
+      hp: 20, max_hp: 20, block: 0, statuses: [], intents: [{ type: "Attack", label: "", title: "Attack", description: "Deal damage." }],
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true }] };
   packet.coverage = [
     ...P1_CAPTURE_SCOPE_REQUIREMENTS.map(requirement_id => ({ requirement_id, required: true, availability: "available", missing: [],
       read_instance_ids: requirement_id === "run_deck" ? ["deck-read"] : requirement_id === "combat_piles" ? ["piles-read"]
@@ -66,7 +76,7 @@ export function archive(packet, captureSuffix = "a", text = JSON.stringify(packe
 export function renamed(packet) {
   const aliases = new Map();
   const keys = new Set(["entity_id", "target_entity_id", "referent_id", "subject_referent_id", "instance_id", "parent_read_instance_id",
-    "source_read_id", "read_id", "read_instance_ids", "bound_action_id", "interaction_id", "snapshot_id", "source_snapshot_id"]);
+    "source_read_id", "read_id", "player_entity_id", "read_instance_ids", "bound_action_id", "interaction_id", "snapshot_id", "source_snapshot_id"]);
   const alias = value => aliases.get(value) ?? (aliases.set(value, `alias-${aliases.size}`), aliases.get(value));
   function visit(value, key) {
     if (typeof value === "string" && keys.has(key)) return alias(value);

@@ -53,24 +53,86 @@ const releaseSchema = z.object({ schema: z.literal(P1_CAPTURE_RELEASE_SCHEMA), c
 const availability = z.enum(["available", "native_unavailable", "not_applicable", "unrevealed", "unsupported", "unknown", "settling", "terminal"]);
 const missing = z.array(z.string().min(1));
 const nonblank = z.string().refine(value => value.trim().length > 0, "must contain public display text");
+const nativeInt = z.number().int().min(-2_147_483_648).max(2_147_483_647);
 const cardContentSchema = z.object({
   entity_id: z.string().min(1), definition_id: z.string().min(1), name: z.string().nullable().optional(),
   type: z.string().min(1), cost: z.string().min(1), star_cost: z.string().nullable().optional(),
   description: z.string().nullable().optional(), rarity: z.string().min(1),
   is_upgraded: z.boolean(), is_selected: z.boolean(), existing_enchantment: z.object({
     definition_id: z.string().min(1), name: z.string().nullable().optional(),
-    description: z.string().nullable().optional(), amount: z.number().int(), observation_source: z.string()
+    description: z.string().nullable().optional(), amount: nativeInt, observation_source: z.string()
   }).strict().nullable().optional(), target_type: z.string().nullable().optional(),
   can_play: z.boolean().nullable().optional(), unplayable_reason: z.string().nullable().optional()
 }).strict();
-const deckContentSchema = z.object({ kind: z.literal("run_deck"), card_count: z.number().int().nonnegative(),
+const deckContentSchema = z.object({ kind: z.literal("run_deck"), card_count: nativeInt.nonnegative(),
   cards: z.array(cardContentSchema) }).strict().refine(value => value.card_count === value.cards.length, "deck count mismatch");
 const pileContentSchema = z.object({ kind: z.literal("combat_piles"), zones: z.array(z.object({
-  zone: z.enum(["draw", "discard", "exhaust"]), card_count: z.number().int().nonnegative(),
+  zone: z.enum(["draw", "discard", "exhaust"]), card_count: nativeInt.nonnegative(),
   ordering_semantics: z.literal("unordered_multiset"), cards: z.array(cardContentSchema)
 }).strict().refine(value => value.card_count === value.cards.length, "pile count mismatch")) }).strict()
   .refine(value => value.zones.length === 3 && new Set(value.zones.map(zone => zone.zone)).size === 3,
     "complete pile content must include each of the three zones");
+// The C1 complete-scope check follows the existing native DTOs in
+// LiveHostContracts.cs. Legacy Snapshot decoding remains intentionally generic.
+const publicText = z.string().nullable().optional();
+const statusContentSchema = z.object({ definition_id: z.string().min(1), name: publicText,
+  amount: z.number(), type: z.string().min(1), description: publicText }).passthrough();
+const healthFields = {
+  hp: z.number().nullable(), max_hp: z.number().nullable(), block: z.number(),
+  health_bar_visible: z.boolean(), hp_display_mode: z.string().min(1), hp_numbers_available: z.boolean()
+};
+const coherentHealthDisplay = (value: { hp: number | null; max_hp: number | null;
+  hp_numbers_available: boolean; health_bar_visible: boolean }) => value.hp_numbers_available
+    ? value.health_bar_visible && value.hp !== null && value.max_hp !== null
+    : value.hp === null && value.max_hp === null;
+const combatContextSchema = z.object({
+  kind: z.literal("combat"), encounter_type: z.string().min(1), round: nativeInt,
+  turn_owner: z.string().min(1), is_play_phase: z.boolean(),
+  player: z.object({
+    player_entity_id: z.string().min(1), block: z.number(), energy: nativeInt, max_energy: nativeInt,
+    stars: nativeInt.nullable().optional(), hand: z.array(cardContentSchema),
+    draw_pile_count: nativeInt.nonnegative(), discard_pile_count: nativeInt.nonnegative(), exhaust_pile_count: nativeInt.nonnegative(),
+    statuses: z.array(statusContentSchema),
+    companions: z.array(z.object({ entity_id: z.string().min(1), definition_id: z.string().min(1),
+      name: publicText, is_alive: z.boolean(), ...healthFields, statuses: z.array(statusContentSchema) }).passthrough().refine(coherentHealthDisplay, "incoherent public health display")),
+    potion_states: z.array(z.object({ entity_id: z.string().min(1), target_type: z.string().min(1),
+      can_use: z.boolean(), automatic: z.boolean() }).passthrough()),
+    orbs: z.array(z.object({ entity_id: z.string().min(1), definition_id: z.string().min(1), name: publicText,
+      description: publicText, passive_value: z.number(), evoke_value: z.number(), queue_index: nativeInt,
+      is_next_to_evoke: z.boolean() }).passthrough()), orb_slots: nativeInt.nullable().optional()
+  }).passthrough(),
+  enemies: z.array(z.object({ entity_id: z.string().min(1), combat_id: z.number().int().min(0).max(4_294_967_295).nullable().optional(),
+    definition_id: z.string().min(1), name: publicText, ...healthFields, statuses: z.array(statusContentSchema),
+    intents: z.array(z.object({ type: z.string().min(1), label: publicText, title: publicText,
+      description: publicText }).passthrough()) }).passthrough().refine(coherentHealthDisplay, "incoherent public health display"))
+}).passthrough();
+
+// The generic legacy persistent decoder checks shape. C1 also preserves the
+// native int domains on these DTO fields without guessing gameplay ranges.
+const previewIntegerSchema = z.object({ existing_enchantment: z.object({ amount: nativeInt })
+  .passthrough().nullable().optional() }).passthrough();
+const persistentContextSchema = z.object({
+  run: z.object({ act: nativeInt, floor: nativeInt, ascension: nativeInt,
+    bosses: z.array(z.object({ order: nativeInt }).passthrough()),
+    modifiers: z.array(z.object({ card_previews: z.array(previewIntegerSchema) }).passthrough()) }).passthrough(),
+  player: z.object({ gold: nativeInt, max_potion_slots: nativeInt,
+    relics: z.array(z.object({ card_previews: z.array(previewIntegerSchema) }).passthrough()),
+    potions: z.array(z.object({ slot: nativeInt, card_previews: z.array(previewIntegerSchema) }).passthrough()) }).passthrough(),
+  completeness: z.object({ missing: z.array(z.string()).length(0) }).passthrough()
+}).passthrough();
+
+// Details may supply optional missing text, but cannot contradict facts already
+// present in that exact display context. Never compare dynamic deck/hand views.
+function preservesSourceCard(source: JsonObject, detail: JsonObject): boolean {
+  // Native nullable nontext values are omitted on the wire when null. Detail
+  // extraction does not invent enchantments, costs, targets or play legality.
+  if (["star_cost", "existing_enchantment", "target_type", "can_play", "unplayable_reason"]
+      .some(field => source[field] == null && detail[field] != null)) return false;
+  return Object.entries(source).every(([field, fact]) =>
+    fact === null ? detail[field] == null || field === "name" || field === "description" :
+    (isJsonObject(fact) && isJsonObject(detail[field])
+      ? preservesSourceCard(fact, detail[field]) : fact === detail[field]));
+}
 const readSchema = z.object({
   instance_id: id, kind: z.string().min(1), source_read_id: z.string().min(1).nullable(),
   target_entity_id: z.string().min(1).nullable(), display_context: z.string().min(1),
@@ -109,6 +171,25 @@ const coverageSchema = z.object({
       value.availability === "available" && value.missing.length !== 0)
     ctx.addIssue({ code: "custom", message: "coverage has repeated instances or contradictory availability" });
 });
+function compatibleSourceCards(left: JsonObject, right: JsonObject): boolean {
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].every(field => {
+    const a = left[field] ?? null; const b = right[field] ?? null;
+    if ((field === "name" || field === "description") && (a === null || b === null)) return true;
+    return isJsonObject(a) && isJsonObject(b) ? compatibleSourceCards(a, b) : a === b;
+  });
+}
+function hasFinitePublicNumbers(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const item = pending.pop();
+    if (typeof item === "number" && !Number.isFinite(item)) return false;
+    if (typeof item === "object" && item !== null && !seen.has(item)) {
+      seen.add(item); pending.push(...Object.values(item));
+    }
+  }
+  return true;
+}
 const observationSchema = z.object({
   schema: z.literal(P1_CAPTURE_OBSERVATION_SCHEMA), input_profile: z.literal(P1_CAPTURE_PROFILE),
   revision: z.literal(P1_CAPTURE_REVISION), capture_scope: z.literal(P1_CAPTURE_SCOPE),
@@ -121,13 +202,39 @@ const observationSchema = z.object({
   reads: z.array(readSchema).max(P1_CAPTURE_MAX_READ_INSTANCES), coverage: z.array(coverageSchema)
 }).strict().superRefine((value, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: "custom", message });
+  if (!hasFinitePublicNumbers(value)) issue("capture public numbers must be finite JSON values");
   try {
     const basis = decodePlayerSnapshot(value.native_basis).data;
     if (basis.snapshot_id !== value.source_snapshot_id ||
         basis.session.runtime_instance_id !== value.session.runtime_instance_id ||
         basis.session.environment_fingerprint !== value.session.environment_fingerprint)
       issue("capture native basis/session mismatch");
-    if (value.scope_status === "complete" && (basis.persistent === null || basis.completeness.status !== "complete" ||
+    const advertised = new Map(basis.reads.map(read => [read.read_id, read]));
+    if (advertised.size !== basis.reads.length) issue("advertised Read identities must be unique");
+    const capturedSources = new Set<string>();
+    for (const read of value.reads) {
+      if (read.source_read_id === null) {
+        if (read.kind !== "surface_card") issue("aggregate Read lacks its advertised source");
+        continue;
+      }
+      const source = advertised.get(read.source_read_id);
+      if (!source || source.kind !== read.kind || source.content_schema !== read.content_schema ||
+          (source.target_referent_id ?? null) !== read.target_entity_id || read.parent_read_instance_id !== null)
+        issue("captured Read does not match its advertised source kind/schema/target");
+      if (capturedSources.has(read.source_read_id)) issue("advertised Read source was reused");
+      capturedSources.add(read.source_read_id);
+    }
+    if (basis.reads.some(read => !capturedSources.has(read.read_id))) issue("advertised Read was not captured");
+    if (value.scope_status === "complete") {
+      for (const kind of ["run_deck", "combat_piles"])
+        if (basis.reads.filter(read => read.kind === kind && (read.target_referent_id ?? null) === null).length !== 1)
+          issue("complete capture scope lacks its required advertised aggregate Reads");
+    }
+    const persistent = basis.persistent?.content;
+    const persistentComplete = persistentContextSchema.safeParse(persistent).success;
+    if (value.scope_status === "complete" && (!persistentComplete ||
+        basis.interaction.content_schema !== "sts2.player-environment/surface/combat_turn-1" ||
+        basis.interaction.content.surface.kind !== "combat_turn" || basis.completeness.status !== "complete" ||
         basis.completeness.missing.length !== 0 || basis.interaction.kind !== "combat_turn" ||
         !isJsonObject(basis.interaction.content.context) || basis.interaction.content.context.kind !== "combat" ||
         basis.interaction.content.context.is_play_phase !== true || basis.status !== "interactive" ||
@@ -154,7 +261,16 @@ const observationSchema = z.object({
         (item.availability !== "available" || item.missing.length !== 0)))) issue("complete capture scope has missing required facts");
   if (value.scope_status === "complete") {
     const expectedDetails: string[] = [];
+    const sourceCards = new Map<string, JsonObject[]>();
     const key = (entity: string | null, context: string, parent: string | null) => JSON.stringify([entity, context, parent]);
+    const expectCard = (card: z.infer<typeof cardContentSchema>, context: string, parent: string | null) => {
+      const display = key(card.entity_id, context, parent);
+      expectedDetails.push(display);
+      const existing = sourceCards.get(display) ?? [];
+      if (existing.some(source => !compatibleSourceCards(source, card)))
+        issue("same-context source cards contradict the same entity instance");
+      sourceCards.set(display, [...existing, card]);
+    };
     const sameIds = (left: readonly string[], right: readonly string[]) =>
       JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
     for (const kind of ["run_deck", "combat_piles"]) {
@@ -165,21 +281,49 @@ const observationSchema = z.object({
       for (const read of aggregate) {
         if (kind === "run_deck") {
           const deck = deckContentSchema.safeParse(read.content);
-          if (deck.success) expectedDetails.push(...deck.data.cards.map(card => key(card.entity_id, "deck", read.instance_id)));
+          if (deck.success) for (const card of deck.data.cards) expectCard(card, "deck", read.instance_id);
         } else {
           const piles = pileContentSchema.safeParse(read.content);
           if (piles.success) for (const zone of piles.data.zones)
-            expectedDetails.push(...zone.cards.map(card => key(card.entity_id, zone.zone, read.instance_id)));
+            for (const card of zone.cards) expectCard(card, zone.zone, read.instance_id);
         }
       }
     }
-    const context = value.native_basis.interaction;
-    const hand = z.object({ content: z.object({ context: z.object({
-      player: z.object({ hand: z.array(cardContentSchema) }).passthrough()
-    }).passthrough() }).passthrough() }).passthrough().safeParse(context);
-    if (!hand.success) issue("complete capture scope lacks the typed current combat hand");
-    else expectedDetails.push(...hand.data.content.context.player.hand.map(card => key(card.entity_id, "hand", null)));
+    const interaction = value.native_basis.interaction;
+    const context = combatContextSchema.safeParse(isJsonObject(interaction) && isJsonObject(interaction.content)
+      ? interaction.content.context : null);
+    if (!context.success) issue("complete capture scope lacks the typed current parent combat context");
+    else {
+      const persistent = value.native_basis.persistent;
+      if (isJsonObject(persistent) && isJsonObject(persistent.content) && isJsonObject(persistent.content.player) &&
+          context.data.player.player_entity_id !== persistent.content.player.entity_id)
+        issue("current combat player does not match the persistent player");
+      for (const read of value.reads.filter(read => read.kind === "combat_piles")) {
+        const piles = pileContentSchema.safeParse(read.content);
+        if (piles.success) for (const zone of piles.data.zones) {
+          const count = context.data.player[`${zone.zone}_pile_count` as "draw_pile_count" | "discard_pile_count" | "exhaust_pile_count"];
+          if (count !== zone.card_count) issue("current combat pile count contradicts its aggregate Read");
+        }
+      }
+      for (const card of context.data.player.hand) expectCard(card, "hand", null);
+    }
     const details = value.reads.filter(read => read.kind === "surface_card");
+    const observedDetails = new Map<string, JsonObject[]>();
+    for (const detail of details) {
+      const display = key(detail.target_entity_id, detail.display_context, detail.parent_read_instance_id);
+      if (isJsonObject(detail.content)) {
+        const existing = observedDetails.get(display) ?? [];
+        if (existing.some(content => !compatibleSourceCards(content, detail.content as JsonObject)))
+          issue("same-context details contradict the same entity instance");
+        observedDetails.set(display, [...existing, detail.content]);
+      }
+      const sources = sourceCards.get(display);
+      const match = isJsonObject(detail.content)
+        ? sources?.findIndex(source => preservesSourceCard(source, detail.content as JsonObject)) : -1;
+      if (detail.source_read_id !== null || match === undefined || match < 0)
+        issue("card detail contradicts its same-context source card");
+      else sources!.splice(match, 1);
+    }
     const detailedCoverage = value.coverage.find(item => item.requirement_id === "surface_card_instances");
     if (!sameIds(expectedDetails, details.map(read => key(read.target_entity_id, read.display_context, read.parent_read_instance_id))) ||
         !detailedCoverage || !sameIds(detailedCoverage.read_instance_ids, details.map(read => read.instance_id)))

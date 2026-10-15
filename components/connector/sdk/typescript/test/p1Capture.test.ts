@@ -51,12 +51,12 @@ function completeSyntheticScope() {
       display_context: "combat_piles", parent_read_instance_id: null, availability: "available",
       content_schema: "sts2.player-environment/read/combat_piles-1", missing: [], content: { kind: "combat_piles",
         zones: ["draw", "discard", "exhaust"].map(zone => ({ zone, card_count: zone === "draw" ? 1 : 0,
-          ordering_semantics: "unordered_multiset", cards: zone === "draw" ? [drawCard] : [] })) } }
+          ordering_semantics: "unordered_multiset", cards: zone === "draw" ? [structuredClone(drawCard)] : [] })) } }
   ];
   const detail = (content: any, context: string, parent: string | null, index: number) => ({
     instance_id: `complete-detail-${index}`, kind: "surface_card", source_read_id: null,
     target_entity_id: content.entity_id, display_context: context, parent_read_instance_id: parent,
-    availability: "available", content_schema: "sts2.player-environment/p1-current-card-display-c1-1", content, missing: []
+    availability: "available", content_schema: "sts2.player-environment/p1-current-card-display-c1-1", content: structuredClone(content), missing: []
   });
   const details = [...deckCards.map((card, index) => detail(card, "deck", "deck-read", index)),
     detail(drawCard, "draw", "piles-read", 2), detail(deckCards[0], "hand", null, 3)];
@@ -72,7 +72,17 @@ function completeSyntheticScope() {
   packet.native_basis.bound_actions.materialized_count = 1; packet.native_basis.bound_actions.total_count = 1;
   packet.native_basis.bound_actions.actions = [{ bound_action_id: "end-turn", verb: "end_turn",
     interaction_id: packet.native_basis.interaction.interaction_id, subject_referent_id: null, arguments: [], label: "End Turn" }];
-  packet.native_basis.interaction.content.context = { kind: "combat", is_play_phase: true, player: { hand: [deckCards[0]] } };
+  packet.native_basis.reads = aggregates.map(read => ({ read_id: read.source_read_id, kind: read.kind,
+    target_referent_id: null, content_schema: read.content_schema, visibility_basis: "normal_player_read",
+    snapshot_bound: true, ordering_semantics: "unordered_multiset", hidden_by_policy: [] }));
+  // Fields follow CombatLiveContext/VisibleCombatPlayer, not a new P1 schema.
+  packet.native_basis.interaction.content.context = { kind: "combat", encounter_type: "normal", round: 1,
+    turn_owner: "player", is_play_phase: true, player: { player_entity_id: "player", block: 0, energy: 3,
+      max_energy: 3, hand: [structuredClone(deckCards[0])], draw_pile_count: 1, discard_pile_count: 0, exhaust_pile_count: 0,
+      statuses: [{ definition_id: "STRENGTH", name: "Strength", amount: 1, type: "Buff", description: "More damage." }],
+      companions: [], potion_states: [], orbs: [] }, enemies: [{ entity_id: "enemy", definition_id: "SLIME",
+      hp: 20, max_hp: 20, block: 0, statuses: [], intents: [{ type: "Attack", label: "", title: "Attack", description: "Deal damage." }],
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true }] };
   packet.coverage = [
     ...P1_CAPTURE_SCOPE_REQUIREMENTS.map(requirement_id => ({ requirement_id, required: true, availability: "available", missing: [],
       read_instance_ids: requirement_id === "run_deck" ? ["deck-read"] : requirement_id === "combat_piles" ? ["piles-read"]
@@ -96,6 +106,19 @@ describe("P1 C1 atomic public capture reader and recording seam", () => {
     expect(full.observation.creates_mutation_authority).toBe(false);
     expect(full.observation.p1_status).toBe("unsupported");
     expect(full.observation.native_basis.schema).toBe("sts2.player-environment/snapshot-1");
+  });
+
+  it("rejects overflowing JSON numeric tokens even with a recomputed archive digest", async () => {
+    for (const location of ["context", "persistent"]) {
+      const packet = completeSyntheticScope();
+      if (location === "context") packet.native_basis.interaction.content.context.player.block = 123456789;
+      else packet.native_basis.persistent.content.player.hp = 123456789;
+      const serialized = JSON.stringify(packet).replace("123456789", "1e400");
+      const record = { schema: "sts2.player-environment/p1-atomic-capture-record-c1-1", capture: {
+        ...source().capture, total_bytes: Buffer.byteLength(serialized),
+        sha256: createHash("sha256").update(serialized).digest("hex") }, serialized_observation: serialized };
+      await expect(readP1CaptureRecord(JSON.stringify(record))).rejects.toThrow("finite JSON values");
+    }
   });
 
   it("transport, recording and comparison reread exactly one capture without a second native acquisition", async () => {
@@ -186,6 +209,131 @@ describe("P1 C1 atomic public capture reader and recording seam", () => {
       const broken = structuredClone(complete); mutate(broken);
       expect(() => decodeP1CapturedObservation(broken)).toThrow();
     }
+  });
+
+  it.each([
+    ["absent source", (p: any) => { p.reads[0].source_read_id = null; }],
+    ["foreign source", (p: any) => { p.reads[0].source_read_id = "read:foreign"; }],
+    ["missed advertisement", (p: any) => { p.native_basis.reads.push({ ...p.native_basis.reads[0],
+      read_id: "read:extra", kind: "relic_detail", content_schema: "sts2.player-environment/read/relic_detail-1" }); }],
+    ["no required advertisements", (p: any) => { p.native_basis.reads = []; }],
+    ["wrong source kind", (p: any) => { p.native_basis.reads[0].kind = "other"; }],
+    ["wrong source schema", (p: any) => { p.native_basis.reads[0].content_schema = "sts2.player-environment/read/other-1"; }],
+    ["reused source", (p: any) => { p.reads[1].source_read_id = p.reads[0].source_read_id; }],
+    ["duplicate advertisement", (p: any) => { p.native_basis.reads.push(p.native_basis.reads[0]); }],
+    ["same-context definition contradiction", (p: any) => { p.reads[2].content = { ...p.reads[2].content, definition_id: "OTHER" }; }],
+    ["same-context description contradiction", (p: any) => { p.reads[2].content = { ...p.reads[2].content, description: "OTHER" }; }],
+    ["same-context cost contradiction", (p: any) => { p.reads[2].content = { ...p.reads[2].content, cost: "0" }; }],
+    ["invented null enchantment", (p: any) => { p.reads[0].content.cards[0].existing_enchantment = null;
+      p.reads[2].content.existing_enchantment = { definition_id: "PHANTOM", amount: 1, name: "Phantom",
+        description: "Invented", observation_source: "native" }; }],
+    ["invented omitted enchantment", (p: any) => { delete p.reads[0].content.cards[0].existing_enchantment;
+      p.reads[2].content.existing_enchantment = { definition_id: "PHANTOM", amount: 1, name: "Phantom",
+        description: "Invented", observation_source: "native" }; }],
+    ["invented null play legality", (p: any) => { p.reads[0].content.cards[0].can_play = null; p.reads[2].content.can_play = true; }],
+    ["nonfinite player block", (p: any) => { p.native_basis.interaction.content.context.player.block = Infinity; }],
+    ["nonfinite persistent hp", (p: any) => { p.native_basis.persistent.content.player.hp = Infinity; }],
+    ["energy outside native int", (p: any) => { p.native_basis.interaction.content.context.player.energy = 2_147_483_648; }],
+    ["combat ID outside native uint", (p: any) => { p.native_basis.interaction.content.context.enemies[0].combat_id = 4_294_967_296; }],
+    ["negative pile count", (p: any) => { p.native_basis.interaction.content.context.player.draw_pile_count = -1; }],
+    ["persistent missing facts", (p: any) => { p.native_basis.persistent.content.completeness.missing = ["player_hp"]; }],
+    ["persistent gold outside native int", (p: any) => { p.native_basis.persistent.content.player.gold = 2_147_483_648; }],
+    ["persistent slots outside native int", (p: any) => { p.native_basis.persistent.content.player.max_potion_slots = 2_147_483_648; }],
+    ["persistent floor outside native int", (p: any) => { p.native_basis.persistent.content.run.floor = 2_147_483_648; }],
+    ["persistent boss order outside native int", (p: any) => { p.native_basis.persistent.content.run.bosses = [
+      { definition_id: "BOSS", order: 2_147_483_648 }]; }],
+    ["foreign surface kind", (p: any) => { p.native_basis.interaction.content.surface.kind = "shop"; }],
+    ["foreign surface schema", (p: any) => { p.native_basis.interaction.content_schema = "sts2.player-environment/surface/shop-1"; }],
+    ["foreign combat player", (p: any) => { p.native_basis.interaction.content.context.player.player_entity_id = "other"; }],
+    ["contradictory pile count", (p: any) => { p.native_basis.interaction.content.context.player.draw_pile_count = 999; }],
+    ["duplicate same-context contradictory source", (p: any) => {
+      const card = p.reads[0].content.cards[1]; card.entity_id = p.reads[0].content.cards[0].entity_id;
+      card.definition_id = "OTHER";
+      p.reads[3].target_entity_id = card.entity_id; p.reads[3].content = structuredClone(card);
+    }],
+    ["bare combat context", (p: any) => { const hand = p.native_basis.interaction.content.context.player.hand;
+      p.native_basis.interaction.content.context = { kind: "combat", is_play_phase: true, player: { hand } }; }],
+    ["missing enemies", (p: any) => { delete p.native_basis.interaction.content.context.enemies; }],
+    ["missing energy", (p: any) => { delete p.native_basis.interaction.content.context.player.energy; }],
+    ["bad status", (p: any) => { delete p.native_basis.interaction.content.context.player.statuses[0].amount; }],
+    ["missing companion state", (p: any) => { delete p.native_basis.interaction.content.context.player.companions; }],
+    ["missing potion state", (p: any) => { delete p.native_basis.interaction.content.context.player.potion_states; }],
+    ["missing orb state", (p: any) => { delete p.native_basis.interaction.content.context.player.orbs; }],
+    ["bad health", (p: any) => { delete p.native_basis.interaction.content.context.enemies[0].hp; }],
+    ["missing available hp", (p: any) => { p.native_basis.interaction.content.context.enemies[0].hp = null; }],
+    ["hidden numeric hp", (p: any) => { p.native_basis.interaction.content.context.enemies[0].hp_numbers_available = false; }],
+    ["duplicate completed detail contradiction", (p: any) => {
+      const card = structuredClone(p.reads[0].content.cards[0]); delete card.name;
+      p.reads[0].content.cards = [card, structuredClone(card)];
+      p.reads[2].content = { ...card, name: "A" };
+      p.reads[3].target_entity_id = card.entity_id; p.reads[3].content = { ...card, name: "B" };
+    }],
+    ["bad intent", (p: any) => { p.native_basis.interaction.content.context.enemies[0].intents[0].type = 3; }]
+  ] as const)("rejects complete C1 %s", (_, mutate) => {
+    const packet = completeSyntheticScope(); mutate(packet);
+    expect(() => decodeP1CapturedObservation(packet)).toThrow();
+  });
+
+  it("permits distinct dynamic displays for one entity in different contexts and optional text completion", () => {
+    const packet = completeSyntheticScope();
+    const hand = packet.native_basis.interaction.content.context.player.hand[0];
+    packet.native_basis.interaction.content.context.player.hand = [{ ...hand, cost: "0", description: "Hand display" }];
+    const detail = packet.reads.find((r: any) => r.display_context === "hand");
+    detail.content = { ...detail.content, cost: "0", description: "Hand display" };
+    // Reader compatibility permits optional text supplementation. The current
+    // C# producer conservatively marks absent source text unsupported.
+    delete packet.reads[0].content.cards[0].name;
+    expect(decodeP1CapturedObservation(packet).data.scope_status).toBe("complete");
+  });
+
+  it("accepts typed companions, potions, orbs and hidden health without inventing public values", () => {
+    const packet = completeSyntheticScope(); const context = packet.native_basis.interaction.content.context;
+    context.player.stars = 0; context.player.orb_slots = 3;
+    context.player.companions = [{ entity_id: "companion", definition_id: "PET", is_alive: true,
+      hp: null, max_hp: null, block: 0, statuses: [], health_bar_visible: false,
+      hp_display_mode: "infinite_without_numbers", hp_numbers_available: false }];
+    context.player.potion_states = [{ entity_id: "potion", target_type: "Self", can_use: true, automatic: false }];
+    context.player.orbs = [{ entity_id: "orb", definition_id: "LIGHTNING", passive_value: 3, evoke_value: 8,
+      queue_index: 0, is_next_to_evoke: true }];
+    expect(decodeP1CapturedObservation(packet).data.scope_status).toBe("complete");
+    for (const mutate of [
+      (p: any) => { delete p.player.companions[0].is_alive; },
+      (p: any) => { delete p.player.potion_states[0].can_use; },
+      (p: any) => { delete p.player.orbs[0].passive_value; }
+    ]) {
+      const broken = structuredClone(packet); mutate(broken.native_basis.interaction.content.context);
+      expect(() => decodeP1CapturedObservation(broken)).toThrow();
+    }
+  });
+
+  it("keeps unqualified diagnostics partial while enforcing advertised provenance and coverage", () => {
+    const packet = JSON.parse(source().serialized);
+    const opportunity = { read_id: "read:unknown", kind: "future_read", target_referent_id: null,
+      content_schema: "sts2.player-environment/read/future_read-1", visibility_basis: "normal_player_read",
+      snapshot_bound: true, ordering_semantics: "single_entity", hidden_by_policy: [] };
+    packet.native_basis.reads = [opportunity];
+    packet.reads.push({ instance_id: "unknown-read", kind: opportunity.kind, source_read_id: opportunity.read_id,
+      target_entity_id: null, display_context: "unqualified_surface", parent_read_instance_id: null,
+      availability: "unsupported", content_schema: opportunity.content_schema, content: null, missing: ["outside_c1"] });
+    packet.coverage.push({ requirement_id: "read_instance:unknown-read", required: true, availability: "unsupported",
+      read_instance_ids: ["unknown-read"], missing: ["outside_c1"] });
+    expect(decodeP1CapturedObservation(packet).data.scope_status).toBe("partial");
+    const targeted = structuredClone(packet);
+    targeted.native_basis.referents = [{ referent_id: "public-target", role: "relic", kind: "entity",
+      state: { visible: true, observation_basis: "native_visible_fact" } }];
+    targeted.native_basis.reads[0].target_referent_id = "public-target";
+    targeted.reads.at(-1).target_entity_id = "public-target";
+    expect(decodeP1CapturedObservation(targeted).data.scope_status).toBe("partial");
+    const wrongTarget = structuredClone(packet);
+    wrongTarget.reads.at(-1).target_entity_id = "foreign";
+    expect(() => decodeP1CapturedObservation(wrongTarget)).toThrow();
+    const absent = structuredClone(packet); absent.reads.pop(); absent.coverage.pop();
+    expect(() => decodeP1CapturedObservation(absent)).toThrow();
+    const foreign = structuredClone(packet); foreign.reads.at(-1).source_read_id = "read:foreign";
+    expect(() => decodeP1CapturedObservation(foreign)).toThrow();
+    const available = structuredClone(packet); available.reads.at(-1).availability = "available";
+    available.reads.at(-1).content = {}; available.reads.at(-1).missing = [];
+    expect(() => decodeP1CapturedObservation(available)).toThrow();
   });
 
   it.each([
