@@ -25,7 +25,10 @@ and consumer execution before the bounded battle batches.
 - PR180 merged normally into develop02636a94. PR187/405ba001 passed its own full
   dual-OS gate38724470159; it remains a candidate until reviewed integration.
 - C1 repair8c847f88 passed independent source/CLI attacks and is normally integrated
-  in this candidate; its new selected gate remains due. C1 stays agent_admissible=false;
+  in this candidate. The3831 full gate38766308324 failed on both Windows leaves;
+  startup-observation ordering is repaired with a regression, while the publish
+  commit delay remains unresolved. A new selected gate and reviewed failure
+  disposition are required. C1 stays agent_admissible=false;
   it lacks full P1 information/semantic actions/occurrence and runtime qualification.
 - Historical Managed43417/3 and separate49e Seeker target retain their identities.
   Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.

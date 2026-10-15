@@ -268,6 +268,73 @@ def test_two_episodes_are_serial_and_finish_a_precedes_prepare_b(tmp_path):
     assert len({row["seed"] for row in report["episodes"][:2]}) == 2
 
 
+class PublishingOwner(OwnerClient):
+    """The original owner publishes while an independent HTTP read is in flight.
+
+    LocalModelService associates the native resource before exposing its startup
+    association. A native-status reply can still contain an earlier detached copy.
+    This models that legal ordering, not an atomic pair of the two GET endpoints.
+    """
+    publication_pending = False
+
+    def submit(self, request, ref, timeout):
+        super().submit(request, ref, timeout)
+        self.resource.pop("actor")
+        self.resource["phase"] = "ready"
+        self.publication_pending = True
+        return {"operation": {"id": self.operation_id, "status": "pending"}}
+
+    def publish(self):
+        self.resource.update(phase="actor-associated", actor={"run_id": self.run_id})
+        self.publication_pending = False
+
+    def status(self, timeout):
+        if self.publication_pending:
+            self.publish()
+        return super().status(timeout)
+
+    def native_status(self, timeout):
+        value = super().native_status(timeout)
+        if self.publication_pending:
+            # Return the already captured old resource even though publication
+            # completes before the next endpoint is read.
+            self.publish()
+        elif self.running and self.fault == "actor_replaced":
+            value["actor"] = {"run_id": "different-run"}
+        elif self.running and self.fault == "actor_missing":
+            value.pop("actor", None)
+        return value
+
+
+@pytest.mark.parametrize("fault", [None, "actor_replaced", "actor_missing"])
+def test_startup_publication_between_gets_preserves_exact_resource_binding(tmp_path, fault):
+    from spireagent.workbench.reference_suite import SuiteLimits, run_suite
+
+    manifest, sha = suite_manifest(tmp_path)
+    directory = tmp_path / "publication-attempt"
+    client, clock = PublishingOwner(directory, fault), Clock()
+    report = run_suite(manifest, sha, client=client, run_dir=directory,
+                       selection="existing-agent", run_profile="short", max_episodes=2,
+                       limits=SuiteLimits(2, 2, 2, 20, 0.01), clock=clock, sleep=clock.sleep)
+    assert len(report["episodes"]) == 20
+    if fault is None:
+        assert report["status"] == "completed", report
+        assert report["actor_started"] == client.calls.count("submit") == 2
+        assert all(row["cleanup_accepted"] for row in report["episodes"][:2])
+    else:
+        assert report["status"] == "stopped"
+        assert report["stop_reason"] == "resource_actor_changed"
+        assert client.calls.count("submit") == client.calls.count("prepare") == 1
+        assert all(row["status"] == "not_started" for row in report["episodes"][1:])
+        evidence = report["episodes"][0]["actor_binding_observations"]
+        raw = (directory / evidence["path"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == evidence["sha256"]
+        pair = json.loads(raw)
+        assert pair["application_status"]["startup"]["run_id"] == client.run_id
+        assert pair["native_resource"].get("actor") == (
+            {"run_id": "different-run"} if fault == "actor_replaced" else None)
+
+
 def test_full_twenty_keeps_literal_denominator_and_twenty_exact_original_runs(tmp_path):
     report, client, _ = execute(tmp_path, count=20)
     assert report["status"] == "completed", report

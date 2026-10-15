@@ -176,6 +176,30 @@ def test_missing_malformed_and_hash_mismatch_are_availability_not_success(
     ] == {"availability": "missing"}
 
 
+def test_actor_binding_observations_preserve_distinct_identities_without_private_fields(
+    returned_report, tmp_path,
+):
+    raw = json.dumps({
+        "read_order": "application_status_then_native_resource",
+        "native_resource": {"phase": "actor-associated", "environment_ref": "e" * 32,
+                            "actor": {"run_id": "foreign-run", "token": "DO_NOT_PRINT_TOKEN"}},
+        "application_status": {"startup": {"run_id": "original-run"},
+                               "config": "DO_NOT_PRINT_CONFIG"},
+    }).encode()
+    name = "0020-actor-binding-observations.json"
+    (tmp_path / name).write_bytes(raw)
+    returned_report["episodes"][0]["actor_binding_observations"] = {
+        "path": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    message = diagnostic.report_diagnostic(returned_report, tmp_path)
+    fact = json.loads(message)["episodes"][0]["originals"]["actor_binding_observations"]
+    assert fact["file"]["availability"] == "verified"
+    assert fact["facts"]["resource_actor_run"] != fact["facts"]["application_run"]
+    assert fact["facts"]["resource_actor_run"]["sha256"] == (
+        hashlib.sha256(b"foreign-run").hexdigest())
+    assert "DO_NOT_PRINT" not in message and "foreign-run" not in message
+
+
 def test_diagnostic_fault_does_not_mask_parent_assertion_or_reason(
     returned_report, tmp_path, monkeypatch
 ):

@@ -331,8 +331,6 @@ def run_suite(
             while True:
                 if should_stop():
                     _reject("stop_requested")
-                resource = client.native_status(timeout(phase_deadline))
-                _same_resource(resource, row, client.identity)
                 try:
                     state = client.status(timeout(phase_deadline))
                 except (OSError, BoundaryError) as error:
@@ -345,6 +343,13 @@ def run_suite(
                     row["status_read_error"] = _error(error)
                     sleep(min(limits.poll_seconds, timeout(phase_deadline)))
                     continue
+                # LocalModelService publishes the native resource association
+                # before exposing startup_native_episode. Read the resource
+                # after that status, so an older detached resource response
+                # cannot be mistaken for an Actor replacement during startup.
+                # These remain separate observations, with all identity checks.
+                resource = client.native_status(timeout(phase_deadline))
+                _same_resource(resource, row, client.identity)
                 operation = state.get("operation", {})
                 if operation.get("id") != operation_id:
                     _reject("operation_replaced")
@@ -363,6 +368,15 @@ def run_suite(
                         artifacts.save(report)
                     if (not isinstance(resource.get("actor"), dict)
                             or resource["actor"].get("run_id") != run_id):
+                        try:
+                            row["actor_binding_observations"] = artifacts.put(
+                                "actor-binding-observations.json", json_bytes({
+                                    "read_order": "application_status_then_native_resource",
+                                    "application_status": _status(state),
+                                    "native_resource": resource,
+                                }))
+                        except (OSError, ValueError) as error:
+                            row["actor_binding_diagnostic_error"] = _error(error)
                         _reject("resource_actor_changed")
                 elif operation.get("status") != "pending":
                     _reject("actor_association_missing")
