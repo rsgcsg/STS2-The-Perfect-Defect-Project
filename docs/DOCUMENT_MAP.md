@@ -4,6 +4,7 @@
 
 - [P1 public information and decision grain](protocols/P1.zh-CN.md)
 - [P1 Host and wire mapping](protocols/P1_HOST_AND_WIRE.zh-CN.md)
+- [Offline C1 archival comparison](P1_CAPTURE_COMPARISON.md)
 - [ADR-0017: P1 forward profile](adr/0017-p1-forward-decision-profile.md)
 - [Current implementation order](plans/P1_FORWARD_2026-10-15.zh-CN.md)
 
