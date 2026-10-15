@@ -3,8 +3,11 @@
 
 # Architecture
 
-The [current baseline specification](BASELINE_V1_SPEC.zh-CN.md) owns the selected
-Agent/protocol direction and its design revisions. This document owns durable
+The current direction is the [P1 forward decision profile](protocols/P1.zh-CN.md),
+with the proposed refinement in [ADR-0017](adr/0017-p1-forward-decision-profile.md).
+The [earlier baseline](BASELINE_V1_SPEC.zh-CN.md) retains historical obligations
+and evidence; it no longer dispatches the former dual learning chains.
+This document owns durable
 component authority and existing architectural boundaries. Protocol-specific
 implementation and compatibility remain in their owning contracts; candidate
 qualification is tracked by [STATUS](STATUS.md). Historical design proposals are
@@ -87,6 +90,13 @@ SDK-direct/in-process driver needs a real capability or measured cost reason, an
 the same execution owner/request/permission/evidence with common Stop/deadline,
 late-response, unknown and consumption/state guarantees. It must not create an
 independent run-management loop or substitute a Host lease for the user's budget.
+
+For the new P1 profile, a reviewed semantic operation may lower to multiple native
+steps and explicit protocol commitments. Catalog completeness applies to that
+declared profile; underlying native catalogs and legacy contracts remain complete
+in their own scope. This is a versioned owning-profile change under ADR-0017, not
+consumer-side filtering or a new legality engine. Original microsteps, partial
+execution and unknown remain observable in the operation evidence.
 
 Every current, historical and future implementation follows the same change rules:
 

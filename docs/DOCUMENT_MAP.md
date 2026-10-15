@@ -1,20 +1,31 @@
 # Document map
 
+## P1 forward decision profile
+
+- [P1 public information and decision grain](protocols/P1.zh-CN.md)
+- [P1 Host and wire mapping](protocols/P1_HOST_AND_WIRE.zh-CN.md)
+- [ADR-0017: P1 forward profile](adr/0017-p1-forward-decision-profile.md)
+- [Current implementation order](plans/P1_FORWARD_2026-10-15.zh-CN.md)
+
+These documents distinguish the user-selected direction, proposed implementation
+contract and actual qualification. Historical plans retain evidence, not a second
+current work queue.
+
 Start with README → [CURRENT](memory/CURRENT.md) → the active task and owning
 specification. Read only the route needed for the next decision. This is a map,
 not another requirements, identity or status registry.
 
-## Current baseline
+## Historical baseline and retained architecture
 
-- [V1 specification](BASELINE_V1_SPEC.zh-CN.md): required outcomes, selected
-  design, rationale, assumptions and unimplemented choices.
+- [V1 specification](BASELINE_V1_SPEC.zh-CN.md): earlier required outcomes,
+  design, rationale, assumptions and unimplemented choices; current selection is above.
 - [Agent composition/execution decision](adr/0016-agent-composition-and-execution-request.md):
   Accepted architecture/migration direction; concrete P1 startup remains unaccepted, training mapping is future scope.
 - [Execution and acceptance matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
-  active packets, dependencies, authorization, budget and exact remaining gates.
+  historical packets, dependencies and exact remaining evidence; no new authorization.
 - [Task index](plans/BASELINE_TASKS.zh-CN.md): stable P/E/G/V/R IDs.
 - [Boundary round](plans/BASELINE_BOUNDARY_REGRESSION_ROUND_2026-10-10.md):
-  latest supervisor authorization, native failure accounting and finite legacy
+  historical supervisor authorization, native failure accounting and finite legacy
   PR entry points; historical restrictions below its updates stay historical.
 - [Status](STATUS.md): dated claim/evidence index, including the latest bounded
   Source3 learning/Model delivery and historical operating combinations.

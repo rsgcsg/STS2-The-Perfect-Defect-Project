@@ -38,10 +38,13 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
-  abstract layers, full interaction target, I/F-off Agent and user approval gates.
-- [Current execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) and
-  [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [CURRENT](docs/memory/CURRENT.md) and the [P1 forward plan](docs/plans/P1_FORWARD_2026-10-15.zh-CN.md):
+  current direction, authorization, owners, evidence and next steps.
+- [P1 contract](docs/protocols/P1.zh-CN.md) and [ADR-0017](docs/adr/0017-p1-forward-decision-profile.md):
+  the selected public-information/decision-grain direction and proposed implementation contract.
+- [Earlier baseline](docs/BASELINE_V1_SPEC.zh-CN.md) and its
+  [execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): historical
+  design, retained outcomes and exact evidence, not the current work queue.
 - [Status and evidence](docs/STATUS.md): integrated source, candidate builds,
   installed/deployed observations and their separate qualification limits.
 - [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
@@ -56,8 +59,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 The first completed instance is a bounded text-menu-v2 compatibility loop. Full
 G2/V1 implementation and verification continue against the retained requirements;
 only the user can approve those gates. Source/test, installed/loaded execution,
-Human origin and scientific results remain separate. The execution packet owns
-the current authorization, resources and approval boundary; it does not turn a proposed design or a branch into deployed capability.
+Human origin and scientific results remain separate. CURRENT and the active P1
+plan own the current authorization and next steps; neither turns a proposed
+design or a branch into deployed capability.
 
 ## Workspace
 
