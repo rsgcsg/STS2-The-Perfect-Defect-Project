@@ -14,3 +14,4 @@ export * from "./nativeLogicalAssembly.js";
 export * from "./nativeLogicalClient.js";
 export * from "./nativeLogicalPublicationProfile.generated.js";
 export * from "./clientRevocation.js";
+export * from "./p1Capture.js";

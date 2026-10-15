@@ -258,12 +258,13 @@ internal static class PlayerVisibleReadBuilder
     private static VisibleCard[] BuildCards(
         IEnumerable<CardModel> source,
         PileType displayPile,
-        NativeEntityRegistry entities) =>
-        source
+        NativeEntityRegistry entities) => OrderPublicReadCards(source
             .Select(card => LiveContextReader.BuildCard(
                 card,
                 entities.GetId(card, "card"),
-                displayPile: displayPile))
+                displayPile: displayPile)));
+
+    internal static VisibleCard[] OrderPublicReadCards(IEnumerable<VisibleCard> cards) => cards
             // Serialization order is deterministic only. The protocol declares
             // the collection unordered and never exposes the model's draw order.
             .OrderBy(card => card.DefinitionId, StringComparer.Ordinal)

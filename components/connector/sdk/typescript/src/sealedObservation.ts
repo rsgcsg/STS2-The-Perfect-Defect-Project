@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isJsonObject, type JsonObject } from "./json.js";
 import { type DecodedPlayerPayload } from "./protocol.js";
+import { assembleRetainedBytes } from "./retainedBytes.js";
 import {
   TEXT_MENU_V2_PROFILE, TEXT_MENU_V2_OBSERVATION_CONTEXT_SCHEMA,
   decodeTextMenuV2Snapshot, type TextMenuV2ObservationContext
@@ -100,34 +101,8 @@ export async function assembleSealedTextMenuV2(
 ): Promise<FullTextMenuV2Observation> {
   capture = decodeSealedObservationCapture(capture).data;
   validateSealedChunkLimit(maxBytes);
-  const bytes = new Uint8Array(capture.total_bytes);
-  const visited = new Set<string>();
-  let offset = 0;
-  let next: string | null = capture.first_cursor;
-  // Every nonterminal chunk must fill its requested size; loop count is strictly bounded.
-  while (next !== null) {
-    if (visited.has(next)) throw new Error("sealed observation cursor cycle");
-    visited.add(next);
-    const chunk: SealedObservationChunk = decodeSealedObservationChunk((await reader.readSealed({
-      captureId: capture.capture_id, cursor: next, maxBytes
-    })).data).data;
-    if (chunk.capture_id !== capture.capture_id || chunk.sha256 !== capture.sha256 ||
-        chunk.total_bytes !== capture.total_bytes || chunk.offset !== offset)
-      throw new Error("sealed observation identity or contiguous offset mismatch");
-    const binary = atob(chunk.data_base64);
-    const block = Uint8Array.from(binary, value => value.charCodeAt(0));
-    // Reject noncanonical base64 as well as gaps, overlaps and overlong payloads.
-    if (btoa(binary) !== chunk.data_base64 || block.length !== Math.min(maxBytes, bytes.length - offset))
-      throw new Error("sealed observation chunk size or base64 mismatch");
-    bytes.set(block, offset);
-    offset += block.length;
-    if (chunk.end !== (offset === bytes.length)) throw new Error("sealed observation premature or missing terminal chunk");
-    next = chunk.next_cursor;
-  }
-  if (offset !== bytes.length) throw new Error("sealed observation assembly is incomplete");
-  const actualDigest = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes.buffer)))
-    .map(value => value.toString(16).padStart(2, "0")).join("");
-  if (actualDigest !== capture.sha256) throw new Error("sealed observation digest mismatch");
+  const bytes = await assembleRetainedBytes(capture, async input =>
+    decodeSealedObservationChunk((await reader.readSealed(input)).data).data, maxBytes);
   const serializedSnapshot = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   const snapshot = decodeTextMenuV2Snapshot(JSON.parse(serializedSnapshot)).data;
   if (snapshot.snapshot_id !== capture.source_snapshot_id ||

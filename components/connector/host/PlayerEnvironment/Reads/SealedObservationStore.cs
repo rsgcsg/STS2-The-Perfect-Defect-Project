@@ -16,12 +16,24 @@ internal sealed class SealedObservationException(string code, string detail) : E
 
 internal sealed record FrozenPublicObservation(
     byte[] Bytes, string SnapshotId, PlayerEnvironmentSessionReference Session,
-    string? GameContinuityId, DateTimeOffset CapturedAt);
+    string? GameContinuityId, DateTimeOffset CapturedAt, SealedObservationProfile? Profile = null);
+
+// Wire profiles share one retention owner; the legacy default is unchanged.
+internal sealed record SealedObservationProfile(
+    string CaptureSchema, string ReadProfile, string InputProfile, string ChunkSchema, string ReleaseSchema)
+{
+    internal static readonly SealedObservationProfile TextMenuV2 = new(
+        SealedObservationContract.Schema, SealedObservationContract.ReadProfile, TextMenuV2Contract.Profile,
+        SealedObservationContract.ChunkSchema, SealedObservationContract.ReleaseSchema);
+    internal static readonly SealedObservationProfile P1Capture = new(
+        P1CaptureContract.CaptureSchema, P1CaptureContract.ReadProfile, P1CaptureContract.Profile,
+        P1CaptureContract.ChunkSchema, P1CaptureContract.ReleaseSchema);
+}
 
 /// <summary>Only frozen public bytes. No native objects, callbacks or controller state are retained.</summary>
 internal sealed class SealedObservationStore
 {
-    private sealed record Entry(byte[] Bytes, SealedObservationCapture Capture, long Deadline);
+    private sealed record Entry(byte[] Bytes, SealedObservationCapture Capture, long Deadline, SealedObservationProfile Profile);
     private readonly object gate = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly byte[] cursorKey = RandomNumberGenerator.GetBytes(32);
@@ -60,6 +72,7 @@ internal sealed class SealedObservationStore
             throw new SealedObservationException("too_large", "The public snapshot exceeds the capsule byte limit.");
         // Own an independent byte array even if a caller later mutates its buffer.
         byte[] bytes = (byte[])frozen.Bytes.Clone();
+        SealedObservationProfile profile = frozen.Profile ?? SealedObservationProfile.TextMenuV2;
         string digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         string id = "capture-" + Guid.NewGuid().ToString("N");
         lock (gate)
@@ -68,19 +81,19 @@ internal sealed class SealedObservationStore
             PruneExpired(now);
             if (entries.Count >= maxCapsules || bytes.Length > maxRetainedBytes - retainedBytes)
                 throw new SealedObservationException("capacity", "Release retained capsules or wait for expiration.");
-            var envelope = new SealedObservationCapture(SealedObservationContract.Schema,
-                SealedObservationContract.ReadProfile, TextMenuV2Contract.Profile, id,
+            var envelope = new SealedObservationCapture(profile.CaptureSchema,
+                profile.ReadProfile, profile.InputProfile, id,
                 frozen.SnapshotId, frozen.Session, generationId, frozen.GameContinuityId,
                 frozen.CapturedAt, DateTimeOffset.UtcNow.AddMilliseconds(ttlMs), bytes.Length,
                 digest, Cursor(id, digest, 0), ordinal);
-            entries.Add(id, new Entry(bytes, envelope, now + ttlMs));
+            entries.Add(id, new Entry(bytes, envelope, now + ttlMs, profile));
             retainedBytes += bytes.Length;
             return envelope;
         }
     }
 
     internal SealedObservationChunk Read(string id, string cursor,
-        int maxBytes = SealedObservationContract.DefaultChunkBytes)
+        int maxBytes = SealedObservationContract.DefaultChunkBytes, SealedObservationProfile? profile = null)
     {
         if (maxBytes < SealedObservationContract.MinChunkBytes || maxBytes > SealedObservationContract.MaxChunkBytes)
             throw new SealedObservationException("invalid_limit", "Chunk size is outside the advertised limits.");
@@ -88,6 +101,8 @@ internal sealed class SealedObservationStore
         {
             if (!entries.TryGetValue(id, out Entry? entry))
                 throw new SealedObservationException("not_found", "No retained capsule has this ID.");
+            if (entry.Profile != (profile ?? SealedObservationProfile.TextMenuV2))
+                throw new SealedObservationException("profile_mismatch", "The retained capsule belongs to another wire profile.");
             if (monotonicMs() >= entry.Deadline)
             {
                 Remove(id, entry);
@@ -98,7 +113,7 @@ internal sealed class SealedObservationStore
                 throw new SealedObservationException("cursor_mismatch", "The cursor does not address a retained chunk.");
             int count = Math.Min(maxBytes, entry.Bytes.Length - offset);
             int next = offset + count;
-            return new SealedObservationChunk(SealedObservationContract.ChunkSchema, id,
+            return new SealedObservationChunk(entry.Profile.ChunkSchema, id,
                 entry.Capture.Sha256, offset, entry.Bytes.Length,
                 Convert.ToBase64String(entry.Bytes, offset, count),
                 next == entry.Bytes.Length ? null : Cursor(id, entry.Capture.Sha256, next),
@@ -106,11 +121,16 @@ internal sealed class SealedObservationStore
         }
     }
 
-    internal SealedObservationRelease Release(string id)
+    internal SealedObservationRelease Release(string id, SealedObservationProfile? profile = null)
     {
         lock (gate)
-            if (entries.TryGetValue(id, out Entry? entry)) Remove(id, entry);
-        return new(SealedObservationContract.ReleaseSchema, id, true);
+            if (entries.TryGetValue(id, out Entry? entry))
+            {
+                if (entry.Profile != (profile ?? SealedObservationProfile.TextMenuV2))
+                    throw new SealedObservationException("profile_mismatch", "The retained capsule belongs to another wire profile.");
+                Remove(id, entry);
+            }
+        return new((profile ?? SealedObservationProfile.TextMenuV2).ReleaseSchema, id, true);
     }
 
     private void PruneExpired(long now)
