@@ -437,7 +437,7 @@ only when native health visibility and display mode permit them, otherwise both
 HP fields are explicitly null. Unavailable marked diagnostics remain readable.
 Incomplete historical or unknown-purpose selectors
 remain readable without actions. This additive bounded mapping is not full P1
-or C1 admission. The owning Host [mapping](../../../host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md)
+or C1 admission. Host Runtime's `docs/MANAGED_SELECTOR_CONTEXT.md`
 records native capture, rendering, revalidation, abort and unsupported boundaries.
 
 The Managed extension does not redefine complete card-selection surfaces of other
