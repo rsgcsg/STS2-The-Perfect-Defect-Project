@@ -10,6 +10,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from metadata_import_guard import install_torch_import_guard
 from metadata_import_guard import no_torch_imports as no_torch_imports
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
@@ -54,8 +55,7 @@ class MetadataBlobs(LocalBlobStore):
         return super().get(key)
 
 
-@pytest.fixture
-def closed_legacy(tmp_path):
+def _build_closed_legacy(tmp_path):
     blobs = MetadataBlobs(tmp_path / "store")
     store = ManifestArtifactStore(blobs)
     owner = SimpleNamespace(
@@ -360,6 +360,130 @@ def closed_legacy(tmp_path):
         path=path,
         config=cfg,
     )
+
+
+def _legacy_files(root):
+    return tuple(
+        (path.relative_to(root).as_posix(), path.read_bytes())
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
+
+
+@pytest.fixture(scope="module")
+def closed_legacy_template(tmp_path_factory):
+    # Keep the real publishers/completion owner, including all 26 attempts.
+    # A module fixture precedes the function import guard, so guard this seam too.
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        guard = install_torch_import_guard(monkeypatch)
+        original = _build_closed_legacy(tmp_path_factory.mktemp("closed-legacy-template"))
+        assert (
+            LocalTrainingService._read(original.path, original.owner.identity) == original.journal
+        )
+        verify_completion_metadata(original.store, original.journal)
+        assert not guard.attempts
+    # Only immutable byte tuples cross tests; no store, database, reads or dicts do.
+    files = _legacy_files(original.blobs.root)
+    yield files
+    assert _legacy_files(original.blobs.root) == files
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        guard = install_torch_import_guard(monkeypatch)
+        assert (
+            LocalTrainingService._read(original.path, original.owner.identity) == original.journal
+        )
+        verify_completion_metadata(original.store, original.journal)
+        assert not guard.attempts
+
+
+def _clone_closed_legacy(files, tmp_path):
+    blobs = MetadataBlobs(tmp_path / "store")
+    # copy_artifact alone omits remote controls/indexes and the completion marker.
+    # Fresh regular files preserve their exact bytes without links or fsync replay.
+    for name, raw in files:
+        path = blobs.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    path = blobs.root / "local-training-operation.json"
+    journal = json.loads(path.read_bytes())
+    owner = SimpleNamespace(
+        path=blobs.root / ".curation.sqlite",
+        store_dir=blobs.root,
+        identity=(*journal["_owner"][:3], str(blobs.root)),
+    )
+    journal["_owner"] = list(owner.identity)
+    raw = (json.dumps(journal, indent=2) + "\n").encode("utf-8")
+    path.write_bytes(raw)
+    return SimpleNamespace(
+        store=ManifestArtifactStore(blobs),
+        blobs=blobs,
+        owner=owner,
+        journal=journal,
+        raw=raw,
+        path=path,
+        config=ProjectConfig(tmp_path / "state", "", "", None, combination()),
+    )
+
+
+@pytest.fixture
+def closed_legacy(closed_legacy_template, tmp_path):
+    return _clone_closed_legacy(closed_legacy_template, tmp_path)
+
+
+def test_private_history_copies_preserve_closure_and_isolate_corruption(
+    closed_legacy_template, tmp_path
+):
+    template_hashes = tuple(
+        (name, hashlib.sha256(raw).hexdigest()) for name, raw in closed_legacy_template
+    )
+    damaged = _clone_closed_legacy(closed_legacy_template, tmp_path / "damaged")
+    intact = _clone_closed_legacy(closed_legacy_template, tmp_path / "intact")
+    assert damaged.owner.identity != intact.owner.identity
+    assert damaged.config.state_dir != intact.config.state_dir
+    assert damaged.config.combination is not intact.config.combination
+    assert all(
+        not (damaged.blobs.root / name).samefile(intact.blobs.root / name)
+        for name, _ in closed_legacy_template
+    )
+    for f in (damaged, intact):
+        assert not f.blobs.reads
+        assert len(f.journal["remote"]["attempts"]) == 26
+        assert LocalTrainingService._read(f.path, f.owner.identity) == f.journal
+        verify_completion_metadata(f.store, f.journal)
+        assert {
+            name: raw for name, raw in _legacy_files(f.blobs.root)
+            if name != "local-training-operation.json"
+        } == {
+            name: raw for name, raw in closed_legacy_template
+            if name != "local-training-operation.json"
+        }
+    intact_before = _legacy_files(intact.blobs.root)
+    intact_reads = list(intact.blobs.reads)
+    attempt = damaged.journal["remote"]["attempts"][-1]
+    control = damaged.blobs.root / attempt["handle_ref"]
+    control_raw = control.read_bytes()
+    control.write_bytes(control_raw + b" ")
+    with pytest.raises(BoundaryError, match="historical_control_digest_mismatch"):
+        verify_completion_metadata(damaged.store, damaged.journal)
+    control.write_bytes(control_raw)
+    index_path = damaged.blobs.root / attempt["request_ref"]
+    index = json.loads(index_path.read_bytes())
+    index["sha256"] = "0" * 64
+    index_path.write_bytes(json_bytes(index))
+    with pytest.raises(BoundaryError, match="historical_index_descriptor_invalid"):
+        verify_completion_metadata(damaged.store, damaged.journal)
+    # Nested metadata/owner and noncanonical raw journal are private as well.
+    damaged.journal["_owner"][0] = "0" * 32
+    damaged.journal["remote"]["attempts"][-1]["stop_confirmation"]["active_tasks"] = 1
+    damaged.path.write_bytes(json_bytes(damaged.journal))
+    with pytest.raises(BoundaryError, match="operation_recovery_required"):
+        LocalTrainingService._read(damaged.path, damaged.owner.identity)
+    assert intact.blobs.reads == intact_reads
+    assert _legacy_files(intact.blobs.root) == intact_before
+    assert LocalTrainingService._read(intact.path, intact.owner.identity) == intact.journal
+    verify_completion_metadata(intact.store, intact.journal)
+    assert tuple(
+        (name, hashlib.sha256(raw).hexdigest()) for name, raw in closed_legacy_template
+    ) == template_hashes
 
 
 def test_closed_26_history_reader_and_metadata_are_readonly(closed_legacy):
