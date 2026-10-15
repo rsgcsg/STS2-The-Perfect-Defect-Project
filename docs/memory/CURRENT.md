@@ -26,20 +26,25 @@ Keep raw sources and useful readers/ports; do not rename old models/results P1.
   reviewed head 58d28fa9, same tree as its successful selected dual-OS gate.
 - P1 contract/Host-wire and native reward rules have bounded independent review.
   Ordinary-combat C1 capture freezes, retains and validates required detail instances;
-  it remains agent_admissible=false, with no complete P1 or Source3 claim.
+  offline C1 archive comparison preserves declared typed alias relations and
+  reports unknown mappings as incomparable. It remains agent_admissible=false;
+  real paired captures, Managed C1 production and full P1/Source3 are unproved.
 - One integration topic combines reviewed C1/P1, Managed fair projection/AnyPlayer/
   bounded choose-card and combat-pile selectors, D-min evaluation, Reference suite,
   cancellation-fixture repair and CI stage/auth diagnostics plus cost-based sharding.
   Component source parents use normal merges; new-tree gates are still required.
-- AnyPlayer candidate smoke-20:15 natural losses/5 selector censors/0 unknown,
-  all20 normal closes,7 real AnyPlayer uses. The new selector source has not yet
-  inherited those runtime results; deck-enchantment and incomplete rich text reject.
+- Integrated434 smoke-20:17 natural losses/3 selector censors/0 unknown, all20
+  native/driver closes confirmed. Colorless and Hologram child continuations ran.
+  A separate49e targeted Seeker episode passed its repaired empty-intent-label
+  boundary and naturally lost onfloor11; it does not rewrite the full20 result.
+  Deck-enchantment and incomplete rich text remain unavailable.
 - Reference rc34/d6 short canary:16 known deliveries, submission-limit censor,
   Stop/seal/owned-process cleanup confirmed. Native errors remain; no natural
   terminal/ref-20/P1/Human qualification follows. The installed Mod is unchanged.
-- PR183 full passed; PR184 transport failures, PR185 cancellation assertion/cap,
-  and PR186 stopped-suite failure remain archived at their original identities.
-  Diagnostics and a future green run do not by themselves close old root causes.
+- PR187 first candidate434 full dual-OS CI passed:4445 Python nodes perOS and
+  all48 stages. The label/comparison follow-up requires its own selected gate.
+  PR184 transport failures, PR185 cancellation assertion/cap and PR186 stopped
+  failure remain archived; new green checks do not establish their root causes.
 - J-min original CUDA raw numerical qualification failed; ordinary remote
   TrainingService loop remains incomplete. Configuration may be proposed first,
   with J qualification as a launch condition, avoiding circular dependencies.
