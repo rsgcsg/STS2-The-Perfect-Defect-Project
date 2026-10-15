@@ -286,6 +286,15 @@ by MPE remain observable. Discard/exhaust keep their existing presented order
 and current contract; this fix does not select a new P1 ordering policy or
 add missing card-detail/revealed-order capabilities.
 
+The engineering probe also treats these aliases only as reference lookup keys.
+Its semantic selection key excludes combat/entity/referent and envelope IDs;
+it never interprets an opaque combat alias as a number or ordering value.
+Fully equal public semantic actions remain distinct BoundActions and use the
+published complete catalog's relative order for a final tie. Their exact private
+bindings remain separate. This rule depends on that order; it does not establish
+arbitrary-order invariance, unique correspondence for equal-valued entities
+across Hosts, or a new canonical-decision comparison contract.
+
 The regression compares the complete public Snapshot plus every materialized
 Read, including all identities and serialized digests, at a fixed public
 projection version while changing only hidden Draw permutation/native counters.
