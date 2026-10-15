@@ -22,11 +22,20 @@ and consumer execution before the bounded battle batches.
 
 ## Verified starting facts and open work
 
-- develop02636a94 contains PR180. PR187/931fcaf8 remains unmerged. Gate38800467323
-  finished all twelve Windows2 owners, but one Policy Runtime future_publication_kind
-  case exceeded its original5000ms test limit (5007ms). The other three leaves passed.
-  Python2362pass/43skip and Bridge preparation passed; job58m24 was below75min.
-  There is no successful full execution receipt. The exact slow phase remains unknown.
+- develop02636a94 contains PR180. PR187 remains unmerged. The latest2c gate
+  38813375418 was cancelled at the official75min Windows1 job limit after its
+  3960.27s Python owner passed. All four Python leaves passed, but Policy was
+  interrupted and three later owners blocked:44/48stages passed,1cancelled,3blocked.
+  No full execution receipt exists. Prior931 gate38800467323's5007ms Runtime
+  failure and earlier unknown causes remain; this cancellation is not that failure.
+- Root and non-author review accepted a data-only cost-profile refresh from three
+  complete retained Windows pairs (2c/405/434), retaining the exact schema, median
+  aggregation, whole-file LPT, two shards per OS, unknown30s and every deadline.
+  All284 weights and six source records were recomputed from original JUnit and
+  terminal manifests. Fixed2c cost replay balances2820.225/3069.459s instead of
+  3754.672/2135.012s; this is not future runtime or75min gate assurance. The actual
+  Windows cost drift remains unexplained. New candidate checks and a new full
+  gate are required before merge; no rerun of the unchanged failed head.
 - C1 repair8c847f88 and startup-observation ordering passed non-author review.
   Gates3831/38766308324 and1e60/38776381573 failed. The latter stopped one Python
   attack before injection on scratch inventory and timed out two Runtime tests.
