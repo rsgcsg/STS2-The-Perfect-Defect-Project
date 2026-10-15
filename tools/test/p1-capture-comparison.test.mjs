@@ -112,6 +112,10 @@ test("CLI rejects invalid UTF-8 and absent archive without exposing local paths"
   for (const corrupt of [dir => writeFileSync(path.join(dir, "candidate.json"), Buffer.from([0xff, 0xfe])),
     dir => rmSync(path.join(dir, "candidate.json"))]) {
     const result = cli(inputs(), corrupt); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+    assert.equal(result.result.environment_alignment, "externally_asserted");
+    assert.equal(result.result.alignment_verified, false);
+    assert.equal(result.result.cross_host_qualification, "incomparable");
+    assert.equal(result.result.relation_scope, "declared_typed_alias_relations_only");
     assert.equal(JSON.stringify(result.result).includes(tmpdir()), false);
   }
 });
