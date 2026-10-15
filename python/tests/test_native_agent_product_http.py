@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 import pytest
+from auth_fixture_diagnostics import AuthFixtureDiagnostics
 from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_native_agent_product_data import settled
 from test_native_agent_sampled_source import original as original
@@ -35,18 +36,23 @@ def native_data_http(tmp_path, monkeypatch):
                         pytest.fail("data preparation cannot start training"))
     monkeypatch.setattr(app.account, "status", lambda: pytest.fail("no Hub/account endpoint"))
     server = create_server(app)
+    diagnostic = AuthFixtureDiagnostics(fixture="native-agent-data-http")
+    diagnostic.observe_server(server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     root = f"http://127.0.0.1:{server.server_port}"
-    client = build_opener(HTTPCookieProcessor(CookieJar()))
+    cookies = CookieJar()
+    client = build_opener(HTTPCookieProcessor(cookies))
 
     def post(route, body, *, csrf=None, origin=None):
         request = Request(root + route, data=json.dumps(body).encode(), method="POST", headers={
             "Content-Type": "application/json", "Origin": root if origin is None else origin,
             "X-CSRF-Token": app.account.csrf if csrf is None else csrf})
         try:
-            with client.open(request, timeout=5) as response:
-                return response.status, json.load(response)
+            return diagnostic.exchange(
+                client, request, auth="browser-cookie" if cookies else "browser-no-cookie",
+                body_length=len(request.data), timeout=5, include_status=True,
+            )
         except HTTPError as error:
             return error.code, json.loads(error.read())
 

@@ -81,7 +81,7 @@ export function ciWorkflowErrors(rawSource) {
       /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2\]/u);
     requireMatch(errors, `${label} must retain its 55-minute budget`, lane, /timeout-minutes: 55/u);
     if (!lane.includes("name: pytest-${{ runner.os }}-shard-${{ matrix.shard }}-${{ github.run_attempt }}") ||
-        !lane.includes("python/.local/pytest-shard.json") || !lane.includes(".local/checks/workspace-*.json")) {
+        !lane.includes("python/.local/pytest-shard.json") || !lane.includes("python/.local/fixture-diagnostics/**") || !lane.includes(".local/checks/workspace-*.json")) {
       errors.push(`${label} must retain uniquely named original shard diagnostics`);
     }
   }

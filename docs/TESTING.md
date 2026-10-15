@@ -297,7 +297,9 @@ owned process group/tree and reports unresolved cleanup as a failure, rather tha
 killing only an npm wrapper and leaving its descendants running. This changes diagnostic
 collection, not the dual-OS requirement, supported scope or scientific claims.
 CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
-on failure; the GitHub summary lists each reached or blocked stage. The existing
+on failure; synthetic fixture diagnostics retain bounded phases, whitelisted operation
+fields and stacks without locals under `python/.local/fixture-diagnostics/`, with no
+environment/configuration dump or default MSBuild binlog upload. The GitHub summary lists each reached or blocked stage. The existing
 successful execution receipt remains a separate artifact and is never generated
 from a failing diagnostic summary.
 
@@ -349,9 +351,14 @@ defaults remain complete and unpartitioned.
 
 Each top-level invocation explicitly loads `tools.pytest_shard` with shard
 index/count and a manifest path. It collects the unchanged default testpaths,
-normalizes relative POSIX node IDs/files, sorts unique files and assigns whole
-files by rank modulo two. Parameters, classes and module fixtures stay together;
-new files join automatically. No manually curated test list, `PYTEST_ADDOPTS`,
+normalizes relative POSIX node IDs/files and assigns whole files using the static
+`python/tools/pytest-file-costs.json` profile and `lpt-whole-file-1`: descending
+integer cost, UTF-8 file tie order, then the lower-load shard (ties shard 1).
+Parameters, classes and module fixtures stay together. New files join automatically
+with a nonzero 30,000 ms scheduling weight; retired profile entries do not select tests.
+The reviewed profile uses median whole-file testcase milliseconds from three retained
+Windows runs, including failed runs as cost observations, never successful receipts.
+Invalid/missing profiles fail closed; weights are not deadlines or performance promises. No manually curated test list, `PYTEST_ADDOPTS`,
 automatic inherited environment plugin or conftest filters nested pytest.
 The Modal fresh child and other nested invocations keep their full case sets.
 
@@ -359,12 +366,16 @@ Unique OS/shard/attempt artifacts retain the original complete collection,
 selection, actual setup/call/teardown and subtest outcomes, terminal execution,
 source identities and workspace results. Before sealing a fresh receipt,
 `portable` downloads the four current-run artifact directories separately and
-verifies clean exact head/tree/workflow/selector, run/attempt/scope/OS, identical
+verifies clean exact head/tree/workflow/selector and cost-profile Git blob/raw SHA256
+plus routing algorithm, run/attempt/scope/OS, identical
 same-OS collection, disjoint/exhaustive deterministic selections, and terminal
 executed IDs matching every selected item. Existing test-level skips remain
 explicit; a missing, duplicate, empty, wholly skipped, failed, cancelled,
 uncompleted or foreign-source leaf cannot pass. All selected owner stages must
-also pass. The small existing execution receipt adds only coverage digests/counts;
+also pass. Manifest/coverage schema v2 binds this routing definition; Python and JS
+independently recompute whole-file assignments from the current complete collection.
+A profile change is a source-tree change, so an old tree receipt cannot cover it.
+The small existing execution receipt adds only coverage digests/counts/routing identity;
 original manifests remain diagnostics. Receipt eligibility, freshness, source
 binding, required OS groups and higher evidence gates remain unchanged.
 

@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
 import {eligibleEvent, validReceipt, findReceipt} from './check-receipt.mjs';
 const now = Date.UTC(2026, 8, 17);
 const current = {repository: 'owner/project', tree: 'a'.repeat(40), workflow: 'b'.repeat(40), scope: 'full'};
@@ -57,4 +61,24 @@ test('lookup uses only matching executed content and falls back on corrupt or ab
 test('rerunning an old run cannot refresh the age of its successful lanes', () => {
   assert.equal(validReceipt(receipt, {...run, created_at:new Date(now-8*86400_000).toISOString(),
     updated_at:new Date(now).toISOString()}, current, now), false);
+});
+
+
+test('a profile-only Git tree change invalidates an otherwise matching executed receipt', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cost-receipt-'));
+  const git = (...args) => execFileSync('git', args, {cwd: root, encoding: 'utf8', stdio: 'pipe'}).trim();
+  try {
+    git('init'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+    const profile = path.join(root, 'pytest-file-costs.json');
+    fs.writeFileSync(profile, JSON.stringify({file_cost_ms: {'tests/one.py': 1}}));
+    git('add', '.'); git('commit', '-m', 'original profile');
+    const tree = git('rev-parse', 'HEAD^{tree}');
+    const original = {...receipt, tree};
+    assert.equal(validReceipt(original, run, {...current, tree}, now), true);
+    fs.writeFileSync(profile, JSON.stringify({file_cost_ms: {'tests/one.py': 2}}));
+    git('add', '.'); git('commit', '-m', 'new profile only');
+    const next = git('rev-parse', 'HEAD^{tree}');
+    assert.notEqual(next, tree);
+    assert.equal(validReceipt(original, run, {...current, tree: next}, now), false);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

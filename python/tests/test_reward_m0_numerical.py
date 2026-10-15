@@ -8,6 +8,12 @@ import uuid
 from dataclasses import replace
 
 import pytest
+from fixture_diagnostics import (
+    FixtureDiagnostics,
+    failure_snapshot,
+    operation_snapshot,
+    thread_snapshot,
+)
 from test_reward_m0_pair import limits
 from test_reward_m0_pair import pair_originals as pair_originals
 from test_reward_m0_recipe import publish_pair
@@ -37,6 +43,14 @@ def test_ordinary_two_arm_fit_has_shared_init_tokenizer_schedule_and_exact_artif
     from spireagent.workbench.recipes import structured
 
     actual_child = structured._private_child
+    diagnostic = FixtureDiagnostics("reward-m0-numerical")
+
+    def record(phase, arm, service, operation):
+        return diagnostic.record(phase, arm=arm, operation=operation_snapshot(operation),
+                                 thread=thread_snapshot(service._thread)
+                                 if service._thread is not None else None,
+                                 child_log=diagnostic.training_log(owner.path.parent, operation),
+                                 parent_failure=failure_snapshot(service._failure_diagnostic))
     for arm in ("A", "B"):
         selected = replace(frozen, arm=arm)
         service = LocalTrainingService(config)
@@ -66,29 +80,38 @@ def test_ordinary_two_arm_fit_has_shared_init_tokenizer_schedule_and_exact_artif
             return actual_child(*args, **kwargs)
 
         monkeypatch.setattr(structured, "_private_child", child)
-        service.start(request)
+        diagnostic.record("arm-start-requested", arm=arm)
+        started = service.start(request)
+        record("arm-started", arm, service, started["operation"])
         assert service._thread is not None
         service._thread.join(timeout=140)
+        record("initial-join-returned", arm, service, started["operation"])
         assert not service._thread.is_alive(), "fixed fixture wall budget did not terminate"
         operation = service.status()["operation"]
+        record("initial-attempt-joined", arm, service, operation)
         if arm == "A":
             assert pause_sent and operation["status"] == "paused", operation
             assert operation["progress"]["completed"] == 1
             before = operation["elapsed_seconds"]
-            service.resume(
+            record("resume-requested", arm, service, operation)
+            resumed = service.resume(
                 operation["operation_id"],
                 operation["attempt_id"],
                 operation["checkpoint_id"],
                 uuid.uuid4().hex,
                 limits(),
             )
+            record("resume-started", arm, service, resumed["operation"])
             service._thread.join(timeout=140)
+            record("resumed-join-returned", arm, service, resumed["operation"])
             assert not service._thread.is_alive()
             operation = service.status()["operation"]
+            record("resumed-attempt-joined", arm, service, operation)
             assert operation["elapsed_seconds"] >= before
             assert operation["limits"] == limits()
 
-        assert operation["status"] == "completed", operation
+        detail = record("arm-terminal-observed", arm, service, operation)
+        assert operation["status"] == "completed", detail
         assert operation["validation_state"] == "verified"
         assert operation["progress"]["completed"] == selected.steps == 2
         assert operation["worker_state"] == "terminal" and operation["child_exit"]["exit_code"] == 0

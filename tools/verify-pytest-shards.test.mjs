@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import test from "node:test";
-import {verifyPytestShards} from "./verify-pytest-shards.mjs";
+import {verifyPytestShards, readCostProfile, selectedNodeids, validatedCostProfile} from "./verify-pytest-shards.mjs";
 import {workspaceStages, pytestPartition} from "./check-workspace.mjs";
 
 const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -14,14 +14,15 @@ const write = (file, value) => { fs.mkdirSync(path.dirname(file), {recursive: tr
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pytest-proof-"));
   const expected = {source: {head: "a".repeat(40), tree: "b".repeat(40), workflow: "c".repeat(40),
-    selector: "d".repeat(40), dirty: false}, repository: "owner/repo", run_id: "123", run_attempt: "1", scope: "full"};
+    selector: "d".repeat(40), cost_profile: "e".repeat(40),
+    cost_profile_sha256: readCostProfile().sha256, routing_algorithm: "lpt-whole-file-1", dirty: false}, repository: "owner/repo", run_id: "123", run_attempt: "1", scope: "full"};
   const collection = ["deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py"].flatMap(file =>
     ["one", "two"].map(value => ({file, nodeid: `${file}::test_value[${value}]`})));
   const leaves = [];
   for (const os of ["Linux", "Windows"]) for (const index of [1, 2]) {
     const root = path.join(directory, `pytest-${os}-shard-${index}-1`);
-    const selected = collection.filter(item => [...new Set(collection.map(value => value.file))].indexOf(item.file) % 2 === index - 1).map(item => item.nodeid);
-    const report = {schema: "spireagent/pytest-shard-1", run: {repository: expected.repository,
+    const selected = selectedNodeids(collection, index, readCostProfile().profile);
+    const report = {schema: "spireagent/pytest-shard-2", run: {repository: expected.repository,
       run_id: "123", run_attempt: "1", job: os === "Linux" ? "linux-portability" : "windows-portability", os, scope: "full"},
       shard: {index, count: 2}, source_at_start: expected.source, source_at_end: expected.source,
       invocation: {argv: ["python", "-m", "pytest", "-p", "tools.pytest_shard", `--portable-shard-index=${index}`, "--portable-shard-count=2"],
@@ -80,6 +81,10 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
     leaf => leaf.report.run.run_attempt = "2",
     leaf => leaf.report.run.os = "Darwin",
     leaf => leaf.report.source_at_end = {...leaf.report.source_at_end, dirty: true},
+    leaf => leaf.report.schema = "spireagent/pytest-shard-1",
+    leaf => leaf.report.source_at_start = {...leaf.report.source_at_start, cost_profile: "f".repeat(40)},
+    leaf => leaf.report.source_at_start = {...leaf.report.source_at_start, cost_profile_sha256: "0".repeat(64)},
+    leaf => leaf.report.source_at_start = {...leaf.report.source_at_start, routing_algorithm: "rank-2"},
     leaf => leaf.report.source_at_start = {...leaf.report.source_at_start, workflow: "e".repeat(40)},
     leaf => leaf.workspace.results.pop(),
     leaf => leaf.workspace.results[2].status = "cancelled",
@@ -112,4 +117,58 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
     try { mutation(data); assert.throws(() => verifyPytestShards(data.directory, data.expected)); }
     finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
   }
+});
+
+test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic", () => {
+  const profile = structuredClone(readCostProfile().profile);
+  profile.file_cost_ms = {"tests/test_a.py": 100000, "tests/test_b.py": 80000,
+    "tests/test_c.py": 20000, "tests/test_d.py": 10000, "tests/retired.py": 999999000};
+  const collection = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/new.py"]
+    .flatMap(file => ["test_one", "OtherClass::test_two[param]"].map(name => ({file, nodeid: `${file}::${name}`})));
+  const first = selectedNodeids(collection, 1, profile), second = selectedNodeids(collection, 2, profile);
+  assert.deepEqual([...new Set(first.map(id => id.split("::")[0]))], ["tests/test_a.py", "tests/test_c.py"]);
+  assert.deepEqual([...new Set(second.map(id => id.split("::")[0]))], ["tests/new.py", "tests/test_b.py", "tests/test_d.py"]);
+  assert.deepEqual([...first, ...second].sort(), collection.map(item => item.nodeid).sort());
+  assert.deepEqual(selectedNodeids([...collection].reverse(), 1, profile), first);
+  profile.file_cost_ms = {"tests/é.py": 50, "tests/z.py": 50};
+  assert.deepEqual(selectedNodeids(Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`})), 1, profile),
+    ["tests/z.py::test_case"]);
+});
+
+test("invalid cost definitions never fall back to an unverified assignment", () => {
+  for (const mutation of [
+    p => p.schema = "unknown", p => p.algorithm = "rank-2", p => p.unknown_file_ms = 0,
+    p => p.extra = "ignored", p => p.file_cost_ms = {}, p => p.file_cost_ms = {"../foreign.py": 1},
+    ...[true, 1.5, -1, Infinity, Number.MAX_SAFE_INTEGER + 1].map(value => p => p.file_cost_ms = {"tests/x.py": value}),
+    p => p.file_cost_ms = {"tests/x.py": Number.MAX_SAFE_INTEGER, "tests/y.py": 1},
+    p => p.sources[0][0].all_selected_terminal = false, p => p.sources[0][0].junit_sha256 = "foreign",
+  ]) {
+    const profile = structuredClone(readCostProfile().profile); mutation(profile);
+    assert.throws(() => validatedCostProfile(profile));
+  }
+});
+
+test("an exhaustive whole-file swap and a foreign cost definition cannot seal coverage", () => {
+  const data = fixture();
+  try {
+    for (let offset = 0; offset < 4; offset += 2) {
+      const first = structuredClone(data.leaves[offset].report);
+      const second = structuredClone(data.leaves[offset + 1].report);
+      for (const [leaf, other] of [[data.leaves[offset], second], [data.leaves[offset + 1], first]]) {
+        leaf.report.selected_nodeids = other.selected_nodeids;
+        leaf.report.executed = other.executed;
+        write(leaf.manifest, leaf.report);
+      }
+    }
+    assert.throws(() => verifyPytestShards(data.directory, data.expected), /deterministic_selection/);
+  } finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
+  const other = fixture();
+  try {
+    const foreign = structuredClone(other.expected);
+    foreign.source.cost_profile_sha256 = "0".repeat(64);
+    assert.throws(() => verifyPytestShards(other.directory, foreign), /cost_profile_identity/);
+    foreign.source.cost_profile_sha256 = other.expected.source.cost_profile_sha256;
+    foreign.source.routing_algorithm = "rank-2";
+    assert.throws(() => verifyPytestShards(other.directory, foreign), /cost_profile_identity/);
+  } finally { fs.rmSync(other.directory, {recursive: true, force: true}); }
 });

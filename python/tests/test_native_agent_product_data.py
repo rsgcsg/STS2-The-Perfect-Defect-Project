@@ -6,6 +6,7 @@ import json
 import shutil
 
 import pytest
+from fixture_diagnostics import FixtureDiagnostics, operation_snapshot, thread_snapshot
 from metadata_import_guard import no_torch_imports as no_torch_imports
 from test_native_agent_sampled_source import original as original
 from test_protocol_source import setup_store
@@ -33,8 +34,12 @@ def setup(tmp_path):
 
 def settled(service):
     assert service.thread is not None
+    diagnostic = FixtureDiagnostics("native-agent-product-data")
+    diagnostic.record("join-started", operation=operation_snapshot(service.operation))
     service.thread.join(timeout=10)
-    assert not service.thread.is_alive()
+    detail = diagnostic.record("join-ended", thread=thread_snapshot(service.thread),
+                               operation=operation_snapshot(service.operation))
+    assert not service.thread.is_alive(), detail
     result = service.status()
     return result.get("operation", result)
 
