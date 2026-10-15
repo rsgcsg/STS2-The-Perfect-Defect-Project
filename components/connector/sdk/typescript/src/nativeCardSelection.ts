@@ -12,6 +12,11 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
   if (!isJsonObject(content) || !isJsonObject(content.surface) || !isJsonObject(content.context))
     return ["native card selection requires typed current content"];
   const surface = content.surface;
+  // This additive Managed extension does not redefine other Hosts' existing
+  // card_selection contracts or historical readers.
+  if (surface.selector_profile == null && surface.selector_kind == null) return [];
+  if (surface.selector_profile !== "managed-command-selector-1")
+    return ["native card selection requires its explicit Managed selector profile"];
   const cards = surface.cards;
   const text = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0
     && !/[{}]|\[img/iu.test(v);

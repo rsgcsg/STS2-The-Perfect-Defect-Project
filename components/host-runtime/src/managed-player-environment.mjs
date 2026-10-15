@@ -1356,7 +1356,7 @@ function currentSurface(state, ctx) {
           statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
       } : null;
       return { kind: "card_selection", stage: "choosing", prompt: state.prompt ?? null,
-        surface: { kind: "card_selection", selector_kind: state.origin ?? "unknown", stage: "choosing",
+        surface: { kind: "card_selection", selector_profile: "managed-command-selector-1", selector_kind: state.origin ?? "unknown", stage: "choosing",
           display_context: state.display_pile ?? null, cards: referents.map((item) => item.properties),
           native_option_count: cards.length, min_select: state.min_select, max_select: state.max_select,
           selected_count: selected.length, selected_card_entity_ids: referents.filter((_, index) => cards[index]?.is_selected).map((item) => item.referent_id),

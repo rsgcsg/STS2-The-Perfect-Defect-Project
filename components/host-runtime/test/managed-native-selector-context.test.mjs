@@ -119,3 +119,11 @@ test("native child actions retain unknown-no-retry and never re-dispatch a paren
     boundActionId: action.bound_action_id, timeoutMs: 1000 });
   assert.equal(calls.length, 2);
 });
+
+test("Managed selector profile does not redefine Reference/legacy card-selection decoding", () => {
+  const snapshot = structuredClone(project(selector()).snapshot);
+  delete snapshot.interaction.content.surface.selector_profile;
+  delete snapshot.interaction.content.surface.selector_kind;
+  assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
+  assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "unavailable");
+});

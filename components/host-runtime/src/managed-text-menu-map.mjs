@@ -45,7 +45,8 @@ export function currentManagedNativeVerbs() {
 }
 
 function completeCurrentLeaf(snapshot) {
-  if (snapshot?.interaction?.kind === "card_selection" && nativeCardSelectionProblems(snapshot).length > 0) return false;
+  if (snapshot?.interaction?.kind === "card_selection" && (snapshot.interaction?.content?.surface?.selector_profile !== "managed-command-selector-1"
+    || nativeCardSelectionProblems(snapshot).length > 0)) return false;
   const interactionId = snapshot?.interaction?.interaction_id;
   const actions = snapshot?.bound_actions?.actions;
   const referents = snapshot?.referents;

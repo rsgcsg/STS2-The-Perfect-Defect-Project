@@ -423,7 +423,8 @@ stale.
 ### Bounded Managed card selection
 
 The legacy Managed Host may publish a complete `card_selection-1` surface only
-for exact `selector_kind=choose_card|combat_pile`, with its display context,
+for explicit `selector_profile=managed-command-selector-1` and exact
+`selector_kind=choose_card|combat_pile`, with its display context,
 complete rendered card/hover details, native option count, per-card select/
 deselect state, selected entity IDs, bounds and native skip/manual-confirm flags.
 Its selection context includes the current post-parent combat HUD; it does not
@@ -432,3 +433,7 @@ selection/action multiset. Incomplete historical or unknown-purpose selectors
 remain readable without actions. This additive bounded mapping is not full P1
 or C1 admission. The owning Host [mapping](../../../host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md)
 records native capture, rendering, revalidation, abort and unsupported boundaries.
+
+The Managed extension does not redefine complete card-selection surfaces of other
+Hosts. Legacy decoding remains compatible; the Managed text-menu mapper requires
+the explicit profile before accepting this additional interaction kind.

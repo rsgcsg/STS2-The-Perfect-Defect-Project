@@ -33,7 +33,8 @@ Draw candidates are already native-revealed; projection sorts public card facts
 while preserving original private bindings and distinct equal card instances.
 It never reveals the unoffered draw remainder, true draw order or RNG.
 
-A complete surface has selector_kind choose_card/combat_pile, display_context,
+A complete surface declares selector_profile managed-command-selector-1,
+selector_kind choose_card/combat_pile, display_context,
 all cards and their native-admitted flags, exact selected public entity IDs,
 full bounds/control flags and current combat context. The strict SDK checks
 card/referent/selection/catalog closure. Text-menu accepts only that bounded
