@@ -123,7 +123,7 @@ test("native child actions retain unknown-no-retry and never re-dispatch a paren
 test("Managed selector profile does not redefine Reference/legacy card-selection decoding", () => {
   const snapshot = structuredClone(project(selector()).snapshot);
   delete snapshot.interaction.content.surface.selector_profile;
-  delete snapshot.interaction.content.surface.selector_kind;
+  snapshot.interaction.content.surface.selector_kind = "reference-native-selector";
   assert.doesNotThrow(() => decodePlayerSnapshot(snapshot));
   assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "unavailable");
 });

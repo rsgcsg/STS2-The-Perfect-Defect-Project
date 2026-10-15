@@ -847,10 +847,10 @@ index 0000000..d1760cc
 +}
 diff --git a/src/Sts2Headless/NativeSelectorCardDisplay.cs b/src/Sts2Headless/NativeSelectorCardDisplay.cs
 new file mode 100644
-index 0000000..dfb4053
+index 0000000..b23c7bd
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorCardDisplay.cs
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,96 @@
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.HoverTips;
 +using MegaCrit.Sts2.Core.Models;
@@ -878,9 +878,10 @@ index 0000000..dfb4053
 +            ["name"] = null, ["description"] = null,
 +        };
 +        var missing = new List<string>();
++        bool addedToPath = false;
 +        try
 +        {
-+            if (path.Count >= 16 || !path.Add(card))
++            if (path.Count >= 16 || !(addedToPath = path.Add(card)))
 +                throw new InvalidOperationException("Unqualified recursive native hover-card display");
 +            if (card.Affliction != null) missing.Add("unqualified_native_selector_affliction_display");
 +            if (!TestMode.IsOn)
@@ -942,7 +943,7 @@ index 0000000..dfb4053
 +            missing.Add("native_selector_card_render_failed");
 +            visible["description"] = null;
 +        }
-+        finally { path.Remove(card); }
++        finally { if (addedToPath) path.Remove(card); }
 +        return new(visible, missing.Distinct(StringComparer.Ordinal).ToArray());
 +    }
 +}

@@ -14,7 +14,7 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
   const surface = content.surface;
   // This additive Managed extension does not redefine other Hosts' existing
   // card_selection contracts or historical readers.
-  if (surface.selector_profile == null && surface.selector_kind == null) return [];
+  if (surface.selector_profile == null) return [];
   if (surface.selector_profile !== "managed-command-selector-1")
     return ["native card selection requires its explicit Managed selector profile"];
   const cards = surface.cards;
