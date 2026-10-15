@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from tools.project import RepositoryGateError, parse_pytest_shard, portable_commands
-from tools.pytest_shard import normalized_nodeid, selected_ids
+from tools.pytest_shard import load_profile, normalized_nodeid, selected_ids, validated_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -119,6 +119,9 @@ def test_two():
     files["python/tools/pytest_shard.py"] = (ROOT / "python/tools/pytest_shard.py").read_text(
         encoding="utf-8"
     )
+    files["python/tools/pytest-file-costs.json"] = (
+        ROOT / "python/tools/pytest-file-costs.json"
+    ).read_text(encoding="utf-8")
     for name, text in files.items():
         file = root / name
         file.parent.mkdir(parents=True, exist_ok=True)
@@ -211,7 +214,7 @@ for(const index of [1,2]) {
  fs.mkdirSync(path.join(dir,'.local','checks'),{recursive:true});
  fs.writeFileSync(path.join(dir,'.local','checks',`workspace-full-${workspace.platform}.json`),JSON.stringify(workspace));
 }
-console.log(JSON.stringify(verifyPytestShards(artifact,expected,{oses:[os]})));
+console.log(JSON.stringify(verifyPytestShards(artifact,expected,{oses:[os],profileRoot:path.join(base,'clone-1')})));
 '''
     node = shutil.which("node")
     assert node
@@ -249,3 +252,55 @@ def test_real_negative_outcomes_remain_original(tmp_path: Path, failure: str) ->
             assert all(item["status"] == "passed" for item in report["executed"])
         else:
             assert any(item["status"] in ("failed", "incomplete") for item in report["executed"])
+
+
+def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
+    profile = load_profile()
+    profile["file_cost_ms"] = {"tests/test_a.py": 100, "tests/test_b.py": 80,
+                               "tests/test_c.py": 20, "tests/test_d.py": 10,
+                               "tests/retired.py": 999999}
+    # Unknown cost is 30000ms; scale known costs to the same unit.
+    profile["file_cost_ms"] = {key: value * 1000
+                               for key, value in profile["file_cost_ms"].items()}
+    collection = [{"file": file, "nodeid": file + "::" + case}
+                  for file in ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py",
+                               "tests/test_d.py", "tests/new.py")
+                  for case in ("test_one", "OtherClass::test_two[param]")]
+    first, second = (selected_ids(collection, index, 2, profile) for index in (1, 2))
+    assert {item.split("::")[0] for item in first} == {"tests/test_a.py", "tests/test_c.py"}
+    assert {item.split("::")[0] for item in second} == {
+        "tests/test_b.py", "tests/test_d.py", "tests/new.py"}
+    assert sorted(first + second) == sorted(item["nodeid"] for item in collection)
+    assert selected_ids(list(reversed(collection)), 1, 2, profile) == first
+    profile["file_cost_ms"] = {"tests/é.py": 50, "tests/z.py": 50}
+    collection = [{"file": file, "nodeid": file + "::test_case"}
+                  for file in ("tests/é.py", "tests/z.py")]
+    assert selected_ids(collection, 1, 2, profile) == ["tests/z.py::test_case"]
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value.update(schema="unknown"),
+    lambda value: value.update(algorithm="rank-2"),
+    lambda value: value.update(unknown_file_ms=0),
+    lambda value: value.update(extra="ignored"),
+    lambda value: value.update(file_cost_ms={}),
+    lambda value: value.update(file_cost_ms={"../foreign.py": 1}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": True}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": 1.5}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": -1}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": float("inf")}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": 2**53}),
+    lambda value: value.update(file_cost_ms={"tests/x.py": 2**53 - 1, "tests/y.py": 1}),
+    lambda value: value["sources"][0][0].update(all_selected_terminal=False),
+    lambda value: value["sources"][0][0].update(junit_sha256="foreign"),
+])
+def test_invalid_cost_profile_is_not_a_selection_fallback(mutation) -> None:
+    profile = load_profile()
+    mutation(profile)
+    with pytest.raises(ValueError):
+        validated_profile(profile)
+
+
+def test_missing_profile_is_not_a_selection_fallback(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_profile(tmp_path / "absent.json")

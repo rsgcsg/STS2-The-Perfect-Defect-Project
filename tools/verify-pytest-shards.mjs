@@ -10,11 +10,73 @@ const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const sort = values => [...values].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 const requireProof = (condition, reason) => { if (!condition) throw new Error(`pytest_shards:${reason}`); };
 
+const profilePath = "python/tools/pytest-file-costs.json";
+const algorithm = "lpt-whole-file-1";
+const defaultRoot = path.resolve(import.meta.dirname, "..");
+const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
+  equal(sort(Object.keys(value)), sort(keys));
+
+export function validatedCostProfile(profile) {
+  requireProof(exactKeys(profile, ["schema", "algorithm", "unknown_file_ms", "aggregation", "sources", "file_cost_ms"]) &&
+    profile.schema === "spireagent/pytest-file-cost-1" && profile.algorithm === algorithm &&
+    profile.unknown_file_ms === 30000 && profile.aggregation ===
+      "median-available-of-three-retained-Windows-testcase-total-ms-min1", "cost_profile_definition");
+  const costs = profile.file_cost_ms;
+  requireProof(costs && typeof costs === "object" && !Array.isArray(costs) && Object.keys(costs).length > 0,
+    "cost_profile_empty");
+  for (const [file, weight] of Object.entries(costs)) requireProof(
+    /^(?:tests|deploy\/hub)\//u.test(file) && file.endsWith(".py") && !file.includes("\\") &&
+    !file.includes(":") && !file.split("/").some(part => ["", ".", ".."].includes(part)) &&
+    Number.isSafeInteger(weight) && weight > 0, "cost_profile_weight");
+  requireProof(Number.isSafeInteger(Object.values(costs).reduce((sum, value) => sum + value, 0)),
+    "cost_profile_sum");
+  requireProof(Array.isArray(profile.sources) && profile.sources.length === 3, "cost_profile_sources");
+  for (const group of profile.sources) {
+    requireProof(Array.isArray(group) && group.length === 2, "cost_profile_source_pair");
+    for (const [offset, source] of group.entries()) requireProof(
+      exactKeys(source, ["run_id", "os", "shard", "execution_checkout", "collection_count", "collection_sha256",
+        "junit_sha256", "exit_code", "all_selected_terminal"]) &&
+      typeof source.run_id === "string" && /^[0-9]+$/u.test(source.run_id) && source.os === "Windows" &&
+      source.shard === offset + 1 && Number.isSafeInteger(source.collection_count) && source.collection_count > 0 &&
+      typeof source.execution_checkout === "string" && /^[0-9a-f]{40}$/u.test(source.execution_checkout) && typeof source.collection_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.collection_sha256) &&
+      typeof source.junit_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.junit_sha256) && [0, 1].includes(source.exit_code) &&
+      source.all_selected_terminal === true, "cost_profile_source_identity");
+    requireProof(group[0].run_id === group[1].run_id, "cost_profile_source_run");
+  }
+  return profile;
+}
+
+export function readCostProfile(root = defaultRoot) {
+  const file = path.join(root, profilePath), stat = fs.lstatSync(file);
+  requireProof(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 1_000_000, "cost_profile_file");
+  const bytes = fs.readFileSync(file);
+  return {profile: validatedCostProfile(JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes))),
+    sha256: hash(bytes)};
+}
+
+export function selectedNodeids(collection, index, profile) {
+  requireProof([1, 2].includes(index), "selection_index");
+  validatedCostProfile(profile);
+  const costs = new Map(Object.entries(profile.file_cost_ms));
+  const files = [...new Set(collection.map(item => item.file))];
+  const weight = file => costs.get(file) ?? profile.unknown_file_ms;
+  requireProof(Number.isSafeInteger(files.reduce((sum, file) => sum + weight(file), 0)), "selection_sum");
+  files.sort((left, right) => weight(right) - weight(left) || Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  const bins = [new Set(), new Set()], loads = [0, 0];
+  for (const file of files) {
+    const target = loads[0] <= loads[1] ? 0 : 1;
+    bins[target].add(file); loads[target] += weight(file);
+  }
+  return sort(collection.filter(item => bins[index - 1].has(item.file)).map(item => item.nodeid));
+}
+
 export function currentShardIdentity(root, environment) {
   const git = (...args) => execFileSync("git", args, {cwd: root, encoding: "utf8"}).trim();
   const source = {head: git("rev-parse", "HEAD"), tree: git("rev-parse", "HEAD^{tree}"),
     workflow: git("rev-parse", "HEAD:.github/workflows/ci.yml"),
     selector: git("rev-parse", "HEAD:python/tools/pytest_shard.py"),
+    cost_profile: git("rev-parse", `HEAD:${profilePath}`),
+    cost_profile_sha256: readCostProfile(root).sha256, routing_algorithm: algorithm,
     dirty: git("status", "--porcelain", "--untracked-files=normal").length > 0};
   requireProof(!source.dirty && source.head === environment.GITHUB_SHA, "aggregate_source");
   return {source, repository: environment.GITHUB_REPOSITORY, run_id: environment.GITHUB_RUN_ID,
@@ -92,7 +154,11 @@ function verifyWorkspace(report, expected, os, index) {
   }
 }
 
-export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windows"]} = {}) {
+export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windows"], profileRoot = defaultRoot} = {}) {
+  const cost = readCostProfile(profileRoot);
+  requireProof(expected.source?.cost_profile_sha256 === cost.sha256 &&
+    /^[0-9a-f]{40}$/u.test(expected.source?.cost_profile ?? "") &&
+    expected.source?.routing_algorithm === algorithm, "cost_profile_identity");
   requireProof(["full", "python"].includes(expected.scope) && /^[\w.-]+\/[\w.-]+$/.test(expected.repository ?? "") &&
     /^[1-9][0-9]*$/.test(expected.run_id ?? "") && /^[1-9][0-9]*$/.test(expected.run_attempt ?? ""), "expected_run");
   const names = oses.flatMap(os => [1, 2].map(index => `pytest-${os}-shard-${index}-${expected.run_attempt}`));
@@ -107,7 +173,7 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     const run = {repository: expected.repository, run_id: expected.run_id, run_attempt: expected.run_attempt,
       job: os === "Linux" ? "linux-portability" : os === "Windows" ? "windows-portability" : "fixture",
       os, scope: expected.scope};
-    requireProof(report.schema === "spireagent/pytest-shard-1" && equal(report.run, run) &&
+    requireProof(report.schema === "spireagent/pytest-shard-2" && equal(report.run, run) &&
       equal(report.shard, {index, count: 2}) && equal(report.source_at_start, expected.source) &&
       equal(report.source_at_end, expected.source) && report.state === "completed" &&
       Array.isArray(report.errors) && report.errors.length === 0 &&
@@ -121,9 +187,7 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     const collection = verifiedCollection(report);
     if (collections.has(os)) requireProof(equal(collection, collections.get(os)), "same_os_collection_changed");
     else collections.set(os, collection);
-    const files = sort([...new Set(collection.map(item => item.file))]);
-    const selectedFiles = new Set(files.filter((_, rank) => rank % 2 === index - 1));
-    const selected = sort(collection.filter(item => selectedFiles.has(item.file)).map(item => item.nodeid));
+    const selected = selectedNodeids(collection, index, cost.profile);
     requireProof(selected.length > 0, "empty_selection");
     idsMatch(report.selected_nodeids, selected, "deterministic_selection");
     const counts = verifyExecuted(report, selected);
@@ -138,5 +202,6 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
       collection_sha256: report.collection_sha256, selected: selected.length, ...counts});
   }
   for (const os of oses) idsMatch(selections.get(os), collections.get(os).map(item => item.nodeid), "exhaustive_union");
-  return {schema: "spireagent/pytest-coverage-1", complete: true, shards_per_os: 2, leaves: proofs};
+  return {schema: "spireagent/pytest-coverage-2", complete: true, shards_per_os: 2,
+    routing: {algorithm, cost_profile: expected.source.cost_profile, sha256: cost.sha256}, leaves: proofs};
 }
