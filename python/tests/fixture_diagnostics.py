@@ -95,7 +95,8 @@ class FixtureDiagnostics:
             return str(path)
         except (OSError, TypeError, ValueError) as error:
             # Exception type only: an arbitrary exception message can carry data.
-            with suppress(OSError):
+            # A closed/captured stdout raises ValueError rather than OSError.
+            with suppress(OSError, ValueError):
                 print(f"fixture_diagnostic_write_failed={type(error).__name__}", flush=True)
             return "diagnostic_unavailable"
 

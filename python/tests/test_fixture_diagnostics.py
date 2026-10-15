@@ -1,8 +1,10 @@
 """Failure diagnostics remain useful without changing the observed failure."""
 from __future__ import annotations
 
+import io
 import json
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -50,6 +52,22 @@ def test_diagnostic_write_error_does_not_replace_original_failure(tmp_path):
     blocked.write_text("occupied", encoding="utf-8")
     diagnostic = FixtureDiagnostics("unwritable", root=blocked)
     assert diagnostic.record("original-error", error_code="original") == "diagnostic_unavailable"
+
+
+def test_unwritable_diagnostic_and_closed_stdout_keep_original_assertion(tmp_path, monkeypatch):
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("occupied", encoding="utf-8")
+    diagnostic = FixtureDiagnostics("closed-stdout", root=blocked)
+    closed_stdout = io.StringIO()
+    closed_stdout.close()
+    original = AssertionError("original fixture assertion")
+    with pytest.raises(AssertionError) as caught, monkeypatch.context() as context:
+        context.setattr(sys, "stdout", closed_stdout)
+        try:
+            raise original
+        finally:
+            diagnostic.record("original-error", error_code="original")
+    assert caught.value is original
 
 
 def test_attempt_log_requires_exact_binding_and_keeps_original_bounded_bytes(tmp_path):
