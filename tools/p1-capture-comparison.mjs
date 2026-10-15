@@ -12,6 +12,7 @@ function aliasPolicy(observation) {
     "$.native_basis.interaction.content.context.player.hand[].entity_id",
     "$.native_basis.interaction.content.context.player.companions[].entity_id",
     "$.native_basis.interaction.content.context.player.potion_states[].entity_id",
+    "$.native_basis.interaction.content.context.player.orbs[].entity_id",
     "$.native_basis.interaction.content.context.enemies[].entity_id",
     "$.native_basis.interaction.content.surface.room_entity_id",
     ...["playable_cards", "usable_potions"].flatMap(collection => [
@@ -20,6 +21,7 @@ function aliasPolicy(observation) {
     "$.native_basis.persistent.content.player.entity_id",
     "$.native_basis.persistent.content.player.relics[].entity_id",
     "$.native_basis.persistent.content.player.potions[].entity_id",
+    "$.native_basis.persistent.content.player.potions[].card_previews[].entity_id",
     "$.native_basis.persistent.content.player.relics[].card_previews[].entity_id",
     "$.native_basis.persistent.content.run.modifiers[].card_previews[].entity_id",
     "$.native_basis.referents[].referent_id",
@@ -33,10 +35,10 @@ function aliasPolicy(observation) {
   ]);
   const propertyPaths = new Map(Object.entries({
     card: [".entity_id"], hand: [".entity_id"], enemy: [".entity_id"], companion: [".entity_id"],
-    potion_state: [".entity_id"], potion: [".entity_id"],
+    potion_state: [".entity_id"], orb: [".entity_id"], potion: [".entity_id"],
     playable_card: [".entity_id", ".target_entity_ids[]"], usable_potion: [".entity_id", ".target_entity_ids[]"],
     relic: [".entity_id", ".card_previews[].entity_id"],
-    player: [".player_entity_id", ".hand[].entity_id", ".companions[].entity_id", ".potion_states[].entity_id"]
+    player: [".player_entity_id", ".hand[].entity_id", ".companions[].entity_id", ".potion_states[].entity_id", ".orbs[].entity_id"]
   }).map(([role, paths]) => [`sts2.player-environment/referent/${role}-1`, paths]));
   return (key, path) => {
     const normalized = path.replace(/\[\d+\]/gu, "[]");

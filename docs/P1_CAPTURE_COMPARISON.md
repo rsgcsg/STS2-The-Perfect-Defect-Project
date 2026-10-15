@@ -96,7 +96,10 @@ Read-instance, legacy Read, action, interaction and Snapshot aliases have their
 own bijections. Repeated IDs cannot split; distinct IDs cannot collapse.
 Definition IDs, labels, descriptions and unknown extension locations remain literal,
 even when a field in an extension is named `entity_id`.
-No text substitution or kind/definition deduplication occurs.
+No text substitution or kind/definition deduplication occurs. Known ordinary
+combat paths include orb identities in the current player, `orb-1` properties
+and nested `player-1` properties, plus owned-potion card previews in persistent
+state. Orb values/queue positions and preview content remain semantic values.
 
 Read instances and coverage are keyed collections, including each occurrence and
 its parent and all coverage links. Every other sequence retains its declared

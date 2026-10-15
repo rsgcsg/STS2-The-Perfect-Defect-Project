@@ -183,3 +183,71 @@ test("unknown extensions cannot acquire collection semantics through familiar fi
     assert.equal((await compare(left, right)).verdict, "c1_scope_mismatch");
   }
 });
+
+// Source shapes: VisibleCombatPlayer/VisibleOrb and VisibleOwnedPotion in
+// LiveHostContracts.cs; these are native-visible identities, not extensions.
+function ordinaryOrbScope() {
+  const packet = completeSyntheticScope();
+  const orb = { entity_id: "orb-a", definition_id: "LIGHTNING", name: "Lightning", description: "Deal damage.",
+    passive_value: 3, evoke_value: 8, queue_index: 0, is_next_to_evoke: true };
+  const player = packet.native_basis.interaction.content.context.player;
+  player.player_entity_id = "player"; player.orbs = [orb]; player.orb_slots = 3;
+  packet.native_basis.referents.push({ referent_id: orb.entity_id, role: "orb", kind: "entity", label: "Lightning",
+    state: { visible: true, observation_basis: "native_visible_fact" },
+    properties_schema: "sts2.player-environment/referent/orb-1", properties: structuredClone(orb) });
+  packet.native_basis.referents.push({ referent_id: player.player_entity_id, role: "player", kind: "entity", label: "Defect",
+    state: { visible: true, observation_basis: "native_visible_fact" },
+    properties_schema: "sts2.player-environment/referent/player-1", properties: structuredClone(player) });
+  return packet;
+}
+test("ordinary Defect orb and player property aliases match through actual CLI", () => {
+  const left = ordinaryOrbScope(); const right = renamed(left);
+  // This field is explicitly named by VisibleCombatPlayer, separate from entity_id.
+  right.native_basis.interaction.content.context.player.player_entity_id = right.native_basis.persistent.content.player.entity_id;
+  right.native_basis.referents.at(-1).properties.player_entity_id = right.native_basis.persistent.content.player.entity_id;
+  const result = cli(inputs(left, right)); assert.equal(result.code, 0); assert.equal(result.result.verdict, "c1_scope_match");
+});
+test("ordinary orb referent cannot split from its context/property entity through actual CLI", () => {
+  const left = ordinaryOrbScope(); const right = structuredClone(left);
+  right.native_basis.referents.find(ref => ref.role === "orb").referent_id = "orb-split";
+  const result = cli(inputs(left, right)); assert.equal(result.code, 10); assert.equal(result.result.verdict, "c1_scope_mismatch");
+});
+test("owned potion preview card aliases match through actual CLI", () => {
+  const left = completeSyntheticScope();
+  left.native_basis.persistent.content.player.potions = [{ entity_id: "potion-a", definition_id: "COLORLESS_POTION",
+    name: "Colorless Potion", description: "Choose a card.", slot: 0, keywords: [],
+    card_previews: [{ ...left.reads[0].content.cards[0], entity_id: "potion-preview-a" }] }];
+  const result = cli(inputs(left, renamed(left))); assert.equal(result.code, 0); assert.equal(result.result.verdict, "c1_scope_match");
+});
+
+test("orb semantic values and known nested alias relations remain compared through CLI", () => {
+  for (const mutate of [packet => { packet.native_basis.interaction.content.context.player.orbs[0].passive_value = 99; },
+    packet => { packet.native_basis.referents.find(ref => ref.role === "player").properties.orbs[0].entity_id = "orb-split"; }]) {
+    const left = ordinaryOrbScope(); const right = structuredClone(left); mutate(right);
+    const result = cli(inputs(left, right)); assert.equal(result.code, 10); assert.equal(result.result.verdict, "c1_scope_mismatch");
+  }
+});
+test("orb-looking unknown extensions and unknown referent schemas remain literal", () => {
+  for (const location of ["extension", "recognized-properties-extension", "unknown-schema"]) {
+    const left = ordinaryOrbScope(); const right = structuredClone(left);
+    if (location === "extension") {
+      left.native_basis.interaction.content.context.player.orbs[0].extension = { entity_id: "opaque-left" };
+      right.native_basis.interaction.content.context.player.orbs[0].extension = { entity_id: "opaque-right" };
+    } else if (location === "recognized-properties-extension") {
+      left.native_basis.referents.find(ref => ref.role === "orb").properties.extension = { entity_id: "opaque-left" };
+      right.native_basis.referents.find(ref => ref.role === "orb").properties.extension = { entity_id: "opaque-right" };
+    } else {
+      for (const packet of [left, right]) packet.native_basis.referents.find(ref => ref.role === "orb").properties_schema = "sts2.player-environment/referent/unknown_orb-1";
+      right.native_basis.referents.find(ref => ref.role === "orb").properties.entity_id = "opaque-right";
+    }
+    assert.equal(cli(inputs(left, right)).result.verdict, "c1_scope_mismatch");
+  }
+});
+test("owned potion preview cannot lose a shared public card alias relation through CLI", () => {
+  const left = completeSyntheticScope();
+  left.native_basis.persistent.content.player.potions = [{ entity_id: "potion-a", definition_id: "COLORLESS_POTION",
+    name: "Colorless Potion", description: "Choose a card.", slot: 0, keywords: [],
+    card_previews: [structuredClone(left.reads[0].content.cards[0])] }];
+  const right = structuredClone(left); right.native_basis.persistent.content.player.potions[0].card_previews[0].entity_id = "preview-split";
+  const result = cli(inputs(left, right)); assert.equal(result.code, 10); assert.equal(result.result.verdict, "c1_scope_mismatch");
+});
