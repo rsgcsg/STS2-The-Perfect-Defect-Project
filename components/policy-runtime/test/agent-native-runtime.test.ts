@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { nativeRuntimeFixture } from "./native-runtime-fixtures.js";
 import { NdjsonAgentSessionPort } from "../src/agent-session-port.js";
 import { CHILD } from "./native-runtime-fixtures.js";
+import { fixtureProgress } from "./fixture-progress.js";
 
 function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 async function eventually(condition: () => boolean | Promise<boolean>, timeout = 1000): Promise<void> {
@@ -113,16 +114,18 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
     } finally { await f.close(); }
   });
   it.each(["terminal", "future_publication_kind"])("consumes every %s source view once, including observed empty C, without inferring Close", async kind => {
-    const f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "shadow" }); sourceKind(f, kind);
+    const progress = fixtureProgress(`native-source-view-${kind}`, true, undefined, true);
+    let f: Awaited<ReturnType<typeof nativeRuntimeFixture>> | undefined;
     try {
-      expect((await f.runtime.tick()).type).toBe("awaited");
-      expect((await f.runtime.tick()).type).toBe("awaited");
+      f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "shadow", progress }); sourceKind(f, kind);
+      expect((await f.observe("tick-1", () => f!.runtime.tick())).type).toBe("awaited");
+      expect((await f.observe("tick-2", () => f!.runtime.tick())).type).toBe("awaited");
       expect(f.runtime.status()).toMatchObject({ lifecycle: "running", controller: "released", session: { state_version: 1,
         prefix: { consumed_publication_index: "1", omissions: { received_unconsumed_count: 0, gap: null } } } });
-      expect((await f.events()).filter(e => e.kind === "agent_consumed")).toHaveLength(1);
+      expect((await f.observe("events-read", f.events)).filter(e => e.kind === "agent_consumed")).toHaveLength(1);
       expect(f.source.requests.filter(r => /\/(current|actions)$/.test(r.path))).toHaveLength(0);
-      await archive(f, `${kind}-captured`);
-    } finally { await f.close(); }
+      await f.observe("archive", () => archive(f!, `${kind}-captured`));
+    } finally { try { await f?.close(); } finally { await progress.flush(); } }
   });
   it.each(["missing", "payload_expired"])("records the original terminal %s view as a gap without Current substitution", async availability => {
     const f = await nativeRuntimeFixture({ count: 0, status: "observed", mode: "auto" }); sourceKind(f, "terminal", availability);

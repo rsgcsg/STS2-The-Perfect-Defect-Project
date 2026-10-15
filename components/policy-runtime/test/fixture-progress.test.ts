@@ -44,6 +44,21 @@ describe("best-effort fixture progress", () => {
     ]);
   });
 
+  it("keeps bounded failure-only snapshots silent until failure and publishes them once", async () => {
+    const progress = fixtureProgress("failure-only", true, undefined, true);
+    for (let i = 0; i < 1030; i++) progress("bounded", { iteration: i });
+    await progress.flush();
+    expect(console.info).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled(); expect(writeFile).not.toHaveBeenCalled();
+    await progress.flush(true);
+    const entries = vi.mocked(console.info).mock.calls.map(([line]) => JSON.parse(line));
+    expect(entries).toHaveLength(1025); // 1024 snapshots and one bounded flush summary.
+    expect(entries.at(-1)).toMatchObject({ entry_limit_reached: 1, observer_pending_writes: 0 });
+    expect(writeFile).toHaveBeenCalledTimes(1024);
+    await progress.flush(true);
+    expect(writeFile).toHaveBeenCalledTimes(1024);
+  });
+
   it("keeps original success and failure when diagnostic filesystem and logging fail", async () => {
     vi.mocked(mkdir).mockRejectedValue(new Error("observer directory unavailable"));
     vi.mocked(console.info).mockImplementation(() => { throw new Error("observer stdout unavailable"); });
