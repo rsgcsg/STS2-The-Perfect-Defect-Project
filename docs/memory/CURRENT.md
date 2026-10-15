@@ -24,13 +24,22 @@ Keep raw sources and useful readers/ports; do not rename old models/results P1.
 
 - PR180 test fixture optimization normally merged as develop 02636a94, exact
   reviewed head 58d28fa9, same tree as its successful selected dual-OS gate.
-- P1 contract/Host-wire and native reward-lowering review are being assembled.
-- Two independent writers: Managed public projection fairness; CI failure-stage
-  diagnostics/root cause. New behavior is not installed by source edits.
-- Existing Managed smoke: 8 natural losses/12 interface censors/0 unknown from
-  20 planned episodes; no new P1 qualification or reliable long-run throughput.
-- Existing native runs/loops and cleanup failures retain exact historical scope;
-  new fixed-combination ref-20 has not been completed.
+- P1 contract/Host-wire and native reward rules have bounded independent review.
+  Ordinary-combat C1 capture freezes, retains and validates required detail instances;
+  it remains agent_admissible=false, with no complete P1 or Source3 claim.
+- One integration topic combines reviewed C1/P1, Managed fair projection/AnyPlayer/
+  bounded choose-card and combat-pile selectors, D-min evaluation, Reference suite,
+  cancellation-fixture repair and CI stage/auth diagnostics plus cost-based sharding.
+  Component source parents use normal merges; new-tree gates are still required.
+- AnyPlayer candidate smoke-20:15 natural losses/5 selector censors/0 unknown,
+  all20 normal closes,7 real AnyPlayer uses. The new selector source has not yet
+  inherited those runtime results; deck-enchantment and incomplete rich text reject.
+- Reference rc34/d6 short canary:16 known deliveries, submission-limit censor,
+  Stop/seal/owned-process cleanup confirmed. Native errors remain; no natural
+  terminal/ref-20/P1/Human qualification follows. The installed Mod is unchanged.
+- PR183 full passed; PR184 transport failures, PR185 cancellation assertion/cap,
+  and PR186 stopped-suite failure remain archived at their original identities.
+  Diagnostics and a future green run do not by themselves close old root causes.
 - J-min original CUDA raw numerical qualification failed; ordinary remote
   TrainingService loop remains incomplete. Configuration may be proposed first,
   with J qualification as a launch condition, avoiding circular dependencies.
