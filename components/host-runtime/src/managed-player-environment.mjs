@@ -1425,11 +1425,14 @@ function currentSurface(state, ctx) {
       const targetEntriesForPotion = (potion) => potion.target_type === "AnyPlayer"
         ? [{ raw: state.player, referent: playerReferent }]
         : enemyEntries;
+      const targetRefsForPotion = (potion) => potion.target_type === "AnyPlayer"
+        ? (Array.isArray(potion.valid_target_refs) ? potion.valid_target_refs : [])
+        : (potion.valid_target_refs ?? []);
       const targetIdsForPotion = (potion) => {
         const byNative = new Map(targetEntriesForPotion(potion).map((entry) => [
           entry.raw.native_ref, entry.referent.referent_id
         ]));
-        return (Array.isArray(potion.valid_target_refs) ? potion.valid_target_refs : [])
+        return targetRefsForPotion(potion)
           .map((nativeRef) => byNative.get(nativeRef)).filter(Boolean);
       };
 
@@ -1449,7 +1452,7 @@ function currentSurface(state, ctx) {
         });
         if (potion.can_use === true && potion.binding_supported === true) {
           if (potion.target_type === "AnyEnemy" || potion.target_type === "AnyPlayer") {
-            const validTargets = new Set(Array.isArray(potion.valid_target_refs) ? potion.valid_target_refs : []);
+            const validTargets = new Set(targetRefsForPotion(potion));
             for (const { raw: candidate, referent: target } of targetEntriesForPotion(potion)) {
               if (!validTargets.has(candidate.native_ref)) continue;
               ctx.action({

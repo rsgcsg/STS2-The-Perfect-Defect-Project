@@ -96,6 +96,15 @@ test("identical held AnyPlayer potions retain distinct complete use and discard 
   assert.equal(projection.snapshot.persistent.content.player.potions.length, 2);
 });
 
+test("AnyPlayer admission does not normalize malformed target facts for other potion families", () => {
+  for (const canUse of [true, false]) {
+    for (const refs of [42, {}, "native-301"]) {
+      assert.throws(() => projectManagedCandidateDecision({ state: withPotion({
+        target_type: "AnyEnemy", can_use: canUse, valid_target_refs: refs }), ...identity }), TypeError);
+    }
+  }
+});
+
 test("AnyPlayer dispatches the bound player once, retains stale refusal and leaves generated choices pending", async () => {
   const before = withPotion({ id: "COLORLESS_POTION", name: "Colorless Potion" });
   // Synthetic exact callback shape: Colorless uses GetSelectedCards(cards, 0, 1),
