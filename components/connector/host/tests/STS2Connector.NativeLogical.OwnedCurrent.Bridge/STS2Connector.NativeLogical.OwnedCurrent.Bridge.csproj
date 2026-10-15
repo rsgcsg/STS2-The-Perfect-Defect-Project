@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
+    <!-- Both fixture consumers launch dotnet with the DLL, never a native launcher. -->
+    <UseAppHost>false</UseAppHost>
     <IsTestProject>false</IsTestProject>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>

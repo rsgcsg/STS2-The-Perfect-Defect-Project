@@ -55,6 +55,17 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
 });
 
+test("CI keeps the bounded Windows capacity adjustment separate from Linux's existing budget", () => {
+  for (const minutes of [55, 60, 90, 750]) {
+    const source = currentSource().replace("timeout-minutes: 75", `timeout-minutes: ${minutes}`);
+    assert.ok(ciWorkflowErrors(source).includes("Windows must retain its 75-minute budget"));
+  }
+  for (const minutes of [75, 550]) {
+    const source = currentSource().replace("timeout-minutes: 55", `timeout-minutes: ${minutes}`);
+    assert.ok(ciWorkflowErrors(source).includes("Linux must retain its 55-minute budget"));
+  }
+});
+
 test("aggregate implementation verifies original coverage before minting a fresh receipt", () => {
   const source = fs.readFileSync(new URL("./check-plan.mjs", import.meta.url), "utf8");
   assert.ok(source.includes("currentShardIdentity(root, e)"));

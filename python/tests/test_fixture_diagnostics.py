@@ -187,10 +187,19 @@ def test_diagnostic_write_error_does_not_replace_original_failure(tmp_path):
 
 
 @pytest.mark.parametrize("release_after_deadline", [False, True])
+@pytest.mark.parametrize("coarse_monotonic", [False, True], ids=["native-clock", "coarse-clock"])
 def test_product_join_failure_stays_failed_when_diagnostics_observe_late_completion(
-    tmp_path, monkeypatch, release_after_deadline,
+    tmp_path, monkeypatch, release_after_deadline, coarse_monotonic,
 ):
     import test_native_agent_product_data as owner
+
+    if coarse_monotonic:
+        # A real blocked join may finish within one Windows monotonic-clock tick.
+        # Keep the actual thread/joins and high-resolution clock; only make the
+        # helper's coarse clock return an unchanged sample across both waits.
+        monkeypatch.setattr(owner, "time", SimpleNamespace(
+            monotonic=lambda: 1000.0, perf_counter=owner.time.perf_counter,
+        ))
 
     entered, release = threading.Event(), threading.Event()
     operation = {"status": "pending"}
@@ -227,6 +236,8 @@ def test_product_join_failure_stays_failed_when_diagnostics_observe_late_complet
         assert tail["thread"]["alive"] is (not release_after_deadline)
         assert tail["operation"]["status"] == (
             "completed" if release_after_deadline else "pending")
+        if not release_after_deadline:
+            assert tail["diagnostic_join_elapsed_seconds"] > 0
     finally:
         release.set()
         thread.join(timeout=2)
