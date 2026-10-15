@@ -343,7 +343,13 @@ that full or Python inventory and both OS requirements; it does not waive them.
 ### Hosted pytest partition and complete execution proof
 
 Full and Python scopes use two isolated runner leaves per OS, with matrix
-`fail-fast: false` and the existing 55-minute limit per leaf. Each leaf repeats
+`fail-fast: false` and finite per-leaf job limits: Linux55 minutes, Windows75.
+Windows95d evidence recorded a50.37-minute pytest command before the remaining
+required checks and an official55-minute job cancellation. The capacity increase
+keeps all four leaves, case/owner inventories and same-run receipt requirements.
+It does not change any fixture/product deadline or turn a failed setup into a pass;
+two Windows leaves have at most40 additional runner-minutes per run. Actual cost
+and speed remain measured outcomes, not a guarantee. Each leaf repeats
 its selected repository guards, fresh SDK/Runtime build, full S0 checks, Python
 nonpytest commands and component-owner inventory. Only the top-level Python
 pytest invocation is partitioned. Local `npm run check` and Python `check`

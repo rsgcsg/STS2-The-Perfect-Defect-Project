@@ -22,14 +22,18 @@ and consumer execution before the bounded battle batches.
 
 ## Verified starting facts and open work
 
-- PR180 merged normally into develop02636a94. PR187/405ba001 passed its own full
-  dual-OS gate38724470159; it remains a candidate until reviewed integration.
+- develop02636a94 contains PR180. PR187/95d031d3 remains unmerged: its full
+  gate38788081212 had four shared Bridge-build setup errors, then Windows2 hit
+  the55-minute job cap. Required downstream gates did not finish; no receipt exists.
 - C1 repair8c847f88 and startup-observation ordering passed non-author review.
   Gates3831/38766308324 and1e60/38776381573 failed. The latter stopped one Python
   attack before injection on scratch inventory and timed out two Runtime tests.
   Reviewed diagnostics now retain original scan causes and in-flight operations;
   checks/deadlines are unchanged. These and the earlier publish delay remain
   unresolved; a fresh selected gate and explicit disposition precede integration.
+  The next candidate removes unused fixture apphost work and uses a high-resolution
+  join diagnostic clock, while preserving deadlines. Windows job capacity is75min,
+  Linux55; full inventory/receipt still required. Bridge physical cause is unknown.
   C1 stays agent_admissible=false, without complete P1 or native qualification.
 - Historical Managed43417/3 and separate49e Seeker target retain their identities.
   Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.
