@@ -1,36 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodePlayerSnapshot, nativeCardSelectionProblems } from "@rsgcsg/sts2-connector-client";
-import { combatState, renamePrivateCounters } from "./fixtures/managed-fair-combat.mjs";
+import { decodePlayerSnapshot as decodeBaseSnapshot } from "@rsgcsg/sts2-connector-client";
+import { nativeCardSelectionProblems } from "../src/native-card-selection.generated.mjs";
+import { renamePrivateCounters } from "./fixtures/managed-fair-combat.mjs";
 import { projectManagedCandidateDecision, ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
+import { selector } from "./fixtures/managed-native-selector.mjs";
 import { projectManagedTextMenuV1 } from "../src/managed-text-menu-map.mjs";
+
+// The installed public SDK validates the base wire. This Host validates its own
+// additive selector profile with the package-contained canonical artifact.
+function decodePlayerSnapshot(value) {
+  const result = decodeBaseSnapshot(value);
+  const problems = nativeCardSelectionProblems(result.data);
+  if (problems.length) throw new Error(problems.join("; "));
+  return result;
+}
 
 const identity = { runtimeInstanceId: "selector-runtime", environmentFingerprint: "selector-environment", sequence: 1 };
 // Synthetic exact producer DTO shape. Native callback capture, rendering, original
 // object revalidation and effects are separately gated by exact native fixtures.
-function selector({ choose = false, skip = false, manual = false, selected = false } = {}) {
-  const state = combatState();
-  const card = (ref, name = "Strike") => ({ native_ref: ref, id: name.toUpperCase(), name,
-    cost: "1", type: "Attack", rarity: "Basic", description: "Deal 6 damage.", target_type: "AnyEnemy",
-    is_upgraded: false, keywords: [], card_previews: [], render_complete: true,
-    is_selected: false, is_selectable: !selected, is_deselectable: false });
-  const cards = [card("native-card-a"), card("native-card-b")];
-  if (selected) Object.assign(cards[0], { is_selected: true, is_deselectable: manual });
-  return { ...state, decision: "native_card_select", selector_ref: "native-selector",
-    origin: choose ? "choose_card" : "combat_pile", stage: "choosing", prompt: "Choose a card.",
-    min_select: choose && skip ? 0 : 1, max_select: 1, selected_refs: selected ? [cards[0].native_ref] : [],
-    cancelable: false, can_skip: skip, require_manual_confirmation: manual, can_confirm: manual && selected,
-    display_pile: choose ? "none" : "discard", native_selector_complete: true, native_selector_missing: [], cards,
-    combat_context: { round: 1, turn_owner: "player", player_ref: state.player.native_ref,
-      hp: 80, max_hp: 80, block: 3, energy: 2, max_energy: 3, stars: 0,
-      draw_pile_count: 2, discard_pile_count: 2, exhaust_pile_count: 0, orb_slots: 0,
-      statuses: [], orbs: [], companions: [], enemies: [{ native_ref: "native-enemy-current", id: "MAWLER",
-        name: "Mawler", hp: 7, max_hp: 20, block: 0, health_bar_visible: true, health_display: "Normal",
-        statuses: [], intents: [] }] } };
-}
+
 function project(state) { return projectManagedCandidateDecision({ state, ...identity }); }
 
-test("choose and combat publish every original occurrence, current HUD and strict SDK/text-menu catalog", () => {
+test("choose and combat publish every original occurrence, current HUD and strict Host/text-menu catalog", () => {
   for (const state of [selector(), selector({ choose: true, skip: true }), selector({ choose: true })]) {
     const p = project(state); const s = decodePlayerSnapshot(p.snapshot).data;
     assert.equal(s.completeness.status, "complete");
@@ -77,7 +69,7 @@ test("missing exact scope, renderer, bounds, flags or HUD fences the entire cand
   }
 });
 
-test("SDK rejects removed candidate details/catalog controls and unknown-purpose complete leaves", () => {
+test("Host rejects removed candidate details/catalog controls and unknown-purpose complete leaves", () => {
   for (const mutate of [s => { s.interaction.content.surface.cards[0].description = null; },
     s => { s.interaction.content.context.combat = null; },
     s => { s.interaction.content.surface.selector_kind = "unknown"; },
@@ -129,7 +121,7 @@ test("Managed selector profile does not redefine Reference/legacy card-selection
 });
 
 
-test("marked selector SDK and menu require the whole current HUD and same persistent player", () => {
+test("marked selector Host and menu require the whole current HUD and same persistent player", () => {
   const baseline = project(selector()).snapshot;
   const hud = baseline.interaction.content.context.combat;
   hud.player.statuses = [{ definition_id: "STRENGTH", name: "Strength", amount: 1, type: "Buff", description: "Deal more damage." }];

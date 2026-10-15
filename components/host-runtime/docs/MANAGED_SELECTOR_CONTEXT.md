@@ -37,7 +37,11 @@ A complete surface declares selector_profile managed-command-selector-1,
 selector_kind choose_card/combat_pile, display_context,
 all cards and their native-admitted flags, exact selected public entity IDs,
 full bounds/control flags and current combat context. The strict SDK checks
-card/referent/selection/catalog closure. Text-menu accepts only that bounded
+card/referent/selection/catalog closure. The SDK source is the canonical validator. The Host ships its generated, self-contained
+ESM artifact, checked by the root boundary gate, without requiring an unpublished
+SDK export or a runtime sibling-source import. Regenerate with
+`node tools/generate-managed-selector-validator.mjs` after canonical changes.
+Text-menu accepts only that bounded
 complete shape; historical untyped card_selection remains unsupported.
 
 Terminal input revalidates the current selector/run/player, complete original
@@ -56,3 +60,8 @@ mechanisms, not execution of a live suspended native command or whole-game parit
 A later explicitly allocated runtime canary must verify exact hook ordering and
 native continuation. No installed, loaded, journey, Human or strategy qualification
 is transferred from the previous candidate.
+
+The frozen macOS artifact is produced by normal GitHub candidate preparation,
+including SourceLink metadata. An earlier local-remote build had identical tracked
+source and method IL but different module/debug identities; it is not the admitted
+normal-prepare artifact. Exact SHA/MVID checks remain mandatory.

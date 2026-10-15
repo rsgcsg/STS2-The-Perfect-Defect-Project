@@ -37,8 +37,8 @@
   },
   "expected_build": {
     "source_patch_sha256": "0b7ed7c8cacbd84c415904c28b549c3d36fbbb71ee3d4d8a2e2c36ac090fc3fc",
-    "artifact_sha256": "3a91c60fd4e589ac3fede640640663e301e38ed518fdb67c5e475fdce1fa035e",
-    "artifact_mvid": "7cc99314-4888-4ad2-8ecc-ad0eff1b3f67"
+    "artifact_sha256": "6a43de86a1bc95037690f34aafeaca42efbe85f4e451e7c1251af73e80f93731",
+    "artifact_mvid": "7c5b2161-d25e-462c-a49d-9f2ec6d28028"
   },
   "previous_candidate_build": {
     "source_patch_sha256": "0f649da925da74a9c7134247ccd9a142ce6e86d7438c1f1c013aeba729dcd4ae",

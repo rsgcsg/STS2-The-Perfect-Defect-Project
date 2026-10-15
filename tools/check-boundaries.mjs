@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { managedSelectorArtifactErrors } from "./generate-managed-selector-validator.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const predecessorRelease = /https:\/\/github\.com\/rsgcsg\/(?:STS2-Connector|STS2-headless|STS2-human-Annotator)(?:\/|["'])/u;
@@ -76,7 +77,7 @@ function visit(workspaceRoot, directory, errors) {
 }
 
 export function collectBoundaryErrors(workspaceRoot = root) {
-  const errors = [];
+  const errors = managedSelectorArtifactErrors(workspaceRoot);
   const rootPackage = JSON.parse(fs.readFileSync(path.join(workspaceRoot, "package.json"), "utf8"));
   const expectedWorkspaces = [
     "components/connector/sdk/typescript",

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL, nativeCardSelectionProblems } from "@rsgcsg/sts2-connector-client";
+import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
+import { nativeCardSelectionProblems } from "./native-card-selection.generated.mjs";
 
 export const MANAGED_TEXT_MENU_PROFILE = "text-menu-v1";
 export const MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1";
