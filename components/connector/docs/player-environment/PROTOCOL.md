@@ -434,7 +434,9 @@ For this marked complete surface, every current HUD scalar and nested public
 status/orb/companion/enemy/intent fact is required; the HUD player entity must
 match the current persistent player. Enemy and companion HP numbers are finite
 only when native health visibility and display mode permit them, otherwise both
-HP fields are explicitly null. Unavailable marked diagnostics remain readable.
+HP fields are explicitly null. Intent `label` is required but may be the native
+empty display string; intent type, hover title and description must still be
+complete. A missing/null label is not an empty label. Unavailable marked diagnostics remain readable.
 Incomplete historical or unknown-purpose selectors
 remain readable without actions. This additive bounded mapping is not full P1
 or C1 admission. Host Runtime's `docs/MANAGED_SELECTOR_CONTEXT.md`
