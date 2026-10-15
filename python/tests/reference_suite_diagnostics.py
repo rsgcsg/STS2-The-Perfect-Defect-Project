@@ -170,6 +170,21 @@ def _evaluation(value: Any) -> dict[str, Any]:
     return result
 
 
+def _actor_binding_observations(value: Any) -> dict[str, Any]:
+    obj = value if isinstance(value, dict) else {}
+    resource = obj.get("native_resource")
+    state = obj.get("application_status")
+    actor = resource.get("actor") if isinstance(resource, dict) else None
+    startup = state.get("startup") if isinstance(state, dict) else None
+    return {
+        "read_order": _field(value, "read_order"),
+        "resource_identity": _identity(resource),
+        "resource_phase": _field(resource, "phase"),
+        "resource_actor_run": _field(actor, "run_id", identity=True),
+        "application_run": _field(startup, "run_id", identity=True),
+    }
+
+
 def report_diagnostic(report: Any, root: Path) -> str:
     """No raw config, headers, World, snapshots, stderr, or exception messages."""
     rows = report.get("episodes") if isinstance(report, dict) else None
@@ -267,6 +282,7 @@ def report_diagnostic(report: Any, root: Path) -> str:
             ("original_request", _request),
             ("finish", _finish),
             ("evaluation", _evaluation),
+            ("actor_binding_observations", _actor_binding_observations),
         ):
             facts, original = _original(root, obj.get(name))
             entry["originals"][name] = {

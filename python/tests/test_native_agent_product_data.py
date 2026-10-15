@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 
 import pytest
 from fixture_diagnostics import FixtureDiagnostics, operation_snapshot, thread_snapshot
@@ -32,14 +33,31 @@ def setup(tmp_path):
             LocalDatasetService(config), store, owner)
 
 
-def settled(service):
+def settled(service, *, join_timeout=10, diagnostic_timeout=20):
     assert service.thread is not None
     diagnostic = FixtureDiagnostics("native-agent-product-data")
     diagnostic.record("join-started", operation=operation_snapshot(service.operation))
-    service.thread.join(timeout=10)
+    started = time.monotonic()
+    service.thread.join(timeout=join_timeout)
+    join_elapsed = time.monotonic() - started
+    alive_at_join = service.thread.is_alive()
     detail = diagnostic.record("join-ended", thread=thread_snapshot(service.thread),
+                               alive_at_join=alive_at_join,
+                               join_timeout_seconds=join_timeout,
+                               join_elapsed_seconds=join_elapsed,
                                operation=operation_snapshot(service.operation))
-    assert not service.thread.is_alive(), detail
+    if alive_at_join:
+        # Keep the original failed deadline. This bounded observation neither
+        # retries the operation nor accepts a worker that completed too late.
+        diagnostic_started = time.monotonic()
+        service.thread.join(timeout=diagnostic_timeout)
+        diagnostic_elapsed = time.monotonic() - diagnostic_started
+        diagnostic.record("after-failed-join", thread=thread_snapshot(service.thread),
+                          diagnostic_timeout_seconds=diagnostic_timeout,
+                          diagnostic_join_elapsed_seconds=diagnostic_elapsed,
+                          original_join_failed=True,
+                          operation=operation_snapshot(service.operation))
+    assert not alive_at_join, detail
     result = service.status()
     return result.get("operation", result)
 

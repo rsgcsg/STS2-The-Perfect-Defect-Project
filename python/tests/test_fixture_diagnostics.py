@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fixture_diagnostics import (
@@ -52,6 +53,53 @@ def test_diagnostic_write_error_does_not_replace_original_failure(tmp_path):
     blocked.write_text("occupied", encoding="utf-8")
     diagnostic = FixtureDiagnostics("unwritable", root=blocked)
     assert diagnostic.record("original-error", error_code="original") == "diagnostic_unavailable"
+
+
+@pytest.mark.parametrize("release_after_deadline", [False, True])
+def test_product_join_failure_stays_failed_when_diagnostics_observe_late_completion(
+    tmp_path, monkeypatch, release_after_deadline,
+):
+    import test_native_agent_product_data as owner
+
+    entered, release = threading.Event(), threading.Event()
+    operation = {"status": "pending"}
+
+    def worker():
+        entered.set()
+        release.wait()
+        operation["status"] = "completed"
+
+    class RetainedDiagnostic(FixtureDiagnostics):
+        def __init__(self, name):
+            super().__init__(name, root=tmp_path)
+
+        def record(self, phase, **details):
+            path = super().record(phase, **details)
+            if phase == "join-ended" and release_after_deadline:
+                release.set()
+            return path
+
+    monkeypatch.setattr(owner, "FixtureDiagnostics", RetainedDiagnostic)
+    thread = threading.Thread(target=worker)
+    service = SimpleNamespace(thread=thread, operation=operation)
+    thread.start()
+    try:
+        assert entered.wait(timeout=2)
+        with pytest.raises(AssertionError):
+            owner.settled(service, join_timeout=0.01, diagnostic_timeout=0.05)
+        first = json.loads(next(tmp_path.glob("*/002-join-ended.json")).read_text())
+        tail = json.loads(next(tmp_path.glob("*/003-after-failed-join.json")).read_text())
+        assert first["alive_at_join"] is True
+        assert first["join_timeout_seconds"] == 0.01
+        assert first["join_elapsed_seconds"] >= 0.01
+        assert tail["original_join_failed"] is True
+        assert tail["thread"]["alive"] is (not release_after_deadline)
+        assert tail["operation"]["status"] == (
+            "completed" if release_after_deadline else "pending")
+    finally:
+        release.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive()
 
 
 def test_unwritable_diagnostic_and_closed_stdout_keep_original_assertion(tmp_path, monkeypatch):
