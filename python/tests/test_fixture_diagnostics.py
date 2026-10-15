@@ -14,8 +14,72 @@ from fixture_diagnostics import (
     FixtureDiagnostics,
     failure_snapshot,
     operation_snapshot,
+    scoped_failure_snapshot,
     thread_snapshot,
 )
+
+
+def test_scoped_original_failure_projection_excludes_unknown_values_and_private_fields():
+    private = "DO-NOT-PUBLISH-PRIVATE-CONTENT"
+    value = {
+        "replaced": False, "injection_stage": "not_seen", "status": "interrupted_unknown",
+        "error_code": "scratch_inventory_invalid", "stderr": private, "path": private,
+        "parent_failure": {
+            "stage": "preparing_run", "exception_type": "spireagent.json_boundary.BoundaryError",
+            "message": private, "origin": {"file": "training_scratch.py",
+                                            "function": "retained_scratch_bytes", "line": 7,
+                                            "locals": private},
+            "scratch_inventory": {"scan_phase": "scandir_open", "reason": "os_error",
+                                  "active_attempt": True, "attempt_scope": "current",
+                                  "entry_scope": "descendant", "file_type": "directory",
+                                  "entries": 2, "queued": 0, "path": private},
+            "causes": [{"link": "cause", "exception_type": "builtins.PermissionError",
+                        "errno": 13, "winerror": 5, "filename": private, "message": private}],
+        },
+    }
+    observed = scoped_failure_snapshot(value)
+    assert observed["replaced"] is False and observed["injection_stage"] == "not_seen"
+    assert observed["parent_failure"]["scratch_inventory"]["attempt_scope"] == "current"
+    assert observed["parent_failure"]["causes"][0]["winerror"] == 5
+    assert private not in json.dumps(observed)
+    value["injection_stage"] = private
+    value["parent_failure"]["origin"].update(file=private, function=private)
+    value["parent_failure"]["scratch_inventory"].update(scan_phase=private, entries=True)
+    value["parent_failure"]["causes"] = [{"link": [], "exception_type": private,
+                                          "errno": private, "winerror": True}] * 20
+    observed = scoped_failure_snapshot(value)
+    assert observed["injection_stage"] == "unknown"
+    assert observed["parent_failure"]["origin"]["file"] == "unknown"
+    assert observed["parent_failure"]["scratch_inventory"]["scan_phase"] == "unknown"
+    assert observed["parent_failure"]["scratch_inventory"]["entries"] is None
+    assert len(observed["parent_failure"]["causes"]) == 4
+    assert observed["parent_failure"]["causes"][0] == {
+        "link": "unknown", "exception_type": "unknown", "errno": None, "winerror": None}
+    assert private not in json.dumps(observed)
+
+
+def test_parent_failure_cause_chain_is_bounded_and_does_not_export_exception_attributes():
+    from spireagent.json_boundary import BoundaryError
+    from spireagent.workbench.local_training import _safe_parent_failure
+
+    causes = [PermissionError(13, "SECRET-MESSAGE", "/SECRET-PATH") for _ in range(7)]
+    for current, following in zip(causes, causes[1:], strict=False):
+        current.__cause__ = following
+    error = BoundaryError("local_training", "scratch_inventory_invalid")
+    error.__cause__ = causes[0]
+    error.private_token = "SECRET-TOKEN"
+    value = _safe_parent_failure(error, "preparing_run")
+    assert len(value["causes"]) == 4
+    assert all(item["errno"] == 13 for item in value["causes"])
+    assert "SECRET" not in json.dumps(value)
+    causes[0].__cause__ = error
+    assert len(_safe_parent_failure(error, "preparing_run")["causes"]) == 1
+    error.__cause__ = None
+    error.__context__ = RuntimeError("SECRET-CONTEXT")
+    error.__suppress_context__ = False
+    assert _safe_parent_failure(error, "preparing_run")["causes"][0] == {
+        "link": "context", "exception_type": "builtins.RuntimeError",
+        "errno": None, "winerror": None}
 
 
 def test_whitelisted_operation_and_blocked_thread_survive_fixture_cleanup(tmp_path):

@@ -23,6 +23,11 @@ _OPERATION_FIELDS = {
     "validation_state", "worker_state", "writer_terminal", "error_code", "elapsed_seconds",
     "requested_action", "checkpoint_id", "run_id", "input_id", "model_id", "result_id",
 }
+_SAFE_EXCEPTION_TYPES = {"builtins." + name for name in (
+    "OSError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
+    "IsADirectoryError", "TimeoutError", "InterruptedError", "ValueError",
+    "RuntimeError", "TypeError", "AssertionError",
+)} | {"spireagent.json_boundary.BoundaryError"}
 
 
 def operation_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
@@ -57,6 +62,61 @@ def failure_snapshot(value: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(item, dict):
             result[name] = {key: detail for key, detail in item.items() if key in fields
                             and (detail is None or type(detail) in {str, int})}
+    if type(value.get("scratch_inventory")) is dict:
+        from spireagent.workbench.training_scratch import scratch_failure_snapshot
+
+        result["scratch_inventory"] = scratch_failure_snapshot(value["scratch_inventory"])
+    if type(value.get("causes")) is list:
+        result["causes"] = [{
+            "link": (item.get("link") if type(item.get("link")) is str
+                     and item["link"] in {"cause", "context"} else "unknown"),
+            "exception_type": (item.get("exception_type")
+                               if type(item.get("exception_type")) is str
+                               and item["exception_type"] in _SAFE_EXCEPTION_TYPES else "unknown"),
+            **{key: detail if type(detail) is int else None
+               for key in ("errno", "winerror") for detail in (item.get(key),)},
+        } for item in value["causes"][:4] if type(item) is dict]
+    return result
+
+
+def scoped_failure_snapshot(value: object) -> dict[str, Any]:
+    """Safe failure output from the copied-source foreign-producer supervisor."""
+    if type(value) is not dict:
+        value = {}
+    enums = {
+        "injection_stage": {"not_seen", "event_received", "forged_published", "substituted"},
+        "status": {"pending", "failed", "interrupted_unknown", "completed", "paused", "cancelled"},
+        "error_code": {"child_event_invalid", "scratch_inventory_invalid"},
+    }
+    result: dict[str, Any] = {
+        key: item if type(item) is str and item in allowed else "unknown"
+        for key, allowed in enums.items() for item in (value.get(key),)
+    }
+    result["replaced"] = value.get("replaced") if type(value.get("replaced")) is bool else None
+    parent = failure_snapshot(value.get("parent_failure"))
+    if parent:
+        for key, allowed in (
+            ("exception_type", _SAFE_EXCEPTION_TYPES),
+            ("stage", {"unavailable", "reserving", "allocating", "public_view", "tokenizing",
+                       "preparing_run", "training", "verifying_result", "completed"}),
+        ):
+            item = parent.get(key)
+            if key in parent:
+                parent[key] = item if type(item) is str and item in allowed else "unknown"
+        parent.pop("child", None)
+        for key in ("origin", "owner_call"):
+            point = parent.get(key)
+            if isinstance(point, dict):
+                for field, allowed in (
+                    ("file", {"training_scratch.py", "local_training.py", "structured.py",
+                              "research_process.py"}),
+                    ("function", {"retained_scratch_bytes", "_run", "stop_requested", "message",
+                                  "private_child", "drain", "exited", "current", "_advance"}),
+                ):
+                    item = point.get(field)
+                    if field in point:
+                        point[field] = item if type(item) is str and item in allowed else "unknown"
+    result["parent_failure"] = parent
     return result
 
 
