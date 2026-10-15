@@ -139,6 +139,10 @@ export async function compareP1CaptureRecords({ reference, candidate, declaratio
       if (Buffer.byteLength(input.record, "utf8") > MAX_DOCUMENT_BYTES) fail(`$.${side}.record`, "record_byte_bound_exceeded", true);
       try { full = await readP1CaptureRecord(input.record); } catch { fail(`$.${side}.record`, "strict_sdk_record_verification_failed", true); }
       result.provenance[side] = verifyAssociation(side, input, full, declaration);
+      const interaction = full.observation.native_basis.interaction;
+      if (interaction.content_schema !== "sts2.player-environment/surface/combat_turn-1"
+          || interaction.content.surface.kind !== "combat_turn" || interaction.content.context.kind !== "combat")
+        fail(`$.${side}.native_basis.interaction`, "unsupported_ordinary_combat_schema_or_kind", true);
       for (const [index, referent] of full.observation.native_basis.referents.entries())
         if (referent.properties_schema != null && !REFERENT_PROPERTY_PATHS.has(referent.properties_schema))
           fail(`$.${side}.native_basis.referents[${index}].properties_schema`, "unsupported_referent_properties_schema", true);

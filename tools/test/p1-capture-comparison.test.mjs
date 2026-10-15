@@ -281,3 +281,27 @@ test("equal alias-looking extension literals do not infer an undeclared entity r
   assert.equal(result.result.relation_scope, "declared_typed_alias_relations_only");
   assert.equal(result.result.extension_semantics, "literal_values_no_undeclared_relation_inference");
 });
+for (const [name, mutate] of [
+  ["future surface schema", packet => { packet.native_basis.interaction.content_schema = "sts2.player-environment/surface/future_combat-1"; }],
+  ["future surface kind", packet => { packet.native_basis.interaction.content.surface.kind = "future_combat"; }]
+]) test(`ordinary owning schema guard refuses ${name} through actual CLI`, () => {
+  const left = completeSyntheticScope(); const right = renamed(left); mutate(left); mutate(right);
+  const result = cli(inputs(left, right)); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+  assert.equal(result.result.first_difference.reason, "unsupported_ordinary_combat_schema_or_kind");
+});
+test("current SDK still rejects future owning Snapshot, persistent, action and C1 Read schemas", () => {
+  for (const mutate of [
+    packet => { packet.native_basis.schema = "sts2.player-environment/snapshot-2"; },
+    packet => { packet.native_basis.persistent.content_schema = "sts2.player-environment/persistent/run-player-2"; },
+    packet => { packet.native_basis.bound_actions.schema = "sts2.player-environment/bound-actions-2"; },
+    packet => { packet.reads[0].content_schema = "sts2.player-environment/read/run_deck-2"; }
+  ]) {
+    const input = inputs(); const record = JSON.parse(input.candidate.record); const packet = JSON.parse(record.serialized_observation); mutate(packet);
+    record.serialized_observation = JSON.stringify(packet); record.capture.sha256 = sha256Text(record.serialized_observation);
+    record.capture.total_bytes = Buffer.byteLength(record.serialized_observation); input.candidate.record = JSON.stringify(record);
+    const declaration = JSON.parse(input.declaration); declaration.candidate.record_sha256 = sha256Text(input.candidate.record);
+    declaration.candidate.capture_sha256 = record.capture.sha256; input.declaration = JSON.stringify(declaration);
+    const result = cli(input); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+    assert.equal(result.result.first_difference.reason, "strict_sdk_record_verification_failed");
+  }
+});

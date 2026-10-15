@@ -106,7 +106,12 @@ review of its producer meaning and alias relations. The current finite map cover
 context/surface roles `playable_card`, `usable_potion`, `player`, `hand`,
 `companion`, `potion_state`, `orb` and `enemy`; the map also retains the already
 supported typed card/potion/relic shapes. A target-only referent with no property
-schema requires no property interpretation.
+schema requires no property interpretation. The outer interaction must declare
+`surface/combat_turn-1`, surface kind `combat_turn` and context kind `combat`.
+Future/unknown outer schemas or kinds are incomparable. The current SDK already
+strictly binds the Snapshot, persistent `run-player-1`, BoundAction and complete
+C1 Read schemas before this tool applies their known paths; those checks remain
+in the SDK.
 
 Definition IDs, labels, descriptions and unknown extension locations remain literal,
 even when a field in an extension is named `entity_id`.
