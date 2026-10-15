@@ -109,6 +109,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeEventOptionAdmission.cs",
     "src/Sts2Headless/NativeMerchantRemovalAdmission.cs",
     "src/Sts2Headless/NativePlayWindowAdmission.cs",
+    "src/Sts2Headless/NativePotionTargetAdmission.cs",
     "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/PerformanceLab.cs",
     "tests/NativePlayWindowAdmissionTests.csproj",
