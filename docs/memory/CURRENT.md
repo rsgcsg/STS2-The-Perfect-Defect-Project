@@ -22,18 +22,22 @@ and consumer execution before the bounded battle batches.
 
 ## Verified starting facts and open work
 
-- develop02636a94 contains PR180. PR187/95d031d3 remains unmerged: its full
-  gate38788081212 had four shared Bridge-build setup errors, then Windows2 hit
-  the55-minute job cap. Required downstream gates did not finish; no receipt exists.
+- develop02636a94 contains PR180. PR187/931fcaf8 remains unmerged. Gate38800467323
+  finished all twelve Windows2 owners, but one Policy Runtime future_publication_kind
+  case exceeded its original5000ms test limit (5007ms). The other three leaves passed.
+  Python2362pass/43skip and Bridge preparation passed; job58m24 was below75min.
+  There is no successful full execution receipt. The exact slow phase remains unknown.
 - C1 repair8c847f88 and startup-observation ordering passed non-author review.
   Gates3831/38766308324 and1e60/38776381573 failed. The latter stopped one Python
   attack before injection on scratch inventory and timed out two Runtime tests.
   Reviewed diagnostics now retain original scan causes and in-flight operations;
   checks/deadlines are unchanged. These and the earlier publish delay remain
   unresolved; a fresh selected gate and explicit disposition precede integration.
-  The next candidate removes unused fixture apphost work and uses a high-resolution
-  join diagnostic clock, while preserving deadlines. Windows job capacity is75min,
-  Linux55; full inventory/receipt still required. Bridge physical cause is unknown.
+  Candidate931 already removes unused fixture apphost work and uses a high-resolution
+  join diagnostic clock. Original95d shared Bridge-build failures and55min cancellation
+  remain historical failures with unknown physical cause. Windows75/Linux55 capacity
+  and all product/test deadlines stay. Next: observe the failed Runtime case phases
+  without relaxing its5000ms watchdog, then review the new candidate and selected gate.
   C1 stays agent_admissible=false, without complete P1 or native qualification.
 - Historical Managed43417/3 and separate49e Seeker target retain their identities.
   Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.
