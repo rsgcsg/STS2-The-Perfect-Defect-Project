@@ -109,9 +109,10 @@ Each packet defines an authority envelope and a completion boundary:
 
 The default is no merge, production installation/restart/deployment, Steam mutation,
 real-data training, new budget or destructive data operation unless the packet explicitly
-names and authorizes it. A conditional integration packet may include a previously
-exact PR merge accepted under its applicable review level and preparation of the
-next Draft PR; it must not merge work still lacking its required review. No admin bypass, force push or unbounded repair-until-green.
+names and authorizes it. A conditional integration packet may include an exact
+PR merge accepted under its applicable review level and preparation of the next
+Draft PR; it must not merge work still lacking required review. No admin bypass,
+force push or unbounded repair-until-green.
 When a failure is within the declared repair scope, diagnose and repair it locally rather
 than returning immediately; if it remains unexplained after a bounded diagnostic pass,
 return the evidence and smallest blocking question, not a wider speculative rewrite.
@@ -173,7 +174,8 @@ accepted for the stated scope, changes required, missing evidence/access or runn
 A source-only subtask may complete while the parent real-consumer capability stays
 open. Acceptance is not additional merge, release, deployment, training or spending
 or data-mutation authority; execute actions already authorized without requesting
-them again. An unexplained critical path cannot be accepted. Changed source, inputs, dependencies or artifacts require impact review and current
+them again. An unexplained critical path cannot be accepted. Changed source,
+inputs, dependencies or artifacts require impact review and current
 applicable checks under TESTING, not automatic transfer of an old verdict.
 
 ### Design availability and branch discipline

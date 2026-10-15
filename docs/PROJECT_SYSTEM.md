@@ -40,6 +40,7 @@ is still current.
 | root/local `AGENTS.md` | Hard invariants, owner routing and change loop | A durable instruction changes; no campaign budget, worker queue or acceptance timeline |
 | `NEW_ENGINEER_GUIDE.md`, `NEW_MEMBER_HANDOFF.zh-CN.md` | Role-specific onboarding and links to supported procedures | Setup or user path changes; do not turn every role's checklist into every newcomer's prerequisite |
 | `ARCHITECTURE.md`, `COMPONENTS.md`, accepted ADRs | Durable authority, dependency direction and significant decisions | A boundary changes; cite exact protocol owners rather than restating their schemas |
+| `DECISIONS.md` | Selected project decisions, rationale and supersession pointers | Current user choices change; owning ADR/spec keeps the contract. `python/docs/memory/DECISIONS.md` retains research/import history, not a competing project queue. |
 | owning specification and component contracts | Required outcomes, selected behavior, assumptions, failure/compatibility semantics and decision rationale | Before dependent implementation of a changed design; mark selected but unimplemented behavior explicitly |
 | active plan/task/PR; baseline task index | Stable task IDs, dependencies, one writer, acceptance, allowed operations, resources and progress | Dispatch, design selection, review or integration changes; link evidence, do not become a second contract |
 | `TESTING.md`, `VERSIONING.md`, workflow, `AI_COLLABORATION.md` | Check selection, identity, Git/release and collaborator lifecycle respectively | Their governed process changes; other guides link instead of creating a second timing or check policy |
@@ -53,6 +54,7 @@ unresolved obligations. CURRENT names the one active plan and its supersession;
 an older execution matrix does not independently dispatch current work. Accepted
 decisions belong in their owner and linked rationale history. Manifests/BOM/store/
 use ledgers remain identity and data-permission owners, not prose status pages.
+Do not create a parallel registry or status database for documentation convenience.
 
 ### Keeping a change aligned
 

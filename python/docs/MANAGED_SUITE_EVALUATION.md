@@ -93,6 +93,11 @@ proposal into the evaluation owner. They are target definitions, not achieved
 results; report exact profile, Agent, game/Host tuple, exposure and complete plan.
 Existing manifests own the seeds. Suite names produce different seeds; a paired
 Host comparison must reuse the same manifest, not equal ordinals in two suites.
+Numbers come from retained evaluator runs with eval ID, Host, character and exact
+game/profile versions. Current dev-500/test-1000 manifests are Managed Defect/A0;
+other roles/difficulties require their own frozen suite before claiming a target.
+Managed results before paired Reference qualification represent Managed only.
+On game-version change rerun the affected suite and report versions separately.
 
 | Suite | Purpose |
 | --- | --- |

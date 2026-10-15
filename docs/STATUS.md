@@ -8,8 +8,9 @@ Historical execution matrices retain their original observations and obligations
 ## P1 integration baseline candidate, observed 2026-10-16
 
 PR180 normally merged at02636a94. PR187/405ba001 full dual-OS run38724470159
-passed its own current source/test gate. Subsequent C1 trust-boundary counterexamples
-require a reviewed repair and fresh selected gate; green405 does not qualify it.
+passed its own current source/test gate. C1 repair8c847f88 subsequently passed
+independent source/CLI review and is integrated in the candidate; its fresh selected
+gate remains due. Green405 does not qualify this changed source.
 The current [P1 delivery](plans/P1_FORWARD_2026-10-15.zh-CN.md) includes real capture,
 Agent consumption and paired Host records; it remains incomplete.
 
