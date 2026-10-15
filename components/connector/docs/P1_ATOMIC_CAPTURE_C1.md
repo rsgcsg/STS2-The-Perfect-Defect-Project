@@ -84,7 +84,18 @@ The convenience method assembles/validates exact bytes and then releases
 retention. For multiple readers, obtain one handle, call exported
 `assembleP1Capture` for each reader, then release explicitly. Every reader
 validates profile, contiguous chunks, total bytes, final SHA-256, source/session,
-required coverage and instance relations. It never submits actions or acquires
+required coverage and instance relations. Each source-backed instance must join
+exactly one advertised Read by ID, kind, content schema and target; every
+advertisement must be retained, including unsupported Reads in partial packets.
+Derived card details have no advertised source ID. A complete scope additionally
+requires the advertised deck/pile aggregates, the existing typed native combat
+context, and details that preserve their same-context source card facts. Missing
+optional display text may be supplied by a detail for reader compatibility (the
+current native producer conservatively marks absent source text unsupported).
+Nullable nontext facts cannot be invented; public numbers must be finite and
+known counters/IDs retain their native integer types. Dynamic values are not compared
+across different display contexts. Unknown Read schemas cannot claim available
+content, but remain explicit unsupported diagnostics. It never submits actions or acquires
 a controller. Text-menu-v2 and C1 use the same byte-assembly implementation.
 
 `serializeP1CaptureRecord` writes an archival representation of the same exact

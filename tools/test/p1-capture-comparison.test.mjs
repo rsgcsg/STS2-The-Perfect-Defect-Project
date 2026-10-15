@@ -8,6 +8,17 @@ import { fileURLToPath } from "node:url";
 import { compareP1CaptureRecords, sha256Text } from "../p1-capture-comparison.mjs";
 import { inputs, completeSyntheticScope, producerFixture, producerSerializedFixture, renamed } from "./p1-capture-comparison-fixture.mjs";
 const compare = async (left, right) => compareP1CaptureRecords(inputs(left, right));
+// Mutate a valid current display and its exact source together. Distinct
+// serialized contexts do not share mutable JavaScript object references.
+function changeCardDisplay(packet, detailIndex, fields) {
+  const detail = packet.reads[detailIndex];
+  const parent = packet.reads.find(read => read.instance_id === detail.parent_read_instance_id);
+  const cards = parent?.kind === "run_deck" ? parent.content.cards
+    : parent?.kind === "combat_piles" ? parent.content.zones.find(zone => zone.zone === detail.display_context).cards
+      : packet.native_basis.interaction.content.context.player.hand;
+  Object.assign(cards.find(card => card.entity_id === detail.target_entity_id), fields);
+  Object.assign(detail.content, fields);
+}
 function cli(input, corrupt) {
   const dir = mkdtempSync(path.join(tmpdir(), "p1-c1-comparison-"));
   try {
@@ -55,11 +66,11 @@ test("declared unordered piles tolerate order; ordered hand/deck remain compared
   assert.equal((await compare(left, right)).verdict, "c1_scope_mismatch");
 });
 for (const [name, mutate] of [
-  ["detail cost", p => { p.reads[2].content.cost = "9"; }],
-  ["thirteenth description", p => { p.reads[14].content.description = "changed public value"; }],
+  ["detail cost", p => { changeCardDisplay(p, 2, { cost: "9" }); }],
+  ["thirteenth description", p => { changeCardDisplay(p, 14, { description: "changed public value" }); }],
   ["bound action operand", p => { const a = p.native_basis.bound_actions.actions[0]; a.arguments[0].referent_id = a.subject_referent_id; }],
-  ["public text resembling an ID", p => { p.reads[2].content.description = p.reads[2].target_entity_id; }],
-  ["semantic definition ID", p => { p.reads[2].content.definition_id = "DIFFERENT"; }],
+  ["public text resembling an ID", p => { changeCardDisplay(p, 2, { description: p.reads[2].target_entity_id }); }],
+  ["semantic definition ID", p => { changeCardDisplay(p, 2, { definition_id: "DIFFERENT" }); }],
   ["unknown ID remains semantic", p => { p.native_basis.interaction.content.context.custom_id = "changed"; }],
   ["shared entity split", p => { const d = p.reads.find(read => read.display_context === "hand"); d.content = { ...d.content, entity_id: "split" }; d.target_entity_id = "split"; p.native_basis.interaction.content.context.player.hand[0] = { ...d.content }; }],
   ["distinct entities collapse", p => { const a = p.reads[0].content.cards; a[2].entity_id = a[1].entity_id; for (const d of p.reads) if (d.target_entity_id === "card-2") d.target_entity_id = d.content.entity_id = "card-1"; p.reads[1].content.zones[0].cards[1].entity_id = "card-1"; }]
@@ -121,7 +132,7 @@ test("CLI rejects invalid UTF-8 and absent archive without exposing local paths"
 });
 
 test("same capture identity cannot hide semantically changed valid-digest bytes", async () => {
-  const left = completeSyntheticScope(); const right = structuredClone(left); right.reads[2].content.cost = "9";
+  const left = completeSyntheticScope(); const right = structuredClone(left); changeCardDisplay(right, 2, { cost: "9" });
   const input = inputs(left, right); const record = JSON.parse(input.candidate.record);
   record.capture.capture_id = JSON.parse(input.reference.record).capture.capture_id; input.candidate.record = JSON.stringify(record);
   const declaration = JSON.parse(input.declaration); declaration.candidate.capture_id = record.capture.capture_id;
@@ -154,6 +165,7 @@ test("pile multiplicity and available-empty versus absent remain distinct", () =
 test("valid complete packet with reduced pile and required-detail multiplicity diverges", async () => {
   const left = completeSyntheticScope(); const right = structuredClone(left);
   right.reads[1].content.zones[0].cards.pop(); right.reads[1].content.zones[0].card_count--;
+  right.native_basis.interaction.content.context.player.draw_pile_count--;
   const removed = right.reads.find(read => read.display_context === "draw" && read.target_entity_id === "card-2").instance_id;
   right.reads = right.reads.filter(read => read.instance_id !== removed);
   right.coverage = right.coverage.filter(item => item.requirement_id !== `read_instance:${removed}`);
@@ -289,9 +301,16 @@ for (const [name, mutate] of [
   ["future surface schema", packet => { packet.native_basis.interaction.content_schema = "sts2.player-environment/surface/future_combat-1"; }],
   ["future surface kind", packet => { packet.native_basis.interaction.content.surface.kind = "future_combat"; }]
 ]) test(`ordinary owning schema guard refuses ${name} through actual CLI`, () => {
-  const left = completeSyntheticScope(); const right = renamed(left); mutate(left); mutate(right);
-  const result = cli(inputs(left, right)); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
-  assert.equal(result.result.first_difference.reason, "unsupported_ordinary_combat_schema_or_kind");
+  // The owning SDK now refuses these complete-scope contradictions before
+  // comparison. Forge the archive bytes to exercise that earlier CLI boundary.
+  const input = inputs(); const record = JSON.parse(input.candidate.record);
+  const packet = JSON.parse(record.serialized_observation); mutate(packet);
+  record.serialized_observation = JSON.stringify(packet); record.capture.sha256 = sha256Text(record.serialized_observation);
+  record.capture.total_bytes = Buffer.byteLength(record.serialized_observation); input.candidate.record = JSON.stringify(record);
+  const declaration = JSON.parse(input.declaration); declaration.candidate.record_sha256 = sha256Text(input.candidate.record);
+  declaration.candidate.capture_sha256 = record.capture.sha256; input.declaration = JSON.stringify(declaration);
+  const result = cli(input); assert.equal(result.code, 20); assert.equal(result.result.verdict, "c1_incomparable");
+  assert.equal(result.result.first_difference.reason, "strict_sdk_record_verification_failed");
 });
 test("current SDK still rejects future owning Snapshot, persistent, action and C1 Read schemas", () => {
   for (const mutate of [
