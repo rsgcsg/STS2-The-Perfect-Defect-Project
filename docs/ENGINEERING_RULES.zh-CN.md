@@ -68,7 +68,7 @@ PR 数、测试数、文档篇幅和 receipt 都不算能力进展；可靠性�
 | --- | --- | --- |
 | T1 | `components/`、`apps/game-mod`、`contracts/`、`platform-bom.json`、原始录制与 Store 写入路径 | topic 分支→独立审查→所属测试与选定 CI→normal merge；改原生代码另跑本机 exact-game 门；组件源身份照常更新，产物版本只在发布时变 |
 | T2 | `python/stpd`、`python/spireagent`、`python/deploy`、`apps/ingame-ui`、`apps/workbench`、`tools/`、`docs/` | topic 分支→作者自查清单→`check:plan` 选定的 CI 通过即可合并；不写证据阶梯段落 |
-| T3 | `experiments/<日期>-<名字>/` | 不审查、不进 CI；T1/T2 代码不得 import 它；想长期保留就提 PR 升到 T2 |
+| T3 | `experiments/<日期>-<名字>/` | 不审查；"不进 CI"是目标，排除器未实施（第 8 节）：未入仓的私人探索不要求 CI，已提交到仓库的仍跑 `check:plan` 选定的门。T1/T2 代码不得 import 它；想长期保留就提 PR 升到 T2 |
 
 三个维度互相独立，不能混为一谈：
 - **审查强度**（T1/T2/T3）：按上面的行为判断。
@@ -118,8 +118,9 @@ runs/2026-10-20-bc-p1-a1b2c3/
 ```
 
 **数据**：原始录制保持现有不可变 Store（T1）。训练用的派生数据集是只读快照，带 manifest
-（来源记录 ID、投影版本、行数、过滤规则、来源类型）。派生数据可以随时重建或删除，原件不受影响。
-来源分"轨迹"和"标注"两类，见 [SYSTEM_MAP 第 4 节](SYSTEM_MAP.zh-CN.md#4-数据来源在框架里怎么放)。
+（来源记录 ID、投影版本、行数、过滤规则、来源类型）。能清理的只有可重建且未被占用的缓存，按现有 retention 和引用检查执行；固定 manifest、成员与 parents、转换身份、
+用途/Gold/曝光/实际使用记录和 run 引用由 Store/Curation owner 保留，清缓存不解除任何使用保护。
+训练来源分"轨迹"和"标注"两类，二者不穷尽原件，见 [SYSTEM_MAP 第 4 节](SYSTEM_MAP.zh-CN.md#4-数据来源在框架里怎么放)。
 
 **原件与训练数据不同**：原件是底片，数据集是为某个用途挑选和加工的结果。用途、划分和曝光由 Curation 记录；
 没捕获的事实不回填，推断出的标签作为声明了假设的研究配方。
