@@ -419,3 +419,27 @@ in the same runtime. Opening and closing a real native page may advance the
 Snapshot, so `post_snapshot_id` is a fresh successor rather than a promise that
 the old token becomes current again. Any prior Snapshot/Read/action token stays
 stale.
+
+### Bounded Managed card selection
+
+The legacy Managed Host may publish a complete `card_selection-1` surface only
+for explicit `selector_profile=managed-command-selector-1` and exact
+`selector_kind=choose_card|combat_pile`, with its display context,
+complete rendered card/hover details, native option count, per-card select/
+deselect state, selected entity IDs, bounds and native skip/manual-confirm flags.
+Its selection context includes the current post-parent combat HUD; it does not
+become a combat-turn action owner. Strict SDK consumers verify the card/referent/
+selection/action multiset, including when a complete catalog has zero actions.
+For this marked complete surface, every current HUD scalar and nested public
+status/orb/companion/enemy/intent fact is required; the HUD player entity must
+match the current persistent player. Enemy and companion HP numbers are finite
+only when native health visibility and display mode permit them, otherwise both
+HP fields are explicitly null. Unavailable marked diagnostics remain readable.
+Incomplete historical or unknown-purpose selectors
+remain readable without actions. This additive bounded mapping is not full P1
+or C1 admission. The owning Host [mapping](../../../host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md)
+records native capture, rendering, revalidation, abort and unsupported boundaries.
+
+The Managed extension does not redefine complete card-selection surfaces of other
+Hosts. Legacy decoding remains compatible; the Managed text-menu mapper requires
+the explicit profile before accepting this additional interaction kind.

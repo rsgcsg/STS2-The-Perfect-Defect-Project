@@ -41,7 +41,8 @@ function actionSemanticKey(snapshot, action) {
     if (Array.isArray(value)) return value.map(withoutOpaqueIdentity);
     if (value == null || typeof value !== "object") return value;
     return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !["entity_id", "entity_ids", "target_entity_ids", "referent_id", "snapshot_id", "interaction_id", "bound_action_id", "read_id"].includes(key))
+      .filter(([key]) => !/(?:^|_)(?:entity|referent)_ids?$/u.test(key)
+        && !["combat_id", "snapshot_id", "interaction_id", "bound_action_id", "read_id"].includes(key))
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, nested]) => [key, withoutOpaqueIdentity(nested)]));
   };
@@ -64,8 +65,17 @@ function actionSemanticKey(snapshot, action) {
   });
 }
 
+function inPublicCatalogOrder(actions, compare) {
+  // Callers retain the complete public catalog's relative order. Fully equal
+  // semantic values remain distinct occurrences, tied by that published order;
+  // this is not an arbitrary-order or cross-Host correspondence guarantee.
+  return actions.map((action, occurrence) => ({ action, occurrence }))
+    .sort((left, right) => compare(left.action, right.action) || left.occurrence - right.occurrence)
+    .map(({ action }) => action);
+}
+
 function ordered(snapshot, actions) {
-  return [...actions].sort((left, right) =>
+  return inPublicCatalogOrder(actions, (left, right) =>
     actionSemanticKey(snapshot, left).localeCompare(actionSemanticKey(snapshot, right)));
 }
 
@@ -86,7 +96,7 @@ export function chooseManagedPlayerEnvironmentAction(snapshot) {
   const referents = new Map((snapshot.referents ?? []).map((referent) => [referent.referent_id, referent]));
   const subject = (action) => referents.get(action.subject_referent_id)?.properties ?? {};
   const numeric = (value) => Number.isFinite(Number(value)) ? Number(value) : Number.MAX_SAFE_INTEGER;
-  const byProperties = (items, selector) => [...items].sort((left, right) => {
+  const byProperties = (items, selector) => inPublicCatalogOrder(items, (left, right) => {
     const leftValues = selector(left);
     const rightValues = selector(right);
     for (let index = 0; index < Math.max(leftValues.length, rightValues.length); index += 1) {
@@ -102,7 +112,7 @@ export function chooseManagedPlayerEnvironmentAction(snapshot) {
       const card = subject(action);
       const targetId = action.arguments?.find((argument) => argument.role === "target")?.referent_id;
       const target = referents.get(targetId)?.properties ?? {};
-      return [card.definition_id, numeric(card.hand_index), target.definition_id, numeric(target.combat_id)];
+      return [card.definition_id, numeric(card.hand_index), target.definition_id];
     })[0]
       ?? actions.find((action) => action.verb === "end_turn")
       ?? null;

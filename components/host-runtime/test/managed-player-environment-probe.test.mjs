@@ -7,6 +7,9 @@ import {
   summarizeManagedPlayerEnvironmentCapacityGroup
 } from "../src/managed-player-environment-probe.mjs";
 
+import { projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
+import { combatState, renamePrivateCounters } from "./fixtures/managed-fair-combat.mjs";
+
 function snapshot(kind, actions, status = "interactive") {
   return {
     status,
@@ -42,6 +45,64 @@ test("managed Player Environment probe policy consumes only canonical actions", 
     { bound_action_id: "take-relic", verb: "select", label: "Take Bag" }
   ])).bound_action_id, "take-relic");
   assert.equal(chooseManagedPlayerEnvironmentAction(snapshot("shop_inventory", [], "visible_unsupported")), null);
+});
+
+
+test("managed probe chooses by public combat semantics across runtime and private-counter aliases", () => {
+  for (const identityMode of ["crypto", "sequence"]) {
+    const chosen = [];
+    for (const swapped of [false, true]) {
+      for (let runtime = 0; runtime < 8; runtime += 1) {
+        const initial = combatState();
+        initial.enemies[0].hp = swapped ? 10 : 5;
+        initial.enemies[1].hp = swapped ? 5 : 10;
+        const state = runtime % 2 === 0 ? initial : renamePrivateCounters(initial);
+        const projection = projectManagedCandidateDecision({ state,
+          runtimeInstanceId: `same-world-runtime-${runtime}`,
+          environmentFingerprint: "same", sequence: runtime < 2 ? 1 : runtime - 1, identityMode });
+        const action = chooseManagedPlayerEnvironmentAction(projection.snapshot);
+        assert.ok(projection.snapshot.bound_actions.actions.includes(action));
+        const request = projection.bindings.get(action.bound_action_id).raw_request;
+        const targetOccurrence = state.enemies.findIndex((value) => value.native_ref === request.args.target_ref);
+        assert.notEqual(targetOccurrence, -1);
+        chosen.push({ swapped, runtime, targetOccurrence, hp: state.enemies[targetOccurrence].hp });
+      }
+    }
+    assert.equal(new Set(chosen.map((value) => value.hp)).size, 1, JSON.stringify(chosen));
+    assert.equal(new Set(chosen.filter((value) => !value.swapped).map((value) => value.targetOccurrence)).size, 1);
+    assert.notEqual(chosen[0].targetOccurrence, chosen[8].targetOccurrence,
+      "different visible HP remains semantic information, not an identity-normalized tie");
+  }
+});
+
+test("managed probe keeps identical public occurrences separately bound and uses their catalog order for ties", () => {
+  for (const identityMode of ["crypto", "sequence"]) {
+    for (const reversePresentation of [false, true]) {
+      for (let runtime = 0; runtime < 4; runtime += 1) {
+        const state = combatState();
+        if (reversePresentation) {
+          state.hand.reverse();
+          state.enemies.reverse();
+        }
+        const projection = projectManagedCandidateDecision({ state,
+          runtimeInstanceId: `duplicate-world-runtime-${runtime}`,
+          environmentFingerprint: "same", sequence: 1, identityMode });
+        const play = projection.snapshot.bound_actions.actions.filter((value) => value.verb === "play");
+        assert.equal(play.length, 4); // Two distinct cards, each with two distinct targets.
+        assert.equal(new Set(play.map((value) => value.bound_action_id)).size, 4);
+        const requests = play.map((value) => projection.bindings.get(value.bound_action_id).raw_request);
+        assert.equal(new Set(requests.map((value) => value.args.card_ref)).size, 2);
+        assert.equal(new Set(requests.map((value) => value.args.target_ref)).size, 2);
+        assert.equal(new Set(requests.map((value) => JSON.stringify(value.args))).size, 4);
+        const selected = chooseManagedPlayerEnvironmentAction(projection.snapshot);
+        assert.equal(selected, play[0], "a semantic tie keeps the published complete catalog order");
+        assert.equal(projection.snapshot.bound_actions.actions.filter((value) => value.verb === "play").length, 4);
+        assert.equal(projection.bindings.size, 5); // Four play leaves plus end turn remain offered.
+        assert.deepEqual(projection.bindings.get(selected.bound_action_id).raw_request.args,
+          { card_ref: state.hand[0].native_ref, target_ref: state.enemies[0].native_ref });
+      }
+    }
+  }
 });
 
 test("managed probe records native terminal outcome without treating generic terminal as victory", () => {

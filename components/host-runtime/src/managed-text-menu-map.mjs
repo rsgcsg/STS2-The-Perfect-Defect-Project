@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
+import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL, nativeCardSelectionProblems } from "@rsgcsg/sts2-connector-client";
 
 export const MANAGED_TEXT_MENU_PROFILE = "text-menu-v1";
 export const MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1";
@@ -16,7 +16,7 @@ function textSnapshotId(snapshotId) {
 
 const REVIEWED_TEXT_MENU_KINDS = Object.freeze([
   "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
-  "deck_card_selection", "shop_inventory", "combat_turn",
+  "deck_card_selection", "card_selection", "shop_inventory", "combat_turn",
   "treasure_chest", "treasure_relic_selection", "treasure_completion",
   "reward_claim", "card_reward_selection", "reward_completion"
 ]);
@@ -45,6 +45,8 @@ export function currentManagedNativeVerbs() {
 }
 
 function completeCurrentLeaf(snapshot) {
+  if (snapshot?.interaction?.kind === "card_selection" && (snapshot.interaction?.content?.surface?.selector_profile !== "managed-command-selector-1"
+    || nativeCardSelectionProblems(snapshot).length > 0)) return false;
   const interactionId = snapshot?.interaction?.interaction_id;
   const actions = snapshot?.bound_actions?.actions;
   const referents = snapshot?.referents;

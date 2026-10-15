@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isJsonObject, type JsonObject } from "./json.js";
 import { persistentVisibleStateSchema } from "./visibleState.js";
+import { nativeCardSelectionProblems } from "./nativeCardSelection.js";
 
 export const SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL = "1.0.0" as const;
 
@@ -198,6 +199,9 @@ const snapshotSchema: z.ZodTypeAny = z.object({
     unknown_field_behavior: z.string().min(1)
   }).strict()
 }).strict().superRefine((value, context) => {
+  for (const message of nativeCardSelectionProblems(value)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message });
+  }
   const boundActionIds = value.bound_actions.actions.map((item) => item.bound_action_id);
   const referentIds = new Set(value.referents.map((item) => item.referent_id));
   if (new Set(boundActionIds).size !== boundActionIds.length) {
