@@ -314,6 +314,10 @@ public static partial class ConnectorMod
             {
                 HandleSealedObservation(path[(SealedObservationContract.Route.Length + 1)..], request, response);
             }
+            else if (path.StartsWith(P1CaptureContract.Route + "/", StringComparison.Ordinal))
+            {
+                HandleSealedObservation(path[(P1CaptureContract.Route.Length + 1)..], request, response, p1Capture: true);
+            }
             else if (path.StartsWith("/api/player-environment/reads/", StringComparison.Ordinal))
             {
                 if (request.HttpMethod == "GET")

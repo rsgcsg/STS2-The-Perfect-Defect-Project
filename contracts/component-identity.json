@@ -32,7 +32,10 @@
         "host/PlayerEnvironment/Protocol/NativeLogicalContracts.cs",
         "host/PlayerEnvironment/NativeLogical/NativeLogicalWire.cs",
         "sdk/typescript/src/sealedObservation.ts",
-        "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs"
+        "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs",
+        "sdk/typescript/src/p1Capture.ts",
+        "host/PlayerEnvironment/Protocol/P1CaptureContracts.cs",
+        "docs/P1_ATOMIC_CAPTURE_C1.md"
       ]
     },
     "host-runtime": {

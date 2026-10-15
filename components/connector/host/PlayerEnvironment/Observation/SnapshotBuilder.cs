@@ -22,8 +22,10 @@ internal static partial class PlayerEnvironmentService
         ProcessLocalCaptureProfiler? captureProfiler = null,
         string? inputProfile = null,
         bool textMenuCapture = false,
-        int maximumBoundActions = MaxBoundActions)
+        int maximumBoundActions = MaxBoundActions,
+        Func<LiveObservation, IReadOnlyCollection<string>>? requiredReadKindsForObservation = null)
     {
+        P1CaptureGuard.ObserveSnapshotBuild();
         if (!IsSupportedInputProfile(inputProfile)
             || inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile)
             throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
@@ -97,6 +99,7 @@ internal static partial class PlayerEnvironmentService
         draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
         IReadOnlyCollection<string>? selectedReadKinds = inputProfile == null
             ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
+                ?? requiredReadKindsForObservation?.Invoke(draft)
             : null;
         IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
             "required_read_builds",

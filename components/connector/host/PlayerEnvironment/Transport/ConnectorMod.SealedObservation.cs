@@ -9,19 +9,22 @@ namespace STS2Connector;
 public static partial class ConnectorMod
 {
     private static void HandleSealedObservation(string operation,
-        HttpListenerRequest request, HttpListenerResponse response)
+        HttpListenerRequest request, HttpListenerResponse response, bool p1Capture = false)
     {
         try
         {
             switch (operation)
             {
                 case "capabilities" when request.HttpMethod == "GET":
-                    SendJson(response, PlayerEnvironmentService.GetSealedObservationCapabilities());
+                    if (p1Capture) SendJson(response, PlayerEnvironmentService.GetP1CaptureCapabilities());
+                    else SendJson(response, PlayerEnvironmentService.GetSealedObservationCapabilities());
                     return;
                 case "current" when request.HttpMethod == "GET":
-                    if (request.QueryString["input_profile"] != TextMenuV2Contract.Profile)
+                    if (request.QueryString["input_profile"] != (p1Capture ? P1CaptureContract.Profile : TextMenuV2Contract.Profile))
                     {
-                        SendApiError(response, 400, "unsupported_input_profile", "Only public text-menu-v2 can be sealed.");
+                        SendApiError(response, 400, "unsupported_input_profile", p1Capture
+                            ? "This route requires the explicit read-only P1 C1 capture profile."
+                            : "Only public text-menu-v2 can be sealed.");
                         return;
                     }
                     string? expected = request.QueryString["expected_snapshot_id"];
@@ -30,7 +33,9 @@ public static partial class ConnectorMod
                         SendApiError(response, 400, "invalid_snapshot_id", "Expected snapshot ID is invalid.");
                         return;
                     }
-                    var task = RunOnMainThread(() => PlayerEnvironmentService.ReadCurrentSealedObservation(expected));
+                    var task = RunOnMainThread(() => p1Capture
+                        ? PlayerEnvironmentService.ReadCurrentP1Capture(expected)
+                        : PlayerEnvironmentService.ReadCurrentSealedObservation(expected));
                     SendJson(response, task.GetAwaiter().GetResult());
                     return;
                 case "read" when request.HttpMethod == "GET":
@@ -48,7 +53,8 @@ public static partial class ConnectorMod
                         SendApiError(response, 400, "invalid_limit", "max_bytes must be an integer.");
                         return;
                     }
-                    SendJson(response, PlayerEnvironmentService.ReadSealedObservation(id!, cursor!, limit));
+                    SendJson(response, p1Capture ? PlayerEnvironmentService.ReadP1Capture(id!, cursor!, limit)
+                        : PlayerEnvironmentService.ReadSealedObservation(id!, cursor!, limit));
                     return;
                 case "release" when request.HttpMethod == "POST":
                     var release = ReadBoundedJsonBody<SealedObservationReleaseRequest>(request, response,
@@ -59,7 +65,8 @@ public static partial class ConnectorMod
                         SendApiError(response, 400, "invalid_capture_id", "Capture ID is invalid.");
                         return;
                     }
-                    SendJson(response, PlayerEnvironmentService.ReleaseSealedObservation(release.CaptureId!));
+                    SendJson(response, p1Capture ? PlayerEnvironmentService.ReleaseP1Capture(release.CaptureId!)
+                        : PlayerEnvironmentService.ReleaseSealedObservation(release.CaptureId!));
                     return;
                 default:
                     SendApiError(response, 405, "method_not_allowed", "Unsupported sealed observation operation or method.");

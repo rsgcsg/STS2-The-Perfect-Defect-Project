@@ -75,6 +75,11 @@ assemblies, installed artifacts, local runtime data, logs or secrets.
 
 ## Consumer Contract
 
+The additive [P1 C1 capture foundation](docs/P1_ATOMIC_CAPTURE_C1.md) freezes an
+ordinary combat base and every applicable Read instance for SDK/recording
+readback. It is diagnostic-only and does not admit an Actor or implement the
+full P1 semantic action/commitment contract.
+
 The TypeScript package under `sdk/typescript` strictly validates the wire and
 performs transport/control operations only. It also provides a coherence-
 checking eager Read aggregator for memoryless consumers; that helper cannot add

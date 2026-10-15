@@ -207,6 +207,7 @@ internal static partial class PlayerEnvironmentService
         NativeUiBoundAction binding,
         IReadOnlyDictionary<string, string> parameters)
     {
+        P1CaptureGuard.InvalidateActive();
         string operation = binding.Candidate.Operation;
         if (operation == NativeGeneratedCardChoice.SelectOperation
             && parameters.TryGetValue("card_id", out string? cardId)
