@@ -69,26 +69,49 @@ function visibleState({ enabled = null, selected = null } = {}) {
   };
 }
 
-function createProjectionContext({ state, runtimeInstanceId, sequence, identityMode = "crypto" }) {
+function createProjectionContext({
+  state, runtimeInstanceId, sequence, identityMode = "crypto", publicEntityAliases
+}) {
   if (!["crypto", "sequence"].includes(identityMode)) {
     throw new TypeError("Managed projection identityMode must be crypto or sequence.");
   }
   const rawStateSha = identityMode === "crypto" ? digest(state) : null;
-  const snapshotId = identityMode === "crypto"
-    ? `managed_${runtimeInstanceId}_s${sequence}_${rawStateSha}`
-    : `managed_${runtimeInstanceId}_s${sequence}`;
-  const interactionId = identityMode === "crypto"
-    ? `interaction_${runtimeInstanceId}_s${sequence}_${rawStateSha}`
-    : `interaction_${runtimeInstanceId}_s${sequence}`;
+  // This is the existing profile's projection version, not a P1 semantic
+  // occurrence. Private state (including hidden order/RNG) never enters it.
+  const snapshotId = `managed_${runtimeInstanceId}_s${sequence}`;
+  const interactionId = `interaction_${runtimeInstanceId}_s${sequence}`;
   const referents = [];
   const actions = [];
   const bindings = new Map();
-  let localIdentity = 0;
+  const projectionAliases = new Map();
+
+  function publicId(prefix, scope, ordinal) {
+    return identityMode === "crypto"
+      ? stableId(prefix, runtimeInstanceId, scope, ordinal)
+      : `${prefix}_${runtimeInstanceId}_${scope}_${ordinal}`;
+  }
 
   function makeId(prefix, ...parts) {
-    if (identityMode === "crypto") return stableId(prefix, ...parts);
-    localIdentity += 1;
-    return `${prefix}_${runtimeInstanceId}_s${sequence}_${localIdentity}`;
+    // Private operands can key a lookup, never a public digest or identifier.
+    // First use follows public projection order; Draw is normalized before it.
+    const key = JSON.stringify(canonicalValue([prefix, ...parts]));
+    if (!projectionAliases.has(key)) {
+      projectionAliases.set(key, publicId(prefix, `s${sequence}`, projectionAliases.size + 1));
+    }
+    return projectionAliases.get(key);
+  }
+
+  function entityId(kind, nativeRef) {
+    if (typeof nativeRef !== "string" || nativeRef.length === 0) {
+      return makeId(kind, "unbound", projectionAliases.size);
+    }
+    const key = JSON.stringify([kind, nativeRef]);
+    if (!publicEntityAliases.has(key)) {
+      // Only a first PUBLIC appearance allocates this alias. The native token's
+      // value/allocation counter is a private map key, not an alias ingredient.
+      publicEntityAliases.set(key, publicId(kind, `visible_s${sequence}`, publicEntityAliases.size + 1));
+    }
+    return publicEntityAliases.get(key);
   }
 
   function referent({
@@ -153,6 +176,7 @@ function createProjectionContext({ state, runtimeInstanceId, sequence, identityM
     actions,
     bindings,
     id: makeId,
+    entityId,
     referent,
     action
   };
@@ -210,7 +234,7 @@ function mapCoordinateKey(col, row) {
   return `${col},${row}`;
 }
 
-function buildPersistentVisibleState(state, snapshotId, makeId = stableId) {
+function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
   const run = state.context;
   const player = state.player;
   if (!plainObject(run) || !plainObject(player)) {
@@ -256,7 +280,7 @@ function buildPersistentVisibleState(state, snapshotId, makeId = stableId) {
       ]
     };
   }
-  const playerEntityId = makeId("player", snapshotId, player.native_ref);
+  const playerEntityId = entityId("player", player.native_ref);
   return {
     complete: true,
     missing: [],
@@ -291,7 +315,7 @@ function buildPersistentVisibleState(state, snapshotId, makeId = stableId) {
           max_hp: player.max_hp,
           gold: player.gold,
           relics: relics.map((relic, index) => ({
-            entity_id: makeId("relic", snapshotId, relic.native_ref, index),
+            entity_id: entityId("relic", relic.native_ref),
             definition_id: definitionId(relic.id),
             name: relic.name ?? null,
             description: relic.description ?? null,
@@ -300,7 +324,7 @@ function buildPersistentVisibleState(state, snapshotId, makeId = stableId) {
             card_previews: visibleHoverCards(relic.card_previews, snapshotId, `relic_${index}`, makeId)
           })),
           potions: potions.map((potion, index) => ({
-            entity_id: makeId("potion", snapshotId, potion.native_ref, index),
+            entity_id: entityId("potion", potion.native_ref),
             definition_id: definitionId(potion.id),
             name: potion.name ?? null,
             description: potion.description ?? null,
@@ -824,7 +848,7 @@ function currentSurface(state, ctx) {
         : [];
       const discardablePotions = hasPotionReward && potionSlotsFull
         ? rawPotions.map((potion, index) => {
-          const entityId = ctx.id("potion", ctx.snapshotId, potion.native_ref, potion.slot ?? index);
+          const entityId = ctx.entityId("potion", potion.native_ref);
           const visiblePotion = {
             entity_id: entityId,
             definition_id: definitionId(potion.id ?? potion.name),
@@ -1059,7 +1083,7 @@ function currentSurface(state, ctx) {
         enabled: card.is_selectable || card.is_deselectable,
         selected: card.is_selected,
         id: typeof card.native_ref === "string"
-          ? ctx.id("card", ctx.snapshotId, card.native_ref) : null,
+          ? ctx.entityId("card", card.native_ref) : null,
         properties: { index, ...cardProperties(card), is_selected: card.is_selected }
       }));
       if (exact) {
@@ -1166,7 +1190,7 @@ function currentSurface(state, ctx) {
         enabled: exact && (card.is_selectable || card.is_deselectable),
         selected: card?.is_selected === true,
         id: exact && typeof card?.native_ref === "string"
-          ? ctx.id("card", ctx.snapshotId, card.native_ref) : null,
+          ? ctx.entityId("card", card.native_ref) : null,
         properties: { index, ...(card == null ? {} : cardProperties(card)),
           is_selected: card?.is_selected === true }
       }));
@@ -1277,8 +1301,8 @@ function currentSurface(state, ctx) {
 
       const enemyEntries = rawEnemies.map((enemy, index) => {
         const properties = {
-          entity_id: ctx.id("enemy", ctx.snapshotId, enemy.native_ref),
-          combat_id: enemy.combat_id,
+          entity_id: ctx.entityId("enemy", enemy.native_ref),
+          combat_id: ctx.entityId("enemy", enemy.native_ref),
           definition_id: definitionId(enemy.id),
           name: enemy.name ?? null,
           hp: enemy.hp,
@@ -1303,7 +1327,7 @@ function currentSurface(state, ctx) {
         entry.referent
       ]));
       const handEntries = rawHand.map((card, index) => {
-        const entityId = ctx.id("card", ctx.snapshotId, card.native_ref);
+        const entityId = ctx.entityId("card", card.native_ref);
         const visibleCard = visibleCombatCard(card, entityId);
         const playable = card.can_play === true;
         const validTargets = (card.valid_target_refs ?? [])
@@ -1369,7 +1393,7 @@ function currentSurface(state, ctx) {
           .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
           .filter(Boolean);
         const visiblePotion = {
-          entity_id: ctx.id("potion", ctx.snapshotId, potion.native_ref),
+          entity_id: ctx.entityId("potion", potion.native_ref),
           name: potion.name ?? null,
           target_entity_ids: targetIds
         };
@@ -1428,7 +1452,7 @@ function currentSurface(state, ctx) {
         }
       }
 
-      const playerEntityId = ctx.id("player", ctx.snapshotId, state.player?.native_ref);
+      const playerEntityId = ctx.entityId("player", state.player?.native_ref);
       const playerContext = {
         player_entity_id: playerEntityId,
         block: state.player?.block ?? 0,
@@ -1441,7 +1465,7 @@ function currentSurface(state, ctx) {
         statuses: (state.player_statuses ?? []).map(visibleStatus),
         companions: state.companions ?? [],
         potion_states: rawPotions.map((potion) => ({
-          entity_id: ctx.id("potion", ctx.snapshotId, potion.native_ref),
+          entity_id: ctx.entityId("potion", potion.native_ref),
           target_type: potion.target_type,
           can_use: potion.can_use === true,
           automatic: potion.usage === "Automatic"
@@ -1478,7 +1502,7 @@ function currentSurface(state, ctx) {
           usable_potions: playWindowOpen
             ? rawPotions.filter((potion) => potion.can_use === true)
             .map((potion) => ({
-              entity_id: ctx.id("potion", ctx.snapshotId, potion.native_ref),
+              entity_id: ctx.entityId("potion", potion.native_ref),
               name: potion.name ?? null,
               target_entity_ids: (potion.valid_target_refs ?? [])
                 .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
@@ -1709,7 +1733,7 @@ function capabilities(actions, referents) {
   return [...values.values()];
 }
 
-function runDeckRead(snapshotId, state, makeId = stableId) {
+function runDeckRead(snapshotId, state, makeId, entityId) {
   if (!Array.isArray(state.player?.deck)) return null;
   const nativeIdentityComplete = state.player.deck.every((card) =>
     typeof card?.native_ref === "string" && card.native_ref.length > 0);
@@ -1743,9 +1767,9 @@ function runDeckRead(snapshotId, state, makeId = stableId) {
       kind: "run_deck",
       card_count: state.player.deck.length,
       cards: state.player.deck.map((card) => {
-        const entityId = makeId("deck_card", card.native_ref ?? snapshotId, card.id, card.upgraded);
+        const cardEntityId = entityId("card", card.native_ref);
         return {
-          ...visibleCombatCard(card, entityId),
+          ...visibleCombatCard(card, cardEntityId),
           is_selected: false
         };
       })
@@ -1762,7 +1786,7 @@ function runDeckRead(snapshotId, state, makeId = stableId) {
   };
 }
 
-function combatPilesRead(snapshotId, state, makeId = stableId) {
+function combatPilesRead(snapshotId, state, makeId) {
   if (!Array.isArray(state.combat_piles)) return null;
   return {
     descriptor: {
@@ -1777,15 +1801,27 @@ function combatPilesRead(snapshotId, state, makeId = stableId) {
     },
     content: {
       kind: "combat_piles",
-      zones: state.combat_piles.map((zone) => ({
-        zone: zone.pile,
-        card_count: zone.cards?.length ?? 0,
-        ordering_semantics: "unordered_multiset",
-        cards: (zone.cards ?? []).map((card, index) => visibleCombatCard(
-          card,
-          makeId("pile_card", snapshotId, zone.pile, card.native_ref, index)
-        ))
-      }))
+      zones: state.combat_piles.map((zone) => {
+        // Project the complete allowed card facts BEFORE ordering/aliasing.
+        // A stable tie between equal visible values carries no hidden identity:
+        // equal occurrences receive separate public slots, without deduplication.
+        const cards = (zone.cards ?? []).map((card) => visibleCombatCard(card, null));
+        if (zone.pile === "draw") {
+          cards.sort((left, right) => {
+            const a = JSON.stringify(canonicalValue(left));
+            const b = JSON.stringify(canonicalValue(right));
+            return a < b ? -1 : a > b ? 1 : 0;
+          });
+        }
+        return {
+          zone: zone.pile,
+          card_count: cards.length,
+          ordering_semantics: "unordered_multiset",
+          cards: cards.map((card, index) => ({
+            ...card, entity_id: makeId("pile_card", snapshotId, zone.pile, index, card)
+          }))
+        };
+      })
     },
     completeness: {
       status: "complete",
@@ -1803,7 +1839,8 @@ export function projectManagedCandidateDecision({
   environmentFingerprint,
   sequence,
   identityMode = "crypto",
-  validateSdk = true
+  validateSdk = true,
+  publicEntityAliases = new Map()
 }) {
   if (!plainObject(state) || state.type !== "decision") {
     throw new TypeError("Managed Player Environment projection requires a raw decision state.");
@@ -1820,13 +1857,13 @@ export function projectManagedCandidateDecision({
 
   const totalStarted = performance.now();
   let stageStarted = totalStarted;
-  const ctx = createProjectionContext({ state, runtimeInstanceId, sequence, identityMode });
+  const ctx = createProjectionContext({ state, runtimeInstanceId, sequence, identityMode, publicEntityAliases });
   const contextMs = performance.now() - stageStarted;
   stageStarted = performance.now();
   const surface = currentSurface(state, ctx);
   const surfaceMs = performance.now() - stageStarted;
   stageStarted = performance.now();
-  const persistent = buildPersistentVisibleState(state, ctx.snapshotId, ctx.id);
+  const persistent = buildPersistentVisibleState(state, ctx.snapshotId, ctx.id, ctx.entityId);
   const persistentMs = performance.now() - stageStarted;
   const terminal = state.decision === "game_over";
   const actionProjectionComplete = (surface.actionComplete ?? surface.complete) === true
@@ -1837,7 +1874,7 @@ export function projectManagedCandidateDecision({
   }
   stageStarted = performance.now();
   const reads = [
-    runDeckRead(ctx.snapshotId, state, ctx.id),
+    runDeckRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
     combatPilesRead(ctx.snapshotId, state, ctx.id)
   ]
     .filter(Boolean);
@@ -1956,6 +1993,7 @@ export class ManagedPlayerEnvironmentSession {
   #identityMode;
   #validateSdk;
   #performance = new Map();
+  #publicEntityAliases = new Map();
 
   constructor({
     process,
@@ -2021,6 +2059,7 @@ export class ManagedPlayerEnvironmentSession {
     }, timeoutMs);
     this.#record("mount_transport_and_native", performance.now() - mountStarted);
     this.#ledger.clear();
+    this.#publicEntityAliases.clear();
     return this.#setState(state, timeoutMs);
   }
 
@@ -2218,6 +2257,7 @@ export class ManagedPlayerEnvironmentSession {
       runtimeInstanceId: this.#runtimeInstanceId,
       environmentFingerprint: this.#environmentFingerprint,
       sequence: this.#sequence,
+      publicEntityAliases: this.#publicEntityAliases,
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
     });
