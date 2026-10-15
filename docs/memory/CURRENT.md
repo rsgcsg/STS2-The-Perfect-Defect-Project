@@ -36,8 +36,10 @@ and consumer execution before the bounded battle batches.
   Candidate931 already removes unused fixture apphost work and uses a high-resolution
   join diagnostic clock. Original95d shared Bridge-build failures and55min cancellation
   remain historical failures with unknown physical cause. Windows75/Linux55 capacity
-  and all product/test deadlines stay. Next: observe the failed Runtime case phases
-  without relaxing its5000ms watchdog, then review the new candidate and selected gate.
+  and all product/test deadlines stay. Reviewed aa152d3d now retains bounded phases
+  for common real Runtime fixtures only on failure; original5000ms and all assertions
+  remain. Local/independent negative checks preserve watchdog failure. This repairs
+  observability, not the unknown Windows delay; next is the candidate full gate.
   C1 stays agent_admissible=false, without complete P1 or native qualification.
 - Historical Managed43417/3 and separate49e Seeker target retain their identities.
   Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.
