@@ -25,7 +25,7 @@ function gate() { let release!: () => void; const promise = new Promise<void>(re
 
 // Real SDK assembly/dispatch and OS Ndjson child, with explicitly scripted
 // source/authority responses. This does not replace the real C# Store pressure gate.
-async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
+async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean; measure?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "owned-stale-runtime-")), source = new SyntheticNativeHttp(1, "interactive", options.failRenewal ? 1000 : 120000);
   const manifest = structuredClone(shared.manifest) as AgentManifest;
   const selectedPolicy = options.continuous ? continuousPolicy : policy;
@@ -99,14 +99,33 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSub
       return { raw: structuredClone(response.value) as JsonObject, encodedByteCount: Buffer.byteLength(JSON.stringify(response.value)), statusCode: response.status ?? 200 };
     }
   } as unknown as PlayerEnvironmentRestClient;
+  const timings: Record<string, number> = {};
+  async function measured<T>(name: string, work: () => Promise<T>): Promise<T> {
+    if (!options.measure) return work();
+    const started = performance.now();
+    try { return await work(); }
+    finally {
+      const elapsed = performance.now() - started;
+      timings[name + "_calls"] = (timings[name + "_calls"] ?? 0) + 1;
+      timings[name + "_total_ms"] = Math.round((timings[name + "_total_ms"] ?? 0) + elapsed);
+      timings[name + "_max_ms"] = Math.max(timings[name + "_max_ms"] ?? 0, Math.round(elapsed));
+    }
+  }
+  const transport = environment.nativeLogicalRequest.bind(environment);
+  if (options.measure) environment.nativeLogicalRequest = (...args) =>
+    measured("transport_" + args[0], () => transport(...args));
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, mode: "auto", runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
+  if (options.measure) {
+    const append = evidence.append.bind(evidence);
+    evidence.append = (...args) => measured("durable_evidence_append", () => append(...args));
+  }
   const manifestPath = join(root, "manifest.json"); await writeFile(manifestPath, JSON.stringify(manifest));
   const port = teacherPython ? NdjsonAgentSessionPort.spawn(teacherPython, ["-m", "stpd.policy.native_teacher_agent", "--manifest", manifestPath], manifest.adapter, manifest.limits,
     { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, options.scenario ?? "normal"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   const closePort = fixturePortCloser(port);
   const inputs: unknown[] = [], next = port.next.bind(port);
-  port.next = (...args) => { inputs.push(structuredClone(args[1])); return next(...args); };
+  port.next = (...args) => { inputs.push(structuredClone(args[1])); return options.measure ? measured("agent_next", () => next(...args)) : next(...args); };
   let runtime: NativeAgentRuntimeOwner;
   try { runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence, mode: "auto", monotonicNow: () => clock,
     runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: options.maxPolicyCalls ?? 1000, deadlineMs: options.deadlineMs ?? 60000 } }); }
@@ -119,7 +138,7 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSub
     source.observation.owner_occurrence.occurrence_id = "occurrence-" + i;
     source.capture.snapshot_id = source.observation.snapshot_id; source.observation.catalog.snapshot_id = source.observation.snapshot_id; source.rehash();
   };
-  return { runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
+  return { timings, runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
     manifest: structuredClone(manifest),
     behavior: (value: typeof behavior) => { behavior = value; }, holdSubmit: () => { submitGate = gate(); return submitGate; },
     holdAwait: () => { awaitGate = gate(); return awaitGate; },
@@ -144,17 +163,17 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
   });
   it("keeps W/prefix/child while unchanged Current only waits, then ACKs a changed unit and chooses a new request", async () => {
-    const recordPhase = fixtureProgress("owned-stale-unchanged-current");
+    const recordPhase = fixtureProgress("owned-stale-unchanged-current", true);
     const progress: typeof recordPhase = (...args) => { try { recordPhase(...args); } catch { /* Diagnostics never decide the test outcome. */ } };
     progress("initialization-started");
-    const f = await fixture();
-    progress("initialized");
+    const f = await fixture({ measure: true });
+    progress("initialized", f.timings);
     const first = await f.runtime.tick(); expect(first.type, JSON.stringify(first)).toBe("fresh_decision_required");
-    progress("initial-refusal-recorded");
+    progress("initial-refusal-recorded", f.timings);
     const initial = f.runtime.status().session;
     for (let i = 0; i < 20; i++) {
       expect((await f.runtime.tick()).type).toBe("awaited");
-      if ((i + 1) % 5 === 0) progress("unchanged-awaits-completed", { unchanged_awaits: i + 1 });
+      if ((i + 1) % 5 === 0) progress("unchanged-awaits-completed", { unchanged_awaits: i + 1, ...f.timings });
     }
     expect(f.runtime.status().session).toEqual(initial); expect(f.handles.size).toBe(1);
     expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
@@ -167,20 +186,29 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     progress("changed-unit-ack-act-completed", { state_version: second.state_version, original_submissions: submits.length });
     f.applyFrame("map_c"); expect((await f.runtime.tick()).type).toBe("delivered"); expect((f.inputs.at(-1) as Record<string, unknown>).operational_outcome).toBeNull();
     progress("next-unit-ack-act-completed");
-    progress("runtime-stop-started");
+    progress("runtime-stop-started", f.timings);
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
-    progress("runtime-stopped", { reader_handles: f.handles.size });
+    progress("runtime-stopped", { reader_handles: f.handles.size, ...f.timings });
     const events = await f.events(); expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(3); expect(events.filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(1);
     progress("original-events-read", { durable_events: events.length });
     const intents = events.filter(e => e.kind === "native_submission_requested"); expect(intents).toHaveLength(3); expect(intents.every(e => Object.keys(e.payload.dispatch_binding).length === 4)).toBe(true);
   });
   it("ends exactly at the third consecutive refusal and records the threshold original result", async () => {
-    const f = await fixture();
-    expect((await f.runtime.tick()).type).toBe("fresh_decision_required"); f.advance(1); expect((await f.runtime.tick()).type).toBe("fresh_decision_required"); f.advance(2);
+    const progress = fixtureProgress("owned-stale-third-refusal", true);
+    progress("initialization-started");
+    const f = await fixture({ measure: true });
+    progress("initialized", f.timings);
+    expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    progress("first-refusal-recorded", f.timings);
+    f.advance(1); expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
+    progress("second-refusal-recorded", f.timings);
+    f.advance(2);
     expect(await f.runtime.tick()).toMatchObject({ type: "not_delivered", reason: "known_stale_streak_limit" });
+    progress("third-refusal-recorded", f.timings);
     const e = await f.events(); expect(e.filter(x => x.kind === "native_result")).toHaveLength(3); expect(e.filter(x => x.kind === "native_stale_decision_deferred").map(x => x.payload.consecutive_known_stale_rejections)).toEqual([1, 2]);
     expect(f.runtime.status()).toMatchObject({ mode: "human", tainted: false, session: { state_version: 3, agent_state: "known" } });
     await expect(f.runtime.setMode("auto")).rejects.toThrow("runtime_sample_segment_ended");
+    progress("segment-reentry-rejected", f.timings);
   });
   it("delivered resets only the streak; total eight still stops in the same accepted prefix", async () => {
     const progress = fixtureProgress("owned-stale-eight-total");

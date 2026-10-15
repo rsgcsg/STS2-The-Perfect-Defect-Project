@@ -297,7 +297,9 @@ owned process group/tree and reports unresolved cleanup as a failure, rather tha
 killing only an npm wrapper and leaving its descendants running. This changes diagnostic
 collection, not the dual-OS requirement, supported scope or scientific claims.
 CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
-on failure; the GitHub summary lists each reached or blocked stage. The existing
+on failure; synthetic fixture diagnostics retain bounded phases, whitelisted operation
+fields and stacks without locals under `python/.local/fixture-diagnostics/`, with no
+environment/configuration dump or default MSBuild binlog upload. The GitHub summary lists each reached or blocked stage. The existing
 successful execution receipt remains a separate artifact and is never generated
 from a failing diagnostic summary.
 

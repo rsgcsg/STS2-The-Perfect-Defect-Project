@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_native_source3_collection as collection_fixtures
+from fixture_diagnostics import FixtureDiagnostics
 from metadata_import_guard import no_torch_imports as no_torch_imports
 
 from spireagent.json_boundary import BoundaryError, json_bytes
@@ -96,7 +97,7 @@ class RealStoreCollectionTests(unittest.TestCase):
         if dotnet is None:
             raise AssertionError("dotnet unavailable for real-store fixture preparation")
         command = [dotnet, "build", str(project), "--output", str(cls.bridge_directory),
-                   "--nologo", "--verbosity", "minimal", "--maxcpucount:1",
+                   "--nologo", "--verbosity", "normal", "--maxcpucount:1",
                    "-p:BuildInParallel=false", "-p:UseSharedCompilation=false",
                    "--ignore-failed-sources"]
         started = time.monotonic()
@@ -110,6 +111,17 @@ class RealStoreCollectionTests(unittest.TestCase):
                 os.fsync(stream.fileno())
             print("real_store_bridge_preparation_phase=" + json.dumps(value), flush=True)
 
+        diagnostic = FixtureDiagnostics("source3-bridge-build")
+        diagnostic.record("sdk-probe-started", executable=dotnet, timeout_seconds=10)
+        try:
+            sdk = subprocess.run([dotnet, "--version"], capture_output=True, timeout=10)
+            sdk_observation = {"exit_code": sdk.returncode,
+                               "version_stdout_original": repr(sdk.stdout[:256]),
+                               "version_stderr_original": repr(sdk.stderr[:256])}
+        except (OSError, subprocess.TimeoutExpired) as error:
+            sdk_observation = {"error_type": type(error).__name__}
+        diagnostic.record("bridge-build-started", command=command, timeout_seconds=60,
+                          sdk=sdk_observation, source_hashes=cls.bridge_source_hashes)
         record_preparation("bridge_build_started", source_hashes=cls.bridge_source_hashes)
         try:
             built = subprocess.run(command, capture_output=True, timeout=60, env={
@@ -118,10 +130,19 @@ class RealStoreCollectionTests(unittest.TestCase):
                 "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
             })
         except subprocess.TimeoutExpired as error:
+            diagnostic.record("bridge-build-timeout", command=command, timeout_seconds=60,
+                              stdout_original=repr((error.stdout or b"")[-65536:]),
+                              stderr_original=repr((error.stderr or b"")[-65536:]),
+                              # subprocess.run killed/waited its direct child, but
+                              # no independent descendant-exit proof is available.
+                              child_exit_observation="unconfirmed")
             record_preparation("bridge_build_timeout",
                                stdout_original=repr((error.stdout or b"")[-8192:]),
                                stderr_original=repr((error.stderr or b"")[-8192:]))
-            raise AssertionError(preparation_phases.read_text()) from error
+            raise AssertionError(preparation_phases.read_text(encoding="utf-8")) from error
+        diagnostic.record("bridge-build-exited", exit_code=built.returncode,
+                          stdout_original=repr(built.stdout[-65536:]),
+                          stderr_original=repr(built.stderr[-65536:]))
         record_preparation("bridge_build_exited", exit_code=built.returncode)
         if built.returncode != 0 or not cls.bridge_dll.is_file():
             raise AssertionError(json.dumps({
@@ -140,6 +161,7 @@ class RealStoreCollectionTests(unittest.TestCase):
             "source_hashes": cls.bridge_source_hashes,
             "output_hashes": cls.bridge_output_hashes,
         }
+        diagnostic.record("bridge-prepared-before-collection", preparation=cls.bridge_preparation)
         print("real_store_bridge_preparation=" + json.dumps(cls.bridge_preparation))
 
     def assert_bridge_unchanged(self):
