@@ -185,7 +185,9 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "shop_inventory|activate|shop_potion": "shop.buy",
   "shop_inventory|activate|shop_relic": "shop.buy",
   "shop_inventory|activate|shop_service": "shop.service",
-  "shop_inventory|close|": "shop.leave"
+  "shop_inventory|close|": "shop.leave",
+  // Reference spells the same native "Close shop inventory" input as cancel.
+  "shop_inventory|cancel|": "shop.leave"
 };
 
 // r1.1 preserves native cancellation, deselection and browsing until a
