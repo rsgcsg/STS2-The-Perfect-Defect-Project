@@ -10,7 +10,7 @@
  * irreversible P1 commitments, occurrence accounting and a versioned record/convert path.
  */
 export const P1G_PROFILE = "p1-global-r1" as const;
-export const P1G_REVISION = "r1.0" as const;
+export const P1G_REVISION = "r1.1" as const;
 export const P1G_OBSERVATION_SCHEMA = "sts2.p1/observation-1" as const;
 export const P1G_RESULT_SCHEMA = "sts2.p1/result-1" as const;
 export const P1G_PORT_PROTOCOL = "sts2.p1/agent-port-1" as const;
@@ -29,6 +29,10 @@ export type SceneFamily =
   | "combat" | "map" | "reward" | "card_reward" | "selector" | "upgrade" | "enchant" | "shop"
   | "event" | "rest" | "treasure" | "relic_choice" | "other" | "terminal" | "unsupported";
 
+/** r1.1 has explicit content validators only for these information shapes.
+ * Other family mappings remain diagnostic until their full-information schema closes. */
+export const P1G_INFORMATION_SHAPES: readonly SceneFamily[] = Object.freeze(["combat", "map", "selector", "terminal"] as SceneFamily[]);
+
 export type HostKind = "reference" | "managed";
 
 export interface P1Envelope {
@@ -38,6 +42,10 @@ export interface P1Envelope {
   readonly host_kind: HostKind;
   readonly source_snapshot_id: string;
   readonly source_sequence: number;
+  /** Producer-independent shared reducer admission result, never a native witness. */
+  readonly capture_complete: boolean;
+  /** Exact capture references; binding metadata removed by modelView. */
+  readonly read_instances: readonly { readonly read_id: string; readonly kind: string; readonly target_referent_id: string | null }[];
 }
 
 export interface P1Part<T> { readonly availability: Availability; readonly content: T | null; readonly source: string | null }
@@ -66,7 +74,7 @@ export interface P1Observation {
   readonly envelope: P1Envelope;
   readonly status: "decision" | "terminal" | "unsupported";
   readonly scene: {
-    readonly family: SceneFamily; readonly native_kind: string; readonly stage: string;
+    readonly family: SceneFamily; readonly native_kind: string; readonly content_schema: string; readonly stage: string;
     readonly prompt: string | null; readonly content: unknown;
   };
   readonly run: P1Part<unknown>;

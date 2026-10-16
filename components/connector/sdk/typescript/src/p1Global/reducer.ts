@@ -1,7 +1,8 @@
 import { decodePlayerRead, decodePlayerSnapshot } from "../protocol.js";
+import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import {
-  P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
+  P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
   type P1Part, type SceneFamily
 } from "./contracts.js";
@@ -79,6 +80,8 @@ export interface Lowering {
   readonly option_definition: string | null;
   /** Private native entity of the previewed option, when the Host keeps it stable across pages. */
   readonly option_entity: string | null;
+  /** Frozen full public card state for an exact stable-instance continuation. */
+  readonly option_public: string | null;
 }
 
 export interface ExcludedNative { readonly bound_action_id: string; readonly verb: string; readonly label: string; readonly rule: string }
@@ -110,7 +113,7 @@ const FAMILY: Readonly<Record<string, SceneFamily>> = {
   card_reward_selection: "card_reward", reward_claim: "reward", reward_completion: "reward",
   map_navigation: "map", event_option: "event", event_dialogue: "event",
   shop_inventory: "shop", shop_room: "shop", rest_site: "rest",
-  treasure_room: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
+  treasure_room: "treasure", treasure_chest: "treasure", treasure_relic_selection: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
   tutorial: "other", game_over: "terminal"
 };
 
@@ -137,8 +140,13 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_turn|play|playable_card": "combat.play_card",
   "combat_turn|use|usable_potion": "potion.use",
   "combat_turn|activate|usable_potion": "potion.discard",
+  "combat_turn|activate|discardable_potion": "potion.discard",
   "combat_turn|end_turn|": "combat.end_turn",
   "map_navigation|activate|option": "map.travel",
+  "treasure_chest|activate|treasure_room": "treasure.open",
+  "treasure_relic_selection|select|relic": "treasure.take",
+  "treasure_relic_selection|skip|treasure_room": "treasure.skip",
+  "treasure_completion|close|treasure_room": "treasure.proceed",
   "reward_claim|activate|reward": "reward.claim",
   "reward_claim|activate|": "reward.leave",
   "reward_completion|activate|combat_room": "reward.proceed",
@@ -154,6 +162,9 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_hand_card_selection|confirm|": "selector.confirm",
   "combat_hand_card_selection|cancel|": "selector.cancel",
   "deck_upgrade_selection|select|card": "upgrade.choose",
+  "deck_upgrade_selection|open|card": "upgrade.preview",
+  "deck_card_selection|open|card": "selector.preview",
+  "deck_enchant_selection|open|card": "enchant.preview",
   "deck_enchant_selection|select|card": "enchant.choose",
   "deck_enchant_selection|confirm|": "enchant.confirm",
   "deck_enchant_selection|cancel|": "enchant.back",
@@ -169,26 +180,13 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "shop_inventory|close|": "shop.leave"
 };
 
-/**
- * Forward profile: native inputs that only browse back, cancel or undo a selection are not
- * offered as P1 choices (each P1 choice must move the game forward). They are recorded as
- * excluded with the rule that removed them; nothing else is ever dropped.
- */
-const EXCLUDED_KINDS: Readonly<Record<string, string>> = {
-  "upgrade.back": "forward_profile:no_cancel_after_choosing_smith",
-  "enchant.back": "forward_profile:no_cancel_after_choosing_the_enchant_target",
-  "selector.cancel": "forward_profile:no_cancel_of_an_entered_selection",
-  "selector.deselect": "forward_profile:selection_is_append_only",
-  "upgrade.deselect": "forward_profile:selection_is_append_only",
-  "enchant.deselect": "forward_profile:selection_is_append_only",
-  "shop.open": "forward_profile:inventory_is_already_attached"
-};
+// r1.1 preserves native cancellation, deselection and browsing until a
+// mechanism-specific full-information/intention proof qualifies their removal.
 
 /** Continue-only inputs: the native room/page referent they name carries no decision content. */
 const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "reward.leave", "rest.proceed"]);
 
-/** Declared forced inputs: the only P1 opportunity on these scenes, with no cancel/timing/resource choice. */
-const FORCED_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "rest.proceed", "map.travel", "event.choose"]);
+// r1.1 has no qualified mandatory-input producer proof. Singleton choices remain Agent choices.
 
 const ALIAS_PREFIX: Readonly<Record<string, string>> = {
   card: "c", hover: "h", enemy: "m", relic: "r", potion: "p", player: "pl", ref: "u", companion: "a", orb: "o"
@@ -266,6 +264,12 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
   const missing: string[] = [];
+  if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
+  if (!(nativeKind in FAMILY)) missing.push(`required:scene_contract:${nativeKind}`);
+  if (interaction.content_schema !== `sts2.player-environment/surface/${nativeKind}-1`
+      || interaction.content?.surface?.kind !== nativeKind) missing.push("required:scene:unsupported_schema_or_kind");
+  if (snapshot.status === "interactive" && (snapshot.completeness?.status !== "complete"
+      || snapshot.bound_actions?.status !== "complete")) missing.push("required:native_catalog_and_capture_complete");
 
   // Occurrence: the same frozen snapshot re-delivered is not a new decision point.
   const commitmentDigest = canonicalJson(state.reward ?? null);
@@ -282,24 +286,41 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     reward = null;
   }
 
-  // Reads: decode exactly; a listed Read that failed makes its part unknown.
-  const readsByKind = new Map<string, Record<string, any> | null>();
-  for (const listed of snapshot.reads as { read_id: string; kind: string }[]) {
-    const captured = basis.reads.find((item) => item.read_id === listed.read_id);
-    if (!captured || captured.response == null) { readsByKind.set(listed.kind, null); missing.push(`read:${listed.kind}`); continue; }
-    const decoded = decodePlayerRead(captured.response).raw as Record<string, any>;
-    if (decoded.read_id !== listed.read_id || decoded.observed_snapshot_id !== snapshot.snapshot_id
-        || decoded.kind !== listed.kind || decoded.completeness?.status !== "complete") {
-      readsByKind.set(listed.kind, null); missing.push(`read:${listed.kind}:not_complete_for_snapshot`); continue;
+  // Preserve every advertised instance. An aggregate has no implicit last-wins rule.
+  if (basis.reads.some(read => !snapshot.reads.some((listed: Record<string, any>) => listed.read_id === read.read_id)))
+    missing.push("read:unadvertised_capture");
+  const readInstances: { listed: Record<string, any>; read: Record<string, any> | null }[] = [];
+  for (const listed of snapshot.reads as Record<string, any>[]) {
+    const captures = basis.reads.filter((item) => item.read_id === listed.read_id);
+    let read: Record<string, any> | null = null;
+    if (captures.length !== 1 || captures[0]!.response == null || captures[0]!.error !== null || captures[0]!.kind !== listed.kind) missing.push(`read:${listed.kind}:${listed.read_id}:missing_or_ambiguous`);
+    else {
+      const decoded = decodePlayerRead(captures[0]!.response).raw as Record<string, any>;
+      if (decoded.read_id !== listed.read_id || decoded.expected_snapshot_id !== snapshot.snapshot_id
+          || decoded.observed_snapshot_id !== snapshot.snapshot_id || decoded.kind !== listed.kind
+          || decoded.content_schema !== listed.content_schema || decoded.completeness?.status !== "complete"
+          || (decoded.target_referent_id ?? null) !== (listed.target_referent_id ?? null)
+          || canonicalJson(decoded.session) !== canonicalJson(snapshot.session)
+          || canonicalJson(decoded.information_policy) !== canonicalJson(snapshot.information_policy))
+        missing.push(`read:${listed.kind}:${listed.read_id}:not_complete_for_snapshot`);
+      else read = decoded;
     }
-    readsByKind.set(listed.kind, decoded);
+    readInstances.push({ listed, read });
   }
-
+  const aggregate = (kind: string): Record<string, any> | null | undefined => {
+    const instances = readInstances.filter((item) => item.listed.kind === kind);
+    if (instances.length > 1) { missing.push(`read:${kind}:unsupported_multiplicity`); return null; }
+    const read = instances.length === 0 ? undefined : instances[0]!.read;
+    if (read && read.content_schema !== `sts2.player-environment/read/${kind}-1`) {
+      missing.push(`read:${kind}:unsupported_schema`); return null;
+    }
+    return read;
+  };
   // Collect every native id that may appear, then alias in a fixed traversal order.
   const ids = new Set<string>();
   for (const referent of snapshot.referents as NativeReferent[]) ids.add(referent.referent_id);
   collectIds(snapshot.persistent, ids); collectIds(interaction.content, ids);
-  for (const read of readsByKind.values()) if (read) collectIds(read.content, ids);
+  for (const { read } of readInstances) if (read) collectIds(read.content, ids);
   const work: AliasWork = { aliases: { ...state.aliases }, counts: { ...state.alias_counts }, ids };
 
   const persistent = snapshot.persistent?.content as Record<string, any> | undefined;
@@ -313,33 +334,37 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     : part(terminalScene ? "terminal" : "unknown", null, null);
   if (!persistent?.run && !terminalScene) missing.push("persistent.run");
 
-  const deckRead = readsByKind.get("run_deck");
+  const deckRead = aggregate("run_deck");
   let deckPart: P1Part<unknown>;
   if (deckRead === undefined) deckPart = part(terminalScene ? "terminal" : "unsupported", null, null);
   else if (deckRead === null) deckPart = part("unknown", null, "read:run_deck");
   else {
     const content = deckRead.content as Record<string, any>;
+    if (!completeDeck(content)) missing.push("required:deck:invalid_content");
     const cards = Array.isArray(content?.cards) ? canonicalMultiset(content.cards, ids) : [];
     deckPart = part("available", aliasTree({ ...content, cards, ordering: "unordered_multiset" }, work), "read:run_deck");
   }
 
-  const pilesRead = readsByKind.get("combat_piles");
+  const pilesRead = aggregate("combat_piles");
   let pilesPart: P1Part<unknown>;
   if (family !== "combat" && pilesRead === undefined) pilesPart = part("not_applicable", null, null);
   else if (pilesRead === undefined) pilesPart = part("unsupported", null, null);
   else if (pilesRead === null) pilesPart = part("unknown", null, "read:combat_piles");
   else {
     const content = pilesRead.content as Record<string, any>;
-    const zones = (Array.isArray(content?.zones) ? content.zones : []).map((zone: Record<string, any>) => {
+    if (!completePiles(content)) missing.push("required:piles:invalid_content");
+    const zones = (Array.isArray(content?.zones) ? content.zones : []).map((zone: unknown) => {
+      if (!isObject(zone)) return zone;
       const cards = Array.isArray(zone.cards) ? zone.cards : [];
-      const draw = zone.zone === "draw" || zone.ordering_semantics === "unordered_multiset";
+      const draw = zone.zone === "draw";
       return { ...zone, cards: draw ? canonicalMultiset(cards, ids, work.aliases) : cards,
-        ordering: draw ? "unordered_multiset" : "native_visible_order" };
+        ordering: draw ? "unordered_multiset" : zone.ordering_semantics === "native_visible_order" ? "native_visible_order" : "unsupported" };
     });
     pilesPart = part("available", aliasTree({ ...content, zones }, work), "read:combat_piles");
   }
 
-  const context = interaction.content.context as Record<string, any>;
+  const context: Record<string, any> = isObject(interaction.content.context) ? interaction.content.context : {};
+  if (!isObject(interaction.content.context)) missing.push("required:context:invalid_content");
   // One Host nests the live combat HUD under a selection context; it is the same public combat state.
   const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
     ? context.combat as Record<string, any> : null;
@@ -347,24 +372,51 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     ? part("available", aliasTree(context, work), "interaction.context")
     : nestedCombat ? part("available", aliasTree(nestedCombat, work), "interaction.context.combat")
     : part(terminalScene ? "terminal" : "not_applicable", null, null);
+  const mapRead = aggregate("map");
   const mapPart = context.kind === "map"
     ? part("available", aliasTree(context, work), "interaction.context")
-    : part(terminalScene ? "terminal" : "unsupported", null, null);
+    : mapRead?.content?.kind === "map"
+      ? part("available", aliasTree(mapRead.content, work), "read:map")
+      : part(terminalScene ? "terminal" : mapRead === null ? "unknown" : "unsupported", null, null);
+  const combatRequired = family === "combat" || context.kind === "combat" || nestedCombat !== null
+    || ["combat_hand_card_selection", "native_combat_pile_selection", "native_generated_card_choice"].includes(nativeKind);
+  if (combatRequired && pilesRead === undefined) pilesPart = part("unsupported", null, null);
+  // Absence from the legacy advertised Reads is not evidence of native unavailability.
+  if (!terminalScene) {
+    if (mapPart.availability === "available" && !completeMap(mapPart.content, persistent?.run?.act_index ?? (Number(persistent?.run?.act) - 1)))
+      missing.push("required:map:invalid_content");
+    if (combatPart.availability === "available") {
+      const combat = combatPart.content as Record<string, any>;
+      if (!completeCombat(combat) || combat.player?.player_entity_id !== (playerPart.content as Record<string, any>)?.entity_id)
+        missing.push("required:combat:invalid_content");
+      if (pilesRead && Array.isArray(pilesRead.content?.zones) && pilesRead.content.zones.some((zone: unknown) => !isObject(zone)
+          || combat.player?.[`${zone.zone}_pile_count`] !== zone.card_count))
+        missing.push("required:piles:combat_count_mismatch");
+    }
+    if (deckPart.availability !== "available") missing.push("required:deck");
+    if (mapPart.availability !== "available") missing.push("required:map");
+    if (combatRequired && combatPart.availability !== "available") missing.push("required:combat");
+    if (combatRequired && pilesPart.availability !== "available") missing.push("required:piles");
+  }
 
-  const surface = interaction.content.surface as Record<string, any>;
+  const surface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
+  if (!isObject(interaction.content.surface)) missing.push("required:surface:invalid_content");
+  if (nativeKind === "combat_turn" && !completeCombatSurface(surface)) missing.push("required:combat_surface:invalid_content");
+  if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   const sceneContext = context.kind === "combat" || context.kind === "map" ? null
     : Object.fromEntries(Object.entries(context).filter(([key]) => !["run", "player"].includes(key) && !(nestedCombat && key === "combat")));
   const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work) };
   if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work);
 
-  const extraReads = [...readsByKind.entries()].filter(([kind]) => kind !== "run_deck" && kind !== "combat_piles")
-    .map(([kind, read]) => ({ kind, availability: (read ? "available" : "unknown") as Availability,
+  const extraReads = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
+    .map(({ listed, read }) => ({ kind: listed.kind, availability: (read ? "available" : "unknown") as Availability,
       content: read ? aliasTree(read.content, work) : null }));
 
   // Reward groups: identity must come from the Host (stable group_id); never from labels or positions.
-  const rewardItems: Record<string, any>[] = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards : [];
+  const rewardItems: Record<string, any>[] = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards.filter(isObject) : [];
   const groupByReferent = new Map<string, Record<string, any>>();
   for (const item of rewardItems) if (typeof item.entity_id === "string") groupByReferent.set(item.entity_id, item);
+  if (rewardItems.some(item => item.kind === "card")) missing.push("required:reward_card_group_qualification");
   const groupIdentityAvailable = rewardItems.length > 0 && rewardItems.every((item) => typeof item.group_id === "string" && item.group_id.length > 0);
   if (rewardItems.length > 0 && !groupIdentityAvailable) missing.push("reward_group_identity:unsupported");
 
@@ -385,30 +437,20 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
     // The native result is final: inputs on the game-over page only navigate to the run summary.
     if (terminalScene) { excluded.push({ ...first, rule: "terminal:post_result_navigation" }); continue; }
+    if (!mapped) missing.push(`required:action_mapping:${nativeKind}.${action.verb}`);
     const target = action.arguments.find((item) => item.role === "target")?.referent_id ?? null;
     const subjectAlias = subjectId ? aliasFor(work, subjectId) : null;
     const targetAlias = target ? aliasFor(work, target) : null;
-    const base = { follow: [] as FollowRule[], commitment: null as Lowering["commitment"], group_key: null as string | null, option_index: null as number | null, option_definition: null as string | null, option_entity: null as string | null };
+    const base = { follow: [] as FollowRule[], commitment: null as Lowering["commitment"], group_key: null as string | null, option_index: null as number | null, option_definition: null as string | null, option_entity: null as string | null, option_public: null as string | null };
     if (kind === "reward.claim" && subjectId) {
       const group = groupByReferent.get(subjectId);
       const groupKey = groupIdentityAvailable ? String(group?.group_id) : null;
       if (groupKey && declined.has(groupKey)) continue; // irreversible P1 decline: never re-offered
       if (group?.kind === "card") {
-        const options = Array.isArray(group.card_options) ? group.card_options as Record<string, any>[] : null;
-        if (options && groupKey) {
-          // Aggregated forward grain: choose the card directly, or decline the whole group.
-          options.forEach((option, index) => push(
-            { kind: "reward.take_card", subject: aliasFor(work, groupKey), target: typeof option.entity_id === "string" ? aliasFor(work, option.entity_id) : null,
-              label: `${action.label} :: ${String(option.name ?? option.definition_id ?? index)}`, mapped: true },
-            { ...base, first, group_key: groupKey, option_index: index, option_definition: String(option.definition_id ?? ""),
-              option_entity: typeof option.entity_id === "string" ? option.entity_id : null,
-              follow: [{ rule_id: "card_reward_select", expect_native_kind: "card_reward_selection", expect_verb: "select", optional: false }],
-              commitment: "consume_group" }));
-          push({ kind: "reward.decline_group", subject: aliasFor(work, groupKey), target: null, label: `Decline: ${action.label}`, mapped: true },
-            { ...base, first: null, group_key: groupKey, commitment: "decline_group" });
-          continue;
-        }
-        kind = "reward.open_card_group"; // Host has no lawful preview: navigation stays an explicit choice
+        // card_options alone does not certify Skip/Reroll/hooks, group relationships,
+        // native disposal or side-effect-free preview qualification. Preserve the native
+        // open action until the producer exposes a complete typed aggregation contract.
+        kind = "reward.open_card_group";
         push({ kind, subject: subjectAlias, target: null, label: action.label, mapped: true }, { ...base, first, group_key: groupKey, commitment: "open_group" });
         continue;
       }
@@ -420,25 +462,14 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     // shows as a separate completion page ("reward.proceed"), so both read as one forced proceed.
     const leavesEmptyPage = kind === "reward.leave" && nativeKind === "reward_claim" && rewardItems.length === 0;
     if (leavesEmptyPage) kind = "reward.proceed";
-    const exclusion = EXCLUDED_KINDS[kind];
-    if (exclusion) { excluded.push({ ...first, rule: exclusion }); continue; }
     let commitment: Lowering["commitment"] = null; let groupKey: string | null = null;
     if (kind === "reward.leave" || leavesEmptyPage) commitment = "leave_reward_page";
-    if (kind === "card_reward.decline" && reward?.open_group) { commitment = "decline_open_group"; groupKey = reward.open_group; }
+    // Native card-page Skip is a return, not an irrevocable group refusal.
+    if (kind === "card_reward.decline" && reward?.open_group) kind = "card_reward.return";
     if (kind === "card_reward.take" && reward?.open_group) { commitment = "consume_open_group"; groupKey = reward.open_group; }
     const follow: FollowRule[] = [];
-    // Single-target selections that move to a preview: confirming is the mechanical rest of the
-    // already chosen intention (cancel/back are excluded by the forward profile).
-    // Leaving the reward page continues to the map; a Host that inserts a completion page with its
-    // single proceed input gets that input folded, so leaving is one P1 choice on every Host.
-    if (kind === "reward.leave" || leavesEmptyPage)
-      follow.push({ rule_id: "reward_completion_proceed", expect_native_kind: "reward_completion", expect_verb: "activate", optional: true });
-    if (kind === "upgrade.choose" && interaction.stage !== "preview")
-      follow.push({ rule_id: "upgrade_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
-    if (kind === "enchant.choose" && interaction.stage !== "preview")
-      follow.push({ rule_id: "enchant_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
-    if (kind === "selector.choose" && interaction.stage !== "preview")
-      follow.push({ rule_id: "selector_preview_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
+    // No current producer certifies unchanged complete preview facts or the exact
+    // owner-exit continuation. Keep preview/confirm/proceed explicit until qualified.
     push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias, label: action.label, mapped },
       { ...base, first, follow, commitment, group_key: groupKey });
   }
@@ -466,31 +497,30 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const observation: P1Observation = {
     schema: P1G_OBSERVATION_SCHEMA, profile: P1G_PROFILE, revision: P1G_REVISION,
     envelope: { episode_id: state.episode_id, occurrence, host_kind: state.host_kind,
-      source_snapshot_id: String(snapshot.snapshot_id), source_sequence: Number(snapshot.sequence) },
+      source_snapshot_id: String(snapshot.snapshot_id), source_sequence: Number(snapshot.sequence), capture_complete: false,
+      read_instances: readInstances.map(({ listed }) => ({ read_id: String(listed.read_id), kind: String(listed.kind),
+        target_referent_id: listed.target_referent_id ?? null })) },
     status,
-    scene: { family, native_kind: nativeKind, stage: String(interaction.stage),
+    scene: { family, native_kind: nativeKind, content_schema: String(interaction.content_schema), stage: String(interaction.stage),
       prompt: typeof interaction.prompt === "string" ? interaction.prompt : null, content: sceneContent },
     run: runPart, player: playerPart, deck: deckPart, map: mapPart, combat: combatPart, piles: pilesPart,
     extra_reads: extraReads, commitments,
     hidden_by_policy: [...new Set<string>([...(snapshot.completeness?.hidden_by_policy ?? []),
-      ...[...readsByKind.values()].flatMap((read) => read?.completeness?.hidden_by_policy ?? [])])].sort(),
+      ...readInstances.flatMap(({ read }) => read?.completeness?.hidden_by_policy ?? [])])].sort(),
     catalog, terminal
   };
-  if (canonicalJson(observation).length > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
+  if (Buffer.byteLength(canonicalJson(observation), "utf8") > P1G_LIMITS.observation_bytes) missing.push("observation_over_limit");
 
-  // reward.leave is forced only when every reward group is already resolved (claimed or declined).
-  const allResolved = nativeKind === "reward_claim" && groupIdentityAvailable
-    && rewardItems.every((item) => declined.has(String(item.group_id)));
-  const forcedKinds = allResolved ? new Set([...FORCED_KINDS, "reward.leave"]) : FORCED_KINDS;
-  const forced = status === "decision" && catalog.length === 1 && forcedKinds.has(catalog[0]!.kind)
-    ? catalog[0]!.choice_id : null;
+  // No current producer has a typed, mechanism-qualified mandatory proof.
+  const forced: string | null = null;
 
   const nextState: P1SessionState = {
     ...state, occurrence, last_snapshot_id: String(snapshot.snapshot_id), last_commitments: canonicalJson(reward ?? null),
     aliases: work.aliases, alias_counts: work.counts, reward_pages: rewardPages, reward
   };
   const complete = missing.length === 0 || (status === "terminal" && missing.every((item) => item.startsWith("read:")));
-  return { state: nextState, observation, lowering, forced_choice_id: forced, excluded, complete, missing };
+  return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, capture_complete: complete } },
+    lowering, forced_choice_id: forced, excluded, complete, missing };
 }
 
 /** Commitment bookkeeping after an intention's native steps finished (status known). */
@@ -509,33 +539,35 @@ export function applyCommitment(state: P1SessionState, lowering: Lowering, deliv
   }
 }
 
+/** Mechanical selection metadata is not card state; all other public fields must match. */
+function publicCardState(card: Record<string, any>): string {
+  const { index: _index, is_selected: _selected, ...publicState } = card;
+  return canonicalJson(publicState);
+}
+
 /** Follow-up native step for a declared fold, taken only from the successor's own catalog. */
 export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: unknown): NativeStep | null {
   const snapshot = decodePlayerSnapshot(successor).raw as Record<string, any>;
-  if (snapshot.status !== "interactive" || snapshot.interaction.kind !== rule.expect_native_kind) return null;
+  if (snapshot.status !== "interactive" || snapshot.interaction.kind !== rule.expect_native_kind
+      || snapshot.bound_actions.status !== "complete" || snapshot.completeness.status !== "complete"
+      || snapshot.interaction.content_schema !== `sts2.player-environment/surface/${rule.expect_native_kind}-1`
+      || snapshot.interaction.content.surface?.kind !== rule.expect_native_kind) return null;
   const actions = snapshot.bound_actions.actions as NativeAction[];
   if (rule.rule_id === "card_reward_select") {
     // Verify the opened native choice is exactly the previewed option before selecting it.
     const cards = snapshot.interaction.content.surface?.cards as Record<string, any>[] | undefined;
     const byEntity = Array.isArray(cards) && lowering.option_entity
       ? cards.filter((card) => card.entity_id === lowering.option_entity) : [];
-    const option = byEntity.length === 1 ? byEntity[0] : Array.isArray(cards) ? cards[lowering.option_index ?? -1] : undefined;
-    if (!option || String(option.definition_id ?? "") !== lowering.option_definition) return null;
+    const option = byEntity.length === 1 ? byEntity[0] : undefined;
+    if (!option || lowering.option_public == null || publicCardState(option) !== lowering.option_public) return null;
     const matches = actions.filter((item) => item.verb === "select" && item.subject_referent_id === option.entity_id);
     if (matches.length !== 1) return null;
     const only = matches[0]!;
     return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
   }
-  if (rule.rule_id === "reward_completion_proceed") {
-    if (actions.length !== 1 || actions[0]!.verb !== rule.expect_verb) return null;
-    const only = actions[0]!;
-    return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
-  }
-  if (rule.optional && snapshot.interaction.stage !== "preview") return null;
-  const matches = actions.filter((item) => item.verb === rule.expect_verb);
-  if (matches.length !== 1) return null;
-  const only = matches[0]!;
-  return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
+  // A matching kind plus a unique confirm/continue is not an intention/owner proof.
+  // r1.1 emits no such automatic plans while those producer contracts are absent.
+  return null;
 }
 
 /** Model-visible view: the envelope is binding metadata only. */

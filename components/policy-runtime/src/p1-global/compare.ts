@@ -1,153 +1,192 @@
-import { canonicalJson, modelView, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
+import { canonicalJson, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
+  type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
-/**
- * Two-Host comparison of P1 observations offered at aligned occurrences.
- * "semantic" mode ignores locale/display text (name/label/description/title/prompt/keyword text),
- * which legitimately differs between a Chinese Reference profile and an English Managed process.
- * Nothing else is normalised: information, catalog kinds, aliases, relations and commitments must match.
- */
-const TEXT_KEYS = new Set(["name", "label", "description", "title", "prompt", "act_name", "character_name", "text", "detail"]);
-
-function strip(value: unknown, semantic: boolean): unknown {
-  if (Array.isArray(value)) return value.map((item) => strip(item, semantic));
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (semantic && TEXT_KEYS.has(key)) continue;
-      if (semantic && key === "keywords") continue;
-      out[key] = strip(item, semantic);
-    }
-    return out;
-  }
-  return value;
+/** Formal full-public comparison. No text key is globally erased. Locale-specific
+ * transformations require an owning schema/path declaration; r1.1 uses literal text.
+ * Entity aliases may be renamed only through one injective global mapping. */
+export interface FirstDifference { path: string; left: unknown; right: unknown; reason?: string }
+type Verdict = "equal" | "different" | "incomparable";
+const normalize = (path: string) => path.replace(/\[\d+\]/gu, "[]");
+const ENTITY_PATHS = new Set([
+  "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
+  "player.content.relics[].card_previews[].entity_id", "player.content.potions[].card_previews[].entity_id",
+  "deck.content.cards[].entity_id", "map.content.nodes[].entity_id",
+  "run.content.modifiers[].card_previews[].entity_id", "combat.content.player.player_entity_id",
+  ...["hand", "companions", "potion_states", "orbs"].map(kind => `combat.content.player.${kind}[].entity_id`),
+  "combat.content.enemies[].entity_id", "combat.content.enemies[].combat_id",
+  "piles.content.zones[].cards[].entity_id",
+  "commitments.declined_reward_groups[]", "catalog[].subject", "catalog[].target"
+]);
+const SELECTOR_NATIVE_KINDS = new Set(["card_selection", "combat_hand_card_selection", "native_combat_pile_selection",
+  "native_deck_card_selection", "native_generated_card_choice", "native_simple_card_selection", "deck_transform_selection",
+  "deck_card_selection", "deck_upgrade_selection", "deck_enchant_selection"]);
+function surfaceEntityPaths(kind: string): Set<string> {
+  const fields = SELECTOR_NATIVE_KINDS.has(kind) ? ["cards[].entity_id", "selected_card_entity_ids[]", "selectable_card_entity_ids[]",
+    "deselectable_card_entity_ids[]", "screen_entity_id", "hand_entity_id"]
+    : kind === "combat_turn" ? ["room_entity_id", ...["playable_cards", "usable_potions", "discardable_potions"].flatMap(key =>
+      [`${key}[].entity_id`, `${key}[].target_entity_ids[]`])]
+    : kind === "map_navigation" ? ["next_options[].entity_id"]
+    : kind === "reward_claim" ? ["rewards[].entity_id", "rewards[].group_id", "rewards[].card_options[].entity_id", "discardable_potions[].entity_id"]
+    : kind === "card_reward_selection" ? ["cards[].entity_id", "alternatives[].entity_id", "screen_entity_id"]
+    : kind === "card_bundle_selection" ? ["bundles[].entity_id", "bundles[].cards[].entity_id", "screen_entity_id"]
+    : ["event_option", "event_dialogue", "rest_site"].includes(kind) ? ["options[].entity_id", "screen_entity_id", "room_entity_id"]
+    : ["treasure_room", "treasure_chest", "treasure_relic_selection", "treasure_completion", "relic_choice", "native_boss_relic_selection"].includes(kind)
+      ? ["room_entity_id", "screen_entity_id", "relics[].entity_id", "selectable_relic_entity_ids[]"]
+    : kind === "shop_inventory" ? ["screen_entity_id", "cards[].entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
+      "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]
+    : kind === "shop_room" ? ["room_entity_id"] : [];
+  return new Set(fields.map(field => `scene.content.surface.${field}`));
 }
-
-export interface FirstDifference { path: string; left: unknown; right: unknown }
-
-function firstDifference(left: unknown, right: unknown, path = "$"): FirstDifference | null {
-  if (canonicalJson(left) === canonicalJson(right)) return null;
-  if (Array.isArray(left) && Array.isArray(right)) {
-    if (left.length !== right.length) return { path: `${path}.length`, left: left.length, right: right.length };
-    for (let i = 0; i < left.length; i++) { const d = firstDifference(left[i], right[i], `${path}[${i}]`); if (d) return d; }
-  }
-  if (left && right && typeof left === "object" && typeof right === "object" && !Array.isArray(left) && !Array.isArray(right)) {
-    const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
-    for (const key of keys) {
-      const d = firstDifference((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key], `${path}.${key}`);
-      if (d) return d;
+function closedEntityRelations(observation: P1Observation): boolean {
+  const surfacePaths = surfaceEntityPaths(observation.scene.native_kind);
+  const declared = new Set<string>(); const referenced: string[] = [];
+  const visit = (value: unknown, path: string): void => {
+    const relative = normalize(path).replace(/^\./u, "");
+    if (typeof value === "string" && (ENTITY_PATHS.has(relative) || surfacePaths.has(relative))) {
+      if (/\.(?:subject|target)$/u.test(relative) || /(?:_entity_ids|declined_reward_groups)\[\]$/u.test(relative)) referenced.push(value);
+      else declared.add(value);
+    } else if (Array.isArray(value)) value.forEach((item, i) => visit(item, `${path}[${i}]`));
+    else if (value && typeof value === "object") Object.entries(value).forEach(([key, child]) => visit(child, `${path}.${key}`));
+  };
+  visit(modelView(observation), "");
+  return referenced.every(value => declared.has(value));
+}
+function graphPolicy(identicalFacts: boolean, nativeKind: string) {
+  const surfacePaths = surfaceEntityPaths(nativeKind);
+  return createPublicGraphComparator({
+    alias(value, _key, path) {
+      const p = normalize(path);
+      if (p === "$.chosen" || p === "$.observation.catalog[].choice_id") return { kind: "action", id: value };
+      const relative = p.replace(/^\$\.observation\./u, "");
+      return (ENTITY_PATHS.has(relative) || surfacePaths.has(relative)) ? { kind: "entity", id: value } : null;
+    },
+    unordered(path, parent) {
+      return path === "$.observation.catalog" || !identicalFacts && (
+        ["$.observation.deck.content.cards", "$.observation.map.content.nodes"].includes(path)
+        || path === "$.observation.piles.content.zones[].cards" && parent?.ordering === "unordered_multiset");
     }
+  });
+}
+function supported(observation: P1Observation): string | null {
+  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || observation.revision !== "r1.1")
+    return "unsupported_profile_revision";
+  if (observation.scene.content_schema !== `sts2.player-environment/surface/${observation.scene.native_kind}-1`
+      || (observation.scene.content as any)?.surface?.kind !== observation.scene.native_kind) return "unsupported_scene_schema_or_kind";
+  if (!observation.envelope.capture_complete) return "incomplete_capture";
+  if (!P1G_INFORMATION_SHAPES.includes(observation.scene.family)) return "unqualified_scene_information";
+  if (observation.status === "unsupported") return "unsupported_observation";
+  if (observation.status === "terminal") return observation.terminal?.outcome === "unknown" ? "unknown_terminal" : null;
+  for (const part of ["run", "player", "deck", "map"] as const)
+    if (observation[part].availability !== "available") return `required_${part}_unavailable`;
+  if (!completeDeck(observation.deck.content) || !completeMap(observation.map.content,
+      (observation.run.content as Record<string, any>)?.act_index ?? Number((observation.run.content as Record<string, any>)?.act) - 1))
+    return "invalid_required_content";
+  if (observation.combat.availability === "available" && (!completeCombat(observation.combat.content) || !completePiles(observation.piles.content)))
+    return "invalid_combat_content";
+  if (observation.scene.family === "combat" || observation.combat.availability === "available")
+    for (const part of ["combat", "piles"] as const)
+      if (observation[part].availability !== "available") return `required_${part}_unavailable`;
+  if (observation.scene.native_kind === "combat_turn" && !completeCombatSurface((observation.scene.content as any)?.surface)) return "invalid_combat_surface";
+  if (["selector", "upgrade", "enchant"].includes(observation.scene.family) && !completeSelector((observation.scene.content as any)?.surface))
+    return "invalid_selector_content";
+  if (new Set(observation.catalog.map(choice => choice.choice_id)).size !== observation.catalog.length || !closedEntityRelations(observation))
+    return "unbound_or_ambiguous_public_relation";
+  if (observation.catalog.some(choice => !choice.mapped)) return "unqualified_native_action_semantics";
+  return null;
+}
+function bounded(value: unknown): boolean {
+  const pending: [unknown, number][] = [[value, 0]]; let nodes = 0; let bytes = 0;
+  while (pending.length) {
+    const [item, depth] = pending.pop()!;
+    if (++nodes > 500_000 || depth > 64) return false;
+    if (typeof item === "string") bytes += Buffer.byteLength(item, "utf8");
+    else if (item && typeof item === "object") {
+      for (const [key, child] of Object.entries(item)) { bytes += Buffer.byteLength(key, "utf8"); pending.push([child, depth + 1]); if (pending.length + nodes > 500_000) return false; }
+    }
+    if (bytes > 8 * 1024 * 1024) return false;
   }
-  return { path, left, right };
+  return true;
+}
+function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
+  { verdict: Verdict; difference: FirstDifference | null } {
+  if (!bounded(left) || !bounded(right)) return { verdict: "incomparable",
+    difference: { path: "$", left: null, right: null, reason: "comparison_work_bound" } };
+  const unsupported = supported(left) ?? supported(right);
+  if (unsupported) return { verdict: "incomparable", difference: { path: "$", left: null, right: null, reason: unsupported } };
+  if (chosenLeft !== null && !left.catalog.some(choice => choice.choice_id === chosenLeft)
+      || chosenRight !== null && !right.catalog.some(choice => choice.choice_id === chosenRight))
+    return { verdict: "incomparable", difference: { path: "$.chosen", left: chosenLeft, right: chosenRight, reason: "choice_not_in_catalog" } };
+  const a = { observation: modelView(left), chosen: chosenLeft }; const b = { observation: modelView(right), chosen: chosenRight };
+  // Identity is itself a bijection and preserves every field/edge, including duplicates.
+  if (canonicalJson(a) === canonicalJson(b)) return { verdict: "equal", difference: null };
+  try {
+    // Facts establish entity mappings before catalog matching; chosen uses the same action mapping.
+    const { catalog: ca, ...oa } = a.observation; const { catalog: cb, ...ob } = b.observation;
+    // Identical complete fact bytes admit the identity bijection, including repeated cards.
+    // Traverse those arrays positionally to establish it; this does not align renamed ambiguities.
+    const graph = graphPolicy(canonicalJson(oa) === canonicalJson(ob), left.scene.native_kind);
+    graph.compare(oa, ob, "$.observation");
+    graph.unordered(ca, cb, "$.observation.catalog");
+    graph.compare(chosenLeft, chosenRight, "$.chosen");
+    return { verdict: "equal", difference: null };
+  } catch (error) {
+    if (error instanceof PublicGraphDifference) return { verdict: error.incomparable ? "incomparable" : "different",
+      difference: { path: error.path, left: null, right: null, reason: error.reason } };
+    return { verdict: "incomparable", difference: { path: "$", left: null, right: null, reason: "unsupported_public_structure" } };
+  }
 }
 
 export interface PairReport {
-  schema: "sts2.p1/pair-report-1"; mode: "exact" | "semantic";
+  schema: "sts2.p1/pair-report-1"; mode: "exact" | "semantic"; verdict: Verdict;
   compared: number; matching: number; first_divergence: (FirstDifference & { occurrence: number }) | null;
-  left_occurrences: number; right_occurrences: number;
+  left_occurrences: number; right_occurrences: number; same_length: boolean;
+  locale_policy: "literal_no_normalization";
 }
-
 export function comparePair(left: readonly P1Observation[], right: readonly P1Observation[], mode: "exact" | "semantic"): PairReport {
-  const report: PairReport = { schema: "sts2.p1/pair-report-1", mode, compared: 0, matching: 0, first_divergence: null,
-    left_occurrences: left.length, right_occurrences: right.length };
-  const count = Math.min(left.length, right.length);
-  for (let i = 0; i < count; i++) {
-    const a = strip(modelView(left[i]!), mode === "semantic"); const b = strip(modelView(right[i]!), mode === "semantic");
-    report.compared += 1;
-    const difference = firstDifference(a, b);
-    if (!difference) { report.matching += 1; continue; }
-    report.first_divergence = { occurrence: left[i]!.envelope.occurrence, ...difference };
-    break;
+  const report: PairReport = { schema: "sts2.p1/pair-report-1", mode, verdict: "equal", compared: 0, matching: 0,
+    first_divergence: null, left_occurrences: left.length, right_occurrences: right.length,
+    same_length: left.length === right.length, locale_policy: "literal_no_normalization" };
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const result = comparePoint(left[i]!, right[i]!, null, null); report.compared++;
+    if (result.verdict === "equal") { report.matching++; continue; }
+    report.verdict = result.verdict; report.first_divergence = { occurrence: left[i]!.envelope.occurrence, ...result.difference! }; return report;
   }
+  if (!report.same_length) { report.verdict = "different"; report.first_divergence = { occurrence: left.length + 1,
+    path: "$.occurrences.length", left: left.length, right: right.length, reason: "sequence_length_changed" }; }
   return report;
 }
 
-/**
- * Decision-level equivalence across Hosts. Public aliases and referent structure are Host-shaped
- * (one Host names a map option, the other the node) and display text is localised, so byte or
- * structural equality is not the cross-Host claim. Instead each occurrence is reduced to a
- * locale-free signature: scene family, the multiset of offered choices by (kind, subject and target
- * public identity), the chosen choice, and the decision-relevant public state.
- */
-type Json = Record<string, any>;
-
-function publicIdentity(observation: P1Observation): Map<string, string> {
-  const names = new Map<string, string>();
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) { for (const item of value) visit(item); return; }
-    if (value === null || typeof value !== "object") return;
-    const item = value as Json;
-    if (typeof item.entity_id === "string" && !names.has(item.entity_id)) {
-      if (typeof item.definition_id === "string") names.set(item.entity_id, `${item.definition_id}${item.is_upgraded ? "+" : ""}`);
-      else if (Number.isInteger(item.col) && Number.isInteger(item.row)) names.set(item.entity_id, `${item.point_type ?? "node"}@${item.col},${item.row}`);
-      else if (typeof item.kind === "string") names.set(item.entity_id, `${item.kind}`);
-      else if (Number.isInteger(item.index)) names.set(item.entity_id, `option#${item.index}`);
-    }
-    if (typeof item.group_id === "string" && typeof item.kind === "string" && !names.has(item.group_id)) names.set(item.group_id, `${item.kind}`);
-    for (const child of Object.values(item)) visit(child);
-  };
-  visit(modelView(observation));
-  return names;
+/** Diagnostic only: preserve each instance. This string is never an equivalence proof. */
+export function choiceSignature(observation: P1Observation, choiceId: string): string | null {
+  const choice = observation.catalog.find(item => item.choice_id === choiceId);
+  return choice ? canonicalJson(choice) : null;
 }
-
-const sorted = (values: string[]) => [...values].sort();
-
-export function choiceSignature(observation: P1Observation, choiceId: string, names = publicIdentity(observation)): string | null {
-  const choice = observation.catalog.find((item) => item.choice_id === choiceId);
-  if (!choice) return null;
-  const who = (alias: string | null) => alias === null ? "-" : names.get(alias) ?? "?";
-  return `${choice.kind}|${who(choice.subject)}|${who(choice.target)}`;
+export function decisionSignature(observation: P1Observation, chosen: string | null): unknown {
+  return { observation: modelView(observation), chosen };
 }
-
-export function decisionSignature(observation: P1Observation, chosen: string | null): Json {
-  const names = publicIdentity(observation);
-  const player = (observation.player.content ?? {}) as Json;
-  const combat = (observation.combat.content ?? null) as Json | null;
-  const deck = ((observation.deck.content ?? {}) as Json).cards as Json[] | undefined;
-  const defs = (items: unknown) => Array.isArray(items) ? sorted(items.map((item: Json) => `${item.definition_id}${item.is_upgraded ? "+" : ""}`)) : null;
-  return {
-    status: observation.status, family: observation.scene.family, terminal: observation.terminal,
-    player: { hp: player.hp, max_hp: player.max_hp, gold: player.gold, character: player.character_definition_id,
-      relics: defs(player.relics), potions: defs(player.potions) },
-    deck: defs(deck),
-    combat: combat ? { round: combat.round, energy: combat.player?.energy, block: combat.player?.block,
-      hand: defs(combat.player?.hand), draw: combat.player?.draw_pile_count, discard: combat.player?.discard_pile_count,
-      enemies: sorted((combat.enemies ?? []).map((enemy: Json) => `${enemy.definition_id}:${enemy.hp}/${enemy.max_hp}:${enemy.block}`)) } : null,
-    commitments: { ...observation.commitments,
-      declined_reward_groups: sorted(observation.commitments.declined_reward_groups.map((alias) => names.get(alias) ?? "?")) },
-    catalog: sorted(observation.catalog.map((choice) => choiceSignature(observation, choice.choice_id, names)!)),
-    chosen: chosen === null ? null : choiceSignature(observation, chosen, names)
-  };
-}
-
 export interface DecisionPairReport {
-  schema: "sts2.p1/decision-pair-report-1"; compared: number; matching: number;
+  schema: "sts2.p1/decision-pair-report-1"; verdict: Verdict; compared: number; matching: number;
   first_divergence: (FirstDifference & { occurrence: number }) | null;
   left_occurrences: number; right_occurrences: number; same_length: boolean;
-  /** Forced (non-decision) observations left out of the comparison on each side. */
-  left_forced: number; right_forced: number;
+  left_forced: number; right_forced: number; locale_policy: "literal_no_normalization";
 }
-
 type DecisionPoint = { observation: P1Observation; chosen: string | null; origin?: string | null };
-
-/**
- * Only Agent decision points and the terminal are compared: declared forced inputs (a page with one
- * continue-only input) are Host presentation, not decisions, and Hosts legitimately differ in them.
- */
-const decisionPoints = (points: readonly DecisionPoint[]) =>
-  points.filter((point) => point.observation.status === "terminal" || (point.origin ?? "agent_choice") === "agent_choice");
-
-export function compareDecisions(allLeft: readonly DecisionPoint[], allRight: readonly DecisionPoint[]): DecisionPairReport {
-  const left = decisionPoints(allLeft); const right = decisionPoints(allRight);
-  const report: DecisionPairReport = { schema: "sts2.p1/decision-pair-report-1", compared: 0, matching: 0, first_divergence: null,
-    left_occurrences: left.length, right_occurrences: right.length, same_length: left.length === right.length,
-    left_forced: allLeft.length - left.length, right_forced: allRight.length - right.length };
+export function compareDecisions(left: readonly DecisionPoint[], right: readonly DecisionPoint[]): DecisionPairReport {
+  const report: DecisionPairReport = { schema: "sts2.p1/decision-pair-report-1", verdict: "equal", compared: 0, matching: 0,
+    first_divergence: null, left_occurrences: left.length, right_occurrences: right.length, same_length: left.length === right.length,
+    left_forced: left.filter(point => point.origin === "forced").length, right_forced: right.filter(point => point.origin === "forced").length,
+    locale_policy: "literal_no_normalization" };
   for (let i = 0; i < Math.min(left.length, right.length); i++) {
-    report.compared += 1;
-    const difference = firstDifference(decisionSignature(left[i]!.observation, left[i]!.chosen),
-      decisionSignature(right[i]!.observation, right[i]!.chosen));
-    if (!difference) { report.matching += 1; continue; }
-    report.first_divergence = { occurrence: left[i]!.observation.envelope.occurrence, ...difference };
-    break;
+    // r1.1 has no qualified mandatory proof. Do not erase observations labelled forced by an old producer.
+    if (left[i]!.origin === "forced" || right[i]!.origin === "forced") {
+      report.verdict = "incomparable"; report.first_divergence = { occurrence: left[i]!.observation.envelope.occurrence,
+        path: "$.origin", left: left[i]!.origin, right: right[i]!.origin, reason: "unqualified_forced_input" }; return report;
+    }
+    const result = comparePoint(left[i]!.observation, right[i]!.observation, left[i]!.chosen, right[i]!.chosen); report.compared++;
+    if (result.verdict === "equal") { report.matching++; continue; }
+    report.verdict = result.verdict; report.first_divergence = { occurrence: left[i]!.observation.envelope.occurrence, ...result.difference! }; return report;
   }
+  if (!report.same_length) { report.verdict = "different"; report.first_divergence = { occurrence: left.length + 1,
+    path: "$.occurrences.length", left: left.length, right: right.length, reason: "sequence_length_changed" }; }
   return report;
 }
