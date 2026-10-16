@@ -53,7 +53,7 @@ export class GlobalHttpFixture {
         if (url.pathname.endsWith("/public-basis/current")) {
           if (this.captureGate) await this.captureGate;
           if(this.steps && this.postCaptureGate) { this.postCaptureEntered?.(); await this.postCaptureGate; }
-          const value = { schema: "sts2.player-environment/public-basis-1", revision: "1", capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete", ...this.basis, missing: this.basis.missing ?? [] };
+          const value = { schema: "sts2.player-environment/public-basis-1", revision: "2", capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete", ...this.basis, snapshot: { ...this.basis.snapshot, input_profile: "public-basis-1" }, missing: this.basis.missing ?? [] };
           const bytes = Buffer.from(JSON.stringify(value)), id = `capture-${this.captures.size + 1}`;
           const handle = { schema: "sts2.player-environment/public-basis-handle-1", read_profile: "public-basis-sealed-1", input_profile: "public-basis-1", capture_id: id,
             source_snapshot_id: value.snapshot.snapshot_id, session: value.snapshot.session, generation_id: "generation-1", game_continuity_id: this.continuity,
@@ -76,6 +76,7 @@ export class GlobalHttpFixture {
           this.held = false; return out({ ...control, status: "controller_released", detail: "synthetic", controller: null });
         }
         if (url.pathname === "/api/player-environment/actions") {
+          if (body.input_profile !== "public-basis-1") throw new Error("public_basis_profile_required");
           this.steps++; const bound = this.basis.snapshot.bound_actions.actions.find((a: any) => a.bound_action_id === body.bound_action_id)!;
           const { interaction_id: _i, label: _l, ...action } = bound;
           if (this.wrongAction) action.bound_action_id = "foreign-action";
@@ -83,9 +84,9 @@ export class GlobalHttpFixture {
           else if (this.terminalAfterStep) { this.basis = fixture("managed-game_over"); this.basis.snapshot.session = this.capabilitiesSession(); for (const r of this.basis.reads) r.response.session = this.capabilitiesSession(); }
           else { this.basis.snapshot.snapshot_id += "-next"; this.basis.snapshot.sequence++; for (const r of this.basis.reads) { r.response.expected_snapshot_id = r.response.observed_snapshot_id = this.basis.snapshot.snapshot_id; } }
           if(this.afterStepContinuity!==undefined)this.continuity=this.afterStepContinuity;
-          const successor=structuredClone(this.basis.snapshot);if(this.wrongSuccessorSession)successor.session.runtime_instance_id="foreign-runtime";
+          const successor={ ...structuredClone(this.basis.snapshot), input_profile: "public-basis-1" };if(this.wrongSuccessorSession)successor.session.runtime_instance_id="foreign-runtime";
           return out({ protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1", request_id: this.wrongRequest ? "foreign-request" : body.request_id,
-            delivery: this.delivery, action, reason_code: null, detail: null, retry: { allowed: false, reason: "synthetic" }, successor });
+            input_profile: "public-basis-1", delivery: this.delivery, action, reason_code: null, detail: null, retry: { allowed: false, reason: "synthetic" }, successor });
         }
         res.statusCode = 404; out({ error: "unexpected" });
       } catch (error) { res.statusCode = 500; out({ error: String(error) }); }

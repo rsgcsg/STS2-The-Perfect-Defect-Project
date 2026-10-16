@@ -30,7 +30,7 @@ internal static partial class PlayerEnvironmentService
         try
         {
             var before = P1NativeCaptureBoundary.Capture();
-            SnapshotBuildResult built = BuildSnapshot(requiredReadKindsForObservation: PublicBasisReadKinds, aggregateCurrentPublicReads: true);
+            SnapshotBuildResult built = BuildSnapshot(inputProfile: PublicBasisContract.Profile);
             var frozen = FreezePublicBasis(built, before.Run == null ? null : Entities.GetId(before.Run, "run"));
             guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
             return frozen;

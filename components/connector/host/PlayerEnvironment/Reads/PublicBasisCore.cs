@@ -15,6 +15,7 @@ internal static class PublicBasisAssembly
         string? continuity, JsonSerializerOptions options, DateTimeOffset? captureTime = null)
     {
         if (snapshot["schema"]?.GetValue<string>() != PlayerEnvironmentContract.SnapshotSchema
+            || (snapshot["input_profile"] is { } profile && profile.GetValue<string>() != PublicBasisContract.Profile)
             || snapshot["information_policy"]?["includes_hidden_information"]?.GetValue<bool>() != false)
             throw new SealedObservationException("invalid_public_basis", "A public source Snapshot is required.");
         if (reads.Count > PublicBasisContract.MaxReadInstances)
@@ -57,8 +58,10 @@ internal static class PublicBasisAssembly
         }
         if (snapshot["completeness"]?["status"]?.GetValue<string>() != "complete"
             || snapshot["completeness"]?["missing"] is not JsonArray { Count: 0 }) missing.Add("snapshot:partial");
+        string revision = snapshot["input_profile"]?.GetValue<string>() == PublicBasisContract.Profile
+            ? PublicBasisContract.ExecutionRevision : PublicBasisContract.Revision;
         // These are original bytes for the existing retention/storage owners. No P1 state is embedded.
-        var observation = new PublicBasisObservation(PublicBasisContract.Schema, PublicBasisContract.Revision,
+        var observation = new PublicBasisObservation(PublicBasisContract.Schema, revision,
             PublicBasisContract.Scope, missing.Count == 0 ? "complete" : "partial", snapshot, reads, missing);
         using var stream = new BoundedObservationStream(SealedObservationContract.MaxCapsuleBytes);
         JsonSerializer.Serialize(stream, observation, options);

@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { isJsonObject } from "./json.js";
-import { decodePlayerRead, decodePlayerSnapshot } from "./protocol.js";
+import { isJsonObject, type JsonObject } from "./json.js";
+import { decodePlayerRead, decodePlayerSnapshot, decodePlayerReceipt,
+  type DecodedPlayerPayload, type PlayerEnvironmentSnapshot, type PlayerEnvironmentReceipt } from "./protocol.js";
 import { hasFinitePublicNumbers } from "./publicCombat.js";
 import { assembleRetainedBytes, publicBytesSha256 } from "./retainedBytes.js";
 import { SEALED_OBSERVATION_MAX_BYTES, SEALED_OBSERVATION_DEFAULT_CHUNK_BYTES,
@@ -43,7 +44,7 @@ const capabilitiesSchema = z.object({ schema: z.literal(wire("capabilities")), r
   && value.default_chunk_bytes <= value.max_chunk_bytes, "inconsistent retention capability");
 const readSchema = z.object({ read_id: id, kind: z.string().min(1), response: z.record(z.unknown()).nullable(),
   error: z.string().min(1).nullable() }).strict();
-const basisSchema = z.object({ schema: z.literal(PUBLIC_BASIS_SCHEMA), revision: z.literal("1"),
+const basisSchema = z.object({ schema: z.literal(PUBLIC_BASIS_SCHEMA), revision: z.enum(["1", "2"]),
   capture_scope: z.literal(PUBLIC_BASIS_SCOPE), capture_status: z.enum(["complete", "partial"]),
   snapshot: z.record(z.unknown()), reads: z.array(readSchema).max(10_000), missing: z.array(z.string().min(1))
 }).strict();
@@ -58,6 +59,38 @@ export const decodePublicBasisChunk = (value: unknown): PublicBasisChunk => chun
 export const decodePublicBasisRelease = (value: unknown): PublicBasisRelease => releaseSchema.parse(value);
 export const decodePublicBasisCapabilities = (value: unknown): PublicBasisCapabilities => capabilitiesSchema.parse(value);
 
+// Keep legacy decoders strict. Only the named public-basis path accepts this tag.
+export type PublicBasisSnapshot = PlayerEnvironmentSnapshot & { input_profile: typeof PUBLIC_BASIS_PROFILE };
+export type PublicBasisReceipt = Omit<PlayerEnvironmentReceipt, "successor"> & {
+  input_profile: typeof PUBLIC_BASIS_PROFILE; successor: PublicBasisSnapshot | null;
+};
+function withoutPublicProfile(value: unknown): JsonObject {
+  if (!isJsonObject(value) || value.input_profile !== PUBLIC_BASIS_PROFILE)
+    throw new Error("public basis requires its exact execution profile");
+  const normal = { ...value }; delete normal.input_profile; return normal;
+}
+export function decodePublicBasisSnapshot(value: unknown): DecodedPlayerPayload<PublicBasisSnapshot> {
+  const decoded = decodePlayerSnapshot(withoutPublicProfile(value));
+  return { raw: value as JsonObject, data: { ...decoded.data, input_profile: PUBLIC_BASIS_PROFILE } };
+}
+export function decodePublicBasisReceipt(value: unknown): DecodedPlayerPayload<PublicBasisReceipt> {
+  const normal = withoutPublicProfile(value);
+  const successor = normal.successor === null ? null : decodePublicBasisSnapshot(normal.successor).data;
+  normal.successor = normal.successor === null ? null : withoutPublicProfile(normal.successor);
+  const decoded = decodePlayerReceipt(normal);
+  return { raw: value as JsonObject, data: { ...decoded.data, input_profile: PUBLIC_BASIS_PROFILE, successor } };
+}
+/** Explicit archive/dual-host reader; unknown profiles still fail the legacy decoder. */
+export function decodePublicSourceReceipt(value: unknown): DecodedPlayerPayload<PlayerEnvironmentReceipt | PublicBasisReceipt> {
+  return isJsonObject(value) && value.input_profile === PUBLIC_BASIS_PROFILE
+    ? decodePublicBasisReceipt(value) : decodePlayerReceipt(value);
+}
+/** Revision-1 archives remain readable with their original untagged projection. */
+export function decodePublicSourceSnapshot(value: unknown): DecodedPlayerPayload<PlayerEnvironmentSnapshot | PublicBasisSnapshot> {
+  return isJsonObject(value) && value.input_profile === PUBLIC_BASIS_PROFILE
+    ? decodePublicBasisSnapshot(value) : decodePlayerSnapshot(value);
+}
+
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
@@ -68,7 +101,8 @@ export function decodePublicBasis(value: unknown): PublicBasis {
   if (!isJsonObject(value)) throw new Error("public basis must contain only finite JSON facts");
   const basis = basisSchema.parse(value);
   if (!hasFinitePublicNumbers(basis)) throw new Error("public basis has nonfinite facts");
-  const snapshot = decodePlayerSnapshot(basis.snapshot).data;
+  const snapshot = basis.revision === "2"
+    ? decodePublicBasisSnapshot(basis.snapshot).data : decodePlayerSnapshot(basis.snapshot).data;
   if (snapshot.information_policy.includes_hidden_information !== false) throw new Error("source is not public");
   if (basis.reads.length !== snapshot.reads.length || new Set(basis.reads.map(read => read.read_id)).size !== basis.reads.length
     || new Set(snapshot.reads.map(read => read.read_id)).size !== snapshot.reads.length)

@@ -76,7 +76,7 @@ internal static partial class PlayerEnvironmentService
         LiveHostIdentity host = EnvironmentIdentityRuntime.HostIdentity();
         return new PlayerEnvironmentCapabilitiesResponse(
             PlayerEnvironmentContract.ProtocolVersion,
-            inputProfile == null
+            inputProfile == null || inputProfile == PublicBasisContract.Profile
                 ? PlayerEnvironmentContract.SnapshotSchema
                 : inputProfile == TextMenuContract.Profile
                     ? TextMenuContract.SnapshotSchema
@@ -146,6 +146,7 @@ internal static partial class PlayerEnvironmentService
 
     internal static bool IsSupportedInputProfile(string? inputProfile) =>
         inputProfile == null
+        || string.Equals(inputProfile, PublicBasisContract.Profile, StringComparison.Ordinal)
         || string.Equals(inputProfile, NativeLogicalContract.Profile, StringComparison.Ordinal)
         || string.Equals(inputProfile, TextMenuContract.Profile, StringComparison.Ordinal)
         || string.Equals(inputProfile, TextMenuV2Contract.Profile, StringComparison.Ordinal)

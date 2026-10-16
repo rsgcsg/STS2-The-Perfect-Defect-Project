@@ -81,6 +81,11 @@ P1 另行验证场景必需资料、完整语义目录和粒度映射，不能�
 该格式复用 SealedObservationStore 的容量、TTL、哈希、连续分块和释放，独立声明
 `/api/player-environment/public-basis/{capabilities,current,read,release}`；旧 C1 及其归档原义保留。
 SDK `getFullPublicBasis` 验证原始字节和 Snapshot/Read/session 绑定，清理失败显式报错。
+Reference 当前捕获使用 `input_profile="public-basis-1"`，提交及结果查询须携带相同 profile。
+该投影保留 Snapshot1 的内容结构，额外标记 input_profile；公开事实包 revision 为 2，SDK 仍可读 revision 1 原件。
+捕获、执行前重建及 receipt successor 均使用 aggregate public Reads/详情和独立 view identity；
+夹入未变化的 legacy 观察不改变该身份，实际 native 变化或当前绑定变化仍使旧 token 过期。
+旧 null/C1、reward 与 text-menu 的投影、输出和身份算法保持原义；不自动升级历史 token。
 调用方可以传外部 AbortSignal、发出前的异步准入与原始响应字节回调；控制、预算和操作账本仍归 Runtime。
 清理使用独立有界信号，未知操作结果不因存在捕获/释放接口而允许重投。
 
