@@ -1,5 +1,7 @@
 # P1 r1：Host 对接、传输与共同记录
 
+> 背景/历史文档。P1 的唯一权威是 [P1 全局 r1](P1_GLOBAL_R1.zh-CN.md)（r1.1）；冲突时以它和代码为准。
+
 状态：Proposed，落实 [P1](P1.zh-CN.md) 与 [ADR-0017](../adr/0017-p1-forward-decision-profile.md)。字段名是本修订候选，未注册为可用生产 schema。
 
 ## 1. 只保留现有分层

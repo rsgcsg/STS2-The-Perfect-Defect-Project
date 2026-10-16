@@ -8,7 +8,9 @@ One repository and workflow do not merge game, evidence, operational or research
 ## Required Read Order
 
 1. `README.md`
-2. `docs/memory/CURRENT.md`
+2. `docs/memory/CURRENT.md`, then `docs/WORKING_RULES.zh-CN.md` (user-confirmed working
+   rules: pragmatic rigor, vertical slices, WIP limits, agent handoff, GitHub use; they
+   override heavier historical process descriptions)
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 

@@ -1,9 +1,11 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：PR188 提交的 r1.0 实验候选，有两端实跑原件；2026-10-16 独立验收发现实质缺陷，尚未接受为完整全局 P1。上级原则见 [P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)。
-代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）；
-执行器、Agent 端口、记录器、转换器、对照工具在 `components/policy-runtime/src/p1-global/`，命令 `components/policy-runtime/bin/sts2-p1.mjs`。
-实测证据、支持矩阵和已知缺口见文末与交付报告；本稿描述提交行为，不能覆盖上级 P1 选定要求。当前修复与完整验收按[唯一活动计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)执行；有损 decision 比较、普通 runner 记录、外部 chooser 接线不分别等同完整等价、独立环境 Recorder、完整产品路径。下文 r1.0 行为保留供审查，修订合同在实现前逐项明确。
+状态：**r1.1，P1 的唯一权威文档**（2026-10-16 起）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；与本文冲突时以本文和代码为准。
+推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前进度与下一步见第 16–18 节。
+
+代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
+产品路径：`PolicyRuntime`（agent-session-1）→ Managed 用 `ManagedServicePolicyClient.attachGlobal`，Reference 用 `ReferenceGlobalTransport`；简单外部 Agent 经 `components/policy-runtime/examples/p1/session-bridge.mjs` 接入（`sts2.p1/agent-port-1`）。
+套件入口：`node tools/p1-suite.mjs`；离线检查 `sts2-p1 replay|trajectory`。第 1–13 节是协议语义（r1.0 起不变，除非第 17 节登记）；第 14–15 节是 r1.0 的历史实测。
 
 ## 1. P1 是什么、为什么要
 
@@ -186,3 +188,50 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 - **人工选择器**未在真实游戏里由真人跑过；执行链路与外部 Agent 相同。
 - **执行路径**：`sts2-p1 run` 直接用 Host 驱动协议，不经过 Policy Runtime 的完整产品路径（workbench/队列）；Codex 的 `p1-ordinary-combat-r1` 是另一个 profile，二者关系待整合。
 - 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、Reference 发布级资格、Managed 规则等价资格、训练数据可用性。
+
+## 16. r1.1 产品路径实测（2026-10-16，本机，source + runtime，非 hosted CI）
+
+全部经 Policy Runtime 产品路径。外部 Agent 是 `examples/p1/random_agent.py`，经 `session-bridge.mjs` 接入；入口 `tools/p1-suite.mjs`。
+
+| 运行 | 宿主 | 结果 |
+| --- | --- | --- |
+| suite-b，10 种子 | Managed（Ironclad，en） | 9/10 自然终局，0 unknown，10/10 回放校验通过 |
+| census40，40 种子（统计 38 局） | Managed（Defect，zh） | 32/38 自然终局，0 unknown，2519 个决策；6 局都卡在选卡页元数据（续作 T2）；另 2 局因本机磁盘满中断，不计入 |
+| ref5，test-1000 前 5 种子 | Reference（真实游戏 + 开发 Mod，Defect，zh） | 4/5 自然终局，343 个决策，5/5 回放校验通过；1 局在第 44 步出现 unknown（见下），已修复，修复后待重跑确认 |
+| Managed→Managed 重放 | Managed | 70/70 匹配，终局相同 |
+| Reference→Managed 重放，96 步轨迹 | Reference 原件在 Managed 上重放 | 第 0 步分叉：Managed 缺牌组卡详情（续作 T1） |
+
+本轮为让真实宿主跑通而修的问题（每个都来自真实运行）：
+- Managed 战斗 HUD 白名单过严，原来 1 步就停；
+- Managed 重复申请控制权；
+- 选卡页缺 `selectable_card_entity_ids`；
+- 富文本图标被拒；
+- 牌组卡详情读取目标不是当前实体；
+- 地图 `current_position` 为 null 时被省略；
+- 投递后过渡态没有等待；
+- 游戏结束页仍声明地图读取；
+- Reference 商店关闭动作的动词是 `cancel`；
+- 请求层"未交付"回执不带 subject，被误判为 unknown；
+- 套件在一个 driver 上连续 reset。
+
+## 17. 登记的协议例外（必须经用户审核才能新增）
+
+| 编号 | 例外 | 原因 | 批准 |
+| --- | --- | --- | --- |
+| E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
+
+另有两条用户确认的规则：
+- Reference 是真相，Managed 跟随；等价性通过在 Managed 上重放 Reference 原件来检验，分叉默认是 Managed 缺陷。
+- Managed 只需在 P1 语境里绝大多数情况与原版一致，功能齐全、逻辑相同；不要求逐字节相同。
+
+## 18. 当前已知缺口（r1.1）
+
+按续作计划 T1–T6 处理：
+- T1：Managed 缺牌组卡详情和空字段形状，是等价的第一分叉。
+- T2：Managed 选卡页元数据不完整。
+- T3：Reference 20 局套件还没跑。
+- T4：Reference→Managed 等价套件还没跑。
+- T5：真人 Source4 短录制还没做。
+- T6：卡牌渲染白名单测试，待用户决定。
+- 第 15 节的 r1.0 缺口仍然有效，除非已在第 16 节列为已修。
+- 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、发布级资格、训练数据可用性。
