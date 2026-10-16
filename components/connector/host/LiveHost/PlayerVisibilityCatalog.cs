@@ -49,7 +49,7 @@ internal static class PlayerVisibilityCatalog
                     "player_openable_draw_discard_exhaust_pile_views",
                     StateBound: true,
                     CreatesActionAuthority: false,
-                    "unordered_multiset",
+                    "per_zone",
                     "medium",
                     new[] { "combat_planning", "discard_sensitive_effect", "exhaust_sensitive_effect" },
                     PlayerVisibleReadBuilder.HiddenByPolicyFor(kind)));

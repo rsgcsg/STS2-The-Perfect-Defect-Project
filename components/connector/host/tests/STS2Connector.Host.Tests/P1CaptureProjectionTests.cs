@@ -22,6 +22,9 @@ public sealed class P1CaptureProjectionTests
             new("public", "native", Array.Empty<string>(), Array.Empty<string>()),
             new("v0.111.0", "41cef1ea", null, 0, new("exact", true, true, true, "fixture")), Array.Empty<string>());
         Assert.Equal(new[] { "run_deck", "combat_piles" }, PlayerEnvironmentService.P1CaptureReadKinds(ready));
+        // Exercise the actual descriptor producer, not a hand-authored archived descriptor.
+        var advertised = PlayerVisibilityCatalog.Build(ready, true, false).ReadCatalog.Single(read => read.Kind == "combat_piles");
+        Assert.Equal("per_zone", advertised.OrderingSemantics);
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { Readiness = "settling" }));
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { Context = context with { IsPlayPhase = false } }));
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { InputOwnership = new("none_fail_closed", null, "fixture") }));

@@ -76,8 +76,9 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
   if (ctx.kind !== "selection" || !isJsonObject(hud) || hud.kind !== "combat"
       || !Number.isSafeInteger(hud.round) || (hud.round as number) < 1 || !text(hud.turn_owner)
       || !isJsonObject(player) || !text(player.player_entity_id) || player.player_entity_id !== owner
-      || !["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+      || !["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
         "exhaust_pile_count", "orb_slots"].every((key) => finite(player[key]))
+      || !(finite(player.stars) || player.stars === null) // Native display is absent at zero for characters without a permanent star counter.
       || !statusesComplete(player.statuses)
       || !Array.isArray(player.orbs) || !player.orbs.every((orb) => isJsonObject(orb)
         && ["entity_id", "definition_id", "name"].every((key) => text(orb[key]))
