@@ -57,3 +57,34 @@ local_models.py无报错；保留原日志，不放宽检查或扩到模型依�
 独立打包，Reference driver/SDK/Runtime执行源码及已加载Mod均未因此改变。
 这说明路径影响边界，不构成最终候选的新实跑证明。范围到定点回归、必要仓库门、
 一次稳定候选推送和 PR交接为止；不合并/关闭 PR，不开其他P1工作。
+
+## 定点CI修复集成（任务4，2026-10-17）
+
+起点986e3f95与实时PR191一致且工作树干净；Root唯一集成人。三个任务均以此
+固定候选调查，先读取实际交付和原日志，再亲核diff。任务1提交8b83a7f1通过
+正常merge7b0deb0a保留；任务2提交93fd596b通过正常merge0efccea9保留。任务3
+没有产品修复提交，Windows Python崩溃仍是阻塞，不扩展成本轮线程/HTTP重构。
+
+- Windows chooser：标准fileURLToPath代替URL.pathname；真实子进程、诊断身份、
+  30次选择与两重复实例集合断言保留。原Windows日志只有exit1，没打印child
+  stderr；本地编码路径反例给出MODULE_NOT_FOUND，Windows真实执行仍待CI。
+- Capture/budget：SDK boundedHook在取消后结束等待，但已启动的response原始
+  artifact/事件写入还在进行；旧源码可先写global_capture_error再写同请求响应，
+  replay正确拒绝。captureGlobal现在等该写入完成再终结请求；真实控制释放独立
+  进行。门闩固定Stop/budget交错，解除写入前已释放；delivered前缀仍保留、
+  不重发、unknown语义与replay断言不变。完整磁盘永久阻塞封存没有新保证。
+- Windows Python：原pytest PID1768退出3221225477/0xC0000005，60s转储中断；
+  当前只有faulthandler最强假说，stdout收尾缺口无因果归属。macOS原测试1pass
+  和纯标准库转储卡死不是Windows AV复现。任务3两实验已结束，Windows原单测
+  原生dump方案未执行；不把一次新CI通过当作根因已解决。
+
+组合树五文件45项定点回归通过；既有SDK/Runtime全套、应用166例等不重复执行。
+typecheck/build/package、identity/BOM、仓库门、closeout通过，定点非作者复核
+接受组合实现。首次文档preflight遗漏既有安全字面入口，恢复原入口后通过；
+首次仓库门指出BOM还有两个current_component别名未更新，补齐后通过。原失败
+日志保留，历史runtime source/digest/version没有改写，也没有削弱检查。
+Policy Runtime版本仍rc.37、公共契约摘要不变；当前BOM仅重算组合源码的
+source/tree/digest，不改历史发布、安装或实跑身份。旧38925913234失败及
+333094d4 Reference证据保留；本次会改变Reference所用Runtime捕获记录路径，
+因此旧实跑不转移到新head。本轮0次游戏，集中一次推送正式所选CI，保留Draft，
+若未终结就明确交接，不无限等待或无原因重跑，不启动下一任务。
