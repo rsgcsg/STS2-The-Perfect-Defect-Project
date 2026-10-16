@@ -3,7 +3,7 @@
 用户明确授权本轮P1实施并检查新规范落实；这替代MGMT-1完成后的无派工状态。
 
 - 目的/产物：终局对照不再把不同胜负或无终局证据称相同；Reference原90步升级选牌首卡点得到真实推进，若出现下一卡点诚实停止。不声称全P1冻结、等价套件完成或策略质量。
-- 基线/负责人：PR189 `29c81ab2426c089c3e570c6b929d407eeeb51de6`，含develop管理规范；topic `codex/p1-terminal-upgrade`。Root唯一tracked作者/集成负责人，复用本工作树；通过正常merge复用T7的dcd571e5/1ad27100来源。Parent PR189尚未接受，历史CI和本轮证据分开。
+- 基线/负责人：PR189 `29c81ab2426c089c3e570c6b929d407eeeb51de6`，含develop管理规范；topic `codex/p1-terminal-upgrade`。Root唯一tracked作者/集成负责人，复用本工作树；通过正常merge复用T7的dcd571e5/1ad27100来源。Parent PR189尚未接受，历史CI和本轮证据分开。发布前已核并正常合入其11d7e039类型修正，Connector/Runtime子树完全未变。
 - 任务分配：一个只读子任务核终局比较最小范围，Root处理升级映射与实现；稳定候选一次定点非作者复核。禁止多位作者改同分支，无实施worker链。
 - 验收：先原记录/小反例复现，再改原owner；终局匹配/不匹配/缺证据正反例及桥接真实消费者检查；升级旧捕获回归与同seed最多一次新Reference回归（必要纠错后最多再一次，全部保留）。同一候选按实际影响跑相关组件/所选门；不靠改声明或删有效断言过关。
 - 成本/停止：先20分钟核事实与拆分，再约60–90分钟完成实现/短验证检查点；原生单槽，不默认40/20局套件、不训练/付费推理。两个缺口交付并完成有界验证即收口；下一缺口只记录。CI检查选择明显失配要判断，确有关联的长检查保留；不无解释重跑。
@@ -11,3 +11,14 @@
 非目标：T1/T2/T6、Source4 Human录制、协议重设计、模型/训练配置、全量能力资格。必要构建/既有隔离Reference路径短验证在当前工程目标内，新的生产安装/隐藏规则/重大语义取舍须另明确；不修改Claude分支、不合并/关闭其他PR。
 
 规范落实的实际核对随本任务记录：当前任务可定位；权限/写者唯一；首先真实失败；相关而非仪式测试；分母/身份准确；完成即停。仅更新本任务/CURRENT和受影响合同，不再开管理体系审计。
+
+
+## 本轮结果与停止点
+
+- 终局比较：新真实Reference轨迹89点（88动作+loss终局）原样匹配；仅将终局变成win，88动作前缀仍匹配，但终局明确拒绝为terminal_outcome_mismatch。真实桥接子进程回归也通过；不声称跨Host整局等价。
+- 升级映射：旧捕获从required:action_mapping:deck_upgrade_selection.activate变成complete。补充真实回归在第91次提交执行原native activate，receipt delivered/result completed；原捕获114/115显示showing_upgrade_previews false→true，13个合法选牌动作仍保留。
+- Native尝试共2次，均用现有安装且无部署。第一次随机Agent88决策、loss终局、0unknown、replay verified，但没有升级页；第二次公开意图引导90步前缀后执行toggle，91提交、0unknown、replay verified。后者诊断Agent错误过滤掉显示为升级预览的卡，随后abstain/child_closed，Runtime fail-closed并释放控制；不冒称完整选牌→确认流程通过。停止，不追加第三次。
+- SDK完整check442通过。Runtime首轮589通过/1环境失败/3跳过：系统Python3.9不能导入Evidence类型；用既有解释器选项改为3.11，只补该原失败通过，再完成build/package。源未因此变化，旧失败保留；不把首轮命令改写成全绿。
+- 定点非作者审查接受本轮代码；仓库/identity/BOM检查通过。完整CI按当前跨组件源码范围一次正式派发，实际状态以本topic PR为准，不预填通过。未获得本PR或PR189的merge授权，不自行合并。
+
+规范落实：当前任务替代旧管理任务，唯一作者和两个有界只读角色；修正继承的CURRENT统计混用与Reference绝对真相措辞；复用T7来源、不重做已完成工作；先原反例，按错误环境只补失败；两次Native分母分开；到停止条件就停。没有实施T1/T2/T6、训练、协议重构或新的管理工程。
