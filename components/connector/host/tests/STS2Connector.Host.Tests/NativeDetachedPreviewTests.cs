@@ -229,7 +229,7 @@ public sealed class NativeDetachedPreviewTests
             Assert.Same(vars, Field(typeof(CardModel), "_dynamicVars").GetValue(canonical));
             Assert.Same(keywords, Field(typeof(CardModel), "_keywords").GetValue(canonical));
             Assert.Same(pool, Field(typeof(CardModel), "_pool").GetValue(canonical));
-            Assert.Equal(count, registry.Count); Assert.DoesNotContain(copy, registry.Values);
+            Assert.Equal(count, registry.Count); Assert.DoesNotContain(registry.Values, model => ReferenceEquals(model, copy));
             Assert.False(canonical.IsMutable); Assert.Same(canonical, copy.CanonicalInstance);
         }
         finally { if (!existed) ModelDb.Remove(typeof(Shiv)); }
