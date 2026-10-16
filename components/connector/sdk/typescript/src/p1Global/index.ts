@@ -5,3 +5,4 @@ export * from "./publicGraph.js";
 export * from "./admission.js";
 export * from "./publicIdentity.js";
 export * from "./rewardForward.js";
+export * from "./sourceMapping.js";
