@@ -110,20 +110,28 @@ public static class NativePublicCardDetails
                 visible["card_previews"] = previews;
                 return true;
             }, mode);
+            // Same public text as the Reference surface readers: rich-text tags removed,
+            // inline icons as [file.png], description newlines as spaces.
+            foreach (string key in new[] { "name", "description", "enchantment", "enchantment_description" })
+                if (visible.GetValueOrDefault(key) is string raw)
+                    visible[key] = key.EndsWith("description", StringComparison.Ordinal)
+                        ? NativeVisibleText.Strip(raw).Replace("\n", " ") : NativeVisibleText.Strip(raw);
+            if (visible.GetValueOrDefault("keywords") is List<Dictionary<string, object?>> plain)
+                foreach (var tip in plain)
+                    foreach (string field in new[] { "name", "description" })
+                        if (tip.GetValueOrDefault(field) is string raw) tip[field] = NativeVisibleText.Strip(raw);
             foreach (string key in new[] { "name", "description", "cost", "target_type" })
                 if (visible.GetValueOrDefault(key) is not string value || string.IsNullOrWhiteSpace(value))
                     missing.Add("native_selector_card_" + key);
             // The text profile has no qualified inline-icon projection yet. Do not
             // erase an icon and retain a misleading allegedly complete description.
             foreach (string? value in visible.Values.OfType<string>())
-                if (value.Contains("[img", StringComparison.OrdinalIgnoreCase)
-                    || value.Contains('{') || value.Contains('}'))
+                if (value.Contains('{') || value.Contains('}'))
                     missing.Add("unqualified_native_selector_rich_text");
             if (visible.GetValueOrDefault("keywords") is List<Dictionary<string, object?>> tips)
                 foreach (var tip in tips)
                     if (tip.Values.Any(value => value is not string text || string.IsNullOrWhiteSpace(text))
-                        || tip.Values.OfType<string>().Any(value => value.Contains("[img", StringComparison.OrdinalIgnoreCase)
-                            || value.Contains('{') || value.Contains('}')))
+                        || tip.Values.OfType<string>().Any(value => value.Contains('{') || value.Contains('}')))
                         missing.Add("native_selector_hover_text");
             if (card.Enchantment != null
                 && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))

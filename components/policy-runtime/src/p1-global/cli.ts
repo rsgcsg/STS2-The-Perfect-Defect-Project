@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import { replayGlobalAgentRun } from "../global-replay.js";
 import { convertRecord } from "./convert.js";
 import { compareDecisions, comparePair } from "./compare.js";
+import { extractTrajectory } from "./trajectory.js";
 
 /**
  * sts2-p1 run      --manifest FILE --adapter-command COMMAND [existing sts2-policy-runtime options]
  * sts2-p1 convert  --record FILE [--out FILE]
  * sts2-p1 compare  --left FILE --right FILE [--mode decision|semantic|exact]
+ * sts2-p1 trajectory --run-directory DIR [--out FILE]   (Agent decision points of a GLOBAL run)
  */
 function option(args: string[], name: string, fallback: string | null = null): string | null {
   const index = args.indexOf(name);
@@ -56,8 +58,15 @@ function compare(args: string[]): void {
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 }
 
+function trajectory(args: string[]): void {
+  const value = extractTrajectory(abs(required(args, "--run-directory")));
+  const out = option(args, "--out");
+  if (out) writeFileSync(abs(out), JSON.stringify(value));
+  process.stdout.write(JSON.stringify({ schema: value.schema, points: value.points.length, out }) + "\n");
+}
+
 const [command, ...rest] = process.argv.slice(2);
-const handlers: Record<string, (args: string[]) => void | Promise<void>> = { run, convert, compare, replay };
+const handlers: Record<string, (args: string[]) => void | Promise<void>> = { run, convert, compare, replay, trajectory };
 const handler = command ? handlers[command] : undefined;
 if (!handler) { process.stderr.write("usage: sts2-p1 run|convert|compare|replay ...\n"); process.exit(2); }
 await handler(rest);

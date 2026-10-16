@@ -44,10 +44,10 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "f22a6de46f2f3e3db878715027854bb7c1f0fe7f21017a248996df3dab8649de");
-  assert.equal(manifest.expected_build.artifact_mvid, "da613413-a0e8-4ca4-ad04-897ae5ad8dc5");
-  assert.equal(manifest.previous_candidate_build.artifact_sha256, "f81bffcd5d9030fbab466833eebd5ee31b631dd7ce35c585deb997b7b8c46025");
-  assert.equal(manifest.previous_candidate_build.artifact_mvid, "84a5698c-2cb3-40d3-8e65-f7b5030aa52a");
+  assert.equal(manifest.expected_build.artifact_sha256, "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93");
+  assert.equal(manifest.expected_build.artifact_mvid, "5da84f07-fa96-4538-91c2-974180da3e62");
+  assert.equal(manifest.previous_candidate_build.artifact_sha256, "f22a6de46f2f3e3db878715027854bb7c1f0fe7f21017a248996df3dab8649de");
+  assert.equal(manifest.previous_candidate_build.artifact_mvid, "da613413-a0e8-4ca4-ad04-897ae5ad8dc5");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "75be6efa9ab35ef4eca4c2ce4153918bb8c14c75bee61d4f837b31c1727a7aba"
     && build.artifact_mvid === "c91e08aa-797e-4837-a320-bdbb92e5b9b2"), true);
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
@@ -136,6 +136,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeSelectorSelection.cs",
     "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/NativeUpgradeMethodInventory.cs",
+    "src/Sts2Headless/NativeVisibleText.cs",
     "src/Sts2Headless/PerformanceLab.cs",
     "tests/NativePlayWindowAdmissionTests.csproj",
     "tests/Program.cs"

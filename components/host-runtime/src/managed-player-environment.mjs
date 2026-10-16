@@ -1848,7 +1848,8 @@ function currentSurface(state, ctx) {
         complete,
         missing: [
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
-          ...(semanticFactsComplete ? [] : ["complete_visible_combat_context"]),
+          ...(semanticFactsComplete ? [] : ["complete_visible_combat_context",
+            ...(typeof state.combat_hud_gap === "string" ? [`combat_hud_gap:${state.combat_hud_gap}`] : [])]),
           ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
           ...(unsupportedCardTarget ? ["native_unsupported_card_target_type"] : []),
           ...(unsupportedPotionTarget ? ["native_unsupported_potion_target_type_or_binding"] : [])

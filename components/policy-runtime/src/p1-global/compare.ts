@@ -79,6 +79,9 @@ function bounded(value: unknown): boolean {
   }
   return true;
 }
+/** One observation (+ optional chosen choice) against another, through the same full public graph. */
+export function comparePublicPoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
+  { verdict: Verdict; difference: FirstDifference | null } { return comparePoint(left, right, chosenLeft, chosenRight); }
 function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
   { verdict: Verdict; difference: FirstDifference | null } {
   if (!bounded(left) || !bounded(right)) return { verdict: "incomparable",

@@ -20,7 +20,7 @@ test("both exact Hosts compile the same native reward/read qualification source"
     "NativeMapReadProjection.cs", "NativeCardRenderTransaction.cs",
     "NativeCalculatedVariableInventory.cs", "NativeCardPreviewReadQualification.Rendering.cs", "NativeCardPreviewReadQualification.cs",
     "NativeDetachedCardCopy.cs", "NativeDetachedCardPreview.cs", "NativeEnchantmentMethodInventory.cs",
-    "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs"])
+    "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs"])
     assert.equal(files.get(`src/Sts2Headless/${name}`),
       readFileSync(path.join(root, "../native-foundation/src", name), "utf8"));
 });
