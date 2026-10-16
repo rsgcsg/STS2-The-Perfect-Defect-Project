@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createSession, reduce, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 import { compareDecisions, comparePair } from "../src/p1-global/compare.js";
@@ -122,9 +123,9 @@ describe("P1 r1.1 full-public graph comparison", () => {
     (a as any).catalog = [{ ...original, choice_id: "one" }, { ...original, choice_id: "two" }];
     const messages = [{ type: "hello", protocol: "sts2.p1/agent-port-1", episode_id: "test-seed" },
       ...Array.from({ length: 30 }, () => ({ type: "observation", observation: a, requires_choice: true })), { type: "episode_end" }];
-    const result = spawnSync(process.execPath, [new URL("../examples/p1/signature_agent.mjs", import.meta.url).pathname],
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("../examples/p1/signature_agent.mjs", import.meta.url))],
       { input: messages.map(m => JSON.stringify(m)).join("\n") + "\n", encoding: "utf8" });
-    expect(result.status).toBe(0); const replies = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+    expect(result.status, result.stderr).toBe(0); const replies = result.stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(replies[0].agent_id).toBe("external-instance-choice-diagnostic");
     expect(new Set(replies.filter(m => m.type === "choose").map(m => m.choice_id))).toEqual(new Set(["one", "two"]));
   });
