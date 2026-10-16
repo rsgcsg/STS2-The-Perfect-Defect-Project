@@ -264,9 +264,10 @@ public sealed class P1CaptureTests
     public void PortableProducerEmitsTheSdkContractFixture()
     {
         FrozenPublicObservation frozen = Freeze();
+        Assert.Equal("c1-2", JsonNode.Parse(frozen.Bytes)!["revision"]!.GetValue<string>());
         if (Environment.GetEnvironmentVariable("P1_CAPTURE_FIXTURE_OUT") is { } destination)
             File.WriteAllBytes(destination, frozen.Bytes);
-        string fixture = Path.Combine(AppContext.BaseDirectory, "p1-capture-c1.json");
+        string fixture = Path.Combine(AppContext.BaseDirectory, "p1-capture-c1-2.json");
         Assert.Equal(frozen.Bytes, File.ReadAllBytes(fixture));
     }
 }

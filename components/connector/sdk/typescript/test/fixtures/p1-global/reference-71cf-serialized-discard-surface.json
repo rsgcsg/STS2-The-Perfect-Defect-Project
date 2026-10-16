@@ -1,0 +1,1 @@
+{"kind":"combat_turn","room_entity_id":"room","can_end_turn":false,"playable_cards":[],"usable_potions":[],"discardable_potions":[{"entity_id":"potion","definition_id":"REVIVE","name":"Revive","description":"Revive on death","slot":0,"target_type":"Self","can_use":false,"automatic":true}]}

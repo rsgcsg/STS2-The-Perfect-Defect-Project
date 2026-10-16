@@ -2,6 +2,10 @@
 
 This additive, read-only profile is `p1-atomic-capture-c1-1`. It is a capture
 foundation for P1, **not a full P1-A observation or an Actor admission profile**.
+The current capture revision is `c1-2`: Draw remains an unordered multiset,
+while discard/exhaust retain their native visible sequence. The reader still
+accepts original `c1-1` archives with their original all-unordered semantics;
+it rejects either revision paired with the other revision's ordering claims.
 `agent_admissible` and `creates_mutation_authority` are always false. The original
 native-logical, text-menu, Source3, Snapshot and Read contracts keep their meanings.
 
@@ -53,11 +57,12 @@ all game state is transactional.
 
 Native references stay in the private synchronous callback. Private draw
 membership/order is compared only to reject drift, never serialized or hashed
-into a public identity. Public pile projection sorts the existing allowed
+into a public identity. Public Draw projection sorts the existing allowed
 values and independently random opaque entity aliases; new Read-instance and
 capture IDs are random. The final digest covers frozen public bytes only.
-Legacy unordered pile semantics are retained in the native basis; this does not
-claim the full P1 discard/exhaust presentation-order contract is implemented.
+The native basis and aggregate Read retain the current per-zone ordering.
+Original `c1-1` archives cannot recover previously discarded order and do not
+acquire the newer presentation-order guarantee merely by being readable.
 
 ## HTTP and retained bytes
 
