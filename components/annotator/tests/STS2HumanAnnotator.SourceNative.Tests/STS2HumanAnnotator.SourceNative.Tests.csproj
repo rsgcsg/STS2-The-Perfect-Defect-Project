@@ -15,6 +15,7 @@
     <ProjectReference Include="../../../connector/host/STS2Connector.Host.csproj"/>
     <Compile Include="../../src/STS2HumanAnnotator.Mod/SourceRecordingWorkerV2.cs" Link="SourceRecordingWorkerV2.cs"/>
     <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.SourceInput.cs" Link="RecorderRuntime.SourceInput.cs"/>
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/NativeSourceSelectorCompletionReceipt.cs" Link="NativeSourceSelectorCompletionReceipt.cs"/>
     <Reference Include="sts2"><HintPath>$(STS2GameDataDir)/sts2.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="GodotSharp"><HintPath>$(STS2GameDataDir)/GodotSharp.dll</HintPath><Private>true</Private></Reference>
   </ItemGroup>

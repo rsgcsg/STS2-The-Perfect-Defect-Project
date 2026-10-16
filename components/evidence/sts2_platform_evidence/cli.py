@@ -15,6 +15,7 @@ from .agent_run_evidence import AgentRunEvidenceVerifier
 from .agent_session_run_evidence import AgentSessionRunEvidenceVerifier
 from .source_session_bundle_v2 import SourceSessionBundleV2Verifier
 from .source_session_bundle_v3 import SourceSessionBundleV3Verifier
+from .source_session_bundle_v4 import SourceSessionBundleV4Verifier
 from .core import VerifierRegistry
 from .human_session_bundle import (
     HumanSessionBundleV2Verifier,
@@ -36,6 +37,7 @@ def registry() -> VerifierRegistry:
         AgentSessionRunEvidenceVerifier(),
         SourceSessionBundleV2Verifier(),
         SourceSessionBundleV3Verifier(),
+        SourceSessionBundleV4Verifier(),
     ):
         result.register(verifier.descriptor, verifier.verify)
     return result
@@ -57,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     source_v2.add_argument("directory", type=Path)
     source_v3 = commands.add_parser("verify-source-bundle-v3")
     source_v3.add_argument("directory", type=Path)
+    source_v4 = commands.add_parser("verify-source-bundle-v4")
+    source_v4.add_argument("directory", type=Path)
 
     manifest = commands.add_parser("transfer-manifest")
     manifest.add_argument("directory", type=Path)
@@ -73,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     receive.add_argument("manifest", type=Path)
     receive.add_argument("--root", type=Path, required=True)
     receive.add_argument("--verify-type", choices=["human-session-bundle", "policy-runtime-agent-run",
-        "policy-runtime-agent-session-run", "source-session-bundle-v2", "source-session-bundle-v3"])
+        "policy-runtime-agent-session-run", "source-session-bundle-v2", "source-session-bundle-v3", "source-session-bundle-v4"])
     receive.add_argument("--receipt", type=Path)
 
     args = parser.parse_args(argv)
@@ -90,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         result = registry().verify("policy-runtime-agent-session-run", args.directory)
         print(json.dumps(_jsonable(result), indent=2, sort_keys=True))
         return 0 if result.passed else 1
-    if args.command in {"verify-source-bundle-v2", "verify-source-bundle-v3"}:
+    if args.command in {"verify-source-bundle-v2", "verify-source-bundle-v3", "verify-source-bundle-v4"}:
         result = registry().verify("source-session-bundle-v" + args.command[-1], args.directory)
         print(json.dumps(_jsonable(result), indent=2, sort_keys=True))
         return 0 if result.passed else 1
@@ -114,8 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         promotion_verifier = _verify_agent_run_promotion
     elif args.verify_type == "policy-runtime-agent-session-run":
         promotion_verifier = _verify_agent_session_run_promotion
-    elif args.verify_type in {"source-session-bundle-v2", "source-session-bundle-v3"}:
-        promotion_verifier = _verify_source_v2_promotion if args.verify_type.endswith("v2") else _verify_source_v3_promotion
+    elif args.verify_type in {"source-session-bundle-v2", "source-session-bundle-v3", "source-session-bundle-v4"}:
+        promotion_verifier = {"source-session-bundle-v2": _verify_source_v2_promotion,
+            "source-session-bundle-v3": _verify_source_v3_promotion, "source-session-bundle-v4": _verify_source_v4_promotion}[args.verify_type]
     receipt = DirectoryReceiver(
         ContentAddressedStore(args.root), promotion_verifier=promotion_verifier
     ).receive(args.directory, args.manifest)
@@ -167,6 +172,10 @@ def _verify_source_v2_promotion(directory: Path, manifest: DirectoryTransferMani
 
 def _verify_source_v3_promotion(directory: Path, manifest: DirectoryTransferManifest) -> None:
     _verify_source_promotion(directory, manifest, SourceSessionBundleV3Verifier())
+
+
+def _verify_source_v4_promotion(directory: Path, manifest: DirectoryTransferManifest) -> None:
+    _verify_source_promotion(directory, manifest, SourceSessionBundleV4Verifier())
 
 
 def _verify_source_promotion(directory: Path, manifest: DirectoryTransferManifest, verifier: SourceSessionBundleV2Verifier) -> None:

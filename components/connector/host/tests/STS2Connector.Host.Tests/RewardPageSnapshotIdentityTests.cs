@@ -93,4 +93,23 @@ public sealed class RewardPageSnapshotIdentityTests
 
         Assert.NotEqual(before.StateId, submit.StateId);
     }
+    [Fact]
+    public void SourceNativePreparationViewDoesNotChurnOrdinarySnapshotButObservedNativeChangeInvalidatesBoth()
+    {
+        var identity = new RewardPageSnapshotIdentity();
+        long original = identity.ObserveNative("same-native-capture");
+        var ordinary = identity.ObserveLegacy(original, "semantic-512");
+        var preparation = identity.ObserveNativePreparation(original, "native-ui-65536");
+        Assert.NotEqual(ordinary.StateId, preparation.StateId);
+        for (int i = 0; i < 3; i++)
+        {
+            long unchanged = identity.ObserveNative("same-native-capture");
+            Assert.Equal(ordinary, identity.ObserveLegacy(unchanged, "semantic-512"));
+            Assert.Equal(preparation, identity.ObserveNativePreparation(unchanged, "native-ui-65536"));
+        }
+        long changed = identity.ObserveNative("actual-new-native-capture");
+        Assert.NotEqual(ordinary.StateId, identity.ObserveLegacy(changed, "semantic-512").StateId);
+        Assert.NotEqual(preparation.StateId, identity.ObserveNativePreparation(changed, "native-ui-65536").StateId);
+    }
+
 }

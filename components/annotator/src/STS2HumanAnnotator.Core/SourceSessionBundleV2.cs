@@ -33,7 +33,7 @@ public static class SourceSessionBundlePackerV2
             if (audit.Status != "pass") throw new InvalidDataException("source_copied_audit_required:" + string.Join(",", audit.Errors));
             CurrentRecordingManifest manifest = SourceSessionJson.Read<CurrentRecordingManifest>(Path.Combine(raw, "recording-manifest.json"));
             string export = Path.Combine(temporary, "export");
-            CopyExport(raw, export);
+            CopyExport(raw, export, format.PublicBasis);
             string auditDirectory = Path.Combine(temporary, "audit"); Directory.CreateDirectory(auditDirectory);
             File.WriteAllBytes(Path.Combine(auditDirectory, "source-audit.json"), SourceSessionJson.Bytes(audit));
             JsonObject rawHashes = SessionBundlePacker.RecursiveChecksums(raw);
@@ -80,6 +80,7 @@ public static class SourceSessionBundlePackerV2
     public static SourceSessionAuditResult Export(string recordingDirectory, string outputDirectory) => ExportVersion(recordingDirectory, outputDirectory, 2);
     internal static SourceSessionAuditResult ExportVersion(string recordingDirectory, string outputDirectory, int version)
     {
+        var format = SourceSessionWireFormat.ForVersion(version);
         string source = Path.GetFullPath(recordingDirectory), output = Path.GetFullPath(outputDirectory);
         RejectNested(source, output);
         SourceSessionAuditResult audit = SourceSessionAuditV2.AuditVersion(source, version);
@@ -94,19 +95,19 @@ public static class SourceSessionBundlePackerV2
             SessionBundlePacker.CopyDirectory(source, snapshot);
             audit = SourceSessionAuditV2.AuditVersion(snapshot, version);
             if (audit.Status != "pass") throw new InvalidDataException("source_copied_audit_required");
-            CopyExport(snapshot, temporary); Directory.Move(temporary, output);
+            CopyExport(snapshot, temporary, format.PublicBasis); Directory.Move(temporary, output);
         }
         catch { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); throw; }
         finally { if (Directory.Exists(snapshot)) Directory.Delete(snapshot, true); }
         return audit;
     }
 
-    private static void CopyExport(string source, string output)
+    private static void CopyExport(string source, string output, bool publicBasis = false)
     {
         Directory.CreateDirectory(output);
         foreach (string file in SourceSessionContractV2.StreamFiles)
             File.Copy(Path.Combine(source, file), Path.Combine(output, file));
-        foreach (string family in new[] { "public-captures", "public-catalogs" })
+        foreach (string family in publicBasis ? new[] { "public-captures", "public-catalogs", "public-bases" } : new[] { "public-captures", "public-catalogs" })
             if (Directory.Exists(Path.Combine(source, family)))
                 SessionBundlePacker.CopyDirectory(Path.Combine(source, family), Path.Combine(output, family));
     }

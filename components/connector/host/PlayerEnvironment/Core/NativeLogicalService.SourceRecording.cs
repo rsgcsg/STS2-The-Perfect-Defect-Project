@@ -23,12 +23,14 @@ internal sealed partial class NativeLogicalService
     private bool sourceEpochTransitioning;
     private IDisposable? sourcePhysicalRegistration;
     private sealed record PhysicalSourceInput(NativeLogicalSourceRecordingAttachment Owner, object Token);
+    private sealed record PhysicalSourceStageAnchor(NativeLogicalSourceRecordingAttachment Owner, NativeLogicalSourceEpoch Epoch);
     private sealed record SourceInput(NativeLogicalSourceRecordingAttachment Owner, PlayerEnvironmentActionRequest Request, object? Token);
     private readonly Dictionary<string, SourceInput> sourceInputs = new(StringComparer.Ordinal);
     private static readonly IReadOnlyList<string> SourceScope = Array.AsReadOnly(new[] { "persistent", "interaction", "referents", "catalog" });
 
-    internal NativeLogicalSourceRecordingAttachment AttachSource(bool requireOrderedBasis = false)
+    internal NativeLogicalSourceRecordingAttachment AttachSource(bool requireOrderedBasis = false, bool requirePublicBasis = false)
     {
+        if (requirePublicBasis && !requireOrderedBasis) throw new NativeLogicalException("source_order_profile_mismatch", "Neutral source capture requires the original native prefix order.");
         SynchronizeRun();
         if (sourceRecorder is not null) throw new NativeLogicalException("source_attachment_capacity", "An original source attachment is still retained.");
         var declaration = Hub.ReadDeclaration();
@@ -41,7 +43,7 @@ internal sealed partial class NativeLogicalService
         var attached = Hub.AttachSource(SourceRequest(client, declaration.Coverage), Bootstrap);
         var epoch = SourceEpoch(attached, declaration, runId, null, null, null);
         var identity = sourceIdentity();
-        var recorder = new NativeLogicalSourceRecordingAttachment(this, attached.RegistrationId, client, epoch, identity.Capabilities, identity.SourceDigest, requireOrderedBasis);
+        var recorder = new NativeLogicalSourceRecordingAttachment(this, attached.RegistrationId, client, epoch, identity.Capabilities, identity.SourceDigest, requireOrderedBasis, requirePublicBasis);
         sourceRecorder = recorder;
         CaptureReservation(attached.InitialReservation); // Original N+1 retained before Activate; no sink runs yet.
         return recorder;
@@ -64,11 +66,13 @@ internal sealed partial class NativeLogicalService
         {
             ExactSource(recorder); if (recorder.Failure is not null) throw new NativeLogicalException(recorder.Failure, "Original source admission failed before activation.");
             if (recorder.Sink is not null) throw new NativeLogicalException("source_already_activated", "The sink activates once.");
-            if (sink.RequiresOrderedBasis != recorder.OrderedBasis) throw new NativeLogicalException("source_order_profile_mismatch", "The producer and sink must select the same original order contract.");
+            if (sink.RequiresOrderedBasis != recorder.OrderedBasis || sink.RequiresPublicBasis != recorder.PublicBasis) throw new NativeLogicalException("source_order_profile_mismatch", "The producer and sink must select the same original order contract.");
             recorder.Sink = sink;
         }
         if (recorder.OrderedBasis) sourcePhysicalRegistration = NativeSourceInputProvider.Register(
-            CapturePhysicalSourcePrefix, CapturePhysicalSourceTerminal);
+            CapturePhysicalSourcePrefix, CapturePhysicalSourceTerminal, recorder.PublicBasis ? CapturePhysicalSourceCarrier : null,
+            recorder.PublicBasis ? CapturePhysicalSourceStageAnchor : null,
+            recorder.PublicBasis ? CapturePhysicalSourceStage : null, observeOriginalRewardTasks: recorder.PublicBasis);
     }
     private void ExactSource(NativeLogicalSourceRecordingAttachment recorder)
     {
@@ -144,6 +148,27 @@ internal sealed partial class NativeLogicalService
         try
         {
             var value = Store.ExportFrozen(captureId);
+            lock (sourceGate) ExactSource(recorder);
+            return new(value, budget);
+        }
+        catch { budget.Dispose(); throw; }
+    }
+    internal NativeLogicalSourcePayloadCopy CopySourcePayload(NativeLogicalSourceRecordingAttachment recorder, string payloadId)
+    {
+        IDisposable budget;
+        lock (sourceGate)
+        {
+            ExactSource(recorder);
+            if (!recorder.PublicBasis) throw new NativeLogicalException("source_profile_mismatch", "Source4 payload requires its exact original attachment.");
+            var original = Store.SourcePayloadMetadata(payloadId);
+            if (!recorder.IssuedEpochs.Values.Any(epoch => epoch.Subscription.ScopeId == original.Descriptor.ScopeId
+                && epoch.Subscription.StreamGeneration == original.Descriptor.StreamGeneration))
+                throw new NativeLogicalException("source_capture_scope_mismatch", "Only original issued source scopes may be copied.");
+            budget = ReserveSourceBytes(checked(16_384 + original.ByteCount * 64L));
+        }
+        try
+        {
+            var value = Store.ExportSourcePayload(payloadId);
             lock (sourceGate) ExactSource(recorder);
             return new(value, budget);
         }
@@ -262,6 +287,8 @@ internal sealed partial class NativeLogicalService
             if (provenanceCapacityExceeded) { FailSource(recorder, "source_input_provenance_capacity"); return; }
             if (recorder.Sink is null) { FailSource(recorder, "source_input_before_activation"); return; }
             if (token is null) return;
+            if (recorder.PublicBasis) recorder.Sink.InputNativeFacts(token, new("protocol_input", null, null,
+                new Dictionary<string, string>(StringComparer.Ordinal)));
             CaptureSourceInputBasis(recorder, token, request.BoundActionId!, null, encodingDeadline, nativeFreeze);
         }
         catch { FailSource(recorder, "source_input_prefix_admission_failed"); }
@@ -279,10 +306,52 @@ internal sealed partial class NativeLogicalService
             var token = recorder.Sink?.AdmitInput(new(NativeLogicalWire.Id("physical_input"), recorder.ClientId, "",
                 boundary.Position, deadline, witness.NativeMechanism));
             if (token is null) return null;
+            if (recorder.PublicBasis)
+            {
+                if (witness.Arguments.Count > 32) throw new InvalidOperationException("source_native_argument_capacity");
+                recorder.Sink!.InputNativeFacts(token, new("native_input", witness.Owner == null ? null : sourceAlias(witness.Owner),
+                    witness.Subject == null ? null : sourceAlias(witness.Subject),
+                    witness.Arguments.ToDictionary(pair => pair.Key, pair => sourceAlias(pair.Value), StringComparer.Ordinal)));
+            }
             CaptureSourceInputBasis(recorder, token, null, witness, deadline, nativeFreeze);
             return new PhysicalSourceInput(recorder, token);
         }
         catch { FailSource(recorder, "source_physical_prefix_admission_failed"); return null; }
+    }
+    private void CapturePhysicalSourceCarrier(object original, object exactCarrier, string kind)
+    {
+        if (original is not PhysicalSourceInput input || input.Owner.Disposed || !input.Owner.PublicBasis) return;
+        if (kind is not ("card_play_created" or "game_action_submitted" or "game_action_accepted" or "card_play_canceled"))
+            throw new InvalidOperationException("source_native_carrier_kind_invalid");
+        // The original provider callback owns this object now. Only its process alias crosses the callback boundary.
+        input.Owner.Sink?.InputCarrier(input.Token, new(kind, sourceAlias(exactCarrier)));
+    }
+    internal object? CapturePhysicalSourceStageAnchor()
+    {
+        AssertMainThread();
+        return sourceRecorder is { PublicBasis: true, Closing: false, Failure: null } recorder
+            ? new PhysicalSourceStageAnchor(recorder, recorder.Current) : null;
+    }
+    internal void CapturePhysicalSourceStage(object original, NativeSourceStageWitness witness)
+    {
+        if (original is not PhysicalSourceStageAnchor anchor || anchor.Owner.Disposed) return;
+        try
+        {
+            AssertMainThread(); SynchronizeRun();
+            // Original registration and epoch only; never adopt a later recording/successor slot.
+            if (!ReferenceEquals(sourceRecorder, anchor.Owner) || anchor.Owner.Closing || anchor.Owner.Failure != null
+                || !ReferenceEquals(anchor.Owner.Current, anchor.Epoch))
+            { FailSource(anchor.Owner, "source_native_stage_epoch_changed"); return; }
+            if (witness.Kind != "card_play_canceled" || witness.Evidence != "native_finished_false"
+                || witness.NoSubmission == false || witness.Arguments.Count != 1 || !witness.Arguments.ContainsKey("hand"))
+                throw new InvalidOperationException("source_native_stage_invalid");
+            var stage = new NativeLogicalSourceStage(witness.Kind, sourceAlias(witness.Owner), sourceAlias(witness.Subject),
+                witness.Arguments.ToDictionary(pair => pair.Key, pair => sourceAlias(pair.Value), StringComparer.Ordinal),
+                witness.Evidence, witness.NoSubmission);
+            // The original callback's single publication captures native + neutral parts together.
+            CaptureReservation(Hub.Reserve("native_input_callback", "card_play_canceled", "observation"), stage);
+        }
+        catch { FailSource(anchor.Owner, "source_native_stage_publication_failed"); }
     }
     private static void CapturePhysicalSourceTerminal(object original, string delivery, string? reason)
     {
@@ -299,14 +368,14 @@ internal sealed partial class NativeLogicalService
         {
             if (recorder.OrderedBasis)
             {
-                prepared = Prepare(); // Fresh original pre-body facts, never a later Current or cached physical basis.
+                prepared = Prepare(sourceCapture: true); // Fresh original pre-body facts, never a later Current or cached physical basis.
                 if (physicalWitness != null)
                 {
                     var leaves = currentNative!.Leaves;
                     physicalMatches = leaves.Select((leaf, index) => (leaf, index)).Where(pair =>
                     {
                         var native = pair.leaf.NativeSourceWitness ?? pair.leaf.NativeWitness;
-                        return pair.leaf.Verb == physicalWitness.Verb && native != null && ReferenceEquals(native.Owner, physicalWitness.Owner)
+                        return (recorder.PublicBasis ? pair.leaf.NativeSourcePrefixVerb ?? pair.leaf.Verb : pair.leaf.Verb) == physicalWitness.Verb && native != null && ReferenceEquals(native.Owner, physicalWitness.Owner)
                             && ReferenceEquals(native.Subject, physicalWitness.Subject)
                             && native.Arguments.Count == physicalWitness.Arguments.Count
                             && native.Arguments.All(argument => physicalWitness.Arguments.TryGetValue(argument.Key, out var operand)
@@ -317,6 +386,7 @@ internal sealed partial class NativeLogicalService
                 {
                     nativeFreeze?.Seal();
                     sink.InputFrozen(token, new("unproven", SourceOrderUnproven));
+                    prepared.SourceWorkingBudget?.Dispose();
                     sink.InputBasis(token, null, null, SourceOrderUnproven); return;
                 }
             }
@@ -335,7 +405,7 @@ internal sealed partial class NativeLogicalService
             sink.InputFrozen(token, new(proven ? "native_prefix_frozen" : "unproven", proven ? null : SourceOrderUnproven));
         }
         IDisposable scratch;
-        try { scratch = ReserveSourceBytes(SourceEncodingScratch); }
+        try { scratch = prepared.SourceWorkingBudget ?? ReserveSourceBytes(SourceEncodingScratch); }
         catch (NativeLogicalException) { Frozen(); sink.InputBasis(token, null, null, "source_copied_payload_capacity"); return; }
         if (!encodingAdmission.Wait(0))
         { scratch.Dispose(); Frozen(); sink.InputBasis(token, null, null, "encoding_capacity_exceeded"); return; }
@@ -343,27 +413,58 @@ internal sealed partial class NativeLogicalService
         Enqueue(() =>
         {
             string? captureId = null; IDisposable? retention = null;
+            NativeLogicalCapturedProjection? projection = null;
+            string? nativeMissing = null;
             try
             {
                 if (Environment.TickCount64 >= encodingDeadline)
-                { sink.InputBasis(token, null, null, "source_input_basis_encoding_timeout"); return; }
-                var projection = projector.Capture(prepared.Facts, SourceScope, originalEpoch.Subscription.ScopeId,
-                    prepared.Time, Environment.TickCount64 + Limits.RetentionMs, () => Environment.TickCount64, Store, SourceInputEncodingBytes);
-                captureId = projection.Capture.CaptureId;
+                { DeliverMissing("source_input_basis_encoding_timeout"); return; }
+                try
+                {
+                    projection = projector.Capture(prepared.Facts, SourceScope, originalEpoch.Subscription.ScopeId,
+                        prepared.Time, Environment.TickCount64 + Limits.RetentionMs, () => Environment.TickCount64, Store, SourceInputEncodingBytes);
+                    captureId = projection.Capture.CaptureId;
+                }
+                catch (NativeLogicalException error) { nativeMissing = error.Code; }
+                catch { nativeMissing = "source_input_basis_encoding_failed"; }
                 if (Environment.TickCount64 >= encodingDeadline)
-                { sink.InputBasis(token, null, null, "source_input_basis_encoding_timeout"); return; }
-                var actions = projection.Catalog!.Actions;
-                var selected = protocolActionId != null ? actions.Where(action => action.ActionId == protocolActionId).ToArray()
-                    : originalMatches.Select(index => actions[index]).ToArray();
-                sink.InputMapping(token, new(selected.Length == 1 ? "exact" : selected.Length == 0 ? "unmapped" : "ambiguous",
-                    selected.Length, selected.Length == 1 ? selected[0].ActionId : null));
-                AcceptBasis(prepared, projection.Catalog);
-                string handle = Store.Retain("source-input:" + recorder.RegistrationId, captureId);
-                retention = new SourceInputRetention(() => Store.Release("source-input:" + recorder.RegistrationId, handle));
-                sink.InputBasis(token, captureId, retention, null); retention = null;
+                { DeliverMissing("source_input_basis_encoding_timeout"); return; }
+                if (projection?.Catalog is { } catalog)
+                {
+                    var actions = catalog.Actions;
+                    var selected = protocolActionId != null ? actions.Where(action => action.ActionId == protocolActionId).ToArray()
+                        : originalMatches.Select(index => actions[index]).ToArray();
+                    sink.InputMapping(token, new(selected.Length == 1 ? "exact" : selected.Length == 0 ? "unmapped" : "ambiguous",
+                        selected.Length, selected.Length == 1 ? selected[0].ActionId : null));
+                    AcceptBasis(prepared, catalog);
+                }
+                if (recorder.PublicBasis)
+                {
+                    var payload = Store.SealSourcePayload(projection, nativeMissing, prepared.PublicBasis,
+                        prepared.PublicMissingReason, prepared.Facts.Session, originalEpoch.Subscription.StreamGeneration,
+                        originalEpoch.Subscription.ScopeId, prepared.Time);
+                    try
+                    {
+                        retention = Store.RetainSourcePayload(payload.PayloadId);
+                        sink.InputSourcePayload(token, payload.PayloadId, retention, null); retention = null;
+                    }
+                    finally { Store.ReleaseSourcePayload(payload.PayloadId); }
+                }
+                else if (captureId != null)
+                {
+                    string handle = Store.Retain("source-input:" + recorder.RegistrationId, captureId);
+                    retention = new SourceInputRetention(() => Store.Release("source-input:" + recorder.RegistrationId, handle));
+                    sink.InputBasis(token, captureId, retention, null); retention = null;
+                }
+                else DeliverMissing(nativeMissing ?? "source_input_basis_encoding_failed");
             }
-            catch { sink.InputBasis(token, null, null, "source_input_basis_encoding_failed"); }
+            catch { DeliverMissing("source_input_basis_encoding_failed"); }
             finally { retention?.Dispose(); if (captureId is not null) Store.ReleaseCapture(captureId); scratch.Dispose(); }
+            void DeliverMissing(string reason)
+            {
+                if (recorder.PublicBasis) sink.InputSourcePayload(token, null, null, reason);
+                else sink.InputBasis(token, null, null, reason);
+            }
         });
         Frozen(); // Immutable facts and their existing serial queue ticket are now sealed.
     }

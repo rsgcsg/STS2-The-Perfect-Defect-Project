@@ -3,10 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
+using MegaCrit.Sts2.Core.Rewards;
 
 namespace STS2Platform.NativeFoundation;
 
@@ -15,7 +18,7 @@ public sealed record NativeSourceInputPrefix(string Verb, object? Owner, object?
     IReadOnlyDictionary<string, object> Arguments, string NativeMechanism, string ExpectedNativeActionType,
     Type? AcceptedCarrierType = null);
 
-/// <summary>Opaque original invocation. It retains no prefix owner/subject/argument graph.</summary>
+/// <summary>Original invocation: weak owner identity plus same-lexical transient carrier receipts only.</summary>
 public sealed class NativeSourceInputInvocation
 {
     internal NativeSourceInputInvocation(NativeSourceInputProvider.Registration registration, object token, string type, Type? acceptedCarrierType)
@@ -29,8 +32,34 @@ public sealed class NativeSourceInputInvocation
     internal bool CreatedCardPlayConflict;
     internal int Terminal;
     internal int CarrierObservationFailed;
+    internal WeakReference<object>? OriginalOwner;
+    internal string OriginalMechanism = "";
+    internal NativeSourceCardPlayCancelScope? PendingCancel;
+    internal WeakReference<object>? OriginalSubject;
+    internal Task<bool>? OriginalRewardTask;
+    internal bool HasOriginalRewardTask, OriginalScopeFinished, OriginalScopeFailed;
+    internal int RewardTaskOutcome; // 0 pending, 1 normal bool result, 2 fault, 3 cancel, 4 conflicting task.
     public string? CarrierObservationError => Volatile.Read(ref CarrierObservationFailed) == 0
         ? null : NativeSourceInputProvider.CarrierObserverFailedReason;
+}
+
+public sealed record NativeSourceStageWitness(string Kind, object Owner, object Subject,
+    IReadOnlyDictionary<string, object> Arguments, string Evidence, bool? NoSubmission);
+
+/// <summary>Transient exact native callback receipt, discarded before its lexical finalizer returns.</summary>
+public sealed class NativeSourceCardPlayCancelScope
+{
+    internal NativeSourceCardPlayCancelScope(NativeSourceInputProvider.Registration registration, object anchor,
+        NCardPlay cardPlay, NPlayerHand hand, NHandCardHolder holder, object card, NativeSourceInputInvocation? lexical)
+    { Registration = registration; Anchor = anchor; CardPlay = cardPlay; Hand = hand; Holder = holder; Card = card; Lexical = lexical; }
+    internal readonly NativeSourceInputProvider.Registration Registration;
+    internal readonly object Anchor, Card;
+    internal readonly NCardPlay CardPlay;
+    internal readonly NPlayerHand Hand;
+    internal readonly NHandCardHolder Holder;
+    internal readonly NativeSourceInputInvocation? Lexical;
+    internal int FalseFinished, TrueFinished, Finalized;
+    internal void ObserveFinished(bool played) { if (played) TrueFinished++; else FalseFinished++; }
 }
 
 /// <summary>Neutral forwarding from existing typed native hooks. One original Source sink owns persistence.</summary>
@@ -44,19 +73,24 @@ public static class NativeSourceInputProvider
     public const string CardPlayCreatedKind = "card_play_created";
     public const string GameActionSubmittedKind = "game_action_submitted";
     public const string GameActionAcceptedKind = "game_action_accepted";
+    public const string CardPlayCanceledKind = "card_play_canceled";
     public const string CarrierObserverFailedReason = "native_source_carrier_observer_failed";
     internal sealed class Registration(Func<NativeSourceInputPrefix, object?> prefix,
-        Action<object, string, string?> terminal, Action<object, object, string>? sourceCarrier) : IDisposable
+        Action<object, string, string?> terminal, Action<object, object, string>? sourceCarrier,
+        Func<object?>? stageAnchor, Action<object, NativeSourceStageWitness>? stage, bool observeOriginalRewardTasks) : IDisposable
     {
         internal Func<NativeSourceInputPrefix, object?>? Prefix = prefix;
         internal Action<object, string, string?>? Terminal = terminal;
         internal Action<object, object, string>? SourceCarrier = sourceCarrier;
+        internal Func<object?>? StageAnchor = stageAnchor;
+        internal Action<object, NativeSourceStageWitness>? Stage = stage;
+        internal readonly bool ObserveOriginalRewardTasks = observeOriginalRewardTasks;
         public void Dispose()
         {
             lock (Gate)
             {
                 if (ReferenceEquals(current, this)) current = null;
-                Prefix = null; Terminal = null; SourceCarrier = null;
+                Prefix = null; Terminal = null; SourceCarrier = null; StageAnchor = null; Stage = null;
             }
         }
     }
@@ -69,12 +103,13 @@ public static class NativeSourceInputProvider
 
     // Composition-only registration; public native hooks cannot create a sink.
     internal static IDisposable Register(Func<NativeSourceInputPrefix, object?> prefix, Action<object, string, string?> terminal,
-        Action<object, object, string>? sourceCarrier = null)
+        Action<object, object, string>? sourceCarrier = null, Func<object?>? stageAnchor = null,
+        Action<object, NativeSourceStageWitness>? stage = null, bool observeOriginalRewardTasks = false)
     {
         lock (Gate)
         {
             if (current != null) throw new InvalidOperationException("native_source_input_owner_conflict");
-            return current = new(prefix, terminal, sourceCarrier);
+            return current = new(prefix, terminal, sourceCarrier, stageAnchor, stage, observeOriginalRewardTasks);
         }
     }
     internal static IDisposable ProtocolDispatch(object originalRequest)
@@ -98,7 +133,12 @@ public static class NativeSourceInputProvider
         object? token;
         try { token = callback(prefix); } catch { return null; }
         if (token == null) return null;
-        var invocation = new NativeSourceInputInvocation(original, token, prefix.ExpectedNativeActionType, prefix.AcceptedCarrierType);
+        var invocation = new NativeSourceInputInvocation(original, token, prefix.ExpectedNativeActionType, prefix.AcceptedCarrierType)
+        {
+            OriginalOwner = original.StageAnchor == null && !original.ObserveOriginalRewardTasks || prefix.Owner == null ? null : new(prefix.Owner),
+            OriginalSubject = original.ObserveOriginalRewardTasks && prefix.Subject != null ? new(prefix.Subject) : null,
+            OriginalMechanism = prefix.NativeMechanism
+        };
         scopes ??= new(); scopes.Push(invocation); return invocation;
     }
     public static void BindSubmitted(GameAction exactAction)
@@ -183,14 +223,152 @@ public static class NativeSourceInputProvider
             Accepted(original);
         }
     }
+    /// <summary>One actual SelectLocalReward return inside the exact original button callback, Source4 only.</summary>
+    public static bool BindOriginalRewardTask(Reward exactReward, Task<bool> exactTask)
+    {
+        if (scopes is not { Count: > 0 }) return false;
+        var original = scopes.Peek();
+        if (original.OriginalOwner is not { } reference || !reference.TryGetTarget(out var owner)
+            || owner is not NRewardButton button || !ReferenceEquals(button.Reward, exactReward)) return false;
+        return BindOriginalRewardTaskCore(button, exactReward, exactTask);
+    }
+    // Pure lifecycle core. The production entry above alone supplies its typed native button proof.
+    internal static bool BindOriginalRewardTaskCore(object exactOwner, Reward exactReward, Task<bool> exactTask)
+    {
+        if (protocolDispatches is { Count: > 0 } || scopes is not { Count: > 0 }) return false;
+        var original = scopes.Peek();
+        if (!original.Registration.ObserveOriginalRewardTasks || original.OriginalMechanism != "NRewardButton.OnRelease"
+            || original.ExpectedType != "NRewardButton.OnRelease" || Volatile.Read(ref original.Terminal) != 0
+            || original.OriginalOwner is not { } ownerReference || !ownerReference.TryGetTarget(out var owner)
+            || !ReferenceEquals(owner, exactOwner)
+            || original.OriginalSubject is not { } subjectReference || !subjectReference.TryGetTarget(out var subject)
+            || !ReferenceEquals(subject, exactReward)) return false;
+        lock (Gate)
+        {
+            if (original.HasOriginalRewardTask)
+            {
+                if (!ReferenceEquals(original.OriginalRewardTask, exactTask)) original.RewardTaskOutcome = 4;
+                CompleteOriginalRewardTaskLocked(original); return true;
+            }
+            original.HasOriginalRewardTask = true; original.OriginalRewardTask = exactTask;
+        }
+        // Observe the exact Task; never wrap, replace, await on the native thread, or change its continuation path.
+        try
+        {
+            if (exactTask.IsCompleted) ObserveOriginalRewardTask(original, exactTask);
+            else _ = exactTask.ContinueWith(static (completed, state) =>
+                ObserveOriginalRewardTask((NativeSourceInputInvocation)state!, completed), original,
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        catch
+        {
+            lock (Gate) { original.RewardTaskOutcome = 5; CompleteOriginalRewardTaskLocked(original); }
+        }
+        return true;
+    }
+    private static void ObserveOriginalRewardTask(NativeSourceInputInvocation original, Task<bool> exactTask)
+    {
+        lock (Gate)
+        {
+            if (!ReferenceEquals(original.OriginalRewardTask, exactTask)) return;
+            if (original.RewardTaskOutcome != 4)
+                original.RewardTaskOutcome = exactTask.IsCompletedSuccessfully ? 1 : exactTask.IsCanceled ? 3 : 2;
+            CompleteOriginalRewardTaskLocked(original);
+        }
+    }
+    private static void CompleteOriginalRewardTaskLocked(NativeSourceInputInvocation original)
+    {
+        if (!original.OriginalScopeFinished || original.OriginalScopeFailed || original.RewardTaskOutcome == 0) return;
+        if (original.RewardTaskOutcome == 1) Complete(original, "delivered", null);
+        else Complete(original, "unknown", original.RewardTaskOutcome == 3 ? "native_source_original_reward_task_canceled"
+            : original.RewardTaskOutcome == 4 ? "native_source_original_reward_task_conflict"
+            : original.RewardTaskOutcome == 5 ? "native_source_original_reward_task_observer_failed" : "native_source_original_reward_task_failed");
+        original.OriginalRewardTask = null; // No game Task/continuation graph survives its original receipt.
+    }
+
+    /// <summary>Passive original CancelPlayCard callback only; no new input root or asynchronous carrier tracker.</summary>
+    public static NativeSourceCardPlayCancelScope? BeginCardPlayCancel(NCardPlay exactCardPlay)
+    {
+        Registration? registration; object? anchor;
+        lock (Gate) registration = current;
+        if (registration?.StageAnchor == null || registration.Stage == null) return null;
+        try { anchor = registration.StageAnchor(); } catch { return null; }
+        if (anchor == null) return null;
+        try
+        {
+            if (!GodotObject.IsInstanceValid(exactCardPlay) || exactCardPlay.IsQueuedForDeletion()
+                || exactCardPlay.GetParent() is not NPlayerHand hand || !hand.InCardPlay
+                || exactCardPlay.Holder is not { } holder || holder.CardModel is not { } card
+                || hand.GetChildren().OfType<NCardPlay>().Where(child => GodotObject.IsInstanceValid(child)
+                    && !child.IsQueuedForDeletion()).SingleOrDefault() is not { } only
+                || !ReferenceEquals(only, exactCardPlay)) return null;
+            NativeSourceInputInvocation? lexical = null;
+            if (scopes is { Count: > 0 } && ReferenceEquals(scopes.Peek().Registration, registration))
+            {
+                var top = scopes.Peek();
+                if (top.OriginalOwner is { } ownerReference && ownerReference.TryGetTarget(out var owner)
+                    && (top.OriginalMechanism == "NCardPlay.TryPlayCard" && ReferenceEquals(owner, exactCardPlay)
+                        || top.ExpectedType == "NPlayerHand.StartCardPlay" && ReferenceEquals(owner, hand)
+                            && ReferenceEquals(top.CreatedCardPlay, exactCardPlay))) lexical = top;
+            }
+            var state = new NativeSourceCardPlayCancelScope(registration, anchor, exactCardPlay, hand, holder, card, lexical);
+            exactCardPlay.Finished += state.ObserveFinished;
+            return state;
+        }
+        catch { return null; } // No receipt is invented when exact pre-state cannot be observed.
+    }
+    public static void FinishCardPlayCancel(NativeSourceCardPlayCancelScope? original, Exception? nativeException = null)
+    {
+        if (original == null || Interlocked.Exchange(ref original.Finalized, 1) != 0) return;
+        try { original.CardPlay.Finished -= original.ObserveFinished; } catch { return; }
+        bool proven = false;
+        try
+        {
+            proven = nativeException == null && original.FalseFinished == 1 && original.TrueFinished == 0
+                && GodotObject.IsInstanceValid(original.CardPlay) && original.CardPlay.IsQueuedForDeletion()
+                && ReferenceEquals(original.CardPlay.GetParent(), original.Hand)
+                && ReferenceEquals(original.CardPlay.Holder, original.Holder)
+                && ReferenceEquals(original.Holder.CardModel, original.Card);
+        }
+        catch { /* Getter failure is not a native cancellation receipt. */ }
+        if (!proven) return;
+        var lexical = original.Lexical;
+        if (lexical != null && scopes is { Count: > 0 } && ReferenceEquals(scopes.Peek(), lexical)
+            && Volatile.Read(ref lexical.Terminal) == 0 && lexical.PendingCancel == null)
+            lexical.PendingCancel = original; // Released by this same synchronous invocation's finalizer.
+        else PublishCancel(original, null); // Independent/async callback never backfills a sealed input.
+    }
+    private static void PublishCancel(NativeSourceCardPlayCancelScope original, bool? noSubmission)
+    {
+        Action<object, NativeSourceStageWitness>? callback;
+        lock (Gate) callback = original.Registration.Stage;
+        try { callback?.Invoke(original.Anchor, new(CardPlayCanceledKind, original.CardPlay, original.Card,
+            new Dictionary<string, object>(StringComparer.Ordinal) { ["hand"] = original.Hand }, "native_finished_false", noSubmission)); }
+        catch { /* Passive evidence failure cannot change CancelPlayCard. */ }
+    }
+
     public static void Finish(NativeSourceInputInvocation? original, Exception? nativeException = null)
     {
         if (original == null) return;
+        if (original.PendingCancel is { } canceled)
+        {
+            original.PendingCancel = null;
+            bool open = Volatile.Read(ref original.Terminal) == 0;
+            if (open) lock (Gate) ObserveCarrierLocked(original, canceled.CardPlay, CardPlayCanceledKind);
+            PublishCancel(canceled, open && !original.HasCarrier && nativeException == null ? true : null);
+        }
         original.CreatedCardPlay = null;
         if (scopes is { Count: > 0 } && ReferenceEquals(scopes.Peek(), original)) scopes.Pop();
+        if (original.HasOriginalRewardTask) lock (Gate)
+        {
+            original.OriginalScopeFailed |= nativeException != null; original.OriginalScopeFinished = true;
+            if (original.OriginalScopeFailed)
+            { Complete(original, "unknown", "native_source_input_boundary_threw"); original.OriginalRewardTask = null; }
+            else CompleteOriginalRewardTaskLocked(original);
+        }
         // An exact requested carrier may be accepted later. Its original object
         // binding remains until OnEnqueued or the existing Source close owner.
-        if (nativeException != null || !original.HasCarrier)
+        if (nativeException != null || !original.HasCarrier && !original.HasOriginalRewardTask)
             Complete(original, "unknown", nativeException == null
                 ? "native_source_scope_ended_without_acceptance" : "native_source_input_boundary_threw");
     }

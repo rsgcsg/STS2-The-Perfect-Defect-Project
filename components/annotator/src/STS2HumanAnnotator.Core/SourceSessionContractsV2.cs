@@ -75,7 +75,8 @@ public sealed record SourceSessionLimitsV2(
     int EncodingDeadlineMs = 2000, int CloseBarrierGraceMs = 3000);
 public sealed record SourceCaptureProfileV2(string Schema, string ProfileId, string InputProfile,
     string PublicationProfileId, string PublicationProfileDefinitionSha256,
-    IReadOnlyList<string> EagerScope, SourceSessionLimitsV2 Limits, IReadOnlyList<string> NonClaims);
+    IReadOnlyList<string> EagerScope, SourceSessionLimitsV2 Limits, IReadOnlyList<string> NonClaims)
+{ [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public SourcePublicBasisProfileV4? PublicBasis { get; init; } }
 public sealed record SourceNativePositionV2(string EpochId, string StreamGeneration, string PublicationIndex);
 public sealed record SourceNativeSealV2(string EpochId, string StreamGeneration, string ReservedThrough, string CompletedThrough)
 { [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? AfterInputOrdinal { get; init; } }
@@ -116,14 +117,21 @@ public sealed record PublicCatalogReferenceV2(string EpochId, string CatalogRef,
 public sealed record SourceObservationPacketV2(SourceNativePositionV2 Position, string SourceSeam,
     string SourceIndex, string Phase, string? SnapshotId, string? OwnerOccurrence, string? GameContinuityId,
     string Completeness, FrozenPublicCaptureV2? Capture, FrozenPublicCatalogV2? Catalog,
-    string? MissingReason = null, string? GapAfterIndex = null);
+    string? MissingReason = null, string? GapAfterIndex = null)
+{
+    public FrozenPublicBasisV4? PublicBasis { get; init; }
+    public string? PublicBasisMissingReason { get; init; }
+    public SourceNativeStageV4? NativeStage { get; init; }
+}
 public sealed record SourcePublicObservationV2(string Schema, long Sequence, string SessionId, string TimelineId,
     string EpochId, string SegmentId, SourceNativePositionV2 Position, string SourceSeam, string SourceIndex,
     string Phase, string? SnapshotId, string? OwnerOccurrence, string? GameContinuityId, string Completeness,
-    PublicCaptureReferenceV2? Capture, PublicCatalogReferenceV2? Catalog, string? MissingReason, string? GapAfterIndex);
+    PublicCaptureReferenceV2? Capture, PublicCatalogReferenceV2? Catalog, string? MissingReason, string? GapAfterIndex)
+{ [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public SourceCapturedPartsV4? CapturedParts { get; init; } }
 public sealed record SourceInputStageV2(string Stage, string Delivery, string Evidence);
 public sealed record SourceInputOutcomeV2(string MappingStatus, int MatchCount, SourcePublicAction? SelectedAction,
-    string NativeMechanism, string Delivery, string? ReasonCode, IReadOnlyList<SourceInputStageV2> Stages);
+    string NativeMechanism, string Delivery, string? ReasonCode, IReadOnlyList<SourceInputStageV2> Stages)
+{ [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public SourceNativeFactsV4? NativeFacts { get; init; } }
 public sealed record SourceNativeInputWitnessV2(string Schema, long Sequence, string SessionId, string TimelineId,
     string InputId, string EpochId, string SegmentId, SourceNativePositionV2 PrePosition,
     PublicCaptureReferenceV2? PreCapture, PublicCatalogReferenceV2? Catalog,
@@ -131,6 +139,7 @@ public sealed record SourceNativeInputWitnessV2(string Schema, long Sequence, st
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? InputPrefixOrdinal { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public SourceBasisOrderV3? BasisOrder { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public SourceCapturedPartsV4? CapturedParts { get; init; }
 }
 public sealed record SourceFinalDrainV2(string EpochId, string StreamGeneration, string SealedReservedThrough,
     string CompletedThrough, string DurableThrough, bool AdmittedInputsTerminal)

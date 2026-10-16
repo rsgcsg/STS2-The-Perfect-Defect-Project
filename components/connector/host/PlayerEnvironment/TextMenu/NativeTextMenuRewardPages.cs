@@ -88,7 +88,9 @@ internal static class NativeTextMenuRewardPages
                 Reward exactReward = reward;
                 leaves.Add(Leaf("claim_reward:" + id, "root", "claim_reward",
                     "Claim " + label, id,
-                    () => ClaimOrdinary(screen, exactButton, exactReward, entities)));
+                    () => ClaimOrdinary(screen, exactButton, exactReward, entities)) with {
+                    NativeSourceWitness = new(exactButton, exactReward, new Dictionary<string, object>(StringComparer.Ordinal)),
+                    NativeSourcePrefixVerb = "activate" });
             }
         }
 
@@ -128,7 +130,9 @@ internal static class NativeTextMenuRewardPages
                     leaves.Add(Leaf("claim_linked:" + groupId + ":" + id,
                         "root", "claim_linked_reward", "Choose " + label,
                         id, () => ClaimLinked(screen, group, exactButton,
-                            linked, exactReward, entities)));
+                            linked, exactReward, entities)) with {
+                        NativeSourceWitness = new(exactButton, exactReward, new Dictionary<string, object>(StringComparer.Ordinal)),
+                        NativeSourcePrefixVerb = "activate" });
                 }
             }
             content.Add(new JsonObject

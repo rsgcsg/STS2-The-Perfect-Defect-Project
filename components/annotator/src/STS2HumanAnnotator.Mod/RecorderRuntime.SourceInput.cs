@@ -16,7 +16,8 @@ internal static partial class RecorderRuntime
         object? SourceControl = null, string? SourceCallback = null)
     { internal bool SourceCallbackClaimed { get; set; } }
 
-    internal static bool IsOrderedSourceProfile => _activeCaptureProfileId == SourceSessionContractV3.ProfileId;
+    internal static bool IsPublicBasisSourceProfile => _activeCaptureProfileId == SourceSessionContractV4.ProfileId;
+    internal static bool IsOrderedSourceProfile => _activeCaptureProfileId is SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;
     [ThreadStatic] private static SelectorInputHandle? sourceSelectorInput;
     private static bool SourceSelectorActive => sourceSelectorInput != null;
     private static Type? SourceCarrierType(string nativeType) => nativeType switch
@@ -75,6 +76,11 @@ internal static partial class RecorderRuntime
     {
         internal readonly NativeSourceInputInvocation? Invocation = invocation;
         public void Dispose() => NativeSourceInputProvider.Finish(Invocation);
+    }
+    internal static void FinishNativeCardStartScope(IDisposable? scope, Exception? nativeException)
+    {
+        if (scope is SourceCardStartScope source) NativeSourceInputProvider.Finish(source.Invocation, nativeException);
+        else scope?.Dispose();
     }
     internal static IDisposable? StageNativeCardPlay(NPlayerHand hand, NHandCardHolder holder)
     {

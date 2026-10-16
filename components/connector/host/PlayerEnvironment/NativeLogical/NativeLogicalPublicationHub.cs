@@ -21,7 +21,11 @@ public sealed record NativeLogicalPublicationReservation(string StreamGeneration
     IReadOnlyList<NativeLogicalSubscription> Subscriptions);
 public sealed record NativeLogicalInitialAttachment(NativeLogicalAttachReply Attach, NativeLogicalPublicationReservation? InitialReservation);
 public sealed record NativeLogicalProjectionOutcome(string ScopeId, NativeLogicalCapture? Capture,
-    string? MissingReason, bool CatalogNonempty = false);
+    string? MissingReason, bool CatalogNonempty = false)
+{
+    [System.Text.Json.Serialization.JsonIgnore] public NativeLogicalSourcePayload? SourcePayload { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore] public NativeLogicalSourceStage? SourceStage { get; init; }
+}
 
 /// <summary>Bounded source metadata and immutable scoped projections. No native capture or dispatch occurs here.</summary>
 public sealed partial class NativeLogicalPublicationHub : IDisposable
@@ -41,6 +45,7 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
         internal bool Completed;
         internal readonly Dictionary<string, NativeLogicalProjectionOutcome> Outcomes = new(StringComparer.Ordinal);
         internal readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, IDisposable> SourcePins = new(StringComparer.Ordinal);
     }
     private sealed class Waiter(string client, string subscription, string id, ulong after, string condition, long deadline)
     {
@@ -242,6 +247,7 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
             foreach (var outcome in outcomes)
             {
                 if (!expectedScopes.Contains(outcome.ScopeId)) throw new NativeLogicalException("invalid_projection", "Outcome is not bound to an accepted projection scope.");
+                ValidateSourcePayload(outcome, reservation.StreamGeneration);
                 if (outcome.Capture is null && outcome.MissingReason is null || outcome.Capture is not null && outcome.MissingReason is not null)
                     throw new NativeLogicalException("invalid_projection", "Each projection has exactly one capture or missing outcome.");
                 if (outcome.MissingReason is not null) NativeLogicalWire.Text(outcome.MissingReason, limits.MaxMetadataFieldBytes);
@@ -265,9 +271,10 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
                         if (store.CaptureDescriptor(outcome.Capture.CaptureId) != outcome.Capture) throw new NativeLogicalException("invalid_projection", "Capture descriptor differs from immutable retained bytes.");
                         slot.Pins.Add(id, store.Retain("hub:" + id, outcome.Capture.CaptureId));
                     }
-                    catch (NativeLogicalException e) { outcome = new(sub.Value.ScopeId, null, e.Code == "payload_expired" ? "payload_expired" : "capacity_exceeded"); }
+                    catch (NativeLogicalException e) { outcome = new(sub.Value.ScopeId, null, e.Code == "payload_expired" ? "payload_expired" : "capacity_exceeded") { SourcePayload = outcome.SourcePayload, SourceStage = outcome.SourceStage }; }
                 }
                 else if (outcome.CatalogNonempty) outcome = outcome with { CatalogNonempty = false };
+                PinSourcePayload(slot, id, ref outcome);
                 slot.Outcomes.Add(id, outcome);
             }
             CompleteRetiringSourceReservation(reservation, outcomes);
@@ -413,7 +420,8 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
         string seamCoverage = sub.AdvertisedCoverage.TryGetValue(slot.Seam, out var accepted) ? accepted.Coverage : "unsupported";
         var value = new NativeLogicalEvent(NativeLogicalContract.EventSchema, Cursor(sub, slot.Index), generation,
             NativeLogicalWire.Number(slot.Index), slot.Kind, slot.Seam, slot.Phase, slot.SourceIndex,
-            sub.Value.ScopeId, outcome.Capture?.CaptureId, outcome.MissingReason, seamCoverage, outcome.Capture);
+            sub.Value.ScopeId, outcome.Capture?.CaptureId, outcome.MissingReason, seamCoverage, outcome.Capture)
+        { SourcePayloadRef = outcome.SourcePayload?.PayloadId, SourceStage = outcome.SourceStage };
         return new(value, outcome.Capture is null ? "missing" : store.IsAvailable(outcome.Capture.CaptureId) ? "available" : "payload_expired");
     }
     private NativeLogicalAwaitReply? Inspect(Subscription sub, ulong after, string condition)
@@ -491,10 +499,27 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
             if (!FinishExpired(waiter, clock())) Finish(waiter, new(status, null, null, null));
         if (subscriptions.Remove(id, out var removed)) waitIdMetadataBytes -= (long)removed.WaitIds.Count * WaitIdMetadataCharge;
         foreach (Slot slot in ring.OfType<Slot>())
-        { if (slot.Pins.Remove(id, out string? pin)) store.Release("hub:" + id, pin); slot.Outcomes.Remove(id); }
+        { if (slot.Pins.Remove(id, out string? pin)) store.Release("hub:" + id, pin);
+          if (slot.SourcePins.Remove(id, out var sourcePin)) sourcePin.Dispose(); slot.Outcomes.Remove(id); }
     }
     private void ReleasePins(Slot slot)
-    { foreach (var pin in slot.Pins) store.Release("hub:" + pin.Key, pin.Value); slot.Pins.Clear(); }
+    {
+        foreach (var pin in slot.Pins) store.Release("hub:" + pin.Key, pin.Value); slot.Pins.Clear();
+        foreach (var pin in slot.SourcePins.Values) pin.Dispose(); slot.SourcePins.Clear();
+    }
+    private void ValidateSourcePayload(NativeLogicalProjectionOutcome outcome, string originalGeneration)
+    {
+        if (outcome.SourcePayload is not { } payload) return;
+        if (payload.ScopeId != outcome.ScopeId || payload.StreamGeneration != originalGeneration
+            || store.SourcePayloadMetadata(payload.PayloadId).Descriptor != payload)
+            throw new NativeLogicalException("invalid_projection", "Source parts are not bound to this original projection.");
+    }
+    private void PinSourcePayload(Slot slot, string subscriptionId, ref NativeLogicalProjectionOutcome outcome)
+    {
+        if (outcome.SourcePayload is not { } payload) return;
+        try { slot.SourcePins.Add(subscriptionId, store.RetainSourcePayload(payload.PayloadId)); }
+        catch (NativeLogicalException e) when (e.Code == "payload_expired") { outcome = outcome with { SourcePayload = null }; }
+    }
     public void ChangeGeneration() { lock (gate) ChangeGenerationLocked(); }
     private void ChangeGenerationLocked()
     {
