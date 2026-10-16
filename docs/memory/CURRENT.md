@@ -9,6 +9,10 @@ PR merge/close, research/spending and deployment keep their explicit boundaries.
 [P1-TU](../plans/P1_TERMINAL_UPGRADE_2026-10-17.md), Draft PR191
 `codex/p1-terminal-upgrade`: Root is the sole integrator. Start986e3f95;
 normal merges7b0deb0a/0efccea9 retain task1/8b83a7f1 and task2/93fd596b.
+Before publication parent PR189 advanced toc5fbbd11; reviewed normal merge51c65a2e
+resolves its BOM conflict, retains both worker fixes and its late-chooser fixture
+startup allowance. Product deadlines/assertions stay unchanged; only that case is
+rechecked after the parent increment, then final identity/package/repository gates.
 Task1 uses fileURLToPath for the real diagnostic child, retaining duplicate-instance
 assertions. Task2 drains the started original-response write before capture closure;
 Stop/budget still releases control independently. Combined focused regression45pass;
