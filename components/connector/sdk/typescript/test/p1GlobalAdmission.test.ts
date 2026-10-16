@@ -7,6 +7,27 @@ const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis
 const read = (basis: any, kind: string): any => basis.reads.find((item: any) => item.kind === kind).response;
 
 describe("P1 r1.1 explicit complete-capture admission", () => {
+  it.each([false, true])("maps the native subjectless upgrade-view toggle (showing=%s) without changing its binding", showing => {
+    const b = fixture("managed-deck_upgrade_selection");
+    Object.assign(b.snapshot.interaction.content.surface, { showing_upgrade_previews: showing, can_toggle_upgrade_view: true });
+    const toggle = { ...b.snapshot.bound_actions.actions[0], bound_action_id: "native_upgrade_view_toggle",
+      verb: "activate", arguments: [], label: showing ? "Show current card versions" : "Show upgraded card previews" };
+    delete toggle.subject_referent_id;
+    b.snapshot.bound_actions.actions.push(toggle); count(b);
+    const r = project(b);
+    // This archived selector capture lacks the required map Read. Mapping the
+    // toggle must remove its own gap, without inventing completeness elsewhere.
+    expect(r.complete).toBe(false);
+    expect(r.missing).toEqual(["required:map"]);
+    const choice = r.observation.catalog.find(c => c.kind === "upgrade.toggle_preview")!;
+    expect(choice.subject).toBeNull();
+    expect(r.lowering[choice.choice_id]!.first!.bound_action_id).toBe(toggle.bound_action_id);
+    expect(r.lowering[choice.choice_id]!.first!.verb).toBe("activate");
+    expect(r.observation.catalog).toHaveLength(b.snapshot.bound_actions.actions.length);
+    // A card-bound activate is not the native screen toggle and stays unsupported.
+    toggle.subject_referent_id = b.snapshot.referents.find((r: any) => r.role === "card").referent_id;
+    expect(project(b).missing).toContain("required:action_mapping:deck_upgrade_selection.activate");
+  });
   it("accepts a fully shaped same-snapshot synthetic capture through production codecs", () => {
     // Captured combat + explicit synthetic map topology/current position; no native qualification claim.
     const result = project(fixture("synthetic-complete-combat"));

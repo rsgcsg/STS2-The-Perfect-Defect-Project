@@ -6,7 +6,7 @@
 //
 // The child sees only: hello{protocol, profile, revision, episode_id, host_kind} ->
 // ready{agent_id} ; observation{observation, requires_choice:true} -> choose{occurrence, choice_id}
-// ; episode_end{reason}. It knows nothing about consumption ids, tokens or native operands.
+// ; observation{requires_choice:false} then episode_end{outcome,censor_reason}. It knows nothing about consumption ids, tokens or native operands.
 // Every directive refers to the exact acknowledged basis; the Runtime remains the only
 // authority for dispatch, budgets, Stop and evidence.
 import { spawn } from "node:child_process";
@@ -33,8 +33,15 @@ const fromChild = async (expect) => {
     if (message.type === "abstain") throw new Error(`p1_agent_abstained:${message.reason ?? ""}`);
   }
 };
-// A dead Agent must surface as a closed port, never as a silent wait.
-child.on("exit", (code) => { process.stderr.write(`p1 agent exited (${code})\n`); process.exit(code === 0 ? 0 : 1); });
+// A dead Agent must surface as a closed port, never as a silent wait. At a
+// terminal, finish the child stream before returning close to the Runtime, which
+// may immediately dispose of this bridge. The Runtime's existing Next budget
+// still bounds an uncooperative child; no gameplay readiness timer is introduced.
+let terminalClosing = false;
+const childExited = new Promise(resolve => child.once("exit", (code, signal) => {
+  resolve({ code, signal });
+  if (!terminalClosing) { process.stderr.write(`p1 agent exited (${code})\n`); process.exit(code === 0 ? 0 : 1); }
+}));
 
 let version = 0, consumption = null, basis = null, pending = null, unit = null, helloSent = false;
 send({ schema: "sts2.policy-runtime/agent-session-1", message_type: "ready", adapter: manifest.adapter });
@@ -63,7 +70,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     let directive;
     if (observation.status === "terminal") {
+      terminalClosing = true;
+      toChild({ type: "observation", observation, requires_choice: false, forced_choice_id: null });
       toChild({ type: "episode_end", outcome: observation.terminal?.outcome ?? null, censor_reason: null });
+      child.stdin.end();
+      const exit = await childExited;
+      if (exit.code !== 0 || exit.signal !== null) throw new Error("p1_agent_terminal_exit_failure");
       directive = { type: "close", reason: "native_terminal_observed" };
     } else {
       toChild({ type: "observation", observation, requires_choice: true, forced_choice_id: null });

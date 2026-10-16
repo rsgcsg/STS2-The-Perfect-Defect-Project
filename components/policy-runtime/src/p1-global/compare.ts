@@ -43,7 +43,7 @@ function supported(observation: P1Observation): string | null {
   if (!observation.envelope.required_information_complete) return "incomplete_required_information";
   if (!P1G_INFORMATION_SHAPES.includes(observation.scene.family)) return "unqualified_scene_information";
   if (observation.status === "unsupported") return "unsupported_observation";
-  if (observation.status === "terminal") return observation.terminal?.outcome === "unknown" ? "unknown_terminal" : null;
+  if (observation.status === "terminal") return ["win", "loss"].includes(observation.terminal?.outcome ?? "") ? null : "unknown_terminal";
   for (const part of ["run", "player", "deck", "map"] as const)
     if (observation[part].availability !== "available") return `required_${part}_unavailable`;
   if (!completeDeck(observation.deck.content) || !completeMap(observation.map.content,

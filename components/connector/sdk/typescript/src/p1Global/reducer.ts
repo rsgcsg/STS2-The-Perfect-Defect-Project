@@ -171,6 +171,7 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_hand_card_selection|cancel|": "selector.cancel",
   "deck_upgrade_selection|select|card": "upgrade.choose",
   "deck_upgrade_selection|open|card": "upgrade.preview",
+  "deck_upgrade_selection|activate|": "upgrade.toggle_preview",
   "deck_card_selection|open|card": "selector.preview",
   "deck_enchant_selection|open|card": "enchant.preview",
   "deck_enchant_selection|select|card": "enchant.choose",

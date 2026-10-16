@@ -116,6 +116,10 @@ Agent → 执行器：choose{occurrence, choice_id} | abstain{reason}
 执行器 → Agent：result{result} …… episode_end{outcome, censor_reason}
 ```
 
+终局同样先发送完整 `observation{requires_choice:false}`，再发送 `episode_end`；不能仅凭结束通知或空choice判定跨Host终局相同。对照须已匹配前缀、Reference最后一点为明确终局、无删失，并比较双方完整公共终局（包含win/loss）。桥接器在返回Runtime close前让子Agent处理完终局并退出，异常退出不伪称完整交付；原Runtime预算仍约束等待。
+
+升级页已有的subjectless原生 `activate`（切换当前/升级预览）映射为 `upgrade.toggle_preview`，保留原bound_action_id并由原生执行时复验，不等同选牌/确认，也不扩成所有activate的兜底。
+
 Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`components/policy-runtime/examples/p1/`（随机、首项、人工选择器）。
 
 ## 10. 记录与转换（`sts2.p1/episode-record-1`）
