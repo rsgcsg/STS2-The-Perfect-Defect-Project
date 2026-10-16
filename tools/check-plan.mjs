@@ -5,32 +5,48 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { eligibleEvent, findReceipt } from "./check-receipt.mjs";
+import {repositoryOnlyWorkflowChange} from "./check-ci-contract.mjs";
 import {pytestPartition} from "./check-workspace.mjs";
 import {currentShardIdentity, verifyPytestShards} from "./verify-pytest-shards.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-// Explicit prose surfaces only. Governance, contracts, component docs and
-// unknown paths retain the complete suite. Python owners have a separate full consumer gate.
+// Route by executable owner, not how important a document sounds. Unknown,
+// component/contract/build changes keep full; repository tools have their own gate.
 const editorial = new Set([
   "README.md", "CONTRIBUTING.md", "docs/NEW_MEMBER_HANDOFF.zh-CN.md",
   "docs/NEW_ENGINEER_GUIDE.md", "docs/DOCUMENT_MAP.md", "docs/STATUS.md",
 ]);
 
+const managementDocs = new Set([
+  "AGENTS.md", "docs/WORKING_RULES.zh-CN.md", "docs/AI_COLLABORATION.md",
+  "docs/TESTING.md", "docs/ENGINEERING_GOVERNANCE.md", "docs/DEVELOPMENT_WORKFLOW.md",
+  "docs/PROJECT_SYSTEM.md", ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/ISSUE_TEMPLATE/engineering_task.yml",
+]);
+const repositoryTools = new Set([
+  "tools/project-system.mjs", "tools/project-system.test.mjs",
+  "tools/check-governance.mjs", "tools/check-governance.test.mjs",
+  "tools/check-plan.mjs", "tools/check-plan.test.mjs",
+  "tools/check-ci-contract.mjs", "tools/check-ci-contract.test.mjs",
+]);
+const regularChange = ({status, oldMode, newMode}) =>
+  newMode === "100644" && ((status === "A" && oldMode === "000000") ||
+    (status === "M" && oldMode === "100644"));
+
 function prose({status, file, oldMode, newMode}) {
   // Mode comes from the committed raw Git diff, not extension or worktree bytes.
   // Executable files, symlinks and type changes cannot masquerade as prose.
-  const regular = newMode === "100644" &&
-    ((status === "A" && oldMode === "000000") || (status === "M" && oldMode === "100644"));
-  const surface = (status === "M" && editorial.has(file)) ||
+  const regular = regularChange({status, oldMode, newMode});
+  const surface = managementDocs.has(file) || (status === "M" && editorial.has(file)) ||
     file === "docs/memory/CURRENT.md" || /^docs\/(?:design|plans|evidence)\/[^/]+\.md$/.test(file);
   return regular && surface;
 }
 
-export function classifyChanges(entries) {
+export function classifyChanges(entries, {repositoryWorkflowOnly = false} = {}) {
   if (!entries.length) return { scope: "full", reason: "empty_or_unknown_diff" };
   // Protected instructions cannot enter the Python report-companion route either.
   // Case variants stay protected on case-insensitive supported workstations.
-  if (entries.some(({file}) => /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(file))) {
+  if (entries.some(({file}) => /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(file) && file !== "AGENTS.md")) {
     return {scope: "full", reason: "protected_instruction_change"};
   }
   if (entries.some(({oldMode, newMode}) =>
@@ -41,12 +57,18 @@ export function classifyChanges(entries) {
   if (entries.every(prose)) {
     return { scope: "docs", reason: "regular_prose_surfaces_only" };
   }
+  const repositoryOwner = entry => regularChange(entry) &&
+    (repositoryTools.has(entry.file) ||
+      (entry.file === ".github/workflows/ci.yml" && entry.status === "M" && repositoryWorkflowOnly));
+  if (entries.some(repositoryOwner) && entries.every(entry => prose(entry) || repositoryOwner(entry))) {
+    return {scope: "repository", reason: "repository_tools_and_management_only"};
+  }
   const pythonOwner = ({file, status}) => ["M", "A", "D"].includes(status) &&
     /^python\/(spireagent|stpd|tests)\//.test(file) && !/(^|\/)AGENTS\.md$/.test(file);
   // Reports accompany a Python fix; they do not introduce another executable owner.
   // Eligible standalone prose uses docs; governance and evidence deletions stay full.
   const companion = ({file, status}) =>
-    (status === "M" && (editorial.has(file) || ["docs/memory/CURRENT.md", "python/docs/PROJECT_CONSOLE.md"].includes(file))) ||
+    (status === "M" && (editorial.has(file) || managementDocs.has(file) || ["docs/memory/CURRENT.md", "python/docs/PROJECT_CONSOLE.md"].includes(file))) ||
     (["A", "M"].includes(status) && /^docs\/evidence\/[^/]+\.md$/.test(file));
   if (entries.some(pythonOwner) && entries.every(entry => pythonOwner(entry) || companion(entry))) {
     return { scope: "python", reason: "python_owners_and_installed_platform_consumers" };
@@ -88,7 +110,11 @@ export function makePlan({ base, head = "HEAD", forceFull = false, cwd = root } 
     const exactBase = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`).trim();
     const entries = parseRawDiff(git("diff", "--no-renames", "--raw", "--no-abbrev", "-z", exactBase, exactHead, "--"));
     const dirty = git("status", "--porcelain", "--untracked-files=normal").trim().length > 0;
-    const route = forceFull || dirty ? { scope: "full", reason: forceFull ? "explicit_full" : "dirty_worktree" } : classifyChanges(entries);
+    const repositoryWorkflowOnly = entries.some(entry => entry.file === ".github/workflows/ci.yml") &&
+      repositoryOnlyWorkflowChange(git("show", `${exactBase}:.github/workflows/ci.yml`),
+        git("show", `${exactHead}:.github/workflows/ci.yml`));
+    const route = forceFull || dirty ? { scope: "full", reason: forceFull ? "explicit_full" : "dirty_worktree" }
+      : classifyChanges(entries, {repositoryWorkflowOnly});
     return { ...route, base: exactBase, head: exactHead, files: entries };
   } catch {
     return { scope: "full", reason: "diff_unavailable", base: null, head: null, files: [] };
@@ -115,6 +141,9 @@ export function checkCommittedPatch({ base, head = "HEAD", cwd = root } = {}) {
 
 export function aggregatePassed(scope, results) {
   if (results.plan !== "success") return false;
+  if (scope === "repository") return results.repository === "success" &&
+    results.docs === "skipped" && results.linux === "skipped" && results.windows === "skipped";
+  if (results.repository !== "skipped") return false;
   if (scope === "docs") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
   if (scope === "reuse") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
   if (["full", "python"].includes(scope)) return results.docs === "skipped" && results.linux === "success" && results.windows === "success";
@@ -123,6 +152,7 @@ export function aggregatePassed(scope, results) {
 
 export function scopeCommands(scope) {
   if (scope === "docs") return ["check:docs"];
+  if (scope === "repository") return ["check:repository"];
   if (scope === "reuse") return ["check:repository"];
   if (scope === "python") return ["check:python-scope"];
   if (scope === "full") return ["check"];
@@ -142,7 +172,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args[0] === "aggregate") {
     const e = process.env;
-    const results = {plan: e.PLAN_RESULT, docs: e.DOCS_RESULT, linux: e.LINUX_RESULT, windows: e.WINDOWS_RESULT};
+    const results = {plan: e.PLAN_RESULT, docs: e.DOCS_RESULT, repository: e.REPOSITORY_RESULT,
+      linux: e.LINUX_RESULT, windows: e.WINDOWS_RESULT};
     if (!aggregatePassed(e.CHECK_SCOPE, results)) process.exitCode = 1;
     else {
       const coverage = ["full", "python"].includes(e.CHECK_SCOPE) ? verifyPytestShards(

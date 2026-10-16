@@ -1,106 +1,79 @@
-# SpireAgent Project Engineering Guide
+# SpireAgent Engineering Guide
 
-## Mission
+## Mission and startup
 
-Maintain one project for the STS2 environment, project applications and STPD research.
-One repository and workflow do not merge game, evidence, operational or research authority.
+Deliver useful STS2 Agents through a faithful environment, usable recording/data
+and a maintainable product path. One repository does not merge gameplay,
+execution, evidence, application and research authority.
 
-## Required Read Order
+Initial route: this file → `README.md` → `docs/memory/CURRENT.md` →
+`docs/WORKING_RULES.zh-CN.md`. Then read the linked current task and only the owning
+specification/component guide and exact code/evidence needed for it. A four-file
+orientation is not a ban on relevant investigation; it is not a requirement to
+read all historical plans before doing useful work.
 
-1. `README.md`
-2. `docs/memory/CURRENT.md`
-3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
-4. the relevant component `AGENTS.md` or guide and exact code/tests
+Before ordinary development consult relevant `docs/DEVELOPMENT_WORKFLOW.md` and
+`docs/TESTING.md` sections. For authority, public contracts, cross-layer semantics,
+identity, test policy or governance changes, also consult the relevant
+`docs/ARCHITECTURE.md`, `docs/COMPONENTS.md` and
+`docs/ENGINEERING_GOVERNANCE.md` sections. `npm run project:context -- --component <name>`
+provides a bounded route. Do not infer current work from an old chat title/report.
 
-Read the active task linked from CURRENT for its requirements, design version,
-allowed operations, resources and final approver. Task-specific budgets, branches,
-worker status and gate progress belong there, not in this instruction file.
-All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md); one lead
-coordinates disjoint writers and verifies original evidence. Material changes,
-including its own, receive non-author review under AI_COLLABORATION. Continue already
-authorized work and routine repairs without using
-the user as a relay. Only stop dependent work at a real unresolved boundary.
+## Work boundary
 
-Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and
-`docs/TESTING.md`. Read `docs/ENGINEERING_GOVERNANCE.md` when the task changes
-architecture, authority, a public contract, evidence/identity, cross-layer
-behavior, test strategy, Agent collaboration, Skill policy, or cloud/runtime
-promotion.
+The shared work rules apply to engineers, architects, managers and Agents.
+One assignment has a purpose, deliverable, scope, acceptance and stop condition.
+The lead owns prioritization and acceptance; each worker has one bounded outcome.
+Do not turn every discovered problem into a new task or substitute repeated tests,
+audits or safety arguments for consumer-visible progress. Reassess stalled work;
+ask the user about genuine unresolved goals, tradeoffs or authority, not routine
+implementation choices. AI-specific delegation/recovery lives in
+`docs/AI_COLLABORATION.md`; material changes receive its scoped non-author review.
 
-Normal work starts from current `origin/develop`, uses one short-lived topic
-branch and targets `develop` by pull request. Do not direct-push `main` or
-`develop`, share a writable branch between agents, or create permanent component
-develop lines. Ordinary tasks finish at reviewed develop integration; promote a selected
-batch to main only when release is in scope. Matching trees need no empty sync PR.
-TESTING.md owns scoped checks and verified execution reuse; never copy a green status
-or equate a branch head with the installed/deployed producer. Use `npm run project:context -- --component <name>` for a bounded
-routing map; load `docs/STATUS.md` and dated evidence only when current claims
-matter.
-
-## Hard Shell
+## Hard shell
 
 - STS2 owns rules, RNG, effects, native legality and Commit.
-- Connector owns fair-player Snapshot, Read, complete finite BoundAction,
+- Connector owns fair-player Snapshot/Read, complete finite BoundAction,
   execute-time revalidation, Receipt and successor semantics.
-- Host Runtime owns process lifecycle, profile isolation, exact identity,
-  recovery and qualification tooling, not gameplay legality.
-- Annotator owns native-human witness correlation and immutable recording
-  evidence, not action authority or research admission.
-- Evidence owns typed verification and immutable transfer, not Human origin or
-  research admission.
-- Policy Runtime consumes Connector-owned finite actions and stays
-  model-neutral; it owns no inference, legality, or native operands.
-- Game Mod owns one production package, exact install/load identity, and
-  rollback; packaging never merges component authorities.
-- External consumers own strategy, research projection, training and
-  evaluation.
+- Host Runtime owns lifecycle, isolation, exact identity and recovery, not legality.
+- Native Foundation owns native facts/lineage, not transport or input authority.
+- Annotator owns native-source/Human witness correlation and immutable records.
+- Evidence owns typed verification and transfer, not Human origin or research admission.
+- Policy Runtime owns controlled execution, budgets/Stop and control release;
+  it owns no inference, legality or native operands.
+- Game Mod owns package/install/load/rollback; packaging does not merge authorities.
+- `python/spireagent` owns applications/infrastructure; `python/stpd` owns research,
+  strategy, models, training and evaluation through declared Platform interfaces.
 
-Platform components are the model-neutral foundation. `python/spireagent` owns
-project applications and shared infrastructure; `python/stpd` owns research.
-Both use declared component APIs. Platform must not import model, reward,
-training or research semantics. See docs/MONOREPO_MIGRATION.md for cutover gates.
-Root governance overrides historical repository workflow descriptions in imported docs.
+Never leak hidden game state, manufacture native operands, create a second legality
+engine, silently fall back, or automatically retry an unknown delivery. Preserve
+original data and failures. Protect actual control/data/permission boundaries;
+do not build speculative defense machinery unrelated to the task.
 
-Never add hidden-state leakage, coordinate/index mutation, arbitrary reflection,
-a second legality engine, consumer-created native operands, silent fallback or
-automatic retry after an `unknown` delivery.
+## Git, identity and completion
 
-## Component Identity
+Use current `origin/develop` for normal short topics; explicitly identify any
+required unmerged dependency. Reuse a suitable clean checkout, one writable branch
+per writer. No direct push to main/develop, force push or overwrite of another
+writer. PR merge/close needs the user's per-PR approval. Existing scoped runtime
+permissions persist; new spending, research configuration, production publication
+or destructive operations need their own authorization.
 
-The workspace commit is provenance, not a component semantic identity. Every
-component has its own path-scoped source revision, source digest, contract
-digest, version and artifact identity. An unrelated component edit must not
-silently change another component's source identity.
+Workspace SHA is provenance, not every component's identity. Keep path-scoped
+source revision/digest, contract version and actual artifact identity distinct.
+Component-source changes use normal merge commits; docs-only changes may squash.
+Never weaken identity/BOM checks for an incompatible merge method.
 
-The current path-scoped `source_revision` is commit provenance. A normal merge
-commit preserves the topic component revision; squash/rebase integration does
-not. Until that provenance contract is deliberately changed, any PR that
-changes component source uses a normal merge commit. Docs/governance-only PRs
-that do not change component source may be squashed. Never weaken BOM/identity
-checks merely to accommodate a provenance-rewriting merge method.
+Classify G0–G6 under Governance, repair the owning fact, use the cheapest faithful
+checks while editing, then the selected gates for the claim. Full runs belong on
+stable candidates, not every small edit. Before a PR run `npm run project:closeout`
+and `git diff --check`; preserve required CI and exact-game/Human checks when those
+claims are requested. Tests/build/installed/runtime/Human/strategy quality are
+separate; none is inferred from a merge or a worker summary.
 
-## Change Loop
-
-Use real needs and evidence to revise designs; current implementation is not a
-reason to freeze a flawed abstraction. Record the chosen behavior, rationale,
-affected consumers and migration in the owning specification before dependent
-implementation. Proposals and historical alternatives do not silently become
-mandatory. Keep one canonical owner per fact; use PROJECT_SYSTEM for document
-placement and update the active handoff when work changes.
-
-Classify the change (`G0`-`G6`), identify the first incorrect fact and owning
-layer, preserve dependency direction, add the lowest-cost faithful regression,
-run the component and selected root gates defined in docs/TESTING.md, then report evidence at its exact level.
-Hosted CI must remain source/test-only; game-bound changes additionally use the
-local exact-game/build/runtime gates defined in `docs/TESTING.md`.
-
-Never commit game files, decompiled source, raw human data, `.local/`,
-credentials, model weights or installed artifacts. Worker or conversation
-output is not evidence until the lead verifies exact code, tests, refs, and
-runtime records.
-
-Record the base branch/SHA, latest head, workstream, change class, owning fact,
-cross-repository pin, evidence level, rollback and non-claims in every PR. A
-merge never promotes source/test evidence to build, loaded, runtime, Human or
-qualification evidence. Run `npm run project:closeout` before the PR so
-documentation, evidence, contract, version, and governance impacts stay visible.
+A PR records purpose, base/latest head, scope/non-goals, owning change, validation,
+contract/version impact, rollback and known limitations. Hand off a compact result
+and stop at the task boundary. Do not start the next backlog item unassigned.
+Never commit game binaries/decompiled source, raw Human data, `.local/`, secrets,
+weights or installed artifacts. Documentation placement and rule maintenance are
+owned by `docs/PROJECT_SYSTEM.md`, not a new status or policy registry.

@@ -42,6 +42,16 @@ export function ciWorkflowErrors(rawSource) {
   if (/continue-on-error:\s*true/u.test(source)) errors.push("CI must not ignore check failures");
   const plan = jobBlock(source, "plan");
   const docs = jobBlock(source, "docs");
+  const repository = jobBlock(source, "repository");
+  if (!docs?.includes("run: npm ci")) errors.push("docs must install locked repository dependencies");
+  if (!repository || !repository.includes("if: needs.plan.outputs.scope == 'repository'") ||
+      !repository.includes("needs: plan") || !repository.includes("runs-on: ${{ matrix.os }}") ||
+      !repository.includes("os: [ubuntu-latest, windows-latest]") ||
+      !repository.includes("run: npm ci") ||
+      !repository.includes("run: node tools/check-plan.mjs execute") ||
+      !repository.includes("CHECK_SCOPE: ${{ needs.plan.outputs.scope }}") ||
+      !repository.includes("fetch-depth: 0") || !repository.includes("persist-credentials: false"))
+    errors.push("repository must execute locked selected checks on both OSes");
   if (!plan || !/run: node tools\/check-plan\.mjs --check-patch\s*$/mu.test(plan)) errors.push("CI must use the shared check planner");
   const route = plan?.match(/      - id: route\n[\s\S]*?(?=\n      - |$)/u)?.[0] ?? "";
   if (!/run: node tools\/check-plan\.mjs --check-patch\s*$/mu.test(route) ||
@@ -99,12 +109,12 @@ export function ciWorkflowErrors(rawSource) {
   }
   if (portable) {
     requireMatch(errors, "portable must aggregate plan and selected lanes", portable,
-      /needs:\s*\[plan, docs, linux-portability, windows-portability\]/u);
+      /needs:\s*\[plan, docs, repository, linux-portability, windows-portability\]/u);
     requireMatch(errors, "portable must evaluate failed/cancelled dependencies", portable,
       /if:\s*\$\{\{\s*always\(\)\s*\}\}/u);
     requireMatch(errors, "portable must use the tested scope aggregate", portable,
       /run:\s*node tools\/check-plan\.mjs aggregate\s*$/mu);
-    for (const name of ["CHECK_SCOPE", "CHECK_PROOF", "PLAN_RESULT", "DOCS_RESULT", "LINUX_RESULT", "WINDOWS_RESULT"]) {
+    for (const name of ["CHECK_SCOPE", "CHECK_PROOF", "PLAN_RESULT", "DOCS_RESULT", "REPOSITORY_RESULT", "LINUX_RESULT", "WINDOWS_RESULT"]) {
       if (!portable.includes(`${name}:`)) errors.push(`portable missing ${name}`);
     }
     if (!portable.includes("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093") ||
@@ -151,6 +161,30 @@ export function ciWorkflowErrors(rawSource) {
     if (!lane.includes("python/.local/pytest.xml")) errors.push(`${name} must report Python durations`);
   }
   return errors;
+}
+
+// A narrow routing/management edit may exercise repository tooling without
+// re-running unchanged product jobs. Any changed trigger/plan/product lane,
+// new unknown job, or invalid shape retains full. This is not general YAML diffing.
+export function repositoryOnlyWorkflowChange(beforeRaw, afterRaw) {
+  const before = normalizeNewlines(beforeRaw), after = normalizeNewlines(afterRaw);
+  const split = source => {
+    const index = /^jobs:\n/mu.exec(source)?.index;
+    if (index === undefined) return null;
+    const body = source.slice(index + 6);
+    // YAML permits global env/defaults after jobs; they still affect product
+    // jobs. Our narrow format has no top-level keys in this suffix.
+    if (/^[^\s#]/mu.test(body)) return null;
+    const names = [...body.matchAll(/^  ([A-Za-z0-9_-]+):\s*$/gmu)].map(m => m[1]);
+    if (new Set(names).size !== names.length) return null;
+    return {header: source.slice(0, index + 6), names};
+  };
+  const left = split(before), right = split(after);
+  const allowed = new Set(["plan", "docs", "repository", "linux-portability", "windows-portability", "portable"]);
+  if (!left || !right || left.header !== right.header ||
+      [...left.names, ...right.names].some(name => !allowed.has(name)) || ciWorkflowErrors(after).length) return false;
+  return ["plan", "linux-portability", "windows-portability"].every(name =>
+    jobBlock(before, name) !== null && jobBlock(before, name) === jobBlock(after, name));
 }
 
 export function validateCiWorkflow(workflowPath) {

@@ -7,36 +7,32 @@ authority.
 
 ## Source-of-truth hierarchy
 
-When sources disagree, use this order:
+Do not put requirements, implementation and evidence in one ranking:
 
-1. current STS2/runtime evidence and GitHub enforcement for operational facts;
-2. public contracts, manifests, `platform-bom.json`, compiler/type config, and
-   deterministic tests for machine-readable facts;
-3. accepted ADRs and canonical architecture/component/testing/version docs;
-4. root and local `AGENTS.md` for hard invariants and navigation;
-5. `STATUS.md` for current claims and exact evidence pointers;
-6. bounded `docs/memory/CURRENT.md` for active work, blockers, and next gate;
-7. tutorials, READMEs, PRs, and dated evidence in their stated scope.
+- User goals/authorization and selected contracts say what should happen.
+- Native facts, actual source, installed identities and original records say what
+  currently happens. They can expose a violated or impossible requirement; they
+  do not silently redefine the goal. Tests and CI can also encode wrong assumptions.
+- [WORKING_RULES](WORKING_RULES.zh-CN.md) owns shared work practice; the focused
+  owners below define architecture, checks, Git and document placement.
+- CURRENT and the active task dispatch work. Historical reports, chat summaries,
+  private checkpoints and external memory provide leads, never fresh assignments.
 
-Fix the weaker stale source. Never create a second version, component identity,
-or artifact registry to make prose easier to query.
+If facts and requirements disagree, label the conflict and decide at the owning
+boundary. Ask the user when a genuine goal/authority/tradeoff remains unresolved;
+otherwise correct the stale owner. Do not create a second status/identity registry.
 
-For operational facts, current evidence describes what happened; accepted needs
-and contracts describe what should happen. Do not turn a source bug into a new
-requirement or declare a proposed design implemented. Label unresolved conflicts
-and route them to the owner before dependent work.
-
-The short newcomer/Agent route is README -> CURRENT -> task packet -> owning
-specification/component guide -> exact code/tests/evidence. The packet retains
-the useful history and call-path map so the next engineer need not repeat broad
-discovery. Refresh changing refs and runtime facts; do not assume a copied handoff
-is still current.
+Initial orientation is AGENTS → README → CURRENT → WORKING_RULES, then the active
+task and only relevant owner sections/code. The task names the purpose, output,
+acceptance, costs and stop boundary; no active assignment means no automatic
+resumption of a historical backlog item. Fresh refs are verified before action.
 
 ## Documentation classes and triggers
 
 | Owner | Contains | Update when / keep out |
 |---|---|---|
 | `README.md`, `DOCUMENT_MAP.md` | Product boundary and short routes by task | Entry points change; no current hashes, work log or copied installation procedure |
+| `WORKING_RULES.zh-CN.md` | Shared work practice for people and Agents; task shape, prioritization, bounded costs and stop decisions | A real failure, repeated cost or user decision changes practice; no live task queue or copied technical contracts |
 | root/local `AGENTS.md` | Hard invariants, owner routing and change loop | A durable instruction changes; no campaign budget, worker queue or acceptance timeline |
 | `NEW_ENGINEER_GUIDE.md`, `NEW_MEMBER_HANDOFF.zh-CN.md` | Role-specific onboarding and links to supported procedures | Setup or user path changes; do not turn every role's checklist into every newcomer's prerequisite |
 | `ARCHITECTURE.md`, `COMPONENTS.md`, accepted ADRs | Durable authority, dependency direction and significant decisions | A boundary changes; cite exact protocol owners rather than restating their schemas |
@@ -91,6 +87,28 @@ example. Record useful engineering judgments, not the transcript. One supported
 mode may be sufficient; do not multiply configurations or mandatory experiments
 merely to preserve every discussion option. Review needs and actual failures before
 retiring an old prescription, and preserve its artifact/compatibility history.
+
+### One current route, one owner per fact
+
+The lead integrating a change owns the route update in that same change: README and
+DOCUMENT_MAP link durable owners; CURRENT links exactly the current task; task status
+links original evidence. Do not merge code while deliberately leaving an entry that
+dispatches its superseded task. A private handoff or hub page is a shortcut to this
+route, not another current queue; give it a source ref/date and supersession link.
+Do not generate/update private mirrors routinely when they add no user value.
+
+When changing an owner, search inbound links and active contradictory wording;
+update those affected entries, not every dated report. Historical evidence is immutable
+in meaning and stays dated; old plans are labelled background/closed and cannot dispatch.
+Git retains old instruction versions; do not duplicate the whole previous handbook into
+a new archive each time. Large raw logs stay at their authorized source, with one useful
+pointer and exact scope. A stale current sentence is fixed, not buried under an update pile.
+
+At handoff, a fresh reader should answer purpose, current task/non-goals, exact source,
+acceptance, stop/escalation and next action. Use a bounded newcomer check after material
+routing changes or a real routing failure; not on every PR. If it fails, repair the entry
+or missing task fact, not a mandatory full-history reading list. Machine link checks
+cannot certify this understanding or prevent all future drift.
 
 Mechanical checks cover links, commands, routing, budgets and identity consistency.
 They cannot prove that a requirement is sensible or a status sentence is true.

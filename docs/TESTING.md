@@ -1,65 +1,82 @@
 # Testing And Evidence
 
 This document owns test design, creation, maintenance, execution selection and
-evidence meanings. Governance owns failure classification and architectural
-decisions; the active task owns authorization, budgets and completion conditions.
-Use existing tests, commands and task/PR records, not another test manager or ledger.
+evidence meanings. [WORKING_RULES](WORKING_RULES.zh-CN.md) owns shared work practice;
+the task owns its outcome, authority, cost window and stop boundary. Tests are part
+of development: they shorten feedback, make changes safer and expose broken
+agreements. They are neither a separate phase after "development complete" nor a
+substitute for a useful product. Developers maintain tests with the behavior.
 
-The root suite is the portable source and package gate. It does not require
-proprietary STS2 files and does not prove installation, loading, mutation, a
-journey, Human evidence, or qualification.
+## Use this guide for the current decision
 
-```bash
-npm ci
-npm run check
-```
+Start with the test lifecycle below. Consult only the relevant details:
+[fixtures](#faithful-fixtures-and-test-shapes),
+[local feedback](#local-feedback-and-candidate-checks),
+[CI selection](#hosted-ci-contract),
+[focused commands](#focused-portable-checks), or
+[exact-game/runtime gates](#local-exact-game-and-runtime-gates).
+This is a reference, not a mandatory full reading or execution list per task.
 
-Repository-system checks and routing can also be run directly:
-
-```bash
-npm run project:context
-npm run project:check
-npm run project:closeout
-```
-
-`project:check` is part of the root portable gate. `project:closeout` reports
-path-based review signals and never rewrites semantic truth.
+The root suite is the portable source/package gate. It does not establish a loaded
+Mod, successful gameplay, Human origin or strategy quality. Reuse dependencies;
+`npm ci` is setup, not a test to repeat on every visit. Use `npm run project:context`
+for routing, `npm run project:check` for repository rules and
+`npm run project:closeout` for handoff impact. The latter does not certify semantics.
+`npm run check` runs the full suite; the committed-diff selector below owns final
+required execution. A locally checked draft is not necessarily merge-ready.
 
 ## Test design and maintenance
 
-Choose a test from the decision its consumer needs to make:
-
 ```text
-claim/risk -> owning fact -> faithful normal/negative checks
-  -> scoped evidence -> consumer decision
+user/consumer outcome -> task acceptance -> changed guarantee and owner
+  -> cheapest faithful check -> implementation and feedback
+  -> selected candidate gates -> bounded delivery/evidence
 ```
 
-Name the observable guarantee, owner and real producer/caller/reader path in the
-existing task or PR. Define a successful example and the relevant duplicate,
-stale, cancel, partial, ambiguous, unknown or cleanup counterexample before coding.
-Choose the lowest layer that can falsify the guarantee, and state any stronger
-unproved claim. Assertions observe behavior, ordering, identity or durable results;
-they must not merely restate implementation structure or prose. A green lower
-layer never removes a higher gate required by the claim.
+Requirements say what is wanted; tests are executable checks of selected examples
+and invariants, and can encode mistakes. Passing tests does not redefine the goal.
+A changed failure requires diagnosis: product, fixture/assertion, environment or
+requirement may be wrong. Keep the original observation and repair the actual cause.
+
+Use the existing task/PR acceptance field, not a separate test plan or ledger, to
+name the observable guarantee, useful normal case, relevant counterexample,
+existing/new coverage and unproved claim. Choose by impact and plausible failure;
+not every edit needs all duplicate/stale/cancel/security combinations. A new
+capability or bounded experiment is legitimate without a historical failing seed.
+For a bug, first reproduce it cheaply where possible; preserve real source/seed/
+operation when relevant, without requiring a whole game for a local parser error.
 
 ### Add, change or retire coverage
 
-| Situation | Required treatment |
+| Situation | Treatment in the same task/PR |
 | --- | --- |
-| Changed behavior, bug repair, public contract, new abstraction, unsafe refactor baseline or escaped CI/governance failure | Add or update the lowest-cost faithful regression in the same PR; contract changes cover real providers, consumers and rejection/migration paths. |
-| Production or Human incident | Preserve the failure, regress its family, repair its owning cause, and add a crossed-boundary regression where needed. Explain whether the check catches the original failure earlier. |
-| Exact existing coverage, prose clarification or dead-code removal with an already covered observable contract | Name the existing test/assertion and why it covers the risk; no separate test mirroring the edit is needed. |
-| Changed expectation, tolerance, fixture, timeout or skip | Explain the intended contract and evidence. A changed implementation or slow run alone does not justify weaker assertions or fewer cases. Preserve archival consumers when semantics change. |
-| Duplicate, obsolete or costly test proposed for deletion/replacement | Inspect actual callers, current and archival contracts and unique normal/error coverage. Name retained or replacement coverage in the PR; cost alone cannot delete a required signal. |
-| Suspected flake or environment failure | A confirmed flaky test is a defect. Preserve each attempt and diagnose separately from assertion failures. Do not label an unexplained result flaky or harmless; a green rerun does not erase the first failure or automatically permit merge. |
-| Quarantine | Require an owner, issue, replacement signal and removal deadline, with review of the lost coverage and merge requirements. No silent skip; this policy creates no automatic quarantine lane. |
+| Meaningful changed behavior, escaped bug or public contract | Add/update the cheapest faithful regression where existing coverage is insufficient. For cross-owner changes test the real provider/reader seam; do not duplicate the same assertion at every layer. |
+| Exact existing coverage, editorial change, trivial reversible edit or dead code with covered behavior | Reuse and name existing coverage, or explain the simple inspection. Do not invent a test merely to increase counts or mirror the diff. |
+| New test | State which plausible failure it detects, why current coverage misses it and who maintains it. Prefer observable outcomes over private structure, mocks calling mocks or exact prose. No universal coverage percentage or fixed unit/integration/E2E ratio. |
+| Refactor or semantic change | Preserve externally required behavior; change obsolete expectations only with the intended contract and affected consumer evidence. Characterization of a bug is not a permanent requirement. |
+| Duplicate, obsolete, slow or brittle test | Inspect affected current/supported archival consumers and unique coverage, not the entire history. Consolidate, replace or delete it with a reason and retained signal. If the guarantee itself is retired, record that decision and consumer impact; no equivalent replacement is needed for a genuinely removed requirement. |
+| Fixture, timeout or tolerance change | Diagnose and measure the affected phase. Do not weaken a product deadline or assertion to get green. Test harness allowances may be corrected with evidence that the actual guarantee remains checked. |
+| Flaky or environmental failure | Retain attempts and classify the cause. One diagnostic rerun may distinguish hypotheses; repeated reruns until green are not a fix. A green rerun alone does not erase an unresolved required failure. |
+| Temporary quarantine | Record owner, lost signal, substitute evidence or explicit gap, revisit condition/date and review in the existing issue/PR. No silent skip, automatic merge exception or permanent unowned quarantine. Existing required gates remain binding. |
 
-Maintain regressions with the owning behavior rather than accumulating literal
-incident snapshots. Repeated failures of the same assumption activate Governance's
-existing L3 contract/architecture review; unrelated symptoms do not prove an
-architecture defect. A test itself can encode a wrong assumption. Correct it from
-the actual contract/evidence and retain the observed mismatch, rather than changing
-production validation to accept an independently invented fixture.
+The behavior owner owns its tests, fixtures and relevant consumer contract cases;
+the maintainer of CI/runner tools owns scheduling and diagnostic infrastructure.
+The lead checks whether the claimed outcome is actually supported. This is role
+ownership, not a separate testing department or mandatory extra reviewer per test.
+
+Maintain tests when the behavior changes, an escaped defect appears, or actual
+flake/runtime/maintenance cost becomes material. Consolidate one failure family
+instead of preserving every incident as another expensive fixture. Repeated
+failures prompt a bounded check of the common assumption; they do not automatically
+justify a new architecture, policy or test framework. No periodic full-suite cleanup
+project is imposed by this guide. Old evidence remains intact even when obsolete
+executable tests are removed; preserving evidence is not perpetual API support.
+
+A test change is useful if it increases confidence in a needed guarantee, catches a
+real failure earlier, or reduces recurring cost while retaining needed detection.
+Test count, coverage, green runs and tokens spent are not product progress.
+Review value using observed feedback time, useful failures versus false alarms,
+escaped defects and maintenance effort from existing logs; no new metrics service.
 
 ### Faithful fixtures and test shapes
 
@@ -96,11 +113,12 @@ fixture families or hosted performance.
 
 ### Fast feedback without repeated assurance work
 
-Before changing behavior, state the risky claim and the normal/negative examples
-that would falsify it. Develop with the smallest faithful check, then run the
-selected component/root gates on a stable candidate. Do not run the whole suite
-after each edit or add tests that only mirror implementation/prose. A minor change
-with exact existing coverage names that coverage rather than inventing a new suite.
+During development use the smallest faithful feedback loop above. Reach a short
+real consumer path early for a cross-owner/product change, once its necessary
+safety/build prerequisites hold; local unit green is not proof of that connection.
+A few representative journeys complement cheap checks, not an E2E run for every
+edge case. Debugging repeatedly on the same seed is regression work, not an unseen
+strategy evaluation. Freeze one stable candidate for its selected final gates.
 
 Broaden or repeat checks only for a new change, failure, uncovered risk or a required
 gate. Repeated failures call for diagnosis of the owning fact and test fidelity,
@@ -204,6 +222,39 @@ dual-OS portable checks remain required for merge, portability and stronger
 promotion. This scheduling rule grants no additional native attempt, Human
 recording, training, spending or deployment authority.
 
+## CI responsibility and cost decisions
+
+CI is the shared, repeatable integration check for a submitted candidate. It
+establishes that the selected source/contracts/tools work in their declared clean
+environments. It does not decide product priorities, prove gameplay/learning,
+replace developer investigation, or require full execution after every edit.
+
+| Work stage / trigger | Action and stop boundary |
+|---|---|
+| Local investigation/edit | Run the cheapest faithful affected test or short consumer path. No remote CI for every intermediate edit; no new workflow for a scratch probe. |
+| Stable PR candidate | Run the committed-diff selected scope once. CI covers the actual owner and affected consumers; review addresses requirement/policy meaning that execution cannot prove. |
+| Cross-owner/shared input or product CI change | Full when the known smaller scope cannot cover affected consumers: shared contracts/build/locks, Platform changes, deployment or changed product-job environment. Broad impact, not document importance, is the reason. |
+| develop integration | Verify its actual diff/result. Reuse only the existing verified identical-content receipt rules, not an ancestor's green label. |
+| Release/executable promotion | Validate the affected deliverable and compatibility; main Python executable promotion remains full. Add build/install/runtime/Human/evaluation evidence only for the actual release claim. Docs do not require reinstalling the game. |
+| Periodic/manual wider check | The existing schedule/manual full route detects drift and retains broad coverage. It is not another run on every unchanged handoff, nor a substitute for affected PR checks. |
+
+The task names an expected feedback window and expensive-run limit. At that
+checkpoint, the lead asks whether the selected work can expose a failure caused
+by this change, whether setup is duplicated, and whether the runner is progressing.
+An unjustified full selection is a test-strategy defect to resolve within the
+relevant task, not an immutable safety rule or an excuse for passive polling.
+Check actual job stages once; do not confuse normal execution, a hang, unknown
+status and failure. Cancel owned obsolete runs after preserving their status;
+cancellation is not success. Reassess before rerunning, extending deadlines or
+adding workers. Do not defer an obvious scope mismatch solely to preserve a
+self-imposed packet boundary. Keep corrections limited to the actual cause.
+
+Measure feedback/setup/verification cost from existing results when it matters;
+no dashboard or cost ledger is required. A few-minute repository check is a target,
+not a fabricated guarantee. A long full product suite may be justified by its
+change; a management edit must explain why it would need that suite. Changes to
+required scope are reviewed code/policy changes, never manual silent skips.
+
 ## Hosted CI contract
 
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
@@ -222,7 +273,7 @@ npm run check:plan -- --base origin/develop --run
 ```
 
 The plan job checks the committed event-base-to-HEAD patch before receipt lookup
-or routing outputs, so bad patch hygiene blocks docs, Python, full and reuse lanes.
+or routing outputs, so bad patch hygiene blocks docs, repository, Python, full and reuse lanes.
 Local `--run` uses the same barrier. An absent or all-zero event base checks the
 selected head's first parent, or the empty tree for an initial commit; invalid
 supplied revisions fail before execution. Scope/event rules remain unchanged,
@@ -232,24 +283,35 @@ The router uses actual committed Git changes, not a caller-selected test list:
 
 | Scope | Selected checks | Eligible changes |
 |---|---|---|
-| `docs` | fresh repository/link/governance/identity/BOM/boundary/history checks | modified editorial allowlist or added/modified regular prose Markdown in explicit root documentation surfaces |
-| `python` | repository guards plus the entire Python gate on Linux and Windows | only `python/spireagent/`, `python/stpd/`, `python/tests/` additions/modifications/deletions, optionally explicit report/editorial companions |
-| `full` | complete root gate on both OSes | Platform, shared contracts/locks, CI/tools, deployment, governance, unknown paths or Git state |
-| `reuse` | fresh repository/identity/BOM/history checks, referencing a verified executed receipt | eligible integration/promotion with identical content and check definition |
+| `docs` | fresh repository/link/governance/identity/BOM/boundary/history checks on Linux | explicit regular editorial/management files, root AGENTS and existing report surfaces; human review judges policy meaning |
+| `repository` | complete repository/tooling checks on Linux and Windows, with locked Node dependencies | explicit project-system/governance/check-planner/workflow-validator tools, their tests and management companions; narrowly verified workflow routing/setup edits |
+| `python` | repository guards plus the entire Python gate on Linux and Windows | only Python application/research/test owners, optionally declared prose/management companions |
+| `full` | complete root gate on both OSes | Platform, shared contracts/locks/build inputs, product-job CI changes, deployment, unknown executable paths or uncertain Git state |
+| `reuse` | fresh repository checks referencing a verified executed receipt | eligible integration/promotion with identical content and check definition |
 
-The docs route accepts non-executable regular Git blobs (mode 100644): modified
-editorial allowlist files, added/modified CURRENT, and single-level Markdown files
-in root docs/design, docs/plans and docs/evidence. AGENTS and SKILL names
-(case-insensitive, including Python report companions),
-governance/ADR, component/Python docs, JSON/schema/manifest files, tools, locks,
-deletions, symlinks and mode/type changes retain full routing. Mixed executable
-changes cannot use docs. The router reads committed raw Git modes; file extensions
-alone do not establish eligibility. Changing this router itself still selects full.
+The planner owns the exact finite path lists. Regular additions/modifications
+(mode100644) of named management docs/templates are not executable product changes.
+Nested AGENTS/SKILL, ADR/contract/component docs, unknown paths, deletions outside
+the existing Python route, symlinks and type/mode changes still expand to full.
+Changes to repository tools run their actual cross-platform tests, not the Python
+training suite merely because their filenames start with `check-`.
 
-Companions are modified editorial allowlist files, CURRENT, PROJECT_CONSOLE, and
-added/modified single-file Markdown reports under docs/evidence. They qualify only
-alongside a Python owner change; standalone eligible prose instead uses docs,
-and evidence deletions still use full. ADR/governance and unknown docs are not companions.
+A workflow change takes repository scope only when its trigger/header, plan job,
+Linux product job and Windows product job are unchanged, all job names are known,
+and the resulting workflow passes the workflow contract. Thus only the existing
+repository/docs setup, repository lane and aggregate wiring may differ. Product
+commands/environments, partitioning, dependencies, unknown workflow structure or
+trigger changes retain full. This narrow check is not a general YAML impact engine.
+New routing/guard behavior requires relevant positive/negative regressions and
+non-author review; a label alone is not evidence. `docs` and `repository` produce
+no new full execution receipt. Failed/cancelled/missing selected work cannot pass.
+Both small lanes install locked Node dependencies: AST checks require TypeScript
+and cannot rely on packages left in a developer's workspace.
+
+Prose companions do not hide source changes. Mixed ownership chooses the stronger
+applicable lane or full when no known scope covers it. The local and hosted planner
+use the same committed diff, with the original patch-hygiene barrier. Explicit
+`--full`, manual dispatch and the existing periodic full check remain available.
 
 The full and Python scopes also run `npm run check:s0`: the shared SDK and Runtime
 builds, bounded S0 runner and native Source3 collector lifecycle tests, and offline
@@ -332,13 +394,14 @@ clean committed diff. `npm run check` always runs full.
 
 `portable` is the required aggregate: plan and all selected jobs must succeed;
 unselected jobs must be skipped. Failure/cancellation never becomes a PASS. A Python,
-docs or reuse result is labelled as such, not as a new full dual-OS execution.
+docs, repository or reuse result is labelled as such, not as a new full dual-OS execution.
 
 The local diagnostic scope may be smaller than merge or release scope. The current
 router, every selected leaf and `portable`, plus any stronger active-task
 prerequisite, remain binding until a separately reviewed policy/code change alters
-them. Testing/governance edits select full today. Hosted partitioning preserves
-that full or Python inventory and both OS requirements; it does not waive them.
+them. Management-only and repository-tool changes use the reviewed scopes above;
+product changes retain their full/Python inventories and both OS requirements.
+Choosing a relevant scope is not deleting a test or claiming unexecuted coverage.
 
 ### Hosted pytest partition and complete execution proof
 

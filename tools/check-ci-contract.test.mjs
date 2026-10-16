@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { ciWorkflowErrors } from "./check-ci-contract.mjs";
+import { ciWorkflowErrors, repositoryOnlyWorkflowChange } from "./check-ci-contract.mjs";
 
 const workflow = path.resolve(import.meta.dirname, "..", ".github", "workflows", "ci.yml");
 
@@ -51,7 +51,7 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
     ["pattern: pytest-*-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
-  ]) assert.ok(ciWorkflowErrors(currentSource().replace(before, after)).includes(error), error);
+  ]) assert.ok(ciWorkflowErrors(currentSource().replaceAll(before, after)).includes(error), error);
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
 });
 
@@ -75,7 +75,7 @@ test("aggregate implementation verifies original coverage before minting a fresh
 
 test("CI contract rejects a required status that does not aggregate Windows", () => {
   const source = currentSource().replace(
-    "needs: [plan, docs, linux-portability, windows-portability]",
+    "needs: [plan, docs, repository, linux-portability, windows-portability]",
     "needs: [linux-portability]"
   );
   assert.ok(ciWorkflowErrors(source).includes("portable must aggregate plan and selected lanes"));
@@ -103,4 +103,28 @@ test("both language environments remain required on both OS lanes", () => {
     assert.ok(errors.some((error) => error.startsWith("Linux must install")));
     assert.ok(errors.some((error) => error.startsWith("Windows must install")));
   }
+});
+
+
+test("repository CI installs its real dependencies and retains both OSes", () => {
+  const source = currentSource();
+  for (const changed of [source.replace("os: [ubuntu-latest, windows-latest]", "os: [ubuntu-latest]"),
+    source.replaceAll("run: npm ci\n", "run: echo no-install\n"),
+    source.replace("REPOSITORY_RESULT:", "OMITTED_RESULT:")])
+    assert.ok(ciWorkflowErrors(changed).length > 0);
+});
+
+test("repository-only workflow changes cannot alter product jobs, plan or triggers", () => {
+  const source = currentSource();
+  assert.ok(repositoryOnlyWorkflowChange(source, source.replace("  docs:\n", "  docs:\n    # setup correction\n")));
+  assert.ok(repositoryOnlyWorkflowChange(source.replace(/  repository:\n[\s\S]*?(?=  linux-portability:\n)/u, "")
+    .replace("plan, docs, repository,", "plan, docs,"), source));
+  for (const changed of [source.replace("node-version: 20", "node-version: 22"),
+    source.replace("dotnet-version: 9.0.x", "dotnet-version: 10.0.x"),
+    source.replace("      - develop", "      - other"),
+    source + "\n  extra-job:\n    runs-on: ubuntu-latest\n",
+    source + "\nenv:\n  PRODUCT_INPUT: changed\n",
+    source.replace("  repository:\n", "  unknown:\n"),
+    source.replace("  docs:\n", "  docs:\n  docs:\n")])
+    assert.equal(repositoryOnlyWorkflowChange(source, changed), false);
 });

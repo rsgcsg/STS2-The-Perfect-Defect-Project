@@ -38,6 +38,27 @@ main 有独有热修复时才通过 PR 带回 develop。组件源码继续普通
 不要在仍不断修补的同时对每个中间提交启动完整 main 晋级。只更新流程规范的任务通常到 develop 结束；
 如果任务明确包含正式发布，则完成 main 与发布回执。不要为了演示流程去重启无关生产服务。
 
+## Bounded integration and approval
+
+Use the shared task boundary in [WORKING_RULES](WORKING_RULES.zh-CN.md). One useful
+increment may be a draft PR before the whole feature is done. When merge is awaiting
+user approval or a concrete gate, report ready-for-review/blocked with the exact
+remaining condition; do not add unrelated work to keep the task running. Approval
+for one PR does not cover another. No branch/worktree is deleted solely because an
+assistant says a packet is complete.
+
+A dependent unmerged base is named in the PR and task. For a management-only packet,
+review its unique commit diff separately from the unaccepted product stack; do not
+claim that documentation acceptance approves the stack. Publish only the intended
+reviewable scope. The user-requested merge/release boundaries remain unchanged.
+
+Auto-fix and interactive writers must not compete on one branch. Name the active
+writer and its bounded task; a CI observer does not authorize repairs. If the head
+moves, compare the increment and affected evidence rather than restarting all work
+or silently borrowing the prior green. Use one current PR/issue for the same topic,
+not a new chat, branch or report for every failure. A worker can stop after its
+reviewable result while the parent integration remains honestly pending.
+
 ## Branches: integration, publication and work
 
 | Ref | Purpose | What it does not do |

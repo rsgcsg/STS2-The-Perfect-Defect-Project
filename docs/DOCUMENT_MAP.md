@@ -1,5 +1,9 @@
 # Document map
 
+This is navigation, not a work queue. Start with [CURRENT](memory/CURRENT.md) and
+[shared working rules](WORKING_RULES.zh-CN.md). CURRENT alone links the current
+assignment; product plans below are background/backlog until assigned.
+
 ## P1 forward decision profile
 
 - [Selected decisions and supersession](DECISIONS.md)
@@ -8,7 +12,7 @@
 - [P1 Host and wire mapping](protocols/P1_HOST_AND_WIRE.zh-CN.md)
 - [Offline C1 archival comparison](P1_CAPTURE_COMPARISON.md)
 - [ADR-0017: P1 forward profile](adr/0017-p1-forward-decision-profile.md)
-- [Current implementation order](plans/P1_FORWARD_2026-10-15.zh-CN.md)
+- [P1 plan and bounded history](plans/P1_FORWARD_2026-10-15.zh-CN.md)
 
 These documents distinguish the user-selected direction, proposed implementation
 contract and actual qualification. Historical plans retain evidence, not a second
@@ -51,9 +55,9 @@ not another requirements, identity or status registry.
 | What instructions apply? | [AGENTS](../AGENTS.md), ancestor/local guides and `npm run project:context` |
 | Where should a fact or new idea be written? | [Project System](PROJECT_SYSTEM.md) |
 | Who owns the fact and is the abstraction justified? | [Architecture](ARCHITECTURE.md), [Components](COMPONENTS.md), [Governance](ENGINEERING_GOVERNANCE.md) |
-| Which tests and evidence does this change need? | [Testing](TESTING.md), existing `check:plan` and owning tests |
+| Why test, when add/reuse/retire, and what must run? | [Test lifecycle](TESTING.md#test-design-and-maintenance), [CI/cost decisions](TESTING.md#ci-responsibility-and-cost-decisions), existing `check:plan` and owning tests |
 | How are branches, integration, release and deployment handled? | [Workflow](DEVELOPMENT_WORKFLOW.md), [Versioning](VERSIONING.md) |
-| How are tasks delegated, reviewed and resumed? | [AI collaboration](AI_COLLABORATION.md) |
+| How is work scoped, stopped and accepted? | [Shared working rules](WORKING_RULES.zh-CN.md); [AI-specific collaboration](AI_COLLABORATION.md) |
 | Is a durable architecture decision needed? | [ADR policy and index](adr/README.md) |
 | Is there a reusable qualification workflow? | [Skills](../.agents/skills/README.md); ordinary implementation needs no Skill |
 
