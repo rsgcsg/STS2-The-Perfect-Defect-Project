@@ -8,6 +8,13 @@ import { nativeCardSelectionProblems } from "../src/nativeCardSelection.js";
 const baseline = JSON.parse(readFileSync(new URL("../../../contracts/fixtures/managed-selector-snapshot.json", import.meta.url), "utf8"));
 
 describe("marked Managed selector contract", () => {
+  it("accepts the native absent star display while still rejecting omitted capture", () => {
+    const nativeDisplay = structuredClone(baseline);
+    nativeDisplay.interaction.content.context.combat.player.stars = null;
+    expect(nativeCardSelectionProblems(nativeDisplay)).toEqual([]);
+    delete nativeDisplay.interaction.content.context.combat.player.stars;
+    expect(nativeCardSelectionProblems(nativeDisplay)).not.toEqual([]);
+  });
   it("accepts the whole public packet and preserves unmarked historical readers", () => {
     expect(() => decodePlayerSnapshot(baseline)).not.toThrow();
     expect(nativeCardSelectionProblems(baseline)).toEqual([]);
