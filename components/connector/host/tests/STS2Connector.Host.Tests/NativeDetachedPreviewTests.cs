@@ -24,11 +24,14 @@ public sealed class NativeDetachedPreviewTests
         // Actual exact-game constructor/copy methods. This local canonical
         // fixture avoids global ModelDb.Init/type discovery and has no owner,
         // Godot tree, native run, mutation command or installed Mod.
-        var canonical = (CardModel)Activator.CreateInstance(type)!;
-        Field(typeof(CardModel), "_canonicalInstance").SetValue(canonical, canonical);
+        bool registered = ModelDb.Contains(type);
+        var canonical = registered ? (CardModel)ModelDb.Get(type) : (CardModel)Activator.CreateInstance(type)!;
+        if (!registered) Field(typeof(CardModel), "_canonicalInstance").SetValue(canonical, canonical);
         return canonical.ToMutable();
     }
     private static CardModel Mutable<T>() where T : CardModel => Mutable(typeof(T));
+    private static EnchantmentModel CanonicalEnchantment(Type type) => ModelDb.Contains(type)
+        ? (EnchantmentModel)ModelDb.Get(type) : (EnchantmentModel)Activator.CreateInstance(type)!;
     private static string Values(CardModel card) => JsonSerializer.Serialize(new
     {
         type = card.GetType().Name, card.IsMutable, card.CurrentUpgradeLevel,
@@ -38,6 +41,26 @@ public sealed class NativeDetachedPreviewTests
         enchantment = card.Enchantment?.GetType().Name, amount = card.Enchantment?.Amount,
         enchantVars = card.Enchantment?.DynamicVars.Values.Select(value => new { value.Name, value.BaseValue, value.EnchantedValue, value.PreviewValue })
     });
+
+    [Fact]
+    public void FixedUpgradeMethodInventoryIsPinnedToTheAuditedNativeBodies()
+    {
+        Assert.Equal(new Guid("57785517-0b16-42b9-8b36-bad6fb28384b"), typeof(CardModel).Module.ModuleVersionId);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        string[] names = NativeUpgradeMethodInventory.TypeNames.Order(StringComparer.Ordinal).ToArray();
+        Assert.Equal(538, names.Length);
+        foreach (string name in names)
+        {
+            Type type = typeof(CardModel).Assembly.GetType("MegaCrit.Sts2.Core.Models.Cards." + name, throwOnError: true)!;
+            MethodInfo method = type.GetMethod("OnUpgrade", Flags | BindingFlags.DeclaredOnly)!;
+            Assert.NotNull(method);
+            hash.AppendData(Encoding.UTF8.GetBytes(name + "\n"));
+            hash.AppendData(method.GetMethodBody()!.GetILAsByteArray()!);
+            hash.AppendData(new byte[] { 0 });
+        }
+        Assert.Equal("77afdcdaa11ab1e3013548ed9dfca0799c86602445ea59e537cc7887183f3053",
+            Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+    }
 
     [Theory]
     [InlineData(typeof(StrikeDefect))]
@@ -56,6 +79,10 @@ public sealed class NativeDetachedPreviewTests
     [InlineData(typeof(Footwork))]
     [InlineData(typeof(Royalties))]
     [InlineData(typeof(TheSmith))]
+    [InlineData(typeof(Barrage))]
+    [InlineData(typeof(BodySlam))]
+    [InlineData(typeof(PerfectedStrike))]
+    [InlineData(typeof(Stack))]
     public void RealNativeUpgradeMatchesNativeCopyWithoutChangingOriginal(Type type)
     {
         CardModel original = Mutable(type);
@@ -67,16 +94,29 @@ public sealed class NativeDetachedPreviewTests
         Assert.Equal(Values(expected), Values(result.Display)); Assert.Equal(before, Values(original));
         Assert.Equal(CardUpgradePreviewType.Deck, result.Display.UpgradePreviewType);
         Assert.Null(result.Display.Pile); Assert.Null(original.Pile);
-        Assert.All(result.Display.DynamicVars.Values, value => Assert.DoesNotContain(value, original.DynamicVars.Values));
+        Assert.All(result.Display.DynamicVars.Values, value =>
+        {
+            Assert.DoesNotContain(value, original.DynamicVars.Values);
+            Assert.Same(result.Display, Field(typeof(DynamicVar), "_owner").GetValue(value));
+        });
+        Assert.All(original.DynamicVars.Values, value => Assert.Same(original, Field(typeof(DynamicVar), "_owner").GetValue(value)));
     }
 
     [Theory]
     [InlineData(typeof(Adroit))]
     [InlineData(typeof(Sharp))]
+    [InlineData(typeof(Goopy))]
+    [InlineData(typeof(Steady))]
+    [InlineData(typeof(RoyallyApproved))]
+    [InlineData(typeof(Glam))]
+    [InlineData(typeof(Inky))]
+    [InlineData(typeof(Spiral))]
+    [InlineData(typeof(TezcatarasEmber))]
+    [InlineData(typeof(Sown))]
     public void RealNativeSingleEnchantMatchesNativePreviewSequence(Type type)
     {
         CardModel original = Mutable<StrikeDefect>(); string before = Values(original);
-        var canonical = (EnchantmentModel)Activator.CreateInstance(type)!;
+        EnchantmentModel canonical = CanonicalEnchantment(type);
         var expected = (CardModel)original.MutableClone();
         var expectedEnchantment = canonical.ToMutable();
         expected.EnchantInternal(expectedEnchantment, 3); expected.IsEnchantmentPreview = true; expectedEnchantment.ModifyCard();
@@ -89,7 +129,7 @@ public sealed class NativeDetachedPreviewTests
     private static (CardModel Original, NCard Node, Action Observer) EnchantedUiFixture()
     {
         CardModel original = Mutable<StrikeDefect>();
-        original.EnchantInternal(new Sharp().ToMutable(), 2);
+        original.EnchantInternal(CanonicalEnchantment(typeof(Sharp)).ToMutable(), 2);
         var node = (NCard)RuntimeHelpers.GetUninitializedObject(typeof(NCard));
         NativeDetachedCardCopy.UiModel(node) = original;
         MethodInfo method = typeof(NCard).GetMethod("OnEnchantmentChanged", Flags)!;
@@ -147,7 +187,7 @@ public sealed class NativeDetachedPreviewTests
     public void StructuralBridgeClearsCopiedCallbackBeforeDeepCopy()
     {
         CardModel original = Mutable<StrikeDefect>();
-        original.EnchantInternal(new Sharp().ToMutable(), 2);
+        original.EnchantInternal(CanonicalEnchantment(typeof(Sharp)).ToMutable(), 2);
         calls = 0; original.EnchantmentChanged += () => calls++;
         object? events = Field(typeof(CardModel), "EnchantmentChanged").GetValue(original);
         // Isolated bridge ordering probe: this deliberately unknown observer
@@ -167,6 +207,41 @@ public sealed class NativeDetachedPreviewTests
         original.EnchantmentChanged += () => calls++;
         Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _));
         Assert.Equal(0, calls); Assert.Equal(0, original.CurrentUpgradeLevel);
+    }
+
+    [Fact]
+    public void CanonicalHoverCopyDoesNotWarmOriginalOrRegisterTemporaryModels()
+    {
+        bool existed = ModelDb.Contains(typeof(Shiv));
+        if (!existed) ModelDb.Inject(typeof(Shiv));
+        try
+        {
+            CardModel canonical = ModelDb.Card<Shiv>();
+            object? vars = Field(typeof(CardModel), "_dynamicVars").GetValue(canonical);
+            object? keywords = Field(typeof(CardModel), "_keywords").GetValue(canonical);
+            object? pool = Field(typeof(CardModel), "_pool").GetValue(canonical);
+            var registry = (Dictionary<ModelId, AbstractModel>)Field(typeof(ModelDb), "_contentById").GetValue(null)!;
+            int count = registry.Count;
+            CardModel expected = (CardModel)canonical.MutableClone();
+            Assert.True(NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(canonical, out var copy, out var gap), gap);
+            Assert.Equal(Values(expected), Values(copy!)); Assert.True(copy!.IsMutable);
+            Assert.Same(vars, Field(typeof(CardModel), "_dynamicVars").GetValue(canonical));
+            Assert.Same(keywords, Field(typeof(CardModel), "_keywords").GetValue(canonical));
+            Assert.Same(pool, Field(typeof(CardModel), "_pool").GetValue(canonical));
+            Assert.Equal(count, registry.Count); Assert.DoesNotContain(copy, registry.Values);
+            Assert.False(canonical.IsMutable); Assert.Same(canonical, copy.CanonicalInstance);
+        }
+        finally { if (!existed) ModelDb.Remove(typeof(Shiv)); }
+    }
+
+    [Fact]
+    public void UnknownCalculatedDelegateRejectsBeforeAnyInvocation()
+    {
+        CardModel original = Mutable<BodySlam>();
+        CalculatedVar variable = original.DynamicVars.Values.OfType<CalculatedVar>().Single(); calls = 0;
+        Field(typeof(CalculatedVar), "_multiplierCalc").SetValue(variable,
+            new Func<CardModel, MegaCrit.Sts2.Core.Entities.Creatures.Creature?, decimal>((_, _) => { calls++; return 17; }));
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _)); Assert.Equal(0, calls);
     }
 
     private sealed class UnknownOwnerVar() : DynamicVar("Unknown", 1)
@@ -190,7 +265,11 @@ public sealed class NativeDetachedPreviewTests
         Field(typeof(CardModel), "_temporaryStarCosts").SetValue(original, null);
         object? vars = Field(typeof(CardModel), "_dynamicVars").GetValue(original);
         Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var result, out var gap));
-        Assert.Null(result); Assert.Equal("native_detached_upgrade_preview_failed", gap);
+        Assert.Null(result); Assert.Equal("native_preview_initialized_card_copy_facts_unqualified", gap);
+        // The production guard refuses malformed native state before copying.
+        // Separately force the actual native bridge failure to verify that a
+        // partial NEW copy never changes the original's fields/events.
+        Assert.Throws<ArgumentNullException>(() => NativeDetachedCardCopy.CreateQualifiedCopy(original));
         Assert.Same(vars, Field(typeof(CardModel), "_dynamicVars").GetValue(original));
         Assert.Null(Field(typeof(CardModel), "_temporaryStarCosts").GetValue(original));
         Assert.Null(original.Enchantment); Assert.Equal(0, original.CurrentUpgradeLevel);

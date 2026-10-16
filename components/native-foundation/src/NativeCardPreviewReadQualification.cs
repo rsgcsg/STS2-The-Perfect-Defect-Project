@@ -7,6 +7,8 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Enchantments;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 
 namespace STS2Platform.NativeFoundation;
@@ -61,21 +63,45 @@ public static partial class NativeCardPreviewReadQualification
     private static readonly FieldInfo? Canonical = typeof(CardModel).GetField("_canonicalInstance", NativeMembers);
 
     // The native clone only calls base Clone/ResetToBase then SetOwner. Unknown
-    // SetOwner implementations (notably CalculatedVar) are rejected BEFORE they
-    // can run. DynamicVars must already be initialized on the original: this is
+    // SetOwner implementations are rejected BEFORE they can run. The exact
+    // CalculatedVar SetOwner/UpdateValues branch only reads the base variable;
+    // multiplier invocation is separately guarded by the rendering operation. DynamicVars must already be initialized on the original: this is
     // the native mutable-card invariant, not permission to warm a live getter.
     private static bool CopyVariablesQualified(AbstractModel owner, DynamicVarSet set) =>
         set.GetType() == typeof(DynamicVarSet)
-        && Vars?.GetValue(set) is Dictionary<string, DynamicVar> values
+        && Vars?.GetValue(set) is Dictionary<string, DynamicVar> values && values.GetType() == typeof(Dictionary<string, DynamicVar>)
+        && ReferenceEquals(values.Comparer, EqualityComparer<string>.Default)
         && values.All(pair => pair.Value != null
             && pair.Value.GetType().Assembly == typeof(CardModel).Assembly
-            && pair.Value is not CalculatedVar
             && VarName?.GetValue(pair.Value) is string name && pair.Key == name
             && ReferenceEquals(VarOwner?.GetValue(pair.Value), owner)
-            && BaseImplementation(pair.Value.GetType(), typeof(DynamicVar), nameof(DynamicVar.SetOwner)))
+            && (pair.Value is CalculatedVar calculated
+                ? owner is CardModel card && CalculatedVariableMetadataQualified(card, calculated)
+                    && values.ContainsKey("CalculationBase")
+                    && values.ContainsKey(calculated.GetType() == typeof(CalculatedDamageVar) ? "ExtraDamage" : "CalculationExtra")
+                : BaseImplementation(pair.Value.GetType(), typeof(DynamicVar), nameof(DynamicVar.SetOwner))))
         && values.Values.Distinct(ReferenceEqualityComparer.Instance).Count() == values.Count;
 
 
+
+
+    internal static bool CalculatedVariableMetadataQualified(CardModel owner, CalculatedVar value)
+    {
+        Type type = value.GetType();
+        if (type != typeof(CalculatedVar) && type != typeof(CalculatedDamageVar) && type != typeof(CalculatedBlockVar)) return false;
+        if (!BaseImplementation(type, typeof(CalculatedVar), "SetOwner")
+            || !BaseImplementation(type, typeof(CalculatedVar), "GetBaseVar")
+            || !BaseImplementation(type, type == typeof(CalculatedDamageVar) ? typeof(CalculatedDamageVar) : typeof(CalculatedVar), "GetExtraVar")
+            || !MethodsUnpatched(typeof(CalculatedVar), "SetOwner", "UpdateValues", "GetBaseVar", "GetExtraVar", "RecalculateForUpgradeOrEnchant", "Calculate")
+            || !MethodsUnpatched(typeof(DynamicVarSet), "get_CalculationBase", "get_CalculationExtra", "get_ExtraDamage")) return false;
+        object? stored = typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers)?.GetValue(value);
+        if (stored is not Delegate multiplier || multiplier.GetInvocationList().Length != 1
+            || multiplier.Method.Module.ModuleVersionId != AuditedGameMvid
+            || multiplier.Method.DeclaringType?.DeclaringType != owner.GetType()
+            || !NativeCalculatedVariableInventory.Multipliers.Contains(multiplier.Method.DeclaringType!.FullName + "::" + multiplier.Method.Name)
+            || !IsUnpatched(multiplier.Method)) return false;
+        return multiplier.Method.IsStatic ? multiplier.Target == null : multiplier.Target?.GetType() == multiplier.Method.DeclaringType;
+    }
 
     private static bool CopyCostQualified(CardModel card)
     {
@@ -84,7 +110,7 @@ public static partial class NativeCardPreviewReadQualification
         return value is CardEnergyCost cost
             && ReferenceEquals(typeof(CardEnergyCost).GetField("_card", NativeMembers)?.GetValue(cost), card)
             && typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers)?.GetValue(cost) is List<LocalCostModifier> modifiers
-            && modifiers.All(modifier => modifier != null && modifier.GetType() == typeof(LocalCostModifier));
+            && modifiers.GetType() == typeof(List<LocalCostModifier>) && modifiers.All(modifier => modifier != null && modifier.GetType() == typeof(LocalCostModifier));
     }
 
     // Only the exact native UI observers audited for this structural bridge.
@@ -161,7 +187,7 @@ public static partial class NativeCardPreviewReadQualification
         && MethodsUnpatched(typeof(DynamicVarSet), "Clone", "get_Values", "InitializeWithOwner", "RecalculateForUpgradeOrEnchant")
         && FixedConstructorsUnpatched(typeof(DynamicVarSet)) && CloneLambdaUnpatched(typeof(DynamicVarSet))
         && MethodsUnpatched(typeof(DynamicVar), "Clone", "ResetToBase", "SetOwner", "get_Name", "get_BaseValue", "set_BaseValue",
-            "get_EnchantedValue", "set_EnchantedValue", "get_PreviewValue", "set_PreviewValue")
+            "get_EnchantedValue", "set_EnchantedValue", "get_PreviewValue", "set_PreviewValue", "get_WasJustUpgraded", "set_WasJustUpgraded")
         && MethodsUnpatched(typeof(CardEnergyCost), "Clone", "get_Canonical", "get_CostsX", "get_WasJustUpgraded", "set_WasJustUpgraded")
         && FixedConstructorsUnpatched(typeof(CardEnergyCost)) && CloneLambdaUnpatched(typeof(CardEnergyCost))
         && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
@@ -183,13 +209,66 @@ public static partial class NativeCardPreviewReadQualification
             if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
             { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
             if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
-                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword>
+                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
+                || keywords.GetType() != typeof(HashSet<CardKeyword>) || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)
+                || typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(card) is not List<TemporaryCardCost> temporary
+                || temporary.GetType() != typeof(List<TemporaryCardCost>)
                 || CardVars?.GetValue(card) is not DynamicVarSet vars || !CopyVariablesQualified(card, vars) || !CopyCostQualified(card))
             { gap = "native_preview_initialized_card_copy_facts_unqualified"; return false; }
             gap = null;
             return true;
         }
         catch { return false; }
+    }
+
+    internal static bool TryPreflightCanonicalHover(CardModel canonical, out string? gap)
+    {
+        gap = "native_canonical_hover_copy_closure_unqualified";
+        try
+        {
+            if (typeof(CardModel).Module.ModuleVersionId != AuditedGameMvid || canonical.GetType() != typeof(Shiv)
+                || Mutable?.GetValue(canonical) is not false || !CopyClosureUnpatched()
+                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "DeepCloneFields")
+                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "AfterCloned")
+                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "get_CanonicalKeywords")
+                || !MethodsUnpatched(typeof(CardModel), "get_CanonicalKeywords")
+                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars")
+                || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
+                || !SingletonVariableListUnpatched() || !CopiedDelegatesQualified(canonical)
+                || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
+                || !CopyCostQualified(canonical)) return false;
+            if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
+            if (Keywords?.GetValue(canonical) is { } keywords
+                && (keywords is not HashSet<CardKeyword> set || set.GetType() != typeof(HashSet<CardKeyword>)
+                    || !ReferenceEquals(set.Comparer, EqualityComparer<CardKeyword>.Default))) return false;
+            if (typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(canonical) is not List<TemporaryCardCost> temporary
+                || temporary.GetType() != typeof(List<TemporaryCardCost>)) return false;
+            if (Canonical?.GetValue(canonical) is { } parent && !ReferenceEquals(parent, canonical)) return false;
+            if (!CanonicalRegistryBindingQualified(canonical))
+            { gap = "native_canonical_hover_registry_binding_unqualified"; return false; }
+            gap = null;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool CanonicalRegistryBindingQualified(CardModel canonical)
+    {
+        if (!MethodsUnpatched(typeof(AbstractModel), "get_Id")
+            || !MethodsUnpatched(typeof(ModelDb), "GetById", "GetByIdOrNull")
+            || !MethodsUnpatched(typeof(ModelId), "GetHashCode", "Equals", "get_EqualityContract", "get_Category", "get_Entry")
+            || !IsUnpatched(typeof(ModelDb).GetMethod("GetById", NativeMembers)?.MakeGenericMethod(typeof(CardModel)))
+            || !IsUnpatched(typeof(ModelDb).GetMethod("GetByIdOrNull", NativeMembers)?.MakeGenericMethod(typeof(CardModel)))) return false;
+        // No arbitrary dictionary comparer or derived ModelId equality can run
+        // during this lookup. Enumeration of these definition keys invokes no
+        // model methods and exposes no catalog/world data to the consumer.
+        if (typeof(ModelDb).GetField("_contentById", NativeMembers)?.GetValue(null) is not Dictionary<ModelId, AbstractModel> registry
+            || registry.GetType() != typeof(Dictionary<ModelId, AbstractModel>)
+            || !ReferenceEquals(registry.Comparer, EqualityComparer<ModelId>.Default)
+            || registry.Keys.Any(key => key is null || key.GetType() != typeof(ModelId))) return false;
+        ModelId id = canonical.Id;
+        return id.GetType() == typeof(ModelId) && registry.TryGetValue(id, out AbstractModel? current)
+            && ReferenceEquals(current, canonical);
     }
 
     internal static bool TryPreflightUpgrade(CardModel card, out string? gap)
@@ -224,26 +303,47 @@ public static partial class NativeCardPreviewReadQualification
         gap = "native_preview_enchantment_closure_unqualified";
         try
         {
-            if (canonical.GetType() != typeof(Adroit) && canonical.GetType() != typeof(Sharp)
-                || Mutable?.GetValue(canonical) is not false
+            Type type = canonical.GetType();
+            if (type.Assembly != typeof(CardModel).Assembly || type.Namespace != "MegaCrit.Sts2.Core.Models.Enchantments"
+                || !NativeEnchantmentMethodInventory.Types.Contains(type.Name) || Mutable?.GetValue(canonical) is not false
                 || !MethodsUnpatched(typeof(AbstractModel), "AssertCanonical")
                 || !MethodsUnpatched(typeof(EnchantmentModel), "ToMutable", "DeepCloneFields", "get_DynamicVars", "get_CanonicalVars",
                     "set_CanonicalInstance", "ApplyInternal", "get_Card", "set_Card", "get_Amount", "set_Amount",
                     "ModifyCard", "OnEnchant", "RecalculateValues")
-                || !MethodsUnpatched(typeof(CardModel), "EnchantInternal", "set_Enchantment", "set_IsEnchantmentPreview")
-                || !BaseImplementation(canonical.GetType(), typeof(EnchantmentModel), "DeepCloneFields")
-                || !BaseImplementation(canonical.GetType(), typeof(AbstractModel), "AfterCloned")
-                || !BaseImplementation(canonical.GetType(), typeof(EnchantmentModel), "OnEnchant")
-                || !IsUnpatched(canonical.GetType().GetMethod("RecalculateValues", NativeMembers))
+                || !MethodsUnpatched(typeof(CardModel), "EnchantInternal", "set_Enchantment", "set_IsEnchantmentPreview", "AddKeyword", "RemoveKeyword")
+                || !BaseImplementation(type, typeof(EnchantmentModel), "DeepCloneFields")
+                || !BaseImplementation(type, typeof(AbstractModel), "AfterCloned")
                 || typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers)?.GetValue(canonical) != null
                 || typeof(EnchantmentModel).GetField("StatusChanged", NativeMembers)?.GetValue(canonical) != null) return false;
             if (typeof(EnchantmentModel).GetField("_dynamicVars", NativeMembers)?.GetValue(canonical) is DynamicVarSet existing
                 && !CopyVariablesQualified(canonical, existing)) return false;
-            if (canonical.GetType() == typeof(Adroit)
-                && (!MethodsUnpatched(typeof(Adroit), "get_CanonicalVars", "RecalculateValues")
-                    || !MethodsUnpatched(typeof(DynamicVarSet), "get_Block")
-                    || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(BlockVar))
-                    || !SingletonVariableListUnpatched())) return false;
+            MethodInfo? onEnchant = type.GetMethod("OnEnchant", NativeMembers);
+            if (!IsUnpatched(onEnchant)) return false;
+            if (onEnchant!.DeclaringType != typeof(EnchantmentModel)
+                && !NativeEnchantmentMethodInventory.KeywordUpdates.Contains(type.Name)
+                && type != typeof(TezcatarasEmber))
+            {
+                // SoulsPower invokes CardCmd.RemoveKeyword -> FindOnTable,
+                // rather than the model-only primitive. Its native UI lookup
+                // closure is an explicit remaining row, never executed here.
+                gap = "native_preview_enchantment_command_ui_lookup_unqualified";
+                return false;
+            }
+            MethodInfo? recalculate = type.GetMethod("RecalculateValues", NativeMembers);
+            if (!IsUnpatched(recalculate) || recalculate!.DeclaringType != typeof(EnchantmentModel) && type != typeof(Adroit)) return false;
+            MethodInfo? factory = type.GetMethod("get_CanonicalVars", NativeMembers);
+            if (!IsUnpatched(factory) || factory!.DeclaringType != typeof(EnchantmentModel)
+                && !NativeEnchantmentMethodInventory.VariableFactories.Contains(type.Name)) return false;
+            if (factory.DeclaringType != typeof(EnchantmentModel)
+                && (!FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(BlockVar))
+                    || !FixedConstructorsUnpatched(typeof(DamageVar)) || !FixedConstructorsUnpatched(typeof(IntVar))
+                    || !FixedConstructorsUnpatched(typeof(PowerVar<WeakPower>)) || !SingletonVariableListUnpatched())) return false;
+            if (type == typeof(Adroit) && !MethodsUnpatched(typeof(DynamicVarSet), "get_Block")) return false;
+            if (type == typeof(TezcatarasEmber)
+                && (!MethodsUnpatched(typeof(AbstractModel), "get_IsCanonical")
+                    || !MethodsUnpatched(typeof(CardEnergyCost), "GetWithModifiers", "UpgradeBy", "SetCustomBaseCost")
+                    || !MethodsUnpatched(typeof(CardModel), "InvokeEnergyCostChanged")
+                    || !MethodsUnpatched(typeof(LocalCostModifier), "set_Amount"))) return false;
             gap = null;
             return true;
         }
