@@ -1164,8 +1164,10 @@ class LocalModelRegistration:
         runtime = node_modules / RUNTIME_PACKAGE / "dist"
         if environment_kind == "managed":
             from .managed_model_target import runtime_arguments
-            target = {**self.models._managed_runtime_target(), "input_profile": "public-basis-1"}
-            args = runtime_arguments(target, self.models.private_root)
+            managed_target = {
+                **self.models._managed_runtime_target(), "input_profile": "public-basis-1",
+            }
+            args = runtime_arguments(managed_target, self.models.private_root)
             options = {args[i].removeprefix("--"): args[i+1] for i in range(0, len(args), 2)}
         else:
             options = {"connector-endpoint": self.models.config.platform_url or "http://127.0.0.1:15526"}

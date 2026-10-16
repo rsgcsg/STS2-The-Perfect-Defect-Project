@@ -24,7 +24,7 @@ def descriptor():
                            "selection": "first_complete_semantic_choice"}}
 
 
-def serve(manifest_path: Path):
+def serve(manifest_path: Path) -> None:
     manifest = json.loads(manifest_path.read_bytes())
     if (
         manifest.get("adapter") != adapter_identity()
