@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { packageEntrypointErrors, textBoundaryErrors } from "./check-boundaries.mjs";
+import { packageEntrypointErrors, textBoundaryErrors, hostSdkDependencyErrors } from "./check-boundaries.mjs";
 import { managedSelectorArtifact, managedSelectorArtifactErrors, generatedPath } from "./generate-managed-selector-validator.mjs";
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -79,4 +79,19 @@ test("native read qualifiers admit only the audited patch-info query and keep pa
     assert.equal(textBoundaryErrors(owner, `${read}\n${mutation};`).length, 1, mutation);
   }
   assert.equal(textBoundaryErrors(owner, `${read}\nusing STS2Connector;`).length, 1);
+});
+
+
+test("native preview exclusion attributes do not permit JSON serialization ownership", () => {
+  const owner = "components/native-foundation/src/NativeDetachedCardPreview.cs";
+  const exclusion = "using System.Text.Json.Serialization;\n[property: JsonIgnore] CardModel Original";
+  assert.deepEqual(textBoundaryErrors(owner, exclusion), []);
+  assert.equal(textBoundaryErrors(owner, `${exclusion}\nSystem.Text.Json.JsonSerializer.Serialize(value);`).length, 1);
+  assert.equal(textBoundaryErrors("components/native-foundation/src/Other.cs", exclusion).length, 1);
+});
+
+test("Host workspace dependency is exactly the public SDK boundary", () => {
+  assert.deepEqual(hostSdkDependencyErrors("file:../connector/sdk/typescript"), []);
+  for (const dependency of ["file:../connector", "file:../connector/host", "file:../../annotator", "*", undefined])
+    assert.equal(hostSdkDependencyErrors(dependency).length, 1);
 });

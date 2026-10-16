@@ -98,3 +98,100 @@ stays literal, ordered selector identity is unaffected by unordered Draw travers
 anonymous deck/Draw members do not join through private pointers, and ordered discard
 identity persists. These are synthetic production-code source/test checks, not native
 qualification or proof of the full global information boundary.
+
+## Codex round closeout for Claude audit and continuation
+
+The user subsequently requested complete engineering closeout of this round, with
+Claude auditing and continuing the remaining pre-training P1 work. This is not
+acceptance of GLOBAL P1 or permission to freeze an incomplete protocol.
+
+The local integration topic normally merged native producer7908da82, Source4
+engine4411e4f3 and converter32429f03, and captured-grid packetba9a18a6. Subsequent
+Root integration corrections align is_native_skip, require the actual reward
+subscription fact, preserve the still-unimplemented stop_relic_refresh opportunity
+as an explicit P1 missing item, and bind the source RewardButton's original verb to
+the PE verb only through its exact mechanism/operands. The independent source
+conversion review passed36 focused tests and8 probes; actual retained Core golden
+CLI remains complete=false/actions0 with original trace unchanged.
+
+The three reward Runtime/replay findings were independently closed at91f3ce5d:
+all three unchanged old wrong-behavior assertions fail on the repair, the separate
+correct-behavior probes pass4/4, two real interrupted archives pass the Python
+verifier and a resealed post-Human false completion is rejected. This is actual
+HTTP/stdio/source evidence, not native execution qualification. Renewal fixture
+repairde9089c2 preserves400/1500/5000ms limits and arms failure only after the real
+Await/Close/held-controller target exists; its9 tests pass locally and non-author
+static review accepts the narrower timing claim.
+
+Root's integrated exact-game Host-focused check passes122 tests after correcting
+an initially omitted STS2GameDir test reference. Final SDK full check passes430
+with typecheck/build/package checks. Integration gates also exposed a detached
+Source stage DTO incorrectly located in the Host-service file: it is moved without
+semantic change into the existing portable NativeLogical directory so the linked
+real-store bridge compiles. The initial failed command and diagnostic are retained.
+A TypeScript unknown-to-string check was corrected without changing admissible
+values. The first full Runtime check had an unsupported default Python3.9 path and
+an obsolete synthetic Managed HUD; the supported interpreter plus explicit current
+synthetic HUD fixes preserve production admission and all ownership assertions.
+The two affected files then pass60 targeted tests. Final component/repository results
+are recorded with exact final source and raw logs in the private handoff index.
+
+Current capability gaps remain concrete: aggregate capture and null legacy submit
+use different snapshot views; the neutral execution profile and early complete
+selector/catalog/dispatch path are not connected. The seven-file revision2 WIP is
+saved byte-for-byte separately, with its original base and first failed check;
+it is not active source or a tested new API. CapturedGrid source tests do not qualify
+its absent Source early caller. Cold pool/other hover families/affliction/active
+CalculatedVar, complete Source conversion and Managed independent originals,
+record-driven real comparison, operational GLOBAL import and installed product
+acceptance remain open. stop_relic_refresh requires its real lowering/postcondition.
+
+One new isolated Managed candidate was built for source/artifact identity inspection:
+patch f416005f943fbc4b94e31cd2331228630a8b5b0417b5ee343503b5ff248b754a,
+DLL f22a6de46f2f3e3db878715027854bb7c1f0fe7f21017a248996df3dab8649de,
+MVID da613413-a0e8-4ca4-ad04-897ae5ad8dc5. The original candidate inspector
+accepts its source patch, artifact and unchanged game assembly. This is a new
+unqualified build; no game was started. Reflection type aliases repair compilation
+against the Managed Godot stubs without changing rendering semantics. The previous
+candidate tuple is retained, including the older historical tuple.
+
+The final shared-core safety guard refuses enriched card details until their new
+display-owner/parent identity fields have an explicit P1 projection. Its rename-only
+regression preserves raw source bytes and rejects a false complete claim. This is
+an additional open information-projection task, not support for those details.
+Final GLOBAL HTTP/stdio/replay tests pass22/22. Runtime full test stage passes573
+with3 skips; the original full command subsequently failed its package stage.
+After lock/version-constant repair, build and installed-package smoke checks pass
+separately. These composed results do not claim the original command was green.
+Evidence's full component check passes381 tests.
+
+No new game, install/load, Human collection, training or hosted CI was started
+for this final assembly. Historical candidates, loaded
+records, failures and original raw data remain unchanged. PR188's remote head is
+still be67e7a1; local integration gates do not belong to that head. PR187 alone was
+approved and merged. Final source/contract versions and BOM describe this local
+review candidate, not a production release or permission to enter training.
+
+Final additional component checks pass: Host Node359 with5 skips, Host Python29,
+Annotator Core424, SourceNative61, portable NativeLogical178, Annotator tools55,
+and Game Mod92. Exact-game Mod compiles with zero warnings/errors. SourceNative's
+first no-restore attempt lacked assets; the restored command succeeds. The two
+Host fixture repairs retain their original assertions and fill the actual separate
+potion HUD/list of36 added patch files. Connector product manifests are synchronized
+withrc.25. Its static contract guard now checks the complete three-format game-thread
+switch; the boundary guard requires the exact game Harmony reference for linked
+Native Foundation read qualification and still forbids direct Host Harmony ownership.
+Three in-memory negative probes reject missing game-thread dispatch, a missing native
+source link and direct Host Harmony use. No runtime source is changed by these probes.
+The final private reviewer accepts the bounded closeout delta; full P1 remains open.
+
+Root repository gates and project:closeout pass after synchronizing the Annotator
+Mod manifest and narrowing obsolete dependency guards. Native Foundation permits
+only named read qualifiers' GetPatchInfo inspection and the exact detached preview's
+JsonIgnore exclusions, not patch ownership or JSON I/O. Host's exact public SDK
+workspace dependency requires the existing exact bundler and external installed
+package check. Negative regressions retain the excluded authority boundaries.
+The closeout planner selects the full project gate for this cross-layer candidate;
+that whole selected gate was NOT executed in this bounded handoff. Its successful
+execution and fresh hosted/full integration checks remain required before merge
+acceptance. The component/targeted checks above do not replace that requirement.

@@ -1,72 +1,90 @@
-# Current project context — complete global P1 delivery
+# Current project context — P1 round closeout and continuation
 
 模型方案冻结：开。New learned Model/Input/Target/data/training configurations require
 user confirmation. Resolve live GitHub refs before acting; exact source, native facts
 and original evidence override this file.
 
-Read the [active P1 task](../plans/P1_FORWARD_2026-10-15.zh-CN.md) for the whole goal,
-requirements, acceptance and current owners. [P1](../protocols/P1.zh-CN.md) and
-[ADR-0017](../adr/0017-p1-forward-decision-profile.md) own the selected semantics;
-[GLOBAL candidate](../protocols/P1_GLOBAL_R1.zh-CN.md) describes submitted implementation,
-not permission to narrow those semantics. Historical proposals do not add obligations.
+Read the [P1 task](../plans/P1_FORWARD_2026-10-15.zh-CN.md) for the complete goal and
+acceptance. [P1](../protocols/P1.zh-CN.md) owns the selected semantics;
+[Host/wire](../protocols/P1_HOST_AND_WIRE.zh-CN.md) and
+[architecture](../ARCHITECTURE.md) own component boundaries. The
+[submitted GLOBAL candidate](../protocols/P1_GLOBAL_R1.zh-CN.md) is historical r1.0
+behavior, not authority to narrow the goal. Evidence and this round's closeout are in
+[P1 acceptance](../evidence/P1_GLOBAL_ACCEPTANCE_2026-10-16.md).
 
-## Current goal and facts
+## Current direction and integration
 
-Deliver one useful complete chain: Reference/Managed → complete lawful P1 information
-and choices → supervised Agent execution → original environment/operation/Agent records
-→ verified P1 conversion and same-action comparison → existing Workbench/data consumers.
-P1 is an environment interaction protocol; SDK, program port, storage format and Model
-are distinct. Current lawful information precedes meaningful choice; mechanical steps
-may be combined only without losing information or meaningful opportunities. A child
-choice is delivered while its parent can still be pending. No requirement to finish an
-old combat-only proof scheme before global work.
+On2026-10-16 the user requested complete engineering closeout of this Codex round,
+then Claude audit and continuation before Agent construction/training. Complete the
+bounded work already underway, preserve every original/failure/WIP, and hand over
+one reviewable state. This is NOT acceptance or freezing of full GLOBAL P1.
+The enduring goal remains a clear, stable, replaceable and maintainable chain:
+Reference/Managed → complete lawful P1 observations/choices → supervised Agent
+execution; independent environment originals → verified P1 trajectories → same-action
+comparison and existing operational/data consumers. Protocol, component, format,
+program port and Model are different roles. Future P2 should reuse this upper chain.
 
-PR187 was approved by the user and normally merged into develop as41e62cd0,
-preserving topic ef79a994 and former base02636a94 as parents. Its selected full run
-38832429898 completed successfully; original four pytest leaves and execution receipt
-were independently verified in the prior closeout (48/48 stages, 4469 nodes per OS).
-Fresh GitHub and fetched merge-parent inspection confirm that integration. Historical failed runs remain failed;
-this source/test result is not current P1 runtime qualification.
+PR187 ef79a994 was separately approved and normally merged as
+41e62cd054f960121129df5d174925846484045b (parents02636a94 and ef79a994).
+Its accepted full run38832429898 has48/48 stages and4469 nodes per OS; this remains
+source/test evidence. PR188 is still draft/open at be67e7a1 targeting develop41e62cd0;
+its submitted CI38847727149 failed two Windows jobs (45/48 stages passed).
+The local codex/p1-global-completion topic contains the subsequent integration;
+its local source checks are not new hosted CI or changes to PR188's head.
 
-PR188 remains draft/open at be67e7a1, now targeting develop41e62cd0. It adds a global shared reducer,
-PE-driver runner, records/conversion and real early-loss runs. Its submitted full CI
-38847727149 ended with two Windows jobs failing;45/48 owner stages passed.
-Path errors, renewal fixture timing and Python crash diagnosis remain separately tracked.
-Independent acceptance found required-information omissions accepted as complete,
-meaningful choices removed, unsafe reward decline/folds, false comparator matches,
-expiry-after-choice submission, invalid receipt acceptance and incomplete archive
-acceptance. Original reports and successful runs are retained with their narrower scope;
-GLOBAL P1 and the full product/recording chain are NOT accepted complete.
+The round normally integrated bounded native public-details/reward facts7908da82,
+Source4 engine4411e4f3 and adapter32429f03, captured-grid packetba9a18a6, shared
+semantic/Runtime fixes and independently reviewed renewal fixture repairde9089c2.
+These are source/test increments. Existing installations and retained candidates
+were not promoted by these merges. Final source/metadata refs, byte indexes and
+success/failure logs are in the private round handoff package, not inferred here.
 
-Codex integration topic codex/p1-global-completion starts at the exact PR188 head;
-Claude's submitted checkout is preserved. Semantic repair and native parity repair have
-separate topics/worktrees. The active plan permits at most four disjoint code writers
-after shared-interface freeze, one shared-interface writer and one heavy local/native slot. The lead verifies original diffs and receipts; material
-changes require non-author review. Full task requirements remain open independently
-of local source subtasks. The active task owns the next work and acceptance table.
+## First remaining incorrect facts
 
-## Authority and remaining work
+1. Live complete public capture and PE execution recapture still select different
+   projections (aggregate versus null legacy). Their signatures can differ without
+   gameplay change. Explicit neutral public-basis execution profile plus one early
+   full-grid capture/finite catalog/current dispatch must be finished together.
+   The seven-file revision2 WIP is preserved separately and is NOT active code.
+2. The captured-grid helper compiles and has focused tests, but Source's early
+   acquisition caller, neutral projection/Reads and original PE bindings/dispatch
+   are not connected. Do not call a helper test end-to-end coverage.
+3. Native detail rendering still has explicit cold-pool/hover-family/affliction/
+   CalculatedVar gaps. Enriched card display-owner/parent fields also need an
+   explicit shared P1 identity projection; the current guard refuses completeness.
+   Unknown information cannot be relabeled complete.
+4. Ordinary reward return can detach the exact CardReward's RelicObtained hook.
+   is_native_skip is not a pure-transition assertion. stop_relic_refresh is selected
+   but its complete lowering/postcondition is pending; attached groups requiring it
+   remain incomplete. Native Skip cannot automatically become P1 decline.
+5. Source4 independently records neutral facts and original input relations; its
+   shared converter currently covers only proved spans. The actual retained Core
+   golden converts with complete=false/actions0. Initial/new/unknown contexts stay
+   unresolved; this is not a complete P1 trajectory or Human-origin proof.
+6. Operational GLOBAL Evidence import is a read-only plan over existing typed
+   transfer/store. Installed Workbench, full scenario coverage, two-Host real suites,
+   original-record-driven comparison and final protocol freeze remain open.
 
-User authorizes implementation, independent review, ordinary PR/CI work, isolated
-reversible development-Mod installation with rollback and bounded unattended local
-Reference/Managed validation. Each PR merge/closure requires separate user approval
-when its concrete candidate is ready. No branch/worktree/data deletion, production
-release/deployment, new spending or frozen research-configuration change is implied.
-Human-only actions remain Human gates; programs may validate engineering paths without
-being described as Human. No new fit is started; J-min's prior cumulative USD1 ceiling
-is not a new P1 compute budget.
+## Authority and continuation
 
-Environment recording must work independently of Agent startup and retain enough
-public facts, timing and relations for complete supported-scene P1 conversion. Its
-format need not be P1. Program-run records and native-Human witnesses have different
-origins. Missing historical facts cannot be backfilled. Reuse existing capture,
-Annotator, Evidence/store/import, Runtime lifecycle and Workbench owners.
+Each PR merge/closure needs separate user approval when reviewable. PR187 approval
+does not approve188. No branch/worktree/data deletion, production publication,
+new spending or frozen research change is implied. Prior ordinary engineering and
+isolated reversible development runtime work remain within their stated scopes;
+this closeout does not start another unattended game or observer. No new fit.
+
+Claude may audit, repair, reorganize or replace unaccepted implementation while
+preserving the user's full requirement. Reuse capture/Annotator/Evidence/Runtime/
+Workbench owners; do not create a second control, legality, recording or research
+admission authority. Historical STOP/GO or completed worker summaries do not dispatch
+new work. Start from verified refs and the latest handoff task card. Preserve raw
+bytes; derive new versioned interpretations rather than rewriting originals.
 
 ## Remaining Platform non-claims
 
-Random early-loss runs do not qualify all scenes, winning trajectories, learned Agent
-quality or Managed rule equivalence. Source/test, build, installed/loaded, runtime,
-Human, data admission and research quality are separate evidence levels. Unsupported
-required information cannot be made complete by changing the denominator. unknown
-never retries; expiry itself must cancel/release/record without a second tick or GET.
-Model training and data-use admission remain outside this engineering acceptance.
+GLOBAL P1 is not yet complete, installed, runtime-qualified, Human-validated or
+frozen. Source/test, build, installed/loaded, runtime, Human, data admission and
+research quality remain separate. Random early-loss runs are not full coverage or
+Managed equivalence. Required missing information keeps its original denominator.
+unknown never retries; deadline expiry itself must cancel/release/record without a
+second tick or GET. Native Human and a P1 human chooser are different origins.
