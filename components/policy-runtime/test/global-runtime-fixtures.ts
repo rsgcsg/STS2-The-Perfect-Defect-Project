@@ -110,7 +110,7 @@ export async function globalRuntimeFixture(options: { editManifest?: (manifest: 
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, runtimeVersion: "fixture", runtimeCodeSha256: runtimeCode, mode: "auto" });
   const port = NdjsonAgentSessionPort.spawn(options.program?.command ?? process.execPath, options.program?.args.map(a=>a==="{manifest}"?manifestPath:a) ?? [child, manifestPath, options.behavior ?? "act"], manifest.adapter, manifest.limits, {env:options.program?.env});
   const runtime: NativeAgentRuntimeOwner = await PolicyRuntime.forAgent({ manifest, globalTransport: transport, port, evidence,
-    runtimeIdentity: { version: "fixture", code_sha256: runtimeCode }, mode: "auto", autoBudget: { deadlineMs: options.budgetMs ?? 10000, maxSubmissions: 20, maxPolicyCalls: 40 } });
+    runtimeIdentity: { version: "fixture", code_sha256: runtimeCode }, mode: "auto", autoBudget: { deadlineMs: options.budgetMs ?? 10000, maxSubmissions: 20, maxPolicyCalls: 40 }, globalPostDeliverySettleMs: 300 });
   return { root, manifest, evidence, port, runtime, source,
     events: async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").map((line: string) => JSON.parse(line)),
     close: async () => { await runtime.stop().catch(() => undefined); await source.close(); } };

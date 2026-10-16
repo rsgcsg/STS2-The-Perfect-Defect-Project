@@ -30,7 +30,6 @@ import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, Age
   RuntimeServiceOwner } from "./agent-runtime-contracts.js";
 import type { AgentAcquisitionWitness, AgentRuntimeEventKind, AgentRuntimeEventPayloads } from "./agent-runtime-events.js";
 
-const GLOBAL_POST_DELIVERY_SETTLE_MS = 15_000;
 
 interface SharedAgentRuntimeOptions {
   manifest: AgentManifest;
@@ -41,6 +40,8 @@ interface SharedAgentRuntimeOptions {
   autoBudget?: Partial<AutonomyBudgetConfig>;
   monotonicNow?: () => number;
   now?: () => string;
+  /** How long a known delivery may re-read a partial native basis while it settles (default 15 s). */
+  globalPostDeliverySettleMs?: number;
 }
 export type NativeAgentRuntimeOptions = SharedAgentRuntimeOptions & (
   { environment: PlayerEnvironmentRestClient; globalTransport?: never } | { environment?: never; globalTransport: GlobalTransport });
@@ -1402,7 +1403,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         const decoded = decodePublicSourceReceipt(receipt).data;
         const expected = { bound_action_id: bound.bound_action_id, verb: bound.verb, subject_referent_id: bound.subject_referent_id ?? null, arguments: bound.arguments };
         const actual = { ...decoded.action, subject_referent_id: decoded.action.subject_referent_id ?? null };
-        if (decoded.request_id !== requestId || canonicalJson(expected) !== canonicalJson(actual)) throw new AgentSessionError("global_original_receipt_binding");
+        // A request-level not_delivered rejection (e.g. a stale snapshot) is issued before the
+        // Host binds the action, so it echoes only the bound action id; nothing was applied.
+        const bindingMatches = decoded.delivery === "not_delivered"
+          ? actual.bound_action_id === expected.bound_action_id
+          : canonicalJson(expected) === canonicalJson(actual);
+        if (decoded.request_id !== requestId || !bindingMatches) throw new AgentSessionError("global_original_receipt_binding");
         await this.emitGlobal("global_receipt", { request_id: requestId, source_ordinal: source.ordinal, receipt: decoded });
         steps.push({ index: steps.length, origin: steps.length ? "fold" : "agent_choice", native_verb: step.verb, label: step.label,
           delivery: decoded.delivery, reason_code: decoded.reason_code ?? null });
@@ -1433,7 +1439,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
         // A real Host is briefly incomplete while native animations/transitions settle after a
         // known delivery. Re-reading (never re-dispatching) until it publishes is the native wait.
-        for (const deadline = Date.now() + GLOBAL_POST_DELIVERY_SETTLE_MS;
+        for (const deadline = Date.now() + (this.options.globalPostDeliverySettleMs ?? 15_000);
           source.full.basis.capture_status !== "complete" && Date.now() < deadline;) {
           await globalDelay(100, signal); this.checkActive(epoch, signal);
           source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
