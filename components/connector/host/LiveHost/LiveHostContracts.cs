@@ -2,6 +2,7 @@ using STS2Connector.Authority;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace STS2Connector.LiveHost.Contracts;
@@ -190,7 +191,13 @@ public sealed record VisibleCard(
     VisibleEnchantment? ExistingEnchantment,
     string? TargetType = null,
     bool? CanPlay = null,
-    string? UnplayableReason = null);
+    string? UnplayableReason = null)
+{
+    // Retained with this exact captured card instance. Legacy card serialization
+    // remains unchanged; only the explicitly enriched bounded detail Read uses it.
+    [JsonIgnore] public JsonObject? CurrentPublicDetails { get; init; }
+    [JsonIgnore] public IReadOnlyList<string> CurrentPublicDetailsMissing { get; init; } = Array.Empty<string>();
+}
 
 public sealed record VisibleStatus(
     string DefinitionId,
@@ -463,7 +470,7 @@ public sealed record MapLiveContext(
     int ActIndex,
     VisibleMapCoordinate? CurrentPosition,
     IReadOnlyList<VisibleMapCoordinate> Visited,
-    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext;
+    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext, IPlayerReadContent;
 
 public sealed record CombatTransitionLiveContext(
     string Kind,
@@ -840,9 +847,11 @@ public sealed record VisibleCardRewardAlternative(
     public string? OptionId { get; init; }
     public string? Title { get; init; }
     public string? AfterSelected { get; init; }
+    public bool IsNativeSkip { get; init; }
 }
 
-public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected);
+public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected)
+{ public bool IsNativeSkip { get; init; } }
 
 /// <summary>
 /// A player-visible room reward. The Host deliberately exposes only the
@@ -857,6 +866,7 @@ public sealed record VisibleReward(
 {
     /// <summary>Public stable identity of this reward group (same alias owner as EntityId).</summary>
     public string? GroupId { get; init; }
+    public string GroupRelation { get; init; } = "unavailable";
 
     /// <summary>
     /// Lawfully viewable candidates of an offered, already populated card reward.
@@ -868,6 +878,7 @@ public sealed record VisibleReward(
     public bool? CanSkipSelection { get; init; }
     public bool? CanReroll { get; init; }
     public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
 }
 
 public sealed record CardRewardSelectionSurface(
@@ -878,6 +889,11 @@ public sealed record CardRewardSelectionSurface(
 {
     public IReadOnlyList<string> SelectableCardEntityIds { get; init; } =
         Array.Empty<string>();
+    public string? ParentGroupId { get; init; }
+    public string ParentStatus { get; init; } = "unavailable";
+    public string? RewardSetId { get; init; }
+    public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
 }
 
 public sealed record VisibleCardBundle(
@@ -905,6 +921,7 @@ public sealed record RewardClaimSurface(
     bool ProceedSkipsRemainingRewards) : ILiveSurface
 {
     public bool CanLeaveWithUnclaimedRewards { get; init; }
+    public string? RewardSetId { get; init; }
 }
 
 public sealed record VisibleMapChoice(

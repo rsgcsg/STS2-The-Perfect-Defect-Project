@@ -28,6 +28,9 @@ public sealed class NativeSourceInputInvocation
     internal NCardPlay? CreatedCardPlay;
     internal bool CreatedCardPlayConflict;
     internal int Terminal;
+    internal int CarrierObservationFailed;
+    public string? CarrierObservationError => Volatile.Read(ref CarrierObservationFailed) == 0
+        ? null : NativeSourceInputProvider.CarrierObserverFailedReason;
 }
 
 /// <summary>Neutral forwarding from existing typed native hooks. One original Source sink owns persistence.</summary>
@@ -38,17 +41,22 @@ public static class NativeSourceInputProvider
     public static event Action? BeforePrefix;
     public static void BeforeInputPrefix()
     { try { BeforePrefix?.Invoke(); } catch { /* Passive guard cannot affect native input. */ } }
+    public const string CardPlayCreatedKind = "card_play_created";
+    public const string GameActionSubmittedKind = "game_action_submitted";
+    public const string GameActionAcceptedKind = "game_action_accepted";
+    public const string CarrierObserverFailedReason = "native_source_carrier_observer_failed";
     internal sealed class Registration(Func<NativeSourceInputPrefix, object?> prefix,
-        Action<object, string, string?> terminal) : IDisposable
+        Action<object, string, string?> terminal, Action<object, object, string>? sourceCarrier) : IDisposable
     {
         internal Func<NativeSourceInputPrefix, object?>? Prefix = prefix;
         internal Action<object, string, string?>? Terminal = terminal;
+        internal Action<object, object, string>? SourceCarrier = sourceCarrier;
         public void Dispose()
         {
             lock (Gate)
             {
                 if (ReferenceEquals(current, this)) current = null;
-                Prefix = null; Terminal = null;
+                Prefix = null; Terminal = null; SourceCarrier = null;
             }
         }
     }
@@ -60,12 +68,13 @@ public static class NativeSourceInputProvider
     [ThreadStatic] private static Stack<object>? protocolDispatches;
 
     // Composition-only registration; public native hooks cannot create a sink.
-    internal static IDisposable Register(Func<NativeSourceInputPrefix, object?> prefix, Action<object, string, string?> terminal)
+    internal static IDisposable Register(Func<NativeSourceInputPrefix, object?> prefix, Action<object, string, string?> terminal,
+        Action<object, object, string>? sourceCarrier = null)
     {
         lock (Gate)
         {
             if (current != null) throw new InvalidOperationException("native_source_input_owner_conflict");
-            return current = new(prefix, terminal);
+            return current = new(prefix, terminal, sourceCarrier);
         }
     }
     internal static IDisposable ProtocolDispatch(object originalRequest)
@@ -102,7 +111,11 @@ public static class NativeSourceInputProvider
         lock (Gate)
         {
             if (Carriers.TryGetValue(exactAction, out var prior)) conflict = !ReferenceEquals(prior.Invocation, original);
-            else { Carriers.Add(exactAction, new(original)); original.HasCarrier = true; }
+            else
+            {
+                Carriers.Add(exactAction, new(original)); original.HasCarrier = true;
+                ObserveCarrierLocked(original, exactAction, GameActionSubmittedKind);
+            }
         }
         if (conflict) Complete(original, "unknown", "native_source_carrier_conflict");
     }
@@ -113,6 +126,7 @@ public static class NativeSourceInputProvider
         {
             if (!Carriers.TryGetValue(exactAction, out var binding)) return false;
             original = binding.Invocation; Carriers.Remove(exactAction);
+            ObserveCarrierLocked(original, exactAction, GameActionAcceptedKind);
         }
         Complete(original, "delivered", null);
         return true;
@@ -122,10 +136,22 @@ public static class NativeSourceInputProvider
     private static void Complete(NativeSourceInputInvocation? original, string delivery, string? reason)
     {
         if (original == null || Interlocked.Exchange(ref original.Terminal, 1) != 0) return;
+        if (original.CarrierObservationError is { } gap)
+            reason = reason == null ? gap : reason + "|" + gap;
         Action<object, string, string?>? callback;
         lock (Gate) callback = original.Registration.Terminal;
         try { callback?.Invoke(original.Token, delivery, reason); } catch { /* Passive evidence cannot change native delivery. */ }
     }
+    // Called only under the original registration lock, after its typed native
+    // witness succeeded. The observer must detach aliases synchronously. It
+    // receives no new action authority and cannot redirect to a later sink.
+    private static void ObserveCarrierLocked(NativeSourceInputInvocation original, object carrier, string kind)
+    {
+        if (Volatile.Read(ref original.Terminal) != 0) return;
+        try { original.Registration.SourceCarrier?.Invoke(original.Token, carrier, kind); }
+        catch { Interlocked.Exchange(ref original.CarrierObservationFailed, 1); }
+    }
+
     public static void BindCreatedCardPlay(NCardPlay exactCarrier)
     {
         if (scopes is not { Count: > 0 }) return;
@@ -151,7 +177,11 @@ public static class NativeSourceInputProvider
                 && ReferenceEquals(currentCarrier, carrier);
         }
         catch { /* No native getter error supplies an acceptance witness. */ }
-        if (accepted) Accepted(original);
+        if (accepted)
+        {
+            lock (Gate) ObserveCarrierLocked(original, carrier!, CardPlayCreatedKind);
+            Accepted(original);
+        }
     }
     public static void Finish(NativeSourceInputInvocation? original, Exception? nativeException = null)
     {

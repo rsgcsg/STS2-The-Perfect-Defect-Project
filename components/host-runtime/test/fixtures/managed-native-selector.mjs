@@ -23,7 +23,7 @@ export function selector({ choose = false, skip = false, manual = false, selecte
     combat_piles: piles,
     combat_context: { encounter_type: "normal", is_play_phase: false, potion_states: [], round: 1, turn_owner: "player", player_ref: state.player.native_ref,
       hand: [card("native-current-hand-a"), card("native-current-hand-b", "Defend")],
-      hp: 80, max_hp: 80, block: 3, energy: 2, max_energy: 3, stars: 0,
+      hp: 80, max_hp: 80, block: 3, energy: 2, max_energy: 3, stars: null,
       draw_pile_count: 2, discard_pile_count: 2, exhaust_pile_count: 0, orb_slots: 0,
       statuses: [], orbs: [], companions: [], enemies: [{ native_ref: "native-enemy-current", id: "MAWLER",
         combat_id: 17, name: "Mawler", hp: 7, max_hp: 20, block: 0, health_bar_visible: true, health_display: "Normal", hp_display_mode: "normal", hp_numbers_available: true,

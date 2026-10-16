@@ -33,6 +33,27 @@ function bundleDigest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+test("explicitly absent native stars survive JSON while missing or invalid HUD metrics mark the capture incomplete", () => {
+  const state = combatState();
+  const complete = projectManagedCandidateDecision({ state, ...identity });
+  assert.equal(complete.snapshot.completeness.status, "complete");
+  assert.equal(JSON.parse(JSON.stringify(complete.snapshot)).interaction.content.context.player.stars, null);
+  for (const key of ["stars", "round", "turn_owner", "energy", "max_energy", "orb_slots",
+    "draw_pile_count", "discard_pile_count", "exhaust_pile_count"]) {
+    const missing = structuredClone(state);
+    delete missing[key];
+    const projection = projectManagedCandidateDecision({ state: missing, ...identity });
+    assert.equal(projection.snapshot.completeness.status, "partial", key);
+  }
+  for (const mutate of [value => { value.player.block = undefined; },
+    value => { value.draw_pile_count = -1; }, value => { value.energy = Infinity; },
+    value => { value.stars = "0"; }]) {
+    const invalid = structuredClone(state); mutate(invalid);
+    const projection = projectManagedCandidateDecision({ state: invalid, ...identity });
+    assert.equal(projection.snapshot.completeness.status, "partial");
+  }
+});
+
 for (const identityMode of ["crypto", "sequence"]) {
   test(`complete public bundle is invariant to hidden draw permutation and native counters (${identityMode})`, () => {
     const state = combatState();
@@ -74,8 +95,8 @@ test("draw canonicalization preserves duplicate visible instances and every proj
   assert.equal(draw.cards.filter((value) => value.name === "Strike" && value.cost === "1").length, 2);
   const enchanted = draw.cards.find((value) => value.cost === "0");
   assert.equal(enchanted.is_upgraded, true);
-  assert.equal(enchanted.enchantment.description, "Deal 2 more damage.");
-  assert.equal(enchanted.enchantment.amount, 2);
+  assert.equal(enchanted.existing_enchantment.description, "Deal 2 more damage.");
+  assert.equal(enchanted.existing_enchantment.amount, 2);
   assert.equal(enchanted.description, "Deal 6 damage.");
 
   const changed = structuredClone(state);
