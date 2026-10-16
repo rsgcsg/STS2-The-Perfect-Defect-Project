@@ -585,7 +585,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
         _command = new Label
         {
-            Text = "模型执行与 Source3 录制统一在工作台实战/采集页操作。这里保留运行诊断和独立 Human/Stop 恢复。",
+            Text = "模型执行与 Source3/Source4 录制统一在工作台实战/采集页操作。这里保留运行诊断和独立 Human/Stop 恢复。",
             MouseFilter = MouseFilterEnum.Ignore,
             AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
@@ -1100,9 +1100,10 @@ internal sealed class PlatformLivePanel : IDisposable
             var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
             var before = owner.QueryStatus();
             bool sourceStart = kind == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession && _recordingProfile.Selected == 1;
-            bool activeSource3 = before.Session?.CaptureProfileId == STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId;
+            bool activeSource = before.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
+                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
             bool inactive = before.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
-            if (sourceStart || (activeSource3 && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive)))
+            if (sourceStart || (activeSource && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive)))
             { OpenNativeWorkbenchPage("data"); return; }
             var declaration = sourceStart || kind == STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource
                 ? ReadSourceDeclaration() : null;
@@ -1355,16 +1356,17 @@ internal sealed class PlatformLivePanel : IDisposable
         STS2HumanAnnotator.Core.RecordingLifecycleState state = recording.Lifecycle.State;
         bool inactive = state is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
         bool isSource = recording.SourceV2 is not null || recording.Source is not null;
-        bool source3Controls = (inactive && _recordingProfile.Selected == 1)
-            || recording.Session?.CaptureProfileId == STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId;
-        bool sourceFields = !source3Controls && ((inactive && _recordingProfile.Selected == 1) || (!inactive && isSource));
+        bool sourceControls = (inactive && _recordingProfile.Selected == 1)
+            || recording.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
+                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
+        bool sourceFields = !sourceControls && ((inactive && _recordingProfile.Selected == 1) || (!inactive && isSource));
         _recordingProfile.Disabled = !inactive;
         _recordingSourceKind.Visible = _recordingActor.Visible = sourceFields;
-        _sourceDeclarationNotice.Visible = sourceFields || source3Controls;
+        _sourceDeclarationNotice.Visible = sourceFields || sourceControls;
         _recordingSourceKind.Disabled = !inactive && state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused;
         _recordingActor.Editable = !_recordingSourceKind.Disabled;
         var sourceDeclaration = recording.SourceV2?.Declaration ?? recording.Source?.Declaration;
-        _sourceDeclarationNotice.Text = (source3Controls ? "Source3 录制在工作台采集页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
+        _sourceDeclarationNotice.Text = (sourceControls ? "Source3/Source4 录制在工作台采集页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
             + (isSource && sourceDeclaration is not null ? $" 当前：{SourceKindLabel(sourceDeclaration.SourceKind)} · {sourceDeclaration.ActorId}" : "");
         if (isSource)
         {
@@ -1388,7 +1390,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _actionFeedList.Visible = !isSource;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession].Disabled =
             recording.Continuous?.Armed == true || !inactive
-                || (_recordingProfile.Selected == 1 && !source3Controls && !HasSourceDeclaration());
+                || (_recordingProfile.Selected == 1 && !sourceControls && !HasSourceDeclaration());
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Pause].Disabled =
             state != STS2HumanAnnotator.Core.RecordingLifecycleState.Recording;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Resume].Disabled =
@@ -1397,10 +1399,10 @@ internal sealed class PlatformLivePanel : IDisposable
             recording.Continuous?.Armed != true && state is not (STS2HumanAnnotator.Core.RecordingLifecycleState.Recording
                 or STS2HumanAnnotator.Core.RecordingLifecycleState.Paused);
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource].Disabled =
-            !isSource || state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused || (!source3Controls && !HasSourceDeclaration());
+            !isSource || state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused || (!sourceControls && !HasSourceDeclaration());
         foreach (var entry in _recordingButtons)
         {
-            bool navigate = source3Controls && (entry.Key != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || _recordingProfile.Selected == 1 || !inactive);
+            bool navigate = sourceControls && (entry.Key != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || _recordingProfile.Selected == 1 || !inactive);
             string label = entry.Key switch { STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession => "开始录制",
                 STS2HumanAnnotator.Core.RecordingCommandKind.Pause => "暂停", STS2HumanAnnotator.Core.RecordingCommandKind.Resume => "继续",
                 STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource => "更改来源", _ => "结束并封存" };

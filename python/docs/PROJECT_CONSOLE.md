@@ -82,7 +82,10 @@ adopt arbitrary old directories. Keep private local paths out of Git. An artifac
 this inventory alone does not make it a usable training set, installed model or validated result.
 
 The local Data page and paired native Workbench also expose **原生交互与观察**
-lifecycle controls through one Application/NativeTasks path. They query only scalar
+lifecycle controls through one Application/NativeTasks path. The format selector
+defaults to Source3; explicitly choose **Source4（保留 P1 公共基底）** for offline
+P1 conversion. Active Source4 uses the same Pause/Resume/ChangeSource/Close owner.
+This is source support, not an installed Mod or Human recording qualification. They query only scalar
 recording status and use the configured local Connector (or its documented Mod
 default) to check the exact game instance. Start and ChangeSource require an explicit
 本人操作 / AI界面操作 / Agent协议 / 未知来源 plus actor ID; no Human default or
@@ -109,7 +112,7 @@ Unknown Source outcomes keep the existing admission fence after client timeout;
 same-runtime refresh does not clear it. Accepted exact durable Close can release
 sequencing, and a typed recording-status query that verifies a new runtime before
 and after against Connector can make an old notice inapplicable without Source
-Start or rewriting the unknown. Shared browser/paired native Workbench owns product Source3 and model execution.
+Start or rewriting the unknown. Shared browser/paired native Workbench owns product Source3/Source4 and model execution.
 The Mod's duplicate non-recovery Policy entries and Source3 Recorder controls now
 navigate explicitly to Workbench play/data. Legacy native Human recording and
 direct Human/Stop retain their original independent recovery boundary; external

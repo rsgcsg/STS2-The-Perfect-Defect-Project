@@ -65,7 +65,11 @@ def owner(app, monkeypatch):
         app.models.native_tasks, "recording_status", lambda _: copy.deepcopy(current)
     )
 
-    def execute(endpoint, observed, kind, *, source_declaration, command_id):
+    def execute(endpoint, observed, kind, *, source_declaration, command_id,
+                capture_profile_id=None):
+        if capture_profile_id is not None:
+            behavior["selected_profile"] = capture_profile_id
+            current["capture_profile_id"] = capture_profile_id
         calls.append((endpoint, copy.deepcopy(observed), kind, source_declaration, command_id))
         if behavior["unknown"]:
             raise BoundaryError("recording", "native_recording_command_unknown")
@@ -266,3 +270,39 @@ def test_native_fixed_forms_and_browser_use_same_application_method_and_explicit
     )
     result = call(route, value)
     assert result["status"] == "rejected" and len(calls) == 2
+
+
+def test_source4_browser_and_fixed_form_use_same_owner_and_close_controls(native_http, monkeypatch):
+    app, call, pair, _, _, _ = native_http
+    current, calls, behavior = owner(app, monkeypatch)
+    current.update(recording_lifecycle="closed", closeout_status="closed")
+    selected = {**body(current, "start_new_session", "declared_human"),
+                "capture_profile_id": "native-logical-source-v4"}
+    route, value = command("recording.start", selected)
+    assert call(route, value)["status"] == "accepted"
+    assert behavior["selected_profile"] == "native-logical-source-v4"
+    assert current["capture_profile_id"] == "native-logical-source-v4"
+    view = call(PREFIX + "/view?page=data")
+    descriptors = {item["action_id"]: item for item in view["capabilities"]["actions"]}
+    assert descriptors["recording.close"]["enabled"]
+    assert descriptors["recording.pause"]["enabled"]
+    assert descriptors["recording.start"]["fields"][-1]["default"] == "native-logical-source-v3"
+    route, value = command("recording.close", body(current, "close"), "e" * 32)
+    assert call(route, value)["status"] == "accepted"
+    assert current["recording_lifecycle"] == "closed"
+    with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+        app.control_native_recording({**body(current, "close"),
+                                      "capture_profile_id": "native-logical-source-v4"})
+
+
+@pytest.mark.parametrize("profile", [None, [], {}, "native-logical-source-v5"])
+def test_source_format_rejects_bad_values_before_owner_dispatch(tmp_path, monkeypatch, profile):
+    app = Application(ProjectConfig(tmp_path / "state", "", "", None, combination()))
+    try:
+        current, calls, _ = owner(app, monkeypatch)
+        with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+            app.control_native_recording({**body(current, "start_new_session", "declared_human"),
+                                          "capture_profile_id": profile})
+        assert calls == []
+    finally:
+        app.close()

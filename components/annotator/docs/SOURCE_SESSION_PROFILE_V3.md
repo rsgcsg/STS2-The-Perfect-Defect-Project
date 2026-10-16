@@ -184,3 +184,43 @@ emit original-position missing accounting. Encoder-only backlog, copy capacity,
 original encoding timeout, held disk, Pause, exact carrier replacement fencing,
 protocol lexical dedup, zero/many mapping and pending Close are exercised on the
 actual producer/worker paths. These source/test fixtures are not real game data.
+
+
+## Source4 originals and offline P1 interpretation
+
+Source4 uses the same engine and command3, profile `native-logical-source-v4`
+and bundle `source-session-bundle-v4`. It additionally preserves independently
+frozen `public-basis-1` bytes, all advertised Read instances and original native
+carrier/Task facts. The Workbench format selector defaults to Source3; Source4
+is explicit. Neither format changes the source declaration into Human proof.
+Source3 import/training readers keep their existing profile admission.
+
+`tools/source4-to-p1.mjs` verifies with the independent Evidence v4 reader,
+rehashes the exact bytes it decodes, then calls the shared SDK reducer, original
+input matcher and publication classifier. Conversion report **v2** classifies
+every original capture with `status` (`matched`, `context_only`, `unresolved`),
+a named `classification` and `reason`. Native originals are never rewritten.
+
+- A complete initial public basis is an observation boundary without a choice.
+- A structurally complete settling basis with no actions is waiting context only
+  when the reducer's sole missing cause is its non-decision settling status.
+  All original public facts and the diagnostic observation remain in captures.
+- Repeated same-snapshot delivery is context only if the whole basis, including
+  every Read instance, matches except snapshot and Read response `observed_at`.
+  A changed Read or any other changed public fact creates a new observation boundary. Snapshot ID
+  alone never proves equality.
+- Complete later decision/terminal bases establish public boundaries; they do
+  not prove a causal successor. Pending input spans remain for the exact shared
+  intention/cancellation matcher, without independent commitment advancement.
+- Decoder failures, missing Reads/bindings, gaps, unqualified waiting/scene facts,
+  unmatched inputs and pause-excluded publications remain unresolved with causes.
+
+`complete` means all retained originals of the declared **bounded recorded
+prefix** have been classified, without required missing facts or excluded pause
+intervals. It does not mean a full game, Human verification or runtime acceptance.
+`scope.natural_terminal_observed` reports a complete terminal observation only;
+Close never invents one. Report v1 retains its historical meaning; the original
+minimal golden remains unchanged and still converts to false/zero actions.
+The new `source_session_v4_p1` fixture is production Store/packer output built
+from a retained Reference combat shape with explicitly synthetic map supplement,
+ordered empty piles, EndTurn witnesses and later publications, not a Human run.

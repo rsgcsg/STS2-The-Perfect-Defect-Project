@@ -79,8 +79,9 @@ describe('Source4 adapter using the actual shared SDK matcher', () => {
     const raw = JSON.stringify(f.source.inputs), report = convert(f.source);
     expect(report.actions).toHaveLength(1); expect(report.actions[0].choice.kind).toBe('combat.end_turn');
     expect(report.unresolved_inputs).toEqual([]); expect(JSON.stringify(f.source.inputs)).toBe(raw);
-    // The shared matcher has not validated first-prefix publication history.
-    expect(report.complete).toBe(false); expect(report.unresolved_contexts).toHaveLength(1);
+    // The shared publication classifier retains the bootstrap as an observation.
+    expect(report.complete).toBe(true); expect(report.unresolved_contexts).toEqual([]);
+    expect(report.captures[0].classification).toBe('p1_initial_boundary');
   });
   it('settles a proven cancel on its publication before the following native input, without a play or commitment', () => {
     const f = canceled(); const end = f.after.snapshot.bound_actions.actions.find(value => value.verb === 'end_turn');
@@ -107,6 +108,55 @@ describe('Source4 adapter using the actual shared SDK matcher', () => {
     f.input(basis, 1, selected(action), { owner_ref: 'end-button', subject_ref: null, arguments: {}, carriers: acceptedCarrier() }, 'native_end_turn_ui');
     changed.snapshot.persistent.content.player.gold++; f.publication(changed, 2);
     const report = convert(f.source); expect(report.actions).toHaveLength(1);
-    expect(report.captures.at(-1).classification).toBe('unresolved_context'); expect(report.complete).toBe(false);
+    expect(report.captures.at(-1).classification).toBe('p1_publication_boundary'); expect(report.complete).toBe(true);
+    expect(report.captures.at(-1).observation.player.content.gold).toBe(changed.snapshot.persistent.content.player.gold);
   });
+  it('recognizes a fresh producer capture of the same snapshot and all Reads as repeated context', () => {
+    const f = fixture(), basis = original(), repeated = structuredClone(basis);
+    f.publication(basis, 1);
+    repeated.snapshot.observed_at = '2026-10-16T00:01:00+00:00';
+    for (const read of repeated.reads) read.response.observed_at = repeated.snapshot.observed_at;
+    f.publication(repeated, 2);
+    const report = convert(f.source); expect(report.complete).toBe(true);
+    expect(report.captures[1].classification).toBe('source_repeated_public_snapshot');
+  });
+  it('keeps changed Read facts under the same snapshot as a new boundary', () => {
+    const f = fixture(), basis = original(), changed = structuredClone(basis);
+    f.publication(basis, 1);
+    changed.reads.find(read => read.kind === 'run_deck').response.content.cards[0].description += ' changed';
+    f.publication(changed, 2);
+    const report = convert(f.source);
+    expect(report.complete).toBe(true);
+    expect(report.captures.map(capture => capture.classification)).toEqual(['p1_initial_boundary', 'p1_publication_boundary']);
+    expect(report.captures[1].observation.deck).not.toEqual(report.captures[0].observation.deck);
+  });
+  it.each(['gap', 'missing-read', 'partial-settling', 'unknown-scene'])('leaves %s publication unresolved with its cause', defect => {
+    const f = fixture(), basis = original(); f.publication(basis, 1);
+    const next = renamed(basis, '-bad');
+    if (defect === 'missing-read') next.reads.pop();
+    if (defect === 'partial-settling') {
+      next.snapshot.status = 'settling'; next.snapshot.bound_actions.actions = [];
+      next.snapshot.bound_actions.total_count = next.snapshot.bound_actions.materialized_count = 0;
+      next.snapshot.interaction.capabilities = [];
+      next.snapshot.persistent.content.player.hp = null;
+    }
+    if (defect === 'unknown-scene') next.snapshot.interaction.kind = 'not-qualified';
+    const publication = f.publication(next, 2);
+    if (defect === 'gap') publication.gap_after_index = '1';
+    const report = convert(f.source);
+    expect(report.complete).toBe(false); expect(report.captures[1].status).toBe('unresolved');
+    expect(report.unresolved_contexts[0].reason).toBeTruthy();
+  });
+  it('does not declare a complete prefix across pause-excluded publications', () => {
+    const f = fixture(), basis = original(); f.publication(basis, 1); f.publication(basis, 3);
+    f.source.boundaries.push({ boundary_id: 'pause-boundary', paused_intervals: [{
+      epoch_id: 'epoch', stream_generation: '1', after_index: '1', through_index: '2',
+      after_input_ordinal: '0', through_input_ordinal: '0' }] });
+    const report = convert(f.source); expect(report.complete).toBe(false);
+    expect(report.unresolved_contexts[0].reason).toBe('recording_pause_excludes_original_publications');
+  });
+  it('does not call an empty prefix complete', () => {
+    expect(convert(fixture().source).complete).toBe(false);
+  });
+
 });

@@ -85,22 +85,23 @@ export function convertOriginals(source, sdk, core, options) {
   const manifest = source.receipt.manifest;
   const episodeId = `source4:${manifest.session_id}`;
   let state = core.createSession(episodeId, options.hostKind);
-  const report = { schema: 'sts2.p1/source4-conversion-report-1', source_bundle: source.bundle,
+  const report = { schema: 'sts2.p1/source4-conversion-report-2', source_bundle: source.bundle,
     source_content_id: source.receipt.content_id, source_session_id: manifest.session_id,
-    host_kind: options.hostKind, captures: [], actions: [], context_spans: [], native_trace: source.inputs,
+    host_kind: options.hostKind, scope: { kind: 'bounded_recorded_prefix',
+      end_reason: source.boundaries.at(-1)?.kind ?? 'verified_source_close', natural_terminal_observed: false }, captures: [], actions: [], context_spans: [], native_trace: source.inputs,
     source_boundaries: source.boundaries,
     unresolved_inputs: [], unresolved_contexts: [], missing: [], complete: false,
     non_claims: ['not_agent_offer_consume_or_choice', 'not_human_origin_verification',
       'not_native_commit_or_causal_successor_proof', 'not_runtime_qualification'] };
   const trace = []; const covered = new Set(); const refusals = new Map();
-  let candidates = []; let publicationsBefore = [];
+  let candidates = []; let publicationsBefore = []; let previousPublication = null;
   for (const entry of orderedSource4Rows(source)) {
     const row = entry.row; const reference = row.captured_parts.public_basis;
     let basis = null; let reduction = null;
     const capture = { source_kind: entry.kind, epoch_id: row.epoch_id, segment_id: row.segment_id,
       source_ref: entry.kind === 'source_input' ? row.input_id : row.position.publication_index,
       public_basis: reference, complete: false, missing: [], observation: null,
-      classification: 'unresolved_context' };
+      classification: 'unresolved_context', status: 'unresolved', reason: 'original_context_not_yet_classified' };
     const captureIndex = report.captures.push(capture) - 1;
     if (reference !== null) {
       const bytes = source.bytes(reference.payload_ref);
@@ -121,13 +122,21 @@ export function convertOriginals(source, sdk, core, options) {
             core.canonicalJson(core.commitmentView(state))].join('|');
           if (!candidates.some(candidate => candidate.key === key)) candidates.push({ key, before: state, basis,
             reduction, captureIndex, start: trace.length, epoch: row.epoch_id, segment: row.segment_id });
-        } else if (reduction.complete && reduction.observation.status === 'terminal') {
-          capture.classification = 'p1_terminal_boundary'; state = reduction.state;
         }
       }
     } else capture.missing.push(row.captured_parts.public_basis_missing_reason);
     if (entry.kind !== 'source_input') {
-      publicationsBefore.push({ ...row, basis });
+      const publication = { ...row, basis };
+      // Pending native intentions must be classified by their exact shared span,
+      // never by treating an intermediate state as an independent choice.
+      if (trace.length === 0 || covered.has(trace.at(-1).wrapper.input_id)) {
+        const classified = core.classifySourceP1Publication(state, publication, previousPublication);
+        Object.assign(capture, classified);
+        if (capture.missing.length && classified.status === 'unresolved') capture.reason = capture.missing.join(';');
+        if (classified.advance) state = reduction.state;
+      }
+      previousPublication = publication;
+      publicationsBefore.push(publication);
       if (trace.length > 0) {
         trace.at(-1).wrapper.publications_after = [...publicationsBefore];
         settle(captureIndex); // An original cancellation/postcondition may settle only after a later publication.
@@ -178,10 +187,13 @@ export function convertOriginals(source, sdk, core, options) {
       throw new Error('source4_shared_match_choice_not_in_original_lowering');
     for (const id of result.input_ids) covered.add(id);
     report.unresolved_inputs = report.unresolved_inputs.filter(value => !covered.has(value.input_id));
-    // Only the supplied, fully verified intermediate span is classified. First-prefix publication history stays unresolved.
+    // Only the supplied, fully verified intermediate span is classified.
     for (let index = candidate.captureIndex; index <= captureIndex; index++)
-      if (report.captures[index].classification === 'unresolved_context')
-        report.captures[index].classification = 'shared_verified_mechanical_context';
+      if (report.captures[index].status === 'unresolved')
+        Object.assign(report.captures[index], { classification: 'shared_verified_mechanical_context',
+          status: 'context_only', reason: result.reason });
+    for (const item of trace.filter(item => result.input_ids.includes(item.wrapper.input_id)))
+      Object.assign(report.captures[item.captureIndex], { status: result.status, reason: result.reason });
     if (result.status === 'context_only') {
       report.context_spans.push({ source_input_ids: result.input_ids, reason: result.reason,
         proof: 'shared_sdk_original_trace_context_only' });
@@ -200,14 +212,27 @@ export function convertOriginals(source, sdk, core, options) {
     && !report.unresolved_inputs.some(item => item.input_id === value.wrapper.input_id)).map(value => ({ input_id: value.wrapper.input_id,
       status: refusals.get(value.wrapper.input_id)?.status ?? 'unmapped',
       reason: refusals.get(value.wrapper.input_id)?.reason ?? 'no_complete_shared_p1_intention_for_original_trace' })));
+  for (const item of report.unresolved_inputs) {
+    const capture = report.captures.find(capture => capture.source_kind === 'source_input' && capture.source_ref === item.input_id);
+    if (capture) capture.reason = item.reason;
+  }
   // Required missing is determined at proven P1 boundaries. Unknown intermediate contexts remain explicit and prevent completion.
   for (const capture of report.captures) {
-    if (capture.classification === 'unresolved_context') report.unresolved_contexts.push({ source_kind: capture.source_kind,
-      source_ref: capture.source_ref, reason: 'shared_mapper_has_not_classified_original_context' });
+    if (capture.status === 'unresolved') report.unresolved_contexts.push({ source_kind: capture.source_kind,
+      source_ref: capture.source_ref, reason: capture.reason, missing: capture.missing });
     if (capture.classification.startsWith('p1_') && capture.missing.length > 0) report.missing.push({
       source_kind: capture.source_kind, source_ref: capture.source_ref, reason: 'p1_boundary_required_information_missing', missing: capture.missing });
   }
-  report.complete = report.missing.length === 0 && report.unresolved_inputs.length === 0 && report.unresolved_contexts.length === 0;
+  for (const boundary of source.boundaries) {
+    for (const interval of boundary.paused_intervals ?? []) {
+      if (BigInt(interval.through_index) > BigInt(interval.after_index)
+          || BigInt(interval.through_input_ordinal) > BigInt(interval.after_input_ordinal))
+        report.unresolved_contexts.push({ source_kind: 'source_boundary', source_ref: boundary.boundary_id,
+          reason: 'recording_pause_excludes_original_publications', interval });
+    }
+  }
+  report.scope.natural_terminal_observed = report.captures.some(capture => capture.classification === 'p1_terminal_boundary');
+  report.complete = report.captures.length > 0 && report.missing.length === 0 && report.unresolved_inputs.length === 0 && report.unresolved_contexts.length === 0;
   return report;
 }
 

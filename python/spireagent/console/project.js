@@ -4054,13 +4054,19 @@ window.SpireProject = (() => {
     const declared = () => kind.value && /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
       && ![".", ".."].includes(actor.value)
       && (!view.model_recovery_required || kind.value === "agent_protocol");
-    const source3 = status.capture_profile_id === "native-logical-source-v3";
+    const profile = select(form, "录制格式", "native-recording-profile", [
+      ["native-logical-source-v3", "Source3（默认）"], ["native-logical-source-v4", "Source4（保留 P1 公共基底）"]],
+      ["native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id)
+        && !["ready", "closed"].includes(status.recording_lifecycle) ? status.capture_profile_id
+        : drafts.get("native-recording-profile") || "native-logical-source-v3");
+    profile.disabled = !["ready", "closed"].includes(status.recording_lifecycle);
+    const sourceRecording = ["native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id);
     const fresh = () => ["ready", "closed"].includes(status.recording_lifecycle)
       && (!view.recovery_required || (status.recording_lifecycle === "closed" && status.closeout_status === "closed"));
     const eligible = action => !view.command_pending && !!view.csrf_token && (action === "close" || confirmationStorage) && (action === "start_new_session" ? fresh() && declared()
-      : action === "change_source" ? source3 && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
-      : action === "close" ? source3 && ["recording", "paused"].includes(status.recording_lifecycle)
-      : source3 && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
+      : action === "change_source" ? sourceRecording && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
+      : action === "close" ? sourceRecording && ["recording", "paused"].includes(status.recording_lifecycle)
+      : sourceRecording && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
     const buttons = [];
     for (const [action, label] of [["start_new_session", "开始录制"], ["pause", "暂停"], ["resume", "继续"], ["change_source", "更改来源"], ["close", "结束并封存"]]) {
       const button = command(ctx, "native-recording-" + action, label, async () => {
@@ -4070,6 +4076,8 @@ window.SpireProject = (() => {
           recording_session_id: status.recording_session_id, source_segment_id: status.source?.segment_id ?? null,
           source_kind: declaration ? kind.value : null, actor_id: declaration ? actor.value : null,
           command_id: crypto.randomUUID()};
+        if (action === "start_new_session" && profile.value !== "native-logical-source-v3")
+          body.capture_profile_id = profile.value;
         const previous = browserUnknown;
         const previousRecovery = view.recovery_required, previousNotice = view.unconfirmed;
         const marker = {command_id:body.command_id, kind:action, recording_session_id:body.recording_session_id,
@@ -4131,9 +4139,10 @@ window.SpireProject = (() => {
     }
     const refreshButtons = () => {
       drafts.set("native-recording-kind", kind.value); drafts.set("native-recording-actor", actor.value);
+      drafts.set("native-recording-profile", profile.value);
       for (const [action, button] of buttons) button.disabled = !eligible(action);
     };
-    kind.onchange = refreshButtons; actor.oninput = refreshButtons;
+    kind.onchange = refreshButtons; actor.oninput = refreshButtons; profile.onchange = refreshButtons;
     box.append(form);
     box.append(command(ctx, "refresh-native-recording", "刷新录制状态", async () => { await reload(ctx); }, {type:"secondary"}));
     box.append(technical({connection:view.connection, profile:status.capture_profile_id,

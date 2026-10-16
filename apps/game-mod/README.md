@@ -159,14 +159,14 @@ wrong Host/non-loopback peers, unknown or duplicate fields and JSON bodies over
 native main-thread queue; runtime identity is compared there immediately before
 the typed Recorder call, which atomically compares the expected session.
 Model preparation now chooses command-1/2/3 according to the current legacy,
-Source1 or Source2/3 profile and uses that same queue.
+Source1 or Source2/3/4 profile and uses that same queue.
 
 The POST exact envelope is `{schema,runtime_instance_id,recording_session_id,command}`
 with schema `sts2.platform/recording-request-1`; the session is explicitly nullable.
 Its exact command fields are `{schema,command_id,kind,capture_profile_id,source_declaration,expected_source_segment_id}`.
 Schema is `sts2.ai-platform/recording-command-3`, command ID a UUID, and kind one
 of `start_new_session`, `pause`, `resume`, `change_source`, `close`. Unused fields
-are explicitly null. Start requires profile `native-logical-source-v3` and an
+are explicitly null. Start requires profile `native-logical-source-v3` or `native-logical-source-v4` and an
 explicit declaration. ChangeSource requires that declaration and the observed
 exact segment, with no profile. Pause/Resume/Close carry none of those optional
 values. Declaration is exactly `{source_kind,actor_id,declaration_id,machine_verifiable}`;
@@ -184,7 +184,7 @@ Result schema `sts2.platform/recording-result-1` has exactly
 `schema,command_id,accepted,pending,code,status`. Pending Close is not durable Closed.
 
 `NativeTasks.recording_status(connector_endpoint)` and
-`recording_command(connector_endpoint, observed, kind, source_declaration=...)`
+`recording_command(connector_endpoint, observed, kind, source_declaration=..., capture_profile_id=...)`
 are the typed Python entry. They compare the configured public Connector's
 runtime identity, preserve the observed session/segment and issue each command
 once with proxy/redirect avoidance. Lost or malformed responses remain unknown;

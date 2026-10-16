@@ -162,7 +162,7 @@ public static class PlatformRecordingCommands
         }
         if (kind == RecordingCommandKind.StartNewSession)
         {
-            if (profile != SourceSessionContractV3.ProfileId || source is null || segment is not null)
+            if (profile is not (SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId) || source is null || segment is not null)
                 throw new ArgumentException("source3_profile_and_declaration_required");
         }
         else if (kind == RecordingCommandKind.ChangeSource)
@@ -179,7 +179,7 @@ public static class PlatformRecordingCommands
     public static string SchemaForProfile(string? profile) => profile switch
     {
         SourceSessionContract.ProfileId => RecordingApplicationContract.SourceCommandSchema,
-        SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId => SourceSessionContractV2.CommandSchema,
+        SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId => SourceSessionContractV2.CommandSchema,
         _ => RecordingApplicationContract.CommandSchema
     };
 

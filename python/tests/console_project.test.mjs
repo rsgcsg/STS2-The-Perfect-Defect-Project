@@ -6640,6 +6640,27 @@ test("Source recording forms require explicit actor and source, preserve exact c
   assert.ok(!env.calls.some(item=> /local-models|training|upload/.test(item.url)));
 });
 
+test("Source4 can be selected explicitly and its active session can Close", async () => {
+  let view = recordingView(); const mutations = [];
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", nativeRecordingData:()=>view,
+    handler:async (url, options) => {
+      if (url === "/api/native-recording/command") { mutations.push(JSON.parse(options.body)); return {status:{recording_session_id:"source4-session"}}; }
+      return recordingPageHandler(url, options);
+    }});
+  let page = await env.render();
+  assert.equal(field(page,"native-recording-profile").value,"native-logical-source-v3");
+  field(page,"native-recording-profile").value="native-logical-source-v4";
+  field(page,"native-recording-profile").onchange();
+  field(page,"native-recording-kind").value="declared_human"; field(page,"native-recording-kind").onchange();
+  field(page,"native-recording-actor").value="human-operator"; field(page,"native-recording-actor").oninput();
+  await action(page,"native-recording-start_new_session").onclick();
+  assert.equal(mutations[0].capture_profile_id,"native-logical-source-v4");
+  view=recordingView("recording","source4-session"); view.status.capture_profile_id="native-logical-source-v4";
+  page=await env.render(); assert.equal(action(page,"native-recording-close").disabled,false);
+  await action(page,"native-recording-close").onclick(); assert.equal(mutations[1].kind,"close");
+  assert.equal(mutations[1].recording_session_id,"source4-session");
+});
+
 test("lost recording reply survives refresh and explicit new isolation keeps the original notice", async () => {
   let view=recordingView("recording","original-session"), lost=true; const mutations=[];
   const storage=new Map();

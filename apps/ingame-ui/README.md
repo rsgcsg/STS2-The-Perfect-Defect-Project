@@ -25,9 +25,10 @@ recording does not itself establish Full-Run qualification or research admission
 
 The Recorder retains **兼容语义录制** as its original native Human capability.
 **原生交互与观察** controls navigate explicitly to the paired Workbench Data page;
-active Source3 lifecycle always uses that owner, regardless of profile dropdown.
+active Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
 The Workbench selects
-the explicit `native-logical-source-v3` profile. Select a source declaration
+the default `native-logical-source-v3` or explicit `native-logical-source-v4`
+profile (Source4 retains the public basis for offline P1 conversion). Select a source declaration
 (本人操作 / AI 界面操作 / Agent 协议 / 未知来源) and enter an operator ID before
 Start; no Human source is selected automatically. IDs use 1–128 ASCII letters,
 digits, `_`, `-` or `.`, excluding `.` and `..` alone. Pause before changing the
