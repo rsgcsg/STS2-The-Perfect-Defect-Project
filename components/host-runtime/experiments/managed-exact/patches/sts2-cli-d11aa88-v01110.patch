@@ -1007,10 +1007,10 @@ index 0000000..14bc7d2
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..5f947fe
+index 0000000..f73eaa0
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,372 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -1279,8 +1279,7 @@ index 0000000..5f947fe
 +            || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)) return false;
 +        return typeof(HoverTipFactory).GetField("_keywordHoverTips", NativeMembers)?.GetValue(null) is Dictionary<CardKeyword, HoverTip> cache
 +            && cache.GetType() == typeof(Dictionary<CardKeyword, HoverTip>)
-+            && ReferenceEquals(cache.Comparer, EqualityComparer<CardKeyword>.Default)
-+            && cache.Values.All(tip => tip != null && tip.GetType() == typeof(HoverTip));
++            && ReferenceEquals(cache.Comparer, EqualityComparer<CardKeyword>.Default);
 +    }
 +
 +    private static readonly string[] RenderHookMethods = {

@@ -266,8 +266,7 @@ public static partial class NativeCardPreviewReadQualification
             || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)) return false;
         return typeof(HoverTipFactory).GetField("_keywordHoverTips", NativeMembers)?.GetValue(null) is Dictionary<CardKeyword, HoverTip> cache
             && cache.GetType() == typeof(Dictionary<CardKeyword, HoverTip>)
-            && ReferenceEquals(cache.Comparer, EqualityComparer<CardKeyword>.Default)
-            && cache.Values.All(tip => tip != null && tip.GetType() == typeof(HoverTip));
+            && ReferenceEquals(cache.Comparer, EqualityComparer<CardKeyword>.Default);
     }
 
     private static readonly string[] RenderHookMethods = {
