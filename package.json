@@ -25,7 +25,7 @@
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
     "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
-    "check:boundaries": "node --test tools/check-boundaries.test.mjs && node tools/check-boundaries.mjs",
+    "check:boundaries": "node --test tools/check-boundaries.test.mjs tools/workshop-boundary.test.mjs && node tools/check-boundaries.mjs",
     "check:history": "node tools/check-migration-history.mjs && node tools/check-project-import.mjs",
     "check:components": "node tools/check-workspace.mjs components",
     "project:context": "node tools/project-system.mjs context",
