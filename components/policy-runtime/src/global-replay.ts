@@ -47,7 +47,7 @@ export async function replayGlobalAgentRun(directory: string) {
     const bytes = await readFile(path); require(sha(bytes) === ref.sha256, "global_artifact_bytes"); referenced.add(ref.path); return bytes;
   };
   let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
-  let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
+  let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
   let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
   const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
   let mode: string | null = null, control = "released", permanentlyFenced = false;
@@ -165,7 +165,7 @@ export async function replayGlobalAgentRun(directory: string) {
       const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
       require(input && reduction && supportsProfileValue(manifest.support.action_verbs,
         reduction.observation.catalog.find(c => c.choice_id === p.choice_id)?.kind ?? "") && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
-      active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence,
+      active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence, epoch: p.recovery_epoch,
         deliveries: [], dispatches: [], postSources: new Map(), errors: new Set() };
     } else if (event.kind === "global_dispatch") {
       require(active && mode !== null && mode !== "human" && mode !== "shadow" && control === "held" && !permanentlyFenced && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
@@ -239,10 +239,14 @@ export async function replayGlobalAgentRun(directory: string) {
       if (p.result.status === "interrupted_known") require(delivered > 0, "global_interruption_without_delivered_prefix");
       let delta = null;
       if (p.result.status === "completed") {
+        require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced
+          && p.recovery_epoch === active.epoch && active.errors.size === 0, "global_completion_after_handoff_or_failure");
         require(state && (!active.lowering.first ? active.deliveries.length === 0
           : delivered === active.deliveries.length && delivered === active.dispatches.length && delivered > 0), "global_completion_unproved");
-        for (const dispatch of active.dispatches)
-          require(active.postSources.get(dispatch.request_id)?.length, "global_completed_post_source_missing");
+        for (const dispatch of active.dispatches) {
+          const postOrdinal = active.postSources.get(dispatch.request_id)?.at(-1);
+          require(postOrdinal && sources.get(postOrdinal)?.full.basis.capture_status === "complete", "global_completed_post_source_missing_or_partial");
+        }
         if (active.lowering.first) {
           const nextRule = active.lowering.follow[delivered - 1];
           if (nextRule) {

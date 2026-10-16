@@ -26,13 +26,20 @@ describe("forward intention through actual HTTP, NDJSON and original replay", ()
       expect((await replayGlobalAgentRun(f.evidence.directory)).results).toBe(1);
       // Journal-level semantic falsifiers retain every original artifact. Hash
       // inventory verification is separate; no missing artifact is needed here.
-      for (const variant of ["wrong_step", "wrong_occurrence", "fake_commitment", "drop_post_source", "early_completed"]) {
+      for (const variant of ["wrong_step", "wrong_occurrence", "fake_commitment", "drop_post_source", "early_completed", "handoff_before_completed"]) {
         const dir = join(f.root, variant); await cp(f.evidence.directory, dir, { recursive: true });
         let altered = structuredClone(rows); const r = altered.find(e => e.kind === "global_result").payload.result;
         if (variant === "wrong_step") r.steps[1].native_verb = "end_turn";
         if (variant === "wrong_occurrence") r.occurrence++;
         if (variant === "fake_commitment") r.commitment_delta = { reward_page_left: true };
         if (variant === "drop_post_source") altered = altered.filter(e => e.kind !== "global_source_retained");
+        if (variant === "handoff_before_completed") {
+          const at = altered.findIndex(e => e.kind === "global_result"), original = altered[at], context = original.payload;
+          altered.splice(at, 0, { ...original, kind: "controller_released", payload: { session_id: context.session_id,
+            recovery_epoch: context.recovery_epoch, controller: "released" } },
+          { ...original, kind: "handoff_to_human", payload: { session_id: context.session_id, recovery_epoch: context.recovery_epoch,
+            reason: "explicit_human_recovery", autonomy_budget: null, controller: "released" } });
+        }
         if (variant === "early_completed") {
           const firstPost = altered.findIndex(e => e.kind === "global_source_retained");
           const early = structuredClone(altered.find(e => e.kind === "global_result")); early.payload.result.steps = early.payload.result.steps.slice(0, 1);
@@ -66,4 +73,23 @@ describe("forward intention through actual HTTP, NDJSON and original replay", ()
       expect((await replayGlobalAgentRun(f.evidence.directory)).results).toBe(1);
     } finally { await f.close(); }
   });
+  it("retains the delivered Skip but refuses completion and commitment when the final original capture is partial", async () => {
+    const source = rewardSource(), final = structuredClone(source.basis);
+    const missing = final.reads[0]; missing.response = null; missing.error = "fixture_unavailable";
+    final.capture_status = "partial"; final.missing = [`read:${missing.read_id}:fixture_unavailable`];
+    final.snapshot.snapshot_id += "_returned";
+    for (const read of final.reads) if (read.response) read.response.expected_snapshot_id = read.response.observed_snapshot_id = final.snapshot.snapshot_id;
+    source.nextBases.push(final);
+    const f = await globalRuntimeFixture({ source, behavior: "choose:reward.decline_group" });
+    try {
+      expect((await f.runtime.tick()).type).toBe("not_delivered"); expect(source.steps).toBe(2);
+      expect(f.runtime.status().tainted).toBe(true); expect(source.controlHeld).toBe(false);
+      const result = (await f.events()).find(e => e.kind === "global_result").payload.result;
+      expect(result).toMatchObject({ status: "interrupted_known", commitment_delta: null });
+      expect(result.steps.map((s: any) => s.delivery)).toEqual(["delivered", "delivered"]);
+      await f.runtime.tick(); expect(source.steps).toBe(2);
+      await f.runtime.stop(); expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(false);
+    } finally { await f.close(); }
+  });
+
 });

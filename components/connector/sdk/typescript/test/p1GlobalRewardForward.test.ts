@@ -34,6 +34,26 @@ describe("complete forward reward intentions", () => {
     }
     expect(resolveFollowBasis(low.follow[0]!, low, child)).toBeNull();
   });
+  it("requires every current surface_card detail instance to remain the offered one", () => {
+    const { outer, child } = pair();
+    const add = (basis: any, id: string) => {
+      const card = basis.snapshot.interaction.content.surface.cards?.[0] ?? basis.snapshot.interaction.content.surface.rewards[0].card_options[0];
+      if (!basis.snapshot.referents.some((r: any) => r.referent_id === card.entity_id)) basis.snapshot.referents.push({
+        ...basis.snapshot.referents[0], referent_id: card.entity_id, role: "card", properties_schema: "sts2.player-environment/referent/card-1" });
+      const listed = { ...basis.snapshot.reads[0], read_id: id, kind: "surface_card", target_referent_id: card.entity_id,
+        content_schema: "sts2.player-environment/read/surface_card-1" };
+      const response = { ...basis.reads[0].response, read_id: id, kind: listed.kind, target_referent_id: card.entity_id,
+        content_schema: listed.content_schema, content: structuredClone(card) };
+      basis.snapshot.reads.push(listed); basis.reads.push({ read_id: id, kind: listed.kind, response, error: null });
+    };
+    add(outer, "detail-one"); add(child, "detail-one"); add(outer, "detail-two"); add(child, "detail-two");
+    const r = project(outer), choice = r.observation.catalog.find(c => c.kind === "reward.take_card")!, low = r.lowering[choice.choice_id]!;
+    expect(r.complete && project(child).complete).toBe(true);
+    expect(resolveFollowBasis(low.follow[0]!, low, child)?.bound_action_id).toBe("select-0");
+    child.reads.at(-1).response.content.description += " newly available public fact";
+    expect(project(child).complete).toBe(true);
+    expect(resolveFollowBasis(low.follow[0]!, low, child)).toBeNull();
+  });
   it("decline executes ordinary Skip before its pending native-disposition commitment", () => {
     const { outer, child } = pair(); const r = project(outer);
     const choice = r.observation.catalog.find(c => c.kind === "reward.decline_group")!; const low = r.lowering[choice.choice_id]!;

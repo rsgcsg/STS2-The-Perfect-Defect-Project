@@ -82,6 +82,18 @@ export interface RewardIntention {
   readonly alternatives: string;
   readonly completes: boolean;
   readonly world: string;
+  readonly details: string;
+}
+
+/** Same-instance current detail inventory is part of the offered option. Multiple
+ * Read instances are retained, not collapsed by kind or entity. */
+function rewardDetailFacts(basis: P1Basis, cards: readonly Record<string, any>[]): string {
+  const ids = new Set(cards.map(card => card.entity_id));
+  const values = basis.reads.filter(read => read.kind === "surface_card").map(read => read.response as Record<string, any>)
+    .filter(read => read && ids.has(read.target_referent_id)).map(read => ({ target: read.target_referent_id,
+      schema: read.content_schema, visibility: read.visibility_basis, ordering: read.ordering_semantics,
+      hidden: read.completeness.hidden_by_policy, content: read.content }));
+  return canonicalJson(values.sort((a, b) => { const x = canonicalJson(a), y = canonicalJson(b); return x < y ? -1 : x > y ? 1 : 0; }));
 }
 
 export function rewardIntention(owner: string, group: Record<string, any>, basis: P1Basis,
@@ -89,7 +101,7 @@ export function rewardIntention(owner: string, group: Record<string, any>, basis
   return { owner, group: String(group.group_id), kind, option,
     cards: canonicalJson(group.card_options.map(rewardCardFacts)),
     alternatives: canonicalJson(group.card_alternatives.map(rewardAlternativeFacts)),
-    completes: group.selection_completes_reward, world: rewardWorldFacts(basis) };
+    completes: group.selection_completes_reward, world: rewardWorldFacts(basis), details: rewardDetailFacts(basis, group.card_options) };
 }
 
 export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): boolean {
@@ -100,5 +112,5 @@ export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): b
     && surface.selection_completes_reward === plan.completes
     && canonicalJson(surface.cards.map(rewardCardFacts)) === plan.cards
     && canonicalJson(surface.alternatives.map(rewardAlternativeFacts)) === plan.alternatives
-    && rewardWorldFacts(basis) === plan.world;
+    && rewardWorldFacts(basis) === plan.world && rewardDetailFacts(basis, surface.cards) === plan.details;
 }

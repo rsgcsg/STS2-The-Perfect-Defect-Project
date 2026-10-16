@@ -1426,6 +1426,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try {
         this.checkActive(epoch, signal);
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        if (source.full.basis.capture_status !== "complete") throw new AgentSessionError("global_post_delivery_capture_incomplete");
         if (!rule) break;
         while (source.full.basis.capture_status === "complete"
           && (source.full.basis.snapshot.interaction as { kind: string }).kind !== "game_over"

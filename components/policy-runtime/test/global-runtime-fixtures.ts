@@ -53,7 +53,7 @@ export class GlobalHttpFixture {
         if (url.pathname.endsWith("/public-basis/current")) {
           if (this.captureGate) await this.captureGate;
           if(this.steps && this.postCaptureGate) { this.postCaptureEntered?.(); await this.postCaptureGate; }
-          const value = { schema: "sts2.player-environment/public-basis-1", revision: "1", capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete", ...this.basis, missing: [] };
+          const value = { schema: "sts2.player-environment/public-basis-1", revision: "1", capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete", ...this.basis, missing: this.basis.missing ?? [] };
           const bytes = Buffer.from(JSON.stringify(value)), id = `capture-${this.captures.size + 1}`;
           const handle = { schema: "sts2.player-environment/public-basis-handle-1", read_profile: "public-basis-sealed-1", input_profile: "public-basis-1", capture_id: id,
             source_snapshot_id: value.snapshot.snapshot_id, session: value.snapshot.session, generation_id: "generation-1", game_continuity_id: this.continuity,
