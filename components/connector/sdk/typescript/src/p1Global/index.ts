@@ -3,3 +3,4 @@ export * from "./canonical.js";
 export * from "./reducer.js";
 export * from "./publicGraph.js";
 export * from "./admission.js";
+export * from "./publicIdentity.js";

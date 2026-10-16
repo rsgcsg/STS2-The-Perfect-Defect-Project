@@ -40,6 +40,16 @@ describe("P1 r1.1 full-public graph comparison", () => {
     const a = unambiguousObservation();
     const b = renamed(a); expect(compare(a, b).verdict).toBe("equal");
   });
+  it("uses the reducer's owning paths for recursive card previews and leaves extensions literal", () => {
+    const a = unambiguousObservation(); const card = content(a.combat).player.hand[0];
+    content(a.player).relics[0].card_previews = [{ ...structuredClone(card), entity_id: "public-preview-parent",
+      card_previews: [{ ...structuredClone(card), entity_id: "public-preview-child" }] }];
+    const b = renamed(a);
+    expect(compare(a, b).verdict).toBe("equal");
+    content(a.player).relics[0].card_previews[0].extension = { entity_id: "literal-left" };
+    content(b.player).relics[0].card_previews[0].extension = { entity_id: "literal-right" };
+    expect(compare(a, b).verdict).toBe("different");
+  });
   it.each(["enemy_intent", "enemy_status", "hand_cost", "draw_definition", "map_edges", "selector_prefs", "unknown_extension"])("detects changed public %s", variant => {
     const a = observation(); const b = structuredClone(a);
     if (variant === "enemy_intent") content(b.combat).enemies[0].intents = [{ type: "Defend", title: "Defend", description: "Gain 999 Block." }];

@@ -3,6 +3,7 @@ import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
+import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
@@ -190,13 +191,27 @@ const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "rewar
 
 // r1.1 has no qualified mandatory-input producer proof. Singleton choices remain Agent choices.
 
-interface AliasWork { aliases: Record<string, string>; counts: Record<string, number>; ids: Set<string>; anonymous: Set<string> }
+interface AliasWork {
+  aliases: Record<string, string>; counts: Record<string, number>;
+  policy: ReturnType<typeof createPublicIdentityPolicy>; anonymous: Set<string>;
+  anonymousViews: { root: string; label: string; aliases: Map<string, string> }[];
+}
 
-function aliasFor(work: AliasWork, id: string): string {
+function aliasFor(work: AliasWork, id: string, path = ""): string {
+  if (work.anonymous.has(id)) {
+    const view = work.anonymousViews.find(view => path === view.root || path.startsWith(view.root + ".") || path.startsWith(view.root + "["));
+    if (view) {
+      const existing = view.aliases.get(id);
+      if (existing) return existing;
+      const alias = `a_${view.label}_${view.aliases.size + 1}`;
+      view.aliases.set(id, alias);
+      return alias;
+    }
+  }
   const existing = work.aliases[id];
   if (existing) return existing;
   // Source token spelling/counters never select a model-visible alias.
-  const prefix = work.anonymous.has(id) ? "a" : "e";
+  const prefix = "e";
   const next = (work.counts[prefix] ?? 0) + 1;
   work.counts[prefix] = next;
   const alias = `${prefix}${next}`;
@@ -204,32 +219,35 @@ function aliasFor(work: AliasWork, id: string): string {
   return alias;
 }
 
-const ID_KEY = /(^|_)(entity_id|entity_ids|combat_id|referent_id|player_entity_id|owner_entity_id|orb_entity_id|group_id)$/u;
-
-function collectIds(value: unknown, ids: Set<string>, key = ""): void {
-  if (typeof value === "string") { if (ID_KEY.test(key)) ids.add(value); return; }
-  if (Array.isArray(value)) { for (const item of value) collectIds(item, ids, key); return; }
-  if (isObject(value)) for (const [k, v] of Object.entries(value)) collectIds(v, ids, k);
+function collectIds(value: unknown, ids: Set<string>, policy: AliasWork["policy"], path = "", declarationsOnly = false): void {
+  if (typeof value === "string") {
+    const relation = policy.relation(path);
+    if (relation && (!declarationsOnly || relation === "declared")) ids.add(value);
+    return;
+  }
+  if (Array.isArray(value)) { value.forEach((item, index) => collectIds(item, ids, policy, `${path}[${index}]`, declarationsOnly)); return; }
+  if (isObject(value)) for (const key of Object.keys(value).sort())
+    collectIds(value[key], ids, policy, publicFieldPath(path, key), declarationsOnly);
 }
 
-/** Replace every native id by its public alias, visiting keys in sorted order (deterministic). */
-function aliasTree(value: unknown, work: AliasWork, key = ""): unknown {
-  if (typeof value === "string") return ID_KEY.test(key) && work.ids.has(value) ? aliasFor(work, value) : value;
-  if (Array.isArray(value)) return value.map((item) => aliasTree(item, work, key));
+/** Alias only paths owned by the public schema; all other facts remain literal. */
+function aliasTree(value: unknown, work: AliasWork, path: string): unknown {
+  if (typeof value === "string") return work.policy.relation(path) ? aliasFor(work, value, path) : value;
+  if (Array.isArray(value)) return value.map((item, index) => aliasTree(item, work, `${path}[${index}]`));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work, key);
+    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work, publicFieldPath(path, key));
     return out;
   }
   return value;
 }
 
-function stripIds(value: unknown, ids: Set<string>, key = ""): unknown {
-  if (typeof value === "string") return ID_KEY.test(key) && ids.has(value) ? "" : value;
-  if (Array.isArray(value)) return value.map((item) => stripIds(item, ids, key));
+function stripIds(value: unknown, policy: AliasWork["policy"], path: string): unknown {
+  if (typeof value === "string") return policy.relation(path) ? "" : value;
+  if (Array.isArray(value)) return value.map((item, index) => stripIds(item, policy, `${path}[${index}]`));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], ids, key);
+    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], policy, publicFieldPath(path, key));
     return out;
   }
   return value;
@@ -239,11 +257,11 @@ function stripIds(value: unknown, ids: Set<string>, key = ""): unknown {
  * Unordered multisets are presented canonically so no hidden order survives: by public
  * content, then by an already assigned public alias (never by the Host's list position).
  */
-function canonicalMultiset(cards: readonly unknown[], ids: Set<string>, aliases: Readonly<Record<string, string>> = {}): unknown[] {
+function canonicalMultiset(cards: readonly unknown[], work: AliasWork, path: string): unknown[] {
   const key = (card: unknown) => {
     const entity = isObject(card) && typeof card.entity_id === "string" ? card.entity_id : "";
-    const alias = aliases[entity] ?? "";
-    return `${canonicalJson(stripIds(card, ids))}\u0000${alias.padStart(12, "0")}`;
+    const alias = work.anonymous.has(entity) ? "" : work.aliases[entity] ?? "";
+    return `${canonicalJson(stripIds(card, work.policy, `${path}[0]`))}\u0000${alias.padStart(12, "0")}`;
   };
   return [...cards].sort((a, b) => { const left = key(a); const right = key(b); return left < right ? -1 : left > right ? 1 : 0; });
 }
@@ -315,58 +333,86 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     }
     return read;
   };
-  // Collect every native id that may appear, then alias in a fixed traversal order.
-  const ids = new Set<string>();
-  for (const referent of snapshot.referents as NativeReferent[]) ids.add(referent.referent_id);
-  collectIds(snapshot.persistent, ids); collectIds(interaction.content, ids);
-  for (const { read } of readInstances) if (read) collectIds(read.content, ids);
-  // Publicly distinguished entities retain continuity. Indistinguishable
-  // unordered members get observation-local slots; their hidden pointer-to-slot
-  // assignment must never persist into a later public draw.
+  const persistent = snapshot.persistent?.content as Record<string, any> | undefined;
+  const context: Record<string, any> = isObject(interaction.content.context) ? interaction.content.context : {};
+  const surface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
+  const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
+    ? context.combat as Record<string, any> : null;
+  const combatSource = family === "combat" || context.kind === "combat" ? context : nestedCombat;
+  const publicCombat = combatSource ? projectCombatContext(combatSource) : null;
+  if (publicCombat) missing.push(...publicCombat.missing);
+  const sceneContext = context.kind === "combat" || context.kind === "map" ? null
+    : Object.fromEntries(Object.entries(context).filter(([key]) => !["run", "player"].includes(key) && !(nestedCombat && key === "combat")));
+  const deckRead = aggregate("run_deck"); const pilesRead = aggregate("combat_piles"); const mapRead = aggregate("map");
+  const extraReadSources = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
+    .map(({ listed, read }) => ({ kind: String(listed.kind), availability: (read ? "available" : "unknown") as Availability,
+      content: read?.content ?? null }));
+  const policy = createPublicIdentityPolicy(nativeKind, extraReadSources);
+  const rawFacts = {
+    player: { content: persistent?.player }, run: { content: persistent?.run },
+    scene: { content: { surface, context: sceneContext } }, combat: { content: publicCombat?.content },
+    map: { content: context.kind === "map" ? context : mapRead?.content },
+    extra_reads: extraReadSources,
+    // An ordered native-visible discard/exhaust Read is a public witness too.
+    piles: { content: { zones: Array.isArray(pilesRead?.content?.zones) ? pilesRead.content.zones.map((zone: unknown) =>
+      isObject(zone) && zone.zone === "draw" ? { ...zone, cards: [] } : zone) : [] } }
+  };
+  // Allocate legitimate ordered public identities before any unordered view can
+  // choose their aliases. Reference-only lists and unknown extensions are not witnesses.
   const distinguished = new Set<string>();
-  collectIds(snapshot.persistent, distinguished);
-  collectIds(interaction.content, distinguished);
+  const { extra_reads: detailWitnesses, ...orderedWitnesses } = rawFacts;
+  collectIds(orderedWitnesses, distinguished, policy, "", true);
+  // Detail inventory order must not preempt the card's ordered owner presentation.
+  collectIds(detailWitnesses, distinguished, policy, "extra_reads", true);
   const anonymous = new Set<string>();
-  for (const { read } of readInstances) if (read) {
-    const groups: unknown[][] = read.kind === "run_deck" ? [read.content.cards]
-      : read.kind === "combat_piles" && Array.isArray(read.content.zones)
-        ? read.content.zones.filter((zone: any) => isObject(zone) && zone.zone === "draw").map((zone: any) => zone.cards) : [];
-    for (const cards of groups) if (Array.isArray(cards)) {
+  const unorderedViews = [
+    { root: "deck.content", path: "deck.content.cards", label: "deck", cards: deckRead?.content?.cards },
+    ...(Array.isArray(pilesRead?.content?.zones) ? pilesRead.content.zones.flatMap((zone: unknown, index: number) =>
+      isObject(zone) && zone.zone === "draw" ? [{ root: `piles.content.zones[${index}]`,
+        path: `piles.content.zones[${index}].cards`, label: "draw", cards: zone.cards }] : []) : [])
+  ];
+  for (const view of unorderedViews) if (Array.isArray(view.cards)) {
+      const cards: unknown[] = view.cards;
       const equal = new Map<string, string[]>();
       for (const card of cards) if (isObject(card) && typeof card.entity_id === "string") {
-        const key = canonicalJson(stripIds(card, ids));
+        const key = canonicalJson(stripIds(card, policy, `${view.path}[0]`));
         const members = equal.get(key) ?? []; members.push(card.entity_id); equal.set(key, members);
       }
       for (const members of equal.values()) if (members.length > 1)
         for (const id of members) if (!distinguished.has(id)) anonymous.add(id);
-    }
   }
-  const work: AliasWork = { aliases: { ...state.aliases }, counts: { ...state.alias_counts, a: 0 }, ids, anonymous };
+  // Child preview identities of an anonymous occurrence are view-local as well.
+  for (const view of unorderedViews) if (Array.isArray(view.cards))
+    for (const card of view.cards) if (isObject(card) && anonymous.has(String(card.entity_id))) {
+      const children = new Set<string>(); collectIds(card, children, policy, `${view.path}[0]`);
+      for (const id of children) if (!distinguished.has(id)) anonymous.add(id);
+    }
+  const work: AliasWork = { aliases: Object.assign(Object.create(null) as Record<string, string>, state.aliases),
+    counts: { ...state.alias_counts, a: 0 }, policy, anonymous,
+    anonymousViews: unorderedViews.map(view => ({ root: view.root, label: view.label, aliases: new Map() })) };
   for (const id of anonymous) delete work.aliases[id];
+  for (const id of distinguished) aliasFor(work, id);
 
-  const persistent = snapshot.persistent?.content as Record<string, any> | undefined;
   const terminalScene = family === "terminal";
   const playerPart = persistent?.player
-    ? part("available", aliasTree(persistent.player, work), "persistent.player")
+    ? part("available", aliasTree(persistent.player, work, "player.content"), "persistent.player")
     : part(terminalScene ? "terminal" : "unknown", null, null);
   if (!persistent?.player && !terminalScene) missing.push("persistent.player");
   const runPart = persistent?.run
-    ? part("available", aliasTree(persistent.run, work), "persistent.run")
+    ? part("available", aliasTree(persistent.run, work, "run.content"), "persistent.run")
     : part(terminalScene ? "terminal" : "unknown", null, null);
   if (!persistent?.run && !terminalScene) missing.push("persistent.run");
 
-  const deckRead = aggregate("run_deck");
   let deckPart: P1Part<unknown>;
   if (deckRead === undefined) deckPart = part(terminalScene ? "terminal" : "unsupported", null, null);
   else if (deckRead === null) deckPart = part("unknown", null, "read:run_deck");
   else {
     const content = deckRead.content as Record<string, any>;
     if (!completeDeck(content)) missing.push("required:deck:invalid_content");
-    const cards = Array.isArray(content?.cards) ? canonicalMultiset(content.cards, ids) : [];
-    deckPart = part("available", aliasTree({ ...content, cards, ordering: "unordered_multiset" }, work), "read:run_deck");
+    const cards = Array.isArray(content?.cards) ? canonicalMultiset(content.cards, work, "deck.content.cards") : [];
+    deckPart = part("available", aliasTree({ ...content, cards, ordering: "unordered_multiset" }, work, "deck.content"), "read:run_deck");
   }
 
-  const pilesRead = aggregate("combat_piles");
   let pilesPart: P1Part<unknown>;
   if (family !== "combat" && pilesRead === undefined) pilesPart = part("not_applicable", null, null);
   else if (pilesRead === undefined) pilesPart = part("unsupported", null, null);
@@ -374,33 +420,25 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   else {
     const content = pilesRead.content as Record<string, any>;
     if (!completePiles(content)) missing.push("required:piles:invalid_content");
-    const zones = (Array.isArray(content?.zones) ? content.zones : []).map((zone: unknown) => {
+    const zones = (Array.isArray(content?.zones) ? content.zones : []).map((zone: unknown, index: number) => {
       if (!isObject(zone)) return zone;
       const cards = Array.isArray(zone.cards) ? zone.cards : [];
       const draw = zone.zone === "draw";
-      return { ...zone, cards: draw ? canonicalMultiset(cards, ids, work.aliases) : cards,
+      return { ...zone, cards: draw ? canonicalMultiset(cards, work, `piles.content.zones[${index}].cards`) : cards,
         ordering: draw ? "unordered_multiset" : zone.ordering_semantics === "native_visible_order" ? "native_visible_order" : "unsupported" };
     });
-    pilesPart = part("available", aliasTree({ ...content, zones }, work), "read:combat_piles");
+    pilesPart = part("available", aliasTree({ ...content, zones }, work, "piles.content"), "read:combat_piles");
   }
 
-  const context: Record<string, any> = isObject(interaction.content.context) ? interaction.content.context : {};
   if (!isObject(interaction.content.context)) missing.push("required:context:invalid_content");
-  // One Host nests the live combat HUD under a selection context; it is the same public combat state.
-  const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
-    ? context.combat as Record<string, any> : null;
-  const combatSource = family === "combat" || context.kind === "combat" ? context : nestedCombat;
-  const publicCombat = combatSource ? projectCombatContext(combatSource) : null;
-  if (publicCombat) missing.push(...publicCombat.missing);
   const combatPart = family === "combat" || context.kind === "combat"
-    ? part("available", aliasTree(publicCombat!.content, work), "interaction.context")
-    : nestedCombat ? part("available", aliasTree(publicCombat!.content, work), "interaction.context.combat")
+    ? part("available", aliasTree(publicCombat!.content, work, "combat.content"), "interaction.context")
+    : nestedCombat ? part("available", aliasTree(publicCombat!.content, work, "combat.content"), "interaction.context.combat")
     : part(terminalScene ? "terminal" : "not_applicable", null, null);
-  const mapRead = aggregate("map");
   const mapPart = context.kind === "map"
-    ? part("available", aliasTree(context, work), "interaction.context")
+    ? part("available", aliasTree(context, work, "map.content"), "interaction.context")
     : mapRead?.content?.kind === "map"
-      ? part("available", aliasTree(mapRead.content, work), "read:map")
+      ? part("available", aliasTree(mapRead.content, work, "map.content"), "read:map")
       : part(terminalScene ? "terminal" : mapRead === null ? "unknown" : "unsupported", null, null);
   const combatRequired = family === "combat" || context.kind === "combat" || nestedCombat !== null
     || ["combat_hand_card_selection", "native_combat_pile_selection", "native_generated_card_choice"].includes(nativeKind);
@@ -423,18 +461,14 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     if (combatRequired && pilesPart.availability !== "available") missing.push("required:piles");
   }
 
-  const surface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
   if (!isObject(interaction.content.surface)) missing.push("required:surface:invalid_content");
   if (nativeKind === "combat_turn" && !completeCombatSurface(surface)) missing.push("required:combat_surface:invalid_content");
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
-  const sceneContext = context.kind === "combat" || context.kind === "map" ? null
-    : Object.fromEntries(Object.entries(context).filter(([key]) => !["run", "player"].includes(key) && !(nestedCombat && key === "combat")));
-  const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work) };
-  if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work);
+  const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work, "scene.content.surface") };
+  if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work, "scene.content.context");
 
-  const extraReads = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
-    .map(({ listed, read }) => ({ kind: listed.kind, availability: (read ? "available" : "unknown") as Availability,
-      content: read ? aliasTree(read.content, work) : null }));
+  const extraReads = extraReadSources.map((read, index) => ({ ...read,
+    content: read.content === null ? null : aliasTree(read.content, work, `extra_reads[${index}].content`) }));
 
   // Reward groups: identity must come from the Host (stable group_id); never from labels or positions.
   const rewardItems: Record<string, any>[] = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards.filter(isObject) : [];
