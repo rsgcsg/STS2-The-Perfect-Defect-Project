@@ -554,6 +554,7 @@ internal static class NativeUpgradeMethodInventory
     };
 
     internal static bool Contains(string nativeType) => Types.Contains(nativeType);
+    internal static IEnumerable<string> TypeNames => Types;
 
     internal static readonly string[] VariableGetters =
     {

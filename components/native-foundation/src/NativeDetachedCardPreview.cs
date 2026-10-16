@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json.Serialization;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
@@ -13,13 +14,36 @@ internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment }
 /// <summary>Process-local presentation only. Original is the game-owned
 /// subject; Display is never added to a scope/pile or used as an input operand.
 /// Public formatting has its own mandatory read preflight.</summary>
-internal sealed record NativeDetachedCardPreview(CardModel Original, CardModel Display,
+internal sealed record NativeDetachedCardPreview([property: JsonIgnore] CardModel Original, [property: JsonIgnore] CardModel Display,
     NativeDetachedPreviewKind Kind, PileType DisplayPile, CardPreviewMode PreviewMode);
 
 internal sealed class NativePreviewReadStateViolationException(string message) : Exception(message);
 
 internal static class NativeDetachedCardPreviewFactory
 {
+    internal static bool TryCanonicalHoverCopy(CardModel canonical, out CardModel? copy, out string? gap)
+    {
+        copy = null;
+        if (!NativeCardPreviewReadQualification.TryPreflightCanonicalHover(canonical, out gap)) return false;
+        SourceStamp before = SourceStamp.Card(canonical);
+        try
+        {
+            CardModel display = NativeDetachedCardCopy.CreateQualifiedCopy(canonical);
+            before.AssertUnchanged();
+            if (!NativeCardPreviewReadQualification.TryPreflightCanonicalHover(canonical, out gap)) return false;
+            copy = display;
+            gap = null;
+            return true;
+        }
+        catch (NativePreviewReadStateViolationException) { throw; }
+        catch
+        {
+            before.AssertUnchanged();
+            gap = "native_canonical_hover_copy_failed";
+            return false;
+        }
+    }
+
     internal static bool TryDeckUpgrade(CardModel original, out NativeDetachedCardPreview? result, out string? gap)
     {
         result = null;
