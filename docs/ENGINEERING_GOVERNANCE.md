@@ -127,7 +127,7 @@ or run every ladder for a reversible local change.
 
 | Class | Typical scope | Minimum additional confidence |
 | --- | --- | --- |
-| `G0` | docs, governance, portable repository tooling | selected check plan (editorial only may use docs gate), closeout, diff check |
+| `G0` | docs, governance, portable repository tooling | selected docs/repository check plan, scoped review, closeout, diff check; broader only for actual affected executable owners |
 | `G1` | portable implementation within one owner | regression, owning component suite, selected root portable check |
 | `G2` | public contract or cross-component behavior | `G1` plus contract/conformance and consumer compatibility |
 | `G3` | game-native C#, Harmony, Native Foundation seam | relevant `G2`, exact-game check, clean exact build, artifact identity |

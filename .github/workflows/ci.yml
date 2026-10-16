@@ -54,10 +54,38 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
+      - name: Install locked repository dependencies
+        run: npm ci
       - name: Run selected repository checks
         env:
           CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
         run: node tools/check-plan.mjs execute
+
+  repository:
+    needs: plan
+    if: needs.plan.outputs.scope == 'repository'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+      - name: Install locked repository dependencies
+        run: npm ci
+      - name: Run selected repository checks
+        env:
+          CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
+        run: node tools/check-plan.mjs execute
+      - name: Check patch hygiene
+        run: git diff --check
 
   linux-portability:
     needs: plan
@@ -175,7 +203,7 @@ jobs:
 
   portable:
     if: ${{ always() }}
-    needs: [plan, docs, linux-portability, windows-portability]
+    needs: [plan, docs, repository, linux-portability, windows-portability]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -199,6 +227,7 @@ jobs:
           CHECK_PROOF: ${{ needs.plan.outputs.proof }}
           PLAN_RESULT: ${{ needs.plan.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
+          REPOSITORY_RESULT: ${{ needs.repository.result }}
           LINUX_RESULT: ${{ needs.linux-portability.result }}
           WINDOWS_RESULT: ${{ needs.windows-portability.result }}
         run: node tools/check-plan.mjs aggregate

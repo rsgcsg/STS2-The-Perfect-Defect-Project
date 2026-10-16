@@ -13,9 +13,10 @@ conditionally authorized this specific merge. Do not merge PR189 or repair P1.
 
 Root is the sole implementer. Topic `codex/engineering-working-baseline`, integration
 base develop41e62cd0; only the management delta from38dbe31b/7835acb9 is ported.
-PR189 and local T7 implementation are not included. Source work is complete;
+PR189 and local T7 implementation are not included. The same assignment also fixes
+the demonstrated management-to-full-CI scope mismatch and locked repository setup;
 read live PR/check state for this topic, not a copied CI status. While unmerged,
-only review/check/merge this management candidate if eligible; after merge there
+only finish/review/check/merge this management and test-selection candidate if eligible; after merge there
 is no further assignment. Do not restart management or P1 work from this entry.
 No game/training/deployment.
 

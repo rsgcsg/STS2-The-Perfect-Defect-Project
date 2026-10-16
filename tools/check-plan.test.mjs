@@ -57,10 +57,10 @@ test("hosted planning rejects committed EOF whitespace before publishing a lane 
     fs.writeFileSync(path.join(cwd, "runner.mjs"),
       "import fs from 'node:fs'; fs.writeFileSync(process.env.TEST_EXPENSIVE_MARKER, 'started');\n");
     fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ scripts: {
-      "check:docs": "node runner.mjs", "check:python-scope": "node runner.mjs",
+      "check:docs": "node runner.mjs", "check:repository": "node runner.mjs", "check:python-scope": "node runner.mjs",
       check: "node runner.mjs",
     } }));
-    const scopes = [["docs", "README.md"], ["python", "python/stpd/fixture.py"],
+    const scopes = [["docs", "README.md"], ["repository", "tools/project-system.test.mjs"], ["python", "python/stpd/fixture.py"],
       ["full", "components/fixture.txt"]];
     for (const [, file] of scopes) {
       fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
@@ -132,8 +132,8 @@ test("committed-patch fallback uses only actual first-parent/root provenance and
 });
 
 test("required aggregate rejects missing, failed, cancelled or unexpectedly skipped work", () => {
-  const full = { plan: "success", docs: "skipped", linux: "success", windows: "success" };
-  const docs = { plan: "success", docs: "success", linux: "skipped", windows: "skipped" };
+  const full = { repository: "skipped", plan: "success", docs: "skipped", linux: "success", windows: "success" };
+  const docs = { repository: "skipped", plan: "success", docs: "success", linux: "skipped", windows: "skipped" };
   assert.ok(aggregatePassed("full", full)); assert.ok(aggregatePassed("docs", docs));
   for (const key of ["plan", "linux", "windows"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("full", { ...full, [key]: value }), false);
   for (const key of ["plan", "docs"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("docs", { ...docs, [key]: value }), false);
@@ -151,7 +151,7 @@ test("Python owner changes retain repository guards and both OS Python consumers
   assert.throws(() => scopeCommands("typo"));
 });
 test("reuse requires fresh repository checks; Python scope still requires Windows", () => {
-  const reused = {plan:"success",docs:"success",linux:"skipped",windows:"skipped"};
+  const reused = {repository:"skipped",plan:"success",docs:"success",linux:"skipped",windows:"skipped"};
   assert.ok(aggregatePassed("reuse",reused));
   for (const key of ["plan","docs"]) assert.equal(aggregatePassed("reuse",{...reused,[key]:"failure"}),false);
   assert.equal(aggregatePassed("python",reused),false);
@@ -184,11 +184,11 @@ test("explicit regular prose additions and modifications retain fresh repository
 });
 
 test("extension, missing modes, deletion, protected prose and executable mixtures stay full", () => {
-  for (const file of ["docs/design/tool.js", "docs/evidence/manifest.json", "docs/design/AGENTS.md", "docs/plans/SKILL.md", "docs/adr/new.md", "docs/TESTING.md", "python/docs/new.md", "components/connector/docs/new.md", "docs/design/nested/new.md"])
+  for (const file of ["docs/design/tool.js", "docs/evidence/manifest.json", "docs/design/AGENTS.md", "docs/plans/SKILL.md", "docs/adr/new.md", "python/docs/new.md", "components/connector/docs/new.md", "docs/design/nested/new.md"])
     assert.equal(classifyChanges([proseEntry(file,"A")]).scope,"full",file);
   assert.equal(classifyChanges([{file:"docs/design/new.md",status:"A"}]).scope,"full");
   assert.equal(classifyChanges([{...proseEntry("docs/design/new.md"),status:"D",newMode:"000000"}]).scope,"full");
-  for(const file of ["tools/new.py", "contracts/new.json", "python/uv.lock", "tools/check-plan.mjs"])
+  for(const file of ["tools/new.py", "contracts/new.json", "python/uv.lock", "tools/check-workspace.mjs"])
     assert.equal(classifyChanges([proseEntry("docs/design/new.md"),proseEntry(file)]).scope,"full");
   for(const newMode of ["120000","100755","160000"])
     assert.equal(classifyChanges([{...proseEntry("docs/design/new.md","A"),newMode}]).scope,"full");
@@ -241,4 +241,51 @@ test("protected instruction names cannot qualify as Python report companions", (
     assert.equal(classifyChanges([source, instruction]).scope, "full", name);
     assert.equal(classifyChanges([instruction]).scope, "full", name);
   }
+});
+
+
+test("management prose uses fresh repository guards, tools use both-OS repository scope", () => {
+  for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/WORKING_RULES.zh-CN.md",
+    "docs/AI_COLLABORATION.md", ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/engineering_task.yml"])
+    assert.equal(classifyChanges([proseEntry(file)]).scope, "docs", file);
+  for (const file of ["tools/project-system.mjs", "tools/check-plan.mjs", "tools/check-ci-contract.test.mjs"])
+    assert.equal(classifyChanges([proseEntry("AGENTS.md"), proseEntry(file)]).scope, "repository", file);
+  assert.deepEqual(scopeCommands("repository"), ["check:repository"]);
+  for (const file of ["package.json", "package-lock.json", "python/uv.lock", "tools/check-workspace.mjs",
+    "contracts/component-identity.json", "components/policy-runtime/src/index.ts", "apps/game-mod/package.json"])
+    assert.equal(classifyChanges([proseEntry("docs/TESTING.md"), proseEntry(file)]).scope, "full", file);
+  assert.equal(classifyChanges([proseEntry("python/stpd/model.py"), proseEntry("docs/TESTING.md")]).scope, "python");
+  for (const status of ["D", "T"]) assert.equal(classifyChanges([proseEntry("AGENTS.md", status)]).scope, "full");
+  assert.equal(classifyChanges([proseEntry(".github/workflows/ci.yml")]).scope, "full");
+});
+
+test("repository aggregate requires its entire matrix and cannot fabricate a full pass", () => {
+  const good = {plan:"success", repository:"success", docs:"skipped", linux:"skipped", windows:"skipped"};
+  assert.ok(aggregatePassed("repository", good));
+  for (const key of ["plan", "repository"]) for (const result of ["failure", "cancelled", "skipped", "", undefined])
+    assert.equal(aggregatePassed("repository", {...good, [key]:result}), false);
+  for (const key of ["docs", "linux", "windows"]) for (const result of ["success", "failure", "", undefined])
+    assert.equal(aggregatePassed("repository", {...good, [key]:result}), false);
+  for (const scope of ["full", "python", "reuse", "docs"]) assert.equal(aggregatePassed(scope, good), false);
+});
+
+test("real Git workflow comparison bounds repository-only routing and forced full", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "repository-route-"));
+  const git = (...args) => execFileSync("git", args, {cwd, encoding:"utf8", stdio:"pipe"}).trim();
+  const source = fs.readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const file = path.join(cwd, ".github/workflows/ci.yml");
+  try {
+    fs.mkdirSync(path.dirname(file), {recursive:true});
+    fs.writeFileSync(file, source); git("init"); git("config","user.email","test@example.invalid");
+    git("config","user.name","Test"); git("add","."); git("commit","-m","base");
+    const base = git("rev-parse","HEAD");
+    fs.writeFileSync(file, source.replace("  docs:\n", "  docs:\n    # repository dependency setup repair\n"));
+    git("commit","-am","repository workflow only");
+    assert.equal(makePlan({base,cwd}).scope,"repository");
+    assert.equal(makePlan({base,cwd,forceFull:true}).scope,"full");
+    fs.writeFileSync(file, source.replace("dotnet-version: 9.0.x", "dotnet-version: 10.0.x"));
+    git("commit","-am","product build input changes");
+    assert.equal(makePlan({base,cwd}).scope,"full");
+  } finally {fs.rmSync(cwd,{recursive:true,force:true});}
 });

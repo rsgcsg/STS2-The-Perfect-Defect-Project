@@ -222,6 +222,39 @@ dual-OS portable checks remain required for merge, portability and stronger
 promotion. This scheduling rule grants no additional native attempt, Human
 recording, training, spending or deployment authority.
 
+## CI responsibility and cost decisions
+
+CI is the shared, repeatable integration check for a submitted candidate. It
+establishes that the selected source/contracts/tools work in their declared clean
+environments. It does not decide product priorities, prove gameplay/learning,
+replace developer investigation, or require full execution after every edit.
+
+| Work stage / trigger | Action and stop boundary |
+|---|---|
+| Local investigation/edit | Run the cheapest faithful affected test or short consumer path. No remote CI for every intermediate edit; no new workflow for a scratch probe. |
+| Stable PR candidate | Run the committed-diff selected scope once. CI covers the actual owner and affected consumers; review addresses requirement/policy meaning that execution cannot prove. |
+| Cross-owner/shared input or product CI change | Full when the known smaller scope cannot cover affected consumers: shared contracts/build/locks, Platform changes, deployment or changed product-job environment. Broad impact, not document importance, is the reason. |
+| develop integration | Verify its actual diff/result. Reuse only the existing verified identical-content receipt rules, not an ancestor's green label. |
+| Release/executable promotion | Validate the affected deliverable and compatibility; main Python executable promotion remains full. Add build/install/runtime/Human/evaluation evidence only for the actual release claim. Docs do not require reinstalling the game. |
+| Periodic/manual wider check | The existing schedule/manual full route detects drift and retains broad coverage. It is not another run on every unchanged handoff, nor a substitute for affected PR checks. |
+
+The task names an expected feedback window and expensive-run limit. At that
+checkpoint, the lead asks whether the selected work can expose a failure caused
+by this change, whether setup is duplicated, and whether the runner is progressing.
+An unjustified full selection is a test-strategy defect to resolve within the
+relevant task, not an immutable safety rule or an excuse for passive polling.
+Check actual job stages once; do not confuse normal execution, a hang, unknown
+status and failure. Cancel owned obsolete runs after preserving their status;
+cancellation is not success. Reassess before rerunning, extending deadlines or
+adding workers. Do not defer an obvious scope mismatch solely to preserve a
+self-imposed packet boundary. Keep corrections limited to the actual cause.
+
+Measure feedback/setup/verification cost from existing results when it matters;
+no dashboard or cost ledger is required. A few-minute repository check is a target,
+not a fabricated guarantee. A long full product suite may be justified by its
+change; a management edit must explain why it would need that suite. Changes to
+required scope are reviewed code/policy changes, never manual silent skips.
+
 ## Hosted CI contract
 
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
@@ -240,7 +273,7 @@ npm run check:plan -- --base origin/develop --run
 ```
 
 The plan job checks the committed event-base-to-HEAD patch before receipt lookup
-or routing outputs, so bad patch hygiene blocks docs, Python, full and reuse lanes.
+or routing outputs, so bad patch hygiene blocks docs, repository, Python, full and reuse lanes.
 Local `--run` uses the same barrier. An absent or all-zero event base checks the
 selected head's first parent, or the empty tree for an initial commit; invalid
 supplied revisions fail before execution. Scope/event rules remain unchanged,
@@ -250,24 +283,35 @@ The router uses actual committed Git changes, not a caller-selected test list:
 
 | Scope | Selected checks | Eligible changes |
 |---|---|---|
-| `docs` | fresh repository/link/governance/identity/BOM/boundary/history checks | modified editorial allowlist or added/modified regular prose Markdown in explicit root documentation surfaces |
-| `python` | repository guards plus the entire Python gate on Linux and Windows | only `python/spireagent/`, `python/stpd/`, `python/tests/` additions/modifications/deletions, optionally explicit report/editorial companions |
-| `full` | complete root gate on both OSes | Platform, shared contracts/locks, CI/tools, deployment, governance, unknown paths or Git state |
-| `reuse` | fresh repository/identity/BOM/history checks, referencing a verified executed receipt | eligible integration/promotion with identical content and check definition |
+| `docs` | fresh repository/link/governance/identity/BOM/boundary/history checks on Linux | explicit regular editorial/management files, root AGENTS and existing report surfaces; human review judges policy meaning |
+| `repository` | complete repository/tooling checks on Linux and Windows, with locked Node dependencies | explicit project-system/governance/check-planner/workflow-validator tools, their tests and management companions; narrowly verified workflow routing/setup edits |
+| `python` | repository guards plus the entire Python gate on Linux and Windows | only Python application/research/test owners, optionally declared prose/management companions |
+| `full` | complete root gate on both OSes | Platform, shared contracts/locks/build inputs, product-job CI changes, deployment, unknown executable paths or uncertain Git state |
+| `reuse` | fresh repository checks referencing a verified executed receipt | eligible integration/promotion with identical content and check definition |
 
-The docs route accepts non-executable regular Git blobs (mode 100644): modified
-editorial allowlist files, added/modified CURRENT, and single-level Markdown files
-in root docs/design, docs/plans and docs/evidence. AGENTS and SKILL names
-(case-insensitive, including Python report companions),
-governance/ADR, component/Python docs, JSON/schema/manifest files, tools, locks,
-deletions, symlinks and mode/type changes retain full routing. Mixed executable
-changes cannot use docs. The router reads committed raw Git modes; file extensions
-alone do not establish eligibility. Changing this router itself still selects full.
+The planner owns the exact finite path lists. Regular additions/modifications
+(mode100644) of named management docs/templates are not executable product changes.
+Nested AGENTS/SKILL, ADR/contract/component docs, unknown paths, deletions outside
+the existing Python route, symlinks and type/mode changes still expand to full.
+Changes to repository tools run their actual cross-platform tests, not the Python
+training suite merely because their filenames start with `check-`.
 
-Companions are modified editorial allowlist files, CURRENT, PROJECT_CONSOLE, and
-added/modified single-file Markdown reports under docs/evidence. They qualify only
-alongside a Python owner change; standalone eligible prose instead uses docs,
-and evidence deletions still use full. ADR/governance and unknown docs are not companions.
+A workflow change takes repository scope only when its trigger/header, plan job,
+Linux product job and Windows product job are unchanged, all job names are known,
+and the resulting workflow passes the workflow contract. Thus only the existing
+repository/docs setup, repository lane and aggregate wiring may differ. Product
+commands/environments, partitioning, dependencies, unknown workflow structure or
+trigger changes retain full. This narrow check is not a general YAML impact engine.
+New routing/guard behavior requires relevant positive/negative regressions and
+non-author review; a label alone is not evidence. `docs` and `repository` produce
+no new full execution receipt. Failed/cancelled/missing selected work cannot pass.
+Both small lanes install locked Node dependencies: AST checks require TypeScript
+and cannot rely on packages left in a developer's workspace.
+
+Prose companions do not hide source changes. Mixed ownership chooses the stronger
+applicable lane or full when no known scope covers it. The local and hosted planner
+use the same committed diff, with the original patch-hygiene barrier. Explicit
+`--full`, manual dispatch and the existing periodic full check remain available.
 
 The full and Python scopes also run `npm run check:s0`: the shared SDK and Runtime
 builds, bounded S0 runner and native Source3 collector lifecycle tests, and offline
@@ -350,13 +394,14 @@ clean committed diff. `npm run check` always runs full.
 
 `portable` is the required aggregate: plan and all selected jobs must succeed;
 unselected jobs must be skipped. Failure/cancellation never becomes a PASS. A Python,
-docs or reuse result is labelled as such, not as a new full dual-OS execution.
+docs, repository or reuse result is labelled as such, not as a new full dual-OS execution.
 
 The local diagnostic scope may be smaller than merge or release scope. The current
 router, every selected leaf and `portable`, plus any stronger active-task
 prerequisite, remain binding until a separately reviewed policy/code change alters
-them. Testing/governance edits select full today. Hosted partitioning preserves
-that full or Python inventory and both OS requirements; it does not waive them.
+them. Management-only and repository-tool changes use the reviewed scopes above;
+product changes retain their full/Python inventories and both OS requirements.
+Choosing a relevant scope is not deleting a test or claiming unexecuted coverage.
 
 ### Hosted pytest partition and complete execution proof
 

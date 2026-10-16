@@ -55,7 +55,7 @@ not another requirements, identity or status registry.
 | What instructions apply? | [AGENTS](../AGENTS.md), ancestor/local guides and `npm run project:context` |
 | Where should a fact or new idea be written? | [Project System](PROJECT_SYSTEM.md) |
 | Who owns the fact and is the abstraction justified? | [Architecture](ARCHITECTURE.md), [Components](COMPONENTS.md), [Governance](ENGINEERING_GOVERNANCE.md) |
-| Why test, when add/reuse/retire, and what must run? | [Test lifecycle](TESTING.md#test-design-and-maintenance), existing `check:plan` and owning tests |
+| Why test, when add/reuse/retire, and what must run? | [Test lifecycle](TESTING.md#test-design-and-maintenance), [CI/cost decisions](TESTING.md#ci-responsibility-and-cost-decisions), existing `check:plan` and owning tests |
 | How are branches, integration, release and deployment handled? | [Workflow](DEVELOPMENT_WORKFLOW.md), [Versioning](VERSIONING.md) |
 | How is work scoped, stopped and accepted? | [Shared working rules](WORKING_RULES.zh-CN.md); [AI-specific collaboration](AI_COLLABORATION.md) |
 | Is a durable architecture decision needed? | [ADR policy and index](adr/README.md) |
