@@ -9,8 +9,8 @@ const outcomes = new Set(["do_nothing", "end_selection_and_complete_reward", "en
  * outcome alone proves that an alternative is the ordinary effect-free Skip. */
 export function completeRewardAlternatives(value: unknown, opened = false): value is Record<string, any>[] {
   return Array.isArray(value) && value.every(v => isObject(v) && text(v.option_id) && text(v.title)
-    && outcomes.has(String(v.after_selected)) && typeof v.is_pure_return === "boolean"
-    && (!v.is_pure_return || v.after_selected === "end_selection_and_do_not_complete_reward")
+    && outcomes.has(String(v.after_selected)) && typeof v.is_native_skip === "boolean"
+    && (!v.is_native_skip || v.after_selected === "end_selection_and_do_not_complete_reward")
     && (!opened || text(v.entity_id) && typeof v.enabled === "boolean"))
     && new Set(value.map(v => v.option_id)).size === value.length
     && (!opened || new Set(value.map(v => v.entity_id)).size === value.length);
@@ -21,6 +21,7 @@ export function completeRewardGroup(group: unknown): group is Record<string, any
     || typeof group.label !== "string" || typeof group.enabled !== "boolean"
     || group.group_relation !== "independent") return false;
   return group.kind !== "card" || completeCards(group.card_options)
+    && ["attached", "absent"].includes(group.native_relic_refresh_subscription)
     && group.card_alternatives_complete === true && completeRewardAlternatives(group.card_alternatives)
     && typeof group.can_skip_selection === "boolean" && typeof group.can_reroll === "boolean"
     && typeof group.selection_completes_reward === "boolean";
@@ -39,6 +40,7 @@ export function completeRewardSurface(value: unknown): boolean {
 
 export function completeCardRewardSurface(value: unknown): boolean {
   if (!isObject(value) || value.kind !== "card_reward_selection" || !completeCards(value.cards)
+    || !["attached", "absent"].includes(String(value.native_relic_refresh_subscription))
     || !completeRewardAlternatives(value.alternatives, true)
     || !Array.isArray(value.selectable_card_entity_ids)
     || new Set(value.selectable_card_entity_ids).size !== value.selectable_card_entity_ids.length
@@ -83,6 +85,7 @@ export interface RewardIntention {
   readonly completes: boolean;
   readonly world: string;
   readonly details: string;
+  readonly refresh_subscription: "attached" | "absent";
 }
 
 /** Same-instance current detail inventory is part of the offered option. Multiple
@@ -101,7 +104,8 @@ export function rewardIntention(owner: string, group: Record<string, any>, basis
   return { owner, group: String(group.group_id), kind, option,
     cards: canonicalJson(group.card_options.map(rewardCardFacts)),
     alternatives: canonicalJson(group.card_alternatives.map(rewardAlternativeFacts)),
-    completes: group.selection_completes_reward, world: rewardWorldFacts(basis), details: rewardDetailFacts(basis, group.card_options) };
+    completes: group.selection_completes_reward, world: rewardWorldFacts(basis), details: rewardDetailFacts(basis, group.card_options),
+    refresh_subscription: group.native_relic_refresh_subscription };
 }
 
 export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): boolean {
@@ -110,6 +114,7 @@ export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): b
   return completeCardRewardSurface(surface) && surface.parent_status === "bound"
     && surface.reward_set_id === plan.owner && surface.parent_group_id === plan.group
     && surface.selection_completes_reward === plan.completes
+    && surface.native_relic_refresh_subscription === plan.refresh_subscription
     && canonicalJson(surface.cards.map(rewardCardFacts)) === plan.cards
     && canonicalJson(surface.alternatives.map(rewardAlternativeFacts)) === plan.alternatives
     && rewardWorldFacts(basis) === plan.world && rewardDetailFacts(basis, surface.cards) === plan.details;

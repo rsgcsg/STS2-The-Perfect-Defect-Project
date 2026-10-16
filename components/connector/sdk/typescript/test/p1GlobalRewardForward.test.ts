@@ -5,6 +5,17 @@ import { rewardForwardPair as pair } from "./fixtures/reward-forward.mjs";
 const project = (basis: P1Basis) => reduce(createSession("reward-test", "reference"), basis);
 
 describe("complete forward reward intentions", () => {
+  it("does not certify the newly exposed passive-refresh opportunity before its P1 lowering exists", () => {
+    const { outer, child, group } = pair();
+    group.native_relic_refresh_subscription = "attached";
+    child.snapshot.interaction.content.surface.native_relic_refresh_subscription = "attached";
+    for (const basis of [outer, child]) {
+      expect(project(basis).complete).toBe(false);
+      expect(project(basis).missing).toContain("required:reward_stop_relic_refresh_mapping");
+    }
+    group.native_relic_refresh_subscription = "unavailable";
+    expect(project(outer).complete).toBe(false);
+  });
   it("offers exact card/alternative/decline outcomes without a browse decision", () => {
     const { outer, child } = pair(); const r = project(outer);
     expect(r.missing).toEqual([]); expect(r.complete).toBe(true);
@@ -77,7 +88,7 @@ describe("complete forward reward intentions", () => {
   });
   it("retains aggregated taking and owner exit without inventing a per-group Skip", () => {
     const { outer, group } = pair(); group.can_skip_selection = false;
-    group.card_alternatives = group.card_alternatives.filter((a: any) => !a.is_pure_return);
+    group.card_alternatives = group.card_alternatives.filter((a: any) => !a.is_native_skip);
     const r = project(outer); expect(r.complete).toBe(true);
     expect(r.observation.catalog.some(c => c.kind === "reward.decline_group")).toBe(false);
     expect(r.observation.catalog.some(c => c.kind === "reward.leave_remaining")).toBe(true);

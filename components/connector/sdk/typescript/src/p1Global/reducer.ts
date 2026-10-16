@@ -475,6 +475,14 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   if (nativeKind === "reward_claim" && !completeRewardSurface(surface)) missing.push("required:reward:invalid_content");
   if (nativeKind === "card_reward_selection" && !completeCardRewardSurface(surface)) missing.push("required:card_reward:invalid_content");
+  // The native producer now exposes a genuine one-way opportunity: ordinary
+  // return detaches this reward's passive relic callback without declining it.
+  // Its live lowering/postcondition is not yet implemented in this candidate.
+  // Do not certify a complete catalog that silently omits that choice.
+  const refreshGroups = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards : [surface];
+  if (refreshGroups.some((group: Record<string, any>) => group.native_relic_refresh_subscription === "attached"
+      && (group.card_alternatives ?? group.alternatives ?? []).some((option: Record<string, any>) => option.is_native_skip === true)))
+    missing.push("required:reward_stop_relic_refresh_mapping");
   const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work, "scene.content.surface") };
   if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work, "scene.content.context");
 
@@ -526,7 +534,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
               reward_intention: rewardIntention(owner, group, basis, "card", card.entity_id) });
         }
         for (const option of group.card_alternatives) {
-          if (option.is_pure_return) {
+          if (option.is_native_skip) {
             if (group.can_skip_selection && surface.can_leave_with_unclaimed_rewards)
               push({ kind: "reward.decline_group", subject, target: null, label: option.title, mapped: true },
                 { ...base, first, follow, group_key: groupKey, commitment: "decline_group",
@@ -695,7 +703,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
     matches = actions.filter(a => a.verb === "select" && a.subject_referent_id === plan.option);
   } else {
     const options = surface.alternatives.filter((o: Record<string, any>) => o.option_id === plan.option && o.enabled
-      && (plan.kind !== "decline" || o.is_pure_return === true));
+      && (plan.kind !== "decline" || o.is_native_skip === true));
     if (options.length !== 1) return null;
     matches = actions.filter(a => ["skip", "activate"].includes(a.verb) && a.subject_referent_id === options[0].entity_id);
   }

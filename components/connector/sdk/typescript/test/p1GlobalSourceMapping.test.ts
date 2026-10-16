@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createSession, matchSourceP1Choice, reduce, type P1Basis } from "../src/p1Global/index.js";
+import { rewardForwardPair } from "./fixtures/reward-forward.mjs";
 
 // Synthetic complete public facts, with explicit original-invocation relations.
 // This is a semantic mapping regression, not a native capture/origin witness.
@@ -39,6 +40,17 @@ function play() {
 }
 
 describe("Source4 original-input to P1 intention mapping", () => {
+  it("maps the explicit original RewardButton claim verb without equating catalog IDs", () => {
+    const { outer, child } = rewardForwardPair();
+    const open = outer.snapshot.bound_actions.actions[0], choose = child.snapshot.bound_actions.actions[0];
+    const trace = [row(outer, "1", { ...open, action_id: "native-claim", verb: "claim_reward" },
+      { owner_ref: "original-button", subject_ref: open.subject_referent_id, arguments: {}, carriers: [] }, "NRewardButton.OnRelease"),
+    row(child, "2", { ...choose, action_id: "native-select" },
+      { owner_ref: "original-selection", subject_ref: choose.subject_referent_id, arguments: {}, carriers: [] }, "NCardRewardSelectionScreen.SelectCard")];
+    expect(matchSourceP1Choice(session(), outer, trace).status).toBe("matched");
+    trace[0]!.outcome.native_mechanism = "unqualified-same-text-callback";
+    expect(matchSourceP1Choice(session(), outer, trace).status).toBe("unmapped");
+  });
   it("matches exact native EndTurn using its own submitted/accepted carrier, never catalog IDs", () => {
     const basis = original(), action = basis.snapshot.bound_actions.actions.find((value: any) => value.verb === "end_turn");
     const input = row(basis, "7", { ...action, action_id: "native-other-catalog-id" },

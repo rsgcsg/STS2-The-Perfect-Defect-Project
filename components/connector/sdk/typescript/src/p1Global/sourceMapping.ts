@@ -177,8 +177,10 @@ function originalActionMatches(row: ObjectValue, action: ObjectValue, basis: P1B
     || !hasReferents(snapshot(basis), action.subject_referent_id ?? null, expectedArgs)) return false;
   // Native-logical IDs and Player Environment IDs are separate catalogs. Only
   // the original object-bound verb/operands are compared, never action ID text.
-  return play ? action.verb === "play" && ["confirm_card", "confirm_target"].includes(selected.verb)
-    : selected.verb === action.verb;
+  if (play) return action.verb === "play" && ["confirm_card", "confirm_target"].includes(selected.verb);
+  if (row.outcome.native_mechanism === "NRewardButton.OnRelease"
+    && ["claim_reward", "claim_linked_reward"].includes(selected.verb)) return action.verb === "activate";
+  return selected.verb === action.verb;
 }
 
 /** Match original native inputs to one complete offered P1 intention. A matched

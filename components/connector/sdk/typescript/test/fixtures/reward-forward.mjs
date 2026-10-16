@@ -8,13 +8,13 @@ export function rewardForwardPair() {
     const cards = structuredClone(snap.interaction.content.context.player.hand.slice(0, 2));
     cards.forEach((card, i) => { card.entity_id = `offered-${i}`; card.index = i; card.is_selected = false; });
     const alternatives = [
-        { option_id: "SKIP", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_pure_return: true },
-        { option_id: "REROLL", title: "Reroll", after_selected: "do_nothing", is_pure_return: false }
+        { option_id: "SKIP", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_native_skip: true },
+        { option_id: "REROLL", title: "Reroll", after_selected: "do_nothing", is_native_skip: false }
     ];
     const group = { entity_id: "reward", group_id: "reward", group_relation: "independent", kind: "card",
         label: "Card reward", description: null, enabled: true, card_options: cards,
         card_alternatives: alternatives, card_alternatives_complete: true, can_skip_selection: true,
-        can_reroll: true, selection_completes_reward: true };
+        can_reroll: true, selection_completes_reward: true, native_relic_refresh_subscription: "absent" };
     const action = (id, verb, subject) => ({ ...template,
         bound_action_id: id, verb, subject_referent_id: subject, arguments: [], label: id });
     const reference = (id, role) => ({ referent_id: id, role, kind: "entity", label: id,
@@ -40,7 +40,7 @@ export function rewardForwardPair() {
         content_schema: "sts2.player-environment/surface/card_reward_selection-1",
         content: { context: { kind: "reward_flow", stage: "card_reward" }, surface: {
                 kind: "card_reward_selection", parent_status: "bound", parent_group_id: "reward", reward_set_id: "set-a",
-                selection_completes_reward: true, cards: structuredClone(cards),
+                selection_completes_reward: true, native_relic_refresh_subscription: "absent", cards: structuredClone(cards),
                 selectable_card_entity_ids: cards.map((c) => c.entity_id),
                 alternatives: alternatives.map((a, i) => ({ ...a, entity_id: `alt-${i}`, index: i, label: a.title, enabled: true }))
             } } });
