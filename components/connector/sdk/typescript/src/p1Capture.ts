@@ -7,7 +7,10 @@ import { SEALED_OBSERVATION_MAX_BYTES, SEALED_OBSERVATION_DEFAULT_CHUNK_BYTES,
 import { assembleRetainedBytes, publicBytesSha256 } from "./retainedBytes.js";
 
 export const P1_CAPTURE_PROFILE = "p1-atomic-capture-c1-1" as const;
-export const P1_CAPTURE_REVISION = "c1-1" as const;
+export const P1_CAPTURE_REVISION = "c1-2" as const;
+// Original c1-1 archives preserve their declared unordered-pile semantics.
+// New captures retain the native visible order of discard/exhaust.
+const captureRevision = z.enum(["c1-1", P1_CAPTURE_REVISION]);
 export const P1_CAPTURE_SCOPE = "ordinary_ready_combat_base_and_read_instances" as const;
 export const P1_CAPTURE_READ_PROFILE = "p1-atomic-capture-c1-sealed-1" as const;
 export const P1_CAPTURE_OBSERVATION_SCHEMA = "sts2.player-environment/p1-atomic-capture-c1-1" as const;
@@ -68,7 +71,7 @@ const deckContentSchema = z.object({ kind: z.literal("run_deck"), card_count: na
   cards: z.array(cardContentSchema) }).strict().refine(value => value.card_count === value.cards.length, "deck count mismatch");
 const pileContentSchema = z.object({ kind: z.literal("combat_piles"), zones: z.array(z.object({
   zone: z.enum(["draw", "discard", "exhaust"]), card_count: nativeInt.nonnegative(),
-  ordering_semantics: z.literal("unordered_multiset"), cards: z.array(cardContentSchema)
+  ordering_semantics: z.enum(["unordered_multiset", "native_visible_order"]), cards: z.array(cardContentSchema)
 }).strict().refine(value => value.card_count === value.cards.length, "pile count mismatch")) }).strict()
   .refine(value => value.zones.length === 3 && new Set(value.zones.map(zone => zone.zone)).size === 3,
     "complete pile content must include each of the three zones");
@@ -192,7 +195,7 @@ function hasFinitePublicNumbers(value: unknown): boolean {
 }
 const observationSchema = z.object({
   schema: z.literal(P1_CAPTURE_OBSERVATION_SCHEMA), input_profile: z.literal(P1_CAPTURE_PROFILE),
-  revision: z.literal(P1_CAPTURE_REVISION), capture_scope: z.literal(P1_CAPTURE_SCOPE),
+  revision: captureRevision, capture_scope: z.literal(P1_CAPTURE_SCOPE),
   scope_status: z.enum(["complete", "partial", "unsupported"]), p1_status: z.literal("unsupported"),
   agent_admissible: z.literal(false), creates_mutation_authority: z.literal(false),
   native_catalog_semantics: z.literal(P1_CAPTURE_NATIVE_CATALOG_SEMANTICS),
@@ -203,6 +206,17 @@ const observationSchema = z.object({
 }).strict().superRefine((value, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: "custom", message });
   if (!hasFinitePublicNumbers(value)) issue("capture public numbers must be finite JSON values");
+  for (const read of value.reads) {
+    if (read.kind !== "combat_piles" || read.availability !== "available") continue;
+    const parsed = pileContentSchema.safeParse(read.content);
+    if (!parsed.success) continue; // The Read's typed validator reports this.
+    for (const zone of parsed.data.zones) {
+      const expected = value.revision === "c1-1" || zone.zone === "draw"
+        ? "unordered_multiset" : "native_visible_order";
+      if (zone.ordering_semantics !== expected)
+        issue("pile ordering does not match the declared capture revision");
+    }
+  }
   try {
     const basis = decodePlayerSnapshot(value.native_basis).data;
     if (basis.snapshot_id !== value.source_snapshot_id ||
@@ -211,6 +225,11 @@ const observationSchema = z.object({
       issue("capture native basis/session mismatch");
     const advertised = new Map(basis.reads.map(read => [read.read_id, read]));
     if (advertised.size !== basis.reads.length) issue("advertised Read identities must be unique");
+    for (const read of basis.reads) {
+      if (read.kind === "combat_piles" && read.ordering_semantics !==
+          (value.revision === "c1-1" ? "unordered_multiset" : "per_zone"))
+        issue("advertised pile ordering does not match the declared capture revision");
+    }
     const capturedSources = new Set<string>();
     for (const read of value.reads) {
       if (read.source_read_id === null) {
@@ -343,7 +362,7 @@ const retentionSchema = z.object({
 }).strict();
 const capabilitiesSchema = z.object({
   schema: z.literal(P1_CAPTURE_CAPABILITIES_SCHEMA), input_profile: z.literal(P1_CAPTURE_PROFILE),
-  revision: z.literal(P1_CAPTURE_REVISION), supported_capture_scope: z.literal(P1_CAPTURE_SCOPE),
+  revision: captureRevision, supported_capture_scope: z.literal(P1_CAPTURE_SCOPE),
   agent_admissible: z.literal(false), creates_mutation_authority: z.literal(false),
   native_catalog_semantics: z.literal(P1_CAPTURE_NATIVE_CATALOG_SEMANTICS),
   max_read_instances: z.literal(P1_CAPTURE_MAX_READ_INSTANCES),
