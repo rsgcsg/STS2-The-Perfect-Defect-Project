@@ -40,7 +40,7 @@ GLOBAL P1 and the full product/recording chain are NOT accepted complete.
 
 Codex integration topic codex/p1-global-completion starts at the exact PR188 head;
 Claude's submitted checkout is preserved. Semantic repair and native parity repair have
-separate topics/worktrees. The active plan permits at most three disjoint code writers
+separate topics/worktrees. The active plan permits at most four disjoint code writers
 after shared-interface freeze, one shared-interface writer and one heavy local/native slot. The lead verifies original diffs and receipts; material
 changes require non-author review. Full task requirements remain open independently
 of local source subtasks. The active task owns the next work and acceptance table.
