@@ -1007,7 +1007,13 @@ class Application:
             )
         return self.local_model_registration.register(model_id, environment_kind=environment_kind)
 
-    def register_builtin_teacher(self, *, variant: str = "continuous", global_program: bool = False, environment_kind: str = "native") -> dict[str, Any]:
+    def register_builtin_teacher(
+        self,
+        *,
+        variant: str = "continuous",
+        global_program: bool = False,
+        environment_kind: str = "native",
+    ) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_registration", "running_instance_unavailable")
         try:
@@ -1022,7 +1028,9 @@ class Application:
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_model_registration", "running_configuration_mismatch")
         if global_program:
-            return self.local_model_registration.register_global_program(environment_kind=environment_kind)
+            return self.local_model_registration.register_global_program(
+                environment_kind=environment_kind
+            )
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
@@ -2044,7 +2052,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         body = self.json_body(maximum=128)
                         if set(body) not in (set(), {"environment_kind"}):
                             raise ValueError
-                        value = app.register_builtin_teacher(global_program=True, environment_kind=body.get("environment_kind", "native"))
+                        value = app.register_builtin_teacher(
+                            global_program=True,
+                            environment_kind=body.get("environment_kind", "native"),
+                        )
                         self.respond(200, json.dumps(value).encode())
                         return
                     if self.path == "/api/local-model-registrations/register-teacher":

@@ -7,11 +7,19 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 
-TRUSTED_AGENT_ADAPTERS = frozenset({
-    "s1-v1", "token-v1", "stpd-m2-decision-adapter", "stpd-s0-structured-adapter",
-    "stpd-native-structured-m2-agent", "stpd-public-m0-decision-adapter",
-    "stpd-public-m2-decision-adapter", "stpd-native-public-program-teacher", "spireagent-global-public-program",
-})
+TRUSTED_AGENT_ADAPTERS = frozenset(
+    {
+        "s1-v1",
+        "token-v1",
+        "stpd-m2-decision-adapter",
+        "stpd-s0-structured-adapter",
+        "stpd-native-structured-m2-agent",
+        "stpd-public-m0-decision-adapter",
+        "stpd-public-m2-decision-adapter",
+        "stpd-native-public-program-teacher",
+        "spireagent-global-public-program",
+    }
+)
 AGENT_PROFILES = (
     ("p1-global-r1", "spireagent-global-public-program", "p1-global-r1", True),
     ("s1-v1", "s1-v1", "text-menu-v1", True),
