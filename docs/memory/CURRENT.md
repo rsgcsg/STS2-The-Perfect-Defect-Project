@@ -22,7 +22,16 @@ and consumer execution before the bounded battle batches.
 
 ## Verified starting facts and open work
 
-- develop02636a94 contains PR180. PR187 remains unmerged. The latest2c gate
+- develop02636a94 contains PR180. PR187 remains unmerged. Its c81 full gate
+  38824434895 failed:47/48stages passed, Windows2 Python lacked a main_return
+  fixture record. The test had not established terminal/main/hold before the
+  original1s cancellation clock. Test-only a24488b4 now prepares those actual
+  process phases first, and separately proves forced/unknown before terminal.
+  Original engine cancel/resume is unchanged. Earlier2800 fullfile34pass and
+  finala244 strengthened15s preparation bound's2cases pass locally; neither is
+  a Windows/full receipt. Non-author source review and nine offline assertion
+  counterexamples accepted a244; normal integration b6df8138 retains both commits.
+  The new candidate still needs the complete selected gate. The previous2c gate
   38813375418 was cancelled at the official75min Windows1 job limit after its
   3960.27s Python owner passed. All four Python leaves passed, but Policy was
   interrupted and three later owners blocked:44/48stages passed,1cancelled,3blocked.
@@ -56,6 +65,10 @@ and consumer execution before the bounded battle batches.
 - Managed C1 producer, real paired P1 data, semantic mapping and actual P1 Agent
   consumption are still missing. Source3/old records are reusable assets, not
   mandatory new-P1 input or automatically qualified demonstration data.
+  Native Recorder format need not be P1, but its public facts/timing/relations
+  must support complete versioned P1 conversion for each supported scene.
+  Repair gaps at existing capture/Recorder/Evidence/converter owners; preserve
+  original bytes and never backfill historical missing facts.
 - J-min remains a separate unintegrated candidate. Original numerical FAIL stays;
   v2 and ordinary remote TrainingService are not qualified. No new fit is started.
 
@@ -66,9 +79,10 @@ Claude independently audits. Material changes require a non-author. At most two
 code writers, one shared-interface writer and one heavy local/native slot.
 
 User authorizes ordinary engineering/PRs/CI, isolated reversible development-Mod
-installation and bounded unattended local Reference/Managed validation. Reviewed
-ordinary develop merges and clear absorbed/superseded PR closures are autonomous;
-do not ask again per PR. Ask for genuinely unresolved goals/authority/tradeoffs.
+installation and bounded unattended local Reference/Managed validation. The latest
+user instruction requires separate approval before each PR merge or closure,
+after the exact candidate, review and required checks are ready. Other routine
+engineering continues autonomously; ask for unresolved goals/authority/tradeoffs.
 No branch/worktree/data deletion, production release/deployment, hard-invariant
 change or expanded budget is inferred. J-min cumulative USD1 includes failures.
 
