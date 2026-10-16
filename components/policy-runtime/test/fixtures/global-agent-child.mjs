@@ -16,6 +16,6 @@ for await(const line of createInterface({input:process.stdin})) {
   if(behavior==='late_choice')await new Promise(r=>setTimeout(r,500));
   reply(m,'directive','output',{continuity_token:m.input.continuity_token,consumption_id:consumption,state_version:version,
     directive:basis.observation.status==='terminal'?{type:'close',reason:'native_terminal_observed'}:{type:'act',basis_acquisition_id:basis.acquisition_id,
-      selection:{kind:'handle',action_id:basis.catalog[0].choice_id},scores:null}});
+      selection:{kind:'handle',action_id:(behavior?.startsWith("choose:")?basis.catalog.find(c=>c.kind===behavior.slice(7)):basis.catalog[0]).choice_id},scores:null}});
  }
 }

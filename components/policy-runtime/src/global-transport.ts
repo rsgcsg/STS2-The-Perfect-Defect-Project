@@ -28,6 +28,18 @@ export function assertGlobalIdentity(actual: GlobalIdentity, expected: GlobalExp
     throw new Error("global_environment_identity_drift");
 }
 
+/** Selected program support is an admission constraint, not descriptive metadata. */
+export function assertGlobalProgramSupport(identity: GlobalIdentity, program: {
+  requirements: { connector_protocol_version: string; required_methods: readonly string[] };
+  support: { game_versions: readonly string[]; game_commits: readonly string[] };
+}): void {
+  if (identity.protocol_version !== program.requirements.connector_protocol_version
+    || typeof identity.game.version !== "string" || !program.support.game_versions.includes(identity.game.version)
+    || typeof identity.game.commit !== "string" || !program.support.game_commits.includes(identity.game.commit)
+    || program.requirements.required_methods.some(method => !["capabilities", "capture", "submit"].includes(method)))
+    throw new Error("global_program_environment_unsupported");
+}
+
 /** Reference uses the existing SDK control registration/lease and retained public capture. */
 export class ReferenceGlobalTransport implements GlobalTransport {
   readonly kind = "reference" as const;

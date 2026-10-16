@@ -14,6 +14,18 @@ const renews = (f: Awaited<ReturnType<typeof nativeRuntimeFixture>>) => f.source
 const expired = { schema: "sts2.player-environment/native-logical-renew-1", input_profile: "native-logical-v1", status: "subscription_expired",
   subscription: null, next_cursor: null, high_watermark: null, retained_start_cursor: null, gap: null, reason: "subscription_expired" };
 
+// Preparation may legitimately span several renewals. Inject failure only once
+// the real operation under test exists; every attempted failed response is
+// counted so an unintended retry cannot hide behind successful preparation.
+function armedExpiry(source: SyntheticNativeHttp) {
+  const route = source.route.bind(source); let armed = false, failures = 0;
+  source.route = (url, body) => {
+    if (armed && url.pathname.endsWith("/renew")) { failures++; return { value: expired }; }
+    return route(url, body);
+  };
+  return { arm: () => { armed = true; }, failures: () => failures };
+}
+
 describe("one passive renewal flight independent of the Model operation queue", () => {
   it("quiesces a transport renewal that ignores abort when initialized attachment evidence fails, before detach", async () => {
     const evidenceGate = gate(), renewGate = gate(); let source: SyntheticNativeHttp | undefined;
@@ -89,56 +101,64 @@ describe("one passive renewal flight independent of the Model operation queue", 
     } finally { late.release(); await f.close(); }
   });
   it("fences and releases an idle held controller on genuine renewal failure without another tick", async () => {
-    const failedRenewal = gate();
-    const f = await nativeRuntimeFixture({ mode: "auto", retentionMs: 400,
-      beforeInitialize: ({ source }) => { source.renewGate = failedRenewal.promise; } });
-    const route = f.source.route.bind(f.source);
-    f.source.route = (url, body) => url.pathname.endsWith("/renew") ? { value: expired } : route(url, body);
+    const f = await nativeRuntimeFixture({ mode: "auto", retentionMs: 400 });
+    const failure = armedExpiry(f.source);
     try {
       const delivered = await f.runtime.tick(); expect(delivered.type, JSON.stringify(delivered)).toBe("delivered");
       expect(f.runtime.status().controller).toBe("held");
-      await eventually(() => renews(f) === 1);
-      failedRenewal.release();
+      failure.arm();
       await eventually(() => f.source.requests.some(r => r.path.endsWith("/controller/release")));
       await eventually(() => f.runtime.status().session.prefix.omissions.gap !== null);
       expect(f.runtime.status()).toMatchObject({ mode: "human", controller: "released" });
       await expect(f.runtime.setMode("auto")).rejects.toMatchObject({ code: "runtime_subscription_unavailable" });
-      const count = renews(f); await new Promise(resolve => setTimeout(resolve, 500)); expect(renews(f)).toBe(count); expect(count).toBe(1);
+      const count = renews(f); await new Promise(resolve => setTimeout(resolve, 500)); expect(renews(f)).toBe(count);
+      expect(failure.failures()).toBe(1); expect(f.source.maxRenewInFlight).toBe(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/controller/release"))).toHaveLength(1);
-    } finally { failedRenewal.release(); await f.close(); }
+    } finally { await f.close(); }
   });
-  it("cancels the active Await immediately when the passive subscription fails", async () => {
-    const failedRenewal = gate();
+  it.each([0, 450])("cancels the active Await on subscription failure after %dms of real preparation", async preparationDelay => {
     const f = await nativeRuntimeFixture({ count: 0, mode: "auto", retentionMs: 400,
-      beforeInitialize: ({ source }) => { source.renewGate = failedRenewal.promise; } });
+      beforeInitialize: ({ evidence }) => {
+        const append = evidence.append.bind(evidence); let delayed = false;
+        evidence.append = async (...args) => {
+          const value = await append(...args);
+          if (!delayed && args[0] === "native_event_received") {
+            delayed = true; await new Promise(resolve => setTimeout(resolve, preparationDelay));
+          }
+          return value;
+        };
+      } });
     const wait = gate(); f.source.waitGate = wait.promise;
-    const route = f.source.route.bind(f.source); f.source.route = (url, body) => url.pathname.endsWith("/renew") ? { value: expired } : route(url, body);
+    const failure = armedExpiry(f.source);
     try {
       const tick = f.runtime.tick(); await eventually(() => f.source.requests.some(r => r.path.endsWith("/await")));
-      await eventually(() => renews(f) === 1);
-      failedRenewal.release();
+      if (preparationDelay > 400) expect(renews(f)).toBeGreaterThanOrEqual(1);
+      failure.arm();
       await tick;
       await eventually(() => f.runtime.status().session.prefix.omissions.gap !== null);
       expect(f.runtime.status()).toMatchObject({ mode: "human", session: { state_version: 1, agent_state: "known" } });
       expect(f.source.requests.filter(r => r.path.endsWith("/cancel_wait"))).toHaveLength(1);
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(0);
-      expect(renews(f)).toBe(1);
-    } finally { failedRenewal.release(); wait.release(); await f.close(); }
+      expect(failure.failures()).toBe(1); expect(f.source.maxRenewInFlight).toBe(1);
+      const count = renews(f); await new Promise(resolve => setTimeout(resolve, 100)); expect(renews(f)).toBe(count);
+    } finally { wait.release(); await f.close(); }
   });
   it("writes a queued renewal gap before Stop seals an interrupted Close operation", async () => {
-    const f = await nativeRuntimeFixture({ child: "close", mode: "shadow", retentionMs: 400 }); const paused = gate(), seen = gate();
-    const append = f.evidence.append.bind(f.evidence), route = f.source.route.bind(f.source);
-    f.evidence.append = async (...args) => { const result = await append(...args); if (args[0] === "agent_directive") { seen.release(); await paused.promise; } return result; };
-    f.source.route = (url, body) => url.pathname.endsWith("/renew") ? { value: expired } : route(url, body);
+    const f = await nativeRuntimeFixture({ child: "close", mode: "shadow", retentionMs: 400 }); const paused = gate(); let seen = false;
+    const append = f.evidence.append.bind(f.evidence), failure = armedExpiry(f.source);
+    f.evidence.append = async (...args) => { const result = await append(...args); if (args[0] === "agent_directive") { seen = true; await paused.promise; } return result; };
     try {
-      const tick = f.runtime.tick(); await seen.promise;
-      await eventually(() => renews(f) === 1 && f.runtime.status().mode === "human");
+      const tick = f.runtime.tick(); await eventually(() => seen);
+      failure.arm();
+      await eventually(() => failure.failures() === 1 && f.runtime.status().mode === "human");
       const stop = f.runtime.stop(); paused.release(); await tick; await stop;
       const events = await f.events(), gapIndex = events.findIndex(e => e.kind === "native_gap"), stoppedIndex = events.findIndex(e => e.kind === "stopped");
       expect(gapIndex).toBeGreaterThan(-1); expect(stoppedIndex).toBeGreaterThan(gapIndex);
       expect(stoppedIndex).toBe(events.length - 1);
       expect(f.runtime.status().session.prefix.omissions.gap).not.toBeNull();
+      expect(failure.failures()).toBe(1); expect(f.source.maxRenewInFlight).toBe(1);
+      const count = renews(f); await new Promise(resolve => setTimeout(resolve, 100)); expect(renews(f)).toBe(count);
     } finally { paused.release(); await f.close(); }
   });
 });

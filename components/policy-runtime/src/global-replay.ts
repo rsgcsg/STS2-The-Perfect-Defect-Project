@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { readPublicBasisRecord, decodePlayerReceipt, verifyPublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollow, canonicalJson, type P1SessionState, type Lowering } from "@rsgcsg/sts2-connector-client/p1-global";
+import { readPublicBasisRecord, decodePlayerReceipt, verifyPublicBasis, decodePublicBasisHandle, decodePublicBasisChunk, assemblePublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_RESULT_SCHEMA, canonicalJson, type P1SessionState, type Lowering } from "@rsgcsg/sts2-connector-client/p1-global";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
-import { validateAgentManifest, validateAgentConsumption, validateAgentDirective } from "./agent-session-contracts.js";
-import { globalDigest, assertGlobalIdentity, type GlobalIdentity } from "./global-transport.js";
+import { validateAgentManifest, validateAgentConsumption, validateAgentDirective, supportsProfileValue } from "./agent-session-contracts.js";
+import { globalDigest, assertGlobalIdentity, assertGlobalProgramSupport, type GlobalIdentity } from "./global-transport.js";
 import { AgentConsumptionLedger } from "./agent-session-consumption.js";
 import type { GlobalArtifact } from "./evidence.js";
 
@@ -47,14 +47,15 @@ export async function replayGlobalAgentRun(directory: string) {
     const bytes = await readFile(path); require(sha(bytes) === ref.sha256, "global_artifact_bytes"); referenced.add(ref.path); return bytes;
   };
   let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
-  let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; deliveries: any[]; dispatches: any[] } | null = null;
+  let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
   let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
   const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
+  let mode: string | null = null, control = "released", permanentlyFenced = false;
   let ledger: AgentConsumptionLedger | undefined;
   const durableAcks = new Map<string, any>();
   const inputs = new Map<string, { input: any; source: number; occurrence: number }>();
   const offers = new Map<string, any>(), consumedFrames = new Map<string, any>(), acknowledgements = new Set<string>();
-  const captureRequests = new Map<string, { terminal: boolean; handle?: any; chunks: Buffer[]; completed?: FullPublicBasis }>();
+  const captureRequests = new Map<string, { terminal: boolean; handle?: any; chunks: ReturnType<typeof decodePublicBasisChunk>[]; completed?: FullPublicBasis }>();
   const classifiedReceipts = new Set<string>();
   const directives: any[] = [], responses = new Map<string, Buffer[]>(), dispatches = new Map<string, any>();
   const fields: Record<string, string[]> = {
@@ -81,7 +82,7 @@ export async function replayGlobalAgentRun(directory: string) {
     if (event.kind === "global_initialized") {
       require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
-      assertGlobalIdentity(identity, expected); state = createSession(run.run_id, identity.kind);
+      assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind);
     } else if (event.kind === "global_capture_requested") {
       require(identity && typeof p.request_id === "string" && !captureRequests.has(p.request_id), "global_capture_request_identity");
       captureRequests.set(p.request_id, { terminal: false, chunks: [] });
@@ -104,6 +105,12 @@ export async function replayGlobalAgentRun(directory: string) {
       const source = sources.get(p.source_ordinal); require(source && !source.classified && typeof p.reason === "string", "global_source_rejection"); source.classified = true;
     } else if (event.kind === "global_source_retained") {
       const source = sources.get(p.source_ordinal); require(source?.valid && p.disposition === "pending_next_receive", "global_pending_source"); source.classified = true;
+      require(active && active.dispatches.length === active.deliveries.length
+        && active.deliveries.at(-1)?.delivery === "delivered", "global_post_source_without_delivery");
+      const dispatch = active.dispatches.at(-1)!;
+      const prior = active.postSources.get(dispatch.request_id) ?? [];
+      require(p.source_ordinal > (prior.at(-1) ?? dispatch.source_ordinal), "global_post_source_order");
+      active.postSources.set(dispatch.request_id, [...prior, p.source_ordinal]);
     } else if (event.kind === "global_observation") {
       const source = sources.get(p.source_ordinal); require(source?.valid && state && !source.reduction, "global_observation_source");
       source.before = state;
@@ -115,6 +122,7 @@ export async function replayGlobalAgentRun(directory: string) {
         && source.full.basis.capture_status === "complete" && reduction.complete && reduction.observation.status !== "unsupported") state = reduction.state;
     } else if (event.kind === "global_input") {
       const source = sources.get(p.source_ordinal), r = source?.reduction; require(r?.complete && (episode !== null || r.observation.status === "terminal") && source!.full.basis.capture_status === "complete" && !inputs.has(p.acquisition_id), "global_input_source_incomplete");
+      require(supportsProfileValue(manifest.support.interaction_kinds, r.observation.scene.native_kind), "global_interaction_unsupported");
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(p.artifact, "public_input")));
       exact(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog", "consumption_unit"]);
       require(input.acquisition_id === p.acquisition_id && input.consumption_unit.id === p.unit && same(input.input_spec, manifest.input.input_spec)
@@ -152,16 +160,25 @@ export async function replayGlobalAgentRun(directory: string) {
     } else if (event.kind === "agent_directive") {
       const index = directives.findIndex(d => same(d, p.output)); require(index >= 0 && ledger && p.output.continuity_token === ledger.continuityToken && p.output.consumption_id === ledger.consumptionId && p.output.state_version === ledger.stateVersion, "global_directive_not_from_agent"); directives.splice(index, 1); lastDirective = p.output;
     } else if (event.kind === "global_choice") {
-      require(!unknown && !active && lastDirective?.directive.type === "act" && lastDirective.directive.basis_acquisition_id === p.acquisition_id
+      require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced && !unknown && !active && lastDirective?.directive.type === "act" && lastDirective.directive.basis_acquisition_id === p.acquisition_id
         && lastDirective.directive.selection.kind === "handle" && lastDirective.directive.selection.action_id === p.choice_id && acknowledgements.has(p.acquisition_id), "global_choice_not_acknowledged");
       const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
-      require(input && reduction && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
-      active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, deliveries: [], dispatches: [] };
+      require(input && reduction && supportsProfileValue(manifest.support.action_verbs,
+        reduction.observation.catalog.find(c => c.choice_id === p.choice_id)?.kind ?? "") && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
+      active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence, epoch: p.recovery_epoch,
+        deliveries: [], dispatches: [], postSources: new Map(), errors: new Set() };
     } else if (event.kind === "global_dispatch") {
-      require(active && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
+      require(active && mode !== null && mode !== "human" && mode !== "shadow" && control === "held" && !permanentlyFenced && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
       const source = sources.get(p.source_ordinal); require(source?.valid, "global_dispatch_source"); source.classified = true;
       const bound = (source.full.basis.snapshot.bound_actions as any).actions.find((a: any) => a.bound_action_id === p.bound_action.bound_action_id);
-      const step = p.step_index === 0 ? active.lowering.first : active.lowering.follow[p.step_index - 1] && resolveFollow(active.lowering.follow[p.step_index - 1]!, active.lowering, source.full.basis.snapshot);
+      if (p.step_index > 0) {
+        const prior = active.dispatches.at(-1)!;
+        require(active.deliveries.at(-1)?.delivery === "delivered"
+          && active.postSources.get(prior.request_id)?.at(-1) === p.source_ordinal, "global_fold_not_current_post_source");
+      }
+      const step = p.step_index === 0 ? active.lowering.first : active.lowering.follow[p.step_index - 1]
+        && source.full.basis.capture_status === "complete"
+        && resolveFollowBasis(active.lowering.follow[p.step_index - 1]!, active.lowering, source.full.basis);
       require(bound && step && step.bound_action_id === bound.bound_action_id && same(bound, p.bound_action) && p.expected_snapshot_id === source.full.basis.snapshot.snapshot_id, "global_dispatch_not_shared_lowering");
       active.dispatches.push(p); dispatches.set(p.request_id, p);
     } else if (event.kind === "global_transport_response") {
@@ -170,32 +187,104 @@ export async function replayGlobalAgentRun(directory: string) {
       else {
         const request = captureRequests.get(p.capture_request_id); require(request && !request.terminal, "global_capture_response_identity");
         let wire: any; try { wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { continue; }
-        if (wire.schema === "sts2.player-environment/public-basis-handle-1") { require(!request.handle, "global_capture_handle_reused"); request.handle = wire; }
-        else if (wire.schema === "sts2.player-environment/public-basis-chunk-1") {
-          require(request.handle && wire.capture_id === request.handle.capture_id && wire.sha256 === request.handle.sha256
-            && wire.offset === request.chunks.reduce((sum, chunk) => sum + chunk.length, 0), "global_capture_original_chunk_sequence");
-          request.chunks.push(Buffer.from(wire.data_base64, "base64"));
-          if (wire.end) request.completed = await verifyPublicBasis(request.handle, new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(request.chunks)));
+        if (wire.schema === "sts2.player-environment/public-basis-handle-1") {
+          require(!request.handle, "global_capture_handle_reused"); request.handle = decodePublicBasisHandle(wire);
+        } else if (wire.schema === "sts2.player-environment/public-basis-chunk-1") {
+          const chunk = decodePublicBasisChunk(wire);
+          require(request.handle && !request.completed, "global_capture_chunk_without_handle");
+          request.chunks.push(chunk);
+          if (chunk.end) {
+            let offset = 0;
+            request.completed = await assemblePublicBasis(request.handle, async () => {
+              const value = request.chunks[offset++]; require(value, "global_capture_original_chunk_missing"); return value;
+            });
+            require(offset === request.chunks.length, "global_capture_extra_original_chunk");
+          }
         } else if (wire.result?.type === "capture_result") {
           const full = wire.result.full; request.completed = await verifyPublicBasis(full.capture, full.serializedObservation);
           require(same(full.basis, request.completed.basis), "global_managed_capture_mirror");
         }
       }
     } else if (event.kind === "global_receipt") {
-      const dispatch = dispatches.get(p.request_id); require(active && dispatch && p.source_ordinal === dispatch.source_ordinal, "global_receipt_without_dispatch");
+      const dispatch = dispatches.get(p.request_id); require(active && dispatch
+        && active.dispatches.at(-1)?.request_id === p.request_id && !classifiedReceipts.has(p.request_id)
+        && active.deliveries.length + 1 === active.dispatches.length
+        && p.source_ordinal === dispatch.source_ordinal, "global_receipt_without_dispatch");
       const receipt = decodePlayerReceipt(p.receipt).data; const { interaction_id: _i, label: _l, ...bound } = dispatch.bound_action;
       require(receipt.request_id === p.request_id && same({ ...receipt.action, subject_referent_id: receipt.action.subject_referent_id ?? null }, { ...bound, subject_referent_id: bound.subject_referent_id ?? null }), "global_receipt_binding");
       require((responses.get(p.request_id) ?? []).some(bytes => { try { const wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); return same(wire.result?.receipt ?? wire, receipt); } catch { return false; } }), "global_receipt_not_original_bytes");
       classifiedReceipts.add(p.request_id); active.deliveries.push(receipt); if (receipt.delivery === "unknown") unknown = true;
     } else if (event.kind === "global_dispatch_error") {
-      require(active && typeof p.sent === "boolean", "global_dispatch_error_unbound");
+      require(active && typeof p.sent === "boolean" && !active.errors.has(p.request_id), "global_dispatch_error_unbound");
+      active.errors.add(p.request_id);
       if (p.sent && !classifiedReceipts.has(p.request_id)) { require(dispatches.has(p.request_id), "global_unknown_without_original_dispatch"); unknown = true; active.deliveries.push({ delivery: "unknown" }); }
     } else if (event.kind === "global_result") {
-      require(active && p.acquisition_id === active.acquisition && p.result.choice_id === active.choice && same(p.result.steps.map((s: any) => s.delivery), active.deliveries.map(r => r.delivery)), "global_result_prefix_changed");
-      require(["completed", "interrupted_known", "not_started", "unknown"].includes(p.result.status) && (p.result.status === "unknown") === active.deliveries.some(r => r.delivery === "unknown"), "global_result_knowledge");
-      if (p.result.status === "completed") { require(state && (!active.lowering.first || active.deliveries.length > 0 && active.deliveries.every(r => r.delivery === "delivered")), "global_completion_unproved"); state = applyCommitment(state, active.lowering, true); }
+      require(active && p.acquisition_id === active.acquisition, "global_result_unbound");
+      exact(p.result, ["schema", "occurrence", "choice_id", "status", "steps", "commitment_delta"]);
+      require(p.result.schema === P1G_RESULT_SCHEMA && p.result.occurrence === active.occurrence
+        && p.result.choice_id === active.choice && Array.isArray(p.result.steps)
+        && p.result.steps.length === active.deliveries.length, "global_result_prefix_changed");
+      for (const [i, step] of p.result.steps.entries()) {
+        exact(step, ["index", "origin", "native_verb", "label", "delivery", "reason_code"]);
+        const receipt = active.deliveries[i], dispatch = active.dispatches[i];
+        require(dispatch && step.index === i && step.origin === (i ? "fold" : "agent_choice")
+          && step.native_verb === dispatch.bound_action.verb && step.label === dispatch.bound_action.label
+          && step.delivery === receipt.delivery && step.reason_code === (receipt.request_id
+            ? receipt.reason_code ?? null : "response_unclassified"), "global_result_step_changed");
+      }
+      require(["completed", "interrupted_known", "not_started", "unknown"].includes(p.result.status)
+        && (p.result.status === "unknown") === active.deliveries.some(r => r.delivery === "unknown"), "global_result_knowledge");
+      const delivered = active.deliveries.filter(r => r.delivery === "delivered").length;
+      if (p.result.status === "not_started") require(delivered === 0, "global_delivered_relabelled_not_started");
+      if (p.result.status === "interrupted_known") require(delivered > 0, "global_interruption_without_delivered_prefix");
+      let delta = null;
+      if (p.result.status === "completed") {
+        require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced
+          && p.recovery_epoch === active.epoch && active.errors.size === 0, "global_completion_after_handoff_or_failure");
+        require(state && (!active.lowering.first ? active.deliveries.length === 0
+          : delivered === active.deliveries.length && delivered === active.dispatches.length && delivered > 0), "global_completion_unproved");
+        for (const dispatch of active.dispatches) {
+          const postOrdinal = active.postSources.get(dispatch.request_id)?.at(-1);
+          require(postOrdinal && sources.get(postOrdinal)?.full.basis.capture_status === "complete", "global_completed_post_source_missing_or_partial");
+        }
+        if (active.lowering.first) {
+          const nextRule = active.lowering.follow[delivered - 1];
+          if (nextRule) {
+            const last = active.dispatches.at(-1)!;
+            const post = sources.get(active.postSources.get(last.request_id)!.at(-1)!)!;
+            require(nextRule.optional && post.full.basis.capture_status === "complete"
+              && !resolveFollowBasis(nextRule, active.lowering, post.full.basis), "global_required_fold_omitted");
+          }
+          require(delivered <= 1 + active.lowering.follow.length, "global_extra_fold");
+        }
+        state = applyCommitment(state, active.lowering, true);
+        if (active.lowering.commitment) delta = commitmentView(state);
+      }
+      require(same(p.result.commitment_delta, delta), "global_commitment_delta_changed");
       results++; active = null;
-    } else if (event.kind === "stopped") { require(index === events.length - 1 && p.pending_request === null, "global_final_closure"); stopped = true; }
+    } else if (event.kind === "mode_changed") {
+      require(identity && ["human", "auto", "one_step", "shadow"].includes(p.mode)
+        && p.controller === control && (!permanentlyFenced || p.mode === "human"), "global_mode_transition");
+      if (p.mode !== "human") require(p.autonomy_budget?.state === "active" && p.autonomy_budget.remaining_ms > 0,
+        "global_mode_without_active_budget");
+      mode = p.mode;
+    } else if (event.kind === "controller_acquired") {
+      require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced
+        && p.controller === "held", "global_control_without_authorization"); control = "held";
+    } else if (event.kind === "controller_released") {
+      require(p.controller === "released", "global_release_state"); control = "released";
+    } else if (event.kind === "controller_release_unknown") {
+      require(p.controller === "unknown" && run.tainted === true && run.status === "tainted", "global_unconfirmed_release_state");
+      control = "unknown"; permanentlyFenced = true;
+    } else if (["handoff_to_human", "autonomy_budget_exhausted"].includes(event.kind)) {
+      require(p.controller === control && control !== "held", "global_handoff_control_state"); mode = "human";
+    } else if (event.kind === "runtime_tainted") {
+      require(p.retry === false && run.tainted === true, "global_taint_state"); mode = "human"; permanentlyFenced = true;
+    } else if (event.kind === "fail_closed") { mode = "human";
+    } else if (event.kind === "stopped") {
+      require(index === events.length - 1 && p.pending_request === null && p.controller === control
+        && control !== "held" && run.mode === "human", "global_final_closure"); stopped = true;
+    }
   }
   require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");

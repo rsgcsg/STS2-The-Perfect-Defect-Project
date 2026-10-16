@@ -1,5 +1,5 @@
 import { canonicalJson, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
-  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
+  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
  * transformations require an owning schema/path declaration; r1.1 uses literal text.
@@ -57,6 +57,10 @@ function supported(observation: P1Observation): string | null {
   if (observation.scene.native_kind === "combat_turn" && !completeCombatSurface((observation.scene.content as any)?.surface)) return "invalid_combat_surface";
   if (["selector", "upgrade", "enchant"].includes(observation.scene.family) && !completeSelector((observation.scene.content as any)?.surface))
     return "invalid_selector_content";
+  if (observation.scene.native_kind === "reward_claim" && !completeRewardSurface((observation.scene.content as any)?.surface))
+    return "invalid_reward_content";
+  if (observation.scene.native_kind === "card_reward_selection" && !completeCardRewardSurface((observation.scene.content as any)?.surface))
+    return "invalid_card_reward_content";
   if (new Set(observation.catalog.map(choice => choice.choice_id)).size !== observation.catalog.length || !closedEntityRelations(observation))
     return "unbound_or_ambiguous_public_relation";
   if (observation.catalog.some(choice => !choice.mapped)) return "unqualified_native_action_semantics";
