@@ -15,12 +15,9 @@ are made and qualified**. It complements, but does not replace:
 - [Status](STATUS.md), [Current Context](memory/CURRENT.md), and dated evidence,
   which own current or historical claims in their exact scopes.
 
-```text
-current code, contracts, native/runtime facts, exact evidence
-  -> canonical docs and accepted ADRs
-  -> deterministic tests, CI, and repository rules
-  -> repository Skills and Agent workflows
-```
+Requirements define the intended behavior; native/source/runtime evidence describes
+actual behavior. Documentation explains both in their own scope. Tests, CI and
+Skills support that distinction rather than replacing engineering judgment.
 
 Skills control repeatable workflows; they are not a second repository truth.
 CI enforces mechanically provable invariants; it does not pretend to judge
@@ -50,18 +47,13 @@ Before a substantive decision:
 4. Treat conversations, handoffs, worker summaries, old PRs, and external
    repositories as orientation until current authority confirms them.
 
-Use this priority when sources disagree:
-
-```text
-exact current code and machine-readable contracts
-  -> exact native/runtime facts and current evidence
-  -> deterministic tests and GitHub enforcement
-  -> accepted ADRs and canonical docs
-  -> bounded handoff and historical evidence in scope
-  -> conversations, worker output, external examples, general guidance
-```
-
-Fix the weaker stale source. Never rewrite stronger evidence to preserve a plan.
+Separate intended requirements from observed facts using
+[Project System](PROJECT_SYSTEM.md#source-of-truth-hierarchy). User goals and
+contracts define the target; native/source/runtime evidence tests it. A bug or a
+test does not become a requirement merely by existing. Keep original evidence,
+resolve the owning conflict and ask the user about real unresolved tradeoffs.
+Daily execution/cost/stop practice is owned by [WORKING_RULES](WORKING_RULES.zh-CN.md),
+not a second mandatory full-project audit in this document.
 
 ### Investigate before placement; iterate after the boundary is clear
 
@@ -113,26 +105,29 @@ status read. A procedure may be simplified; these guarantees are not waived.
 
 The process layer uses the existing G0–G6 classification below, not another tier
 taxonomy. Ordinary internal/editorial changes use the short self-check defined
-in AI collaboration. Any possible effect on the hard shell, public contracts,
+in AI collaboration. A credible effect on the hard shell, public contracts,
 cross-layer behavior, evaluation denominators/scientific claims, budgets/spending,
 security, check policy or governance is material and requires non-author acceptance under
 [AI collaboration](AI_COLLABORATION.md#mandatory-independent-review-before-acceptance).
 Higher runtime/Human/scientific claims still require their owning evidence. A
 source/test subtask can finish its stated scope; the parent capability remains
 open until its real downstream consumer and required execution are demonstrated.
-Uncertain impact is material until resolved; file location never settles it.
+Uncertain impact gets a bounded assessment; credible effects on these boundaries
+require material review. Do not use an unspecified hypothetical risk to demand
+unlimited proof. File location alone does not settle impact.
 
 Use one outcome/consumer, changed behavior, actual checks, known failures and next
 gate in the existing task/PR. Do not commission new reports, full hash walks or
 full reruns for every handoff. Verify the original closure needed by the current
 claim; TESTING and the current router still select every required check.
 
-Classify by the strongest risk or claim, not line count. The required gate is the
-maximum of risk, claim strength, blast radius, uncertainty, and irreversibility.
+Classify by the strongest risk or claim, not line count. Select the required gate from the concrete risk, claim, blast radius and
+irreversibility under TESTING. This is not a mandate to eliminate all uncertainty
+or run every ladder for a reversible local change.
 
 | Class | Typical scope | Minimum additional confidence |
 | --- | --- | --- |
-| `G0` | docs, governance, portable repository tooling | selected check plan (editorial only may use docs gate), closeout, diff check |
+| `G0` | docs, governance, portable repository tooling | selected docs/repository check plan, scoped review, closeout, diff check; broader only for actual affected executable owners |
 | `G1` | portable implementation within one owner | regression, owning component suite, selected root portable check |
 | `G2` | public contract or cross-component behavior | `G1` plus contract/conformance and consumer compatibility |
 | `G3` | game-native C#, Harmony, Native Foundation seam | relevant `G2`, exact-game check, clean exact build, artifact identity |
@@ -277,9 +272,9 @@ evidence; green lower-layer checks do not qualify a higher-layer claim.
 
 Governance owns [failure classification](#classify-failures-before-choosing-a-repair)
 and the L1/L3 response: preserve escaped failures, repair their owning cause and
-improve the discovery path. Repeated failures of one assumption require the
-existing contract/architecture review. Several unrelated failures do not justify
-a general rewrite. Passing a new regression alone does not prove its fixture
+improve the discovery path. Repeated failures call for a bounded assessment of the
+common assumption; a new rule or architecture is conditional on its findings.
+Several unrelated failures do not justify a general rewrite. Passing a new regression alone does not prove its fixture
 faithful or close stated native, service or scientific unknowns.
 
 TESTING's [dependency/result rules](TESTING.md#execute-by-dependency-and-report-every-selected-owner)
@@ -415,8 +410,10 @@ Govern changes and claims, not people:
   invariant at the cheapest faithful gate.
 - **L2 merged defect**: stop stacking on bad integration; revert or narrowly
   fix-forward, invalidate affected artifacts/evidence, and restore CI.
-- **L3 repeated failure family**: stop surface patches; require contract or
-  architecture review, a canonical rule, and cross-layer/generalization test.
+- **L3 repeated failure family**: stop repeating the same patch; inspect the common
+  assumption once within the task budget. Revise the contract/architecture only
+  if that cause is established; otherwise repair the fixture/implementation and
+  consolidate useful regression coverage. A new rule/framework is not automatic.
 - **L4 repeated process bypass**: add targeted approval, CODEOWNERS, merge queue,
   or stronger branch restrictions when team growth or evidence justifies them.
 - **L5 evidence/security incident**: stop propagation, rotate/revoke, invalidate

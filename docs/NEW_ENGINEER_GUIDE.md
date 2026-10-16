@@ -1,13 +1,10 @@
 # New Engineer Guide
 
-Start with README → [CURRENT](memory/CURRENT.md) → the active task packet and
-owning specification. This page is the short engineering path to a legitimate
-first project PR. Use the [member handoff (中文)](NEW_MEMBER_HANDOFF.zh-CN.md)
-only for the accounts, installation, collection or operator role you actually need;
-a source contributor does not need to complete every collector/production step.
-If you only collect/view SpireAgent data, use the
-[collection workbench route](ANNOTATOR_COLLECTION.md#default-project-workflow); building
-Platform is not a collector prerequisite.
+Start with [AGENTS](../AGENTS.md) → [README](../README.md) →
+[CURRENT](memory/CURRENT.md) → [shared working rules](WORKING_RULES.zh-CN.md).
+Then read the active task and relevant owning guide/code. This is a contributor's
+first-PR reference, not an additional full reading prerequisite. Use the
+[member handoff](NEW_MEMBER_HANDOFF.zh-CN.md) only for its applicable product role.
 
 ## 1. Know the boundary
 
@@ -52,13 +49,16 @@ Use a short-lived branch in its own worktree when another person or agent is
 already writing in the repository. Never reuse another workstream's writable
 branch.
 
-## 3. Establish the portable baseline
+## 3. Select baseline checks for the task
 
 ```bash
 npm run doctor
 npm run check
 ```
 
+On a fresh development installation, these commands establish a portable baseline.
+Do not run setup or full checks automatically for a documentation/inspection task,
+or repeat a verified matching baseline. TESTING and the task select necessary checks.
 The root check is the portable source/test gate and must not require proprietary
 STS2 files. Neither command proves build, installation, load, live mutation, a
 journey, Human origin, or qualification.
@@ -122,7 +122,7 @@ git diff --check
 
 The planner selects docs, Python or full checks from actual changes; governance,
 contracts and unknown impact still select full. Initial environment verification
-above runs full once. Do not repeat it for every edit or copy an earlier PASS.
+above is conditional on a fresh development setup, not every newcomer visit. Do not repeat it for every edit or copy an earlier PASS.
 
 Game-bound behavior also requires the exact-game and runtime gates named by the
 owning component. Do not deploy merely to validate a G0 change.

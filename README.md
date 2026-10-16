@@ -1,98 +1,84 @@
 # SpireAgent — STS2 Project
 
-One repository for the fair-player STS2 environment, Human collection, local/cloud
-project tools and STPD research. STS2 owns rules and native execution; project
-applications and models consume declared interfaces.
-
-## One Workbench, local and team resources
-
-The game Mod is the default entry to the project Workbench. Its local service
-can run independently of the game; the browser is another entry to that same
-service. Signing in connects it to the team's shared system: data, model
-artifacts/parameters, analysis, compute and other authorized resources. Team
-model downloads and analysis are examples, not an exhaustive feature boundary.
-
-The product target is a shared team resource directory and coordination service,
-deployable on a cloud server, a LAN server or a designated team computer. Cloud
-hosting is one option, not a requirement. Participating local or remote hosts may collect,
-store, train, run models, analyze results and exchange authorized artifacts.
-Compatible hosts may also run a simulator or a real game through the public
-Host/Connector contracts; their behavior and qualification are not assumed
-equivalent. Task placement should consider CPU/GPU and memory requirements,
-data location, compatibility, availability and cost. Central coordination does
-not replace each host's native execution, permissions or lifecycle authority.
-This is the direction for integration, not a claim that a general multi-host
-scheduler or cloud game Host has already been deployed.
-
-Local recording import, data preparation, explicit training, model controls and
-development-only M2 evaluation are available without a team login, with source
-and recipe support bounded by the implemented contracts. After one-time
-developer-kit initialization, the installed macOS Mod can open the selected
-local Workbench through its fixed user-level launcher. This is not a claim that
-the full Stage 1a journey is complete. See the [current in-run implementation](docs/plans/TEXT_STS2_IN_RUN.md)
-and [console behavior](python/docs/PROJECT_CONSOLE.md) for exact boundaries.
-
-Logging in does not upload old private data, start training or take over a game.
-Team access and downloaded data retain their existing permissions and use/Gold
-restrictions; local and cloud views do not create separate copies of authority.
+Build an STS2 Agent that can play through the real game with reproducible results.
+The environment and data pipeline support that goal; neither is an unlimited
+platform project. Current work focuses on a usable P1 interaction/recording/Agent
+chain. Long term, environment implementations, protocols, data formats, Agents,
+models and training methods should be replaceable without rebuilding control,
+storage or the user product. Exact progress is in [CURRENT](docs/memory/CURRENT.md).
 
 ## Start here
 
-- [CURRENT](docs/memory/CURRENT.md) and the [P1 forward plan](docs/plans/P1_FORWARD_2026-10-15.zh-CN.md):
-  current direction, authorization, owners, evidence and next steps.
-- [P1 contract](docs/protocols/P1.zh-CN.md) and [ADR-0017](docs/adr/0017-p1-forward-decision-profile.md):
-  the selected public-information/decision-grain direction and proposed implementation contract.
-- [Earlier baseline](docs/BASELINE_V1_SPEC.zh-CN.md) and its
-  [execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): historical
-  design, retained outcomes and exact evidence, not the current work queue.
-- [Status and evidence](docs/STATUS.md): integrated source, candidate builds,
-  installed/deployed observations and their separate qualification limits.
-- [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
-  [testing](docs/TESTING.md), [workflow](docs/DEVELOPMENT_WORKFLOW.md),
-  [governance](docs/ENGINEERING_GOVERNANCE.md) and [project standards](docs/PROJECT_SYSTEM.md).
-- [New member handoff](docs/NEW_MEMBER_HANDOFF.zh-CN.md) and
-  [existing Stage1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
-- [Design history](docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md) and
-  [document map](docs/DOCUMENT_MAP.md) and [skills](.agents/skills/README.md): earlier proposals, alternatives and exact
-  receipts. Historical proposal documents are not additional normative layers.
+1. [CURRENT](docs/memory/CURRENT.md): current assignment, status and one next action.
+2. [Working rules](docs/WORKING_RULES.zh-CN.md): shared rules for every engineer,
+   architect, manager and Agent: purpose, deliverable, cost and stop boundary.
+3. Follow CURRENT's active task, then its relevant component/specification.
+   Old plans and completed reports are background, not a second work queue.
 
-The first completed instance is a bounded text-menu-v2 compatibility loop. Full
-G2/V1 implementation and verification continue against the retained requirements;
-only the user can approve those gates. Source/test, installed/loaded execution,
-Human origin and scientific results remain separate. CURRENT and the active P1
-plan own the current authorization and next steps; neither turns a proposed
-design or a branch into deployed capability.
+The root [AGENTS](AGENTS.md) gives hard boundaries and task-based reading.
+[AI collaboration](docs/AI_COLLABORATION.md) adds delegation/context recovery;
+[project system](docs/PROJECT_SYSTEM.md) owns document placement and maintenance.
+[Repository Skills](.agents/skills/README.md) provide specialized workflows when relevant.
+Do not read the whole design history before a local repair.
 
-## Workspace
+## One product, distinct responsibilities
 
-`components/` owns native environment, Host, Connector, Annotator, Evidence and
-Policy Runtime. `apps/game-mod` builds one game Mod; `apps/ingame-ui` is its UI.
-`python/spireagent` owns Hub, local Workbench, shared console and artifact services.
-`python/stpd` owns research projections, models, training and evaluation.
-`python/deploy` owns cloud recipes. `tools/` owns the root checks and provenance.
-`apps/workbench` retains typed diagnostic APIs for existing consumers; its duplicate
-HTML console is retired. The project Workbench is the only user console.
+```text
+STS2 → Host/Connector → selected environment protocol (currently P1)
+     → controlled Runtime → complete Agent → native execution
 
-## Developer setup
+independent native records → Evidence/verified projection → research data
+     → training/model artifact → same Agent/product path → evaluation
+```
 
-Install Node 20+, uv, and the .NET SDK required by Platform checks. From this root:
+A Model is an optional part of an Agent; JSON is a format, not an interaction
+contract. Native rules, public information/actions, execution control, original
+records and research labels have separate owners. See [Architecture](docs/ARCHITECTURE.md)
+and [Components](docs/COMPONENTS.md) when changing a boundary. Source/test, actual
+runtime, Human origin and strategy quality are different evidence levels.
+
+One Workbench is the user console. The game Mod is its default entry; a browser
+opens the same application service, which can run without the game. Local and
+team resources retain existing identity/consent/data-use authority. Logging in
+must not upload old data, start training or take control automatically. Team
+coordination may run on cloud, LAN or a designated computer; a universal scheduler
+and fully integrated remote game Host are not established capabilities.
+
+## Workspace and targeted references
+
+- `components/`: Native Foundation, Connector, Host Runtime, Annotator, Evidence,
+  Policy Runtime. `apps/game-mod`: one production Mod; `apps/ingame-ui`: native UI.
+- `python/spireagent`: Workbench/Hub and shared application infrastructure.
+  `python/stpd`: research projections, models, training and evaluation.
+  `apps/workbench`: retained diagnostic APIs, not a second user console.
+- [P1 direction](docs/protocols/P1.zh-CN.md) and
+  [pending global implementation PR189](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/189): product work,
+  only when assigned; not proof that P1 is frozen or training-ready.
+- [Workflow](docs/DEVELOPMENT_WORKFLOW.md), [Testing](docs/TESTING.md),
+  [Governance](docs/ENGINEERING_GOVERNANCE.md), [Versioning](docs/VERSIONING.md).
+- [Stage1a product](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
+  [console](python/docs/PROJECT_CONSOLE.md), [in-run delivery](docs/plans/TEXT_STS2_IN_RUN.md):
+  established product requirements and bounded implementation.
+- [Document map](docs/DOCUMENT_MAP.md), [status/evidence](docs/STATUS.md),
+  [design history](docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md): consult as needed.
+
+## Development
+
+Node 20+, uv and the required .NET SDK are used. Reuse installed dependencies;
+run setup only when missing or changed:
 
 ```sh
 npm ci
 npm ci --prefix python
 npm run setup:python
-npm run check
 ```
 
-`npm run check:platform` and `npm run check:python` select existing component gates.
-`npm run workbench -- --config /ABS/project.json --hub-url https://hub.2-fire-2.com`
-opens the single project collector workflow. Models are separate downloads;
-recording and upload still require the user's configured consent and device.
-Exact-game build/install/load and Human gates are separate from portable checks.
+Use `npm run project:context -- --component <name>` for routing. Develop with
+relevant checks, then `npm run check:plan -- --base origin/develop --run` on a stable
+candidate; `npm run check` is the full portable suite, not an every-edit default.
+`npm run project:closeout` checks handoff impact. Game build/install/load, Human
+recording and training remain separately scoped operations.
 
-## Source and data history
-
-Original Platform and STPD commits remain in this history, including prior imported
-component histories. `migration/project-import.json` records exact source mapping.
-Old recordings, dataset IDs, model manifests and evidence retain their original
-producer identity. New source, package, service and scientific claims are separate.
+Original Platform/STPD histories remain in Git; `migration/project-import.json`
+records the import. Old recordings and models retain their actual producer and
+contract identities. A new branch or version never rewrites old evidence.

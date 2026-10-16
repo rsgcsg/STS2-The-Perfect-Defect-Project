@@ -62,8 +62,9 @@ test("application and research context includes only its ordered root, Python an
       assert.ok(output.includes(`${instructions.map(([file]) => `- ${file}`).join("\n")}\n`));
       assert.ok(!output.includes(`- ${sibling}\n`));
       assert.match(output, /^- README\.md$/mu);
-      assert.match(output, /^- docs\/TESTING\.md$/mu);
-      assert.match(output, /^- python\/docs\/DOCUMENT_MAP\.md$/mu);
+      assert.match(output, /Relevant sections: docs\/DEVELOPMENT_WORKFLOW\.md and docs\/TESTING\.md/u);
+      assert.match(output, /^Owning guide: python\/docs\/DOCUMENT_MAP\.md$/mu);
+      assert.equal(output.match(/^- AGENTS\.md$/gmu)?.length, 1);
       assert.doesNotMatch(output, /MONOREPO_MIGRATION|FULLRUN_RESEARCH/u);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -414,4 +415,16 @@ test("closeout rejects the assembled CURRENT before candidate checks and preserv
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("context routes newcomers through the active task before optional owner investigation", () => {
+  const root = fixture();
+  try {
+    const output = formatContext(root);
+    assert.match(output, /- docs\/WORKING_RULES\.zh-CN\.md/u);
+    assert.match(output, /Resolve the active task first: purpose, deliverable, scope, acceptance, cost and stop condition/u);
+    assert.match(output, /No active assignment means no automatic backlog execution/u);
+    assert.doesNotMatch(output, /^- docs\/(ARCHITECTURE|COMPONENTS)\.md$/mu);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

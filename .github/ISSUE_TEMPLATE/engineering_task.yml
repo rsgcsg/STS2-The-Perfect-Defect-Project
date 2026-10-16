@@ -4,12 +4,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Follow docs/AI_COLLABORATION.md. Keep small tasks short. An issue is a packet, not proof of dispatch or permission to run external operations. Do not include secrets, raw recordings, saves or private workstation paths.
+        Follow docs/WORKING_RULES.zh-CN.md; AI-specific details live in docs/AI_COLLABORATION.md. Keep small tasks short. An issue is a packet, not proof of dispatch or permission to run external operations. Do not include secrets, raw recordings, saves or private workstation paths.
   - type: textarea
     id: outcome
     attributes:
       label: Task identity and observable outcome
-      description: Stable task ID (P/E/G/V/R for baseline work), real need, next consumer and completion boundary. State the engineering change class separately.
+      description: Stable task ID, real user need, next consumer, concrete deliverable and completion/stop boundary. One outcome per assignee; state non-goals and engineering class separately.
     validations:
       required: true
   - type: textarea
@@ -30,20 +30,20 @@ body:
     id: authority
     attributes:
       label: Authority and decision boundaries
-      description: Allowed reads/edits/commit/push/PR and any explicitly authorized runtime/data/resource operations. State pending human decisions and stop conditions; never infer merge/deploy/training permission.
+      description: Allowed reads/edits/commit/push/PR and any explicitly authorized runtime/data/resource operations. State a cost/time checkpoint and expensive-run/spending limits, pending human decisions and stop conditions. If purpose/progress is lost, reassess rather than renew the same task; never infer new permission.
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Examples, checks and evidence level
-      description: Normal case, meaningful counterexample, cheapest faithful checks, required gates and rollback. Explain exact existing coverage when no new test is needed.
+      description: Observable guarantee, relevant normal/error case, cheapest faithful checks, final gates and cost. State existing/new/replaced/retired coverage only where affected; no new test for ceremony. Explain rollback and what the evidence cannot prove.
     validations:
       required: true
   - type: textarea
     id: handoff
     attributes:
       label: Delivery and continuation
-      description: Expected artifacts and consumer use path. At return add exact head, actual changes/checks/side effects, limitations, monitor if running and next gate. Submitted is not accepted or integrated.
+      description: Expected artifacts and consumer use path. At return add exact head, actual changes/checks/side effects, limitations, monitor if running and next gate. Submitted is not accepted or integrated. Name one next action; backlog items are not automatically dispatched.
     validations:
       required: true
