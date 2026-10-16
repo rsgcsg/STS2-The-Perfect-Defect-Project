@@ -211,7 +211,10 @@ export async function replayGlobalAgentRun(directory: string) {
         && active.deliveries.length + 1 === active.dispatches.length
         && p.source_ordinal === dispatch.source_ordinal, "global_receipt_without_dispatch");
       const receipt = decodePublicSourceReceipt(p.receipt).data; const { interaction_id: _i, label: _l, ...bound } = dispatch.bound_action;
-      require(receipt.request_id === p.request_id && same({ ...receipt.action, subject_referent_id: receipt.action.subject_referent_id ?? null }, { ...bound, subject_referent_id: bound.subject_referent_id ?? null }), "global_receipt_binding");
+      // Same rule as the Runtime: a request-level not_delivered rejection echoes only the bound action id.
+      require(receipt.request_id === p.request_id && (receipt.delivery === "not_delivered"
+        ? receipt.action.bound_action_id === bound.bound_action_id
+        : same({ ...receipt.action, subject_referent_id: receipt.action.subject_referent_id ?? null }, { ...bound, subject_referent_id: bound.subject_referent_id ?? null })), "global_receipt_binding");
       require((responses.get(p.request_id) ?? []).some(bytes => { try { const wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); return same(wire.result?.receipt ?? wire, receipt); } catch { return false; } }), "global_receipt_not_original_bytes");
       classifiedReceipts.add(p.request_id); active.deliveries.push(receipt); if (receipt.delivery === "unknown") unknown = true;
     } else if (event.kind === "global_dispatch_error") {

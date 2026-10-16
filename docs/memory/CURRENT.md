@@ -1,7 +1,8 @@
 # Current project context (2026-10-16)
 
 模型方案冻结：开。New learned Model/Input/Target/data/training configurations require
-user confirmation. Live GitHub refs, exact source and original evidence override this file.
+user confirmation. Resolve live GitHub refs before acting; exact source and original
+evidence override this file.
 
 ## Read first
 
@@ -23,8 +24,8 @@ user confirmation. Live GitHub refs, exact source and original evidence override
 - Managed (Ironclad en, 10 seeds): 9/10 natural terminal, 0 unknown, 10/10 replay verified.
 - Managed (Defect zh, 38 seeds counted): 32/38 natural terminal, 0 unknown, 2519 decisions;
   all 6 stops are T2 (card reward metadata).
-- Reference: first full episodes to natural terminal through the product path
-  (suite numbers in P1 doc §16).
+- Reference (Defect zh, first 5 test-1000 seeds): 4/5 natural terminal, 343 decisions,
+  5/5 replay verified; the one unknown was fixed and that seed reran to natural terminal.
 - Reference→Managed replay: diverges at step 0 on Managed deck card details (T1).
 
 ## Next
@@ -38,3 +39,9 @@ Each PR merge/closure, deployment, release, and branch/worktree/data deletion ne
 separate user approval. No new spending or frozen research change. unknown deliveries
 never retry. Preserve raw bytes; derive new versioned interpretations instead of
 rewriting originals. Source/test, build, installed, runtime and Human evidence stay separate.
+
+## Remaining Platform non-claims
+
+GLOBAL P1 r1.1 is not frozen, installed for release, Human-validated or Managed-equivalent.
+Random early-loss runs are not full coverage, win coverage or strategy strength. Required
+missing information keeps its original denominator; unknown never retries.

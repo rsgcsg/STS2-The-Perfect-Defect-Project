@@ -197,7 +197,7 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 | --- | --- | --- |
 | suite-b，10 种子 | Managed（Ironclad，en） | 9/10 自然终局，0 unknown，10/10 回放校验通过 |
 | census40，40 种子（统计 38 局） | Managed（Defect，zh） | 32/38 自然终局，0 unknown，2519 个决策；6 局都卡在选卡页元数据（续作 T2）；另 2 局因本机磁盘满中断，不计入 |
-| ref5，test-1000 前 5 种子 | Reference（真实游戏 + 开发 Mod，Defect，zh） | 4/5 自然终局，343 个决策，5/5 回放校验通过；1 局在第 44 步出现 unknown（见下），已修复，修复后待重跑确认 |
+| ref5，test-1000 前 5 种子 | Reference（真实游戏 + 开发 Mod，Defect，zh） | 4/5 自然终局，343 个决策，5/5 回放校验通过；第 4 局在第 44 步出现 unknown（请求层“未交付”回执不带 subject，见下）。修复后重跑该种子：自然终局，57 个决策，0 unknown，回放校验通过 |
 | Managed→Managed 重放 | Managed | 70/70 匹配，终局相同 |
 | Reference→Managed 重放，96 步轨迹 | Reference 原件在 Managed 上重放 | 第 0 步分叉：Managed 缺牌组卡详情（续作 T1） |
 
