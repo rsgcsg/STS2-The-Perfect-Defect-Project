@@ -463,7 +463,7 @@ public sealed record MapLiveContext(
     int ActIndex,
     VisibleMapCoordinate? CurrentPosition,
     IReadOnlyList<VisibleMapCoordinate> Visited,
-    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext;
+    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext, IPlayerReadContent;
 
 public sealed record CombatTransitionLiveContext(
     string Kind,
@@ -840,9 +840,11 @@ public sealed record VisibleCardRewardAlternative(
     public string? OptionId { get; init; }
     public string? Title { get; init; }
     public string? AfterSelected { get; init; }
+    public bool IsPureReturn { get; init; }
 }
 
-public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected);
+public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected)
+{ public bool IsPureReturn { get; init; } }
 
 /// <summary>
 /// A player-visible room reward. The Host deliberately exposes only the
@@ -857,6 +859,7 @@ public sealed record VisibleReward(
 {
     /// <summary>Public stable identity of this reward group (same alias owner as EntityId).</summary>
     public string? GroupId { get; init; }
+    public string GroupRelation { get; init; } = "unavailable";
 
     /// <summary>
     /// Lawfully viewable candidates of an offered, already populated card reward.
@@ -878,6 +881,10 @@ public sealed record CardRewardSelectionSurface(
 {
     public IReadOnlyList<string> SelectableCardEntityIds { get; init; } =
         Array.Empty<string>();
+    public string? ParentGroupId { get; init; }
+    public string ParentStatus { get; init; } = "unavailable";
+    public string? RewardSetId { get; init; }
+    public bool? SelectionCompletesReward { get; init; }
 }
 
 public sealed record VisibleCardBundle(
@@ -905,6 +912,7 @@ public sealed record RewardClaimSurface(
     bool ProceedSkipsRemainingRewards) : ILiveSurface
 {
     public bool CanLeaveWithUnclaimedRewards { get; init; }
+    public string? RewardSetId { get; init; }
 }
 
 public sealed record VisibleMapChoice(
