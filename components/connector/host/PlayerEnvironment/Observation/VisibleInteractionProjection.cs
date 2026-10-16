@@ -338,7 +338,7 @@ internal static partial class PlayerEnvironmentService
             {
                 value.Kind, value.Rewards, value.PotionSlotsFull,
                 value.DiscardablePotions, value.CanProceed,
-                value.ProceedSkipsRemainingRewards
+                value.ProceedSkipsRemainingRewards, value.CanLeaveWithUnclaimedRewards
             }),
             MapNavigationSurface value => ToNode(new
             {
