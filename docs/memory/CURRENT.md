@@ -21,15 +21,17 @@ may be combined only without losing information or meaningful opportunities. A c
 choice is delivered while its parent can still be pending. No requirement to finish an
 old combat-only proof scheme before global work.
 
-PR187 remains draft/open at ef79a994, based on develop02636a94. Its selected full run
+PR187 was approved by the user and normally merged into develop as41e62cd0,
+preserving topic ef79a994 and former base02636a94 as parents. Its selected full run
 38832429898 completed successfully; original four pytest leaves and execution receipt
 were independently verified in the prior closeout (48/48 stages, 4469 nodes per OS).
-Fresh GitHub inspection still matches those refs. Historical failed runs remain failed;
+Fresh GitHub and fetched merge-parent inspection confirm that integration. Historical failed runs remain failed;
 this source/test result is not current P1 runtime qualification.
 
-PR188 remains draft/open at be67e7a1, based on PR187. It adds a global shared reducer,
+PR188 remains draft/open at be67e7a1, now targeting develop41e62cd0. It adds a global shared reducer,
 PE-driver runner, records/conversion and real early-loss runs. Its submitted full CI
-38847727149 was running at acceptance start; consult the actual terminal result.
+38847727149 ended with two Windows jobs failing;45/48 owner stages passed.
+Path errors, renewal fixture timing and Python crash diagnosis remain separately tracked.
 Independent acceptance found required-information omissions accepted as complete,
 meaningful choices removed, unsafe reward decline/folds, false comparator matches,
 expiry-after-choice submission, invalid receipt acceptance and incomplete archive
@@ -38,8 +40,8 @@ GLOBAL P1 and the full product/recording chain are NOT accepted complete.
 
 Codex integration topic codex/p1-global-completion starts at the exact PR188 head;
 Claude's submitted checkout is preserved. Semantic repair and native parity repair have
-separate topics/worktrees. At most two code writers, one shared-interface writer and
-one heavy local/native slot. The lead verifies original diffs and receipts; material
+separate topics/worktrees. The active plan permits at most three disjoint code writers
+after shared-interface freeze, one shared-interface writer and one heavy local/native slot. The lead verifies original diffs and receipts; material
 changes require non-author review. Full task requirements remain open independently
 of local source subtasks. The active task owns the next work and acceptance table.
 
