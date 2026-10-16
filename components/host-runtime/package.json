@@ -62,7 +62,8 @@
     "check:repository": "node tools/check-repository.mjs",
     "check:docs": "node tools/check-markdown-links.mjs",
     "check:package": "node tools/check-package.mjs",
-    "check": "npm run check:syntax && npm test && npm run check:python && npm run check:docs && npm run check:repository && npm run check:package"
+    "check": "npm run check:syntax && npm test && npm run check:python && npm run check:docs && npm run check:repository && npm run check:package",
+    "package": "node tools/package.mjs"
   },
   "dependencies": {
     "@rsgcsg/sts2-connector-client": "file:../connector/sdk/typescript"

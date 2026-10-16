@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
+import { packageHostRuntime } from "./package.mjs";
+import { packageFileTreeSha256 } from "../../../tools/bundle-connector-sdk.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import os from "node:os";
@@ -11,23 +14,10 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const npmExecPath = process.env.npm_execpath;
-const args = ["pack", "--dry-run", "--json"];
-const result = typeof npmExecPath === "string" && npmExecPath.length > 0
-  ? spawnSync(process.execPath, [npmExecPath, ...args], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: "pipe"
-    })
-  : spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
-      cwd: root,
-      encoding: "utf8",
-      stdio: "pipe",
-      shell: process.platform === "win32"
-    });
-if (result.error) throw result.error;
-if (result.status !== 0) throw new Error(result.stderr || result.stdout);
-
-const report = JSON.parse(result.stdout)[0];
+const smokeRoot = mkdtempSync(path.join(os.tmpdir(), "sts2-host-runtime-package-smoke-"));
+const report = packageHostRuntime(path.join(smokeRoot, "first"), { allowDirty: true });
+const second = packageHostRuntime(path.join(smokeRoot, "second"), { allowDirty: true });
+assert.equal(report.sha256, second.sha256, "same source/build must produce identical Host archive bytes");
 if (report?.name !== "@rsgcsg/sts2-host-runtime") {
   throw new Error(`Host Runtime pack resolved the wrong package: ${report?.name ?? "missing"}`);
 }
@@ -50,7 +40,8 @@ for (const required of [
   "experiments/managed-exact/manifest.json",
   "package.json",
   "README.md",
-  "LICENSE"
+  "LICENSE", "src/managed-public-basis.mjs", "package-identity.json", "npm-shrinkwrap.json",
+  "node_modules/@rsgcsg/sts2-connector-client/dist/publicBasis.js", "node_modules/zod/package.json"
 ]) {
   if (!files.has(required)) throw new Error(`Host Runtime package is missing ${required}`);
 }
@@ -86,29 +77,8 @@ if (forbidden.length > 0) {
   throw new Error(`Host Runtime package contains forbidden files: ${forbidden.join(", ")}`);
 }
 
-const smokeRoot = mkdtempSync(path.join(os.tmpdir(), "sts2-host-runtime-package-smoke-"));
-const packResult = typeof npmExecPath === "string" && npmExecPath.length > 0
-  ? spawnSync(process.execPath, [npmExecPath, "pack", "--pack-destination", smokeRoot, "--json"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: "pipe"
-    })
-  : spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", [
-      "pack",
-      "--pack-destination",
-      smokeRoot,
-      "--json"
-    ], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: "pipe",
-      shell: process.platform === "win32"
-    });
-if (packResult.error) throw packResult.error;
-if (packResult.status !== 0) throw new Error(packResult.stderr || packResult.stdout);
-const packed = JSON.parse(packResult.stdout)[0];
-const tarball = path.join(smokeRoot, packed.filename);
-const installArgs = ["install", tarball, "--ignore-scripts", "--no-audit", "--no-fund"];
+const tarball = report.tarball;
+const installArgs = ["install", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund"];
 const installResult = typeof npmExecPath === "string" && npmExecPath.length > 0
   ? spawnSync(process.execPath, [npmExecPath, ...installArgs], {
       cwd: smokeRoot,
@@ -134,6 +104,8 @@ const importResult = spawnSync(process.execPath, [
       path.join(installedRoot, "src/project-identity.mjs")))};`,
     `import ${JSON.stringify(moduleSpecifierForPath(path.join(installedRoot, "src/managed-host-service.mjs")))};`,
     `import { projectManagedTextMenuV1 } from ${JSON.stringify(moduleSpecifierForPath(path.join(installedRoot, "src/managed-text-menu-map.mjs")))};`,
+    `import * as sdk from ${JSON.stringify(moduleSpecifierForPath(path.join(installedRoot, "node_modules/@rsgcsg/sts2-connector-client/dist/index.js")))};`,
+    "if (typeof sdk.decodePublicBasis !== 'function' || typeof sdk.verifyPublicBasis !== 'function') process.exit(5);",
     "if (typeof projectManagedTextMenuV1 !== 'function') process.exit(4);",
     `const identity = readProjectIdentity(${JSON.stringify(installedRoot)});`,
     "if (identity.distribution_kind !== 'installed_package') process.exit(3);",
@@ -146,14 +118,24 @@ if (importResult.status !== 0) {
 }
 const installedIdentity = JSON.parse(importResult.stdout);
 const installedPackage = JSON.parse(readFileSync(path.join(installedRoot, "package.json"), "utf8"));
-const installedSdkRoot = path.join(smokeRoot, "node_modules", "@rsgcsg", "sts2-connector-client");
+const installedSdkRoot = path.join(installedRoot, "node_modules", "@rsgcsg", "sts2-connector-client");
 const installedSdk = JSON.parse(readFileSync(path.join(installedSdkRoot, "package.json"), "utf8"));
 const resolvedSdkRoot = realpathSync(installedSdkRoot);
 if (resolvedSdkRoot.startsWith(`${realpathSync(root)}${path.sep}`)) {
   throw new Error("Standalone Host package resolved the Connector SDK from the Platform workspace");
 }
+const packageIdentity = JSON.parse(readFileSync(path.join(installedRoot, "package-identity.json"), "utf8"));
+assert.equal(packageIdentity.connector_sdk.mode, "bundled_source_candidate");
+assert.equal(packageFileTreeSha256(installedSdkRoot), packageIdentity.connector_sdk.bundle_sha256);
+assert.equal(packageFileTreeSha256(path.join(installedRoot, "node_modules/zod")), packageIdentity.connector_sdk.transitive_zod.bundle_sha256);
+assert.equal(installedPackage.dependencies["@rsgcsg/sts2-connector-client"], installedSdk.version);
+assert.ok(!JSON.stringify(installedPackage.dependencies).includes("file:"), "no workspace dependency escapes the package");
+const installedLock=JSON.parse(readFileSync(path.join(smokeRoot,"package-lock.json"),"utf8"));
+assert.ok(Object.entries(installedLock.packages).some(([name,value])=>name.endsWith("node_modules/@rsgcsg/sts2-connector-client")&&value.inBundle===true));
 console.log(JSON.stringify({
   status: "host_runtime_package_clean",
+  package_report: path.join(smokeRoot, "first", "host-runtime-package.json"),
+  package_sha256: report.sha256,
   name: report.name,
   version: report.version,
   filename: report.filename,
@@ -171,6 +153,10 @@ console.log(JSON.stringify({
     source_digest_sha256: installedIdentity.source_digest_sha256,
     connector_sdk_version: installedSdk.version,
     connector_sdk_resolved_outside_workspace: true,
-    managed_menu_and_service_imported: true
+    managed_menu_and_service_imported: true,
+    neutral_capture_sdk_export_verified: true,
+    exact_sdk_zod_bundle_hashes_verified: true,
+    offline_install: true,
+    deterministic_bytes: true
   }
 }, null, 2));
