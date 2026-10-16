@@ -26,7 +26,13 @@ BUILD_FIELDS = ("upstream_revision", "source_patch_sha256", "artifact_sha256",
 
 def managed_manifest(manifest: dict[str, Any]) -> bool:
     environment = manifest.get("requirements", {}).get("environment", {})
-    return bool(environment.get("kind") == KIND or (environment.get("kind") == "global-public-basis" and environment.get("host_kind") == "managed"))
+    return bool(
+        environment.get("kind") == KIND
+        or (
+            environment.get("kind") == "global-public-basis"
+            and environment.get("host_kind") == "managed"
+        )
+    )
 
 
 def public_binding(target: dict[str, Any]) -> dict[str, Any]:
