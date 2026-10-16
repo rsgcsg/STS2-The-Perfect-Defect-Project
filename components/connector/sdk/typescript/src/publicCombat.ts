@@ -40,8 +40,21 @@ export function combatContextSchemaFor<T extends z.ZodTypeAny>(cardContentSchema
   return combatContextSchema;
 }
 
+export function hasFinitePublicNumbers(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const item = pending.pop();
+    if (typeof item === "number" && !Number.isFinite(item)) return false;
+    if (typeof item === "object" && item !== null && !seen.has(item)) {
+      seen.add(item); pending.push(...Object.values(item));
+    }
+  }
+  return true;
+}
 const currentPublicCombatSchema = combatContextSchemaFor(visibleCardSchema);
 export function publicCombatContextProblems(value: unknown): string[] {
+  if (!hasFinitePublicNumbers(value)) return ["public numbers must be finite JSON values"];
   const parsed = currentPublicCombatSchema.safeParse(value);
   return parsed.success ? [] : parsed.error.issues.map(issue =>
     `${issue.path.join(".")}: ${issue.message}`);
