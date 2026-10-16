@@ -29,9 +29,12 @@ export type SceneFamily =
   | "combat" | "map" | "reward" | "card_reward" | "selector" | "upgrade" | "enchant" | "shop"
   | "event" | "rest" | "treasure" | "relic_choice" | "other" | "terminal" | "unsupported";
 
-/** r1.1 has explicit content validators only for these information shapes.
- * Other family mappings remain diagnostic until their full-information schema closes. */
-export const P1G_INFORMATION_SHAPES: readonly SceneFamily[] = Object.freeze(["combat", "map", "selector", "reward", "card_reward", "terminal"] as SceneFamily[]);
+/** Families whose observations may be published. Information completeness is the Host's
+ * declared snapshot/Read completeness plus the shared structural validators below; a
+ * family is not withheld merely because it lacks a dedicated validator. Only scenes the
+ * Host itself reports unsupported stay unpublished. */
+export const P1G_INFORMATION_SHAPES: readonly SceneFamily[] = Object.freeze(["combat", "map", "selector", "reward", "card_reward",
+  "upgrade", "enchant", "shop", "event", "rest", "treasure", "relic_choice", "other", "terminal"] as SceneFamily[]);
 
 export type HostKind = "reference" | "managed";
 

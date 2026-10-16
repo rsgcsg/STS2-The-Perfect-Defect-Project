@@ -280,17 +280,15 @@ public static partial class NativeCardPreviewReadQualification
     {
         Type current = model.GetType();
         if (current.Assembly != typeof(CardModel).Assembly) return false;
+        // Vanilla listeners only, with unpatched render hooks. The native hand/pile UI
+        // evaluates these same hooks whenever it draws a card, so a vanilla override is
+        // the game's own display semantics rather than an unqualified side channel; a
+        // per-class allowlist here rejected ordinary combat (any relic/power override).
         foreach (string name in RenderHookMethods)
         {
             MethodInfo? method = current.GetMethod(name, NativeMembers);
             if (method == null || !IsUnpatched(method)) return false;
-            Type? owner = method.DeclaringType;
-            bool known = owner == typeof(AbstractModel)
-                || owner == typeof(StrengthPower) && name == "ModifyDamageAdditive"
-                || owner == typeof(DexterityPower) && name == "ModifyBlockAdditive"
-                || owner == typeof(FrailPower) && name == "ModifyBlockMultiplicative"
-                || (owner == typeof(WeakPower) || owner == typeof(VulnerablePower)) && name == "ModifyDamageMultiplicative";
-            if (!known) return false;
+            if (method.DeclaringType?.Assembly != typeof(CardModel).Assembly) return false;
         }
         if (model is WeakPower or VulnerablePower)
             return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
@@ -348,13 +346,11 @@ public static partial class NativeCardPreviewReadQualification
                 || displayPile is not (PileType.None or PileType.Deck or PileType.Hand or PileType.Play or PileType.Draw or PileType.Discard or PileType.Exhaust)
 ) return false;
             if (!RenderFixedClosureUnpatched()) { gap = "native_card_render_fixed_closure_unqualified"; return false; }
-            if (!RenderCardDispatchQualified(card)) { gap = "native_card_render_effective_dispatch_unqualified"; return false; }
-            if (!RenderFormattingQualified()) { gap = "native_card_render_formatter_roster_unqualified"; return false; }
-            if (!RenderOrbHoverQualified(card)) { gap = "native_card_render_hover_asset_hit_unqualified"; return false; }
-            if (!RenderKeywordsQualified(card)
-                || !RenderCurrentPoolsQualified(card)
-                || !RenderVariablesQualified(card, CardVars?.GetValue(card) as DynamicVarSet)
-                || !RenderAttachmentQualified(card)) { gap = "native_card_render_current_values_unqualified"; return false; }
+            // Per-class allowlists (dispatch, formatter roster, hover assets, keyword/pool/
+            // variable/attachment rosters) are not render admission: the vanilla UI renders
+            // every card through this same closure. Mod safety stays above (exact MVID and an
+            // unpatched fixed closure); NativeCardRenderTransaction restores and verifies the
+            // owned preview state after each render and rejects any mutation.
             if (card.RunState is { } run)
             {
                 if (!NativeRunHookReadQualification.Preflight(run)) { gap = "native_card_render_run_subscribers_unqualified"; return false; }

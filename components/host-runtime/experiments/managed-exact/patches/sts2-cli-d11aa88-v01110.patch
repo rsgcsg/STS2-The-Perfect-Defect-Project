@@ -1007,10 +1007,10 @@ index 0000000..14bc7d2
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..b8190e9
+index 0000000..70c2d22
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,371 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -1293,17 +1293,15 @@ index 0000000..b8190e9
 +    {
 +        Type current = model.GetType();
 +        if (current.Assembly != typeof(CardModel).Assembly) return false;
++        // Vanilla listeners only, with unpatched render hooks. The native hand/pile UI
++        // evaluates these same hooks whenever it draws a card, so a vanilla override is
++        // the game's own display semantics rather than an unqualified side channel; a
++        // per-class allowlist here rejected ordinary combat (any relic/power override).
 +        foreach (string name in RenderHookMethods)
 +        {
 +            MethodInfo? method = current.GetMethod(name, NativeMembers);
 +            if (method == null || !IsUnpatched(method)) return false;
-+            Type? owner = method.DeclaringType;
-+            bool known = owner == typeof(AbstractModel)
-+                || owner == typeof(StrengthPower) && name == "ModifyDamageAdditive"
-+                || owner == typeof(DexterityPower) && name == "ModifyBlockAdditive"
-+                || owner == typeof(FrailPower) && name == "ModifyBlockMultiplicative"
-+                || (owner == typeof(WeakPower) || owner == typeof(VulnerablePower)) && name == "ModifyDamageMultiplicative";
-+            if (!known) return false;
++            if (method.DeclaringType?.Assembly != typeof(CardModel).Assembly) return false;
 +        }
 +        if (model is WeakPower or VulnerablePower)
 +            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
@@ -1361,13 +1359,11 @@ index 0000000..b8190e9
 +                || displayPile is not (PileType.None or PileType.Deck or PileType.Hand or PileType.Play or PileType.Draw or PileType.Discard or PileType.Exhaust)
 +) return false;
 +            if (!RenderFixedClosureUnpatched()) { gap = "native_card_render_fixed_closure_unqualified"; return false; }
-+            if (!RenderCardDispatchQualified(card)) { gap = "native_card_render_effective_dispatch_unqualified"; return false; }
-+            if (!RenderFormattingQualified()) { gap = "native_card_render_formatter_roster_unqualified"; return false; }
-+            if (!RenderOrbHoverQualified(card)) { gap = "native_card_render_hover_asset_hit_unqualified"; return false; }
-+            if (!RenderKeywordsQualified(card)
-+                || !RenderCurrentPoolsQualified(card)
-+                || !RenderVariablesQualified(card, CardVars?.GetValue(card) as DynamicVarSet)
-+                || !RenderAttachmentQualified(card)) { gap = "native_card_render_current_values_unqualified"; return false; }
++            // Per-class allowlists (dispatch, formatter roster, hover assets, keyword/pool/
++            // variable/attachment rosters) are not render admission: the vanilla UI renders
++            // every card through this same closure. Mod safety stays above (exact MVID and an
++            // unpatched fixed closure); NativeCardRenderTransaction restores and verifies the
++            // owned preview state after each render and rejects any mutation.
 +            if (card.RunState is { } run)
 +            {
 +                if (!NativeRunHookReadQualification.Preflight(run)) { gap = "native_card_render_run_subscribers_unqualified"; return false; }
@@ -3317,7 +3313,7 @@ index 0000000..251661c
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..2db0b51
+index 0000000..aee45e9
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
 @@ -0,0 +1,149 @@
@@ -3365,7 +3361,7 @@ index 0000000..2db0b51
 +    {
 +        var display = NativeSelectorCardDisplay.Capture(card, pile);
 +        if (!display.Complete)
-+            throw new InvalidOperationException("Current native combat card display is incomplete");
++            throw new InvalidOperationException("Current native combat card display is incomplete: " + card.Id.Entry + " " + string.Join(",", display.Missing));
 +        var result = new Dictionary<string,object?>(display.Card);
 +        result["render_complete"] = true;
 +        if (identity) result["native_ref"] = NativeObjectIdentity.Get(card);
@@ -4684,7 +4680,7 @@ index 800f139..d950eec 100644
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..5bc95b7 100644
+index 6b9de4a..ec46b37 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,6 @@
@@ -7238,7 +7234,7 @@ index 6b9de4a..5bc95b7 100644
 +        catch (Exception ex)
 +        {
 +            result["combat_hud_complete"] = false;
-+            result["combat_hud_gap"] = ex.GetType().Name;
++            result["combat_hud_gap"] = ex.GetType().Name + ": " + ex.Message;
 +        }
          return result;
      }

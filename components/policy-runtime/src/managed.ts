@@ -337,7 +337,8 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target, runId);
     return { kind: "managed", negotiate: signal => client.negotiateGlobal(signal), capture: options => client.captureGlobal(options),
       step: (input, options) => client.stepGlobal(input, options),
-      acquire: async signal => { signal.throwIfAborted(); await client.acquireController({ signal }); signal.throwIfAborted(); },
+      // Control is claimed once and held across consecutive choices (Reference credentials are likewise reused).
+      acquire: async signal => { signal.throwIfAborted(); if (!client.control) await client.acquireController({ signal }); signal.throwIfAborted(); },
       controlStatus: () => client.globalControlUnknown ? "unknown" : client.control ? "held" : "released",
       release: async () => { if (client.control) await client.releaseController(); else if (client.globalControlUnknown) throw new Error("managed_control_unconfirmed"); },
       close: async () => { if (client.control) await client.releaseController(); else if (client.globalControlUnknown) throw new Error("managed_control_unconfirmed"); } };

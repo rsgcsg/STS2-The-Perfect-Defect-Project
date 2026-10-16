@@ -4,7 +4,7 @@ import { completeCombatSurface, completeCombat, completeDeck, completeMap, compl
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
-import { completeRewardSurface, completeRewardGroup, completeCardRewardSurface, rewardIntention,
+import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
   matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
@@ -481,14 +481,10 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   if (nativeKind === "reward_claim" && !completeRewardSurface(surface)) missing.push("required:reward:invalid_content");
   if (nativeKind === "card_reward_selection" && !completeCardRewardSurface(surface)) missing.push("required:card_reward:invalid_content");
-  // The native producer now exposes a genuine one-way opportunity: ordinary
-  // return detaches this reward's passive relic callback without declining it.
-  // Its live lowering/postcondition is not yet implemented in this candidate.
-  // Do not certify a complete catalog that silently omits that choice.
-  const refreshGroups = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards : [surface];
-  if (refreshGroups.some((group: Record<string, any>) => group.native_relic_refresh_subscription === "attached"
-      && (group.card_alternatives ?? group.alternatives ?? []).some((option: Record<string, any>) => option.is_native_skip === true)))
-    missing.push("required:reward_stop_relic_refresh_mapping");
+  // Declared r1 exception (protocol §5): ordinary native open→Skip detaches a CardReward's
+  // passive RelicObtained refresh. P1 does not offer that "freeze these candidates" input;
+  // the subscription state stays public on the group (native_relic_refresh_subscription)
+  // and taking/declining the aggregated group remains available.
   const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work, "scene.content.surface") };
   if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work, "scene.content.context");
 
@@ -499,7 +495,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const rewardItems: Record<string, any>[] = nativeKind === "reward_claim" && Array.isArray(surface.rewards) ? surface.rewards.filter(isObject) : [];
   const groupByReferent = new Map<string, Record<string, any>>();
   for (const item of rewardItems) if (typeof item.entity_id === "string") groupByReferent.set(item.entity_id, item);
-  if (rewardItems.some(item => item.kind === "card" && !completeRewardGroup(item))) missing.push("required:reward_card_group_qualification");
+  if (rewardItems.some(item => item.kind === "card" && !structuralRewardGroup(item))) missing.push("required:reward_card_group_qualification");
   const groupIdentityAvailable = rewardItems.length > 0 && rewardItems.every((item) => typeof item.group_id === "string" && item.group_id.length > 0);
   if (rewardItems.length > 0 && !groupIdentityAvailable) missing.push("reward_group_identity:unsupported");
 

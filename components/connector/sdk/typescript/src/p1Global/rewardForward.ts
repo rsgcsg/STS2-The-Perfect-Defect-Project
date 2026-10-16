@@ -16,10 +16,18 @@ export function completeRewardAlternatives(value: unknown, opened = false): valu
     && (!opened || new Set(value.map(v => v.entity_id)).size === value.length);
 }
 
+/** Complete and aggregatable: an independent group whose candidates, alternatives and
+ * native disposition are all public. Only these get take/decline aggregation. */
 export function completeRewardGroup(group: unknown): group is Record<string, any> {
+  return structuralRewardGroup(group) && group.group_relation === "independent";
+}
+
+/** Complete public facts for any declared relation. A linked group is published with its
+ * native open granularity instead of being aggregated (claiming it may dispose siblings). */
+export function structuralRewardGroup(group: unknown): group is Record<string, any> {
   if (!isObject(group) || !text(group.entity_id) || !text(group.group_id) || !text(group.kind)
     || typeof group.label !== "string" || typeof group.enabled !== "boolean"
-    || group.group_relation !== "independent") return false;
+    || !["independent", "linked"].includes(String(group.group_relation))) return false;
   return group.kind !== "card" || completeCards(group.card_options)
     && (group.native_relic_refresh_subscription === "attached" || group.native_relic_refresh_subscription === "absent")
     && group.card_alternatives_complete === true && completeRewardAlternatives(group.card_alternatives)
@@ -33,7 +41,7 @@ export function completeRewardSurface(value: unknown): boolean {
     && (!value.can_leave_with_unclaimed_rewards || value.can_proceed)
     && typeof value.potion_slots_full === "boolean" && Array.isArray(value.discardable_potions)
     && value.discardable_potions.every(v => isObject(v) && text(v.entity_id))
-    && Array.isArray(value.rewards) && value.rewards.every(completeRewardGroup)
+    && Array.isArray(value.rewards) && value.rewards.every(structuralRewardGroup)
     && new Set(value.rewards.map(v => v.group_id)).size === value.rewards.length
     && new Set(value.rewards.map(v => v.entity_id)).size === value.rewards.length;
 }

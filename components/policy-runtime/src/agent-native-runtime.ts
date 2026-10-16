@@ -1374,7 +1374,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try {
         this.checkActive(epoch, signal); await this.options.globalTransport!.acquire(signal); this.checkActive(epoch, signal);
         await this.emit("controller_acquired", { ...this.context(), controller: "held" }); this.checkActive(epoch, signal);
-      } catch (error) { status = steps.length ? "interrupted_known" : "not_started"; break; }
+      } catch (error) {
+        await this.emitGlobal("global_dispatch_error", { request_id: null, sent: false, reason: `controller_acquire:${errorMessage(error)}` });
+        status = steps.length ? "interrupted_known" : "not_started"; break;
+      }
       const requestId = `request-${randomUUID()}`, step = next;
       const bound = (source.full.basis.snapshot.bound_actions as { actions: Record<string, unknown>[] }).actions.find(a => a.bound_action_id === step.bound_action_id);
       if (!bound) { status = steps.length ? "interrupted_known" : "not_started"; break; }
