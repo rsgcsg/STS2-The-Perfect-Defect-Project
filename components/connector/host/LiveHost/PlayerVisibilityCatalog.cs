@@ -105,7 +105,9 @@ internal static class PlayerVisibilityCatalog
         if (activeRunSharedStateAvailable)
         {
             kinds.Add(PlayerVisibleReadBuilder.RunDeckKind);
-            if (aggregateCurrentPublicReads && draft.Context.Kind != "terminal") kinds.Add(PlayerVisibleReadBuilder.MapKind);
+            // The game-over screen has no openable map (native entry is unsupported there).
+            if (aggregateCurrentPublicReads && draft.Context.Kind is not ("terminal" or "game_over"))
+                kinds.Add(PlayerVisibleReadBuilder.MapKind);
         }
         if (draft.Context.Kind == "combat")
             kinds.Add(PlayerVisibleReadBuilder.CombatPilesKind);

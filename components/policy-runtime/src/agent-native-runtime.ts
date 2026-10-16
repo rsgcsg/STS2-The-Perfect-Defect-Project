@@ -30,6 +30,8 @@ import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, Age
   RuntimeServiceOwner } from "./agent-runtime-contracts.js";
 import type { AgentAcquisitionWitness, AgentRuntimeEventKind, AgentRuntimeEventPayloads } from "./agent-runtime-events.js";
 
+const GLOBAL_POST_DELIVERY_SETTLE_MS = 15_000;
+
 interface SharedAgentRuntimeOptions {
   manifest: AgentManifest;
   port: NdjsonAgentSessionPort;
@@ -1429,6 +1431,13 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try {
         this.checkActive(epoch, signal);
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        // A real Host is briefly incomplete while native animations/transitions settle after a
+        // known delivery. Re-reading (never re-dispatching) until it publishes is the native wait.
+        for (const deadline = Date.now() + GLOBAL_POST_DELIVERY_SETTLE_MS;
+          source.full.basis.capture_status !== "complete" && Date.now() < deadline;) {
+          await globalDelay(100, signal); this.checkActive(epoch, signal);
+          source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        }
         if (source.full.basis.capture_status !== "complete") throw new AgentSessionError("global_post_delivery_capture_incomplete");
         if (!rule) break;
         while (source.full.basis.capture_status === "complete"
