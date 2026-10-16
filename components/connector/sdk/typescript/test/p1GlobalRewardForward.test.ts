@@ -5,14 +5,15 @@ import { rewardForwardPair as pair } from "./fixtures/reward-forward.mjs";
 const project = (basis: P1Basis) => reduce(createSession("reward-test", "reference"), basis);
 
 describe("complete forward reward intentions", () => {
-  it("does not certify the newly exposed passive-refresh opportunity before its P1 lowering exists", () => {
+  it("publishes an attached passive-refresh reward as a registered exception, with the fact public", () => {
+    // User decision 2026-10-16: P1 does not offer the native open->Skip "freeze candidates"
+    // input; the subscription state stays visible and the page is still published.
     const { outer, child, group } = pair();
     group.native_relic_refresh_subscription = "attached";
     child.snapshot.interaction.content.surface.native_relic_refresh_subscription = "attached";
-    for (const basis of [outer, child]) {
-      expect(project(basis).complete).toBe(false);
-      expect(project(basis).missing).toContain("required:reward_stop_relic_refresh_mapping");
-    }
+    for (const basis of [outer, child]) expect(project(basis).complete).toBe(true);
+    expect(JSON.stringify(project(outer).observation)).toContain('"native_relic_refresh_subscription":"attached"');
+    expect(project(outer).observation.catalog.some(c => c.kind === "reward.stop_relic_refresh")).toBe(false);
     group.native_relic_refresh_subscription = "unavailable";
     expect(project(outer).complete).toBe(false);
   });

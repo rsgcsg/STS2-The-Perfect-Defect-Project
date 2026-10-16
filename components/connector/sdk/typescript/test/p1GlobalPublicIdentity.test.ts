@@ -13,7 +13,7 @@ const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'str
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
 
 describe('P1 current public identity and HUD projection', () => {
-  it('refuses complete P1 admission until enriched card display/parent identities have a declared projection', () => {
+  it('projects enriched card display owners as public aliases and drops the parent Read locator', () => {
     const b = basis(), card = hud(b).player.hand[0], id = 'new-public-detail';
     const listed = { ...b.snapshot.reads[0], read_id: id, kind: 'surface_card', target_referent_id: card.entity_id,
       content_schema: 'sts2.player-environment/read/surface_card-1' };
@@ -24,8 +24,11 @@ describe('P1 current public identity and HUD projection', () => {
         display_owner_entity_id: hud(b).player.player_entity_id, keywords: [], card_previews: [] } } });
     const before = JSON.stringify(b), r = project(b);
     const renamed = project(rename(b, hud(b).player.player_entity_id, 'different-private-owner-spelling'));
-    expect(input(r) === input(renamed) || !r.complete && !renamed.complete).toBe(true);
-    expect(r.complete).toBe(false); expect(r.missing).toContain('required:public_card_display_identity_projection');
+    expect(r.complete).toBe(true); expect(input(r)).toBe(input(renamed));
+    const detail = (r.observation.extra_reads as any[]).find(read => read.kind === 'surface_card').content;
+    expect(detail).not.toHaveProperty('parent_read_id');
+    expect(detail.display_owner_entity_id).toBe((r.observation.combat.content as any).player.player_entity_id);
+    expect(JSON.stringify(r.observation)).not.toContain(hud(b).player.player_entity_id);
     expect(JSON.stringify(b)).toBe(before);
   });
   it('native numeric counter and opaque token spelling do not change model input', () => {

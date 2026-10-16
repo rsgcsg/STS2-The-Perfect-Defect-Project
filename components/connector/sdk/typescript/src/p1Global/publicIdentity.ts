@@ -61,6 +61,7 @@ export function createPublicIdentityPolicy(nativeKind: string,
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
     && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));
+  if (detailCards.size > 0) references.add("extra_reads[].content.display_owner_entity_id");
   const cardIdentity = (path: string, root: string) => path.startsWith(root)
     && /^(?:\.card_previews\[\])*\.entity_id$/u.test(path.slice(root.length));
   return {

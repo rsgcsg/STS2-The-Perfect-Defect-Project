@@ -152,11 +152,16 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
     discard.ordering_semantics = "unordered_multiset";
     expect(project(b).missing).toContain("required:piles:invalid_content");
   });
-  it("does not call unqualified scene information complete merely because common parts exist", () => {
+  it("publishes a mapped family once the Host snapshot is complete (no per-family withholding)", () => {
     const b = fixture("synthetic-complete-combat");
     b.snapshot.interaction.kind = "event_option"; b.snapshot.interaction.content_schema = "sts2.player-environment/surface/event_option-1";
     b.snapshot.interaction.content.surface.kind = "event_option";
-    expect(project(b).missing).toContain("required:scene_information_qualification:event");
+    const r = project(b);
+    expect(r.missing.some((m: string) => m.startsWith("required:scene_information_qualification"))).toBe(false);
+    expect(r.observation.scene.family).toBe("event");
+    // An incomplete Host snapshot still blocks publication.
+    b.snapshot.completeness = { ...b.snapshot.completeness, status: "partial" };
+    expect(project(b).complete).toBe(false);
   });
   it("checks owning surface schema, public player identity and pile counts", () => {
     for (const mutate of [(b: any) => { b.snapshot.interaction.content_schema = "sts2.player-environment/surface/future_combat-1"; },
@@ -196,13 +201,13 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
     ["treasure_relic_selection", "select", "relic", "treasure.take"],
     ["treasure_relic_selection", "skip", "treasure_room", "treasure.skip"],
     ["treasure_completion", "close", "treasure_room", "treasure.proceed"]])("preserves native %s/%s command binding in treasure family", (kind, verb, role, expected) => {
-    // Command-contract conformance only; full scene information remains explicitly unqualified.
+    // Command-contract conformance; the family publishes on a complete Host snapshot.
     const b = fixture("synthetic-complete-combat"); const action = b.snapshot.bound_actions.actions[0];
     b.snapshot.referents.find((ref: any) => ref.referent_id === action.subject_referent_id).role = role;
     action.verb = verb; action.arguments = []; b.snapshot.bound_actions.actions = [action]; count(b);
     Object.assign(b.snapshot.interaction, { kind, content_schema: `sts2.player-environment/surface/${kind}-1` });
     b.snapshot.interaction.content.surface = { kind };
-    const r = project(b); expect(r.observation.scene.family).toBe("treasure"); expect(r.complete).toBe(false);
+    const r = project(b); expect(r.observation.scene.family).toBe("treasure"); expect(r.complete).toBe(true);
     expect(r.observation.catalog[0]!.kind).toBe(expected);
     expect(r.lowering[r.observation.catalog[0]!.choice_id]!.first!.bound_action_id).toBe(action.bound_action_id);
   });

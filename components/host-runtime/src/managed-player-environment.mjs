@@ -1152,7 +1152,9 @@ function currentSurface(state, ctx) {
           selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
           native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
             ? state.native_relic_refresh_subscription : "unavailable",
-          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip") },
+          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip"),
+          // Same fact as the Reference card reward page: every offered card has its select input.
+          selectable_card_entity_ids: cards.map((card) => card.entity_id) },
         context: { ...commonContext, kind: "reward" },
         complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",

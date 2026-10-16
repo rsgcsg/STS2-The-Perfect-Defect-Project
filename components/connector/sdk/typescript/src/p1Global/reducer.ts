@@ -278,6 +278,14 @@ interface NativeAction { bound_action_id: string; verb: string; subject_referent
   arguments: { role: string; referent_id: string }[]; label: string }
 interface NativeReferent { referent_id: string; role: string }
 
+/** Rich card details: the display owner is an entity relation (aliased by the identity
+ * policy); the parent Read id is a transport locator with no game meaning and is dropped. */
+function publicDetailContent(kind: string, content: unknown): unknown {
+  if (kind !== "surface_card" || !isObject(content) || !Object.hasOwn(content, "public_details_revision")) return content;
+  const { parent_read_id: _locator, ...rest } = content;
+  return rest;
+}
+
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   const interaction = snapshot.interaction as Record<string, any>;
@@ -355,13 +363,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const deckRead = aggregate("run_deck"); const pilesRead = aggregate("combat_piles"); const mapRead = aggregate("map");
   const extraReadSources = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
     .map(({ listed, read }) => ({ kind: String(listed.kind), availability: (read ? "available" : "unknown") as Availability,
-      content: read?.content ?? null }));
-  // The new native detail inventory preserves display/parent identities in its
-  // source bytes. Its P1 identity projection is a separate unfinished seam;
-  // do not send those currently literal metadata IDs as a complete Agent view.
-  if (extraReadSources.some(read => read.kind === "surface_card" && isObject(read.content)
-      && Object.hasOwn(read.content, "public_details_revision")))
-    missing.push("required:public_card_display_identity_projection");
+      content: publicDetailContent(String(listed.kind), read?.content ?? null) }));
   const policy = createPublicIdentityPolicy(nativeKind, extraReadSources);
   const rawFacts = {
     player: { content: persistent?.player }, run: { content: persistent?.run },
