@@ -69,7 +69,7 @@ export interface ManagedEnvironmentBinding {
   schema: "sts2.policy-runtime/managed-environment-binding-1";
   /** Digest of the private operator profile only; the profile bytes are not public evidence. */
   profile_sha256: string;
-  input_profile: "text-menu-v2";
+  input_profile: "text-menu-v2" | "public-basis-1";
   host_package_identity: {
     package: "@rsgcsg/sts2-host-runtime";
     version: string;
@@ -396,7 +396,8 @@ export interface RuntimeStatus {
     modset_status: string;
     modset_fingerprint: string;
     loaded_mod_ids: string[];
-  } | ManagedEnvironmentStatus | null;
+  } | ManagedEnvironmentStatus | { kind: "global_public_basis"; runtime_instance_id: string; environment_fingerprint: string;
+    host_kind: "reference" | "managed"; producer_sha256: string; game_sha256: string; game_continuity_id: string | null } | null;
 }
 
 export type TickResult =
@@ -476,12 +477,12 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   return root as unknown as PolicyManifest;
 }
 
-export function validateManagedEnvironmentBinding(value: unknown): ManagedEnvironmentBinding {
+export function validateManagedEnvironmentBinding(value: unknown, profile: "text-menu-v2" | "public-basis-1" = "text-menu-v2"): ManagedEnvironmentBinding {
   const binding = object(value, "Managed Environment Binding");
   exactKeys(binding, ["schema", "profile_sha256", "input_profile", "host_package_identity", "candidate_build"]);
   literal(binding, "schema", "sts2.policy-runtime/managed-environment-binding-1");
   sha256Field(binding, "profile_sha256");
-  literal(binding, "input_profile", "text-menu-v2");
+  literal(binding, "input_profile", profile);
   const pin = object(binding.host_package_identity, "binding.host_package_identity");
   exactKeys(pin, ["package", "version", "source_revision", "component_tree_revision", "release_asset_sha256", "package_content_sha256"]);
   literal(pin, "package", "@rsgcsg/sts2-host-runtime");

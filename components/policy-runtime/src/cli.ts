@@ -9,6 +9,7 @@ import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
 import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, validatePolicyManifest, type AutonomyBudgetConfig, type RuntimeMode } from "./contracts.js";
 import { ConnectorPolicyClient } from "./connector.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
+import { ReferenceGlobalTransport } from "./global-transport.js";
 import { ManagedServicePolicyClient, type ManagedTarget } from "./managed.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
 import { PolicyRuntime } from "./runtime.js";
@@ -168,7 +169,8 @@ async function main(): Promise<void> {
 }
 
 async function runAgent(options: CliOptions, manifestPath: string, manifest: AgentManifest): Promise<void> {
-  if (options.managed || options.observationAcquisition !== "direct")
+  const global = manifest.input.profile === "p1-global-r1";
+  if ((!global && options.managed) || options.observationAcquisition !== "direct")
     throw new Error("native Agent session does not support Managed or legacy sealed text acquisition");
   const artifactPath = isAbsolute(manifest.artifact.path) ? manifest.artifact.path : resolve(dirname(manifestPath), manifest.artifact.path);
   const artifactSha256 = createHash("sha256").update(await readFile(artifactPath)).digest("hex");
@@ -193,7 +195,12 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
   try {
     port = NdjsonAgentSessionPort.spawn(options.adapterCommand, options.adapterArgs,
       manifest.adapter, manifest.limits, { cwd: options.adapterCwd, executionPolicy: manifest.execution_policy });
-    runtime = await PolicyRuntime.forAgent({ manifest, environment: new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms),
+    const environment = new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms);
+    const selected = global ? { globalTransport: options.managed
+      ? await ManagedServicePolicyClient.attachGlobal(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target, evidence.runId)
+      : new ReferenceGlobalTransport(environment, { productVersion: POLICY_RUNTIME_VERSION, clientInstanceId: evidence.runId }) }
+      : { environment };
+    runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
       port, evidence, mode: options.mode, autoBudget: options.autoBudget,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
     service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,

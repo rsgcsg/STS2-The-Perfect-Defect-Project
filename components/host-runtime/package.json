@@ -65,6 +65,6 @@
     "check": "npm run check:syntax && npm test && npm run check:python && npm run check:docs && npm run check:repository && npm run check:package"
   },
   "dependencies": {
-    "@rsgcsg/sts2-connector-client": "https://github.com/rsgcsg/STS2-The-Pefect-Defect-Project/releases/download/compat/platform-import-v1/rsgcsg-sts2-connector-client-1.1.0-rc.1.tgz"
+    "@rsgcsg/sts2-connector-client": "file:../connector/sdk/typescript"
   }
 }

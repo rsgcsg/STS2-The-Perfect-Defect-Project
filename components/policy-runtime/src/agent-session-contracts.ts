@@ -1,3 +1,5 @@
+import { P1G_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
+import type { GlobalExpectedEnvironment } from "./global-transport.js";
 import type { ConnectorPolicyRequirements } from "./contracts.js";
 import { decodeNativeLogicalResult, type NativeLogicalResult } from "@rsgcsg/sts2-connector-client";
 
@@ -63,7 +65,8 @@ export interface AgentManifest {
   adapter: AgentAdapterIdentity;
   artifact: { id: string; path: string; sha256: string };
   input: {
-    profile: "native-logical-v1";
+    profile: "native-logical-v1" | "p1-global-r1";
+    global?: { revision: typeof P1G_REVISION; core_sha256: string };
     input_spec: AgentInputSpec;
     projection: { id: string; version: string };
     state_format_version: string;
@@ -79,7 +82,7 @@ export interface AgentManifest {
   };
   requirements: {
     connector_protocol_version: string;
-    environment: ConnectorPolicyRequirements["environment"];
+    environment: ConnectorPolicyRequirements["environment"] | GlobalExpectedEnvironment;
     required_methods: string[];
   };
   support: { game_versions: string[]; game_commits: string[]; interaction_kinds: string[]; action_verbs: string[] };
@@ -110,6 +113,7 @@ export interface AgentConsumeAck {
   advanced: boolean; prefix: AgentPrefix;
 }
 export interface AgentConsumeInput {
+  consumption_unit?: { id: string };
   acquisition_id: string; input_spec: AgentInputSpec; continuity_token: string;
   previous_consumption_id: string | null;
   /** Already decoded/qualified by the owning native SDK before offering. */
@@ -248,8 +252,11 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   validateAgentAdapter(manifest.adapter);
   const artifact = sessionObject(manifest.artifact, ["id", "path", "sha256"]);
   sessionText(artifact.id); sessionText(artifact.path, 4096); sessionDigest(artifact.sha256);
-  const input = sessionObject(manifest.input, ["profile", "input_spec", "projection", "state_format_version", "state_recovery", "history_mode", "consumption_mode", "gap_policy", "attachment"]);
-  choice(input.profile, ["native-logical-v1"]); validateAgentInputSpec(input.input_spec);
+  const global = sessionObject(manifest.input).profile === "p1-global-r1";
+  const inputFields = ["profile", "input_spec", "projection", "state_format_version", "state_recovery", "history_mode", "consumption_mode", "gap_policy", "attachment"];
+  const input = sessionObject(manifest.input, global ? [...inputFields, "global"] : inputFields);
+  if (global) { const g = sessionObject(input.global, ["revision", "core_sha256"]); choice(g.revision, [P1G_REVISION]); sessionDigest(g.core_sha256); }
+  choice(input.profile, ["native-logical-v1", "p1-global-r1"]); validateAgentInputSpec(input.input_spec);
   const projection = sessionObject(input.projection, ["id", "version"]);
   sessionText(projection.id); sessionText(projection.version); sessionText(input.state_format_version);
   const recovery = sessionObject(input.state_recovery, ["mode", "max_state_bytes", "model_bindings"]);
@@ -279,7 +286,7 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   });
   if (new Set(seams.map(seam => seam.source_seam)).size !== seams.length) throw new AgentSessionError("duplicate_seam");
   if ((history === "full_reference") !== (delivery === "full_reference")
-    || (history === "full_reference" && (mode !== "once_per_occurrence" || scope.length !== 4 || seams.some(seam => seam.coverage !== "complete_at_seam"))))
+    || (history === "full_reference" && (mode !== "once_per_occurrence" || scope.length !== (global ? 0 : 4) || seams.some(seam => seam.coverage !== "complete_at_seam"))))
     throw new AgentSessionError("history_scope_mismatch");
   if (history === "sampled_current" && (mode !== "once_per_occurrence" || scope.length !== 0
     || delivery !== "scoped" || recoveryMode !== "none" || input.gap_policy !== "handoff"))
@@ -287,17 +294,23 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   if (policy && history !== "sampled_current") throw new AgentSessionError("agent_execution_policy_requires_sampled_current");
   const requirements = sessionObject(manifest.requirements, ["connector_protocol_version", "environment", "required_methods"]);
   sessionText(requirements.connector_protocol_version);
+  if (global && (history !== "full_reference" || mode !== "once_per_occurrence" || recoveryMode !== "none" || input.gap_policy !== "handoff" || policy)) throw new AgentSessionError("global_program_input_contract");
+  if (global) {
+    const e = sessionObject(requirements.environment, ["kind", "host_kind", "producer_sha256", "game_sha256"]);
+    choice(e.kind, ["global-public-basis"]); choice(e.host_kind, ["reference", "managed"]); sessionDigest(e.producer_sha256); sessionDigest(e.game_sha256);
+  } else {
   const environment = sessionObject(requirements.environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]);
   choice(environment.host_kind, ["live_ui", "headless", "replay", "test"]);
   for (const key of ["connector_version", "connector_source_revision", "connector_module_version_id", "modset_status"]) sessionText(environment[key]);
   sessionDigest(environment.connector_artifact_sha256); sessionDigest(environment.modset_fingerprint);
   strings(environment.loaded_mod_ids);
+  }
   const methods = strings(requirements.required_methods, true);
-  const allowed = ["capabilities", "attach", "current", "current_owned", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
-  const minimum = ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
+  const allowed = global ? ["capabilities", "capture", "submit"] : ["capabilities", "attach", "current", "current_owned", "read", "catalog", "resolve", "submit", "result", "events", "await", "cancel_wait", "detach", "renew", "retain", "release"];
+  const minimum = global ? ["capabilities", "capture", "submit"] : ["capabilities", "attach", "events", "await", "cancel_wait", "detach", "submit", "result", "renew"];
   if (history === "sampled_current") minimum.push("current", "read", "catalog", "retain", "release");
   if (policy) minimum.push("current_owned");
-  else if (history === "full_reference") minimum.push("read", "catalog", "retain", "release");
+  else if (!global && history === "full_reference") minimum.push("read", "catalog", "retain", "release");
   else if (methods.includes("current")) minimum.push("read", "retain", "release");
   if (methods.some(method => !allowed.includes(method)) || minimum.some(method => !methods.includes(method)))
     throw new AgentSessionError("required_methods_mismatch");

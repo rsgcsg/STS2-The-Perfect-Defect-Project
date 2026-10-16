@@ -25,7 +25,7 @@ def describe(
     if adapter not in TRUSTED_AGENT_ADAPTERS:
         raise BoundaryError("agent_composition", "unsupported_trusted_adapter")
     native = manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
-    teacher = adapter == TEACHER_ADAPTER
+    teacher = adapter in {TEACHER_ADAPTER, "spireagent-global-public-program"}
     artifact = dict(manifest.get("artifact", {}))
     original_input = dict(manifest.get("input" if native else "representation", {}))
     state: dict[str, Any]
@@ -33,7 +33,7 @@ def describe(
         if (
             not native
             or original_input.get("state_recovery", {}).get("model_bindings") != []
-            or manifest.get("adapter", {}).get("id") != TEACHER_ADAPTER
+            or manifest.get("adapter", {}).get("id") != adapter
         ):
             raise BoundaryError("agent_composition", "teacher_requires_declared_empty_models")
         models: list[dict[str, Any]] = []

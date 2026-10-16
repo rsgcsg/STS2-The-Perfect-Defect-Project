@@ -1,0 +1,85 @@
+"""GLOBAL original archive integrity plus trusted shared-code semantic replay.
+
+Archive bytes never select executable code. A trusted application supplies its
+installed Runtime directory; its exact compiled digest must match the producer.
+This verifies recorded facts, not native coverage, Human origin or research use.
+"""
+from __future__ import annotations
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+from typing import Any, Mapping
+from .agent_run_evidence import _canonical_json, _file_entry, _read_checksums
+from .agent_session_run_evidence import AgentSessionRunEvidence, _object, _json, _require, _sha, _digest, _time, _integer
+
+BASE = {"manifest.json", "agent-manifest.json", "adapter-attestation.json", "events.jsonl"}
+EXTRA = {"checksums.sha256", "evidence-manifest.json"}
+ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin\Z")
+
+
+def verify_global_session(directory: Path, expected: Mapping[str, object] | None) -> AgentSessionRunEvidence:
+    entries = list(directory.iterdir())
+    _require(all(p.is_file() and not p.is_symlink() for p in entries), "global_archive_ordinary_files")
+    names = {p.name for p in entries}
+    artifacts = names - BASE - EXTRA
+    _require(BASE | EXTRA <= names and len(names) <= 65542
+             and all(ARTIFACT.fullmatch(n) for n in artifacts), "global_archive_inventory")
+    _require(sum(p.stat().st_size for p in entries) <= 768 * 1024**2
+             and all(0 < (directory / n).stat().st_size <= 96 * 1024**2 for n in artifacts), "global_archive_capacity")
+    checksums = _read_checksums(directory / "checksums.sha256")
+    _require(set(checksums) == names - {"checksums.sha256"}, "global_checksum_inventory")
+    for name, value in checksums.items():
+        _require(_sha((directory / name).read_bytes()) == value, "global_original_checksum")
+    run = _object(_json((directory / "manifest.json").read_bytes(), "manifest.json"), {
+        "schema", "run_id", "manifest_id", "agent_manifest_sha256", "agent_id", "agent_version", "agent_artifact_sha256",
+        "runtime_version", "runtime_code_sha256", "started_at", "ended_at", "status", "mode", "tainted", "append_only"})
+    _require(run["schema"] == "sts2.policy-runtime/agent-session-run-1" and run["status"] in {"completed", "stopped", "tainted"}
+             and run["append_only"] is True and type(run["tainted"]) is bool, "global_closed_run_required")
+    _time(run["started_at"]); _time(run["ended_at"]); _digest(run["runtime_code_sha256"])
+    agent = _json((directory / "agent-manifest.json").read_bytes(), "agent-manifest.json")
+    _require(agent.get("input", {}).get("profile") == "p1-global-r1"
+             and _sha(_canonical_json(agent).encode()) == run["agent_manifest_sha256"], "global_agent_manifest_binding")
+    immutable = _object(_json((directory / "evidence-manifest.json").read_bytes(), "evidence-manifest.json"), {
+        "schema", "run_id", "complete", "append_only", "files", "manifest_sha256"})
+    files = [_file_entry(directory / n, n) for n in sorted(BASE | artifacts)]
+    _require(immutable["schema"] == "sts2.policy-runtime/immutable-evidence-manifest-1" and immutable["run_id"] == run["run_id"]
+             and immutable["complete"] is True and immutable["append_only"] is True and immutable["files"] == files
+             and immutable["manifest_sha256"] == _sha(_canonical_json({"run_id": run["run_id"], "files": files}).encode()), "global_immutable_inventory")
+    # An archive cannot supply executable paths. This is an application-owned installed package pin.
+    requested = dict(expected or {})
+    trusted = requested.pop("global_runtime_directory", None)
+    _require(isinstance(trusted, str) and bool(trusted), "global_trusted_shared_replay_required")
+    runtime = Path(trusted)
+    _require(runtime.is_absolute() and runtime.is_dir() and runtime.resolve() == runtime
+             and all(not p.is_symlink() for p in [runtime, *runtime.parents]), "global_runtime_directory_unsafe")
+    modules = sorted(runtime.glob("*.js"))
+    _require(modules and all(p.is_file() and not p.is_symlink() for p in modules), "global_runtime_code_required")
+    digest = hashlib.sha256()
+    for module in modules:
+        digest.update(module.name.encode()); digest.update(b"\0"); digest.update(module.read_bytes()); digest.update(b"\0")
+    _require(digest.hexdigest() == run["runtime_code_sha256"], "global_trusted_runtime_code_drift")
+    _require(requested.get("schema", "sts2.policy-runtime/agent-session-startup-1") == "sts2.policy-runtime/agent-session-startup-1", "global_expected_namespace")
+    aliases = {"agent_manifest_id": "manifest_id"}
+    for key in ("run_id", "agent_manifest_id", "agent_id", "agent_version", "agent_manifest_sha256", "agent_artifact_sha256", "runtime_version", "runtime_code_sha256"):
+        if key in requested:
+            _require(run[aliases.get(key, key)] == requested[key], "global_expected_identity")
+    if "adapter" in requested:
+        _require(requested["adapter"] == agent["adapter"], "global_expected_adapter")
+    script = "import{pathToFileURL}from'node:url';const m=await import(pathToFileURL(process.argv[1]));console.log(JSON.stringify(await m.replayGlobalAgentRun(process.argv[2])));"
+    try:
+        result = subprocess.run(["node", "--input-type=module", "-e", script, str(runtime / "global-replay.js"), str(directory)],
+                                capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        _require(False, "global_shared_replay_unavailable")
+    _require(result.returncode == 0 and len(result.stdout) <= 65536, "global_shared_replay_failed")
+    report = _object(json.loads(result.stdout))
+    _require(report.get("schema") == "sts2.policy-runtime/global-replay-1" and report.get("run_id") == run["run_id"]
+             and report.get("verdict") == "verified" and report.get("native_qualification") is False
+             and report.get("human_origin") is False and report.get("research_admission") is False, "global_shared_replay_report")
+    events = (directory / "events.jsonl").read_bytes()
+    _require(events.endswith(b"\n"), "global_journal_truncated")
+    count = len(events.splitlines()); _integer(count, positive=True, maximum=65536)
+    identity = {"schema": "sts2.evidence/store-directory-1", "files": [_file_entry(directory / n, n) for n in sorted(names)]}
+    return AgentSessionRunEvidence(directory, run, agent, immutable, count, _sha(_canonical_json(identity).encode()))

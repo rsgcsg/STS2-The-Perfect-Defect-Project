@@ -576,3 +576,40 @@ The Runtime test command serializes test files. The suite includes independent
 fsync-heavy evidence admission tests and a portable bridge build; simultaneous
 files can exhaust the unchanged per-test deadline through filesystem contention.
 Assertions, timeouts, admission limits and optional-case conditions are preserved.
+
+
+### GLOBAL public program profile
+
+`p1-global-r1` is handled by the same `PolicyRuntime.forAgent`, Agent NDJSON
+port, lifecycle owner, wall/submission/call budget, controller cleanup and HTTP
+server as the native Agent profile. `createGlobalProgramManifest` binds the
+shared SDK reducer and `modelView` to a fixed model-less program descriptor.
+`ReferenceGlobalTransport` uses the SDK retained public capture and control
+session; `ManagedServicePolicyClient.attachGlobal` uses the existing Managed
+service with its real opaque control token/epoch. A complete decision requires
+an actual nonnull episode binding. A later changed or null binding stops the
+operation; a classified delivered prefix remains `interrupted_known`.
+
+The first semantic occurrence is offered through `consume`; only the existing
+ledger's accepted report and the original `consume_ack` frame permit `next` and
+native submission. Every known delivery gets a sealed post-delivery capture,
+including choices without a fold. Stop or capture failure retains that known
+prefix. Unknown delivery fences further writes and is never retried.
+
+`replayGlobalAgentRun` verifies original source/response bytes, the shared
+projection, original framed Agent offers/completions/ACKs, shared lowering and
+original Receipt/result joins. The Python Evidence verifier additionally
+requires the application-owned `global_runtime_directory` pin; archives cannot
+supply executable paths. This verifies archived public facts and program
+plumbing, not native coverage, Human origin, Task success or training admission.
+`sts2-p1 run` is a compatibility frontend to the existing Runtime CLI and accepts
+its `--manifest`, `--adapter-command` and environment options. Historical P1
+records retain their existing converter and evidence scope.
+
+Workbench exposes `POST /api/local-model-registrations/register-global-program`
+with `{}` or `{"environment_kind":"native"|"managed"}`. The reviewed Python
+program and adapter identity are selected by application code. Registration has
+no model dependency; the ordinary installed package, environment, readiness,
+Agent request and explicit load/takeover checks still apply. Its current-choice
+Task declares no success predicate. Terminal observations and operation closure
+therefore remain separate from Task success and strategy quality.

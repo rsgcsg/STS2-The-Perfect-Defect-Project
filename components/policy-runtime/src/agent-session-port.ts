@@ -69,6 +69,18 @@ export class NdjsonAgentSessionPort {
   private readyIdentity: AgentAdapterIdentity | null = null;
   private closed = false;
   private consumedInChild = false;
+  private frameObserver?: (direction: "in" | "out", bytes: Buffer) => Promise<void>;
+  private frameFlight: Promise<void> = Promise.resolve();
+  setFrameObserver(observer: (direction: "in" | "out", bytes: Buffer) => Promise<void>): void {
+    if (this.frameObserver) throw new AgentSessionError("frame_observer_already_set"); this.frameObserver = observer;
+  }
+  async framesDrained(): Promise<void> { await this.frameFlight; }
+  private retainFrame(direction: "in" | "out", bytes: Buffer): Promise<void> {
+    if (!this.frameObserver) return Promise.resolve();
+    const held = this.byteBudget.reserve(bytes.length), copy = Buffer.from(bytes);
+    this.frameFlight = this.frameFlight.then(() => this.frameObserver!(direction, copy)).finally(() => held.release());
+    void this.frameFlight.catch(error => this.fail(error)); return this.frameFlight;
+  }
   private readonly framer: AgentJsonLineFramer;
   private readonly stderrChunks: Buffer[] = [];
   private stderrBytes = 0;
@@ -86,7 +98,10 @@ export class NdjsonAgentSessionPort {
     this.readyPromise = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     // A pre-start process failure must not become an unhandled promise rejection.
     void this.readyPromise.catch(() => undefined);
-    this.framer = new AgentJsonLineFramer(limits.max_message_bytes, value => this.handle(value));
+    this.framer = new AgentJsonLineFramer(limits.max_message_bytes, value => {
+      if (!this.frameObserver) this.handle(value);
+      else void this.frameFlight.then(() => this.handle(value)).catch(error => this.fail(error));
+    }, bytes => { if (this.frameObserver) void this.retainFrame("in", bytes); });
     child.stdout.on("data", (data: Buffer) => {
       if (this.closed) return;
       try { this.framer.push(data); } catch (error) { this.fail(error); }
@@ -143,7 +158,8 @@ export class NdjsonAgentSessionPort {
 
   consume(context: AgentSessionContext, input: AgentConsumeInput, handlers: AgentPortHandlers,
     signal: AbortSignal, onOffer: (requestId: string) => void): Promise<AgentConsumeAck> {
-    sessionObject(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog"]);
+    sessionObject(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog", ...(Object.hasOwn(input, "consumption_unit") ? ["consumption_unit"] : [])]);
+    if (input.consumption_unit) { sessionObject(input.consumption_unit, ["id"]); sessionText(input.consumption_unit.id); }
     sessionText(input.acquisition_id); sessionText(input.continuity_token);
     sessionObject(input.observation);
     return this.request("consume", context, input, handlers, signal, onOffer) as Promise<AgentConsumeAck>;
@@ -380,10 +396,11 @@ export class NdjsonAgentSessionPort {
   private writeEncoded(encoded: Buffer, reservation: AgentByteReservation, onOffer?: () => void): void {
     if (this.closed) throw new AgentSessionError("agent_port_closed");
     onOffer?.();
-    this.child.stdin.write(Buffer.concat([encoded, Buffer.from("\n")]), error => {
-      reservation.release();
-      if (error) this.fail(error);
-    });
+    const frame = Buffer.concat([encoded, Buffer.from("\n")]);
+    const send = () => { if (this.closed) { reservation.release(); return; }
+      this.child.stdin.write(frame, error => { reservation.release(); if (error) this.fail(error); }); };
+    if (!this.frameObserver) send();
+    else void this.retainFrame("out", frame).then(send, error => { reservation.release(); this.fail(error); });
   }
   private fail(value: unknown): void {
     if (this.closed) return;

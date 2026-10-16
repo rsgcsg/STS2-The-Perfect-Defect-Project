@@ -1,0 +1,205 @@
+import { createHash } from "node:crypto";
+import { readFile, readdir, lstat } from "node:fs/promises";
+import { join } from "node:path";
+import { readPublicBasisRecord, decodePlayerReceipt, verifyPublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
+import { createSession, reduce, modelView, applyCommitment, resolveFollow, canonicalJson, type P1SessionState, type Lowering } from "@rsgcsg/sts2-connector-client/p1-global";
+import { p1CoreIdentity } from "./p1-global/core-identity.js";
+import { validateAgentManifest, validateAgentConsumption, validateAgentDirective } from "./agent-session-contracts.js";
+import { globalDigest, assertGlobalIdentity, type GlobalIdentity } from "./global-transport.js";
+import { AgentConsumptionLedger } from "./agent-session-consumption.js";
+import type { GlobalArtifact } from "./evidence.js";
+
+function require(condition: unknown, reason: string): asserts condition { if (!condition) throw new Error(reason); }
+function exact(value: any, keys: string[]): Record<string, any> {
+  require(value && typeof value === "object" && !Array.isArray(value) && canonicalJson(Object.keys(value).sort()) === canonicalJson([...keys].sort()), "global_closed_fields"); return value;
+}
+const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
+const sha = (v: Uint8Array) => createHash("sha256").update(v).digest("hex");
+/** Same compiled-code identity used by the production CLI, supplied by a trusted installed package. */
+export async function globalRuntimeCodeDigest(directory: string): Promise<string> {
+  const digest = createHash("sha256");
+  const names = (await readdir(directory)).filter(name => name.endsWith(".js")).sort(); require(names.length, "runtime_code_absent");
+  for (const name of names) digest.update(name).update("\0").update(await readFile(join(directory, name))).update("\0");
+  return digest.digest("hex");
+}
+/** Original source accounting and actual Agent bytes are replayed independently of saved projections.
+ * No network, native execution, inference, native qualification or research admission. */
+export async function replayGlobalAgentRun(directory: string) {
+  const json = async (name: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(join(directory, name))));
+  const run = await json("manifest.json"), manifest = validateAgentManifest(await json("agent-manifest.json"));
+  require(manifest.input.profile === "p1-global-r1" && manifest.input.global, "global_profile_required");
+  require(run.schema === "sts2.policy-runtime/agent-session-run-1" && run.agent_manifest_sha256 === globalDigest(manifest)
+    && run.ended_at !== null && ["stopped", "tainted", "completed"].includes(run.status), "global_run_not_closed");
+  require(manifest.input.global.core_sha256 === p1CoreIdentity().module_digest, "global_core_identity_changed");
+  const attestation = await json("adapter-attestation.json");
+  require(attestation.run_id === run.run_id && attestation.agent_manifest_sha256 === run.agent_manifest_sha256
+    && same(attestation.expected, manifest.adapter) && attestation.status === "attested" && same(attestation.actual, manifest.adapter), "global_adapter_identity");
+  const rawEvents = await readFile(join(directory, "events.jsonl"));
+  require(rawEvents.length > 0 && rawEvents.length <= 128 * 1024 * 1024 && rawEvents.at(-1) === 10, "global_incomplete_journal");
+  const events: { schema: string; sequence: number; recorded_at: string; kind: string; payload: any }[] = new TextDecoder("utf-8", { fatal: true }).decode(rawEvents).trim().split("\n").map(line => JSON.parse(line));
+  require(events.length <= 65536 && events.at(-1)?.kind === "stopped", "global_stop_required");
+  const referenced = new Set<string>();
+  const artifact = async (ref: GlobalArtifact, role: GlobalArtifact["role"]): Promise<Buffer> => {
+    exact(ref, ["role", "path", "bytes", "sha256"]);
+    require(ref.role === role && /^[a-f0-9]{64}$/u.test(ref.sha256) && ref.path === `global-${ref.sha256}.bin`
+      && Number.isSafeInteger(ref.bytes) && ref.bytes > 0 && ref.bytes <= 96 * 1024 * 1024, "global_artifact_reference");
+    const path = join(directory, ref.path), stat = await lstat(path); require(stat.isFile() && !stat.isSymbolicLink() && stat.size === ref.bytes, "global_artifact_file");
+    const bytes = await readFile(path); require(sha(bytes) === ref.sha256, "global_artifact_bytes"); referenced.add(ref.path); return bytes;
+  };
+  let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
+  let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; deliveries: any[]; dispatches: any[] } | null = null;
+  let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
+  const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
+  let ledger: AgentConsumptionLedger | undefined;
+  const durableAcks = new Map<string, any>();
+  const inputs = new Map<string, { input: any; source: number; occurrence: number }>();
+  const offers = new Map<string, any>(), consumedFrames = new Map<string, any>(), acknowledgements = new Set<string>();
+  const captureRequests = new Map<string, { terminal: boolean; handle?: any; chunks: Buffer[]; completed?: FullPublicBasis }>();
+  const classifiedReceipts = new Set<string>();
+  const directives: any[] = [], responses = new Map<string, Buffer[]>(), dispatches = new Map<string, any>();
+  const fields: Record<string, string[]> = {
+    global_episode_bound: ["game_continuity_id", "source_ordinal"], global_source_rejected: ["source_ordinal", "reason"], global_source_retained: ["source_ordinal", "disposition"],
+    global_capture_requested: ["request_id"], global_capture_error: ["request_id", "reason"],
+    global_initialized: ["identity", "core"], global_transport_response: ["artifact", "operation"], global_source: ["ordinal", "artifact", "capture_request_id"],
+    global_observation: ["source_ordinal", "occurrence", "complete", "missing", "status", "excluded", "observation_sha256"],
+    global_input: ["acquisition_id", "source_ordinal", "occurrence", "artifact", "unit"], global_agent_frame: ["direction", "artifact"],
+    global_consumed: ["request_id", "report", "acknowledgement"], global_choice: ["acquisition_id", "occurrence", "choice_id", "origin"],
+    global_dispatch: ["request_id", "acquisition_id", "source_ordinal", "choice_id", "step_index", "bound_action", "expected_snapshot_id"],
+    global_receipt: ["request_id", "source_ordinal", "receipt"], global_dispatch_error: ["request_id", "sent", "reason"], global_result: ["acquisition_id", "result"],
+    agent_directive: ["output"], controller_acquired: ["controller"], controller_released: ["controller"], controller_release_unknown: ["controller", "reason"],
+    mode_changed: ["mode", "autonomy_budget", "controller"], autonomy_budget_exhausted: ["reason", "autonomy_budget", "controller"],
+    handoff_to_human: ["reason", "autonomy_budget", "controller"], fail_closed: ["reason", "agent_state"], runtime_tainted: ["reason", "retry"],
+    stopped: ["autonomy_budget", "controller", "pending_request", "agent_state"]
+  };
+  for (const [index, event] of events.entries()) {
+    exact(event, ["schema", "sequence", "recorded_at", "kind", "payload"]);
+    require(event.schema === "sts2.policy-runtime/agent-session-event-1" && event.sequence === index + 1 && Number.isFinite(Date.parse(event.recorded_at)) && !stopped, "global_journal_sequence");
+    const p = event.payload, extra = event.kind === "global_transport_response" ? p.operation === "step" ? ["request_id"] : ["capture_request_id"] : [];
+    require(fields[event.kind], "global_unknown_event_kind"); exact(p, ["session_id", "recovery_epoch", ...fields[event.kind]!, ...extra]);
+    require(typeof p.session_id === "string" && (!session || session === p.session_id) && Number.isSafeInteger(p.recovery_epoch) && p.recovery_epoch >= epoch, "global_context_order");
+    session = p.session_id; epoch = p.recovery_epoch;
+    if (event.kind === "global_initialized") {
+      require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
+      const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
+      assertGlobalIdentity(identity, expected); state = createSession(run.run_id, identity.kind);
+    } else if (event.kind === "global_capture_requested") {
+      require(identity && typeof p.request_id === "string" && !captureRequests.has(p.request_id), "global_capture_request_identity");
+      captureRequests.set(p.request_id, { terminal: false, chunks: [] });
+    } else if (event.kind === "global_capture_error") {
+      const request = captureRequests.get(p.request_id); require(request && typeof p.reason === "string", "global_capture_error_identity"); request.terminal = true;
+    } else if (event.kind === "global_source") {
+      require(identity && state && p.ordinal === ++lastSource, "global_source_order");
+      const full = await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(p.artifact, "source")));
+      const request = captureRequests.get(p.capture_request_id);
+      require(request && !request.terminal && request.completed && same(request.completed.capture, full.capture)
+        && request.completed.serializedObservation === full.serializedObservation, "global_source_not_original_transport"); request.terminal = true;
+      const valid = same(full.capture.session, identity.session) && (identity.game_continuity_id === null || identity.game_continuity_id === full.capture.game_continuity_id)
+        && (episode === null || episode === full.capture.game_continuity_id);
+      sources.set(p.ordinal, { full, classified: false, valid });
+    } else if (event.kind === "global_episode_bound") {
+      const source = sources.get(p.source_ordinal);
+      require(episode === null && source?.valid && typeof p.game_continuity_id === "string" && p.game_continuity_id.length
+        && source.full.capture.game_continuity_id === p.game_continuity_id, "global_episode_binding"); episode = p.game_continuity_id;
+    } else if (event.kind === "global_source_rejected") {
+      const source = sources.get(p.source_ordinal); require(source && !source.classified && typeof p.reason === "string", "global_source_rejection"); source.classified = true;
+    } else if (event.kind === "global_source_retained") {
+      const source = sources.get(p.source_ordinal); require(source?.valid && p.disposition === "pending_next_receive", "global_pending_source"); source.classified = true;
+    } else if (event.kind === "global_observation") {
+      const source = sources.get(p.source_ordinal); require(source?.valid && state && !source.reduction, "global_observation_source");
+      source.before = state;
+      const reduction = reduce(state, source.full.basis); source.reduction = reduction; source.classified = true; observations++;
+      require(p.observation_sha256 === globalDigest(reduction.observation) && p.occurrence === reduction.observation.envelope.occurrence
+        && p.complete === reduction.complete && p.status === reduction.observation.status && same(p.missing, reduction.missing) && same(p.excluded, reduction.excluded), "global_projection_changed");
+      const snapshot = source.full.basis.snapshot;
+      if (snapshot.status !== "settling" && !(snapshot.status === "observed" && reduction.observation.status !== "terminal")
+        && source.full.basis.capture_status === "complete" && reduction.complete && reduction.observation.status !== "unsupported") state = reduction.state;
+    } else if (event.kind === "global_input") {
+      const source = sources.get(p.source_ordinal), r = source?.reduction; require(r?.complete && (episode !== null || r.observation.status === "terminal") && source!.full.basis.capture_status === "complete" && !inputs.has(p.acquisition_id), "global_input_source_incomplete");
+      const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(p.artifact, "public_input")));
+      exact(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog", "consumption_unit"]);
+      require(input.acquisition_id === p.acquisition_id && input.consumption_unit.id === p.unit && same(input.input_spec, manifest.input.input_spec)
+        && p.occurrence === r.observation.envelope.occurrence && same(input.observation, modelView(r.observation)) && same(input.catalog, r.observation.catalog), "global_actual_public_input_changed");
+      ledger ??= new AgentConsumptionLedger(manifest, input.continuity_token);
+      require(input.previous_consumption_id === ledger.consumptionId && input.continuity_token === ledger.continuityToken, "global_input_ledger_prefix");
+      ledger.registerGlobal({ acquisition_id: p.acquisition_id, capture: { source_ordinal: p.source_ordinal, source_sha256: source!.full.capture.sha256 },
+        observation: input.observation, catalog: input.catalog, catalog_materialized: true, publication_index: String(p.occurrence) }, source!.full.basis, source!.before!);
+      inputs.set(p.acquisition_id, { input, source: p.source_ordinal, occurrence: p.occurrence });
+    } else if (event.kind === "global_agent_frame") {
+      require(p.direction === "in" || p.direction === "out", "global_frame_direction");
+      const bytes = await artifact(p.artifact, p.direction === "in" ? "agent_in" : "agent_out");
+      require(bytes.at(-1) === 10 && bytes.subarray(0, -1).indexOf(10) === -1, "global_agent_frame_boundary");
+      let frame: any;
+      try { frame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+      catch { require(p.direction === "in" && run.status !== "completed", "global_invalid_agent_frame"); continue; }
+      require(frame.schema === "sts2.policy-runtime/agent-session-1", "global_agent_frame_schema");
+      if (frame.message_type === "ready") { require(p.direction === "in" && same(frame.adapter, manifest.adapter), "global_ready"); continue; }
+      require(frame.session_id === session && Number.isSafeInteger(frame.recovery_epoch) && frame.recovery_epoch <= epoch, "global_frame_context");
+      if (p.direction === "out" && frame.message_type === "consume") {
+        const original = inputs.get(frame.input.acquisition_id); require(original && same(original.input, frame.input) && !offers.has(frame.request_id), "global_offer_not_original"); offers.set(frame.request_id, frame);
+      } else if (p.direction === "in" && frame.message_type === "consumed") {
+        const offer = offers.get(frame.request_id); const report = validateAgentConsumption(frame.completion);
+        require(offer && same(report.input_spec, offer.input.input_spec) && report.acquisition_id === offer.input.acquisition_id
+          && report.continuity_token === offer.input.continuity_token && report.previous_consumption_id === offer.input.previous_consumption_id && !consumedFrames.has(frame.request_id), "global_consumption_not_offered");
+        consumedFrames.set(frame.request_id, report);
+      } else if (p.direction === "out" && frame.message_type === "consume_ack") {
+        require(durableAcks.has(frame.request_id) && same(frame.completion, durableAcks.get(frame.request_id)) && !acknowledgements.has(frame.completion.acquisition_id), "global_ack_without_consumption"); acknowledgements.add(frame.completion.acquisition_id);
+      } else if (p.direction === "in" && frame.message_type === "directive") directives.push(validateAgentDirective(frame.output));
+      else require(p.direction === "out" && frame.message_type === "next", "global_unimplemented_program_frame");
+    } else if (event.kind === "global_consumed") {
+      const frame = consumedFrames.get(p.request_id); require(frame && ledger && !durableAcks.has(p.request_id) && same(frame, p.report), "global_durable_ack_without_original_report");
+      ledger.noteReceived(p.acknowledgement.prefix.received_cursor, 1);
+      const ack = ledger.accept(frame); require(same(ack, p.acknowledgement), "global_durable_ack_changed"); durableAcks.set(p.request_id, ack); consumed++;
+    } else if (event.kind === "agent_directive") {
+      const index = directives.findIndex(d => same(d, p.output)); require(index >= 0 && ledger && p.output.continuity_token === ledger.continuityToken && p.output.consumption_id === ledger.consumptionId && p.output.state_version === ledger.stateVersion, "global_directive_not_from_agent"); directives.splice(index, 1); lastDirective = p.output;
+    } else if (event.kind === "global_choice") {
+      require(!unknown && !active && lastDirective?.directive.type === "act" && lastDirective.directive.basis_acquisition_id === p.acquisition_id
+        && lastDirective.directive.selection.kind === "handle" && lastDirective.directive.selection.action_id === p.choice_id && acknowledgements.has(p.acquisition_id), "global_choice_not_acknowledged");
+      const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
+      require(input && reduction && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
+      active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, deliveries: [], dispatches: [] };
+    } else if (event.kind === "global_dispatch") {
+      require(active && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
+      const source = sources.get(p.source_ordinal); require(source?.valid, "global_dispatch_source"); source.classified = true;
+      const bound = (source.full.basis.snapshot.bound_actions as any).actions.find((a: any) => a.bound_action_id === p.bound_action.bound_action_id);
+      const step = p.step_index === 0 ? active.lowering.first : active.lowering.follow[p.step_index - 1] && resolveFollow(active.lowering.follow[p.step_index - 1]!, active.lowering, source.full.basis.snapshot);
+      require(bound && step && step.bound_action_id === bound.bound_action_id && same(bound, p.bound_action) && p.expected_snapshot_id === source.full.basis.snapshot.snapshot_id, "global_dispatch_not_shared_lowering");
+      active.dispatches.push(p); dispatches.set(p.request_id, p);
+    } else if (event.kind === "global_transport_response") {
+      const bytes = await artifact(p.artifact, "response"); require(["capture", "step"].includes(p.operation), "global_transport_operation");
+      if (p.operation === "step") { require(dispatches.has(p.request_id), "global_response_without_dispatch"); responses.set(p.request_id, [...(responses.get(p.request_id) ?? []), bytes]); }
+      else {
+        const request = captureRequests.get(p.capture_request_id); require(request && !request.terminal, "global_capture_response_identity");
+        let wire: any; try { wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { continue; }
+        if (wire.schema === "sts2.player-environment/public-basis-handle-1") { require(!request.handle, "global_capture_handle_reused"); request.handle = wire; }
+        else if (wire.schema === "sts2.player-environment/public-basis-chunk-1") {
+          require(request.handle && wire.capture_id === request.handle.capture_id && wire.sha256 === request.handle.sha256
+            && wire.offset === request.chunks.reduce((sum, chunk) => sum + chunk.length, 0), "global_capture_original_chunk_sequence");
+          request.chunks.push(Buffer.from(wire.data_base64, "base64"));
+          if (wire.end) request.completed = await verifyPublicBasis(request.handle, new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(request.chunks)));
+        } else if (wire.result?.type === "capture_result") {
+          const full = wire.result.full; request.completed = await verifyPublicBasis(full.capture, full.serializedObservation);
+          require(same(full.basis, request.completed.basis), "global_managed_capture_mirror");
+        }
+      }
+    } else if (event.kind === "global_receipt") {
+      const dispatch = dispatches.get(p.request_id); require(active && dispatch && p.source_ordinal === dispatch.source_ordinal, "global_receipt_without_dispatch");
+      const receipt = decodePlayerReceipt(p.receipt).data; const { interaction_id: _i, label: _l, ...bound } = dispatch.bound_action;
+      require(receipt.request_id === p.request_id && same({ ...receipt.action, subject_referent_id: receipt.action.subject_referent_id ?? null }, { ...bound, subject_referent_id: bound.subject_referent_id ?? null }), "global_receipt_binding");
+      require((responses.get(p.request_id) ?? []).some(bytes => { try { const wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); return same(wire.result?.receipt ?? wire, receipt); } catch { return false; } }), "global_receipt_not_original_bytes");
+      classifiedReceipts.add(p.request_id); active.deliveries.push(receipt); if (receipt.delivery === "unknown") unknown = true;
+    } else if (event.kind === "global_dispatch_error") {
+      require(active && typeof p.sent === "boolean", "global_dispatch_error_unbound");
+      if (p.sent && !classifiedReceipts.has(p.request_id)) { require(dispatches.has(p.request_id), "global_unknown_without_original_dispatch"); unknown = true; active.deliveries.push({ delivery: "unknown" }); }
+    } else if (event.kind === "global_result") {
+      require(active && p.acquisition_id === active.acquisition && p.result.choice_id === active.choice && same(p.result.steps.map((s: any) => s.delivery), active.deliveries.map(r => r.delivery)), "global_result_prefix_changed");
+      require(["completed", "interrupted_known", "not_started", "unknown"].includes(p.result.status) && (p.result.status === "unknown") === active.deliveries.some(r => r.delivery === "unknown"), "global_result_knowledge");
+      if (p.result.status === "completed") { require(state && (!active.lowering.first || active.deliveries.length > 0 && active.deliveries.every(r => r.delivery === "delivered")), "global_completion_unproved"); state = applyCommitment(state, active.lowering, true); }
+      results++; active = null;
+    } else if (event.kind === "stopped") { require(index === events.length - 1 && p.pending_request === null, "global_final_closure"); stopped = true; }
+  }
+  require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
+  const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
+  return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
+    unknown_delivery: unknown, profile: manifest.input.profile, core: p1CoreIdentity(), verdict: "verified" as const,
+    scope: "original_public_basis_semantic_replay_and_actual_agent_dispatch_joins", native_qualification: false, human_origin: false, research_admission: false };
+}
