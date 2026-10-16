@@ -12,7 +12,7 @@ internal static class PublicBasisAssembly
     // Called inside the owning synchronous native freeze, or on its already detached values.
     // Does not read the game, infer omitted facts, navigate, or grant action authority.
     internal static FrozenPublicObservation Freeze(JsonObject snapshot, IReadOnlyList<PublicBasisRead> reads,
-        string? continuity, JsonSerializerOptions options)
+        string? continuity, JsonSerializerOptions options, DateTimeOffset? captureTime = null)
     {
         if (snapshot["schema"]?.GetValue<string>() != PlayerEnvironmentContract.SnapshotSchema
             || snapshot["information_policy"]?["includes_hidden_information"]?.GetValue<bool>() != false)
@@ -63,6 +63,6 @@ internal static class PublicBasisAssembly
         using var stream = new BoundedObservationStream(SealedObservationContract.MaxCapsuleBytes);
         JsonSerializer.Serialize(stream, observation, options);
         return new(stream.ToArray(), id, session, continuity,
-            DateTimeOffset.UtcNow, SealedObservationProfile.PublicBasis);
+            captureTime ?? DateTimeOffset.UtcNow, SealedObservationProfile.PublicBasis);
     }
 }

@@ -18,7 +18,7 @@ internal static partial class PlayerEnvironmentService
     private static readonly Lazy<NativeLogicalService> NativeLogicalOwner = new(CreateNativeLogicalOwner);
     private static NativeLogicalService CreateNativeLogicalOwner() => new(
         CaptureNativeLogicalFrame, () => RunManager.Instance.DebugOnlyGetState() is { } run
-            ? Entities.GetId(run, "run") : null, Requests, clientLifetime: new ClientLifetimeDependency(), clientActive: MutationControlRuntime.IsActiveClient);
+            ? Entities.GetId(run, "run") : null, Requests, clientLifetime: new ClientLifetimeDependency(), clientActive: MutationControlRuntime.IsActiveClient, captureSource: CaptureNativeLogicalSource);
     private sealed class ClientLifetimeDependency : INativeLogicalClientLifetimeDependency
     {
         public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
@@ -69,6 +69,8 @@ internal sealed partial class NativeLogicalService : IDisposable
     internal NativeLogicalPublicationHub Hub { get; }
     private readonly NativeLogicalProjector projector;
     private readonly Func<TextMenuFrame> capture;
+    private readonly Func<NativeLogicalSourceCapture>? captureSource;
+    private readonly Func<object, string> sourceAlias;
     private readonly Func<string?> continuity;
     private readonly Func<RunState?> actualRunState;
     private readonly Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)> sourceIdentity;
@@ -100,9 +102,11 @@ internal sealed partial class NativeLogicalService : IDisposable
         Func<RunState?>? actualRunState = null,
         Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)>? sourceIdentity = null,
         Func<MutationClientRegistrationRequest, MutationClientRegistrationResult>? registerSourceClient = null,
-        NativeLogicalRevalidationDiagnostics? revalidationDiagnostics = null)
+        NativeLogicalRevalidationDiagnostics? revalidationDiagnostics = null,
+        Func<NativeLogicalSourceCapture>? captureSource = null, Func<object, string>? sourceAlias = null)
     {
-        this.capture = capture; this.continuity = continuity;
+        this.capture = capture; this.captureSource = captureSource; this.continuity = continuity;
+        this.sourceAlias = sourceAlias ?? (value => STS2Connector.NativeUi.NativeUiRuntime.Entities.GetId(value, "source_object"));
         this.revalidationDiagnostics = revalidationDiagnostics ?? CreateRevalidationDiagnostics();
         this.clientActive = clientActive ?? MutationControlRuntime.IsActiveClient;
         this.registerSourceClient = registerSourceClient ?? MutationControlRuntime.Register;
@@ -162,11 +166,22 @@ internal sealed partial class NativeLogicalService : IDisposable
         }
         finally { if (generationChanged) lock (sourceGate) sourceEpochTransitioning = false; }
     }
-    internal sealed record Prepared(NativeLogicalPublicFrame Facts, string? Continuity, DateTimeOffset Time);
-    private Prepared Prepare()
+    internal sealed record NativeLogicalSourceCapture(TextMenuFrame Frame, NativeLogicalSourcePublicBasis? PublicBasis, string? PublicMissingReason);
+    internal sealed record Prepared(NativeLogicalPublicFrame Facts, string? Continuity, DateTimeOffset Time,
+        NativeLogicalSourcePublicBasis? PublicBasis = null, string? PublicMissingReason = null, bool SourcePublicRequested = false, IDisposable? SourceWorkingBudget = null);
+    private Prepared Prepare(bool sourceCapture = false)
     {
         AssertMainThread();
-        TextMenuFrame native = capture();
+        bool wantsPublic = sourceCapture && sourceRecorder is { PublicBasis: true, Closing: false, Failure: null };
+        // Admit the original capture/serialization working set before invoking a factory that allocates neutral bytes.
+        IDisposable? sourceWorkingBudget = wantsPublic ? ReserveSourceBytes(SourceEncodingScratch) : null;
+        try { return CapturePrepared(); }
+        catch { sourceWorkingBudget?.Dispose(); throw; }
+
+        Prepared CapturePrepared()
+        {
+        var source = wantsPublic ? captureSource?.Invoke() : null;
+        TextMenuFrame native = source?.Frame ?? capture();
         if (native.GameContinuityId != runId) throw new TextMenuRunContinuityChangedException();
         var page = native.Page;
         string? focus = page.Interaction.Content.Surface["focused_target_referent_id"]?.GetValue<string>();
@@ -202,7 +217,9 @@ internal sealed partial class NativeLogicalService : IDisposable
             currentAvailabilityIdentity = availability;
             currentFacts = facts; currentNative = native;
         }
-        return new(facts, native.GameContinuityId, DateTimeOffset.UtcNow);
+        return new(facts, native.GameContinuityId, source?.PublicBasis?.CapturedAt ?? DateTimeOffset.UtcNow,
+            source?.PublicBasis, wantsPublic ? source?.PublicMissingReason ?? (source?.PublicBasis == null ? "source_public_basis_capture_unavailable" : null) : null, wantsPublic, sourceWorkingBudget);
+        }
     }
     // Equality only revalidates an already generated current snapshot. The
     // existing projector alone assigns snapshots, catalogs and action handles.
@@ -331,7 +348,7 @@ internal sealed partial class NativeLogicalService : IDisposable
         try { SynchronizeRun(); CaptureReservation(Hub.Reserve(seam, phase, kind)); return true; }
         catch (Exception) { return false; /* Native observer failure cannot alter gameplay. */ }
     }
-    private void CaptureReservation(NativeLogicalPublicationReservation reservation)
+    private void CaptureReservation(NativeLogicalPublicationReservation reservation, NativeLogicalSourceStage? sourceStage = null)
     {
         using var nativeFreeze = BeginSourceNativeFreeze();
         // No observer has acquired Current and no subscription selected this
@@ -339,29 +356,43 @@ internal sealed partial class NativeLogicalService : IDisposable
         // A standalone Current basis still needs observed owner re-entry.
         if (reservation.Subscriptions.Count == 0 && currentFacts is null)
         { Hub.Complete(reservation, Array.Empty<NativeLogicalProjectionOutcome>()); return; }
-        void Missing(string reason) => Hub.Complete(reservation, reservation.Subscriptions.Select(s => new NativeLogicalProjectionOutcome(s.ScopeId, null, reason)).ToArray());
+        void Missing(string reason) => Hub.Complete(reservation, reservation.Subscriptions.Select(s => new NativeLogicalProjectionOutcome(s.ScopeId, null, reason) { SourceStage = sourceStage }).ToArray());
         if (!encodingAdmission.Wait(0)) { Missing("encoding_capacity_exceeded"); return; }
         Prepared prepared;
-        try { prepared = Prepare(); }
+        try { prepared = Prepare(sourceCapture: true); }
         catch { encodingAdmission.Release(); Missing("native_capture_failed"); return; }
         bool sourceOrderProven = nativeFreeze?.Proven ?? true;
         var sourceScope = nativeFreeze?.Epoch.Subscription.ScopeId;
         Enqueue(() =>
         {
+            using var sourceWorkingBudget = prepared.SourceWorkingBudget;
             var outcomes = new List<NativeLogicalProjectionOutcome>();
             foreach (var subscription in reservation.Subscriptions)
             {
                 if (!sourceOrderProven && subscription.ScopeId == sourceScope)
-                { outcomes.Add(new(subscription.ScopeId, null, SourceOrderUnproven)); continue; }
+                { outcomes.Add(new(subscription.ScopeId, null, SourceOrderUnproven) { SourceStage = sourceStage }); continue; }
+                NativeLogicalCapturedProjection? projection = null;
+                NativeLogicalProjectionOutcome outcome;
                 try
                 {
-                    var projection = projector.Capture(prepared.Facts, subscription.EagerScope, subscription.ScopeId,
+                    projection = projector.Capture(prepared.Facts, subscription.EagerScope, subscription.ScopeId,
                         prepared.Time, Environment.TickCount64 + Limits.RetentionMs, () => Environment.TickCount64, Store);
                     AcceptBasis(prepared, projection.Catalog);
-                    outcomes.Add(new(subscription.ScopeId, projection.Capture, null, projection.Catalog?.Descriptor.TotalCount > 0));
+                    outcome = new(subscription.ScopeId, projection.Capture, null, projection.Catalog?.Descriptor.TotalCount > 0);
                 }
-                catch (NativeLogicalException e) { outcomes.Add(new(subscription.ScopeId, null, e.Code)); }
-                catch { outcomes.Add(new(subscription.ScopeId, null, "encoding_failed")); }
+                catch (NativeLogicalException e) { outcome = new(subscription.ScopeId, null, e.Code); }
+                catch { outcome = new(subscription.ScopeId, null, "encoding_failed"); }
+                if (prepared.SourcePublicRequested && subscription.ScopeId == sourceScope)
+                {
+                    try
+                    {
+                        outcome = outcome with { SourcePayload = Store.SealSourcePayload(projection, outcome.MissingReason,
+                            prepared.PublicBasis, prepared.PublicMissingReason, prepared.Facts.Session,
+                            reservation.StreamGeneration, subscription.ScopeId, prepared.Time) };
+                    }
+                    catch (NativeLogicalException e) { outcome = outcome with { MissingReason = outcome.Capture == null ? e.Code : null }; }
+                }
+                outcomes.Add(outcome with { SourceStage = sourceStage });
             }
             try { Hub.Complete(reservation, outcomes); }
             finally
@@ -369,7 +400,10 @@ internal sealed partial class NativeLogicalService : IDisposable
                 // Successful event publication now owns independent hub pins;
                 // late/abandoned encodes have no reason to retain an owner pin.
                 foreach (var outcome in outcomes)
+                {
                     if (outcome.Capture is { } value) Store.ReleaseCapture(value.CaptureId);
+                    if (outcome.SourcePayload is { } payload) Store.ReleaseSourcePayload(payload.PayloadId);
+                }
             }
         });
     }

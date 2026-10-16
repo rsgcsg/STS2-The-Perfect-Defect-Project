@@ -18,6 +18,14 @@ public sealed class SourceNativeOrderedProducerTests
     {
         internal readonly Queue<TaskCompletionSource> basis = new();
         public bool RequiresOrderedBasis => inner.RequiresOrderedBasis;
+        public bool RequiresPublicBasis => inner.RequiresPublicBasis;
+        public void InputNativeFacts(object original, NativeLogicalSourceNativeFacts facts) => inner.InputNativeFacts(original, facts);
+        public void InputCarrier(object original, NativeLogicalSourceCarrier carrier) => inner.InputCarrier(original, carrier);
+        public void InputSourcePayload(object original, string? payload, IDisposable? retention, string? missing)
+        {
+            inner.InputSourcePayload(original, payload, retention, missing);
+            lock (basis) if (basis.Count > 0) basis.Dequeue().TrySetResult();
+        }
         public void Epoch(NativeLogicalSourceEpoch epoch) => inner.Epoch(epoch);
         public void Boundary(NativeLogicalSourceTransition transition, NativeLogicalSourcePosition position) => inner.Boundary(transition, position);
         public object? AdmitInput(NativeLogicalSourceInputPrefix prefix) => inner.AdmitInput(prefix);
@@ -38,14 +46,16 @@ public sealed class SourceNativeOrderedProducerTests
             new Dictionary<string, object>(StringComparer.Ordinal), "fixture.actual_native_prefix", nameof(PlayCardAction), typeof(PlayCardAction))));
     private static GameAction Carrier() => (GameAction)RuntimeHelpers.GetUninitializedObject(typeof(PlayCardAction));
     private static void Passed(SourceNativeProducerTests.Fixture f)
-    { var audit = SourceSessionAuditV3.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors)); }
+    { var audit = f.Store.IsPublicBasisSourceSession ? SourceSessionAuditV4.Audit(f.Store.DirectoryPath) : SourceSessionAuditV3.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors)); }
     private static async Task Ready(SourceNativeProducerTests.Fixture f) =>
         Assert.True(await Task.Run(() => SpinWait.SpinUntil(() => f.Store.GetSourceStatusV2()!.Observations >= 1, TimeSpan.FromSeconds(3))));
 
-    [Fact]
-    public async Task ActualProducerPreservesSameWatermarkPrefixActorAndEpochDespiteReverseAcceptedTerminalOrder()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task ActualProducerPreservesSameWatermarkPrefixActorAndEpochDespiteReverseAcceptedTerminalOrder(int version)
     {
-        using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+        using var f = new SourceNativeProducerTests.Fixture(version); await Ready(f);
         var sink = new ObservedSink(f.Attachment.Sink!); f.Invoke(() => f.Attachment.Sink = sink);
         Task firstBasis = sink.NextBasis(); GameAction first = Carrier();
         f.Invoke(() => { f.Surface = "input-a"; var original = Begin(f); NativeSourceInputProvider.BindSubmitted(first); NativeSourceInputProvider.Finish(original); });
@@ -74,15 +84,24 @@ public sealed class SourceNativeOrderedProducerTests
             JsonSerializer.Deserialize<NativeLogicalObservation>(File.ReadAllBytes(Path.Combine(f.Store.DirectoryPath, row.PreCapture!.PayloadRef)), NativeLogicalWire.Options)!).ToArray();
         Assert.True(frames[0].Revision < frames[1].Revision);
         Assert.Equal("input-a", frames[0].Interaction!.Kind); Assert.Equal("input-b", frames[1].Interaction!.Kind);
+        if (version == 4)
+        {
+            Assert.Equal(new[] { "ordinary-input-a", "ordinary-input-b" }, inputs.OrderBy(row => SourceSessionContractV3.Ordinal(row.InputPrefixOrdinal!))
+                .Select(row => row.CapturedParts!.PublicBasis!.SnapshotId));
+            Assert.All(inputs, row => Assert.Equal(row.EpochId, row.CapturedParts!.PublicBasis!.EpochId));
+        }
         string bundle = Path.Combine(f.Root, "ordered-physical-bundle");
-        Assert.Equal("pass", SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-physical-synthetic", "campaign-v3", bundle, new string('e', 40)).Status);
-        string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V3_ORDERED_GOLDEN");
+        Assert.Equal("pass", (version == 4 ? SourceSessionBundlePackerV4.Pack(f.Store.DirectoryPath, "worker-physical-synthetic", "campaign-v4", bundle, new string('e', 40))
+            : SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-physical-synthetic", "campaign-v3", bundle, new string('e', 40))).Status);
+        string? golden = Environment.GetEnvironmentVariable(version == 4 ? "STS2_SOURCE_V4_ORDERED_GOLDEN" : "STS2_SOURCE_V3_ORDERED_GOLDEN");
         if (!string.IsNullOrEmpty(golden)) SourceNativeProducerTests.CopyGolden(bundle, Path.GetFullPath(golden));
     }
-    [Fact]
-    public async Task ActualPhysicalInputImmediatelyAfterResumeUsesItsOriginalOrdinalAtTheUnchangedPausedEndWatermark()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task ActualPhysicalInputImmediatelyAfterResumeUsesItsOriginalOrdinalAtTheUnchangedPausedEndWatermark(int version)
     {
-        using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+        using var f = new SourceNativeProducerTests.Fixture(version); await Ready(f);
         var sink = new ObservedSink(f.Attachment.Sink!); f.Invoke(() => f.Attachment.Sink = sink);
         Task originalBasis = sink.NextBasis(); GameAction pending = Carrier();
         f.Invoke(() => { var original = Begin(f); NativeSourceInputProvider.BindSubmitted(pending); NativeSourceInputProvider.Finish(original); });
@@ -118,17 +137,21 @@ public sealed class SourceNativeOrderedProducerTests
         var segments = f.Rows<SourceSegmentV2>("source-segments.jsonl");
         Assert.Equal("actor-after-resume", segments.Single(row => row.SegmentId == inputs[0].SegmentId).Declaration.ActorId);
         Assert.Equal("actor-original", segments.Single(row => row.SegmentId == inputs[1].SegmentId).Declaration.ActorId);
+        if (version == 4) Assert.Equal("ordinary-input-immediately-after-resume", inputs[0].CapturedParts!.PublicBasis!.SnapshotId);
         // Resume is a command boundary; no publication, Current response or
         // invented successor is added to make this original prefix pass.
         string bundle = Path.Combine(f.Root, "resume-tie-physical-bundle");
-        Assert.Equal("pass", SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-resume-physical", "campaign-resume-v3", bundle, new string('e', 40)).Status);
-        string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V3_RESUME_TIE_GOLDEN");
+        Assert.Equal("pass", (version == 4 ? SourceSessionBundlePackerV4.Pack(f.Store.DirectoryPath, "worker-resume-physical", "campaign-resume-v4", bundle, new string('e', 40))
+            : SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-resume-physical", "campaign-resume-v3", bundle, new string('e', 40))).Status);
+        string? golden = Environment.GetEnvironmentVariable(version == 4 ? "STS2_SOURCE_V4_RESUME_TIE_GOLDEN" : "STS2_SOURCE_V3_RESUME_TIE_GOLDEN");
         if (!string.IsNullOrEmpty(golden)) SourceNativeProducerTests.CopyGolden(bundle, Path.GetFullPath(golden));
     }
-    [Fact]
-    public async Task PublicationInsideOriginalPhysicalPrepareFailsBothSourceAcquisitionsWithoutMovingItsInputCut()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task PublicationInsideOriginalPhysicalPrepareFailsBothSourceAcquisitionsWithoutMovingItsInputCut(int version)
     {
-        using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+        using var f = new SourceNativeProducerTests.Fixture(version); await Ready(f);
         f.Invoke(() =>
         {
             f.OnCapture = () => { f.OnCapture = null; f.Surface = "nested-publication"; f.Owner.Publish("native_owner_ready", "nested_native_prepare"); };
@@ -140,11 +163,14 @@ public sealed class SourceNativeOrderedProducerTests
         Assert.Equal("unproven", input.BasisOrder!.Status); Assert.Equal("capture_missing", input.Outcome.MappingStatus); Assert.Null(input.PreCapture);
         var missing = Assert.Single(f.Rows<SourcePublicObservationV2>("public-observations.jsonl"), row => row.Position.PublicationIndex == "2");
         Assert.Equal(SourceSessionContractV3.OrderUnprovenReason, missing.MissingReason); Assert.Null(missing.Capture); Assert.Equal(1, f.Dispatches);
+        if (version == 4) { Assert.Null(input.CapturedParts!.PublicBasis); Assert.Null(missing.CapturedParts!.PublicBasis); }
     }
-    [Fact]
-    public async Task InputInsideAncestorReservedUnfrozenPublicationCannotAcquireItsPostInputFactsAsAPredecessor()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task InputInsideAncestorReservedUnfrozenPublicationCannotAcquireItsPostInputFactsAsAPredecessor(int version)
     {
-        using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+        using var f = new SourceNativeProducerTests.Fixture(version); await Ready(f);
         f.Invoke(() =>
         {
             f.OnCapture = () =>
@@ -160,6 +186,7 @@ public sealed class SourceNativeOrderedProducerTests
         Assert.Equal("delivered", input.Outcome.Delivery); Assert.Null(input.PreCapture);
         var missing = Assert.Single(f.Rows<SourcePublicObservationV2>("public-observations.jsonl"), row => row.Position.PublicationIndex == "2");
         Assert.Equal(SourceSessionContractV3.OrderUnprovenReason, missing.MissingReason); Assert.Equal(1, f.Dispatches);
+        if (version == 4) { Assert.Null(input.CapturedParts!.PublicBasis); Assert.Null(missing.CapturedParts!.PublicBasis); }
     }
     [Fact]
     public async Task EncoderOnlyBacklogDoesNotBecomeAnAncestorNativeAcquisitionFailure()

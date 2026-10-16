@@ -67,6 +67,9 @@ from .transfer import (
 __all__ = [
     "SUPPORTED_POLICY_DECISION_PROTOCOLS",
     "SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS",
+    "SourceSessionBundleV4",
+    "SourceSessionBundleV4Verifier",
+    "verify_source_session_bundle_v4",
     "SourceSessionBundleV3",
     "SourceSessionBundleV3Verifier",
     "verify_source_session_bundle_v3",
@@ -115,3 +118,5 @@ __all__ = [
     "load_collection_profile",
     "verify_human_session_bundle",
 ]
+
+from .source_session_bundle_v4 import SourceSessionBundleV4, SourceSessionBundleV4Verifier, verify_source_session_bundle_v4

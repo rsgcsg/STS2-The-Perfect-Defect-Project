@@ -45,6 +45,7 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     {
         var l = profile.Limits; var format = SourceSessionWireFormat.ForProfile(profile);
         if (profile.Schema != format.Schema("source-capture-profile") || profile.ProfileId != format.ProfileId
+            || profile.PublicBasis != (format.PublicBasis ? SourceSessionContractV4.PublicBasis : null)
             || profile.InputProfile != "native-logical-v1" || profile.PublicationProfileId != SourceSessionContractV2.PublicationProfileId
             || profile.PublicationProfileDefinitionSha256 != SourceSessionContractV2.PublicationProfileDefinitionSha256
             || !profile.EagerScope.SequenceEqual(new[] { "persistent", "interaction", "referents", "catalog" })
@@ -122,6 +123,34 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         if (catalogs.Count >= profile.Limits.MaxRowsPerStream) Fail("source_catalog_count_capacity");
         PersistBytes(relative, catalog.Bytes); catalogs.Add(key, reference); return reference;
     }
+    private SourceCapturedPartsV4? PersistParts(string epoch, FrozenPublicBasisV4? basis, string? missing,
+        SourceNativeStageV4? stage = null)
+    {
+        if (!format.PublicBasis)
+        {
+            if (basis != null || missing != null || stage != null) throw new InvalidDataException("source_profile_parts_mismatch");
+            return null;
+        }
+        if (stage != null)
+        {
+            SourcePublicBasisCodecV4.Validate(stage);
+            stage = stage with { Arguments = new Dictionary<string, string>(stage.Arguments, StringComparer.Ordinal) };
+        }
+        if (basis == null)
+        {
+            missing ??= "source_public_basis_missing"; SourceSessionContractV2.Text(missing);
+            return new(null, missing, stage);
+        }
+        if (missing != null || basis.EpochId != epoch) throw new InvalidDataException("source_public_basis_binding_invalid");
+        Identity(epoch, basis.SnapshotId, basis.SnapshotId, basis.ScopeId, basis.StreamGeneration);
+        CheckSize(basis.Bytes);
+        // Source copier holds the precharged ownership/parser budget through this append.
+        byte[] bytes = (byte[])basis.Bytes.Clone(); CheckBytes(bytes, basis.Sha256);
+        SourcePublicBasisCodecV4.Validate(bytes, basis.SnapshotId, manifest.SourceEnvironment!);
+        string relative = BlobPath("public-bases", basis.Sha256); PersistBytes(relative, bytes);
+        return new(new(epoch, basis.SnapshotId, basis.ScopeId, basis.StreamGeneration, basis.CapturedAt,
+            bytes.LongLength, basis.Sha256, relative), null, stage);
+    }
     internal void Observe(SourceObservationPacketV2 packet)
     {
         Ledger.ValidateOriginalRange(packet.Position);
@@ -176,10 +205,14 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
             throw new InvalidDataException("source_full_reference_incomplete");
         if (packet.GapAfterIndex != null && SourceSessionContract.Index(new(packet.Position.StreamGeneration, packet.GapAfterIndex)) >= index)
             throw new InvalidDataException("source_gap_interval_invalid");
+        if (packet.NativeStage != null && (packet.SourceSeam != "native_input_callback" || packet.Phase != "card_play_canceled"))
+            throw new InvalidDataException("source_native_stage_publication_invalid");
+        var parts = PersistParts(packet.Position.EpochId, packet.PublicBasis, packet.PublicBasisMissingReason, packet.NativeStage);
         var row = new SourcePublicObservationV2(format.Schema("public-observation"), counts["public-observations.jsonl"] + 1,
             manifest.SessionId, manifest.TimelineId, packet.Position.EpochId, segment, packet.Position,
             packet.SourceSeam, packet.SourceIndex, packet.Phase, packet.SnapshotId, packet.OwnerOccurrence,
-            packet.GameContinuityId, packet.Completeness, capture, catalog, packet.MissingReason, packet.GapAfterIndex);
+            packet.GameContinuityId, packet.Completeness, capture, catalog, packet.MissingReason, packet.GapAfterIndex)
+        { CapturedParts = parts };
         string key = packet.Position.EpochId + ":" + packet.Position.PublicationIndex;
         string signature = SourceSessionContract.Sha256(SourceSessionJson.Bytes(row with { Sequence = 0 }));
         if (observations.TryGetValue(key, out string? previous))
@@ -187,17 +220,23 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         Append("public-observations.jsonl", row); observations.Add(key, signature);
         Ledger.RecordDurable(packet.Position, packet.GapAfterIndex, missing: packet.MissingReason != null);
     }
-    internal void BindInput(SourceInputTokenV2 token, FrozenPublicCaptureV2? capture, FrozenPublicCatalogV2? catalog)
+    internal void BindInput(SourceInputTokenV2 token, FrozenPublicCaptureV2? capture, FrozenPublicCatalogV2? catalog,
+        FrozenPublicBasisV4? publicBasis = null, string? publicBasisMissingReason = null)
     {
         _ = Ledger.ExactInput(token);
         if (capture != null && capture.EpochId != token.PrePosition.EpochId || catalog != null && catalog.EpochId != token.PrePosition.EpochId)
             throw new InvalidDataException("source_input_epoch_mismatch");
         var pre = capture == null ? null : Persist(capture); var relation = catalog == null ? null : Persist(catalog);
-        Join(pre, relation); Ledger.BindInput(token, pre, relation);
+        var parts = PersistParts(token.PrePosition.EpochId, publicBasis, publicBasisMissingReason);
+        Join(pre, relation); Ledger.BindInput(token, pre, relation, parts);
     }
     internal void CompleteInput(SourceInputTokenV2 token, SourceInputOutcomeV2 outcome)
     {
         Healthy(); var input = Ledger.ExactInput(token); outcome = SourceSessionJson.Copy(outcome);
+        if (format.PublicBasis)
+            outcome = outcome with { NativeFacts = outcome.NativeFacts ?? new("missing", null, null,
+                new Dictionary<string, string>(), Array.Empty<SourceNativeCarrierV4>(), "source_native_operand_refs_unavailable") };
+        else if (outcome.NativeFacts != null) throw new InvalidDataException("source_profile_parts_mismatch");
         ValidateOutcome(input, outcome); string signature = SourceSessionContract.Sha256(SourceSessionJson.Bytes(outcome));
         if (input.TerminalSignature != null)
         { if (input.TerminalSignature != signature) throw new InvalidDataException("source_input_completion_conflict"); return; }
@@ -205,11 +244,13 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
             manifest.SessionId, manifest.TimelineId, token.InputId, token.PrePosition.EpochId, token.SegmentId, token.PrePosition,
             input.Capture, input.Catalog, outcome, DateTimeOffset.UtcNow)
         { InputPrefixOrdinal = token.InputPrefixOrdinal, BasisOrder = format.Ordered ? input.BasisOrder ??
-            new(SourceSessionContractV3.UnprovenBasis, SourceSessionContractV3.OrderUnprovenReason) : null };
+            new(SourceSessionContractV3.UnprovenBasis, SourceSessionContractV3.OrderUnprovenReason) : null,
+          CapturedParts = format.PublicBasis ? input.CapturedParts ?? new(null, "source_public_basis_missing") : null };
         Append("native-input-witnesses.jsonl", row); Ledger.CompleteInput(token, signature);
     }
     private void ValidateOutcome(SourceSessionEpochLedgerV2.Input input, SourceInputOutcomeV2 outcome)
     {
+        if (outcome.NativeFacts != null) SourcePublicBasisCodecV4.Validate(outcome.NativeFacts);
         if (outcome.MappingStatus is not ("exact" or "unmapped" or "ambiguous" or "capture_missing")
             || outcome.Delivery is not ("rejected_before_input" or "delivered" or "partially_delivered" or "unknown")
             || outcome.MatchCount is < 0 or > 65536 || outcome.Stages.Count > 16)
@@ -353,7 +394,7 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         Healthy(); byte[] bytes = SourceSessionJson.Bytes(row); var stream = streams[file];
         if (bytes.Length > profile.Limits.MaxRowBytes || counts[file] >= profile.Limits.MaxRowsPerStream
             || bytes.Length > profile.Limits.MaxBytesPerStream - stream.Length) Fail("source_stream_capacity");
-        try { stream.Write(bytes); stream.Flush(); counts[file]++; }
+        try { stream.Write(bytes); stream.Flush(format.PublicBasis); counts[file]++; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         { Ledger.MarkFailure("source_disk_append_uncertain"); throw; }
     }

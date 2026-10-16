@@ -127,7 +127,7 @@ class _SourceFormat:
 
     @property
     def fence_fields(self) -> set[str]:
-        return {"after_input_ordinal"} if self.version == 3 else set()
+        return {"after_input_ordinal"} if self.version >= 3 else set()
 
 
 @dataclass(frozen=True)
@@ -217,7 +217,8 @@ class SourceSessionBundleV2Verifier:
         _require(raw_inventory == identity.get("raw_file_sha256")
                  and export_inventory == identity.get("export_file_sha256"), "source_raw_export_inventory_mismatch")
         expected_export = {key: value for key, value in raw_inventory.items()
-                           if key in STREAMS or key.startswith(("public-captures/", "public-catalogs/"))}
+                           if key in STREAMS or key.startswith(("public-captures/", "public-catalogs/"))
+                           or fmt.version == 4 and key.startswith("public-bases/")}
         _require(expected_export == export_inventory, "source_raw_export_equivalence_invalid")
         audit_bytes = (directory / "audit/source-audit.json").read_bytes()
         audit = _object(_json(audit_bytes))
@@ -241,7 +242,7 @@ class SourceSessionBundleV2Verifier:
             for key, value in expected.items():
                 _require(key in bundle and bundle[key] == value, "source_expected_identity_mismatch", key)
         additions = {"boundaries": tuple(_freeze(row) for row in boundaries),
-                     "final_input_prefix_ordinal": final_ordinal} if fmt.version == 3 else {}
+                     "final_input_prefix_ordinal": final_ordinal} if fmt.version >= 3 else {}
         return self.value_type(directory, _freeze(bundle), _freeze(recording),
             tuple(_freeze(row) for row in observations), tuple(_freeze(row) for row in inputs),
             tuple(_freeze(row) for row in segments), bundle["bundle_content_id"], gaps,
@@ -276,12 +277,15 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
              and bundle.get("capture_profile_id") == fmt.profile_id and bundle.get("capture_profile_sha256") == _sha(profile_bytes),
              "source_manifest_bundle_mismatch")
     _require(set(profile) == {"schema", "profile_id", "input_profile", "publication_profile_id",
-             "publication_profile_definition_sha256", "eager_scope", "limits", "non_claims"}
+             "publication_profile_definition_sha256", "eager_scope", "limits", "non_claims"} | ({"public_basis"} if fmt.version == 4 else set())
              and profile.get("schema") == fmt.schema("source-capture-profile") and profile.get("profile_id") == fmt.profile_id
              and profile.get("input_profile") == "native-logical-v1" and profile.get("publication_profile_id") == PUBLICATION_PROFILE_ID
              and profile.get("publication_profile_definition_sha256") == PUBLICATION_PROFILE_SHA
              and profile.get("eager_scope") == ["persistent", "interaction", "referents", "catalog"]
              and profile.get("non_claims") == list(NON_CLAIMS), "source_profile_invalid")
+    if fmt.version == 4:
+        from .source_session_bundle_v4 import PUBLIC_BASIS_PROFILE
+        _require(profile.get("public_basis") == PUBLIC_BASIS_PROFILE, "source_public_basis_profile_invalid")
     limits = _object(profile.get("limits"))
     upper = {"max_capture_bytes": 64 * 1024 * 1024, "max_payload_bytes": 512 * 1024 * 1024,
              "max_row_bytes": 1024 * 1024, "max_rows_per_stream": 65536, "max_bytes_per_stream": 64 * 1024 * 1024,
@@ -296,7 +300,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
     receipt = _object(_json((raw / "source-close-receipt.json").read_bytes()))
     _require(set(receipt) == {"schema", "session_id", "timeline_id", "status", "accounting_complete", "final_position",
              "sealed_epochs", "final_drains", "counts", "stream_sha256", "gap_count", "input_count", "epoch_count", "source_kinds"}
-             | ({"final_input_prefix_ordinal"} if fmt.version == 3 else set())
+             | ({"final_input_prefix_ordinal"} if fmt.version >= 3 else set())
              and receipt.get("schema") == fmt.schema("source-session-close") and receipt.get("status") == "closed"
              and receipt.get("accounting_complete") is True and receipt.get("session_id") == session and receipt.get("timeline_id") == timeline,
              "source_close_receipt_invalid")
@@ -317,10 +321,13 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
         "native-input-witnesses.jsonl": {"schema", "sequence", "session_id", "timeline_id", "input_id", "epoch_id", "segment_id",
              "pre_position", "pre_capture", "catalog", "outcome", "recorded_at"},
     }
-    if fmt.version == 3:
+    if fmt.version >= 3:
         for file in ("source-attachment-epochs.jsonl", "source-segments.jsonl", "source-boundaries.jsonl"):
             fields[file].add("after_input_ordinal")
         fields["native-input-witnesses.jsonl"].update({"input_prefix_ordinal", "basis_order"})
+    if fmt.version == 4:
+        fields["public-observations.jsonl"].add("captured_parts")
+        fields["native-input-witnesses.jsonl"].add("captured_parts")
     rows: dict[str, list[dict[str, Any]]] = {}
     for file, schema in fmt.streams.items():
         data = (raw / file).read_bytes()
@@ -436,7 +443,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
             if paused:
                 interval = _object(intervals[0])
                 _require(set(interval) == {"epoch_id", "stream_generation", "after_index", "through_index", "reason"}
-                         | ({"after_input_ordinal", "through_input_ordinal"} if fmt.version == 3 else set())
+                         | ({"after_input_ordinal", "through_input_ordinal"} if fmt.version >= 3 else set())
                          and interval["epoch_id"] == expected_epoch and interval["stream_generation"] == epoch_map[expected_epoch]["context"]["stream_generation"]
                          and interval["after_index"] == pause["publication_index"] and _index(interval["through_index"]) == expected_end
                          and _index(interval["after_index"]) <= expected_end and interval["reason"] == "recording_paused", "source_pause_interval_invalid")
@@ -514,6 +521,27 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
                  and all(descriptor.get(key) == catalog.get(key) for key in ("catalog_ref", "snapshot_id", "scope_id", "stream_generation", "total_count")), "source_capture_catalog_descriptor_mismatch")
         _capture_shape(body, capture, full, actions); catalog_actions[key] = actions
 
+    def join_parts(value: Any, epoch_id: str, unproven: bool = False, allow_stage: bool = False) -> None:
+        if fmt.version != 4: return
+        parts = _object(value)
+        _require(set(parts) == {"public_basis", "public_basis_missing_reason", "native_stage"}, "source_public_basis_binding_invalid")
+        if parts["native_stage"] is not None:
+            from .source_session_bundle_v4 import validate_native_stage
+            _require(allow_stage, "source_native_stage_publication_invalid")
+            validate_native_stage(parts["native_stage"])
+        reference = parts["public_basis"]
+        if reference is None:
+            _require(isinstance(parts["public_basis_missing_reason"], str) and bool(parts["public_basis_missing_reason"]), "source_public_basis_binding_invalid")
+            _text(parts["public_basis_missing_reason"]); return
+        reference = _object(reference); context = epoch_map[epoch_id]["context"]
+        _require(not unproven and parts["public_basis_missing_reason"] is None
+                 and set(reference) == {"epoch_id", "snapshot_id", "scope_id", "stream_generation", "captured_at", "byte_count", "sha256", "payload_ref"}
+                 and reference["epoch_id"] == epoch_id and reference["scope_id"] == context["scope_id"]
+                 and reference["stream_generation"] == context["stream_generation"], "source_public_basis_binding_invalid")
+        _identifier(reference["snapshot_id"]); _timestamp(reference["captured_at"])
+        from .source_session_bundle_v4 import validate_public_basis
+        validate_public_basis(blob(reference, "public-bases", "sha256"), reference["snapshot_id"], environment)
+
     ranges = {epoch["epoch_id"]: [] for epoch in epochs}; last_observation = {epoch["epoch_id"]: position(epoch["starting_position"])[1] for epoch in epochs}
     for value in paused_intervals:
         ranges[value["epoch_id"]].append((_index(value["after_index"]), _index(value["through_index"])))
@@ -536,6 +564,8 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
             _require(key not in source_indexes or source_index > source_indexes[key], "source_source_index_order_invalid")
             source_indexes[key] = source_index; ranges[epoch_id].append((index - 1, index))
         join(value["capture"], value["catalog"], epoch_id, value["completeness"] == "complete")
+        if fmt.version == 4: join_parts(value["captured_parts"], epoch_id, allow_stage=
+            value["source_seam"] == "native_input_callback" and value["phase"] == "card_play_canceled")
         if value["owner_occurrence"] is not None:
             _identifier(value["owner_occurrence"])
             _require(value["capture"] is None or capture_owners[(epoch_id, value["capture"]["capture_id"])] == value["owner_occurrence"],
@@ -546,20 +576,24 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
                       if value["completeness"] == "complete" else isinstance(value["missing_reason"], str) and bool(value["missing_reason"])), "source_full_reference_incomplete")
         gaps += int(value["missing_reason"] is not None or value["gap_after_index"] is not None); last_observation[epoch_id] = index
     input_ids: set[str] = set()
-    if fmt.version == 3:
+    if fmt.version >= 3:
         from .source_session_order import _input_is_paused
     for value in inputs:
         epoch_id = value["epoch_id"]; point = in_seal(value["pre_position"]); input_id = _identifier(value["input_id"])
         _require(input_id not in input_ids and epoch_id == value["pre_position"]["epoch_id"] and value["segment_id"] in segment_map
-                 and not (_input_is_paused(value, boundaries, _index) if fmt.version == 3 else is_paused(value["pre_position"])),
+                 and not (_input_is_paused(value, boundaries, _index) if fmt.version >= 3 else is_paused(value["pre_position"])),
                  "source_input_original_binding_invalid"); input_ids.add(input_id)
         segment = segment_map[value["segment_id"]]; offset = segments.index(segment)
         _require(position(segment["boundary_position"]) <= point and (offset + 1 == len(segments) or point <= position(segments[offset + 1]["boundary_position"])), "source_input_original_segment_mismatch")
         outcome = _object(value["outcome"])
-        _require(set(outcome) == {"mapping_status", "match_count", "selected_action", "native_mechanism", "delivery", "reason_code", "stages"}
+        _require(set(outcome) == {"mapping_status", "match_count", "selected_action", "native_mechanism", "delivery", "reason_code", "stages"} | ({"native_facts"} if fmt.version == 4 else set())
                  and outcome["mapping_status"] in {"exact", "unmapped", "ambiguous", "capture_missing"}
                  and type(outcome["match_count"]) is int and 0 <= outcome["match_count"] <= 65536 and outcome["delivery"] in DELIVERIES,
                  "source_input_outcome_invalid")
+        if fmt.version == 4:
+            from .source_session_bundle_v4 import validate_native_facts
+            validate_native_facts(outcome["native_facts"])
+            join_parts(value["captured_parts"], epoch_id, value["basis_order"]["status"] != "native_prefix_frozen")
         _text(outcome["native_mechanism"])
         if outcome["reason_code"] is not None: _text(outcome["reason_code"])
         _require(isinstance(outcome["stages"], list) and len(outcome["stages"]) <= 16, "source_input_stage_capacity")
@@ -598,15 +632,17 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
     allowed_raw = set(STREAMS) | {"recording-manifest.json", "capture-profile.json", "source-close-receipt.json", "source-coverage.json",
         "source-accounting-failure.json", "performance-profile.json", "recording-owner.lock", "run-journal.jsonl", "invalidations.jsonl",
         "semantic-boundary-trace.jsonl", "canonical-transitions.jsonl", "native-semantic-discriminator.jsonl"}
-    _require(all(value in allowed_raw or re.fullmatch(r"(public-captures|public-catalogs)/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.bin", value)
+    families = r"(public-captures|public-catalogs|public-bases)" if fmt.version == 4 else r"(public-captures|public-catalogs)"
+    _require(all(value in allowed_raw or re.fullmatch(families + r"/sha256/[0-9a-f]{2}/[0-9a-f]{64}\.bin", value)
                  for value in raw_inventory), "source_unexpected_raw_file")
-    payload_files = {value for value in raw_inventory if value.startswith(("public-captures/", "public-catalogs/"))}
+    payload_files = {value for value in raw_inventory if value.startswith(("public-captures/", "public-catalogs/"))
+                     or fmt.version == 4 and value.startswith("public-bases/")}
     _require(payload_files == payloads and sum((raw / value).stat().st_size for value in payload_files) <= limits["max_payload_bytes"], "source_payload_inventory_invalid")
     _require(receipt["epoch_count"] == len(epochs) and receipt["input_count"] == len(inputs) and receipt["gap_count"] == gaps
              and receipt["source_kinds"] == sorted(kinds) and bundle.get("gap_count") == gaps
              and bundle.get("observation_count") == len(observations) and bundle.get("input_count") == len(inputs), "source_close_summary_mismatch")
     final_ordinal = None
-    if fmt.version == 3:
+    if fmt.version >= 3:
         from .source_session_order import _verify_order
         final_ordinal = receipt["final_input_prefix_ordinal"]
         _verify_order(epochs, segments, boundaries, inputs, drains, final_ordinal, _index)

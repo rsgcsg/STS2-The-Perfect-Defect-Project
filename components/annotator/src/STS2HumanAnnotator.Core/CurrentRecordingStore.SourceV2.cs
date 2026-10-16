@@ -3,7 +3,8 @@ namespace STS2HumanAnnotator.Core;
 public sealed partial class RecordingSessionStore
 {
     public bool IsSourceSessionV2 => _sourceSessionV2 != null;
-    public bool IsOrderedSourceSession => _sourceSessionV2?.Profile.ProfileId == SourceSessionContractV3.ProfileId;
+    public bool IsOrderedSourceSession => _sourceSessionV2?.Profile.ProfileId is SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;
+    public bool IsPublicBasisSourceSession => _sourceSessionV2?.Profile.ProfileId == SourceSessionContractV4.ProfileId;
     public SourceCaptureProfileV2? SourceProfileV2 => _sourceSessionV2?.Profile;
     public SourceSessionStatusV2? GetSourceStatusV2() => _sourceSessionV2?.Status;
     public static RecordingSessionStore CreateSourceV2(string root, CurrentRecordingManifest manifest,
@@ -12,6 +13,9 @@ public sealed partial class RecordingSessionStore
     public static RecordingSessionStore CreateSourceV3(string root, CurrentRecordingManifest manifest,
         SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
         => CreateSourceVersion(root, manifest, profile, initialSource, initialEpoch, 3);
+    public static RecordingSessionStore CreateSourceV4(string root, CurrentRecordingManifest manifest,
+        SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
+        => CreateSourceVersion(root, manifest, profile, initialSource, initialEpoch, 4);
     private static RecordingSessionStore CreateSourceVersion(string root, CurrentRecordingManifest manifest,
         SourceCaptureProfileV2 profile, SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch, int version)
     {
@@ -50,7 +54,8 @@ public sealed partial class RecordingSessionStore
     public void AppendSourceBoundaryV2(SourceBoundaryV2 boundary) => SourceWriteV2(source => source.AppendBoundary(boundary));
     public void AppendPublicObservationV2(SourceObservationPacketV2 packet) => SourceWriteV2(source => source.Observe(packet));
     public void BindSourceInputBasisV2(SourceInputTokenV2 token, FrozenPublicCaptureV2? capture,
-        FrozenPublicCatalogV2? catalog) => SourceWriteV2(source => source.BindInput(token, capture, catalog));
+        FrozenPublicCatalogV2? catalog, FrozenPublicBasisV4? publicBasis = null, string? publicBasisMissingReason = null) =>
+        SourceWriteV2(source => source.BindInput(token, capture, catalog, publicBasis, publicBasisMissingReason));
     public void CompleteSourceInputV2(SourceInputTokenV2 token, SourceInputOutcomeV2 outcome) =>
         SourceWriteV2(source => source.CompleteInput(token, outcome));
     public void PrepareSourceCloseV2(IReadOnlyList<SourceNativeSealV2> completedOriginalSeals) =>

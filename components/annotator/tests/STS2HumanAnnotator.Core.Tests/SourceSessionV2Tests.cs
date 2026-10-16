@@ -34,12 +34,14 @@ public sealed class SourceSessionV2Tests
         {
             Profile = new("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version, "native-logical-v1",
                 SourceSessionContractV2.PublicationProfileId, SourceSessionContractV2.PublicationProfileDefinitionSha256,
-                new[] { "persistent", "interaction", "referents", "catalog" }, limits ?? new(), SourceSessionContractV2.NonClaims);
+                new[] { "persistent", "interaction", "referents", "catalog" }, limits ?? new(), SourceSessionContractV2.NonClaims)
+            { PublicBasis = version == 4 ? SourceSessionContractV4.PublicBasis : null };
             var manifest = new CurrentRecordingManifest(version, "sts2.annotator/source-session-manifest-" + version, "session-source-v2", "timeline-source-v2",
                 DateTimeOffset.UnixEpoch, "fixture", new string('e', 40), "fixture-platform", Profile.ProfileId,
                 SourceSessionContractV2.ProfileDigest(Profile), Array.Empty<string>(), SourceSessionContractV2.NonClaims)
             { SourceSchemaVersion = version, SourceEnvironment = Environment, RecoverySchemaVersion = 1 };
-            Store = version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"))
+            Store = version == 4 ? RecordingSessionStore.CreateSourceV4(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"))
+                : version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"))
                 : RecordingSessionStore.CreateSourceV2(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"));
         }
         internal SourceEpochPacketV2 Epoch(string id, string? previous, SourceNativeSealV2? seal,
