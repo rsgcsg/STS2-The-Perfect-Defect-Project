@@ -41,11 +41,11 @@ internal static partial class PlayerEnvironmentService
     internal static PlayerEnvironmentReadResult BuildResolvedRead(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadResolution resolution,
-        string expectedSnapshotId)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null)
     {
         PlayerEnvironmentReadOpportunity opportunity = resolution.Opportunity!;
         if (opportunity.TargetReferentId != null)
-            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId);
+            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId, capturedAt);
         PlayerReadDraft draft = resolution.Build!.Draft!;
         return new PlayerEnvironmentReadResult(
             new PlayerEnvironmentReadResponse(
@@ -54,7 +54,7 @@ internal static partial class PlayerEnvironmentService
                 opportunity.ReadId,
                 expectedSnapshotId,
                 snapshot.Snapshot.SnapshotId,
-                DateTimeOffset.UtcNow,
+                capturedAt ?? DateTimeOffset.UtcNow,
                 draft.Kind,
                 null,
                 opportunity.VisibilityBasis,
@@ -134,7 +134,7 @@ internal static partial class PlayerEnvironmentService
     private static PlayerEnvironmentReadResult ReadLinkedDetail(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadOpportunity opportunity,
-        string expectedSnapshotId)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null)
     {
         PlayerEnvironmentSnapshot observation = snapshot.Snapshot;
         if (!string.Equals(opportunity.Kind, "surface_card", StringComparison.Ordinal)
@@ -166,7 +166,7 @@ internal static partial class PlayerEnvironmentService
                 opportunity.ReadId,
                 expectedSnapshotId,
                 observation.SnapshotId,
-                DateTimeOffset.UtcNow,
+                capturedAt ?? DateTimeOffset.UtcNow,
                 opportunity.Kind,
                 referentId,
                 opportunity.VisibilityBasis,

@@ -6,6 +6,8 @@ const project = (b: any) => reduce(createSession('public-identity', 'managed'), 
 const input = (r: ReturnType<typeof project>) => canonicalJson(modelView(r.observation));
 const hud = (b: any) => b.snapshot.interaction.content.context;
 const draw = (b: any) => b.reads.find((r: any) => r.kind === 'combat_piles').response.content.zones.find((z: any) => z.zone === 'draw');
+const deck = (b: any) => b.reads.find((r: any) => r.kind === 'run_deck').response.content;
+const discard = (b: any) => b.reads.find((r: any) => r.kind === 'combat_piles').response.content.zones.find((z: any) => z.zone === 'discard');
 const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'string' ? (v === oldId ? nextId : v)
   : Array.isArray(v) ? v.map(item => rename(item, oldId, nextId)) : v && typeof v === 'object'
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
@@ -62,6 +64,99 @@ describe('P1 current public identity and HUD projection', () => {
     expect((later.observation.combat.content as any).enemies[0].entity_id).toBe(enemy.entity_id);
     expect(Object.values(first.state.aliases).every(alias => !alias.startsWith('a'))).toBe(true);
     expect(input(reduce(first.state, b))).toBe(input(first));
+  });
+
+  it('keeps unknown identity-looking public extensions literal and out of the witness inventory', () => {
+    const a = basis();
+    hud(a).extension = { entity_id: draw(a).cards[0].entity_id, group_id: 'literal-public-id-text' };
+    hud(a)['enemies[0].entity_id'] = 'literal-key-with-path-punctuation';
+    const b = structuredClone(a); draw(b).cards.reverse();
+    const left = project(a); const right = project(b);
+    expect(left.complete && right.complete).toBe(true); expect(input(left)).toBe(input(right));
+    expect((left.observation.combat.content as any).extension).toEqual(hud(a).extension);
+    expect((left.observation.combat.content as any)['enemies[0].entity_id']).toBe('literal-key-with-path-punctuation');
+    expect(Object.hasOwn(left.state.aliases, hud(a).extension.entity_id)).toBe(false);
+  });
+
+  it('allocates fixed public selector identities before an unrelated unordered Draw traversal', () => {
+    // Synthetic current native pile-selector DTO + real decoder/reducer. This
+    // preserves its fixed public display order while changing only a separate Read.
+    const a = basis(); const cards = structuredClone(draw(a).cards.slice(0, 2)); const combat = hud(a);
+    Object.assign(a.snapshot.interaction, { kind: 'native_combat_pile_selection', stage: 'selecting',
+      content_schema: 'sts2.player-environment/surface/native_combat_pile_selection-1',
+      content: { context: { kind: 'selection', combat }, surface: { kind: 'native_combat_pile_selection',
+        stage: 'selecting', pile_type: 'draw', cards, min_select: 1, max_select: 1, selected_count: 0,
+        selected_card_entity_ids: [], selectable_card_entity_ids: cards.map((c: any) => c.entity_id),
+        deselectable_card_entity_ids: [], can_confirm: false, cancelable: false } } });
+    a.snapshot.bound_actions.actions = cards.map((c: any, i: number) => ({ ...a.snapshot.bound_actions.actions[0],
+      bound_action_id: `action_selector_${i}`, verb: 'select', subject_referent_id: c.entity_id, arguments: [], label: 'Select Defend' }));
+    a.snapshot.bound_actions.total_count = a.snapshot.bound_actions.materialized_count = cards.length;
+    a.snapshot.referents.push(...cards.map((c: any) => ({ referent_id: c.entity_id, role: 'card', kind: 'entity',
+      label: c.name, state: { visible: true, observation_basis: 'native_visible_fact' },
+      properties_schema: 'sts2.player-environment/referent/card-1', properties: c })));
+    const b = structuredClone(a); draw(b).cards.reverse();
+    const left = project(a); const right = project(b);
+    expect(left.complete && right.complete).toBe(true); expect(input(left)).toBe(input(right));
+    const displayed = (left.observation.scene.content as any).surface.cards;
+    expect(left.observation.catalog.map(c => c.subject).sort()).toEqual(displayed.map((c: any) => c.entity_id).sort());
+    expect(displayed[0].entity_id).not.toBe(displayed[1].entity_id);
+  });
+
+  it('does not join anonymous deck and Draw slots using a secret native pointer', () => {
+    const a = basis(); const copies = deck(a).cards.filter((c: any) => c.definition_id === 'DEFEND_DEFECT');
+    const drawCopies = draw(a).cards.filter((c: any) => c.definition_id === 'DEFEND_DEFECT');
+    draw(a).cards = draw(a).cards.filter((c: any) => c !== drawCopies[1]);
+    draw(a).cards[0].entity_id = copies[0].entity_id;
+    draw(a).card_count = hud(a).player.draw_pile_count = draw(a).cards.length;
+    const b = structuredClone(a); deck(b).cards.reverse();
+    const left = project(a); const right = project(b);
+    expect(left.complete && right.complete).toBe(true); expect(input(left)).toBe(input(right));
+    const deckAliases = (left.observation.deck.content as any).cards.map((c: any) => c.entity_id);
+    const drawAlias = (left.observation.piles.content as any).zones[0].cards[0].entity_id;
+    expect(deckAliases).not.toContain(drawAlias); // No claimed identity across anonymous displays.
+    expect(Object.hasOwn(left.state.aliases, copies[0].entity_id)).toBe(false);
+    expect(input(reduce(left.state, a))).toBe(input(left));
+  });
+
+  it('treats an ordered visible discard Read as a public identity witness', () => {
+    const a = basis(); const shown = deck(a).cards.find((c: any) => c.definition_id === 'DEFEND_DEFECT');
+    discard(a).cards = [structuredClone(shown)]; discard(a).card_count = hud(a).player.discard_pile_count = 1;
+    const b = structuredClone(a); deck(b).cards.reverse();
+    const left = project(a); const right = project(b);
+    expect(left.complete && right.complete).toBe(true); expect(input(left)).toBe(input(right));
+    const visible = (left.observation.piles.content as any).zones[1].cards[0].entity_id;
+    expect(left.state.aliases[shown.entity_id]).toBe(visible);
+    expect((left.observation.deck.content as any).cards.some((c: any) => c.entity_id === visible)).toBe(true);
+    const later = reduce(left.state, b);
+    expect((later.observation.piles.content as any).zones[1].cards[0].entity_id).toBe(visible);
+  });
+
+  it('aliases owned recursive card previews while preserving an extension with the same property name', () => {
+    const b = basis(); const card = hud(b).player.hand[0];
+    b.snapshot.persistent.content.player.relics[0].card_previews = [{ ...structuredClone(card), entity_id: 'preview-parent',
+      card_previews: [{ ...structuredClone(card), entity_id: card.entity_id }],
+      extension: { entity_id: 'literal-in-card', card_previews: [{ entity_id: 'literal-nested-extension' }] } }];
+    const r = project(b); expect(r.complete).toBe(true);
+    const preview = (r.observation.player.content as any).relics[0].card_previews[0];
+    expect(preview.entity_id).not.toBe('preview-parent');
+    expect(preview.card_previews[0].entity_id).toBe((r.observation.combat.content as any).player.hand[0].entity_id);
+    expect(preview.extension).toEqual(b.snapshot.persistent.content.player.relics[0].card_previews[0].extension);
+  });
+
+  it('keeps typed current card-detail identities and their previews in the same public relation', () => {
+    const b = basis(); const card = hud(b).player.hand[0];
+    const listed = { ...b.snapshot.reads[0], read_id: 'read_owned_detail', kind: 'surface_card',
+      target_referent_id: card.entity_id, content_schema: 'sts2.player-environment/read/surface_card-1' };
+    const captured = structuredClone(b.reads[0]); captured.read_id = listed.read_id; captured.kind = listed.kind;
+    Object.assign(captured.response, { read_id: listed.read_id, kind: listed.kind, target_referent_id: listed.target_referent_id,
+      content_schema: listed.content_schema, content: { ...structuredClone(card), card_previews: [structuredClone(card)],
+      extension: { entity_id: 'literal-detail-extension' } } });
+    b.snapshot.reads.push(listed); b.reads.push(captured);
+    const r = project(b); expect(r.complete).toBe(true);
+    const detail = r.observation.extra_reads[0]!.content as any;
+    const identity = (r.observation.combat.content as any).player.hand[0].entity_id;
+    expect(detail.entity_id).toBe(identity); expect(detail.card_previews[0].entity_id).toBe(identity);
+    expect(detail.extension.entity_id).toBe('literal-detail-extension');
   });
 
 });
