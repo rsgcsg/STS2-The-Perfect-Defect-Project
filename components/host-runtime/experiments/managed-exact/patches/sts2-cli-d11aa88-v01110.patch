@@ -1007,10 +1007,10 @@ index 0000000..14bc7d2
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
 new file mode 100644
-index 0000000..f73eaa0
+index 0000000..19225fd
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,373 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -1122,6 +1122,7 @@ index 0000000..f73eaa0
 +        Type type = enchantment.GetType();
 +        if (type != typeof(Adroit) && type != typeof(Sharp)) return false;
 +        if (!RenderMethodsUnpatched(typeof(EnchantmentModel)) || !RenderMethodsUnpatched(type)) return false;
++        if (!ReferenceEquals(typeof(EnchantmentModel).GetField("_card", NativeMembers)?.GetValue(enchantment), card)) return false;
 +        // IconPath otherwise probes ResourceLoader and memoizes a path. This
 +        // finite branch admits only the already chosen path and a valid hit.
 +        if (typeof(EnchantmentModel).GetField("_iconPath", NativeMembers)?.GetValue(enchantment) is not string icon

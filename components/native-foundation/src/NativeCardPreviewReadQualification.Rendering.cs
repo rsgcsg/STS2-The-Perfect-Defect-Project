@@ -109,6 +109,7 @@ public static partial class NativeCardPreviewReadQualification
         Type type = enchantment.GetType();
         if (type != typeof(Adroit) && type != typeof(Sharp)) return false;
         if (!RenderMethodsUnpatched(typeof(EnchantmentModel)) || !RenderMethodsUnpatched(type)) return false;
+        if (!ReferenceEquals(typeof(EnchantmentModel).GetField("_card", NativeMembers)?.GetValue(enchantment), card)) return false;
         // IconPath otherwise probes ResourceLoader and memoizes a path. This
         // finite branch admits only the already chosen path and a valid hit.
         if (typeof(EnchantmentModel).GetField("_iconPath", NativeMembers)?.GetValue(enchantment) is not string icon
