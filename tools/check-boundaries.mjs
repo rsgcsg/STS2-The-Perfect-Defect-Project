@@ -32,7 +32,15 @@ export function textBoundaryErrors(relative, contents) {
       "NativeCardPreviewReadQualification.cs",
       "NativeCardRewardAlternativePreview.cs"
     ].map(name => `components/native-foundation/src/${name}`));
-    let ownershipText = contents.replace(/^[ \t]*\/\/[^\r\n]*$/gmu, "");
+    // Do not parse comments with a regex: comment-like text inside a C# string
+    // can precede executable code. Only these fixed, inert prose fragments are
+    // ignored; no source line or arbitrary comment body is ever discarded.
+    let ownershipText = contents;
+    for (const prose of [
+      "/// callback. No Harmony callback is installed here and no successor is",
+      "/// implementations and Harmony state; no runtime type/IL discovery is used.</summary>",
+      "// Harmony initialization or an idempotent command callback"
+    ]) ownershipText = ownershipText.replaceAll(prose, "");
     if (readQualificationFiles.has(normalized)) {
       ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
         .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");

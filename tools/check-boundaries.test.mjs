@@ -101,6 +101,8 @@ test("comment-like string literals cannot hide native patch ownership", () => {
   const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
   for (const source of [
     'using HarmonyLib;\nvar text = "//"; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar text = @"first\n//"; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar text = """\n// harmless\n"""; var owner = new Harmony("x");',
     'using HarmonyLib;\nvar open = "/*"; var owner = new Harmony("x"); var close = "*/";'
   ]) assert.equal(textBoundaryErrors(owner, source).length, 1);
 });
