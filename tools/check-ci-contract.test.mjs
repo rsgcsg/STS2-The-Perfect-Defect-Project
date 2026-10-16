@@ -47,11 +47,23 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["fail-fast: false", "fail-fast: true", "Linux must retain two isolated pytest shards"],
     ["shard: [1, 2]", "shard: [1]", "Linux must retain two isolated pytest shards"],
     ["timeout-minutes: 55", "timeout-minutes: 60", "Linux must retain its 55-minute budget"],
+    ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
     ["pattern: pytest-*-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
   ]) assert.ok(ciWorkflowErrors(currentSource().replace(before, after)).includes(error), error);
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
+});
+
+test("CI keeps the bounded Windows capacity adjustment separate from Linux's existing budget", () => {
+  for (const minutes of [55, 60, 90, 750]) {
+    const source = currentSource().replace("timeout-minutes: 75", `timeout-minutes: ${minutes}`);
+    assert.ok(ciWorkflowErrors(source).includes("Windows must retain its 75-minute budget"));
+  }
+  for (const minutes of [75, 550]) {
+    const source = currentSource().replace("timeout-minutes: 55", `timeout-minutes: ${minutes}`);
+    assert.ok(ciWorkflowErrors(source).includes("Linux must retain its 55-minute budget"));
+  }
 });
 
 test("aggregate implementation verifies original coverage before minting a fresh receipt", () => {

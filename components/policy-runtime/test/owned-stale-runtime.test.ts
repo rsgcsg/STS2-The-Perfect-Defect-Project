@@ -21,11 +21,12 @@ const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-curr
 const continuousPolicy = JSON.parse(readFileSync(new URL("../contracts/fixtures/continuous-strict-v2.json", import.meta.url), "utf8")).execution_policy;
 const child = fileURLToPath(new URL("./fixtures/sampled-agent-child.mjs", import.meta.url));
 const cleanup: (() => Promise<void>)[] = [];
+const diagnosticObservers: ReturnType<typeof fixtureProgress>[] = [];
 function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 
 // Real SDK assembly/dispatch and OS Ndjson child, with explicitly scripted
 // source/authority responses. This does not replace the real C# Store pressure gate.
-async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
+async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean; measure?: boolean; progress?: ReturnType<typeof fixtureProgress> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "owned-stale-runtime-")), source = new SyntheticNativeHttp(1, "interactive", options.failRenewal ? 1000 : 120000);
   const manifest = structuredClone(shared.manifest) as AgentManifest;
   const selectedPolicy = options.continuous ? continuousPolicy : policy;
@@ -99,14 +100,35 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSub
       return { raw: structuredClone(response.value) as JsonObject, encodedByteCount: Buffer.byteLength(JSON.stringify(response.value)), statusCode: response.status ?? 200 };
     }
   } as unknown as PlayerEnvironmentRestClient;
+  const timings: Record<string, number> = {};
+  async function measured<T>(name: string, work: () => Promise<T>): Promise<T> {
+    if (!options.measure) return work();
+    const started = performance.now();
+    const complete = options.progress?.begin(name);
+    try { return await work(); }
+    finally {
+      const elapsed = performance.now() - started;
+      timings[name + "_calls"] = (timings[name + "_calls"] ?? 0) + 1;
+      timings[name + "_total_ms"] = Math.round((timings[name + "_total_ms"] ?? 0) + elapsed);
+      timings[name + "_max_ms"] = Math.max(timings[name + "_max_ms"] ?? 0, Math.round(elapsed));
+      complete?.();
+    }
+  }
+  const transport = environment.nativeLogicalRequest.bind(environment);
+  if (options.measure) environment.nativeLogicalRequest = (...args) =>
+    measured("transport_" + args[0], () => transport(...args));
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, mode: "auto", runtimeVersion: "fixture", runtimeCodeSha256: "1".repeat(64) });
+  if (options.measure) {
+    const append = evidence.append.bind(evidence);
+    evidence.append = (...args) => measured("durable_evidence_append", () => append(...args));
+  }
   const manifestPath = join(root, "manifest.json"); await writeFile(manifestPath, JSON.stringify(manifest));
   const port = teacherPython ? NdjsonAgentSessionPort.spawn(teacherPython, ["-m", "stpd.policy.native_teacher_agent", "--manifest", manifestPath], manifest.adapter, manifest.limits,
     { executionPolicy: manifest.execution_policy, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } })
     : NdjsonAgentSessionPort.spawn(process.execPath, [child, manifestPath, options.scenario ?? "normal"], manifest.adapter, manifest.limits, { executionPolicy: manifest.execution_policy });
   const closePort = fixturePortCloser(port);
   const inputs: unknown[] = [], next = port.next.bind(port);
-  port.next = (...args) => { inputs.push(structuredClone(args[1])); return next(...args); };
+  port.next = (...args) => { inputs.push(structuredClone(args[1])); return options.measure ? measured("agent_next", () => next(...args)) : next(...args); };
   let runtime: NativeAgentRuntimeOwner;
   try { runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence, mode: "auto", monotonicNow: () => clock,
     runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: options.maxPolicyCalls ?? 1000, deadlineMs: options.deadlineMs ?? 60000 } }); }
@@ -119,16 +141,45 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSub
     source.observation.owner_occurrence.occurrence_id = "occurrence-" + i;
     source.capture.snapshot_id = source.observation.snapshot_id; source.observation.catalog.snapshot_id = source.observation.snapshot_id; source.rehash();
   };
-  return { runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
+  return { timings, runtime, port, evidence, source, calls, handles, releases, inputs, events, applyFrame, advance,
+    tick: () => measured("runtime_tick", () => runtime.tick()),
     manifest: structuredClone(manifest),
     behavior: (value: typeof behavior) => { behavior = value; }, holdSubmit: () => { submitGate = gate(); return submitGate; },
     holdAwait: () => { awaitGate = gate(); return awaitGate; },
     onSubmit: (fn: () => void) => { onSubmit = fn; }, failRelease: (fn: (id: string) => boolean) => { failRelease = fn; },
     expire: () => { clock = options.deadlineMs ?? 60000; } };
 }
-afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0)) await close(); });
+afterEach(async () => {
+  try { vi.restoreAllMocks(); for (const close of cleanup.splice(0)) await close(); }
+  finally { for (const progress of diagnosticObservers.splice(0)) await progress.flush(); }
+});
 
 describe("owned Current stale continuation through actual SDK and Ndjson process", () => {
+  it("preserves real child decisions and durable originals when diagnostic retention fails", async () => {
+    // An existing source file cannot be a directory. Only the observer targets
+    // this deliberately unwritable child path; product evidence uses real tmp.
+    const directory = new URL("./owned-stale-runtime.test.ts/observer-failure/", import.meta.url);
+    const progress = fixtureProgress("owned-stale-observer-failure", true, directory);
+    const diagnosticLog = vi.spyOn(console, "info");
+    diagnosticObservers.push(progress);
+    const f = await fixture({ measure: true, progress });
+    const first = await f.tick(); expect(first.type).toBe("fresh_decision_required");
+    expect((await f.tick()).type).toBe("awaited");
+    f.advance(1); f.behavior("delivered"); expect((await f.tick()).type).toBe("delivered");
+    const events = await f.events();
+    expect(events.filter(event => event.kind === "native_result")).toHaveLength(2);
+    expect(events.filter(event => event.kind === "agent_consumed")).toHaveLength(2);
+    expect(events.filter(event => event.kind === "native_stale_decision_deferred")).toHaveLength(1);
+    const submits = f.calls.filter(call => call.operation === "submit");
+    expect(submits).toHaveLength(2); expect(submits[0]!.body.request_id).not.toBe(submits[1]!.body.request_id);
+    expect(f.runtime.status()).toMatchObject({ mode: "auto", tainted: false, session: { state_version: 2, agent_state: "known" } });
+    await expect(readFile(new URL("1.json", directory))).rejects.toThrow();
+    await f.runtime.stop(); expect(f.handles.size).toBe(0);
+    await progress.flush();
+    const summary = diagnosticLog.mock.calls.map(([line]) => JSON.parse(line)).reverse()
+      .find(entry => entry.fixture_diagnostic === "owned-stale-observer-failure" && entry.phase === "observer-flush");
+    expect(summary.observer_write_failures).toBeGreaterThan(0);
+  });
   it("composes the actual OS Python Teacher with a private source descriptor, without Torch or final producer promotion", async () => {
     const f = await fixture({ teacher: true });
     expect(f.port.executionPolicy).toEqual(policy); const first = await f.runtime.tick();
@@ -144,43 +195,53 @@ describe("owned Current stale continuation through actual SDK and Ndjson process
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
   });
   it("keeps W/prefix/child while unchanged Current only waits, then ACKs a changed unit and chooses a new request", async () => {
-    const recordPhase = fixtureProgress("owned-stale-unchanged-current");
-    const progress: typeof recordPhase = (...args) => { try { recordPhase(...args); } catch { /* Diagnostics never decide the test outcome. */ } };
+    const progress = fixtureProgress("owned-stale-unchanged-current", true);
+    diagnosticObservers.push(progress);
     progress("initialization-started");
-    const f = await fixture();
-    progress("initialized");
-    const first = await f.runtime.tick(); expect(first.type, JSON.stringify(first)).toBe("fresh_decision_required");
-    progress("initial-refusal-recorded");
+    const f = await fixture({ measure: true, progress });
+    progress("initialized", f.timings);
+    const first = await f.tick(); expect(first.type, JSON.stringify(first)).toBe("fresh_decision_required");
+    progress("initial-refusal-recorded", f.timings);
     const initial = f.runtime.status().session;
     for (let i = 0; i < 20; i++) {
-      expect((await f.runtime.tick()).type).toBe("awaited");
-      if ((i + 1) % 5 === 0) progress("unchanged-awaits-completed", { unchanged_awaits: i + 1 });
+      expect((await f.tick()).type).toBe("awaited");
+      if ((i + 1) % 5 === 0) progress("unchanged-awaits-completed", { unchanged_awaits: i + 1, ...f.timings });
     }
     expect(f.runtime.status().session).toEqual(initial); expect(f.handles.size).toBe(1);
     expect(f.calls.filter(c => c.operation === "submit")).toHaveLength(1);
     const outcome = (f.inputs[1] as Record<string, unknown>).operational_outcome;
     expect(outcome).toMatchObject({ state_version: 1, result: { request_id: first.type === "fresh_decision_required" ? first.original_request_id : "", action: null, stages: [], retry: "never_automatic" } });
-    f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
+    f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.tick()).type).toBe("delivered");
     const second = f.runtime.status().session; expect(second.session_id).toBe(initial.session_id); expect(second.continuity_token).toBe(initial.continuity_token); expect(second.state_version).toBe(2);
     const submits = f.calls.filter(c => c.operation === "submit"); expect(submits[1]!.body.request_id).not.toBe(submits[0]!.body.request_id);
     expect(submits[1]!.body.expected_snapshot_id).not.toBe(submits[0]!.body.expected_snapshot_id); expect(f.handles.size).toBe(1);
     progress("changed-unit-ack-act-completed", { state_version: second.state_version, original_submissions: submits.length });
-    f.applyFrame("map_c"); expect((await f.runtime.tick()).type).toBe("delivered"); expect((f.inputs.at(-1) as Record<string, unknown>).operational_outcome).toBeNull();
+    f.applyFrame("map_c"); expect((await f.tick()).type).toBe("delivered"); expect((f.inputs.at(-1) as Record<string, unknown>).operational_outcome).toBeNull();
     progress("next-unit-ack-act-completed");
-    progress("runtime-stop-started");
+    progress("runtime-stop-started", f.timings);
     await f.runtime.stop(); expect(f.handles.size).toBe(0);
-    progress("runtime-stopped", { reader_handles: f.handles.size });
+    progress("runtime-stopped", { reader_handles: f.handles.size, ...f.timings });
     const events = await f.events(); expect(events.filter(e => e.kind === "agent_consumed")).toHaveLength(3); expect(events.filter(e => e.kind === "native_stale_decision_deferred")).toHaveLength(1);
     progress("original-events-read", { durable_events: events.length });
     const intents = events.filter(e => e.kind === "native_submission_requested"); expect(intents).toHaveLength(3); expect(intents.every(e => Object.keys(e.payload.dispatch_binding).length === 4)).toBe(true);
   });
   it("ends exactly at the third consecutive refusal and records the threshold original result", async () => {
-    const f = await fixture();
-    expect((await f.runtime.tick()).type).toBe("fresh_decision_required"); f.advance(1); expect((await f.runtime.tick()).type).toBe("fresh_decision_required"); f.advance(2);
-    expect(await f.runtime.tick()).toMatchObject({ type: "not_delivered", reason: "known_stale_streak_limit" });
+    const progress = fixtureProgress("owned-stale-third-refusal", true);
+    diagnosticObservers.push(progress);
+    progress("initialization-started");
+    const f = await fixture({ measure: true, progress });
+    progress("initialized", f.timings);
+    expect((await f.tick()).type).toBe("fresh_decision_required");
+    progress("first-refusal-recorded", f.timings);
+    f.advance(1); expect((await f.tick()).type).toBe("fresh_decision_required");
+    progress("second-refusal-recorded", f.timings);
+    f.advance(2);
+    expect(await f.tick()).toMatchObject({ type: "not_delivered", reason: "known_stale_streak_limit" });
+    progress("third-refusal-recorded", f.timings);
     const e = await f.events(); expect(e.filter(x => x.kind === "native_result")).toHaveLength(3); expect(e.filter(x => x.kind === "native_stale_decision_deferred").map(x => x.payload.consecutive_known_stale_rejections)).toEqual([1, 2]);
     expect(f.runtime.status()).toMatchObject({ mode: "human", tainted: false, session: { state_version: 3, agent_state: "known" } });
     await expect(f.runtime.setMode("auto")).rejects.toThrow("runtime_sample_segment_ended");
+    progress("segment-reentry-rejected", f.timings);
   });
   it("delivered resets only the streak; total eight still stops in the same accepted prefix", async () => {
     const progress = fixtureProgress("owned-stale-eight-total");

@@ -1,0 +1,226 @@
+"""Bounded diagnostics for synthetic CI fixtures; never runtime authority.
+
+Callers select the fields. This module never reads environments, frame locals,
+configuration files or arbitrary directories, and never decides a test outcome.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import re
+import sys
+import threading
+import time
+import traceback
+import uuid
+from contextlib import suppress
+from pathlib import Path
+from typing import Any
+
+_OPERATION_FIELDS = {
+    "schema", "operation_id", "intent_id", "recipe_id", "attempt_id", "status", "stage",
+    "validation_state", "worker_state", "writer_terminal", "error_code", "elapsed_seconds",
+    "requested_action", "checkpoint_id", "run_id", "input_id", "model_id", "result_id",
+}
+_SAFE_EXCEPTION_TYPES = {"builtins." + name for name in (
+    "OSError", "FileNotFoundError", "PermissionError", "NotADirectoryError",
+    "IsADirectoryError", "TimeoutError", "InterruptedError", "ValueError",
+    "RuntimeError", "TypeError", "AssertionError",
+)} | {"spireagent.json_boundary.BoundaryError"}
+
+
+def operation_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
+    """Do not copy private request/config/credentials or arbitrary nested values."""
+    result = {key: value for key, value in operation.copy().items()
+              if key in _OPERATION_FIELDS
+              and (value is None or type(value) in {str, int, float, bool})}
+    for name, fields in (
+        ("progress", {"unit", "completed", "total"}),
+        ("error", {"code", "automatic_retry"}),
+        ("child_exit", {"attempt_id", "exit_code", "forced", "elapsed_seconds", "ended_at"}),
+    ):
+        value = operation.get(name)
+        if isinstance(value, dict):
+            result[name] = {key: item for key, item in value.items()
+                            if key in fields
+                            and (item is None or type(item) in {str, int, float, bool})}
+    return result
+
+
+def failure_snapshot(value: dict[str, Any] | None) -> dict[str, Any]:
+    """The production parent's existing safe diagnostic, with explicit fields."""
+    if not isinstance(value, dict):
+        return {}
+    result = {key: item for key, item in value.copy().items()
+              if key in {"stage", "exception_type", "errno", "winerror"}
+              and (item is None or type(item) in {str, int})}
+    for name, fields in (("owner_call", {"file", "function", "line"}),
+                         ("origin", {"file", "function", "line"}),
+                         ("child", {"error_code", "exception_type"})):
+        item = value.get(name)
+        if isinstance(item, dict):
+            result[name] = {key: detail for key, detail in item.items() if key in fields
+                            and (detail is None or type(detail) in {str, int})}
+    if type(value.get("scratch_inventory")) is dict:
+        from spireagent.workbench.training_scratch import scratch_failure_snapshot
+
+        result["scratch_inventory"] = scratch_failure_snapshot(value["scratch_inventory"])
+    if type(value.get("causes")) is list:
+        result["causes"] = [{
+            "link": (item.get("link") if type(item.get("link")) is str
+                     and item["link"] in {"cause", "context"} else "unknown"),
+            "exception_type": (item.get("exception_type")
+                               if type(item.get("exception_type")) is str
+                               and item["exception_type"] in _SAFE_EXCEPTION_TYPES else "unknown"),
+            **{key: detail if type(detail) is int else None
+               for key in ("errno", "winerror") for detail in (item.get(key),)},
+        } for item in value["causes"][:4] if type(item) is dict]
+    return result
+
+
+def scoped_failure_snapshot(value: object) -> dict[str, Any]:
+    """Safe failure output from the copied-source foreign-producer supervisor."""
+    if type(value) is not dict:
+        value = {}
+    enums = {
+        "injection_stage": {"not_seen", "event_received", "forged_published", "substituted"},
+        "status": {"pending", "failed", "interrupted_unknown", "completed", "paused", "cancelled"},
+        "error_code": {"child_event_invalid", "scratch_inventory_invalid"},
+    }
+    result: dict[str, Any] = {
+        key: item if type(item) is str and item in allowed else "unknown"
+        for key, allowed in enums.items() for item in (value.get(key),)
+    }
+    result["replaced"] = value.get("replaced") if type(value.get("replaced")) is bool else None
+    parent = failure_snapshot(value.get("parent_failure"))
+    if parent:
+        for key in ("errno", "winerror"):
+            parent[key] = parent.get(key) if type(parent.get(key)) is int else None
+        for key, allowed in (
+            ("exception_type", _SAFE_EXCEPTION_TYPES),
+            ("stage", {"unavailable", "reserving", "allocating", "public_view", "tokenizing",
+                       "preparing_run", "training", "verifying_result", "completed"}),
+        ):
+            item = parent.get(key)
+            if key in parent:
+                parent[key] = item if type(item) is str and item in allowed else "unknown"
+        parent.pop("child", None)
+        for key in ("origin", "owner_call"):
+            point = parent.get(key)
+            if isinstance(point, dict):
+                line = point.get("line")
+                point["line"] = line if type(line) is int and 0 < line <= 1_000_000 else None
+                for field, allowed in (
+                    ("file", {"training_scratch.py", "local_training.py", "structured.py",
+                              "research_process.py"}),
+                    ("function", {"retained_scratch_bytes", "_run", "stop_requested", "message",
+                                  "private_child", "drain", "exited", "current", "_advance"}),
+                ):
+                    item = point.get(field)
+                    if field in point:
+                        point[field] = item if type(item) is str and item in allowed else "unknown"
+    result["parent_failure"] = parent
+    return result
+
+
+def scoped_supervisor_failure(
+    stdout: bytes, stderr: bytes, returncode: int, directory: Path,
+) -> dict[str, Any]:
+    """Retain in test tmp/scoped-supervisor-failure; publish only safe facts."""
+    diagnostic = scoped_failure_snapshot({})
+    found = False
+    for line in stdout.splitlines():
+        if line.startswith(b"scoped_failure_diagnostic=") and len(line) <= 16384:
+            with suppress(ValueError, TypeError):
+                value = json.loads(line.split(b"=", 1)[1])
+                if type(value) is dict:
+                    diagnostic = scoped_failure_snapshot(value)
+                    found = True
+    pipes = {}
+    for name, raw in (("stdout", stdout), ("stderr", stderr)):
+        retained = raw[:64 * 1024]
+        pipes[name] = {"captured_bytes": len(raw), "retained_bytes": None, "stored": False,
+                       "captured_sha256": hashlib.sha256(raw).hexdigest(),
+                       "retained_sha256": None,
+                       "truncated": len(retained) != len(raw)}
+    retention = "stored"
+    try:
+        directory.mkdir(mode=0o700)
+        for name, raw in (("stdout", stdout), ("stderr", stderr)):
+            descriptor = os.open(directory / (name + ".bin"),
+                                 os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(raw[:64 * 1024])
+                stream.flush()
+                os.fsync(stream.fileno())
+            pipes[name].update(stored=True, retained_bytes=min(len(raw), 64 * 1024),
+                               retained_sha256=hashlib.sha256(raw[:64 * 1024]).hexdigest())
+    except OSError:
+        # A private retention error must not replace the original supervisor FAIL.
+        retention = "unavailable"
+    return {"supervisor_exit": returncode if type(returncode) is int else None,
+            "diagnostic_found": found, **diagnostic,
+            "private_output": {"location": "test_tmp_scoped_supervisor_failure",
+                               "retention": retention, **pipes}}
+
+
+def thread_snapshot(thread: threading.Thread) -> dict[str, Any]:
+    frame = sys._current_frames().get(thread.ident) if thread.ident is not None else None
+    return {"ident": thread.ident, "native_id": thread.native_id,
+            "alive": thread.is_alive(),
+            # StackSummary contains file/line/function/source, never frame locals.
+            "stack": traceback.format_stack(frame, limit=32) if frame is not None else []}
+
+
+class FixtureDiagnostics:
+    def __init__(self, fixture: str, *, root: Path | None = None) -> None:
+        if not re.fullmatch(r"[a-z0-9-]+", fixture):
+            raise ValueError("invalid fixture diagnostic name")
+        self.fixture = fixture
+        self.started = time.monotonic()
+        self.directory = (root or Path(__file__).resolve().parents[1] / ".local" /
+                          "fixture-diagnostics") / (fixture + "-" + uuid.uuid4().hex)
+        self.sequence = 0
+
+    def record(self, phase: str, **details: Any) -> str:
+        """Persist the entered phase before a bounded wait; do not mask its result."""
+        self.sequence += 1
+        path = self.directory / f"{self.sequence:03d}-{phase}.json"
+        value = {"fixture": self.fixture, "phase": phase,
+                 "elapsed_seconds": time.monotonic() - self.started,
+                 "platform": platform.system(), "python": platform.python_version(), **details}
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as stream:
+                json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            return str(path)
+        except (OSError, TypeError, ValueError) as error:
+            # Exception type only: an arbitrary exception message can carry data.
+            # A closed/captured stdout raises ValueError rather than OSError.
+            with suppress(OSError, ValueError):
+                print(f"fixture_diagnostic_write_failed={type(error).__name__}", flush=True)
+            return "diagnostic_unavailable"
+
+    def training_log(self, directory: Path, operation: dict[str, Any]) -> dict[str, Any]:
+        """Only the exact synthetic attempt log, with bounded original byte tail."""
+        operation_id, attempt_id = (operation.get(key) for key in ("operation_id", "attempt_id"))
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)
+                   for value in (operation_id, attempt_id)):
+            return {"status": "unbound"}
+        path = directory / f"local-training-{operation_id}-{attempt_id}.log"
+        try:
+            if path.is_symlink():
+                return {"status": "symlink_rejected"}
+            with path.open("rb") as stream:
+                size = stream.seek(0, 2)
+                stream.seek(max(0, size - 8192))
+                tail = stream.read(8192)
+            return {"status": "observed", "name": path.name, "bytes": size,
+                    "tail_original": repr(tail), "truncated": size > len(tail)}
+        except OSError as error:
+            return {"status": "unavailable", "error_type": type(error).__name__}

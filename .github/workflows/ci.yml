@@ -111,6 +111,7 @@ jobs:
           path: |
             python/.local/pytest.xml
             python/.local/pytest-shard.json
+            python/.local/fixture-diagnostics/**
             .local/checks/workspace-*.json
           include-hidden-files: true
           if-no-files-found: ignore
@@ -122,7 +123,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'
     runs-on: windows-latest
-    timeout-minutes: 55
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -164,6 +165,7 @@ jobs:
           path: |
             python/.local/pytest.xml
             python/.local/pytest-shard.json
+            python/.local/fixture-diagnostics/**
             .local/checks/workspace-*.json
           include-hidden-files: true
           if-no-files-found: ignore

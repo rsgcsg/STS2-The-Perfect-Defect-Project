@@ -16,8 +16,9 @@ Read the active task linked from CURRENT for its requirements, design version,
 allowed operations, resources and final approver. Task-specific budgets, branches,
 worker status and gate progress belong there, not in this instruction file.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md); one lead
-coordinates disjoint writers and independently reviews evidence, including its
-own changes. Continue already authorized work and routine repairs without using
+coordinates disjoint writers and verifies original evidence. Material changes,
+including its own, receive non-author review under AI_COLLABORATION. Continue already
+authorized work and routine repairs without using
 the user as a relay. Only stop dependent work at a real unresolved boundary.
 
 Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and

@@ -8,7 +8,7 @@ import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, p
 
 test("only modified editorial surfaces select docs; additions, deletion and rename stay full", () => {
   assert.equal(classifyChanges([{ status: "M", file: "README.md", oldMode: "100644", newMode: "100644" }]).scope, "docs");
-  for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/adr/example.md", "components/annotator/docs/DATA_CONTRACT.md", "python/uv.lock", ".github/workflows/ci.yml", "tools/check-plan.mjs", "new.md"]) {
+  for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/adr/example.md", "components/annotator/docs/DATA_CONTRACT.md", "python/uv.lock", "python/tools/pytest-file-costs.json", ".github/workflows/ci.yml", "tools/check-plan.mjs", "new.md"]) {
     assert.equal(classifyChanges([{ status: "M", file }]).scope, "full", file);
   }
   for (const status of ["A", "D", "T", "R100"]) assert.equal(classifyChanges([{ status, file: "README.md" }]).scope, "full");

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
@@ -12,6 +14,20 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock, running
 from spireagent.workbench.hub_client import NoRedirect
+
+
+def _response_budget(value: float) -> None:
+    if type(value) not in {int, float} or not math.isfinite(value) or not 0 < value <= 180:
+        raise BoundaryError("local_model", "bounded_response_timeout_required")
+
+
+def _response_remaining(deadline: float | None, default: float) -> float:
+    if deadline is None:
+        return default
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise BoundaryError("local_model", "response_allowance_exhausted")
+    return remaining
 
 
 def native_episode_command(
@@ -27,11 +43,21 @@ def native_episode_command(
     operation: str = "prepare-and-takeover",
     run_profile: str = "short",
     expected_instance_id: str | None = None,
+    original_request: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Call one Application, optionally fenced to its original instance.
 
     The instance guard is local; it adds no HTTP body field or Host command.
+    An explicit allowance covers all offers and elapsed health-fence time.
+    The existing readonly health probe keeps its own two-second response cap;
+    after it returns, an exhausted allowance cannot issue another request.
     """
+    if timeout_seconds is not None:
+        _response_budget(timeout_seconds)
+    deadline = None if timeout_seconds is None else monotonic() + timeout_seconds
+    if original_request is not None and action != "run-agent":
+        raise BoundaryError("native_episode", "original_request_requires_run_agent")
     current = running(config)
     if current is None:
         raise BoundaryError("native_episode", "open_workbench_first")
@@ -49,8 +75,9 @@ def native_episode_command(
                 "Authorization": "Bearer " + current["control_token"],
             },
         )
+        remaining = _response_remaining(deadline, 90)
         try:
-            with opener.open(request, timeout=90) as response:
+            with opener.open(request, timeout=remaining) as response:
                 raw = response.read(1024 * 1024 + 1)
             value = decode_json(raw)
             if len(raw) > 1024 * 1024 or not isinstance(value, dict):
@@ -78,6 +105,17 @@ def native_episode_command(
             "/api/local-environment/native/finish",
             {"environment_ref": digest(environment_ref, "native_episode.reference", length=32)},
         )
+    if action == "run-agent" and original_request is not None:
+        admission = original_request.get("admission_context")
+        episode = admission.get("native_episode") if isinstance(admission, dict) else None
+        expected_ref = digest(environment_ref, "native_episode.reference", length=32)
+        if (original_request.get("schema") != "spireagent/agent-run-request-v1"
+                or not isinstance(episode, dict) or episode.get("environment_ref") != expected_ref
+                or selection is not None and original_request.get("selection_id") != selection):
+            raise BoundaryError("native_episode", "original_request_binding_mismatch")
+        # Submit exactly the generated value. The server still recomputes and
+        # validates the effective composition; no second /request can replace it.
+        return call("/api/local-models/run-agent", original_request)
     if action in {"agent-request", "run-agent"}:
         if not isinstance(selection, str) or not selection:
             raise BoundaryError("native_episode", "selection_required")
@@ -112,8 +150,16 @@ def model_command(
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
     expected_instance_id: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Call one Application, or install offline without an instance guard."""
+    """Call one Application, or install offline without an instance guard.
+
+    Explicit online allowances use the same health/offer deadline as the native
+    helper. Offline install/generation keep their existing owner budgets.
+    """
+    if timeout_seconds is not None:
+        _response_budget(timeout_seconds)
+    deadline = None if timeout_seconds is None else monotonic() + timeout_seconds
     generation_action = action in {"initialize-runtime-generation",
                                    "upgrade-runtime-generation", "rollback-runtime-generation"}
     if expected_instance_id is not None and (generation_action or runtime_archive is not None):
@@ -285,8 +331,10 @@ def model_command(
             "Authorization": "Bearer " + current["control_token"],
         },
     )
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    remaining = _response_remaining(deadline, 25)
     try:
-        with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=25) as response:
+        with opener.open(request, timeout=remaining) as response:
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise ValueError

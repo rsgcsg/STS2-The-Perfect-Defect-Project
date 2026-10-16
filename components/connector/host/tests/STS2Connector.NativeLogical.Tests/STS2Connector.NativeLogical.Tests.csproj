@@ -19,6 +19,10 @@
     <Compile Include="../../HostControl/HostProfileIsolation.cs" Link="HostControl/HostProfileIsolation.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs" Link="Protocol/PlayerEnvironmentContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/TextMenuContracts.cs" Link="Protocol/TextMenuContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/SealedObservationContracts.cs" Link="Protocol/SealedObservationContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/P1CaptureContracts.cs" Link="Protocol/P1CaptureContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Reads/SealedObservationStore.cs" Link="Reads/SealedObservationStore.cs" />
+    <Compile Include="../../PlayerEnvironment/Reads/P1CaptureCore.cs" Link="Reads/P1CaptureCore.cs" />
     <Compile Include="../../PlayerEnvironment/Requests/*.cs" Link="Requests/%(Filename)%(Extension)" />
     <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/ClientRevocationWire.cs" Link="Protocol/ClientRevocationWire.cs" />
@@ -29,5 +33,6 @@
     <None Include="../../../contracts/fixtures/native-logical-v1.json" Link="native-logical-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../contracts/fixtures/native-logical-owned-current-v1.json" Link="native-logical-owned-current-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/p1-capture-c1.json" Link="p1-capture-c1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

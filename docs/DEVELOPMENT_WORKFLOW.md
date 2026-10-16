@@ -82,8 +82,8 @@ Design, protocol examples and acceptance precede production code; repeated small
 consumer workarounds are a signal to revisit the owner. No new process requires
 re-auditing all history for every edit or asking the human to relay routine repairs.
 Integrate reviewed increments regularly; do not stockpile all work until the final
-baseline gate. The baseline task index coordinates future work, not authority to
-merge, run or publish it.
+baseline gate. The baseline index preserves historical IDs; CURRENT and its active plan
+coordinate current work. Neither supplies authority to merge, run or publish.
 
 For a behavioral packet, record the observable guarantee, first owning fact,
 actual producer/consumer path, one falsifying example, faithful lowest-cost gate,
@@ -214,13 +214,11 @@ advances; operators consult the approved current runbook and actual deployment i
 
 ## Checks, cleanup and traceability
 
-For initial/full environment validation: npm ci, npm ci --prefix python, npm run setup:python, npm run check.
-For subsequent tasks use npm run check:plan -- --base origin/develop --run;
-TESTING.md defines editorial, Python-owner, full and verified integration scopes plus native gates.
-Run npm run project:closeout and git diff --check; match higher gates to TESTING.md.
-Review contracts/BOM/pins/version/ADR/docs only where affected. Record exact tested head,
-actual evidence, rollback and non-claims in the PR. Source merge never creates Human or
-scientific evidence; a flaky retry is not proof that the first failure was harmless.
+[README](../README.md) and the engineer guide own setup; [TESTING](TESTING.md)
+owns selected gates and verified integration reuse.
+Run npm run check:plan -- --base origin/develop --run, project:closeout and
+git diff --check. The PR records actual head, scope, higher gates,
+rollback and remaining uncertainty; a new pass does not explain an old failure.
 
 The initial history import and legacy retirement are complete. The old repositories are
 archived; their releases, identities, commit histories and evidence remain for consumers.

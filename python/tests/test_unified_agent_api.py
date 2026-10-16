@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 import pytest
+from auth_fixture_diagnostics import AuthFixtureDiagnostics
 
 from spireagent.workbench.developer import ProjectConfig, atomic_json, combination
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
@@ -250,6 +251,8 @@ def native_entry_api(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app.models, "_prepare_and_load", launch)
     server = create_server(app)
+    diagnostic = AuthFixtureDiagnostics()
+    diagnostic.observe_server(server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     root = f"http://127.0.0.1:{server.server_port}"
@@ -277,8 +280,11 @@ def native_entry_api(tmp_path, monkeypatch):
             headers.update(extra)
         wire = raw if raw is not None else (json_bytes(value) if value is not None else None)
         opener = browser if auth == "browser" else plain
-        with opener.open(Request(root + path, data=wire, headers=headers), timeout=3) as response:
-            return json.load(response)
+        return diagnostic.exchange(
+            opener, Request(root + path, data=wire, headers=headers), auth=auth,
+            body_length=len(wire) if wire is not None else 0,
+            effects=effects, requests=requests,
+        )
 
     yield SimpleNamespace(
         app=app,

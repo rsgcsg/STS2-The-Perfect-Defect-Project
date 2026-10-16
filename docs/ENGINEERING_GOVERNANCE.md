@@ -103,6 +103,30 @@ explicitly scoped; it is not production acceptance or a reason to lower the targ
 
 ## 2. Change classes and required confidence
 
+Two layers keep protection strict while scaling process cost. The hard shell in
+[AGENTS](../AGENTS.md), component contracts and data/use rules applies everywhere:
+native truth, complete binding/revalidation, fair inputs, no uncertain replay,
+owner-enforced deadlines/budgets/Stop and cleanup, immutable originals, permissions,
+exact identity and qualified rollback. Research, scripts and prose have no path
+exemption. Expiry itself triggers owning release/cleanup without a next tick or
+status read. A procedure may be simplified; these guarantees are not waived.
+
+The process layer uses the existing G0–G6 classification below, not another tier
+taxonomy. Ordinary internal/editorial changes use the short self-check defined
+in AI collaboration. Any possible effect on the hard shell, public contracts,
+cross-layer behavior, evaluation denominators/scientific claims, budgets/spending,
+security, check policy or governance is material and requires non-author acceptance under
+[AI collaboration](AI_COLLABORATION.md#mandatory-independent-review-before-acceptance).
+Higher runtime/Human/scientific claims still require their owning evidence. A
+source/test subtask can finish its stated scope; the parent capability remains
+open until its real downstream consumer and required execution are demonstrated.
+Uncertain impact is material until resolved; file location never settles it.
+
+Use one outcome/consumer, changed behavior, actual checks, known failures and next
+gate in the existing task/PR. Do not commission new reports, full hash walks or
+full reruns for every handoff. Verify the original closure needed by the current
+claim; TESTING and the current router still select every required check.
+
 Classify by the strongest risk or claim, not line count. The required gate is the
 maximum of risk, claim strength, blast radius, uncertainty, and irreversibility.
 
@@ -316,7 +340,7 @@ Use a small number of independent workers for bounded call-path inventory, log/t
 analysis, native research, fixtures or implementation after architecture selection.
 The current delegation/observer policy is owned by [AI collaboration](AI_COLLABORATION.md).
 No worker is required merely for parallelism; native fidelity and available local resources
-limit useful concurrency. The supervisor's own changes also receive independent review.
+limit useful concurrency. The supervisor's own material changes receive the same non-author review.
 
 Workers receive an exact repo/ref, bounded files, one task, non-goals, and
 deterministic checks. They return facts/changes, files, checks, and uncertainty.
@@ -462,26 +486,10 @@ cost, fallback/rollback, and verdict (`ADOPT`, `PARTIAL`, `OPTIONAL`,
 
 ## Small-team delivery principles
 
-Ordinary work completes at reviewed develop integration, unless the task explicitly
-includes publication or deployment. Main is the formal publication source, not the
-running-service pointer. Batch compatible changes for an intentional release; keep
-unchanged artifacts and accepted installations pinned. Do not rebuild the system
-for an unrelated source or documentation edit.
-
-Use one existing authority per fact: game/native semantics, Connector contracts,
-Annotator evidence, Hub membership/operations, STPD research admission, immutable
-release composition and actual deployment receipts. A shared repository does not
-merge those responsibilities. Prefer existing owner APIs over a parallel ledger,
-compatibility registry, retry tracker or another service.
-
-Choose tests by risk and dependency, not line count. Behavioral bug fixes need the
-lowest-cost regression that fails on the original bug. Public changes need producer,
-consumer and error-path coverage; ordinary prose corrections need existing document
-checks, not new tests mirroring prose. Alter expectations only when the intended
-contract changes, explain why and retain archival consumers. Failed evidence stays
-failed; classify environment failures separately from assertions.
-
-The check planner is conservative automation, not permission to skip native,
-Human, security, research or release requirements. Changes to its own logic,
-contracts or governance take the full route. REVIEW the dependency effect when
-shared console, locks, identity or packaging changes. Unknown impact means full.
+Complete ordinary work at reviewed develop integration under [Workflow](DEVELOPMENT_WORKFLOW.md).
+The running combination remains identified by actual artifacts and receipts.
+Use existing owners; a shared repository creates no shared gameplay/research authority.
+[TESTING](TESTING.md) owns faithful fixtures, selected gates and receipt reuse;
+[AI collaboration](AI_COLLABORATION.md) owns review and bounded handoff.
+Simplification must preserve the actual guarantee and its consumer, not just remove
+the document or check which exposed a problem.

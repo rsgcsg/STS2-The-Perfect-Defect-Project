@@ -61,6 +61,7 @@ ledger.
 
 - [ADR-0015: Native logical observation, actions, and memory (Accepted: upper-level scope)](0015-native-logical-interaction.md)
 - [ADR-0016: Agent composition and execution request (Accepted: architecture/migration scope only)](0016-agent-composition-and-execution-request.md)
+- [ADR-0017: P1 public information and forward decision profile (Proposed implementation contract)](0017-p1-forward-decision-profile.md)
 
 ## New ADR template
 

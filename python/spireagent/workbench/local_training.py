@@ -63,7 +63,7 @@ from spireagent.workbench.recipe_contracts import (
     validate_limits,
 )
 from spireagent.workbench.research_process import private_child
-from spireagent.workbench.training_scratch import retained_scratch_bytes
+from spireagent.workbench.training_scratch import retained_scratch_bytes, scratch_failure_snapshot
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
     REWARD_M0_RECIPE,
@@ -111,11 +111,40 @@ def _safe_parent_failure(error: Exception, stage: str) -> dict[str, Any]:
 
     errno = getattr(error, "errno", None)
     winerror = getattr(error, "winerror", None)
-    return {"stage": stage, "exception_type": type(error).__module__ + "." +
-            type(error).__qualname__,
-            "errno": errno if type(errno) is int else None,
-            "winerror": winerror if type(winerror) is int else None,
-            "owner_call": point(owner), "origin": point(origin)}
+    result: dict[str, Any] = {"stage": stage, "exception_type": type(error).__module__ + "." +
+              type(error).__qualname__,
+              "errno": errno if type(errno) is int else None,
+              "winerror": winerror if type(winerror) is int else None,
+              "owner_call": point(owner), "origin": point(origin)}
+    scratch = scratch_failure_snapshot(getattr(error, "scratch_inventory_diagnostic", None))
+    if scratch:
+        result["scratch_inventory"] = scratch
+    # Exception text, filenames and arbitrary attributes stay in the existing
+    # private parent-error log. CI receives only bounded typed cause facts.
+    known_types: dict[type[BaseException], str] = {item: "builtins." + item.__name__ for item in (
+        OSError, FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
+        TimeoutError, InterruptedError, ValueError, RuntimeError, TypeError, AssertionError,
+    )}
+    known_types[BoundaryError] = "spireagent.json_boundary.BoundaryError"
+    causes = []
+    seen = {id(error)}
+    following: BaseException = error
+    for _ in range(4):
+        cause = following.__cause__
+        link = "cause"
+        if cause is None and not following.__suppress_context__:
+            cause, link = following.__context__, "context"
+        if cause is None or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        causes.append({"link": link, "exception_type": known_types.get(type(cause), "unknown"),
+                       **{key: item if type(item) is int else None
+                          for key in ("errno", "winerror")
+                          for item in (getattr(cause, key, None),)}})
+        following = cause
+    if causes:
+        result["causes"] = causes
+    return result
 
 
 def _write_parent_failure(path: Path, identity: str, error: Exception) -> None:

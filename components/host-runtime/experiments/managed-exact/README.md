@@ -120,6 +120,28 @@ Connector SDK contract, snapshot-bound finite actions, Host-local operands,
 idempotent request ledger, stale refusal, and unknown-no-retry behavior. They
 remain partial until cross-Host differential and coverage gates pass.
 
+The combat potion catalog binds `AnyPlayer` through the exact current Player
+object and its native Creature in the existing single-player scope. The run
+must contain exactly one Player, identical to the current player and potion
+owner. Native `PotionModel.IsValidTarget` supplies the target domain independently
+of current usability; an unusable held potion keeps its visible facts, valid
+targets and any discard action without disabling other supported combat actions.
+The public use action targets the existing opaque player referent. Its private
+operand is the exact Player identity, never an index or an implicit Self/null
+target. Delivery rechecks the current domain, potion slot/object, usability and
+native target validity before `EnqueueManualUse`; the native `UsePotionAction`
+retains its later target validation. Missing, stale or foreign targets reject;
+multiple-player domains and other unsupported target families remain unavailable.
+This scoped binding does not implement every effect's child interaction.
+Colorless Potion may now open the bounded exact choose-card presentation when its
+complete native rendering/context is admitted; other generated cards can remain
+unsupported with explicit rendering/detail gaps. Hologram and Seeker Strike use
+the exact combat-pile adapter. Deck-enchantment and untyped selectors remain
+unsupported. See [selector context](../../docs/MANAGED_SELECTOR_CONTEXT.md).
+A delivered parent use is not a claim that its whole effect completed.
+Portable helper/projection tests and an exact build establish their stated
+source/test/build scope, not native UI parity, a gameplay journey or qualification.
+
 The bounded Managed text-menu deck-upgrade page uses only the pinned
 `CardSelectCmd.FromDeckForUpgrade(Player, CardSelectorPrefs)` test-selector
 seam. A scoped exact invocation carries the game's full preferences to the
@@ -247,6 +269,64 @@ promotes semantic evidence.
 Privileged commands such as `enter_room` are scenario controls. They are used
 only by named targeted gates and never enter Player Environment actions.
 Passing those gates is not a fair-player journey.
+
+## Fair public projection and private bindings
+
+Managed keeps native object tokens and raw state digests inside its execution
+projection. Public Snapshot/interaction IDs bind the runtime and the existing
+profile's monotonically advancing projection version; hidden draw order, RNG,
+object-allocation counters and raw-state hashes are not identifier inputs.
+`observe` and Read reuse that frozen version. Mount/reset and a returned action
+successor create a version; map enrichment happens inside the same projection.
+This is the existing Snapshot-version boundary, not an implementation or
+qualification of a new P1 semantic-occurrence contract.
+
+A session assigns entity aliases only when objects first appear in the public
+projection, using the runtime, first public projection version and public
+allocation ordinal. Native tokens are private map keys and never alias bytes
+or digest inputs. Cards/player/enemies/relics/potions retain their aliases across the existing
+hand, deck, action-target and persistent associations that carry private object
+identity, and across later versions. Pile Read instances remain snapshot-local
+public slots, not a new cross-pile native-identity contract. A new mount resets
+the map without reusing prior-run identities. Equal-looking cards remain distinct
+when the native action binds distinct instances. Enemy `combat_id` is now an
+opaque public alias matching its `entity_id`, not the native allocation number;
+consumers must not parse it as a native counter. Action arguments still name
+the corresponding public referents. Exact native objects and execute-time
+checks remain private and authoritative; public stability does not authorize
+stale requests or retry an unknown delivery.
+
+`RunSimulator.VisiblePile` first builds the existing visible card facts. Its
+pure `FairPileProjection` helper strips non-visible DTO fields and canonicalizes
+only Draw before returning the raw pile view. No original Draw index or native
+object token is present in that read-only view. MPE independently projects its
+allowed visible-card fields before canonicalizing Draw and assigning public
+read-instance IDs, so private inputs cannot enter a sort key, tie-break or hash.
+Equal visible occurrences retain their multiplicity and separate public read
+instances. Visible card text, cost, upgrade/enchantment facts already supported
+by MPE remain observable. Discard/exhaust keep their existing presented order
+and current contract; this fix does not select a new P1 ordering policy or
+add missing card-detail/revealed-order capabilities.
+
+The engineering probe also treats these aliases only as reference lookup keys.
+Its semantic selection key excludes combat/entity/referent and envelope IDs;
+it never interprets an opaque combat alias as a number or ordering value.
+Fully equal public semantic actions remain distinct BoundActions and use the
+published complete catalog's relative order for a final tie. Their exact private
+bindings remain separate. This rule depends on that order; it does not establish
+arbitrary-order invariance, unique correspondence for equal-valued entities
+across Hosts, or a new canonical-decision comparison contract.
+
+The regression compares the complete public Snapshot plus every materialized
+Read, including all identities and serialized digests, at a fixed public
+projection version while changing only hidden Draw permutation/native counters.
+It also checks already allocated aliases, visible multiplicity/details, real
+public changes, cross-view/next-version object links, reset identity, private
+operand binding and stale refusal. The compiled helper's actual JSON is fed
+through MPE and its strict SDK validation with synthetic card DTOs. That check
+mocks the CardModel/rendering source and native execution; exact compilation
+and later runtime qualification remain separate. No new P1 macro, selector,
+training, native-UI, full-game or cross-Host qualification follows.
 
 When changing the candidate:
 

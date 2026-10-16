@@ -3,7 +3,9 @@
 
 # Components
 
-For the selected cross-system direction, read the [current baseline specification](BASELINE_V1_SPEC.zh-CN.md).
+For the selected cross-system direction, read [P1](protocols/P1.zh-CN.md) and
+[ADR-0017](adr/0017-p1-forward-decision-profile.md); the earlier
+[baseline](BASELINE_V1_SPEC.zh-CN.md) retains its historical scope.
 The table below owns component placement and authority; the execution packet and
 STATUS separately track implementation and qualification. Historical proposals
 do not move these boundaries or establish current capability.

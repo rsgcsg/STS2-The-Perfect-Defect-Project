@@ -6,6 +6,10 @@ import {
   type SealedObservationChunk, type SealedObservationRelease, type FullTextMenuV2Observation
 } from "./sealedObservation.js";
 import { isJsonObject, type JsonObject } from "./json.js";
+import { P1_CAPTURE_ROUTE, P1_CAPTURE_PROFILE, assembleP1Capture, decodeP1CaptureCapabilities,
+  decodeP1CaptureHandle, decodeP1CaptureChunk, decodeP1CaptureRelease,
+  type P1CaptureCapabilities, type P1CaptureHandle, type P1CaptureChunk, type P1CaptureRelease,
+  type FullP1Capture } from "./p1Capture.js";
 import { NATIVE_LOGICAL_PROFILE, NATIVE_LOGICAL_ROUTE, NATIVE_LOGICAL_MAX_RESPONSE_BYTES,
   parseNativeLogicalJson, type NativeLogicalTransportOperation, type NativeLogicalTransportOptions,
   type NativeLogicalTransportReply, validateNativeLogicalRequest, decodeNativeLogicalCurrent } from "./nativeLogical.js";
@@ -177,6 +181,39 @@ export class PlayerEnvironmentRestClient {
     const encodedRead = encodeURIComponent(readId);
     const encodedSnapshot = encodeURIComponent(expectedSnapshotId);
     return decodePlayerRead(await this.get(`/api/player-environment/reads/${encodedRead}?expected_snapshot_id=${encodedSnapshot}`));
+  }
+
+  async p1CaptureCapabilities(): Promise<DecodedPlayerPayload<P1CaptureCapabilities>> {
+    return decodeP1CaptureCapabilities(await this.get(`${P1_CAPTURE_ROUTE}/capabilities`));
+  }
+
+  async readCurrentP1Capture(input: { expectedSnapshotId?: string } = {}): Promise<DecodedPlayerPayload<P1CaptureHandle>> {
+    const query = new URLSearchParams({ input_profile: P1_CAPTURE_PROFILE });
+    if (input.expectedSnapshotId !== undefined) query.set("expected_snapshot_id", input.expectedSnapshotId);
+    const capture = decodeP1CaptureHandle(await this.get(`${P1_CAPTURE_ROUTE}/current?${query}`));
+    if (input.expectedSnapshotId !== undefined && capture.data.source_snapshot_id !== input.expectedSnapshotId)
+      throw new PlayerEnvironmentHttpError("P1 capture does not match the requested snapshot");
+    return capture;
+  }
+
+  async readP1Capture(input: { captureId: string; cursor: string; maxBytes?: number }): Promise<DecodedPlayerPayload<P1CaptureChunk>> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const query = new URLSearchParams({ capture_id: input.captureId, cursor: input.cursor });
+    if (input.maxBytes !== undefined) query.set("max_bytes", String(input.maxBytes));
+    return decodeP1CaptureChunk(await this.get(`${P1_CAPTURE_ROUTE}/read?${query}`));
+  }
+
+  async releaseP1Capture(captureId: string): Promise<DecodedPlayerPayload<P1CaptureRelease>> {
+    const result = decodeP1CaptureRelease(await this.post(`${P1_CAPTURE_ROUTE}/release`, { capture_id: captureId }));
+    if (result.data.capture_id !== captureId) throw new PlayerEnvironmentHttpError("P1 release capture ID mismatch");
+    return result;
+  }
+
+  async getFullP1Capture(input: { expectedSnapshotId?: string; maxBytes?: number } = {}): Promise<FullP1Capture> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const capture = (await this.readCurrentP1Capture(input)).data;
+    try { return await assembleP1Capture(capture, this, input.maxBytes); }
+    finally { await this.releaseP1Capture(capture.capture_id).catch(() => undefined); }
   }
 
   async submit(input: {

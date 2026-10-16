@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { selector } from "./fixtures/managed-native-selector.mjs";
 import {
   ManagedPlayerEnvironmentSession,
   projectManagedCandidateDecision
@@ -264,7 +265,8 @@ test("published v1 and v2 contracts cover actual reviewed scene projections", ()
     treasureDecision(), treasureDecision("treasure_relic"),
     treasureDecision("treasure_complete"),
     deckUpgradeDecision(), deckUpgradeDecision("preview"),
-    combatDecision(), rewardDecision(), rewardDecision("card_reward"),
+    combatDecision(), selector(), selector({ choose: true, skip: true }),
+    selector({ manual: true, selected: true }), rewardDecision(), rewardDecision("card_reward"),
     rewardDecision("combat_rewards_complete"),
     { ...mapDecision(), decision: "game_over", victory: true }];
   const seenKinds = new Set();

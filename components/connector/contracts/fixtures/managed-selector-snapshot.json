@@ -1,0 +1,342 @@
+{
+  "protocol_version": "1.0.0",
+  "schema": "sts2.player-environment/snapshot-1",
+  "snapshot_id": "managed_selector-contract-fixture_s1",
+  "sequence": 1,
+  "observed_at": "2026-10-15T00:00:00.000Z",
+  "status": "interactive",
+  "persistent": {
+    "content_schema": "sts2.player-environment/persistent/run-player-1",
+    "content": {
+      "scope": "active_single_player_run",
+      "run": {
+        "act": 1,
+        "act_definition_id": "OVERGROWTH",
+        "act_name": "Overgrowth",
+        "floor": 2,
+        "ascension": 0,
+        "bosses": [
+          {
+            "definition_id": "VANTOM_BOSS",
+            "name": "Vantom",
+            "order": 0
+          }
+        ],
+        "modifiers": []
+      },
+      "player": {
+        "entity_id": "player_3a7e56197d4cfd88c4152234",
+        "character_definition_id": "IRONCLAD",
+        "character_name": "Ironclad",
+        "hp": 80,
+        "max_hp": 80,
+        "gold": 99,
+        "relics": [
+          {
+            "entity_id": "relic_695dc1827fba3387b61e1286",
+            "definition_id": "HAPPY_FLOWER",
+            "name": "Happy Flower",
+            "description": "Every three turns, gain 1 Energy.",
+            "counter": 2,
+            "keywords": [],
+            "card_previews": []
+          }
+        ],
+        "potions": [],
+        "max_potion_slots": 3
+      },
+      "completeness": {
+        "player_visible_semantics": "complete_for_strategy_relevant_persistent_single_player_hud",
+        "sources": [
+          "RunState.CurrentActIndex+Act+TotalFloor+AscensionLevel+Modifiers",
+          "NTopBar+NTopBarBossIcon+NTopBarFloorIcon+NTopBarHp+NTopBarGold",
+          "NRelicInventory+NPotionContainer+LocalContext.GetMe"
+        ],
+        "missing": []
+      }
+    }
+  },
+  "interaction": {
+    "interaction_id": "interaction_selector-contract-fixture_s1",
+    "kind": "card_selection",
+    "stage": "choosing",
+    "prompt": "Choose a card.",
+    "content_schema": "sts2.player-environment/surface/card_selection-1",
+    "content": {
+      "surface": {
+        "kind": "card_selection",
+        "selector_profile": "managed-command-selector-1",
+        "selector_kind": "choose_card",
+        "stage": "choosing",
+        "display_context": "none",
+        "cards": [
+          {
+            "entity_id": "card_4aacdfe48e504d82aed22da1",
+            "definition_id": "STRIKE",
+            "name": "Strike",
+            "type": "Attack",
+            "cost": "1",
+            "description": "Deal 6 damage.",
+            "rarity": "Basic",
+            "is_upgraded": false,
+            "is_selected": false,
+            "target_type": "AnyEnemy",
+            "can_play": null,
+            "is_selectable": true,
+            "is_deselectable": false,
+            "keywords": [],
+            "card_previews": []
+          },
+          {
+            "entity_id": "card_233529ae0af44dca732e794d",
+            "definition_id": "STRIKE",
+            "name": "Strike",
+            "type": "Attack",
+            "cost": "1",
+            "description": "Deal 6 damage.",
+            "rarity": "Basic",
+            "is_upgraded": false,
+            "is_selected": false,
+            "target_type": "AnyEnemy",
+            "can_play": null,
+            "is_selectable": true,
+            "is_deselectable": false,
+            "keywords": [],
+            "card_previews": []
+          }
+        ],
+        "native_option_count": 2,
+        "min_select": 0,
+        "max_select": 1,
+        "selected_count": 0,
+        "selected_card_entity_ids": [],
+        "require_manual_confirmation": false,
+        "can_skip": true,
+        "can_confirm": false,
+        "cancelable": false
+      },
+      "context": {
+        "kind": "selection",
+        "combat": {
+          "kind": "combat",
+          "round": 1,
+          "turn_owner": "player",
+          "player": {
+            "player_entity_id": "player_3a7e56197d4cfd88c4152234",
+            "hp": 80,
+            "max_hp": 80,
+            "block": 3,
+            "energy": 2,
+            "max_energy": 3,
+            "stars": 0,
+            "draw_pile_count": 2,
+            "discard_pile_count": 2,
+            "exhaust_pile_count": 0,
+            "orb_slots": 0,
+            "statuses": [
+              {
+                "definition_id": "STRENGTH",
+                "name": "Strength",
+                "amount": 1,
+                "type": "Buff",
+                "description": "Deal more damage."
+              }
+            ],
+            "orbs": [
+              {
+                "entity_id": "orb-public",
+                "definition_id": "LIGHTNING",
+                "name": "Lightning",
+                "passive": 3,
+                "evoke": 8,
+                "keywords": []
+              }
+            ],
+            "companions": [
+              {
+                "entity_id": "pet-public",
+                "definition_id": "OSTY",
+                "alive": true,
+                "hp": null,
+                "max_hp": null,
+                "block": 0,
+                "health_bar_visible": false,
+                "health_display": "Normal",
+                "statuses": []
+              }
+            ]
+          },
+          "enemies": [
+            {
+              "entity_id": "enemy_96f983f9bd9ed5ec31d8a321",
+              "definition_id": "MAWLER",
+              "name": "Mawler",
+              "hp": 7,
+              "max_hp": 20,
+              "block": 0,
+              "health_bar_visible": true,
+              "health_display": "Normal",
+              "statuses": [],
+              "intents": []
+            }
+          ]
+        }
+      }
+    },
+    "capabilities": [
+      {
+        "verb": "select",
+        "subject_role": "card",
+        "arguments": [],
+        "availability_basis": "current_native_interaction"
+      },
+      {
+        "verb": "skip",
+        "arguments": [],
+        "availability_basis": "current_native_interaction"
+      }
+    ]
+  },
+  "referents": [
+    {
+      "referent_id": "card_4aacdfe48e504d82aed22da1",
+      "role": "card",
+      "kind": "entity",
+      "label": "Strike",
+      "state": {
+        "visible": true,
+        "enabled": true,
+        "selected": false,
+        "observation_basis": "native_visible_fact"
+      },
+      "properties_schema": "sts2.player-environment/referent/card-1",
+      "properties": {
+        "entity_id": "card_4aacdfe48e504d82aed22da1",
+        "definition_id": "STRIKE",
+        "name": "Strike",
+        "type": "Attack",
+        "cost": "1",
+        "description": "Deal 6 damage.",
+        "rarity": "Basic",
+        "is_upgraded": false,
+        "is_selected": false,
+        "target_type": "AnyEnemy",
+        "can_play": null,
+        "is_selectable": true,
+        "is_deselectable": false,
+        "keywords": [],
+        "card_previews": []
+      }
+    },
+    {
+      "referent_id": "card_233529ae0af44dca732e794d",
+      "role": "card",
+      "kind": "entity",
+      "label": "Strike",
+      "state": {
+        "visible": true,
+        "enabled": true,
+        "selected": false,
+        "observation_basis": "native_visible_fact"
+      },
+      "properties_schema": "sts2.player-environment/referent/card-1",
+      "properties": {
+        "entity_id": "card_233529ae0af44dca732e794d",
+        "definition_id": "STRIKE",
+        "name": "Strike",
+        "type": "Attack",
+        "cost": "1",
+        "description": "Deal 6 damage.",
+        "rarity": "Basic",
+        "is_upgraded": false,
+        "is_selected": false,
+        "target_type": "AnyEnemy",
+        "can_play": null,
+        "is_selectable": true,
+        "is_deselectable": false,
+        "keywords": [],
+        "card_previews": []
+      }
+    }
+  ],
+  "bound_actions": {
+    "schema": "sts2.player-environment/bound-actions-1",
+    "status": "complete",
+    "materialized_count": 3,
+    "total_count": 3,
+    "limit": 512,
+    "ordering_semantics": "candidate_id_then_operand_name_then_referent_id",
+    "actions": [
+      {
+        "bound_action_id": "action_5d5e62be54b9afc72c7a0566",
+        "verb": "select",
+        "interaction_id": "interaction_selector-contract-fixture_s1",
+        "subject_referent_id": "card_4aacdfe48e504d82aed22da1",
+        "arguments": [],
+        "label": "Select Strike"
+      },
+      {
+        "bound_action_id": "action_1081049768ebb15c94d40596",
+        "verb": "select",
+        "interaction_id": "interaction_selector-contract-fixture_s1",
+        "subject_referent_id": "card_233529ae0af44dca732e794d",
+        "arguments": [],
+        "label": "Select Strike"
+      },
+      {
+        "bound_action_id": "action_bacb98145100f8c529f4b689",
+        "verb": "skip",
+        "interaction_id": "interaction_selector-contract-fixture_s1",
+        "subject_referent_id": null,
+        "arguments": [],
+        "label": "Skip generated card choice"
+      }
+    ]
+  },
+  "reads": [
+    {
+      "read_id": "read_4c1892cc1296bcff80114399",
+      "kind": "run_deck",
+      "target_referent_id": null,
+      "content_schema": "sts2.player-environment/read/run_deck-1",
+      "visibility_basis": "player_openable_run_deck_view",
+      "snapshot_bound": true,
+      "ordering_semantics": "unordered_multiset",
+      "hidden_by_policy": []
+    },
+    {
+      "read_id": "read_7dec83991ade1312a7c70f45",
+      "kind": "combat_piles",
+      "target_referent_id": null,
+      "content_schema": "sts2.player-environment/read/combat_piles-1",
+      "visibility_basis": "player_openable_draw_discard_exhaust_pile_views",
+      "snapshot_bound": true,
+      "ordering_semantics": "unordered_multiset",
+      "hidden_by_policy": [
+        "draw_pile_true_order"
+      ]
+    }
+  ],
+  "completeness": {
+    "status": "complete",
+    "visible_information": "current_native_selector_cards_and_current_post_prefix_combat_hud",
+    "interaction_discovery": "exact_synchronous_native_command_context_and_execute_time_current_domain",
+    "missing": [],
+    "hidden_by_policy": [
+      "hidden_rng",
+      "draw_pile_true_order",
+      "unoffered_draw_cards",
+      "future_enemy_moves"
+    ]
+  },
+  "session": {
+    "runtime_instance_id": "selector-contract-fixture",
+    "environment_fingerprint": "selector-fixture"
+  },
+  "information_policy": {
+    "id": "player_visible_v1",
+    "scope": "Information currently presented by, or normally inspectable through, the local player's game UI.",
+    "includes_hidden_information": false,
+    "unknown_field_behavior": "omit_and_mark_incomplete"
+  }
+}

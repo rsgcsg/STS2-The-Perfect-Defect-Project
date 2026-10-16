@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { packageEntrypointErrors, textBoundaryErrors } from "./check-boundaries.mjs";
+import { managedSelectorArtifact, managedSelectorArtifactErrors, generatedPath } from "./generate-managed-selector-validator.mjs";
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+test("packaged Managed validator drift rejects without changing the canonical contract", () => {
+  const temporary = mkdtempSync(path.join(os.tmpdir(), "selector-contract-artifact-"));
+  try {
+    for (const name of ["nativeCardSelection.ts", "json.ts"]) {
+      const relative = `components/connector/sdk/typescript/src/${name}`;
+      mkdirSync(path.dirname(path.join(temporary, relative)), { recursive: true });
+      copyFileSync(new URL(`../${relative}`, import.meta.url), path.join(temporary, relative));
+    }
+    const artifact = path.join(temporary, generatedPath);
+    mkdirSync(path.dirname(artifact), { recursive: true });
+    writeFileSync(artifact, managedSelectorArtifact(temporary));
+    assert.deepEqual(managedSelectorArtifactErrors(temporary), []);
+    writeFileSync(artifact, "export function nativeCardSelectionProblems() { return []; }\n");
+    assert.match(managedSelectorArtifactErrors(temporary)[0], /stale/u);
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
 
 test("active production code rejects predecessor release authority", () => {
   const errors = textBoundaryErrors(

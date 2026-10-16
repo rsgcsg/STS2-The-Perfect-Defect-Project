@@ -24,12 +24,88 @@ def normalized_nodeid(nodeid: str) -> str:
     return file + separator + name
 
 
-def selected_ids(collection: list[dict[str, str]], index: int, count: int) -> list[str]:
+PROFILE_PATH = Path(__file__).with_name("pytest-file-costs.json")
+ALGORITHM = "lpt-whole-file-1"
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def validated_profile(profile: Any) -> dict[str, Any]:
+    keys = {"schema", "algorithm", "unknown_file_ms", "aggregation", "sources", "file_cost_ms"}
+    if (not isinstance(profile, dict) or set(profile) != keys
+            or profile["schema"] != "spireagent/pytest-file-cost-1"
+            or profile["algorithm"] != ALGORITHM
+            or type(profile["unknown_file_ms"]) is not int
+            or profile["unknown_file_ms"] != 30000
+            or profile["aggregation"] != (
+                "median-available-of-three-retained-Windows-testcase-total-ms-min1")):
+        raise ValueError("invalid portable cost profile definition")
+    costs = profile["file_cost_ms"]
+    if not isinstance(costs, dict) or not costs:
+        raise ValueError("empty portable cost profile")
+    for file, weight in costs.items():
+        if (not isinstance(file, str) or not file.endswith(".py")
+                or not file.startswith(("tests/", "deploy/hub/"))
+                or "\\" in file or ":" in file
+                or any(part in ("", ".", "..") for part in file.split("/"))
+                or type(weight) is not int or not 0 < weight <= MAX_SAFE_INTEGER):
+            raise ValueError("invalid portable file cost")
+    if sum(costs.values()) > MAX_SAFE_INTEGER:
+        raise ValueError("portable file costs exceed safe integer sum")
+    sources = profile["sources"]
+    source_keys = {"run_id", "os", "shard", "execution_checkout", "collection_count",
+                   "collection_sha256", "junit_sha256", "exit_code", "all_selected_terminal"}
+    if not isinstance(sources, list) or len(sources) != 3:
+        raise ValueError("invalid portable cost provenance")
+    for group in sources:
+        if not isinstance(group, list) or len(group) != 2:
+            raise ValueError("invalid portable cost source pair")
+        for index, source in enumerate(group, 1):
+            if (not isinstance(source, dict) or set(source) != source_keys
+                    or not isinstance(source["run_id"], str)
+                    or not source["run_id"].isascii() or not source["run_id"].isdigit()
+                    or source["os"] != "Windows" or source["shard"] != index
+                    or type(source["shard"]) is not int
+                    or type(source["collection_count"]) is not int
+                    or not 0 < source["collection_count"] <= MAX_SAFE_INTEGER
+                    or type(source["exit_code"]) is not int or source["exit_code"] not in (0, 1)
+                    or source["all_selected_terminal"] is not True):
+                raise ValueError("invalid portable cost source identity")
+            for key, length in (("execution_checkout", 40), ("collection_sha256", 64),
+                                ("junit_sha256", 64)):
+                value = source[key]
+                if (not isinstance(value, str) or len(value) != length
+                        or any(char not in "0123456789abcdef" for char in value)):
+                    raise ValueError("invalid portable cost source digest")
+        if group[0]["run_id"] != group[1]["run_id"]:
+            raise ValueError("portable cost source pair differs")
+    return profile
+
+
+def load_profile(file: Path = PROFILE_PATH) -> dict[str, Any]:
+    size = file.lstat().st_size
+    if file.is_symlink() or not file.is_file() or size > 1_000_000:
+        raise ValueError("invalid portable profile file")
+    return validated_profile(json.loads(file.read_text(encoding="utf-8")))
+
+
+def selected_ids(collection: list[dict[str, str]], index: int, count: int,
+                 profile: dict[str, Any] | None = None) -> list[str]:
     if count != 2 or index not in (1, 2):
         raise ValueError("portable pytest requires shard 1/2 or 2/2")
-    files = sorted({item["file"] for item in collection})
-    selected = {file for rank, file in enumerate(files) if rank % count == index - 1}
-    return sorted(item["nodeid"] for item in collection if item["file"] in selected)
+    profile = load_profile() if profile is None else validated_profile(profile)
+    costs = profile["file_cost_ms"]
+    files = {item["file"] for item in collection}
+    weights = {file: costs.get(file, profile["unknown_file_ms"]) for file in files}
+    if sum(weights.values()) > MAX_SAFE_INTEGER:
+        raise ValueError("portable selection exceeds safe integer sum")
+    bins: list[set[str]] = [set(), set()]
+    loads = [0, 0]
+    for file in sorted(files, key=lambda file: (-weights[file], file.encode("utf-8"))):
+        target = 0 if loads[0] <= loads[1] else 1
+        bins[target].add(file)
+        loads[target] += weights[file]
+    return sorted((item["nodeid"] for item in collection if item["file"] in bins[index - 1]),
+                  key=lambda nodeid: nodeid.encode("utf-8"))
 
 
 def source_identity(root: Path) -> dict[str, Any]:
@@ -40,6 +116,9 @@ def source_identity(root: Path) -> dict[str, Any]:
     return {"head": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
             "workflow": git("rev-parse", "HEAD:.github/workflows/ci.yml"),
             "selector": git("rev-parse", "HEAD:python/tools/pytest_shard.py"),
+            "cost_profile": git("rev-parse", "HEAD:python/tools/pytest-file-costs.json"),
+            "cost_profile_sha256": hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest(),
+            "routing_algorithm": load_profile()["algorithm"],
             "dirty": bool(git("status", "--porcelain", "--untracked-files=normal"))}
 
 
@@ -89,7 +168,7 @@ class ShardRecorder:
                 or config.option.keyword or config.option.markexpr or config.option.collectonly):
             raise pytest.UsageError("portable shard must collect unchanged default testpaths")
         self.data: dict[str, Any] = {
-            "schema": "spireagent/pytest-shard-1", "run": metadata,
+            "schema": "spireagent/pytest-shard-2", "run": metadata,
             "shard": {"index": index, "count": count}, "source_at_start": source,
             "invocation": {"argv": sys.orig_argv, "pid": os.getpid(), "started_at": now()},
             "collection": [], "selected_nodeids": [], "executed": [],

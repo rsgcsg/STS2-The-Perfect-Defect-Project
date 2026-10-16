@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_native_source3_collection as collection_fixtures
+from fixture_diagnostics import FixtureDiagnostics
 from metadata_import_guard import no_torch_imports as no_torch_imports
 
 from spireagent.json_boundary import BoundaryError, json_bytes
@@ -96,7 +97,7 @@ class RealStoreCollectionTests(unittest.TestCase):
         if dotnet is None:
             raise AssertionError("dotnet unavailable for real-store fixture preparation")
         command = [dotnet, "build", str(project), "--output", str(cls.bridge_directory),
-                   "--nologo", "--verbosity", "minimal", "--maxcpucount:1",
+                   "--nologo", "--verbosity", "normal", "--maxcpucount:1",
                    "-p:BuildInParallel=false", "-p:UseSharedCompilation=false",
                    "--ignore-failed-sources"]
         started = time.monotonic()
@@ -110,6 +111,17 @@ class RealStoreCollectionTests(unittest.TestCase):
                 os.fsync(stream.fileno())
             print("real_store_bridge_preparation_phase=" + json.dumps(value), flush=True)
 
+        diagnostic = FixtureDiagnostics("source3-bridge-build")
+        diagnostic.record("sdk-probe-started", executable=dotnet, timeout_seconds=10)
+        try:
+            sdk = subprocess.run([dotnet, "--version"], capture_output=True, timeout=10)
+            sdk_observation = {"exit_code": sdk.returncode,
+                               "version_stdout_original": repr(sdk.stdout[:256]),
+                               "version_stderr_original": repr(sdk.stderr[:256])}
+        except (OSError, subprocess.TimeoutExpired) as error:
+            sdk_observation = {"error_type": type(error).__name__}
+        diagnostic.record("bridge-build-started", command=command, timeout_seconds=60,
+                          sdk=sdk_observation, source_hashes=cls.bridge_source_hashes)
         record_preparation("bridge_build_started", source_hashes=cls.bridge_source_hashes)
         try:
             built = subprocess.run(command, capture_output=True, timeout=60, env={
@@ -118,10 +130,19 @@ class RealStoreCollectionTests(unittest.TestCase):
                 "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
             })
         except subprocess.TimeoutExpired as error:
+            diagnostic.record("bridge-build-timeout", command=command, timeout_seconds=60,
+                              stdout_original=repr((error.stdout or b"")[-65536:]),
+                              stderr_original=repr((error.stderr or b"")[-65536:]),
+                              # subprocess.run killed/waited its direct child, but
+                              # no independent descendant-exit proof is available.
+                              child_exit_observation="unconfirmed")
             record_preparation("bridge_build_timeout",
                                stdout_original=repr((error.stdout or b"")[-8192:]),
                                stderr_original=repr((error.stderr or b"")[-8192:]))
-            raise AssertionError(preparation_phases.read_text()) from error
+            raise AssertionError(preparation_phases.read_text(encoding="utf-8")) from error
+        diagnostic.record("bridge-build-exited", exit_code=built.returncode,
+                          stdout_original=repr(built.stdout[-65536:]),
+                          stderr_original=repr(built.stderr[-65536:]))
         record_preparation("bridge_build_exited", exit_code=built.returncode)
         if built.returncode != 0 or not cls.bridge_dll.is_file():
             raise AssertionError(json.dumps({
@@ -140,6 +161,7 @@ class RealStoreCollectionTests(unittest.TestCase):
             "source_hashes": cls.bridge_source_hashes,
             "output_hashes": cls.bridge_output_hashes,
         }
+        diagnostic.record("bridge-prepared-before-collection", preparation=cls.bridge_preparation)
         print("real_store_bridge_preparation=" + json.dumps(cls.bridge_preparation))
 
     def assert_bridge_unchanged(self):
@@ -149,6 +171,42 @@ class RealStoreCollectionTests(unittest.TestCase):
             str(p.relative_to(self.bridge_directory)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(self.bridge_directory.rglob("*")) if p.is_file()
         }, self.bridge_output_hashes)
+
+    def test_dll_bundle_launches_without_apphost_and_keeps_typed_errors(self):
+        self.assert_bridge_unchanged()
+        outputs = self.bridge_output_hashes
+        stem = self.bridge_dll.stem
+        self.assertIn(stem + ".deps.json", outputs)
+        self.assertIn(stem + ".runtimeconfig.json", outputs)
+        self.assertNotIn(stem, outputs)
+        self.assertNotIn(stem + ".exe", outputs)
+        for fixture in ("native-logical-v1.json", "native-logical-owned-current-v1.json",
+                        "native-logical-public-domains-v1.json"):
+            self.assertIn(fixture, outputs)
+        dotnet = shutil.which(os.environ.get("STS2_OWNED_CURRENT_DOTNET", "dotnet"))
+        self.assertIsNotNone(dotnet)
+        commands = [{"operation": operation, "body": {}}
+                    for operation in ("stats", "not_a_bridge_operation", "stats")]
+        completed = subprocess.run(
+            [dotnet, str(self.bridge_dll)],
+            input=b"".join(json_bytes(command) for command in commands),
+            capture_output=True, timeout=10,
+            env={**os.environ, "DOTNET_PROCESSOR_COUNT": "2"},
+        )
+        print("real_store_bridge_dll_smoke=" + json.dumps({
+            "exit_code": completed.returncode,
+            "stdout_original": repr(completed.stdout), "stderr_original": repr(completed.stderr),
+        }))
+        self.assertEqual(completed.returncode, 0, repr(completed.stderr))
+        replies = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertEqual(len(replies), 3)
+        empty = {"charged_bytes": 0, "charged_buffers": 0, "handles": 0,
+                 "live_captures": 0, "now": 0}
+        self.assertEqual(replies[0], {"value": empty, "error": None})
+        self.assertEqual(replies[1]["error"]["code"], "bridge_error")
+        self.assertIsNone(replies[1]["value"])
+        self.assertEqual(replies[2], {"value": empty, "error": None})
+        self.assert_bridge_unchanged()
 
     @staticmethod
     def failure_diagnostic(result, proof, child_stderr=b"", phase_events=()):

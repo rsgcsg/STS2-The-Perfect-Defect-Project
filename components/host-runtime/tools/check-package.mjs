@@ -40,6 +40,7 @@ for (const required of [
   "tools/managed-host-service.mjs",
   "src/managed-player-environment.mjs",
   "src/managed-host-service.mjs",
+  "src/native-card-selection.generated.mjs",
   "src/project-identity.mjs",
   "src/native-episode-tuple.mjs",
   "tools/reference-pe-driver.mjs",
@@ -131,6 +132,9 @@ const importResult = spawnSync(process.execPath, [
   [
     `import { readProjectIdentity } from ${JSON.stringify(moduleSpecifierForPath(
       path.join(installedRoot, "src/project-identity.mjs")))};`,
+    `import ${JSON.stringify(moduleSpecifierForPath(path.join(installedRoot, "src/managed-host-service.mjs")))};`,
+    `import { projectManagedTextMenuV1 } from ${JSON.stringify(moduleSpecifierForPath(path.join(installedRoot, "src/managed-text-menu-map.mjs")))};`,
+    "if (typeof projectManagedTextMenuV1 !== 'function') process.exit(4);",
     `const identity = readProjectIdentity(${JSON.stringify(installedRoot)});`,
     "if (identity.distribution_kind !== 'installed_package') process.exit(3);",
     "console.log(JSON.stringify(identity));"
@@ -166,6 +170,7 @@ console.log(JSON.stringify({
     distribution_kind: installedIdentity.distribution_kind,
     source_digest_sha256: installedIdentity.source_digest_sha256,
     connector_sdk_version: installedSdk.version,
-    connector_sdk_resolved_outside_workspace: true
+    connector_sdk_resolved_outside_workspace: true,
+    managed_menu_and_service_imported: true
   }
 }, null, 2));
