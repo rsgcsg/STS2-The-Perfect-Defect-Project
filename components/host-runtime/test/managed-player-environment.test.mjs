@@ -782,7 +782,7 @@ test("combat projection fails closed for target types without an exact current b
       bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: []
     },
     encounter_type: "normal", turn_owner: "player", round: 1,
-    is_play_phase: true,
+    is_play_phase: true, combat_hud_complete: true, potion_states: [],
     exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{
       index: 0, native_ref: "card-a", id: "CARD.STRIKE", name: "Strike", can_play: true,
@@ -790,7 +790,7 @@ test("combat projection fails closed for target types without an exact current b
     }],
     enemies: [{
       index: 0, native_ref: "enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
-      name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
     }],
     player: { ...player(), native_ref: "player-a", character_id: "IRONCLAD", max_potion_slots: 3, potions: [] }
   };

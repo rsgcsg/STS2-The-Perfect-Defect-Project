@@ -537,6 +537,44 @@ function visibleIntent(intent) {
   };
 }
 
+function visibleHealth(creature) {
+  return Object.fromEntries(["hp", "max_hp", "block", "health_bar_visible", "hp_display_mode",
+    "hp_numbers_available", "health_display"].map((key) => [key, creature[key]]));
+}
+function visibleOrb(orb, ctx) {
+  return { entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
+    name: visibleText(orb.name), description: visibleText(orb.description),
+    passive_value: orb.passive_value, evoke_value: orb.evoke_value,
+    queue_index: orb.queue_index, is_next_to_evoke: orb.is_next_to_evoke,
+    passive: orb.passive, evoke: orb.evoke,
+    keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) };
+}
+function visibleCompanion(pet, ctx) {
+  return { entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
+    name: visibleText(pet.name), is_alive: pet.is_alive, alive: pet.alive, ...visibleHealth(pet),
+    statuses: (pet.statuses ?? []).map(visibleStatus) };
+}
+function canonicalHealthComplete(creature) {
+  return plainObject(creature) && typeof creature.health_bar_visible === "boolean"
+    && ["normal", "infinite_with_numbers", "infinite_without_numbers"].includes(creature.hp_display_mode)
+    && typeof creature.hp_numbers_available === "boolean" && Number.isFinite(creature.block)
+    && creature.hp_numbers_available === (creature.health_bar_visible && creature.hp_display_mode !== "infinite_without_numbers")
+    && (creature.hp_numbers_available ? Number.isFinite(creature.hp) && Number.isFinite(creature.max_hp)
+      : creature.hp === null && creature.max_hp === null);
+}
+function canonicalHudComplete(hud) {
+  return plainObject(hud) && typeof hud.encounter_type === "string" && typeof hud.is_play_phase === "boolean"
+    && Array.isArray(hud.potion_states) && hud.potion_states.every((potion) => typeof potion.native_ref === "string"
+      && typeof potion.target_type === "string" && typeof potion.can_use === "boolean" && typeof potion.automatic === "boolean")
+    && Array.isArray(hud.orbs) && hud.orbs.every((orb, index) => typeof orb.native_ref === "string"
+      && typeof orb.id === "string" && typeof orb.description === "string" && Number.isFinite(orb.passive_value)
+      && Number.isFinite(orb.evoke_value) && orb.queue_index === index && orb.is_next_to_evoke === (index === 0))
+    && Array.isArray(hud.companions) && hud.companions.every((pet) => canonicalHealthComplete(pet)
+      && typeof pet.native_ref === "string" && typeof pet.id === "string" && typeof pet.is_alive === "boolean")
+    && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => canonicalHealthComplete(enemy)
+      && (enemy.combat_id === null || Number.isSafeInteger(enemy.combat_id) && enemy.combat_id >= 0 && enemy.combat_id <= 4_294_967_295));
+}
+
 function currentSurface(state, ctx) {
   const commonContext = {
     kind: "run",
@@ -1300,7 +1338,7 @@ function currentSurface(state, ctx) {
         && (card.enchantment == null || text(card.enchantment) && text(card.enchantment_description));
       const statusComplete = (values) => Array.isArray(values) && values.every((value) =>
         text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
-      const hudComplete = plainObject(hud) && hud.player_ref === state.player?.native_ref
+      const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
         && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
@@ -1375,23 +1413,18 @@ function currentSurface(state, ctx) {
             selector_ref: state.selector_ref, selected_refs: selected.join(",") } } });
       }
       const publicHud = hudComplete ? {
-        kind: "combat", round: hud.round, turn_owner: hud.turn_owner,
+        kind: "combat", encounter_type: hud.encounter_type, is_play_phase: hud.is_play_phase,
+        round: hud.round, turn_owner: hud.turn_owner,
         player: { player_entity_id: ctx.entityId("player", hud.player_ref),
           hand: hud.hand.map((card) => publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
             "discard_pile_count", "exhaust_pile_count", "orb_slots"].map((key) => [key, hud[key]])),
-          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => ({
-            entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
-            name: visibleText(orb.name), passive: orb.passive, evoke: orb.evoke,
-            keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) })),
-          companions: hud.companions.map((pet) => ({
-            entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
-            hp: pet.hp, max_hp: pet.max_hp, block: pet.block, alive: pet.alive,
-            health_bar_visible: pet.health_bar_visible, health_display: pet.health_display,
-            statuses: (pet.statuses ?? []).map(visibleStatus) })) },
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx)),
+          potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
+            target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
+          companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
         enemies: hud.enemies.map((enemy) => ({ entity_id: ctx.entityId("enemy", enemy.native_ref),
-          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), hp: enemy.hp, max_hp: enemy.max_hp,
-          block: enemy.block, health_bar_visible: enemy.health_bar_visible, health_display: enemy.health_display,
+          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), combat_id: enemy.combat_id, ...visibleHealth(enemy),
           statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
       } : null;
       return { kind: "card_selection", stage: "choosing", prompt: state.prompt ?? null,
@@ -1440,7 +1473,8 @@ function currentSurface(state, ctx) {
             || potion.valid_target_refs.some((nativeRef) => nativeRef !== state.player?.native_ref)
             || (potion.can_use === true && potion.valid_target_refs.length !== 1))));
       const playWindowOpen = state.is_play_phase === true;
-      const semanticFactsComplete = typeof state.encounter_type === "string"
+      const semanticFactsComplete = state.combat_hud_complete === true && canonicalHudComplete(state)
+        && typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"
         && typeof state.is_play_phase === "boolean"
         && Number.isSafeInteger(state.exhaust_pile_count)
@@ -1449,7 +1483,7 @@ function currentSurface(state, ctx) {
         && Array.isArray(state.companions)
         && Array.isArray(state.player_statuses)
         && rawEnemies.every((enemy) => typeof enemy.id === "string"
-          && Number.isSafeInteger(enemy.combat_id)
+          && (enemy.combat_id === null || Number.isSafeInteger(enemy.combat_id))
           && Array.isArray(enemy.statuses)
           && (enemy.intents ?? []).every((intent) =>
             typeof intent.label === "string"
@@ -1459,12 +1493,10 @@ function currentSurface(state, ctx) {
       const enemyEntries = rawEnemies.map((enemy, index) => {
         const properties = {
           entity_id: ctx.entityId("enemy", enemy.native_ref),
-          combat_id: ctx.entityId("enemy", enemy.native_ref),
+          combat_id: enemy.combat_id,
           definition_id: definitionId(enemy.id),
           name: enemy.name ?? null,
-          hp: enemy.hp,
-          max_hp: enemy.max_hp,
-          block: enemy.block,
+          ...visibleHealth(enemy),
           statuses: (enemy.statuses ?? []).map(visibleStatus),
           intents: (enemy.intents ?? []).map(visibleIntent)
         };
@@ -1548,23 +1580,24 @@ function currentSurface(state, ctx) {
       const playerEntityId = ctx.entityId("player", state.player?.native_ref);
       const playerContext = {
         player_entity_id: playerEntityId,
-        block: state.player?.block ?? 0,
-        energy: state.energy ?? 0,
-        max_energy: state.max_energy ?? 0,
+        block: state.player?.block,
+        energy: state.energy,
+        max_energy: state.max_energy,
+        stars: state.stars,
         hand: handEntries.map((entry) => entry.card),
         draw_pile_count: state.draw_pile_count ?? 0,
         discard_pile_count: state.discard_pile_count ?? 0,
         exhaust_pile_count: state.exhaust_pile_count ?? 0,
         statuses: (state.player_statuses ?? []).map(visibleStatus),
-        companions: state.companions ?? [],
-        potion_states: rawPotions.map((potion) => ({
+        companions: (state.companions ?? []).map((pet) => visibleCompanion(pet, ctx)),
+        potion_states: (state.potion_states ?? []).map((potion) => ({
           entity_id: ctx.entityId("potion", potion.native_ref),
           target_type: potion.target_type,
-          can_use: potion.can_use === true,
-          automatic: potion.usage === "Automatic"
+          can_use: potion.can_use,
+          automatic: potion.automatic
         })),
-        orbs: state.orbs ?? [],
-        orb_slots: state.orb_slots ?? 0
+        orbs: (state.orbs ?? []).map((orb) => visibleOrb(orb, ctx)),
+        orb_slots: state.orb_slots
       };
       const playerReferent = ctx.referent({
         role: "player",
