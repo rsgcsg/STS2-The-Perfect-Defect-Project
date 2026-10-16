@@ -1207,6 +1207,42 @@ def test_managed_target_drift_blocks_decisions_but_preserves_explicit_recovery(
         ("/v2/stop", {}) if recovery == "stop" else ("/v2/mode", {"mode": "human"})]
 
 
+def test_managed_global_command_reads_owned_startup_adapter_identity(
+    service, runtime_http, monkeypatch, tmp_path,
+):
+    from spireagent.workbench.global_program_agent import adapter_identity
+    from test_managed_model_target import target
+
+    transport, _, requests = runtime_http
+    # Reuse the HTTP control fixture; this is command routing, not an Agent
+    # session handshake. The startup/adapter shape comes from its real producer.
+    owned_startup = local_models._startup_identity(
+        {"schema": "sts2.policy-runtime/agent-manifest-1",
+         "manifest_id": "global-fixture", "artifact": {"sha256": "a" * 64},
+         "adapter": adapter_identity()},
+        {"version": "fixture", "code_sha256": "b" * 64},
+    )
+    owned_startup["run_id"] = transport.startup["run_id"]
+    service.client = SimpleNamespace(startup=owned_startup, request=transport.request)
+    selected = {**target(tmp_path), "runtime_instance_id": "game-1"}
+    service.managed_target = lambda: selected
+    service.state.update(
+        status="loaded", loaded=True, connector_endpoint=None,
+        managed_environment=local_models.public_target(
+            {**selected, "input_profile": "public-basis-1"}),
+    )
+
+    def unexpected(*_args):
+        pytest.fail("Managed GLOBAL command left its owned startup/Host path")
+
+    monkeypatch.setattr(service, "selection", unexpected)
+    monkeypatch.setattr(service.native_tasks, "connector_instance", unexpected)
+    service.command("one_step")
+    assert finished(service)["operation"]["status"] == "completed"
+    assert [(route, body) for route, body in requests if body is not None] == [
+        ("/v2/mode", {"mode": "one_step"}), ("/v2/tick", {"max_ticks": 1})]
+
+
 @pytest.mark.parametrize("drift", [None, "binding_sha256", "service_instance_id",
                                   "runtime_instance_id", "game_continuity_id"])
 def test_managed_load_binds_cli_and_checks_actual_startup_target(
