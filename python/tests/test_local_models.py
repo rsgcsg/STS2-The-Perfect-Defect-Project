@@ -1210,8 +1210,9 @@ def test_managed_target_drift_blocks_decisions_but_preserves_explicit_recovery(
 def test_managed_global_command_reads_owned_startup_adapter_identity(
     service, runtime_http, monkeypatch, tmp_path,
 ):
-    from spireagent.workbench.global_program_agent import adapter_identity
     from test_managed_model_target import target
+
+    from spireagent.workbench.global_program_agent import adapter_identity
 
     transport, _, requests = runtime_http
     # Reuse the HTTP control fixture; this is command routing, not an Agent
