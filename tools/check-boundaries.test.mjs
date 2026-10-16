@@ -67,3 +67,16 @@ test("declared package entrypoints must exist in the Git source authority", () =
     () => true
   ), []);
 });
+
+
+test("native read qualifiers admit only the audited patch-info query and keep patch ownership out", () => {
+  const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
+  const read = "using HarmonyLib;\nvar patches = Harmony.GetPatchInfo(method);";
+  assert.deepEqual(textBoundaryErrors(owner, read), []);
+  assert.equal(textBoundaryErrors("components/native-foundation/src/Other.cs", read).length, 1);
+  for (const mutation of ["new Harmony(id)", "Harmony.Patch(method)", "Harmony.UnpatchAll()",
+    "typeof(Harmony)", "using H = HarmonyLib.Harmony;", "Harmony.CreateAndPatchAll(type)"]) {
+    assert.equal(textBoundaryErrors(owner, `${read}\n${mutation};`).length, 1, mutation);
+  }
+  assert.equal(textBoundaryErrors(owner, `${read}\nusing STS2Connector;`).length, 1);
+});

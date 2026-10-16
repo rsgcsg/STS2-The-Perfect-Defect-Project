@@ -25,9 +25,20 @@ export function textBoundaryErrors(relative, contents) {
       && /(?:from\s+|import\s*\()\s*["'][^"']*(?:host-runtime|annotator)/u.test(contents)) {
     errors.push(`${normalized}: Connector imports a downstream component`);
   }
-  if (normalized.startsWith("components/native-foundation/")
-      && /STS2Connector|STS2HumanAnnotator|HarmonyLib|System\.Text\.Json/u.test(contents)) {
-    errors.push(`${normalized}: Native Foundation imports transport, evidence, or patch ownership`);
+  if (normalized.startsWith("components/native-foundation/")) {
+    // These exact shared read qualifiers inspect patches; they never install them.
+    const readQualificationFiles = new Set([
+      "NativeRunHookReadQualification.cs",
+      "NativeCardPreviewReadQualification.cs",
+      "NativeCardRewardAlternativePreview.cs"
+    ].map(name => `components/native-foundation/src/${name}`));
+    let ownershipText = contents.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu, "");
+    if (readQualificationFiles.has(normalized)) {
+      ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
+        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");
+    }
+    if (/STS2Connector|STS2HumanAnnotator|\bHarmony(?:Lib)?\b|System\.Text\.Json/u.test(ownershipText))
+      errors.push(`${normalized}: Native Foundation imports transport, evidence, or patch ownership`);
   }
   if (normalized.startsWith("components/host-runtime/")
       && /(?:from\s+|import\s*\()\s*["'][^"']*(?:\.\.\/)+(?:connector|annotator)(?:\/|["'])/u.test(contents)) {
