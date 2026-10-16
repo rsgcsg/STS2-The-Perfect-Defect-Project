@@ -28,6 +28,7 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
     ["run", "--project", path.join(candidate, "native-tests/NativeMechanisms.csproj"), "--configuration", "Release"],
     { cwd: candidate, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
   assert.match(stdout, /14 exact native reward factory checks passed/u);
+  assert.match(stdout, /23 exact native relic command checks passed/u);
   const emitted = stdout.split(/\r?\n/u).find(line => line.startsWith("native-reward-json="));
   assert.ok(emitted);
   const facts = JSON.parse(emitted.slice("native-reward-json=".length));

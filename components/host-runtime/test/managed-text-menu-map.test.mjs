@@ -227,13 +227,14 @@ function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "
 function combatDecision() {
   return {
     type: "decision", decision: "combat_play", context: { ...mapDecision().context, floor: 2, total_floor: 2, room_type: "Combat" },
-    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
+    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1, combat_hud_complete: true,
+    potion_states: [{native_ref:"native-potion-fire",target_type:"AnyEnemy",can_use:true,automatic:false}],
     energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{ index: 0, native_ref: "native-card-strike", valid_target_refs: ["native-enemy-a"],
       id: "CARD.STRIKE_IRONCLAD", name: "Strike", can_play: true, target_type: "AnyEnemy",
       type: "Attack", rarity: "Basic", cost: 1 }],
     enemies: [{ index: 0, native_ref: "native-enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
-      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
     player: { ...mapDecision().player, native_ref: "native-player", potions: [{
       slot: 0, native_ref: "native-potion-fire", id: "POTION.FIRE", name: "Fire Potion",
       target_type: "AnyEnemy", can_use: true, can_discard: true, binding_supported: true,
@@ -268,6 +269,9 @@ test("published v1 and v2 contracts cover actual reviewed scene projections", ()
     combatDecision(), selector(), selector({ choose: true, skip: true }),
     selector({ manual: true, selected: true }), rewardDecision(), rewardDecision("card_reward"),
     rewardDecision("combat_rewards_complete"),
+    { ...mapDecision(), decision:"relic_choice", selector_ref:"native-choice", stage:"choosing", can_skip:true, native_relic_complete:true,
+      relics:[{index:0,native_ref:"native-relic-choice",id:"PAELS_WING",name:"Pael's Wing",description:"Visible effect.",
+        hover_facts_complete:true,keywords:[],card_previews:[]}] },
     { ...mapDecision(), decision: "game_over", victory: true }];
   const seenKinds = new Set();
   for (const state of scenes) {
