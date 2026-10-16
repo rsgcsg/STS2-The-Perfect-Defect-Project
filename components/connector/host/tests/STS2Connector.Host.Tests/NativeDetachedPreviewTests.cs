@@ -25,13 +25,13 @@ public sealed class NativeDetachedPreviewTests
         // fixture avoids global ModelDb.Init/type discovery and has no owner,
         // Godot tree, native run, mutation command or installed Mod.
         bool registered = ModelDb.Contains(type);
-        var canonical = registered ? (CardModel)ModelDb.Get(type) : (CardModel)Activator.CreateInstance(type)!;
+        var canonical = registered ? ModelDb.GetById<CardModel>(ModelDb.GetId(type)) : (CardModel)Activator.CreateInstance(type)!;
         if (!registered) Field(typeof(CardModel), "_canonicalInstance").SetValue(canonical, canonical);
         return canonical.ToMutable();
     }
     private static CardModel Mutable<T>() where T : CardModel => Mutable(typeof(T));
     private static EnchantmentModel CanonicalEnchantment(Type type) => ModelDb.Contains(type)
-        ? (EnchantmentModel)ModelDb.Get(type) : (EnchantmentModel)Activator.CreateInstance(type)!;
+        ? ModelDb.GetById<EnchantmentModel>(ModelDb.GetId(type)) : (EnchantmentModel)Activator.CreateInstance(type)!;
     private static string Values(CardModel card) => JsonSerializer.Serialize(new
     {
         type = card.GetType().Name, card.IsMutable, card.CurrentUpgradeLevel,
