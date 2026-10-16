@@ -30,7 +30,7 @@ internal static partial class PlayerEnvironmentService
         try
         {
             var before = P1NativeCaptureBoundary.Capture();
-            SnapshotBuildResult built = BuildSnapshot(requiredReadKindsForObservation: PublicBasisReadKinds);
+            SnapshotBuildResult built = BuildSnapshot(requiredReadKindsForObservation: PublicBasisReadKinds, aggregateCurrentPublicReads: true);
             var frozen = FreezePublicBasis(built, before.Run == null ? null : Entities.GetId(before.Run, "run"));
             guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
             return frozen;
@@ -39,7 +39,7 @@ internal static partial class PlayerEnvironmentService
     }
 
     internal static IReadOnlyCollection<string> PublicBasisReadKinds(LiveObservation draft) =>
-        PlayerVisibilityCatalog.Build(draft, true, ShopSurfaceFacts.TryGetCurrent(out _, out _, out _))
+        PlayerVisibilityCatalog.Build(draft, true, ShopSurfaceFacts.TryGetCurrent(out _, out _, out _), aggregateCurrentPublicReads: true)
             .ReadCatalog.Select(read => read.Kind).Distinct(StringComparer.Ordinal).ToArray();
 
     // Share this assembly with original-source capture. Passing a built Snapshot is essential:

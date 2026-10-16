@@ -565,6 +565,11 @@ function canonicalHealthComplete(creature) {
 }
 function canonicalHudComplete(hud) {
   return plainObject(hud) && typeof hud.encounter_type === "string" && typeof hud.is_play_phase === "boolean"
+    && Number.isSafeInteger(hud.round) && hud.round >= 1 && typeof hud.turn_owner === "string" && hud.turn_owner.length > 0
+    && ["energy", "max_energy", "orb_slots"].every(key => Number.isSafeInteger(hud[key]))
+    && ["draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key => Number.isSafeInteger(hud[key]) && hud[key] >= 0)
+    && (hud.stars === null || Number.isSafeInteger(hud.stars))
+    && Number.isFinite(plainObject(hud.player) ? hud.player.block : hud.block)
     && Array.isArray(hud.potion_states) && hud.potion_states.every((potion) => typeof potion.native_ref === "string"
       && typeof potion.target_type === "string" && typeof potion.can_use === "boolean" && typeof potion.automatic === "boolean")
     && Array.isArray(hud.orbs) && hud.orbs.every((orb, index) => typeof orb.native_ref === "string"
@@ -982,6 +987,35 @@ function currentSurface(state, ctx) {
         ]
       };
     }
+    case "relic_choice": {
+      const relics = Array.isArray(state.relics) ? state.relics : [];
+      const exact = state.native_relic_complete === true && typeof state.selector_ref === "string" && state.selector_ref.length > 0
+        && state.stage === "choosing" && state.can_skip === true && relics.length > 0 && relics.length + 1 <= ACTION_LIMIT
+        && relics.every((relic, index) => relic?.index === index && typeof relic.native_ref === "string" && relic.native_ref.length > 0
+          && ["id", "name", "description"].every(key => typeof relic[key] === "string" && relic[key].trim().length > 0)
+          && relic.hover_facts_complete === true && Array.isArray(relic.keywords) && Array.isArray(relic.card_previews))
+        && new Set(relics.map(relic => relic.native_ref)).size === relics.length;
+      const offered = relics.map((relic, index) => {
+        const unique = typeof relic?.native_ref === "string" && relics.filter(option => option?.native_ref === relic.native_ref).length === 1;
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic", relic.native_ref) : ctx.id("unbound_relic", index),
+          label: relic.name, occurrence: index, enabled: exact,
+          properties: { definition_id: definitionId(relic.id), name: visibleText(relic.name), description: visibleText(relic.description),
+            counter: relic.counter ?? null, keywords: visibleHoverKeywords(relic.keywords ?? []),
+            card_previews: visibleHoverCards(relic.card_previews ?? [], ctx.snapshotId, `relic_choice_${index}`, ctx.id) } });
+        if (exact) ctx.action({ verb: "select", subject: item, label: `Choose ${relic.name}`,
+          raw: { cmd: "action", action: "select_native_relic", args: { selector_ref: state.selector_ref, relic_ref: relic.native_ref } } });
+        return item.properties;
+      });
+      if (exact) ctx.action({ verb: "skip", label: "Skip relic selection", raw: {
+        cmd: "action", action: "skip_native_relic", args: { selector_ref: state.selector_ref } } });
+      return { kind: "native_boss_relic_selection", stage: "choosing", prompt: null,
+        surface: { kind: "native_boss_relic_selection", stage: "choosing", selector_profile: "managed-native-relic-presentation-1",
+          relics: offered, selectable_relic_entity_ids: exact ? offered.map(relic => relic.entity_id) : [], can_skip: exact && state.can_skip },
+        context: { ...commonContext, kind: "relic_choice" }, complete: exact,
+        missing: exact ? [] : ["exact_current_native_relic_presentation", ...(state.native_relic_gap ? [state.native_relic_gap] : [])],
+        visibleInformation: "complete_original_native_relic_offer_and_current_public_display",
+        interactionDiscovery: "exact_synchronous_RelicSelectCmd_presentation_and_original_object_completion" };
+    }
     case "card_reward": {
       const rawCards = state.cards;
       const rawAlternatives = state.alternatives;
@@ -1355,7 +1389,7 @@ function currentSurface(state, ctx) {
         text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
       const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
-        && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+        && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
         && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
           && card.render_complete === true && cardComplete(card))
@@ -1600,9 +1634,9 @@ function currentSurface(state, ctx) {
         max_energy: state.max_energy,
         stars: state.stars,
         hand: handEntries.map((entry) => entry.card),
-        draw_pile_count: state.draw_pile_count ?? 0,
-        discard_pile_count: state.discard_pile_count ?? 0,
-        exhaust_pile_count: state.exhaust_pile_count ?? 0,
+        draw_pile_count: state.draw_pile_count,
+        discard_pile_count: state.discard_pile_count,
+        exhaust_pile_count: state.exhaust_pile_count,
         statuses: (state.player_statuses ?? []).map(visibleStatus),
         companions: (state.companions ?? []).map((pet) => visibleCompanion(pet, ctx)),
         potion_states: (state.potion_states ?? []).map((potion) => ({

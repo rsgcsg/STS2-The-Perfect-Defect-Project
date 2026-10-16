@@ -12,14 +12,14 @@ function combatDecision({ enemies = 2, hand = null } = {}) {
   const monsters = Array.from({ length: enemies }, (_, index) => ({
     index, native_ref: `native-enemy-${index}`, id: "MONSTER.CULTIST",
     combat_id: index + 1, name: "Cultist", hp: 10, max_hp: 10,
-    block: 0, statuses: [], intents: [] }));
+    block: 0, health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, statuses: [], intents: [] }));
   return {
     type: "decision", decision: "combat_play",
     context: { act: 1, act_index: 0, act_definition_id: "OVERGROWTH",
       act_name: "Overgrowth", floor: 2, total_floor: 2, ascension: 0,
       room_type: "Combat", bosses: [], modifiers: [] },
-    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
-    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0,
+    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1, combat_hud_complete: true, potion_states: [],
+    energy: 3, max_energy: 3, stars: null, draw_pile_count: 0, discard_pile_count: 0, exhaust_pile_count: 0, orb_slots: 0,
     orbs: [], companions: [], player_statuses: [],
     hand: hand ?? [
       { index: 0, native_ref: "native-strike", id: "CARD.STRIKE",
@@ -32,7 +32,7 @@ function combatDecision({ enemies = 2, hand = null } = {}) {
     ],
     enemies: monsters,
     player: { name: "The Defect", character_id: "DEFECT", hp: 70, max_hp: 70,
-      gold: 99, native_ref: "native-player", max_potion_slots: 3,
+      block: 0, gold: 99, native_ref: "native-player", max_potion_slots: 3,
       relics: [], potions: [], deck: [] }
   };
 }

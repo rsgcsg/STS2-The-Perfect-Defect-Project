@@ -19,7 +19,7 @@ export function combatState() {
     context: { act: 1, act_index: 0, act_definition_id: "OVERGROWTH", act_name: "Overgrowth",
       floor: 2, total_floor: 2, ascension: 0, room_type: "Combat",
       bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: [] },
-    combat_hud_complete: true, potion_states: [], stars: 0, encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true,
+    combat_hud_complete: true, potion_states: [], stars: null, encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true,
     energy: 3, max_energy: 3, draw_pile_count: 4, discard_pile_count: 2,
     exhaust_pile_count: 1, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     player: { native_ref: "native-1", name: "Ironclad", character_id: "IRONCLAD",

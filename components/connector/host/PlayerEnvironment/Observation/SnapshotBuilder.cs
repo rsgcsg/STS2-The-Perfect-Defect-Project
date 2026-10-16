@@ -23,7 +23,8 @@ internal static partial class PlayerEnvironmentService
         string? inputProfile = null,
         bool textMenuCapture = false,
         int maximumBoundActions = MaxBoundActions,
-        Func<LiveObservation, IReadOnlyCollection<string>>? requiredReadKindsForObservation = null)
+        Func<LiveObservation, IReadOnlyCollection<string>>? requiredReadKindsForObservation = null,
+        bool aggregateCurrentPublicReads = false)
     {
         P1CaptureGuard.ObserveSnapshotBuild();
         if (!IsSupportedInputProfile(inputProfile)
@@ -107,7 +108,7 @@ internal static partial class PlayerEnvironmentService
         PlayerVisibilityProjection information = Measure("visibility_catalog", () =>
         {
             bool shopCatalogAvailable = ShopSurfaceFacts.TryGetCurrent(out _, out _, out _);
-            return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable);
+            return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable, aggregateCurrentPublicReads);
         });
         IReadOnlyList<PlayerReadCatalogEntry> readCatalog = inputProfile == null
             ? information.ReadCatalog
