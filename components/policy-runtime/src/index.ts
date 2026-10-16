@@ -16,3 +16,9 @@ export * from "./agent-session-state.js";
 export * from "./agent-runtime-contracts.js";
 export * from "./agent-runtime-events.js";
 export type { NativeAgentRuntimeOptions, NativeAgentRuntimeOwner } from "./agent-native-runtime.js";
+
+export * from "./global-transport.js";
+export * from "./global-program.js";
+export * from "./global-replay.js";
+
+export { p1CoreIdentity } from "./p1-global/core-identity.js";

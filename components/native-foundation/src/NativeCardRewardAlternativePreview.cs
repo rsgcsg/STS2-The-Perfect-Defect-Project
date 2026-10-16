@@ -16,7 +16,8 @@ using MegaCrit.Sts2.Core.Runs;
 
 namespace STS2Platform.NativeFoundation;
 
-public sealed record NativeCardRewardAlternativePreviewFact(string OptionId, string Title, string AfterSelected);
+public sealed record NativeCardRewardAlternativePreviewFact(string OptionId, string Title, string AfterSelected)
+{ public bool IsPureReturn { get; init; } }
 public sealed record NativeCardRewardAlternativePreviewResult(bool Complete,
     IReadOnlyList<NativeCardRewardAlternativePreviewFact>? Alternatives,
     bool? CanSkipSelection, bool? CanReroll, bool? SelectionCompletesReward, string? Gap);
@@ -54,10 +55,24 @@ public static class NativeCardRewardAlternativePreview
         _ => null
     };
 
+    private static readonly MethodInfo? EmptySelection = typeof(CardRewardAlternative)
+        .GetNestedType("<>c", BindingFlags.NonPublic)?.GetMethod("<.ctor>b__16_0", BindingFlags.Instance | BindingFlags.NonPublic);
+    public static bool IsPureReturn(CardRewardAlternative alternative)
+    {
+        if (typeof(CardRewardAlternative).Module.ModuleVersionId != new Guid("57785517-0b16-42b9-8b36-bad6fb28384b")
+            || !FactoryIsAudited() || alternative.GetType() != typeof(CardRewardAlternative)
+            || alternative.OptionId != "Skip"
+            || alternative.AfterSelected != PostAlternateCardRewardAction.EndSelectionAndDoNotCompleteReward)
+            return false;
+        Delegate[] callbacks = alternative.OnSelect.GetInvocationList();
+        return callbacks.Length == 1 && EmptySelection != null && callbacks[0].Method == EmptySelection;
+    }
+
     private static bool FactoryIsAudited() => new[] { "Player", "Cards", "IsPopulated", "CanSkip", "CanReroll" }
             .All(name => GetterIsUnpatched(typeof(CardReward), name))
         && GetterIsUnpatched(typeof(Player), "RunState") && CardsProjectionIsUnpatched()
-        && new[] { "OptionId", "AfterSelected", "Title" }.All(name => GetterIsUnpatched(typeof(CardRewardAlternative), name))
+        && new[] { "OptionId", "AfterSelected", "Title", "OnSelect" }.All(name => GetterIsUnpatched(typeof(CardRewardAlternative), name))
+        && Unpatched(EmptySelection)
         && Unpatched(typeof(CardRewardAlternative).GetMethod(nameof(CardRewardAlternative.Generate), new[] { typeof(CardReward) }))
         && Unpatched(typeof(CardRewardAlternative).GetConstructor(new[] { typeof(string), typeof(PostAlternateCardRewardAction) }))
         && Unpatched(typeof(CardRewardAlternative).GetConstructor(new[] { typeof(string), typeof(Func<System.Threading.Tasks.Task>), typeof(PostAlternateCardRewardAction) }))
@@ -107,7 +122,7 @@ public static class NativeCardRewardAlternativePreview
                 string? outcome = Outcome(alternative.AfterSelected);
                 if (string.IsNullOrWhiteSpace(alternative.OptionId) || string.IsNullOrWhiteSpace(title) || outcome == null)
                     return Missing("native_alternative_public_fact_unavailable");
-                facts.Add(new(alternative.OptionId, title, outcome));
+                facts.Add(new(alternative.OptionId, title, outcome) { IsPureReturn = IsPureReturn(alternative) });
             }
             if (facts.Select(value => value.OptionId).Distinct(StringComparer.Ordinal).Count() != facts.Count)
                 return Missing("native_alternative_duplicate_option_id");

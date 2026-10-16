@@ -56,6 +56,7 @@ internal static class NativeMapInformation
 
     internal sealed record ReadEntry(string Status, string? Gap, Func<bool> StillCurrent);
     private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+    private static readonly FieldInfo? MapOwner = typeof(NMapScreen).GetField("_map", PrivateInstance);
     private static readonly FieldInfo? Pressed = typeof(NHotkeyManager).GetField("_hotkeyPressedBindings", PrivateInstance);
     private static readonly FieldInfo? Released = typeof(NHotkeyManager).GetField("_hotkeyReleasedBindings", PrivateInstance);
     private static bool Unpatched(Type type, string name) => NativeRunHookReadQualification.IsUnpatched(
@@ -92,11 +93,13 @@ internal static class NativeMapInformation
         {
             if (!ReferenceEquals(RunManager.Instance.DebugOnlyGetState(), state)
                 || !ReferenceEquals(NRun.Instance, run) || !ReferenceEquals(NMapScreen.Instance, map)
+                || !ReferenceEquals(MapOwner?.GetValue(map), state.Map)
                 || !ReferenceEquals(run.GlobalUi.TopBar.Map, button) || !ReferenceEquals(NHotkeyManager.Instance, hotkeys)
                 || !ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, capstone)
                 || !PureCapstone(capstone)
                 || !Unpatched(typeof(NTopBarMapButton), "OnRelease") || !Unpatched(typeof(NTopBarMapButton), "IsOpen")
-                || !Unpatched(typeof(NHotkeyManager), "_UnhandledInput")) return false;
+                || !Unpatched(typeof(NHotkeyManager), "_UnhandledInput")
+                || !Unpatched(typeof(NMapScreen), "get_IsOpen") || !Unpatched(typeof(NClickableControl), "get_IsEnabled")) return false;
             // Already displayed information does not depend on travel/Back/FTUE.
             if (map.IsOpen && ConnectorMod.IsNodeVisible(map)) return true;
             // Exact last registered native press+release handlers prove the

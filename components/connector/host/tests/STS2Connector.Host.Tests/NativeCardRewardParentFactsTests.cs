@@ -242,6 +242,51 @@ public sealed class NativeCardRewardParentFactsTests
         }
     }
 
+    [Fact]
+    public void SequentialTestModeCallbacksRefreshOnlyTheSameExactSynchronousPresentationOwner()
+    {
+        CardReward parent = Parent(Option());
+        object presentation = new();
+        string? invalidated = null;
+        using (NativeCardRewardSelectionObservation.BeginSynchronousOnSelect(parent))
+        {
+            Assert.Same(parent, NativeCardRewardSelectionObservation.BindCurrent(Options(parent), presentation,
+                status => invalidated = status, out string first, allowSequentialCallback: true));
+            Assert.Equal("exact_synchronous_parent", first);
+            Options(parent)[0] = Option();
+            Assert.Same(parent, NativeCardRewardSelectionObservation.BindCurrent(Options(parent), presentation,
+                status => invalidated = status, out string refreshed, allowSequentialCallback: true));
+            Assert.Equal("exact_synchronous_parent", refreshed);
+            Assert.Null(NativeCardRewardSelectionObservation.BindCurrent(Options(parent), new object(),
+                _ => { }, out string foreign, allowSequentialCallback: true));
+            Assert.Equal("ambiguous_show_screen", foreign);
+            Assert.Equal(foreign, invalidated);
+        }
+        Assert.Null(NativeCardRewardSelectionObservation.BindCurrent(Options(parent), presentation,
+            _ => { }, out string late, allowSequentialCallback: true));
+        Assert.Equal("parent_not_bound", late);
+    }
+
+    [Fact]
+    public void OuterSetMembershipRequiresExactObservedNativeSetAndCurrentMember()
+    {
+        CardReward parent = Parent(Option());
+        RewardsSet set = Bare<RewardsSet>();
+        SetField(set, "<Rewards>k__BackingField", new List<Reward> { parent });
+        Assert.Null(NativeRewardSetObservation.Capture(parent));
+        NativeRewardSetObservation.Register(set);
+        Assert.Same(set, NativeRewardSetObservation.Capture(parent));
+        set.Rewards.Clear();
+        Assert.Null(NativeRewardSetObservation.Capture(parent));
+        set.Rewards.Add(parent);
+        NativeRewardSetObservation.Register(set);
+        Assert.Same(set, NativeRewardSetObservation.Capture(parent));
+        RewardsSet foreign = Bare<RewardsSet>();
+        SetField(foreign, "<Rewards>k__BackingField", new List<Reward> { parent });
+        NativeRewardSetObservation.Register(foreign);
+        Assert.Null(NativeRewardSetObservation.Capture(parent));
+    }
+
     private static CardReward Parent(params CardCreationResult[] options)
     {
         CardReward reward = Bare<CardReward>();

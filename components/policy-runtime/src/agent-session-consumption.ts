@@ -1,3 +1,4 @@
+import { canonicalJson, reduce, modelView, type P1Basis, type P1SessionState } from "@rsgcsg/sts2-connector-client/p1-global";
 import {
   AgentSessionError, NATIVE_SCOPE, sessionDigest, sessionInteger, sessionObject,
   sessionText, supportsProfileValue, validateAgentConsumption, validateAgentManifest, validateAgentScope,
@@ -184,6 +185,22 @@ export class AgentConsumptionLedger {
     reservations.push(factReservation); this.factReservations.set(occurrence, reservations);
   }
 
+  /** GLOBAL admission uses the shared reducer, never a caller-created complete flag. */
+  registerGlobal(value: AgentAcquisition, source: P1Basis, state: P1SessionState): void {
+    if (this.manifest.input.profile !== "p1-global-r1" || this.closed || this.acquisitions.has(value.acquisition_id)
+      || this.acquisitions.size >= this.manifest.limits.max_acquisitions) throw new AgentSessionError("global_acquisition_unavailable");
+    const projected = reduce(state, source);
+    if (!projected.complete || canonicalJson(modelView(projected.observation)) !== canonicalJson(value.observation)
+      || canonicalJson(projected.observation.catalog) !== canonicalJson(value.catalog)) throw new AgentSessionError("global_projection_binding");
+    const bytes = agentJsonByteLength(value, this.manifest.limits.max_message_bytes), reservation = this.byteBudget.reserve(bytes);
+    try {
+      const cloned = JSON.parse(encodeBoundedAgentJson(value, this.manifest.limits.max_message_bytes).toString("utf8"));
+      const occurrence = canonicalJson([state.episode_id, projected.observation.envelope.occurrence]);
+      this.acquisitions.set(value.acquisition_id, { acquisition: freeze(cloned), occurrence,
+        revision: projected.observation.envelope.occurrence, included: [], facts: {}, bytes, reservation });
+    } catch (error) { reservation.release(); throw error; }
+  }
+
   get(acquisitionId: string): AgentAcquisition {
     const known = this.acquisitions.get(acquisitionId);
     if (!known) throw new AgentSessionError("unknown_acquisition");
@@ -266,8 +283,7 @@ export class AgentConsumptionLedger {
       this.lastPublication = BigInt(publication!);
       this.receivedUnconsumed = Math.max(0, this.receivedUnconsumed - 1);
     }
-    const completeness = sessionObject(known.acquisition.observation.completeness);
-    this.missingScopes = validateAgentScope(completeness.missing);
+    this.missingScopes = this.manifest.input.profile === "p1-global-r1" ? [] : validateAgentScope(sessionObject(known.acquisition.observation.completeness).missing);
     return freeze({ consumption_id: report.consumption_id, acquisition_id: report.acquisition_id,
       state_version: report.state_version, advanced, prefix: this.prefix() });
   }

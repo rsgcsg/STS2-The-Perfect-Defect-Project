@@ -7,6 +7,7 @@ remain separate, and the current Connector remains the environment authority.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -1151,6 +1152,73 @@ class LocalModelRegistration:
             raise
         except OSError as error:
             raise BoundaryError("local_model_registration", "registration_write_failed") from error
+
+    def register_global_program(self, *, environment_kind: str = "native") -> dict[str, Any]:
+        """Fixed public program registration; no model, downloaded command or inference."""
+        from .global_program_agent import ADAPTER, descriptor, adapter_identity
+        from .global_program_support import CONFIG_SCHEMA, PROFILE, validate
+        if environment_kind not in {"native", "managed"}:
+            raise BoundaryError("global_program", "unsupported_environment")
+        deadline = monotonic() + REGISTRATION_SECONDS
+        node_modules, _ = self._native_runtime(deadline=deadline)
+        runtime = node_modules / RUNTIME_PACKAGE / "dist"
+        if environment_kind == "managed":
+            from .managed_model_target import runtime_arguments
+            target = {**self.models._managed_runtime_target(), "input_profile": "public-basis-1"}
+            args = runtime_arguments(target, self.models.private_root)
+            options = {args[i].removeprefix("--"): args[i+1] for i in range(0, len(args), 2)}
+        else:
+            options = {"connector-endpoint": self.models.config.platform_url or "http://127.0.0.1:15526"}
+        private = self.models.private_root
+        if private.is_symlink():
+            raise BoundaryError("global_program", "unsafe_registration_owner")
+        private.mkdir(mode=0o700, exist_ok=True)
+        with instance_lock(private / LOCK):
+            folder = private / REGISTRATIONS
+            if folder.is_symlink():
+                raise BoundaryError("global_program", "unsafe_registration_owner")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            selection = "local-global-program-" + uuid.uuid4().hex
+            target = folder / selection
+            target.mkdir(mode=0o700)
+            artifact_path, config_path, manifest_path = (target / n for n in ("program.json", "config.json", "manifest.json"))
+            try:
+                raw = json_bytes(descriptor()); artifact_path.write_bytes(raw)
+                script = (
+                    "import{pathToFileURL}from'node:url';import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
+                    "const d=process.argv[1],o=JSON.parse(process.argv[2]),p=process.argv[3],a=JSON.parse(process.argv[4]);"
+                    "const r=await import(pathToFileURL(d+'/index.js'));let t;"
+                    "if(o['managed-binding']){const m=await import(pathToFileURL(d+'/managed.js'));"
+                    "t=await m.ManagedServicePolicyClient.attachGlobal(o['managed-binding'],o['managed-attachment'],"
+                    "{serviceInstanceId:o['managed-expected-service-instance-id'],runtimeInstanceId:o['managed-expected-runtime-instance-id'],"
+                    "gameContinuityId:o['managed-expected-game-continuity-id']},'run-'+randomUUID());}"
+                    "else{const s=await import(pathToFileURL(d+'/../node_modules/@rsgcsg/sts2-connector-client/dist/index.js'));"
+                    "t=new r.ReferenceGlobalTransport(new s.PlayerEnvironmentRestClient(o['connector-endpoint'],3000),"
+                    "{productVersion:'1',clientInstanceId:'global-registration'});}"
+                    "const identity=await t.negotiate(AbortSignal.timeout(5000));"
+                    "console.log(JSON.stringify(r.createGlobalProgramManifest({episodeId:process.argv[5],manifestId:process.argv[5],"
+                    "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
+                )
+                reply = subprocess.run(["node", "--input-type=module", "-e", script, str(runtime), json.dumps(options),
+                                        str(artifact_path), json.dumps(adapter_identity()), selection], capture_output=True,
+                                       text=True, timeout=_remaining(deadline), check=False)
+                if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
+                    raise BoundaryError("global_program", "public_environment_unavailable")
+                manifest = json.loads(reply.stdout)
+                config = {"schema": CONFIG_SCHEMA, "artifact_path": str(artifact_path), "artifact_sha256": hashlib.sha256(raw).hexdigest()}
+                manifest_path.write_bytes(json_bytes(manifest)); config_path.write_bytes(json_bytes(config))
+                validate(self.models.root, config_path, manifest_path, binding_root=private)
+                self.models._public_manifest_contract(manifest_path)
+                entry = {"id": selection, "label": "GLOBAL 公共信息程序（无学习模型）", "adapter": ADAPTER,
+                         "runtime_profile": PROFILE, "manifest": manifest_path.relative_to(private).as_posix(),
+                         "config": config_path.relative_to(private).as_posix()}
+                atomic_json(private / REGISTRY, {"schema": "stpd/local-token-policies-v1", "policies": [*self._entries(), entry]})
+            except Exception:
+                for path in (artifact_path, config_path, manifest_path):
+                    path.unlink(missing_ok=True)
+                target.rmdir()
+                raise
+        return {"schema": "spireagent/local-agent-registration-v1", "status": "registered", "selection_id": selection, "models": [], "reused": False}
 
     def register_teacher(
         self, *, variant: str = "continuous", environment_kind: str = "native"

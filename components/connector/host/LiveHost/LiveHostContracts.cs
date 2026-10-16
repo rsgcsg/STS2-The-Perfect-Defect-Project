@@ -2,6 +2,7 @@ using STS2Connector.Authority;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace STS2Connector.LiveHost.Contracts;
@@ -190,7 +191,13 @@ public sealed record VisibleCard(
     VisibleEnchantment? ExistingEnchantment,
     string? TargetType = null,
     bool? CanPlay = null,
-    string? UnplayableReason = null);
+    string? UnplayableReason = null)
+{
+    // Retained with this exact captured card instance. Legacy card serialization
+    // remains unchanged; only the explicitly enriched bounded detail Read uses it.
+    [JsonIgnore] public JsonObject? CurrentPublicDetails { get; init; }
+    [JsonIgnore] public IReadOnlyList<string> CurrentPublicDetailsMissing { get; init; } = Array.Empty<string>();
+}
 
 public sealed record VisibleStatus(
     string DefinitionId,

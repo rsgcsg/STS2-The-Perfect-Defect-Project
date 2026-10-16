@@ -24,77 +24,10 @@ public static class NativeCardRewardDecisionProvider
         string ParentStatus,
         IReadOnlyList<NativeCardRewardAlternativeFact> AlternativeFacts);
 
-    /// <summary>
-    /// CardReward.OnSelect calls ShowScreen before its first await in the pinned
-    /// native build. This thread-local scope exists only during that synchronous
-    /// invocation; it cannot flow into an asynchronous continuation.
-    /// </summary>
-    private sealed class SynchronousSelectionScope : IDisposable
-    {
-        internal SynchronousSelectionScope(CardReward reward, SynchronousSelectionScope? previous)
-        {
-            Reward = reward;
-            Previous = previous;
-            ThreadId = Environment.CurrentManagedThreadId;
-        }
-
-        internal CardReward Reward { get; }
-        internal SynchronousSelectionScope? Previous { get; }
-        internal int ThreadId { get; }
-        internal NCardRewardSelectionScreen? BoundScreen { get; set; }
-        internal int ShowCalls { get; set; }
-        internal bool IsDisposed => _disposed;
-        private volatile bool _disposed;
-
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                if (Environment.CurrentManagedThreadId == ThreadId
-                    && ReferenceEquals(CurrentSelection, this))
-                    CurrentSelection = Previous is { IsDisposed: false } ? Previous : null;
-                return;
-            }
-            _disposed = true;
-            if (Environment.CurrentManagedThreadId != ThreadId)
-            {
-                if (BoundScreen != null)
-                    InvalidateParent(BoundScreen, "selection_scope_cross_thread_disposal");
-                return;
-            }
-            if (!ReferenceEquals(CurrentSelection, this))
-            {
-                SynchronousSelectionScope? nested = CurrentSelection;
-                CurrentSelection = null;
-                while (nested != null)
-                {
-                    nested._disposed = true;
-                    if (nested.BoundScreen != null)
-                        InvalidateParent(nested.BoundScreen, "selection_scope_out_of_order");
-                    nested = nested.Previous;
-                }
-                if (BoundScreen != null)
-                    InvalidateParent(BoundScreen, "selection_scope_out_of_order");
-                return;
-            }
-            CurrentSelection = Previous is { IsDisposed: false } ? Previous : null;
-        }
-    }
-
-    [ThreadStatic]
-    private static SynchronousSelectionScope? CurrentSelection;
-
-    private static readonly FieldInfo? NativeCardsField = typeof(CardReward).GetField(
-        "_cards", BindingFlags.Instance | BindingFlags.NonPublic);
     private static readonly ConditionalWeakTable<NCardRewardSelectionScreen, Owner> Owners = new();
 
-    public static IDisposable BeginSynchronousOnSelect(CardReward reward)
-    {
-        ArgumentNullException.ThrowIfNull(reward);
-        var scope = new SynchronousSelectionScope(reward, CurrentSelection);
-        CurrentSelection = scope;
-        return scope;
-    }
+    public static IDisposable BeginSynchronousOnSelect(CardReward reward) =>
+        NativeCardRewardSelectionObservation.BeginSynchronousOnSelect(reward);
 
     public static void Register(
         NCardRewardSelectionScreen screen,
@@ -109,26 +42,9 @@ public static class NativeCardRewardDecisionProvider
         IReadOnlyList<CardCreationResult> options,
         IReadOnlyList<CardRewardAlternative> alternatives)
     {
-        SynchronousSelectionScope? scope = CurrentSelection;
-        if (scope == null || scope.IsDisposed || scope.ThreadId != Environment.CurrentManagedThreadId)
-        {
-            if (scope is { IsDisposed: true })
-                CurrentSelection = null;
-            RegisterExact(screen, options, alternatives, null, "parent_not_bound");
-            return;
-        }
-
-        scope.ShowCalls++;
-        if (scope.ShowCalls != 1 || !MatchesNativeOptions(scope.Reward, options))
-        {
-            if (scope.BoundScreen != null)
-                InvalidateParent(scope.BoundScreen, "ambiguous_show_screen");
-            RegisterExact(screen, options, alternatives, null, "ambiguous_show_screen");
-            return;
-        }
-
-        scope.BoundScreen = screen;
-        RegisterExact(screen, options, alternatives, scope.Reward, "exact_synchronous_parent");
+        CardReward? parent = NativeCardRewardSelectionObservation.BindCurrent(options, screen,
+            status => InvalidateParent(screen, status), out string parentStatus);
+        RegisterExact(screen, options, alternatives, parent, parentStatus);
     }
 
     public static void Refresh(
@@ -221,18 +137,8 @@ public static class NativeCardRewardDecisionProvider
         Owners.Add(screen, owner with { Parent = null, ParentStatus = status });
     }
 
-    private static bool MatchesNativeOptions(CardReward parent, IReadOnlyList<CardCreationResult> options)
-    {
-        try
-        {
-            return NativeCardsField?.GetValue(parent) is IReadOnlyList<CardCreationResult> native
-                   && ReferenceEquals(native, options);
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    private static bool MatchesNativeOptions(CardReward parent, IReadOnlyList<CardCreationResult> options) =>
+        NativeCardRewardSelectionObservation.MatchesNativeOptions(parent, options);
 
     public static NativeCardRewardDecision Capture(
         NCardRewardSelectionScreen screen,

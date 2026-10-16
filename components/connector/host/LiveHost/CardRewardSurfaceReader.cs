@@ -109,7 +109,7 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
         }
 
         VisibleCard[] cards = holders.Select(holder =>
-            LiveContextReader.BuildCard(
+            LiveContextReader.BuildRewardCard(
                 holder.CardModel,
                 entities.GetId(holder.CardModel, "card")))
             .ToArray();
@@ -128,17 +128,26 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             {
                 OptionId = alternativesBoundExactly ? exactAlternatives[index].Alternative.OptionId : null,
                 Title = alternativeLabels[index],
+                IsPureReturn = alternativesBoundExactly && NativeCardRewardAlternativePreview.IsPureReturn(exactAlternatives[index].Alternative),
                 AfterSelected = alternativesBoundExactly
                     ? NativeCardRewardAlternativePreview.Outcome(exactAlternatives[index].Alternative.AfterSelected) : null
             })
             .ToArray();
 
+        NativeCardRewardParentFacts parentFacts = NativeCardRewardDecisionProvider.CaptureParentFacts(screen);
+        var parent = parentFacts.Status == "captured" ? parentFacts.ParentReward : null;
+        var parentSet = parent == null ? null : NativeRewardSetObservation.Capture(parent);
+        var parentPreview = parent == null ? null : NativeCardRewardAlternativePreview.Capture(parent);
         var surface = new CardRewardSelectionSurface(
             SurfaceKind,
             entities.GetId(screen, "screen"),
             cards,
             alternatives)
         {
+            ParentStatus = parent != null && parentSet != null ? "bound" : "unavailable",
+            ParentGroupId = parent == null ? null : entities.GetId(parent, "reward"),
+            RewardSetId = parentSet == null ? null : entities.GetId(parentSet, "reward_set"),
+            SelectionCompletesReward = parentPreview?.SelectionCompletesReward,
             SelectableCardEntityIds = holders
                 .Where(holder => catalogBoundExactly
                                  && IsHolderClickable(holder)
@@ -196,8 +205,6 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
                 new RewardFlowLiveContext("reward_flow", "card_reward"),
                 surface, completeness, game, Array.Empty<string>());
 
-        NativeCardRewardParentFacts parentFacts =
-            NativeCardRewardDecisionProvider.CaptureParentFacts(screen);
         RewardPageProfileFacts profileFacts = QualifyProfileFacts(
             catalogBoundExactly, parentFacts, semanticAlternatives, alternatives);
         if (profileFacts.Qualified

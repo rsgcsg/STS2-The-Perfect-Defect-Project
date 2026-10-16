@@ -30,7 +30,10 @@ internal sealed record PlayerEnvironmentReadResult(
 internal sealed record PlayerEnvironmentLinkedDetailCatalogEntry(
     string Kind,
     string EntityId,
-    string VisibilityBasis);
+    string VisibilityBasis,
+    string? DetailKey = null,
+    string? DisplayContext = null,
+    string? ParentReadId = null);
 
 internal sealed record BoundActionProjectionResult(
     PlayerEnvironmentBoundActionProjection Projection,
