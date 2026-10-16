@@ -38,9 +38,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [CURRENT](docs/memory/CURRENT.md) and the [P1 forward plan](docs/plans/P1_FORWARD_2026-10-15.zh-CN.md):
+- [CURRENT](docs/memory/CURRENT.md) and the [P1 continuation](docs/plans/P1_R1_CONTINUATION_2026-10-16.zh-CN.md):
   current direction, authorization, owners, evidence and next steps.
-- [P1 contract](docs/protocols/P1.zh-CN.md) and [ADR-0017](docs/adr/0017-p1-forward-decision-profile.md):
+- [P1 contract](docs/protocols/P1_GLOBAL_R1.zh-CN.md) and [ADR-0017](docs/adr/0017-p1-forward-decision-profile.md):
   the selected public-information/decision-grain direction and proposed implementation contract.
 - [Earlier baseline](docs/BASELINE_V1_SPEC.zh-CN.md) and its
   [execution packet](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md): historical

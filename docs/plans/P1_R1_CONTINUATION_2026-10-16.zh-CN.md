@@ -10,15 +10,15 @@ Reference / Managed → 完整、公平的 P1 观察和单向动作 → 任意�
 还要求独立的环境录制（Source4）能转换成可校验的 P1 轨迹。
 上层链（Agent 端口、记录、对照）要能在 P2 原样复用。
 
-## 停止线（做到就收口，冻结 P1 r1）
+## 候选收敛指标（通过不自动冻结 P1 r1）
 
 1. Managed：40 局套件（Defect，zh）≥ 95% 自然终局，0 unknown，卡点原因全部列出。
 2. Reference：20 局套件 ≥ 90% 自然终局，0 unknown。
-3. 等价：至少 5 局 Reference 真实轨迹在 Managed 上重放到底。分叉先修 Managed；修不了的登记成 Managed 已知差异，要用户确认。
+3. 等价：至少 5 局 Reference 真实轨迹在 Managed 上重放到底。分叉先定位原生事实/两端投影/共享核心；真实协议差异需用户确认，不能默认一端永远正确。
 4. 录制：用户在真实游戏里录一段短的原生操作（Source4），离线转换成 `complete=true` 的 P1 轨迹。
 5. 文档：P1 权威文档第 16–18 节更新到最终数字，CURRENT 一屏。
 
-达到后开 PR 收敛到 develop。合并要用户批准。之后 P1 r1 冻结，新需求进 r2 或 P2。
+以上是运行可用性采样指标，不是完整机制/信息正确性或策略能力证明。冻结还须已声明场景的完整信息/动作/失败语义覆盖、同一候选的跨Host终局比较、必要Human记录与所选门通过；不把一幕死亡终局率替代覆盖。达到有用竖切即可提交草稿PR，合并和最终冻结分别审查。
 
 ## 待办（按顺序 T1、T2、T7、T3、T4；每项都是真实失败，含复现）
 
@@ -71,7 +71,7 @@ node $W/tools/p1-suite.mjs --host reference --local-root $REF_ROOT \
   --suite $W/python/stpd/evaluation/suites/test-1000.json --limit 20 --out ref20 --agent "$AGENT"
 ```
 
-逐个修卡点（Reference 是真相，修 Connector 或 SDK 映射，不放宽公平性）。本轮已经修掉的 Reference 卡点：
+逐个修卡点（以原生事实核对，修实际错误owner，不放宽公平性）。本轮已经修掉的 Reference 卡点：
 - 地图 `current_position`；
 - 投递后的过渡态等待；
 - 游戏结束页的地图读取；
@@ -80,7 +80,7 @@ node $W/tools/p1-suite.mjs --host reference --local-root $REF_ROOT \
 
 ### T4 Reference→Managed 等价套件
 
-把 T3 的每局轨迹都在 Managed 上重放，汇总每局第一处分叉，按原因计数。分叉默认是 Managed 缺陷（T1 是第一个）。
+把 T3 的每局轨迹都在 Managed 上重放，汇总每局第一处分叉，按原因计数。先按原件定位分叉owner；T1是当前第一处分叉，不是默认Managed有错的通则。
 
 ### T5 真人短录制（需要用户操作）
 
@@ -99,28 +99,24 @@ node tools/source4-to-p1.mjs --bundle /ABS/NEW_BUNDLE --python /ABS/PYTHON_GE_3_
 
 检查报告里的 `complete`、`actions`、`unresolved_inputs`、`unresolved_contexts`。退出码 0 不等于转换完整。
 
-### T6 待用户决定：卡牌渲染测试
+### T6 原生显示覆盖与外来执行入口（未解决）
 
-`NativeRewardCardRendererTests.SameActualNativeRewardCardRetainsTheFullReferenceDtoAfterExactParentScreenBinding` 失败。
-原因：本轮按"原生逻辑优先、不做纯度证明"去掉了变量、卡池、悬停图标和格式化器白名单，被打补丁的固定闭包仍然拒绝。这个测试还在断言这些白名单会拒绝。
-用户批准后，把这几段断言改成新规则；或者恢复白名单。**不要自行删除断言。**
+`NativeRewardCardRendererTests.SameActualNativeRewardCardRetainsTheFullReferenceDtoAfterExactParentScreenBinding`仍失败。
+独审区分了两类问题：普通native卡类/战斗hook的固定名单过严；外来formatter、variable delegate和有效派生getter的patch检查仍有必要，preview transaction不覆盖其副作用。
+推荐保留native展示覆盖、恢复窄来源/有效方法检查，再拆分巨型测试为正常native正例和外来执行反例；不恢复全部卡类名单，也不删除仍有效断言。
+这是待实施/验证方向，不是已批准的新协议例外；若确需改变玩家信息或读取副作用保证，再给用户具体方案与影响。当前**不要自行删除断言**。
 
-### T7 投递后的"等待稳定"改为原生信号（用户要求，优先于 T3）
+### T7 投递后等待：消费原生状态（本轮修复）
 
-现状：本轮为跑通 Reference，在 `agent-native-runtime.ts` 加了一个临时补丁（选项 `globalPostDeliverySettleMs`，默认 15 秒）。已知投递后，如果 Host 返回 `capture_status: partial`，就每 100 ms 重读一次，直到完整或超时。它只重读、不重发，但判断"稳定"的依据是时间，这不符合要求。
+首个错误事实已由Reference ref5原件复核：投递后snapshot已经是`settling/no_action`，但广告的map Read暂不可用使basis为`partial`。因此先修Runtime消费顺序，不新增一套queue/动画推导。
 
-要求（用户确认）：
-- P1、Connector 和 Runtime 判断"可以给 Agent 下一个观察"时，**以原生事件或原生状态为准**，不靠读秒。
-- 只有在原生确实没有信号、或原来就是计时实现时，才用计时，并且要在文档里写明原因。
+- 只有原生snapshot.status=`settling`时等待；每次保留原捕获，不重发动作，不推进Agent消费。
+- 现有HTTP捕获是pull接口，50ms仅限制读取频率，不是稳定条件。原操作预算和Stop中断等待、释放控制；超时不生成ready。
+- 一旦离开settling，捕获仍partial立即保留delivered前缀并停止；新交互/子选择交共享语义处理，不能等待父Task或全局队列全空。
+- 已删除任意partial的15秒重读宽限。单例/合成传输测试通过后，按同一原失败种子作短真实复验；完整20局不是每次改动的前置。
+- 若真实复验发现新的未标记过渡，再根据该原生owner修producer，不能以泛化计时或queue-empty猜就绪。
 
-做法：
-1. 在 Connector 找出投递后不完整的真实原因：过场或动画、动作队列未清空、页面未就绪、某个 Read 暂时不可用。复现用本轮 Reference 套件（`tools/p1-suite.mjs --host reference`）。
-2. 对这些情况，用原生状态标 `status: settling`（已有字段，Runtime 已经会无时限等待 settling），不要发 `partial`。可用的原生依据：ActionQueue 或命令队列是否空闲、NOverlayStack / ActiveScreenContext 是否已切到目标页面、过渡或动画是否结束。现有的就绪判断优先复用。
-3. 真正缺信息时仍发 `partial`。Runtime 收到 `partial` 时立即按原逻辑停下，不再计时重读。
-4. 时间上限只防卡死（例如 settling 长时间不结束）。超时要明确停局并记录原因，不得当作稳定。
-5. 删除 `globalPostDeliverySettleMs` 的重读循环，或把它改成只防卡死。改测试（`global-forward-runtime.test.ts` 的部分抓取用例），再用 Reference 套件重跑。
-
-验收：Reference 5 局结果不差于本轮（4/5 终局，修复后 5/5），事件日志里没有因计时放行的观察。
+验收分别报告源码回归、真实同场景复验和仍未覆盖机制；旧5局+修复后单跑不合并成新5/5。
 
 ## 交接格式
 
@@ -129,3 +125,13 @@ node tools/source4-to-p1.mjs --bundle /ABS/NEW_BUNDLE --python /ABS/PYTHON_GE_3_
 - 跑了什么命令，结果数字（完整分母）；
 - 下一个真实卡点和复现命令；
 - 需要用户决定的事。
+
+## Codex 本轮限定收口（2026-10-16，最新）
+
+先完成Claude交付独审、T7一条修复/复验链、最小工作规则纠偏；不重开全平台重构。
+调查约30分钟，实现与短复验先用60–90分钟窗口；只有具体新证据才扩测试或提预算。
+T7首错已由ref5原件定位：snapshot已settling/no_action、map Read暂不可用令basis partial，Runtime投递后判断顺序错误。
+修复复用原生status和现有pull接口；50ms只调度读取，预算到期为中断，不产生ready。不要再按通用queue-empty推导ready，子选择可先于父Task结束。
+本轮T6保留原断言：原生常规类型名单可减，foreign formatter/delegate/effective patched getter仍有实质检查目标；先做窄修，不接受简单删断言方案。
+另发现轨迹工具未比较终局完整观察/胜负；先修这一验证缺口，再开展T1/T4大规模对照。96点旧ref轨迹本身无终局。
+ff6761fd CI的Linux失败是Python lint58；增量9089fb04已修lint和Managed active-entry引用，但最新Linux仍在mypy的5处失败，pytest未执行。后续不得沿用“只剩BOM”的旧诊断；并行Auto-fix更新须按实际head分开检查。
