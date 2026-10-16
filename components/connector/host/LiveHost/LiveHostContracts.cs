@@ -468,6 +468,8 @@ public sealed record VisibleMapNode(
 public sealed record MapLiveContext(
     string Kind,
     int ActIndex,
+    // Always written: null is the public fact "no node visited yet this act".
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     VisibleMapCoordinate? CurrentPosition,
     IReadOnlyList<VisibleMapCoordinate> Visited,
     IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext, IPlayerReadContent;
