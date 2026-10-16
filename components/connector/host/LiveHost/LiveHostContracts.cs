@@ -844,7 +844,17 @@ public sealed record VisibleReward(
     string Kind,
     string Label,
     string? Description,
-    bool Enabled);
+    bool Enabled)
+{
+    /// <summary>Public stable identity of this reward group (same alias owner as EntityId).</summary>
+    public string? GroupId { get; init; }
+
+    /// <summary>
+    /// Lawfully viewable candidates of an offered, already populated card reward.
+    /// Read without opening, populating, rerolling or marking content as seen.
+    /// </summary>
+    public IReadOnlyList<VisibleCard>? CardOptions { get; init; }
+}
 
 public sealed record CardRewardSelectionSurface(
     string Kind,

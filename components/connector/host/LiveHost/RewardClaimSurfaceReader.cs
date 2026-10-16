@@ -196,12 +196,20 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
                 ConnectorMod.SafeGetText(() => potion.DynamicDescription) ?? label,
             _ => label
         };
+        string rewardId = entities.GetId(reward, "reward");
+        IReadOnlyList<VisibleCard>? cardOptions = reward is CardReward { IsPopulated: true } cardReward
+            ? cardReward.Cards.Select(card => LiveContextReader.BuildCard(card, entities.GetId(card, "card"))).ToArray()
+            : null;
         return new VisibleReward(
-            entities.GetId(reward, "reward"),
+            rewardId,
             RewardKind(reward),
             label,
             description,
-            button.IsEnabled && claimable);
+            button.IsEnabled && claimable)
+        {
+            GroupId = rewardId,
+            CardOptions = cardOptions
+        };
     }
 
     private static VisibleCombatPotion BuildDiscardablePotion(

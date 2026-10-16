@@ -826,7 +826,14 @@ function currentSurface(state, ctx) {
             kind,
             label,
             description: reward.description ?? null,
-            enabled
+            enabled,
+            // Public stable group identity (alias of the private native reward ref).
+            group_id: ctx.entityId("reward_group", reward.native_ref),
+            // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
+            ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
+              ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
+                entity_id: ctx.entityId("card", card?.native_ref), ...cardProperties(card) }))
+              : null } : {})
           }
         });
         if (enabled) {

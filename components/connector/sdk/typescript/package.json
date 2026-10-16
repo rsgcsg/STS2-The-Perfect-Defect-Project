@@ -24,6 +24,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./p1-global": {
+      "types": "./dist/p1Global/index.d.ts",
+      "import": "./dist/p1Global/index.js"
     }
   },
   "scripts": {
