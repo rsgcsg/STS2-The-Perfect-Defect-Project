@@ -72,7 +72,7 @@ function supported(observation: P1Observation): string | null {
     return "unsupported_profile_revision";
   if (observation.scene.content_schema !== `sts2.player-environment/surface/${observation.scene.native_kind}-1`
       || (observation.scene.content as any)?.surface?.kind !== observation.scene.native_kind) return "unsupported_scene_schema_or_kind";
-  if (!observation.envelope.capture_complete) return "incomplete_capture";
+  if (!observation.envelope.required_information_complete) return "incomplete_required_information";
   if (!P1G_INFORMATION_SHAPES.includes(observation.scene.family)) return "unqualified_scene_information";
   if (observation.status === "unsupported") return "unsupported_observation";
   if (observation.status === "terminal") return observation.terminal?.outcome === "unknown" ? "unknown_terminal" : null;

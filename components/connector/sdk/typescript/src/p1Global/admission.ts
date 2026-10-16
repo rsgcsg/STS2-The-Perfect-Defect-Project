@@ -29,7 +29,7 @@ export function completeMap(value: unknown, actIndex: unknown): boolean {
   const key = (node: Record<string, unknown>) => `${node.col},${node.row}`;
   const nodes = value.nodes;
   if (!nodes.every(node => coordinate(node) && text(node.entity_id) && text(node.point_type)
-      && ["travelable", "untravelable", "traveled"].includes(String(node.state))
+      && text(node.state)
       && Array.isArray(node.children) && node.children.every(coordinate))) return false;
   const coordinates = new Set(nodes.map(key));
   if (coordinates.size !== nodes.length || new Set(nodes.map(node => node.entity_id)).size !== nodes.length) return false;
@@ -69,5 +69,11 @@ export function completeCombatSurface(value: unknown): boolean {
     && text(item.entity_id) && Array.isArray(item.target_entity_ids) && item.target_entity_ids.every(text));
   return isObject(value) && value.kind === "combat_turn" && typeof value.can_end_turn === "boolean"
     && commands(value.playable_cards) && commands(value.usable_potions)
-    && (value.discardable_potions === undefined || commands(value.discardable_potions));
+    // Native71cf uses VisibleCombatPotion here, not VisibleCombatCommandOption.
+    // Execute targets belong to authoritative bound_actions and usable_potions.
+    && (value.discardable_potions === undefined || Array.isArray(value.discardable_potions)
+      && value.discardable_potions.every(item => isObject(item) && text(item.entity_id) && text(item.definition_id)
+        && Number.isSafeInteger(item.slot) && text(item.target_type) && typeof item.can_use === "boolean"
+        && typeof item.automatic === "boolean" && ["name", "description"].every(key =>
+          item[key] === undefined || item[key] === null || typeof item[key] === "string")));
 }

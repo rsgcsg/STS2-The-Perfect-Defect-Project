@@ -88,7 +88,7 @@ describe("P1 r1.1 full-public graph comparison", () => {
   });
   it("refuses incomplete capture, unsupported revisions, invalid parts and unqualified forced input", () => {
     const a = observation();
-    for (const mutate of [(b: any) => { b.envelope.capture_complete = false; },
+    for (const mutate of [(b: any) => { b.envelope.required_information_complete = false; },
       (b: any) => { b.revision = "r1.0"; }, (b: any) => { b.map.content = { kind: "map" }; },
       (b: any) => { b.piles.availability = "unsupported"; }]) {
       const b = structuredClone(a); mutate(b); expect(compare(a, b).verdict).toBe("incomparable");

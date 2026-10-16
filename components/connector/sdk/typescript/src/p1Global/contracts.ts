@@ -42,8 +42,8 @@ export interface P1Envelope {
   readonly host_kind: HostKind;
   readonly source_snapshot_id: string;
   readonly source_sequence: number;
-  /** Producer-independent shared reducer admission result, never a native witness. */
-  readonly capture_complete: boolean;
+  /** Required public information passes structural admission; not joint native capture or qualification. */
+  readonly required_information_complete: boolean;
   /** Exact capture references; binding metadata removed by modelView. */
   readonly read_instances: readonly { readonly read_id: string; readonly kind: string; readonly target_referent_id: string | null }[];
 }

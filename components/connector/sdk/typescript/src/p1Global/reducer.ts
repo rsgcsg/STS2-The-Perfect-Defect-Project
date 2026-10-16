@@ -269,7 +269,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   if (interaction.content_schema !== `sts2.player-environment/surface/${nativeKind}-1`
       || interaction.content?.surface?.kind !== nativeKind) missing.push("required:scene:unsupported_schema_or_kind");
   if (snapshot.status === "interactive" && (snapshot.completeness?.status !== "complete"
-      || snapshot.bound_actions?.status !== "complete")) missing.push("required:native_catalog_and_capture_complete");
+      || snapshot.bound_actions?.status !== "complete")) missing.push("required:native_catalog_and_snapshot_complete");
 
   // Occurrence: the same frozen snapshot re-delivered is not a new decision point.
   const commitmentDigest = canonicalJson(state.reward ?? null);
@@ -497,7 +497,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const observation: P1Observation = {
     schema: P1G_OBSERVATION_SCHEMA, profile: P1G_PROFILE, revision: P1G_REVISION,
     envelope: { episode_id: state.episode_id, occurrence, host_kind: state.host_kind,
-      source_snapshot_id: String(snapshot.snapshot_id), source_sequence: Number(snapshot.sequence), capture_complete: false,
+      source_snapshot_id: String(snapshot.snapshot_id), source_sequence: Number(snapshot.sequence), required_information_complete: false,
       read_instances: readInstances.map(({ listed }) => ({ read_id: String(listed.read_id), kind: String(listed.kind),
         target_referent_id: listed.target_referent_id ?? null })) },
     status,
@@ -519,7 +519,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     aliases: work.aliases, alias_counts: work.counts, reward_pages: rewardPages, reward
   };
   const complete = missing.length === 0 || (status === "terminal" && missing.every((item) => item.startsWith("read:")));
-  return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, capture_complete: complete } },
+  return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, required_information_complete: complete } },
     lowering, forced_choice_id: forced, excluded, complete, missing };
 }
 

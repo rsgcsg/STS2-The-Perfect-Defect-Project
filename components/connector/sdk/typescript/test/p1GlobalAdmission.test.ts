@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, createSession, reduce, resolveFollow, type Lowering, type P1Basis } from "../src/p1Global/index.js";
+import { canonicalJson, completeCombatSurface, createSession, reduce, resolveFollow, type Lowering, type P1Basis } from "../src/p1Global/index.js";
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`./fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const project = (basis: P1Basis) => reduce(createSession("admission", "managed"), basis);
 const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis.snapshot.bound_actions.materialized_count = basis.snapshot.bound_actions.actions.length; };
@@ -13,7 +13,7 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
     expect(result.complete).toBe(true);
     expect(result.missing).toEqual([]);
     expect(result.observation.revision).toBe("r1.1");
-    expect(result.observation.envelope.capture_complete).toBe(true);
+    expect(result.observation.envelope.required_information_complete).toBe(true);
     expect(result.observation.envelope.read_instances).toHaveLength(3);
   });
   it.each(["run_deck", "combat_piles", "map"])("rejects required %s even when its descriptor was never advertised", kind => {
@@ -22,7 +22,7 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
     b.reads = b.reads.filter((item: any) => item.kind !== kind);
     const r = project(b);
     expect(r.complete).toBe(false);
-    expect(r.observation.envelope.capture_complete).toBe(false);
+    expect(r.observation.envelope.required_information_complete).toBe(false);
   });
   it.each(["nodes", "visited", "current_position", "act_index"])("rejects missing map field %s despite complete read envelope", key => {
     const b = fixture("synthetic-complete-combat"); delete read(b, "map").content[key];
@@ -51,6 +51,36 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
   it("retains strict codec rejection of null owning content", () => {
     const b = fixture("synthetic-complete-combat"); b.snapshot.interaction.content.context = null;
     expect(() => project(b)).toThrow(/strict decoding/u);
+  });
+  it("accepts the actual native71cf serialized discard DTO without invented targets", () => {
+    // Existing71cf STS2_MCP.dll, actual CombatPotionDiscardTests.Surface(0) constructor,
+    // serialized with System.Text.Json SnakeCaseLower. Assembly SHA d822df953b2bf37cdf0a95aa7bf89075c41a55f8314c4bc55132c996643c4207.
+    const surface = fixture("reference-71cf-serialized-discard-surface");
+    expect(surface.discardable_potions[0]).not.toHaveProperty("target_entity_ids");
+    expect(completeCombatSurface(surface)).toBe(true);
+    for (const [key, invalid] of [["slot", 0.5], ["target_type", null], ["can_use", "false"], ["automatic", 1]]) {
+      const changed = structuredClone(surface); changed.discardable_potions[0][key as string] = invalid;
+      expect(completeCombatSurface(changed)).toBe(false);
+    }
+    const b = fixture("synthetic-complete-combat"); b.snapshot.interaction.content.surface = surface;
+    const potion = surface.discardable_potions[0];
+    b.snapshot.persistent.content.player.potions.push({ ...potion, keywords: [], card_previews: [] });
+    b.snapshot.interaction.content.context.player.potion_states.push({ entity_id: potion.entity_id, target_type: potion.target_type,
+      can_use: potion.can_use, automatic: potion.automatic });
+    b.snapshot.referents.push({ referent_id: potion.entity_id, role: "discardable_potion", kind: "entity", label: potion.name,
+      state: { visible: true, observation_basis: "native_visible_fact" },
+      properties_schema: "sts2.player-environment/referent/discardable_potion-1", properties: potion });
+    b.snapshot.bound_actions.actions = [{ ...b.snapshot.bound_actions.actions[0], bound_action_id: "action_native_discard", verb: "activate",
+      subject_referent_id: potion.entity_id, arguments: [] }]; count(b);
+    const r = project(b); expect(r.complete).toBe(true);
+    expect(r.observation.catalog[0]!.kind).toBe("potion.discard");
+    expect(r.observation.catalog[0]!.subject).toBe((r.observation.player.content as any).potions[0].entity_id);
+    expect(r.lowering[r.observation.catalog[0]!.choice_id]!.first!.bound_action_id).toBe("action_native_discard");
+  });
+  it("preserves native map state text including None without inventing legality", () => {
+    const b = fixture("synthetic-complete-combat"); read(b, "map").content.nodes[0].state = "none";
+    const r = project(b); expect(r.complete).toBe(true);
+    expect((r.observation.map.content as any).nodes[0].state).toBe("none");
   });
   it("preserves all Read instances and rejects ambiguous aggregate multiplicity", () => {
     const b = fixture("synthetic-complete-combat");
