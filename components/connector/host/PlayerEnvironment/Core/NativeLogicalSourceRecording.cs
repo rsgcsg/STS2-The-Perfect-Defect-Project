@@ -23,8 +23,6 @@ public sealed record NativeLogicalSourceBasisMapping(string MappingStatus, int M
 public sealed record NativeLogicalSourceNativeFacts(string Origin, string? OwnerRef, string? SubjectRef,
     IReadOnlyDictionary<string, string> Arguments);
 public sealed record NativeLogicalSourceCarrier(string Kind, string CarrierRef);
-public sealed record NativeLogicalSourceStage(string Kind, string OwnerRef, string SubjectRef,
-    IReadOnlyDictionary<string, string> Arguments, string Evidence, bool? NoSubmission);
 public sealed record NativeLogicalSourceInputTerminal(string Delivery, string? Reason, IReadOnlyList<NativeLogicalInputStage> Stages);
 
 /// <summary>Passive typed sink. Prefix and native metadata callbacks must perform no I/O or native input.</summary>

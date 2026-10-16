@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
+using MethodInfo = System.Reflection.MethodInfo;
+using PropertyInfo = System.Reflection.PropertyInfo;
 using System.Runtime.CompilerServices;
 using Godot;
 using MegaCrit.Sts2.Core.Assets;

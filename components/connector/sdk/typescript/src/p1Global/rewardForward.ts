@@ -21,7 +21,7 @@ export function completeRewardGroup(group: unknown): group is Record<string, any
     || typeof group.label !== "string" || typeof group.enabled !== "boolean"
     || group.group_relation !== "independent") return false;
   return group.kind !== "card" || completeCards(group.card_options)
-    && ["attached", "absent"].includes(group.native_relic_refresh_subscription)
+    && (group.native_relic_refresh_subscription === "attached" || group.native_relic_refresh_subscription === "absent")
     && group.card_alternatives_complete === true && completeRewardAlternatives(group.card_alternatives)
     && typeof group.can_skip_selection === "boolean" && typeof group.can_reroll === "boolean"
     && typeof group.selection_completes_reward === "boolean";

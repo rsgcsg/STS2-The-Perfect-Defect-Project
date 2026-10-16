@@ -13,6 +13,21 @@ const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'str
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
 
 describe('P1 current public identity and HUD projection', () => {
+  it('refuses complete P1 admission until enriched card display/parent identities have a declared projection', () => {
+    const b = basis(), card = hud(b).player.hand[0], id = 'new-public-detail';
+    const listed = { ...b.snapshot.reads[0], read_id: id, kind: 'surface_card', target_referent_id: card.entity_id,
+      content_schema: 'sts2.player-environment/read/surface_card-1' };
+    b.snapshot.reads.push(listed);
+    b.reads.push({ read_id: id, kind: 'surface_card', error: null, response: { ...b.reads[0].response,
+      read_id: id, kind: listed.kind, target_referent_id: card.entity_id, content_schema: listed.content_schema,
+      content: { ...card, public_details_revision: '1', display_context: 'hand', parent_read_id: null,
+        display_owner_entity_id: hud(b).player.player_entity_id, keywords: [], card_previews: [] } } });
+    const before = JSON.stringify(b), r = project(b);
+    const renamed = project(rename(b, hud(b).player.player_entity_id, 'different-private-owner-spelling'));
+    expect(input(r) === input(renamed) || !r.complete && !renamed.complete).toBe(true);
+    expect(r.complete).toBe(false); expect(r.missing).toContain('required:public_card_display_identity_projection');
+    expect(JSON.stringify(b)).toBe(before);
+  });
   it('native numeric counter and opaque token spelling do not change model input', () => {
     const a = basis(); let b = basis(); hud(b).enemies[0].combat_id = 4_000_001;
     b = rename(b, hud(b).enemies[0].entity_id, 'opaque_different_private_counter_919191');

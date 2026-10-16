@@ -120,8 +120,12 @@ for (const field of [...sealed.capture_fields, ...sealed.chunk_fields, ...sealed
   requireIn(sealedSdk, `${field}:`, "sealed strict wire field");
 requireIn(sealedService, "FreezePublicTextMenuV2(ObserveTextMenuV2Context(), ConnectorMod._jsonOptions)",
   "sealed synchronous capture and freeze");
-requireIn(sealedTransport, "RunOnMainThread(() => PlayerEnvironmentService.ReadCurrentSealedObservation(expected))",
-  "sealed capture game-thread dispatch");
+requireIn(sealedTransport, `RunOnMainThread(() => format switch
+                    {
+                        SealedPublicFormat.LegacyP1C1 => PlayerEnvironmentService.ReadCurrentP1Capture(expected),
+                        SealedPublicFormat.PublicBasis => PlayerEnvironmentService.ReadCurrentPublicBasis(expected),
+                        _ => PlayerEnvironmentService.ReadCurrentSealedObservation(expected)
+                    })`, "all sealed capture formats stay inside game-thread dispatch");
 requireIn(sealedService, "JsonSerializer.Serialize(stream, context.Snapshot, options)", "sealed public Snapshot only");
 requireIn(client, "getFullTextMenuV2", "sealed full acquisition SDK");
 requireIn(sealedSdk, "decodeTextMenuV2Snapshot(JSON.parse(serializedSnapshot))", "sealed strict inner schema");

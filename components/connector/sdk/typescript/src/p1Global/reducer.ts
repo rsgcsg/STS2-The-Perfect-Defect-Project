@@ -356,6 +356,12 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const extraReadSources = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
     .map(({ listed, read }) => ({ kind: String(listed.kind), availability: (read ? "available" : "unknown") as Availability,
       content: read?.content ?? null }));
+  // The new native detail inventory preserves display/parent identities in its
+  // source bytes. Its P1 identity projection is a separate unfinished seam;
+  // do not send those currently literal metadata IDs as a complete Agent view.
+  if (extraReadSources.some(read => read.kind === "surface_card" && isObject(read.content)
+      && Object.hasOwn(read.content, "public_details_revision")))
+    missing.push("required:public_card_display_identity_projection");
   const policy = createPublicIdentityPolicy(nativeKind, extraReadSources);
   const rawFacts = {
     player: { content: persistent?.player }, run: { content: persistent?.run },

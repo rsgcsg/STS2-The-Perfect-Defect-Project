@@ -6,7 +6,13 @@
       "version_file": "component.json",
       "contract_paths": [
         "src/NativeDecisionContracts.cs",
-        "src/NativeActionLifecycleObserver.cs"
+        "src/NativeActionLifecycleObserver.cs",
+        "src/NativeSourceInputProvider.cs",
+        "src/NativePublicCardDetails.cs",
+        "src/NativeDetachedCardPreview.cs",
+        "src/NativeCardRewardSelectionObservation.cs",
+        "src/NativeCardRewardAlternativePreview.cs",
+        "src/NativeMapReadProjection.cs"
       ]
     },
     "connector": {
@@ -35,7 +41,13 @@
         "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs",
         "sdk/typescript/src/p1Capture.ts",
         "host/PlayerEnvironment/Protocol/P1CaptureContracts.cs",
-        "docs/P1_ATOMIC_CAPTURE_C1.md"
+        "docs/P1_ATOMIC_CAPTURE_C1.md",
+        "sdk/typescript/src/publicBasis.ts",
+        "sdk/typescript/src/publicCombat.ts",
+        "sdk/typescript/src/p1Global",
+        "host/PlayerEnvironment/Protocol/PublicBasisContracts.cs",
+        "host/PlayerEnvironment/Core/NativeLogicalSourceRecording.cs",
+        "host/PlayerEnvironment/NativeLogical/NativeLogicalSourceStage.cs"
       ]
     },
     "host-runtime": {
@@ -49,7 +61,9 @@
         "src/game-processes.mjs",
         "src/shipped-player-environment.mjs",
         "src/native-episode-tuple.mjs",
-        "tools/reference-pe-driver.mjs"
+        "tools/reference-pe-driver.mjs",
+        "src/managed-host-service.mjs",
+        "src/managed-player-environment.mjs"
       ]
     },
     "annotator": {
@@ -80,7 +94,10 @@
         "src/server.ts",
         "src/agent-session-contracts.ts",
         "docs/AGENT_SESSION_PROTOCOL.md",
-        "contracts/fixtures/sampled-current-carry-v1.json"
+        "contracts/fixtures/sampled-current-carry-v1.json",
+        "src/global-program.ts",
+        "src/global-transport.ts",
+        "src/global-replay.ts"
       ]
     },
     "workbench": {
