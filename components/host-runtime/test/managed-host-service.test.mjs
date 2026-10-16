@@ -116,7 +116,7 @@ test("two attached clients see one Managed runtime, owner menu and explicit Host
     assert.equal(first.body.text_protocol_version, SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL);
     assert.deepEqual(first.body.text_menu_contracts,
       [managedTextMenuV1Contract(), managedTextMenuV2Contract()]);
-    assert.deepEqual(first.body.text_menu_contracts.map((item) => item.input_profile),
+    assert.deepEqual([...first.body.text_menu_contracts.map((item) => item.input_profile), "public-basis-1"],
       first.body.supported_input_profiles);
     assert.equal(first.body.episode.game_continuity_id, null);
     assert.equal(JSON.stringify(first.body).includes(service.clientToken), false);
@@ -455,7 +455,7 @@ test("loopback bearer, Host/Origin and command scope fail closed without token e
     assert.equal((await command(service, service.clientToken,
       { command: "close" })).status, 403);
     assert.equal((await command(service, service.clientToken,
-      { command: "step" })).status, 403);
+      { command: "step" })).status, 428);
     assert.equal((await call(service, service.clientToken, "/v1/admin/close",
       { request_id: "unauthorized-close" })).status, 403);
     const wrongService = await fetch(`${service.endpoint}/v1/command`, {
@@ -481,4 +481,26 @@ test("loopback bearer, Host/Origin and command scope fail closed without token e
   } finally {
     await service.close();
   }
+});
+
+
+test("neutral capture works with no Agent or control and materializes one stored actor projection", async () => {
+  const native = fixture(); const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    await reset(service);
+    const ready = await call(service, service.clientToken, "/v1/ready");
+    const before = native.calls.length;
+    const captured = await command(service, service.clientToken, { command: "capture",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: ready.body.episode.game_continuity_id });
+    assert.equal(captured.status, 200); assert.equal(native.calls.length, before, "capture makes no native request or refresh");
+    const full = captured.body.result.full;
+    const { verifyPublicBasis } = await import("@rsgcsg/sts2-connector-client");
+    const verified = await verifyPublicBasis(full.capture, full.serializedObservation);
+    assert.deepEqual(verified.basis, full.basis);
+    assert.equal(verified.basis.reads.length, verified.basis.snapshot.reads.length);
+    assert.equal(service.driver.status().control_held, false);
+    assert.equal(JSON.stringify(full).includes(service.clientToken), false);
+    assert.equal((await command(service, service.clientToken, { command: "capture", expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: "stale" })).status, 409);
+  } finally { await service.close(); }
 });

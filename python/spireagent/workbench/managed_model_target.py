@@ -25,13 +25,14 @@ BUILD_FIELDS = ("upstream_revision", "source_patch_sha256", "artifact_sha256",
 
 
 def managed_manifest(manifest: dict[str, Any]) -> bool:
-    return bool(manifest.get("requirements", {}).get("environment", {}).get("kind") == KIND)
+    environment = manifest.get("requirements", {}).get("environment", {})
+    return bool(environment.get("kind") == KIND or (environment.get("kind") == "global-public-basis" and environment.get("host_kind") == "managed"))
 
 
 def public_binding(target: dict[str, Any]) -> dict[str, Any]:
     """Copy only public identity fields; credentials and local paths stay private."""
     try:
-        if target["input_profile"] != "text-menu-v2" or any(
+        if target["input_profile"] not in {"text-menu-v2", "public-basis-1"} or any(
             not isinstance(target[key], str) or not target[key] for key in TARGET_FIELDS
         ):
             raise ValueError

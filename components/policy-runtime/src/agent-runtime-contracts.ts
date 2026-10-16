@@ -19,7 +19,7 @@ export interface AgentRuntimeStatus {
   tainted: boolean; taint_reason: string | null; refreshing: boolean;
   environment: RuntimeStatus["environment"];
   session: {
-    session_id: string; recovery_epoch: number; profile: "native-logical-v1";
+    session_id: string; recovery_epoch: number; profile: "native-logical-v1" | "p1-global-r1";
     input_spec: AgentInputSpec; stream_generation: string | null;
     continuity_token: string; state_version: number; consumption_id: string | null;
     prefix: AgentPrefix; agent_state: "known" | "uncertain";

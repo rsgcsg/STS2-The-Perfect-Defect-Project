@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +9,8 @@ import { readRecord } from "../src/p1-global/recorder.js";
 
 const sdkFixture = (name: string) => JSON.parse(readFileSync(new URL(
   `../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8")) as { snapshot: any; reads: any[] };
-const fakeHostRoot = new URL("./fixtures/p1-global-fake-host/", import.meta.url).pathname;
-const firstAgent = new URL("../examples/p1/first_agent.mjs", import.meta.url).pathname;
+const fakeHostRoot = fileURLToPath(new URL("./fixtures/p1-global-fake-host/", import.meta.url));
+const firstAgent = fileURLToPath(new URL("../examples/p1/first_agent.mjs", import.meta.url));
 
 function scenario(steps: unknown[], observe: unknown[] = [], withMap = true) {
   // Synthetic complete map capture for protocol lifecycle checks; not native capture evidence.
