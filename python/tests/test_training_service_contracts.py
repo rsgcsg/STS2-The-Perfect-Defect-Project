@@ -517,7 +517,9 @@ def test_cancel_ack_safe_checkpoint_and_explicit_resume(tmp_path, monkeypatch, r
         fixture_cleanup_diagnostic(service, owner, phases, observer, pytest_request)
 
 
-def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monkeypatch, request):
+@pytest.mark.parametrize("fixture_target", ["terminal_hold", "preterminal_hold"])
+def test_original_cancel_clock_stops_fixture_held_child_without_completion(
+        tmp_path, monkeypatch, request, fixture_target):
     pytest_request = request
     service, request, owner, store = ready(tmp_path, monkeypatch)
     entered, released = threading.Event(), threading.Event()
@@ -533,14 +535,52 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
             assert released.wait(3)
         callback(raw)
 
+    # The terminal variant uses a test-owned domain control, not parent cancel,
+    # to prepare a real cancelled Result/main return while the OS writer is held.
+    # The other variant holds before terminal. Neither mutes the original clock.
     checkpoint_child(monkeypatch, on_line=message, phases=phases, diagnose_exit=True,
-                     cancel_exit="hold", processes=processes)
+                     cancel_exit="hold", processes=processes, fixture_target=fixture_target)
     try:
+        preparation_deadline = time.monotonic() + 15
         started = service.start(request)["operation"]
-        assert entered.wait(15)
+        assert entered.wait(max(0, preparation_deadline - time.monotonic()))
         assert observer.binding["operation_id"] == started["operation_id"]
         assert observer.binding["attempt_id"] == started["attempt_id"]
         assert observer.binding["run_id"] == service.status()["operation"]["run_id"]
+        released.set()
+        trace = owner.path.parent / ("fixture-checkpoint-" + started["attempt_id"] + ".jsonl")
+        hold_phase = ("shutdown_hold_entered" if fixture_target == "terminal_hold"
+                      else "preterminal_hold_entered")
+        while True:
+            raw = trace.read_bytes()
+            records = [json.loads(line) for line in raw.splitlines()] if raw.endswith(b"\n") else []
+            target_ready = hold_phase in {row["phase"] for row in records}
+            if fixture_target == "terminal_hold":
+                target_ready = target_ready and any("callback_completed_at" in row
+                                                    for row in phases.get("terminals", []))
+            if target_ready:
+                break
+            assert service._thread.is_alive(), "fixture target exited before preparation"
+            assert time.monotonic() < preparation_deadline, "fixture target was not established"
+            threading.Event().wait(0.005)
+        assert all((row["operation_id"], row["attempt_id"], row["pid"], row["ppid"]) == (
+            started["operation_id"], started["attempt_id"], observer.binding["pid"],
+            observer.binding["ppid"]) for row in records)
+        if fixture_target == "terminal_hold":
+            assert next(row for row in records if row["phase"] == "main_return")["exit_code"] == 0
+            assert next(row for row in records if row["phase"] == "terminal_emitted")[
+                "state"] == "cancelled"
+            assert next(row for row in records if row["phase"] == "fixture_domain_cancel")[
+                "parent_requested_action"] == "continue"
+            assert len(phases["terminals"]) == 1
+            assert phases["terminals"][0]["attempt_id"] == started["attempt_id"]
+            assert phases["terminals"][0]["state"] == "cancelled"
+        prepared = service.status()["operation"]
+        assert prepared["status"] == "pending" and prepared["worker_state"] == "running"
+        assert prepared["requested_action"] == "continue" and "child_exit" not in prepared
+        assert service._cancel_requested_monotonic is None
+        assert observer.observe("fixture_target_before_cancel")["terminated"] is False
+        phases["fixture_target_ready_at"] = time.monotonic()
         ack = service.cancel(started["operation_id"], started["attempt_id"])["operation"]
         phases["cancel_requested_at"] = service._cancel_requested_monotonic
         assert ack["status"] == "pending" and ack["requested_action"] == "cancel"
@@ -548,26 +588,39 @@ def test_cancelled_terminal_and_main_return_do_not_prove_os_exit(tmp_path, monke
         stopped = settle(service)
         worker_exit = observer.observe("post_sut_stop_before_fixture_cleanup")
         diagnostic = cancellation_diagnostic(service, owner, stopped, phases)
-        trace = owner.path.parent / ("fixture-checkpoint-" + started["attempt_id"] + ".jsonl")
         records = [json.loads(line) for line in trace.read_bytes().splitlines()]
         assert all(row["operation_id"] == started["operation_id"] and
                    row["attempt_id"] == started["attempt_id"] for row in records), diagnostic
-        returned = next(row for row in records if row["phase"] == "main_return")
-        held = next(row for row in records if row["phase"] == "shutdown_hold_entered")
-        terminal = next(row for row in records if row["phase"] == "terminal_emitted")
+        held = next(row for row in records if row["phase"] == hold_phase)
         killed = next(row for row in phases["process_observations"]
                       if row["phase"] == "kill_entered")
         assert worker_exit["bound"] is True, diagnostic
         assert len(processes) == 1 and killed["pid"] == processes[0].pid, diagnostic
-        assert returned["pid"] == held["pid"] == observer.binding["pid"], diagnostic
-        assert returned["ppid"] == held["ppid"] == observer.binding["ppid"], diagnostic
+        assert held["pid"] == observer.binding["pid"], diagnostic
+        assert held["ppid"] == observer.binding["ppid"], diagnostic
         assert all(row.get("pid") == observer.binding["pid"] and
                    row.get("ppid") == observer.binding["ppid"] for row in records), diagnostic
         assert killed["operation_id"] == started["operation_id"]
         assert killed["attempt_id"] == started["attempt_id"]
-        assert terminal["state"] == "cancelled" and returned["exit_code"] == 0, diagnostic
-        assert returned["observed_at"] <= held["observed_at"] <= killed["observed_at"]
-        assert phases["terminals"][0]["callback_completed_at"] <= killed["observed_at"]
+        assert held["observed_at"] <= phases["fixture_target_ready_at"] <= phases[
+            "cancel_requested_at"] <= killed["observed_at"]
+        if fixture_target == "terminal_hold":
+            returned = next(row for row in records if row["phase"] == "main_return")
+            terminal = next(row for row in records if row["phase"] == "terminal_emitted")
+            domain_cancel = next(row for row in records if row["phase"] == "fixture_domain_cancel")
+            assert domain_cancel["parent_requested_action"] == "continue", diagnostic
+            assert returned["pid"] == held["pid"] and returned["ppid"] == held["ppid"]
+            assert terminal["state"] == "cancelled" and returned["exit_code"] == 0, diagnostic
+            assert domain_cancel["observed_at"] <= terminal["observed_at"] <= returned[
+                "observed_at"] <= held["observed_at"]
+            assert len(phases["terminals"]) == 1
+            assert phases["terminals"][0]["callback_completed_at"] <= phases[
+                "fixture_target_ready_at"]
+        else:
+            assert held["parent_requested_action"] == "continue", diagnostic
+            assert not {"terminal_emitted", "main_return", "shutdown_hold_entered",
+                        "fixture_domain_cancel"} & {row["phase"] for row in records}, diagnostic
+            assert not phases.get("terminals"), diagnostic
         assert killed["observed_at"] - phases["cancel_requested_at"] >= 1.0
         assert stopped["status"] == "interrupted_unknown", diagnostic
         assert stopped["child_exit"]["forced"] is True
@@ -762,9 +815,11 @@ if (_fixture_main_code == 0 and _fixture_terminal ==
 
 def checkpoint_child(monkeypatch, *, on_line, phases, allow_advance=False,
                      expected_action="cancel", diagnose_exit=False,
-                     cancel_exit=None, processes=None):
+                     cancel_exit=None, processes=None, fixture_target=None):
     assert expected_action in {"cancel", "pause"}
     assert cancel_exit is None or expected_action == "cancel" and not allow_advance
+    assert fixture_target in {None, "terminal_hold", "preterminal_hold"}
+    assert fixture_target is None or diagnose_exit and cancel_exit == "hold"
     # Parent notification does not hold the actual child at a numerical boundary.
     # Gate this fixture's first checkpoint on the existing exact journal control;
     # production publication, control polling and process exit stay authoritative.
@@ -779,6 +834,7 @@ original_advance = StructuredTrainingEngine.advance_chunk
 original_channel_emit = child.ChildChannel.emit
 first = None
 expected_action = EXPECTED_ACTION
+fixture_target = FIXTURE_TARGET
 
 def record(phase, **details):
     fence = first['fence']
@@ -818,7 +874,12 @@ def emit(self, event):
                  'run_id': current['run_id']}
         record('checkpoint_emitted', sequence=self.channel.sequence,
                requested_action=current['requested_action'])
-        if not ALLOW_ADVANCE:
+        if fixture_target == 'preterminal_hold':
+            record('preterminal_hold_entered',
+                   parent_requested_action=first['fence'].requested_action())
+            while True:
+                time.sleep(0.05)  # Real parent cancel must stop us before terminal/main.
+        if not ALLOW_ADVANCE and fixture_target is None:
             await_control()
     return identity
 
@@ -838,9 +899,31 @@ def channel_emit(self, kind, **details):
 
 child.ChildReporter.emit = emit
 child.ChildChannel.emit = channel_emit
+if fixture_target == 'terminal_hold':
+    from stpd.workers import structured_execution as fixture_execution
+    original_execute = fixture_execution.execute_structured_workload
+
+    class FixtureDomainCancellation:
+        # Separate domain input prepares this lifecycle fixture before parent
+        # cancel. Authority/publication and the real engine Result stay original.
+        def __init__(self, parent_control):
+            self.parent_control = parent_control
+
+        def requested_action(self):
+            parent_action = self.parent_control.requested_action()
+            assert parent_action == 'continue'
+            record('fixture_domain_cancel', parent_requested_action=parent_action)
+            return 'cancel'
+
+    def fixture_execute(*args, **kwargs):
+        kwargs['control'] = FixtureDomainCancellation(kwargs['control'])
+        return original_execute(*args, **kwargs)
+
+    fixture_execution.execute_structured_workload = fixture_execute
 if ALLOW_ADVANCE:
     StructuredTrainingEngine.advance_chunk = advance
-""".replace("ALLOW_ADVANCE", repr(allow_advance)).replace("EXPECTED_ACTION", repr(expected_action))
+""".replace("ALLOW_ADVANCE", repr(allow_advance)).replace(
+        "EXPECTED_ACTION", repr(expected_action)).replace("FIXTURE_TARGET", repr(fixture_target))
     return child_script(monkeypatch, body, on_line=on_line, phases=phases,
                         diagnose_exit=diagnose_exit, cancel_exit=cancel_exit,
                         processes=processes)
