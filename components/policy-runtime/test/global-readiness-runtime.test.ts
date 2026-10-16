@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { GlobalHttpFixture, globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 
@@ -32,6 +34,48 @@ const within = <T>(promise: Promise<T>) => Promise.race([promise, new Promise<ne
 })]);
 
 describe("GLOBAL waits for native readiness, not incomplete-capture grace", () => {
+  it.each(["stop", "budget"])("%s preserves capture response ordering when cancellation overtakes its evidence write", async reason => {
+    const source = new GlobalHttpFixture(), writing = gate(), finishWrite = gate(), released = gate(), captureSettled = gate(), exhausted = gate();
+    source.nextBases = [noInput(source, true)]; source.releaseObserved = released.release;
+    const f = await globalRuntimeFixture({ source, budgetMs: 1000 });
+    const store = f.evidence.storeGlobalArtifact.bind(f.evidence), capture = f.transport.capture.bind(f.transport), append = f.evidence.append.bind(f.evidence);
+    f.evidence.append = async (...args) => {
+      await append(...args);
+      if (args[0] === "autonomy_budget_exhausted") exhausted.release();
+    };
+    let original: Buffer | undefined;
+    f.evidence.storeGlobalArtifact = async (role, bytes) => {
+      if (role === "response" && source.steps && !original
+        && JSON.parse(Buffer.from(bytes).toString("utf8")).schema === "sts2.player-environment/public-basis-handle-1") {
+        original = Buffer.from(bytes); writing.release(); await finishWrite.promise;
+      }
+      return store(role, bytes);
+    };
+    f.transport.capture = async options => {
+      try { return await capture(options); }
+      finally { if (source.steps) captureSettled.release(); }
+    };
+    try {
+      const tick = f.runtime.tick(); await within(writing.promise);
+      const stopping = reason === "stop" ? f.runtime.stop() : undefined;
+      // Expiry/Stop releases real control even while original response storage
+      // is blocked. The SDK has cancelled the capture, but its hook still runs.
+      await within(released.promise); await within(captureSettled.promise);
+      expect(source.controlHeld).toBe(false);
+      finishWrite.release(); await within(tick); if (stopping) await within(stopping);
+      if (reason === "budget") await within(exhausted.promise);
+      expect(source.steps).toBe(1); expect(source.releases).toBe(1); expect(source.controlHeld).toBe(false);
+      await f.runtime.stop();
+      const events = await f.events(), error = events.find(e => e.kind === "global_capture_error");
+      const response = events.find(e => e.kind === "global_transport_response" && e.payload.capture_request_id === error.payload.request_id);
+      expect(await readFile(join(f.evidence.directory, response.payload.artifact.path))).toEqual(original);
+      expect(events.find(e => e.kind === "global_result").payload.result).toMatchObject({
+        status: "interrupted_known", steps: [{ delivery: "delivered" }], commitment_delta: null
+      });
+      expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(false);
+      expect(response.sequence).toBeLessThan(error.sequence);
+    } finally { finishWrite.release(); await f.close(); }
+  });
   it.each([false, true])("keeps one delivered operation pending through native settling (partial=%s)", async partial => {
     const source = new GlobalHttpFixture(), transient = noInput(source, partial), ready = terminal(source);
     let postCaptures = 0; source.nextBases = [transient];

@@ -1275,11 +1275,23 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const captureRequestId = `capture-request-${randomUUID()}`;
     await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
     try {
-    const full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
-      onResponseBytes: async bytes => {
-        const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
-        await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
-      } });
+    let responseWrite = Promise.resolve();
+    let full: FullPublicBasis;
+    try {
+      full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
+        onResponseBytes: bytes => {
+          responseWrite = (async () => {
+            const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
+            await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
+          })();
+          return responseWrite;
+        } });
+    } finally {
+      // Transport cancellation may overtake its bounded response hook. Finish
+      // our original-byte accounting before closing this capture request; the
+      // lifecycle owner releases control independently of this durable write.
+      await responseWrite;
+    }
     const artifact = await this.options.evidence.storeGlobalArtifact("source", Buffer.from(serializePublicBasisRecord(full), "utf8"));
     const ordinal = ++this.globalSourceOrdinal;
     await this.emitGlobal("global_source", { ordinal, artifact, capture_request_id: captureRequestId });
