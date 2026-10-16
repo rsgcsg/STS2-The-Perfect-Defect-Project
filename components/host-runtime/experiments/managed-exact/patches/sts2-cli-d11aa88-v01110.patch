@@ -1672,7 +1672,7 @@ index 0000000..b23c7bd
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..26051c2
+index 0000000..2db0b51
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
 @@ -0,0 +1,149 @@
@@ -1784,7 +1784,7 @@ index 0000000..26051c2
 +                && CombatManager.Instance.IsPartOfPlayerTurn(player) && !CombatManager.Instance.PlayerActionsDisabled,
 +            ["round"]=combat.RoundNumber,["turn_owner"]=combat.CurrentSide.ToString().ToLowerInvariant(),
 +            ["player_ref"]=NativeObjectIdentity.Get(player),["hp"]=player.Creature.CurrentHp,["max_hp"]=player.Creature.MaxHp,
-+            ["block"]=player.Creature.Block,["energy"]=pcs.Energy,["max_energy"]=pcs.MaxEnergy,["stars"]=pcs.Stars,
++            ["block"]=player.Creature.Block,["energy"]=pcs.Energy,["max_energy"]=pcs.MaxEnergy,["stars"]=player.Character.ShouldAlwaysShowStarCounter || pcs.Stars > 0 ? pcs.Stars : null,
 +            ["draw_pile_count"]=pcs.DrawPile.Cards.Count,["discard_pile_count"]=pcs.DiscardPile.Cards.Count,
 +            ["exhaust_pile_count"]=pcs.ExhaustPile.Cards.Count,["statuses"]=Statuses(player.Creature),["enemies"]=enemies,
 +            ["hand"]=hand.Select(card => Card(card, PileType.Hand, true)).ToArray(),

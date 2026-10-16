@@ -229,13 +229,13 @@ function combatDecision() {
     type: "decision", decision: "combat_play", context: { ...mapDecision().context, floor: 2, total_floor: 2, room_type: "Combat" },
     encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1, combat_hud_complete: true,
     potion_states: [{native_ref:"native-potion-fire",target_type:"AnyEnemy",can_use:true,automatic:false}],
-    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
+    energy: 3, max_energy: 3, stars: null, draw_pile_count: 0, discard_pile_count: 0, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{ index: 0, native_ref: "native-card-strike", valid_target_refs: ["native-enemy-a"],
       id: "CARD.STRIKE_IRONCLAD", name: "Strike", can_play: true, target_type: "AnyEnemy",
       type: "Attack", rarity: "Basic", cost: 1 }],
     enemies: [{ index: 0, native_ref: "native-enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
       health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
-    player: { ...mapDecision().player, native_ref: "native-player", potions: [{
+    player: { ...mapDecision().player, block: 0, native_ref: "native-player", potions: [{
       slot: 0, native_ref: "native-potion-fire", id: "POTION.FIRE", name: "Fire Potion",
       target_type: "AnyEnemy", can_use: true, can_discard: true, binding_supported: true,
       valid_target_refs: ["native-enemy-a"], hover_facts_complete: true, keywords: [], card_previews: []

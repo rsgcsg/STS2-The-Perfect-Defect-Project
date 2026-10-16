@@ -565,6 +565,11 @@ function canonicalHealthComplete(creature) {
 }
 function canonicalHudComplete(hud) {
   return plainObject(hud) && typeof hud.encounter_type === "string" && typeof hud.is_play_phase === "boolean"
+    && Number.isSafeInteger(hud.round) && hud.round >= 1 && typeof hud.turn_owner === "string" && hud.turn_owner.length > 0
+    && ["energy", "max_energy", "orb_slots"].every(key => Number.isSafeInteger(hud[key]))
+    && ["draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key => Number.isSafeInteger(hud[key]) && hud[key] >= 0)
+    && (hud.stars === null || Number.isSafeInteger(hud.stars))
+    && Number.isFinite(plainObject(hud.player) ? hud.player.block : hud.block)
     && Array.isArray(hud.potion_states) && hud.potion_states.every((potion) => typeof potion.native_ref === "string"
       && typeof potion.target_type === "string" && typeof potion.can_use === "boolean" && typeof potion.automatic === "boolean")
     && Array.isArray(hud.orbs) && hud.orbs.every((orb, index) => typeof orb.native_ref === "string"
@@ -1384,7 +1389,7 @@ function currentSurface(state, ctx) {
         text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
       const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
-        && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+        && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
         && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
           && card.render_complete === true && cardComplete(card))
@@ -1629,9 +1634,9 @@ function currentSurface(state, ctx) {
         max_energy: state.max_energy,
         stars: state.stars,
         hand: handEntries.map((entry) => entry.card),
-        draw_pile_count: state.draw_pile_count ?? 0,
-        discard_pile_count: state.discard_pile_count ?? 0,
-        exhaust_pile_count: state.exhaust_pile_count ?? 0,
+        draw_pile_count: state.draw_pile_count,
+        discard_pile_count: state.discard_pile_count,
+        exhaust_pile_count: state.exhaust_pile_count,
         statuses: (state.player_statuses ?? []).map(visibleStatus),
         companions: (state.companions ?? []).map((pet) => visibleCompanion(pet, ctx)),
         potion_states: (state.potion_states ?? []).map((potion) => ({

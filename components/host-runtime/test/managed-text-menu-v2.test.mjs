@@ -19,7 +19,7 @@ function combatDecision({ enemies = 2, hand = null } = {}) {
       act_name: "Overgrowth", floor: 2, total_floor: 2, ascension: 0,
       room_type: "Combat", bosses: [], modifiers: [] },
     encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1, combat_hud_complete: true, potion_states: [],
-    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0,
+    energy: 3, max_energy: 3, stars: null, draw_pile_count: 0, discard_pile_count: 0, exhaust_pile_count: 0, orb_slots: 0,
     orbs: [], companions: [], player_statuses: [],
     hand: hand ?? [
       { index: 0, native_ref: "native-strike", id: "CARD.STRIKE",
@@ -32,7 +32,7 @@ function combatDecision({ enemies = 2, hand = null } = {}) {
     ],
     enemies: monsters,
     player: { name: "The Defect", character_id: "DEFECT", hp: 70, max_hp: 70,
-      gold: 99, native_ref: "native-player", max_potion_slots: 3,
+      block: 0, gold: 99, native_ref: "native-player", max_potion_slots: 3,
       relics: [], potions: [], deck: [] }
   };
 }
