@@ -9,6 +9,7 @@ import {
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
+const CARD_ALTERNATIVE_OUTCOMES = new Set(["do_nothing", "end_selection_and_complete_reward", "end_selection_and_do_not_complete_reward"]);
 // Pinned native TargetType values supported by the current Managed combat
 // inputs. AnyAlly lacks a complete published single-player target domain.
 // Potion values must also agree with the exact native binding switch; its
@@ -876,7 +877,18 @@ function currentSurface(state, ctx) {
             ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
               ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
                 entity_id: ctx.entityId("card", card?.native_ref), ...cardProperties(card) }))
-              : null } : {})
+              : null,
+              card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
+                option_id: option.option_id, title: option.title, after_selected: option.after_selected })) : null,
+              card_alternatives_complete: reward.card_alternatives_complete === true
+                && Array.isArray(reward.card_alternatives)
+                && reward.card_alternatives.every(option => typeof option?.option_id === "string" && option.option_id.length > 0
+                  && typeof option.title === "string" && option.title.length > 0 && CARD_ALTERNATIVE_OUTCOMES.has(option.after_selected))
+                && new Set(reward.card_alternatives.map(option => option.option_id)).size === reward.card_alternatives.length
+                && ["can_skip_selection", "can_reroll", "selection_completes_reward"].every(key => typeof reward[key] === "boolean"),
+              can_skip_selection: reward.can_skip_selection ?? null,
+              can_reroll: reward.can_reroll ?? null,
+              selection_completes_reward: reward.selection_completes_reward ?? null } : {})
           }
         });
         if (enabled) {
@@ -956,6 +968,7 @@ function currentSurface(state, ctx) {
           potion_slots_full: potionSlotsFull,
           discardable_potions: discardablePotions,
           can_proceed: state.is_terminal === true && state.can_proceed === true,
+          can_leave_with_unclaimed_rewards: state.can_leave_with_unclaimed_rewards ?? null,
           proceed_skips_remaining_rewards: rewards.length > 0
         },
         context: { kind: "reward_flow", reward_kind: "room_rewards" },
@@ -1014,7 +1027,9 @@ function currentSurface(state, ctx) {
         const item = ctx.referent({
           role: "card_reward_alternative", label: alternative?.name ?? `Alternative ${index + 1}`,
           occurrence: index,
-          properties: { option_id: alternative?.id ?? null, name: alternative?.name ?? null }
+          properties: { option_id: alternative?.option_id ?? alternative?.id ?? null,
+            name: alternative?.name ?? null, title: alternative?.title ?? null,
+            after_selected: alternative?.after_selected ?? null }
         });
         ctx.action({
           verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
