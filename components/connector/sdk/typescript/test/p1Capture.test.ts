@@ -10,8 +10,8 @@ import { assembleP1Capture, decodeP1CapturedObservation, decodeP1CaptureHandle,
   type P1CaptureHandle, type P1CaptureChunk } from "../src/index.js";
 
 function source() {
-  // This fixture is emitted and independently checked by the real C# frozen
-  // packet producer. It is synthetic/diagnostic, never a captured game claim.
+  // This immutable c1-1 fixture was emitted by the original C# producer.
+  // Current producers have a separate c1-2 fixture. Neither is a game capture.
   const serialized = readFileSync(new URL("../../../contracts/fixtures/p1-capture-c1.json", import.meta.url), "utf8");
   const bytes = Buffer.from(serialized, "utf8");
   const capture: P1CaptureHandle = {
@@ -96,6 +96,37 @@ function completeSyntheticScope() {
 }
 
 describe("P1 C1 atomic public capture reader and recording seam", () => {
+  it("preserves legacy pile semantics and validates current per-zone ordering by revision", () => {
+    const legacy = completeSyntheticScope();
+    expect(decodeP1CapturedObservation(legacy).data.revision).toBe("c1-1");
+    const current = structuredClone(legacy);
+    current.revision = "c1-2";
+    const piles = current.reads.find((read: any) => read.kind === "combat_piles");
+    for (const zone of piles.content.zones)
+      zone.ordering_semantics = zone.zone === "draw" ? "unordered_multiset" : "native_visible_order";
+    current.native_basis.reads.find((read: any) => read.kind === "combat_piles").ordering_semantics = "per_zone";
+    expect(decodeP1CapturedObservation(current).data.revision).toBe("c1-2");
+
+    const wrongDescriptor = structuredClone(current);
+    wrongDescriptor.native_basis.reads.find((read: any) => read.kind === "combat_piles").ordering_semantics = "unordered_multiset";
+    expect(() => decodeP1CapturedObservation(wrongDescriptor)).toThrow(/advertised pile ordering/u);
+
+    const falselyUpgraded = structuredClone(legacy);
+    falselyUpgraded.revision = "c1-2";
+    expect(() => decodeP1CapturedObservation(falselyUpgraded)).toThrow(/ordering.*revision/u);
+    const falselyDowngraded = structuredClone(current);
+    falselyDowngraded.revision = "c1-1";
+    expect(() => decodeP1CapturedObservation(falselyDowngraded)).toThrow(/ordering.*revision/u);
+    piles.content.zones[0].ordering_semantics = "native_visible_order";
+    expect(() => decodeP1CapturedObservation(current)).toThrow(/ordering.*revision/u);
+  });
+
+  it("reads the separate current C# producer fixture without rewriting the historical fixture", () => {
+    const current = JSON.parse(readFileSync(new URL("../../../contracts/fixtures/p1-capture-c1-2.json", import.meta.url), "utf8"));
+    expect(decodeP1CapturedObservation(current).data.revision).toBe("c1-2");
+    expect(decodeP1CapturedObservation(JSON.parse(source().serialized)).data.revision).toBe("c1-1");
+  });
+
   it("keeps >8 same-kind detail instances and duplicate-entity contexts without claiming P1 admission", async () => {
     const s = source(); const full = await assembleP1Capture(s.capture, s, 1024);
     expect(full.serializedObservation).toBe(s.serialized);

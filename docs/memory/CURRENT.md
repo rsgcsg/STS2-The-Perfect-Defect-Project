@@ -1,102 +1,70 @@
-# Current project context — P1 real-consumer delivery
+# Current project context — complete global P1 delivery
 
-模型方案冻结：开。New model/Input/Target/data/training configurations require
-user confirmation. The [decision record](../DECISIONS.md) and [active P1 task](../plans/P1_FORWARD_2026-10-15.zh-CN.md)
-carry selected goals, supersession and authorization. Resolve live GitHub refs
-and owner records before acting; exact source and original evidence override this file.
+模型方案冻结：开。New learned Model/Input/Target/data/training configurations require
+user confirmation. Resolve live GitHub refs before acting; exact source, native facts
+and original evidence override this file.
 
-## Main line and next usable result
+Read the [active P1 task](../plans/P1_FORWARD_2026-10-15.zh-CN.md) for the whole goal,
+requirements, acceptance and current owners. [P1](../protocols/P1.zh-CN.md) and
+[ADR-0017](../adr/0017-p1-forward-decision-profile.md) own the selected semantics;
+[GLOBAL candidate](../protocols/P1_GLOBAL_R1.zh-CN.md) describes submitted implementation,
+not permission to narrow those semantics. Historical proposals do not add obligations.
 
-One versioned P1 chain: Reference/Managed → complete public information and semantic
-actions → actual Agent consumption/execution → original records → research data,
-training/evaluation → the same Workbench/Mod product. Old d6 uses an older input
-contract; its legacy ref-20 is not a prerequisite. Reuse its useful infrastructure.
+## Current goal and facts
 
-The current parent delivery is **ordinary-combat P1 through a real Agent, recorded
-on Reference and Managed, with at least one explained same-mechanism comparison**.
-Its source subtasks can finish separately; this parent stays open until the real
-consumer and required runtime evidence exist. A weak chooser needs targeted
-mechanism coverage, not only early-loss natural runs. Next: specify the complete
-combat example/shared mapping, then qualify capture
-and consumer execution before the bounded battle batches.
+Deliver one useful complete chain: Reference/Managed → complete lawful P1 information
+and choices → supervised Agent execution → original environment/operation/Agent records
+→ verified P1 conversion and same-action comparison → existing Workbench/data consumers.
+P1 is an environment interaction protocol; SDK, program port, storage format and Model
+are distinct. Current lawful information precedes meaningful choice; mechanical steps
+may be combined only without losing information or meaningful opportunities. A child
+choice is delivered while its parent can still be pending. No requirement to finish an
+old combat-only proof scheme before global work.
 
-## Verified starting facts and open work
+PR187 remains draft/open at ef79a994, based on develop02636a94. Its selected full run
+38832429898 completed successfully; original four pytest leaves and execution receipt
+were independently verified in the prior closeout (48/48 stages, 4469 nodes per OS).
+Fresh GitHub inspection still matches those refs. Historical failed runs remain failed;
+this source/test result is not current P1 runtime qualification.
 
-- develop02636a94 contains PR180. PR187 remains unmerged. Its c81 full gate
-  38824434895 failed:47/48stages passed, Windows2 Python lacked a main_return
-  fixture record. The test had not established terminal/main/hold before the
-  original1s cancellation clock. Test-only a24488b4 now prepares those actual
-  process phases first, and separately proves forced/unknown before terminal.
-  Original engine cancel/resume is unchanged. Earlier2800 fullfile34pass and
-  finala244 strengthened15s preparation bound's2cases pass locally; neither is
-  a Windows/full receipt. Non-author source review and nine offline assertion
-  counterexamples accepted a244; normal integration b6df8138 retains both commits.
-  The new candidate still needs the complete selected gate. The previous2c gate
-  38813375418 was cancelled at the official75min Windows1 job limit after its
-  3960.27s Python owner passed. All four Python leaves passed, but Policy was
-  interrupted and three later owners blocked:44/48stages passed,1cancelled,3blocked.
-  No full execution receipt exists. Prior931 gate38800467323's5007ms Runtime
-  failure and earlier unknown causes remain; this cancellation is not that failure.
-- Root and non-author review accepted a data-only cost-profile refresh from three
-  complete retained Windows pairs (2c/405/434), retaining the exact schema, median
-  aggregation, whole-file LPT, two shards per OS, unknown30s and every deadline.
-  All284 weights and six source records were recomputed from original JUnit and
-  terminal manifests. Fixed2c cost replay balances2820.225/3069.459s instead of
-  3754.672/2135.012s; this is not future runtime or75min gate assurance. The actual
-  Windows cost drift remains unexplained. New candidate checks and a new full
-  gate are required before merge; no rerun of the unchanged failed head.
-- C1 repair8c847f88 and startup-observation ordering passed non-author review.
-  Gates3831/38766308324 and1e60/38776381573 failed. The latter stopped one Python
-  attack before injection on scratch inventory and timed out two Runtime tests.
-  Reviewed diagnostics now retain original scan causes and in-flight operations;
-  checks/deadlines are unchanged. These and the earlier publish delay remain
-  unresolved; a fresh selected gate and explicit disposition precede integration.
-  Candidate931 already removes unused fixture apphost work and uses a high-resolution
-  join diagnostic clock. Original95d shared Bridge-build failures and55min cancellation
-  remain historical failures with unknown physical cause. Windows75/Linux55 capacity
-  and all product/test deadlines stay. Reviewed aa152d3d now retains bounded phases
-  for common real Runtime fixtures only on failure; original5000ms and all assertions
-  remain. Local/independent negative checks preserve watchdog failure. This repairs
-  observability, not the unknown Windows delay; next is the candidate full gate.
-  C1 stays agent_admissible=false, without complete P1 or native qualification.
-- Historical Managed43417/3 and separate49e Seeker target retain their identities.
-  Reference rc34/d6 has16 deliveries and cleanup, with native errors unresolved.
-  See STATUS; none establishes current P1 load/runtime qualification.
-- Managed C1 producer, real paired P1 data, semantic mapping and actual P1 Agent
-  consumption are still missing. Source3/old records are reusable assets, not
-  mandatory new-P1 input or automatically qualified demonstration data.
-  Native Recorder format need not be P1, but its public facts/timing/relations
-  must support complete versioned P1 conversion for each supported scene.
-  Repair gaps at existing capture/Recorder/Evidence/converter owners; preserve
-  original bytes and never backfill historical missing facts.
-- J-min remains a separate unintegrated candidate. Original numerical FAIL stays;
-  v2 and ordinary remote TrainingService are not qualified. No new fit is started.
+PR188 remains draft/open at be67e7a1, based on PR187. It adds a global shared reducer,
+PE-driver runner, records/conversion and real early-loss runs. Its submitted full CI
+38847727149 was running at acceptance start; consult the actual terminal result.
+Independent acceptance found required-information omissions accepted as complete,
+meaningful choices removed, unsafe reward decline/folds, false comparator matches,
+expiry-after-choice submission, invalid receipt acceptance and incomplete archive
+acceptance. Original reports and successful runs are retained with their narrower scope;
+GLOBAL P1 and the full product/recording chain are NOT accepted complete.
 
-## Owners, authorization and checks
+Codex integration topic codex/p1-global-completion starts at the exact PR188 head;
+Claude's submitted checkout is preserved. Semantic repair and native parity repair have
+separate topics/worktrees. At most two code writers, one shared-interface writer and
+one heavy local/native slot. The lead verifies original diffs and receipts; material
+changes require non-author review. Full task requirements remain open independently
+of local source subtasks. The active task owns the next work and acceptance table.
 
-Codex owns implementation, integration and current-entry edits in the same code PR;
-Claude independently audits. Material changes require a non-author. At most two
-code writers, one shared-interface writer and one heavy local/native slot.
+## Authority and remaining work
 
-User authorizes ordinary engineering/PRs/CI, isolated reversible development-Mod
-installation and bounded unattended local Reference/Managed validation. The latest
-user instruction requires separate approval before each PR merge or closure,
-after the exact candidate, review and required checks are ready. Other routine
-engineering continues autonomously; ask for unresolved goals/authority/tradeoffs.
-No branch/worktree/data deletion, production release/deployment, hard-invariant
-change or expanded budget is inferred. J-min cumulative USD1 includes failures.
+User authorizes implementation, independent review, ordinary PR/CI work, isolated
+reversible development-Mod installation with rollback and bounded unattended local
+Reference/Managed validation. Each PR merge/closure requires separate user approval
+when its concrete candidate is ready. No branch/worktree/data deletion, production
+release/deployment, new spending or frozen research-configuration change is implied.
+Human-only actions remain Human gates; programs may validate engineering paths without
+being described as Human. No new fit is started; J-min's prior cumulative USD1 ceiling
+is not a new P1 compute budget.
 
-The new develop baseline needs repaired C1, synchronized entries, non-author
-review and current selected checks. It need not await full P1 or training. Source
-integration never promotes package/load/runtime/Human/research evidence. Preserve
-unknown-no-retry, expiry-triggered cleanup and complete suite denominators.
+Environment recording must work independently of Agent startup and retain enough
+public facts, timing and relations for complete supported-scene P1 conversion. Its
+format need not be P1. Program-run records and native-Human witnesses have different
+origins. Missing historical facts cannot be backfilled. Reuse existing capture,
+Annotator, Evidence/store/import, Runtime lifecycle and Workbench owners.
 
 ## Remaining Platform non-claims
 
-P1 learned ref-20 targets≥19/20 natural ends with zero unknown/stalls/unconfirmed
-cleanup; the original Reference L0 all20 criterion remains separate. Random P1
-battle tests establish scoped engineering behavior, not learned strategy quality.
-
-Contracts: [P1](../protocols/P1.zh-CN.md), [Host/wire](../protocols/P1_HOST_AND_WIRE.zh-CN.md).
-Owners: [architecture](../ARCHITECTURE.md), [components](../COMPONENTS.md),
-[status](../STATUS.md), [testing](../TESTING.md), [workflow](../DEVELOPMENT_WORKFLOW.md).
+Random early-loss runs do not qualify all scenes, winning trajectories, learned Agent
+quality or Managed rule equivalence. Source/test, build, installed/loaded, runtime,
+Human, data admission and research quality are separate evidence levels. Unsupported
+required information cannot be made complete by changing the denominator. unknown
+never retries; expiry itself must cancel/release/record without a second tick or GET.
+Model training and data-use admission remain outside this engineering acceptance.

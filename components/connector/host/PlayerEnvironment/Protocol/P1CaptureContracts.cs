@@ -10,7 +10,7 @@ namespace STS2Connector.PlayerEnvironment.Protocol;
 public static class P1CaptureContract
 {
     public const string Profile = "p1-atomic-capture-c1-1";
-    public const string Revision = "c1-1";
+    public const string Revision = "c1-2";
     public const string Scope = "ordinary_ready_combat_base_and_read_instances";
     public const string ReadProfile = "p1-atomic-capture-c1-sealed-1";
     public const string ObservationSchema = "sts2.player-environment/p1-atomic-capture-c1-1";

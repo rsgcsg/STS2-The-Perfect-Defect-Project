@@ -486,7 +486,7 @@ function visibleHoverCards(cards, snapshotId, ownerKey, makeId) {
   ));
 }
 
-function visibleCombatCard(card, entityId) {
+function visibleCombatCard(card, entityId, depth = 0) {
   return {
     entity_id: entityId,
     definition_id: definitionId(card?.id ?? card?.name),
@@ -509,7 +509,12 @@ function visibleCombatCard(card, entityId) {
     }),
     target_type: card?.target_type ?? null,
     can_play: card?.can_play ?? null,
-    ...(card?.unplayable_reason == null ? {} : { unplayable_reason: card.unplayable_reason })
+    ...(card?.unplayable_reason == null ? {} : { unplayable_reason: card.unplayable_reason }),
+    ...(Array.isArray(card?.keywords) ? { keywords: card.keywords.map((tip) => ({
+      name: visibleText(tip?.name), description: visibleText(tip?.description)
+    })) } : {}),
+    ...(depth < 16 && Array.isArray(card?.card_previews) ? { card_previews: card.card_previews.map((preview) =>
+      visibleCombatCard(preview, null, depth + 1)) } : {})
   };
 }
 
@@ -1230,7 +1235,9 @@ function currentSurface(state, ctx) {
           });
         }
         if (state.can_preview) ctx.action({
-          verb: "preview", label: "Preview card selection",
+          // Same wire meaning as Reference's open_player_environment_deck_preview.
+          // This opens the native confirmation stage; it does not commit the cards.
+          verb: "open", label: "Preview card selection",
           raw: { cmd: "action", action: "preview_deck_selection", args: {
             selector_ref: state.selector_ref
           } }
@@ -1297,6 +1304,16 @@ function currentSurface(state, ctx) {
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
         && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
+        && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
+          && card.render_complete === true && cardComplete(card))
+        && new Set(hud.hand.map((card) => card.native_ref)).size === hud.hand.length
+        && Array.isArray(state.combat_piles) && state.combat_piles.length === 3
+        && ["draw", "discard", "exhaust"].every((pile) => {
+          const zones = state.combat_piles.filter((zone) => zone?.pile === pile);
+          return zones.length === 1 && zones[0].ordering_semantics === (pile === "draw" ? "unordered_multiset" : "native_visible_order")
+            && Array.isArray(zones[0].cards) && zones[0].cards.length === hud[`${pile}_pile_count`]
+            && zones[0].cards.every((card) => card?.render_complete === true && cardComplete(card));
+        })
         && statusComplete(hud.statuses) && Array.isArray(hud.orbs) && hud.orbs.every((orb) => text(orb?.native_ref)
           && text(orb?.id) && text(orb?.name) && Number.isFinite(orb.passive) && Number.isFinite(orb.evoke)
           && Array.isArray(orb.keywords) && orb.keywords.every((tip) => text(tip?.name) && text(tip?.description)))
@@ -1360,6 +1377,7 @@ function currentSurface(state, ctx) {
       const publicHud = hudComplete ? {
         kind: "combat", round: hud.round, turn_owner: hud.turn_owner,
         player: { player_entity_id: ctx.entityId("player", hud.player_ref),
+          hand: hud.hand.map((card) => publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
             "discard_pile_count", "exhaust_pile_count", "orb_slots"].map((key) => [key, hud[key]])),
           statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => ({
@@ -1945,7 +1963,7 @@ function combatPilesRead(snapshotId, state, makeId) {
       content_schema: "sts2.player-environment/read/combat_piles-1",
       visibility_basis: "player_openable_draw_discard_exhaust_pile_views",
       snapshot_bound: true,
-      ordering_semantics: "unordered_multiset",
+      ordering_semantics: "per_zone",
       hidden_by_policy: ["draw_pile_true_order"]
     },
     content: {
@@ -1965,7 +1983,7 @@ function combatPilesRead(snapshotId, state, makeId) {
         return {
           zone: zone.pile,
           card_count: cards.length,
-          ordering_semantics: "unordered_multiset",
+          ordering_semantics: zone.pile === "draw" ? "unordered_multiset" : "native_visible_order",
           cards: cards.map((card, index) => ({
             ...card, entity_id: makeId("pile_card", snapshotId, zone.pile, index, card)
           }))

@@ -34,5 +34,6 @@
     <None Include="../../../contracts/fixtures/native-logical-owned-current-v1.json" Link="native-logical-owned-current-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../contracts/fixtures/p1-capture-c1.json" Link="p1-capture-c1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/p1-capture-c1-2.json" Link="p1-capture-c1-2.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

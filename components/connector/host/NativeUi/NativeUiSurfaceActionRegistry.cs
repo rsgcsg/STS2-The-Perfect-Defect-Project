@@ -65,7 +65,7 @@ internal static partial class NativeUiActionRuntime
         {
             Adapter<PotionPopupSurface>("potion_popup", BuildPotionPopupBindings, StartPotionPopupCommand),
             Adapter<CombatTurnSurface>("combat_turn", BuildCombatBindings,
-                static (draft, request, _) => StartCombatCommand(draft, request)),
+                StartCombatCommand),
             Adapter<ShopRoomSurface>("shop_room", BuildShopRoomBindings,
                 static (draft, request, _) => StartShopRoomCommand(draft, request)),
             Adapter<MapNavigationSurface>("map_navigation", BuildMapBindings,

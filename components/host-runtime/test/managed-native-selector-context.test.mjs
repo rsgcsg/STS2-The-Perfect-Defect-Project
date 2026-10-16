@@ -31,6 +31,11 @@ test("choose and combat publish every original occurrence, current HUD and stric
     assert.equal(s.referents.filter((r) => r.role === "card").length, 2);
     assert.equal(s.interaction.content.context.combat.player.block, 3);
     assert.equal(s.interaction.content.context.combat.enemies[0].hp, 7);
+    assert.deepEqual(s.interaction.content.context.combat.player.hand.map((card) => card.definition_id), ["STRIKE", "DEFEND"]);
+    const piles = [...p.reads.values()].find((read) => read.descriptor.kind === "combat_piles");
+    assert.deepEqual(piles.content.zones.map((zone) => [zone.zone, zone.ordering_semantics, zone.cards.length]), [
+      ["draw", "unordered_multiset", 2], ["discard", "native_visible_order", 2], ["exhaust", "native_visible_order", 0]
+    ]);
     assert.equal(s.bound_actions.actions.length, state.can_skip ? 3 : 2);
     assert.equal(new Set(s.bound_actions.actions.filter((a) => a.verb === "select").map((a) => a.subject_referent_id)).size, 2);
     assert.equal(projectManagedTextMenuV1(s).menu_actions.status, "complete");
@@ -58,7 +63,13 @@ test("missing exact scope, renderer, bounds, flags or HUD fences the entire cand
     s => { s.cards[1].native_ref = s.cards[0].native_ref; }, s => { s.can_skip = true; },
     s => { s.cancelable = true; }, s => { s.max_select = 2; }, s => { s.combat_context = null; },
     s => { s.combat_context.player_ref = "foreign-player"; }, s => { s.cards[0].is_selected = true; },
-    s => { s.cards[0].is_selectable = false; }, s => { s.combat_context.enemies[0].intents = [{ type: "Attack" }]; }];
+    s => { s.cards[0].is_selectable = false; }, s => { s.combat_context.enemies[0].intents = [{ type: "Attack" }]; },
+    s => { delete s.combat_context.hand; }, s => { s.combat_context.hand[0].render_complete = false; },
+    s => { s.combat_context.hand[1].native_ref = s.combat_context.hand[0].native_ref; },
+    s => { delete s.combat_piles; }, s => { s.combat_piles.pop(); },
+    s => { s.combat_piles[1].ordering_semantics = "unordered_multiset"; },
+    s => { s.combat_piles[0].cards[0].description = "Deal {Damage} damage."; },
+    s => { s.combat_context.draw_pile_count++; }];
   for (const mutate of mutations) {
     const state = selector(); mutate(state); const p = project(state);
     assert.equal(p.snapshot.completeness.status, "partial");

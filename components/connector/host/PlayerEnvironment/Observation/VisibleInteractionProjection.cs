@@ -312,7 +312,7 @@ internal static partial class PlayerEnvironmentService
             }),
             CombatTurnSurface value => ToNode(new
             {
-                value.Kind, value.CanEndTurn, value.PlayableCards, value.UsablePotions
+                value.Kind, value.CanEndTurn, value.PlayableCards, value.UsablePotions, value.DiscardablePotions
             }),
             CombatHandCardSelectionSurface value => ToNode(new
             {

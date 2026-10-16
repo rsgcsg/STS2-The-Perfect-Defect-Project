@@ -419,6 +419,65 @@ test("the exact deck-enchant callback is presented as the native enchant selecti
   assert.equal(unnamed.snapshot.bound_actions.actions.length, 0);
 });
 
+test("multi-select opens an exact preview before confirmation and preserves native cancellation", async () => {
+  const state = (selected = [], preview = false) => ({
+    type: "decision", decision: "deck_card_select", context: { act: 1, floor: 3, room_type: "Event" }, player: player(),
+    selector_ref: "selector-multi", origin: "deck_generic", stage: preview ? "preview" : "selecting",
+    prompt: "Choose one or two cards.", min_select: 1, max_select: 2, cancelable: true,
+    require_manual_confirmation: true, selected_refs: selected,
+    can_cancel_selection: !preview, can_preview: !preview && selected.length >= 1,
+    can_cancel_preview: preview, can_confirm: preview,
+    cards: ["card-a", "card-b"].map((ref, index) => ({ index, native_ref: ref,
+      id: "STRIKE", name: "Strike", is_selected: selected.includes(ref),
+      is_selectable: !preview && !selected.includes(ref) && selected.length < 2,
+      is_deselectable: !preview && selected.includes(ref) }))
+  });
+  const calls = [];
+  const process = { async request(request) {
+    calls.push(request);
+    if (request.cmd === "start_run") return state();
+    if (request.action === "select_deck_card") return state(["card-a"]);
+    if (request.action === "preview_deck_selection") return state(["card-a"], true);
+    if (request.action === "cancel_deck_preview") return state();
+    if (request.action === "confirm_deck_selection") return eventState();
+    throw new Error(`unexpected native request ${request.action}`);
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...projectionIdentity });
+  let snapshot = await session.mount({ seed: "MULTI-STAGED-PREVIEW" });
+  const step = async (verb, id) => {
+    const action = snapshot.bound_actions.actions.find((action) => action.verb === verb);
+    assert.ok(action, verb);
+    const receipt = await session.submit({ requestId: id, expectedSnapshotId: snapshot.snapshot_id,
+      boundActionId: action.bound_action_id });
+    assert.equal(receipt.delivery, "delivered"); snapshot = receipt.successor;
+    decodePlayerSnapshot(snapshot);
+  };
+  assert.equal(snapshot.bound_actions.actions.some((action) => action.verb === "open"), false);
+  await step("select", "select-first");
+  const tentative = snapshot;
+  assert.deepEqual(snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["cancel", "deselect", "open", "select"]);
+  await step("open", "open-preview");
+  assert.equal(snapshot.interaction.stage, "preview");
+  assert.deepEqual(snapshot.bound_actions.actions.map((action) => action.verb), ["cancel", "confirm"]);
+  assert.deepEqual(calls.at(-1), { cmd: "action", action: "preview_deck_selection", args: { selector_ref: "selector-multi" } });
+  const stale = await session.submit({ requestId: "stale-preview", expectedSnapshotId: tentative.snapshot_id,
+    boundActionId: tentative.bound_actions.actions.find((action) => action.verb === "open").bound_action_id });
+  assert.equal(stale.reason_code, "stale_snapshot");
+  assert.equal(calls.length, 3);
+  await step("cancel", "return-preview");
+  assert.equal(snapshot.interaction.stage, "selecting");
+  await step("select", "select-again");
+  await step("open", "preview-again");
+  await step("confirm", "confirm-selected");
+  assert.deepEqual(calls.at(-1), { cmd: "action", action: "confirm_deck_selection",
+    args: { selector_ref: "selector-multi", selected_refs: "card-a" } });
+  assert.equal(snapshot.interaction.kind, "event_option");
+
+  // A producer claiming preview before the native minimum does not gain input.
+  const invalid = state(); invalid.can_preview = true;
+  assert.equal(projectManagedCandidateDecision({ ...projectionIdentity, state: invalid }).snapshot.bound_actions.status, "unavailable");
+});
+
 test("a non-skippable terminal reward set offers claims without proceed", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,

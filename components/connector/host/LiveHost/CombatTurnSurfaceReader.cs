@@ -9,6 +9,7 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
+using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
@@ -88,10 +89,29 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             semanticDecision.IsDecisionOpen);
         var playableCards = new List<VisibleCombatCommandOption>();
         var usablePotions = new List<VisibleCombatCommandOption>();
+        var discardablePotions = new List<VisibleCombatPotion>();
+        bool discardBindingsComplete = true;
         if (inputReady)
         {
             AddCardOptions(playableCards, semanticDecision, visibleHandCards);
             AddPotionOptions(usablePotions, semanticDecision, player);
+            NativePotionDiscardDecision discard = NativePotionDiscardDecisionProvider.Capture(entities);
+            for (int slot = 0; slot < player.PotionSlots.Count; slot++)
+            {
+                PotionModel? potion = player.GetPotionAtSlotIndex(slot);
+                if (!CanDiscardPotion(player, potion, slot)
+                    || !NativeSemanticActionCatalog.ContainsExactlyOnce(discard.Actions, "discard", potion!))
+                    continue;
+                bool discardReady = PotionPopupSurfaceReader.TryCurrentDiscardHolder(player, potion!, slot,
+                    out _, out bool bindingKnown);
+                discardBindingsComplete &= bindingKnown;
+                if (!discardReady) continue;
+                discardablePotions.Add(new VisibleCombatPotion(entities.GetId(potion!, "potion"),
+                    potion!.Id.Entry, ConnectorMod.SafeGetText(() => potion.Title),
+                    ConnectorMod.SafeGetText(() => potion.DynamicDescription), slot,
+                    potion.TargetType.ToString(), CanUse: false,
+                    Automatic: potion.Usage == PotionUsage.Automatic));
+            }
         }
 
         bool canEndTurn = inputReady
@@ -102,9 +122,10 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         if (canEndTurn)
             endTurn = NativeEndTurnInput.Capture(room, hand, player, out endTurnMissing);
         string? endTurnIdentity = endTurn == null ? null : NativeEndTurnInput.Identity(entities, endTurn.ExactScope);
-        int commandCount = playableCards.Count + usablePotions.Count + (canEndTurn ? 1 : 0);
+        int commandCount = playableCards.Count + usablePotions.Count + discardablePotions.Count + (canEndTurn ? 1 : 0);
         bool completeDiscovery = semanticDecision.Status == "captured"
-            && visibleHandCards.Length == visibleHolders.Count && context.CaptureMissing.Count == 0;
+            && visibleHandCards.Length == visibleHolders.Count && context.CaptureMissing.Count == 0
+            && discardBindingsComplete;
         var availability = CombatInputAvailability.Capture(room, hand, player, entities, commandCount,
             completeDiscovery, inputReady);
         if (commandCount == 0 && (availability is { CanStartWithdrawal: true } or { CanContinueWithdrawal: true }))
@@ -118,11 +139,14 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             canEndTurn)
         {
             PlayableCards = playableCards,
-            UsablePotions = usablePotions
+            UsablePotions = usablePotions,
+            DiscardablePotions = discardablePotions
         };
         string readiness = inputReady ? "ready" : "settling";
         var completeness = new StateCompleteness(
-            "contract_complete_for_immediate_combat_turn_including_visible_companions; pile contents available through a separate read-only Player Environment Read",
+            discardBindingsComplete
+                ? "contract_complete_for_immediate_combat_turn_including_visible_companions; pile contents available through a separate read-only Player Environment Read"
+                : "partial",
             inputReady
                 ? "derived_from_same_validator_as_execution"
                 : presentationReady
@@ -139,7 +163,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
                 "NPlayerHand.ActiveHolders+AreCardActionsAllowed-equivalent guards",
                 "NCardPlayQueue exclusion"
             },
-            Array.Empty<string>());
+            discardBindingsComplete ? Array.Empty<string>() : new[] { "native_combat_potion_holder_binding" });
         string signature = StableIdentityHash.Object(new
         {
             game.Version,
@@ -337,6 +361,36 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             : NativeInputResult.Rejected(
                 "combat_binding_changed",
                 "The exact combat room or player is no longer current.");
+
+    internal static NativeInputResult StartDirectDiscardPotion(
+        NativeEntityRegistry entities, string expectedRoomId, string expectedPotionId, int expectedSlot)
+    {
+        if (!TryResolveDirectCombatOwner(entities, expectedRoomId, out Player? player)
+            || !entities.TryResolve(expectedPotionId, out PotionModel? potion) || potion == null)
+            return NativeInputResult.Rejected("combat_binding_changed",
+                "The exact combat room, player, or potion is no longer current.");
+        if (!IsActionablePlayerTurn(player!) || !CanDiscardPotion(player!, potion, expectedSlot)
+            || !NativeSemanticActionCatalog.ContainsExactlyOnce(
+                NativePotionDiscardDecisionProvider.Capture(entities).Actions, "discard", potion)
+            || !PotionPopupSurfaceReader.TryCurrentDiscardHolder(player!, potion, expectedSlot,
+                out var holder, out _))
+            return NativeInputResult.Rejected("potion_discard_changed",
+                "The advertised potion is no longer discardable in the same native slot.");
+        // Same queue entry as NPotionPopup.OnDiscardButtonPressed. The game
+        // action retains native execution and Commit; enqueue is not completion.
+        holder!.DisableUntilPotionRemoved();
+        RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(
+            new DiscardPotionGameAction(player!, (uint)expectedSlot, true));
+        return NativeInputResult.Delivered("native_discard_potion_action_enqueued");
+    }
+
+    // NPotionPopup disables both controls for a queued/dead owner's potion or
+    // when CanUseOrRemovePotions is false. Custom usability/Automatic disable
+    // use only, so they must not remove the independent discard opportunity.
+    internal static bool CanDiscardPotion(Player player, PotionModel? potion, int slot) =>
+        potion != null && !potion.IsQueued && !player.Creature.IsDead
+        && player.CanUseOrRemovePotions && slot >= 0 && slot < player.PotionSlots.Count
+        && ReferenceEquals(player.GetPotionAtSlotIndex(slot), potion);
 
     private static bool TryResolveDirectCombatOwner(
         NativeEntityRegistry entities,

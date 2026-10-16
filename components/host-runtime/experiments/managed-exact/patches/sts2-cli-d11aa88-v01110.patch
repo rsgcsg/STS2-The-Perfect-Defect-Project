@@ -614,7 +614,7 @@ index 0000000..dfe49ae
 +}
 diff --git a/src/Sts2Headless/FairPileProjection.cs b/src/Sts2Headless/FairPileProjection.cs
 new file mode 100644
-index 0000000..cc2f951
+index 0000000..b11b0f2
 --- /dev/null
 +++ b/src/Sts2Headless/FairPileProjection.cs
 @@ -0,0 +1,30 @@
@@ -643,7 +643,7 @@ index 0000000..cc2f951
 +        return new Dictionary<string, object?>
 +        {
 +            ["pile"] = pile,
-+            ["ordering_semantics"] = "unordered_multiset",
++            ["ordering_semantics"] = pile == "draw" ? "unordered_multiset" : "native_visible_order",
 +            ["cards"] = cards,
 +        };
 +    }
@@ -1048,21 +1048,46 @@ index 0000000..b23c7bd
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..a5dfaa9
+index 0000000..2f124b8
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,103 @@
 +using MegaCrit.Sts2.Core.Combat;
 +using MegaCrit.Sts2.Core.Entities.Creatures;
++using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
 +using MegaCrit.Sts2.Core.HoverTips;
++using MegaCrit.Sts2.Core.Models;
 +
 +namespace Sts2Headless;
 +
-+// Current post-prefix public combat facts only. Does not pump, wait, inspect hand
-+// or draw contents, advertise play actions, or borrow a parent observation.
++// Current post-prefix public combat facts only. Does not pump, wait, advertise
++// play actions, or borrow a parent observation. Draw is an unordered read.
 +internal static class NativeSelectorHud
 +{
++    private static Dictionary<string,object?> Card(CardModel card, PileType pile, bool identity)
++    {
++        var display = NativeSelectorCardDisplay.Capture(card, pile);
++        if (!display.Complete)
++            throw new InvalidOperationException("Current native combat card display is incomplete");
++        var result = new Dictionary<string,object?>(display.Card);
++        result["render_complete"] = true;
++        if (identity) result["native_ref"] = NativeObjectIdentity.Get(card);
++        return result;
++    }
++
++    private static Dictionary<string,object?> Pile(string name, PileType type, CardModel[] cards)
++    {
++        var visible = cards.Select(card => Card(card, type, false));
++        return new()
++        {
++            ["pile"] = name,
++            ["ordering_semantics"] = type == PileType.Draw ? "unordered_multiset" : "native_visible_order",
++            ["cards"] = (type == PileType.Draw
++                ? visible.OrderBy(card => System.Text.Json.JsonSerializer.Serialize(card), StringComparer.Ordinal)
++                : visible).ToArray()
++        };
++    }
 +    private static List<Dictionary<string,object?>> Statuses(Creature creature)
 +    {
 +        var result=new List<Dictionary<string,object?>>();
@@ -1080,6 +1105,8 @@ index 0000000..a5dfaa9
 +    {
 +        var pcs=player.PlayerCombatState ?? throw new InvalidOperationException("Current player combat context is unavailable");
 +        if(!ReferenceEquals(player.Creature.CombatState,combat))throw new InvalidOperationException("Current combat owner changed");
++        CardModel[] hand = pcs.Hand.Cards.ToArray(), draw = pcs.DrawPile.Cards.ToArray(),
++            discard = pcs.DiscardPile.Cards.ToArray(), exhaust = pcs.ExhaustPile.Cards.ToArray();
 +        var enemies=combat.Enemies.Where(enemy=>enemy.IsAlive).Select(enemy=>new Dictionary<string,object?>
 +        {
 +            ["native_ref"]=NativeObjectIdentity.Get(enemy),["id"]=enemy.Monster!.Id.Entry,
@@ -1102,6 +1129,9 @@ index 0000000..a5dfaa9
 +            ["block"]=player.Creature.Block,["energy"]=pcs.Energy,["max_energy"]=pcs.MaxEnergy,["stars"]=pcs.Stars,
 +            ["draw_pile_count"]=pcs.DrawPile.Cards.Count,["discard_pile_count"]=pcs.DiscardPile.Cards.Count,
 +            ["exhaust_pile_count"]=pcs.ExhaustPile.Cards.Count,["statuses"]=Statuses(player.Creature),["enemies"]=enemies,
++            ["hand"]=hand.Select(card => Card(card, PileType.Hand, true)).ToArray(),
++            ["combat_piles"]=new[] { Pile("draw", PileType.Draw, draw),
++                Pile("discard", PileType.Discard, discard), Pile("exhaust", PileType.Exhaust, exhaust) },
 +            ["orb_slots"]=pcs.OrbQueue.Capacity,
 +            ["orbs"]=pcs.OrbQueue.Orbs.Select(orb=>new Dictionary<string,object?>{["id"]=orb.Id.Entry,
 +                ["native_ref"]=NativeObjectIdentity.Get(orb),["name"]=orb.Title.GetFormattedText(),
@@ -1116,17 +1146,21 @@ index 0000000..a5dfaa9
 +                ["health_bar_visible"]=pet.Monster.IsHealthBarVisible,["health_display"]=pet.HpDisplay.ToString(),["block"]=pet.Block,
 +                ["alive"]=pet.IsAlive,["statuses"]=Statuses(pet)}).ToArray(),
 +        };
-+        if(!ReferenceEquals(player.PlayerCombatState,pcs) || !ReferenceEquals(player.Creature.CombatState,combat))
++        if(!ReferenceEquals(player.PlayerCombatState,pcs) || !ReferenceEquals(player.Creature.CombatState,combat)
++            || !hand.SequenceEqual(pcs.Hand.Cards, ReferenceEqualityComparer.Instance)
++            || !draw.SequenceEqual(pcs.DrawPile.Cards, ReferenceEqualityComparer.Instance)
++            || !discard.SequenceEqual(pcs.DiscardPile.Cards, ReferenceEqualityComparer.Instance)
++            || !exhaust.SequenceEqual(pcs.ExhaustPile.Cards, ReferenceEqualityComparer.Instance))
 +            throw new InvalidOperationException("Current combat context changed during capture");
 +        return result;
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeSelectorSelection.cs b/src/Sts2Headless/NativeSelectorSelection.cs
 new file mode 100644
-index 0000000..e87fd11
+index 0000000..b4aefde
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorSelection.cs
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,131 @@
 +using MegaCrit.Sts2.Core.Commands;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -1224,6 +1258,7 @@ index 0000000..e87fd11
 +            ["selected_refs"]=Selected.Select(NativeObjectIdentity.Get).ToArray(),["can_skip"]=CanSkip,
 +            ["require_manual_confirmation"]=Manual,["can_confirm"]=CanConfirm,["cancelable"]=false,
 +            ["display_pile"]=DisplayPile.ToString().ToLowerInvariant(),["combat_context"]=hud,
++            ["combat_piles"]=hud?.GetValueOrDefault("combat_piles"),
 +            ["native_selector_complete"]=RenderReady,["native_selector_missing"]=missing.Distinct().ToArray()
 +        };
 +    }
@@ -6467,10 +6502,10 @@ index 0000000..89bd221
 +</Project>
 diff --git a/tests/Program.cs b/tests/Program.cs
 new file mode 100644
-index 0000000..a6dca15
+index 0000000..f121a08
 --- /dev/null
 +++ b/tests/Program.cs
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,251 @@
 +using Sts2Headless;
 +
 +static void Require(bool condition, string caseName)
@@ -6648,7 +6683,8 @@ index 0000000..a6dca15
 +var hiddenPermutation = FairPileProjection.Create("draw",
 +    [PileCard("native-9900", 45), PileCard("native-9800", 44), PileCard("native-9700", 43, "0")]);
 +Require(Json(originalPile) == Json(hiddenPermutation), "draw ignores native order/index/identity/private state");
-+Require(!Json(originalPile).Contains("native-") && !Json(originalPile).Contains("index"),
++Require((string)originalPile["ordering_semantics"]! == "unordered_multiset"
++    && !Json(originalPile).Contains("native-") && !Json(originalPile).Contains("index"),
 +    "pile projection omits private fields before ordering");
 +var visiblePile = (Dictionary<string, object?>[])originalPile["cards"]!;
 +Require(visiblePile.Length == 3 && visiblePile.Count(card => (string)card["cost"]! == "1") == 2,
@@ -6657,7 +6693,8 @@ index 0000000..a6dca15
 +    "visible multiplicity changes remain observable");
 +foreach (string zone in new[] { "discard", "exhaust" })
 +{
-+    Require(Json(FairPileProjection.Create(zone, [PileCard("a", 0), PileCard("b", 1, "0")])) !=
++    var orderedPile = FairPileProjection.Create(zone, [PileCard("a", 0), PileCard("b", 1, "0")]);
++    Require((string)orderedPile["ordering_semantics"]! == "native_visible_order" && Json(orderedPile) !=
 +            Json(FairPileProjection.Create(zone, [PileCard("b", 0, "0"), PileCard("a", 1)])),
 +        zone + " keeps its existing presented order");
 +}

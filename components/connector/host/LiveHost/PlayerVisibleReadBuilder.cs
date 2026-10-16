@@ -131,7 +131,7 @@ internal static class PlayerVisibleReadBuilder
         return PlayerReadBuildResult.Success(new PlayerReadDraft(
             CombatPilesKind,
             "normal_player_read",
-            "unordered_multiset",
+            "per_zone",
             content,
             new PlayerReadCompleteness(
                 "complete_for_player_visible_combat_pile_contents_without_draw_order",
@@ -247,13 +247,19 @@ internal static class PlayerVisibleReadBuilder
         PileType pileType,
         NativeEntityRegistry entities)
     {
-        VisibleCard[] cards = BuildCards(pile.Cards, pileType, entities);
+        VisibleCard[] cards = OrderCombatPileCards(pileType, pile.Cards
+            .Select(card => LiveContextReader.BuildCard(card, entities.GetId(card, "card"), displayPile: pileType)));
         return new CombatPileReadZone(
             zone,
             cards.Length,
-            "unordered_multiset",
+            pileType == PileType.Draw ? "unordered_multiset" : "native_visible_order",
             cards);
     }
+
+    // Exact NCardPileScreen.OnPileContentsChanged sorts Draw only. The other
+    // two grids retain their native pile order, which is public information.
+    internal static VisibleCard[] OrderCombatPileCards(PileType pile, IEnumerable<VisibleCard> cards) =>
+        pile == PileType.Draw ? OrderPublicReadCards(cards) : cards.ToArray();
 
     private static VisibleCard[] BuildCards(
         IEnumerable<CardModel> source,

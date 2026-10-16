@@ -78,4 +78,22 @@ public sealed class P1CaptureProjectionTests
         }
         Assert.Equal(Freeze(before).Bytes, Freeze(after).Bytes);
     }
+
+    [Fact]
+    public void CombatPileReadPreservesNativeDiscardAndExhaustGridOrder()
+    {
+        VisibleCard Card(string id, string definition) => new(id, definition, definition, "Skill", "1", null,
+            "Visible", "Common", false, false, null);
+        VisibleCard[] cards = { Card("first", "ZAP"), Card("second", "DEFEND"), Card("third", "ZAP") };
+        foreach (var pile in new[] { MegaCrit.Sts2.Core.Entities.Cards.PileType.Discard,
+            MegaCrit.Sts2.Core.Entities.Cards.PileType.Exhaust })
+        {
+            Assert.Equal(cards, PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards));
+            Assert.Equal(cards.Reverse(), PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards.Reverse()));
+            Assert.NotEqual(PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards),
+                PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards.Reverse()));
+        }
+        Assert.Equal(PlayerVisibleReadBuilder.OrderCombatPileCards(MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw, cards),
+            PlayerVisibleReadBuilder.OrderCombatPileCards(MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw, cards.Reverse()));
+    }
 }

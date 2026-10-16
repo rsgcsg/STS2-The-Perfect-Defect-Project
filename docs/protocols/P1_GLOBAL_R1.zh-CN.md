@@ -1,9 +1,9 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：已实现并在两端实跑的第一个全局修订。上级原则见 [P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)。
+状态：PR188 提交的 r1.0 实验候选，有两端实跑原件；2026-10-16 独立验收发现实质缺陷，尚未接受为完整全局 P1。上级原则见 [P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)。
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）；
 执行器、Agent 端口、记录器、转换器、对照工具在 `components/policy-runtime/src/p1-global/`，命令 `components/policy-runtime/bin/sts2-p1.mjs`。
-实测证据、支持矩阵和已知缺口见文末与交付报告；本文只写"现在怎么做"。
+实测证据、支持矩阵和已知缺口见文末与交付报告；本稿描述提交行为，不能覆盖上级 P1 选定要求。当前修复与完整验收按[唯一活动计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)执行；有损 decision 比较、普通 runner 记录、外部 chooser 接线不分别等同完整等价、独立环境 Recorder、完整产品路径。下文 r1.0 行为保留供审查，修订合同在实现前逐项明确。
 
 ## 1. P1 是什么、为什么要
 
