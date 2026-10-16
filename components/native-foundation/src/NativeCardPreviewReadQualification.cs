@@ -93,7 +93,7 @@ public static partial class NativeCardPreviewReadQualification
     private static bool UiObserver(Delegate callback, string method, CardModel original) =>
         callback is Action && callback.Method == typeof(NCard).GetMethod(method, NativeMembers)
         && IsUnpatched(callback.Method) && callback.Target is NCard node && node.GetType() == typeof(NCard)
-        && ReferenceEquals(typeof(NCard).GetField("_model", NativeMembers)?.GetValue(node), original);
+        && ReferenceEquals(NativeDetachedCardCopy.UiModel(node), original);
 
     private static bool CopiedDelegatesQualified(CardModel card)
     {
