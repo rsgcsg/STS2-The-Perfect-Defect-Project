@@ -41,11 +41,11 @@ internal static partial class PlayerEnvironmentService
     internal static PlayerEnvironmentReadResult BuildResolvedRead(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadResolution resolution,
-        string expectedSnapshotId, DateTimeOffset? capturedAt = null)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false)
     {
         PlayerEnvironmentReadOpportunity opportunity = resolution.Opportunity!;
         if (opportunity.TargetReferentId != null)
-            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId, capturedAt);
+            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId, capturedAt, includePublicCardDetails);
         PlayerReadDraft draft = resolution.Build!.Draft!;
         return new PlayerEnvironmentReadResult(
             new PlayerEnvironmentReadResponse(
@@ -134,7 +134,7 @@ internal static partial class PlayerEnvironmentService
     private static PlayerEnvironmentReadResult ReadLinkedDetail(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadOpportunity opportunity,
-        string expectedSnapshotId, DateTimeOffset? capturedAt = null)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false)
     {
         PlayerEnvironmentSnapshot observation = snapshot.Snapshot;
         if (!string.Equals(opportunity.Kind, "surface_card", StringComparison.Ordinal)
@@ -146,11 +146,14 @@ internal static partial class PlayerEnvironmentService
                 "This current read kind has no bounded Live host implementation.");
         }
         string referentId = opportunity.TargetReferentId;
-        VisibleCard? card = VisibleSurfaceCards(snapshot.HostObservation.Surface)
-            .FirstOrDefault(value => string.Equals(
-                value.EntityId,
-                referentId,
-                StringComparison.Ordinal));
+        CapturedCardDetail? captured = includePublicCardDetails
+            ? CapturedCardDetails(snapshot.HostObservation.Surface, snapshot.HostObservation.Context, snapshot.ReadBuilds)
+                .SingleOrDefault(value => string.Equals("read:surface_card:" + value.DetailKey, opportunity.ReadId, StringComparison.Ordinal)
+                    && string.Equals(value.Card.EntityId, referentId, StringComparison.Ordinal))
+            : null;
+        VisibleCard? card = includePublicCardDetails ? captured?.Card
+            : VisibleSurfaceCards(snapshot.HostObservation.Surface).FirstOrDefault(value =>
+                string.Equals(value.EntityId, referentId, StringComparison.Ordinal));
         if (card == null)
         {
             return new PlayerEnvironmentReadResult(
@@ -159,6 +162,24 @@ internal static partial class PlayerEnvironmentService
                 "The current card detail could not be rebuilt from the same UI Surface.");
         }
 
+        JsonObject content = (JsonObject)(JsonSerializer.SerializeToNode(card, ConnectorMod._jsonOptions) ?? new JsonObject());
+        string[] missing = Array.Empty<string>();
+        if (includePublicCardDetails)
+        {
+            content["public_details_revision"] = "1";
+            content["display_context"] = captured!.DisplayContext;
+            content["parent_read_id"] = captured.ParentReadId;
+            content["display_owner_entity_id"] = captured.OwnerEntityId;
+            if (card.CurrentPublicDetails is { } details)
+            {
+                var detailMissing = new List<string>(card.CurrentPublicDetailsMissing);
+                foreach (string field in new[] { "keywords", "card_previews" })
+                    if (details[field] is JsonArray values) content[field] = values.DeepClone();
+                    else detailMissing.Add("current_native_public_card_" + field + "_not_captured");
+                missing = detailMissing.Distinct(StringComparer.Ordinal).ToArray();
+            }
+            else missing = new[] { "current_native_public_card_details_not_captured" };
+        }
         return new PlayerEnvironmentReadResult(
             new PlayerEnvironmentReadResponse(
                 PlayerEnvironmentContract.ProtocolVersion,
@@ -172,12 +193,12 @@ internal static partial class PlayerEnvironmentService
                 opportunity.VisibilityBasis,
                 opportunity.OrderingSemantics,
                 opportunity.ContentSchema,
-                JsonSerializer.SerializeToNode(card, ConnectorMod._jsonOptions) ?? new JsonObject(),
+                content,
                 new PlayerEnvironmentCompleteness(
-                    "complete",
+                    missing.Length == 0 ? "complete" : "partial",
                     "complete_current_player_visible_card_detail",
                     "read_only",
-                    Array.Empty<string>(),
+                    missing,
                     Array.Empty<string>()),
                 observation.Session,
                 observation.InformationPolicy),
@@ -185,16 +206,76 @@ internal static partial class PlayerEnvironmentService
             null);
     }
 
-    internal static IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry>
-        BuildLinkedDetailCatalog(ILiveSurface surface) =>
-        VisibleSurfaceCards(surface)
-            .GroupBy(card => card.EntityId, StringComparer.Ordinal)
-            .Select(group => new PlayerEnvironmentLinkedDetailCatalogEntry(
-                "surface_card",
-                group.Key,
-                "normal_player_visible_surface_card"))
-            .OrderBy(entry => entry.EntityId, StringComparer.Ordinal)
-            .ToArray();
+    private sealed record CapturedCardDetail(VisibleCard Card, string DisplayContext, string? ParentReadId, string? OwnerEntityId)
+    {
+        internal string DetailKey => "public-card-" + StableIdentityHash.Object(new { Card.EntityId, DisplayContext, ParentReadId, OwnerEntityId });
+    }
+
+    // This inventory consumes the already captured DTOs only. It cannot resolve
+    // a native model, navigate, rerender, or obtain a second version of the run.
+    private static IEnumerable<CapturedCardDetail> CapturedCardDetails(ILiveSurface surface, ILiveContext? context,
+        IReadOnlyDictionary<string, PlayerReadBuildResult>? readBuilds)
+    {
+        var values = new List<CapturedCardDetail>();
+        void Add(IEnumerable<VisibleCard> cards, string display, string? parent, string? owner)
+        { values.AddRange(cards.Select(card => new CapturedCardDetail(card, display, parent, owner))); }
+        switch (surface)
+        {
+            case RewardClaimSurface rewards:
+                foreach (VisibleReward reward in rewards.Rewards)
+                    Add(reward.CardOptions ?? Array.Empty<VisibleCard>(), "reward_candidate", null, reward.GroupId ?? reward.EntityId);
+                break;
+            case CardBundleSelectionSurface bundles:
+                foreach (VisibleCardBundle bundle in bundles.Bundles) Add(bundle.Cards, "bundle_preview", null, bundle.EntityId);
+                break;
+            case NativeDeckUpgradeSelectionSurface upgrade:
+                Add(upgrade.Cards, "selector_before_upgrade", null, upgrade.ScreenEntityId);
+                Add(upgrade.PreviewCards, "selector_after_upgrade", null, upgrade.ScreenEntityId);
+                break;
+            case ShopInventorySurface shop:
+                foreach (VisibleShopCardOffer offer in shop.Cards)
+                    if (offer.Card != null) Add(new[] { offer.Card }, "shop_offer", null, offer.EntityId);
+                break;
+            default:
+                Add(VisibleSurfaceCards(surface), "surface:" + surface.Kind, null, null);
+                break;
+        }
+        if (context is CombatLiveContext combat) Add(combat.Player.Hand, "hand", null, combat.Player.PlayerEntityId);
+        if (readBuilds != null)
+            foreach (var entry in readBuilds.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+                switch (entry.Value.Draft?.Content)
+                {
+                    case RunDeckReadContent deck:
+                        Add(deck.Cards, "deck", "read:" + entry.Key, null); break;
+                    case CombatPilesReadContent piles:
+                        foreach (CombatPileReadZone zone in piles.Zones) Add(zone.Cards, zone.Zone, "read:" + entry.Key, null);
+                        break;
+                    case ShopCatalogReadContent shop:
+                        foreach (VisibleShopCardOffer offer in shop.Cards)
+                            if (offer.Card != null) Add(new[] { offer.Card }, "shop_offer", "read:" + entry.Key, offer.EntityId);
+                        break;
+                }
+        return values.GroupBy(value => value.DetailKey, StringComparer.Ordinal).Select(group =>
+            {
+                CapturedCardDetail first = group.First();
+                string Signature(CapturedCardDetail value) => JsonSerializer.Serialize(new { value.Card,
+                    Details = value.Card.CurrentPublicDetails, Missing = value.Card.CurrentPublicDetailsMissing }, ConnectorMod._jsonOptions);
+                string expected = Signature(first);
+                if (group.Skip(1).Any(value => Signature(value) != expected))
+                    throw new SealedObservationException("capture_failed", "The same public card display identity has conflicting captured facts.");
+                return first;
+            }).OrderBy(value => value.DetailKey, StringComparer.Ordinal).ToArray();
+    }
+
+    internal static IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry> BuildLinkedDetailCatalog(
+        ILiveSurface surface, ILiveContext? context = null,
+        IReadOnlyDictionary<string, PlayerReadBuildResult>? readBuilds = null, bool includePublicCardDetails = false) =>
+        includePublicCardDetails
+            ? CapturedCardDetails(surface, context, readBuilds).Select(value => new PlayerEnvironmentLinkedDetailCatalogEntry(
+                "surface_card", value.Card.EntityId, "normal_player_visible_surface_card", value.DetailKey, value.DisplayContext, value.ParentReadId)).ToArray()
+            : VisibleSurfaceCards(surface).GroupBy(card => card.EntityId, StringComparer.Ordinal)
+                .Select(group => new PlayerEnvironmentLinkedDetailCatalogEntry("surface_card", group.Key, "normal_player_visible_surface_card"))
+                .OrderBy(entry => entry.EntityId, StringComparer.Ordinal).ToArray();
 
     private static IEnumerable<VisibleCard> VisibleSurfaceCards(ILiveSurface surface) =>
         surface switch
