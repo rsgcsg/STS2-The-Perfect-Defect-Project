@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
 using STS2Platform.NativeFoundation;
@@ -54,6 +55,29 @@ public sealed class NativeRunHookReadQualificationTests
     }
 
     private static bool Block() => false;
+
+    private static int _getterCalls;
+    private static bool PatchedGetter(ref bool __result) { _getterCalls++; __result = false; return false; }
+
+    [Fact]
+    public void ReachablePatchedGetterIsRejectedBeforeItCanRun()
+    {
+        RunState run = (RunState)RuntimeHelpers.GetUninitializedObject(typeof(RunState));
+        Player player = (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player));
+        typeof(RunState).GetField("_players", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(run, new List<Player> { player });
+        MethodInfo getter = typeof(Player).GetProperty(nameof(Player.IsActiveForHooks))!.GetMethod!;
+        var harmony = new Harmony("sts2-platform.native-read-getter-test");
+        _getterCalls = 0;
+        try
+        {
+            harmony.Patch(getter, prefix: new HarmonyMethod(typeof(NativeRunHookReadQualificationTests), nameof(PatchedGetter)));
+            Assert.False(NativeRunHookReadQualification.TryCaptureListeners(run, out _, out _));
+            Assert.Equal(0, _getterCalls);
+        }
+        finally { harmony.UnpatchAll(harmony.Id); }
+        Assert.True(NativeRunHookReadQualification.Preflight(run));
+    }
 }
 
 [CollectionDefinition("Native run hook read isolation", DisableParallelization = true)]

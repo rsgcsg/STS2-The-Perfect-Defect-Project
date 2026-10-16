@@ -353,11 +353,13 @@ test("projects native reward sets without exposing exact reward or room operands
     kind: "reward_claim",
     rewards: [
       { kind: "gold", label: "17 gold", description: null, enabled: true },
-      { kind: "card", label: "Add a card", description: null, enabled: true, card_options: null }
+      { kind: "card", label: "Add a card", description: null, enabled: true, card_options: null,
+        card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null }
     ],
     potion_slots_full: false,
     discardable_potions: [],
     can_proceed: true,
+    can_leave_with_unclaimed_rewards: null,
     proceed_skips_remaining_rewards: true
   });
   assert.equal(JSON.stringify(projection.snapshot).includes("reward-gold-a"), false);
@@ -1107,4 +1109,27 @@ test("native delivery with rejected successor projection preserves delivered Rec
   assert.equal(later.delivery, "not_delivered");
   assert.equal(later.reason_code, "runtime_tainted_after_successor_projection_failure");
   assert.equal(actionCalls, 1);
+});
+
+
+test("complete unopened card reward alternatives preserve actual outcomes and outer abandonment permission", () => {
+  const state = { type: "decision", decision: "reward_set", context: {}, player: player(),
+    can_skip: true, is_terminal: true, can_proceed: true, can_leave_with_unclaimed_rewards: false,
+    room_ref: "room-original", rewards: [{ native_ref: "group-original", kind: "card_choice", name: "Reward",
+      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward" },
+        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward" }],
+      card_alternatives_complete: true, can_skip_selection: true, can_reroll: false, selection_completes_reward: true }] };
+  const result = projectManagedCandidateDecision({ state, ...projectionIdentity }).snapshot.interaction.content.surface;
+  assert.deepEqual(result.rewards[0].card_alternatives, state.rewards[0].card_alternatives);
+  assert.equal(result.rewards[0].card_alternatives_complete, true);
+  assert.equal(result.can_leave_with_unclaimed_rewards, false);
+  assert.equal(JSON.stringify(result).includes("group-original"), false);
+  for (const mutate of [reward => { reward.card_alternatives = null; },
+    reward => { reward.card_alternatives[0].after_selected = "unknown"; },
+    reward => { delete reward.selection_completes_reward; },
+    reward => { reward.card_alternatives[1].option_id = "Skip"; }]) {
+    const changed=structuredClone(state); mutate(changed.rewards[0]);
+    const output=projectManagedCandidateDecision({ state: changed, ...projectionIdentity }).snapshot.interaction.content.surface;
+    assert.equal(output.rewards[0].card_alternatives_complete, false);
+  }
 });

@@ -137,7 +137,11 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             potionSlotsFull,
             discardablePotions,
             canProceed,
-            proceedButton.IsSkip);
+            proceedButton.IsSkip)
+        {
+            CanLeaveWithUnclaimedRewards = canProceed
+                && NativeRewardDecisionProvider.ObserveOwner(screen)?.RewardsSet.DisallowSkipping == false
+        };
         StateCompleteness completeness = DescribeCompleteness(catalogBoundExactly, hasCurrentCommand);
         string signature = StableIdentityHash.Object(new
         {
@@ -200,6 +204,8 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
         IReadOnlyList<VisibleCard>? cardOptions = reward is CardReward { IsPopulated: true } cardReward
             ? cardReward.Cards.Select(card => LiveContextReader.BuildCard(card, entities.GetId(card, "card"))).ToArray()
             : null;
+        NativeCardRewardAlternativePreviewResult? preview = reward is CardReward currentCardReward
+            ? NativeCardRewardAlternativePreview.Capture(currentCardReward) : null;
         return new VisibleReward(
             rewardId,
             RewardKind(reward),
@@ -208,7 +214,13 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             button.IsEnabled && claimable)
         {
             GroupId = rewardId,
-            CardOptions = cardOptions
+            CardOptions = cardOptions,
+            CardAlternatives = preview?.Alternatives?.Select(option =>
+                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected)).ToArray(),
+            CardAlternativesComplete = preview?.Complete == true,
+            CanSkipSelection = preview?.CanSkipSelection,
+            CanReroll = preview?.CanReroll,
+            SelectionCompletesReward = preview?.SelectionCompletesReward
         };
     }
 
