@@ -15,10 +15,10 @@ test("ordinary runtime product controls navigate to the existing Workbench owner
   for(const text of ["在工作台开始测试","在工作台只评分","在工作台单步执行","在工作台推进 Tick"])
     assert.ok(mod.includes(text));
 });
-test("active Source3 controls cannot bypass the paired application through a profile dropdown",()=>{
+test("active Source3/Source4 controls cannot bypass the paired application through a profile dropdown",()=>{
   const flow=mod.slice(mod.indexOf("private void ApplyRecordingCommand"),mod.indexOf("private STS2HumanAnnotator.Core.SourceDeclaration ReadSourceDeclaration"));
-  assert.match(flow,/activeSource3 = before.Session\?\.CaptureProfileId == .*SourceSessionContractV3.ProfileId/);
-  assert.match(flow,/sourceStart \|\| \(activeSource3/);
+  assert.match(flow,/activeSource = before.Session\?\.CaptureProfileId is .*SourceSessionContractV3.ProfileId/);
+  assert.match(flow,/sourceStart \|\| \(activeSource/);
   assert.ok(flow.indexOf('OpenNativeWorkbenchPage("data")')<flow.indexOf("PlatformRecordingCommands.Execute"));
   assert.match(flow,/owner.ExecuteForSession/); // legacy native Human capability retained
   assert.match(panel,/internal void OpenPage\(string page\)/);

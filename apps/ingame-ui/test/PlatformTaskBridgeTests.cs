@@ -105,19 +105,22 @@ namespace STS2PlatformLiveUiTests
             Assert.Fail("Actual HTTP bridge never queued its native command.");
         }
 
-        [Fact]
-        public async Task ActualHttpSourceMutationRunsOnlyWhenTheNativeQueueDrains()
+        [Theory]
+        [InlineData(SourceSessionContractV3.ProfileId)]
+        [InlineData(SourceSessionContractV4.ProfileId)]
+        public async Task ActualHttpSourceMutationRunsOnlyWhenTheNativeQueueDrains(string profile)
         {
             Reset(); int calls = 0, nativeThread = 0;
             var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
             owner.Execute = (command, expected) => {
                 calls++; Assert.Equal(nativeThread, Environment.CurrentManagedThreadId);
                 Assert.Equal("recording-1", expected); Assert.Equal(SourceSessionContractV2.CommandSchema, command.Schema);
-                Assert.Equal(SourceSessionContractV3.ProfileId, command.CaptureProfileId);
+                Assert.Equal(profile, command.CaptureProfileId);
                 Assert.Equal("agent_native_ui", command.SourceDeclaration!.SourceKind);
                 return new(true, false, "recording", "private detail", owner.Status.Lifecycle);
             };
-            await using var call = new Call("/v1/tasks/recording/command", PlatformRecordingCommandsTests.Request().ToJsonString());
+            var request = PlatformRecordingCommandsTests.Request(); request["command"]!["capture_profile_id"] = profile;
+            await using var call = new Call("/v1/tasks/recording/command", request.ToJsonString());
             await Queued(); Assert.Equal(0, calls); Assert.False(call.Response.IsCompleted);
             nativeThread = Environment.CurrentManagedThreadId;
             Assert.Equal(1, STS2Connector.ConnectorMod.Queue.Drain(1));
@@ -130,6 +133,7 @@ namespace STS2PlatformLiveUiTests
         [InlineData(SourceSessionContract.ProfileId, RecordingApplicationContract.SourceCommandSchema)]
         [InlineData(SourceSessionContractV2.ProfileId, SourceSessionContractV2.CommandSchema)]
         [InlineData(SourceSessionContractV3.ProfileId, SourceSessionContractV2.CommandSchema)]
+        [InlineData(SourceSessionContractV4.ProfileId, SourceSessionContractV2.CommandSchema)]
         public async Task ExistingPrepareModelHttpUsesNativeQueueAndCorrectSourceCloseSchema(string profile, string schema)
         {
             Reset(); var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;

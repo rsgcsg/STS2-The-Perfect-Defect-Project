@@ -29,9 +29,11 @@ public sealed class SourceSessionV2Tests
             new("Annotator", "fixture", new string('e', 40), new string('f', 64), new string('a', 64), "annotator-mvid"),
             "1.0.0", "runtime-fixture", "environment-fixture", "fixture", "modset-fixture");
         internal readonly SourceCaptureProfileV2 Profile;
+        private readonly SourcePublicAction nativeAction;
         internal readonly RecordingSessionStore Store;
-        internal Fixture(SourceSessionLimitsV2? limits = null, int version = 2)
+        internal Fixture(SourceSessionLimitsV2? limits = null, int version = 2, SourcePublicAction? action = null)
         {
+            nativeAction = action ?? Action;
             Profile = new("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version, "native-logical-v1",
                 SourceSessionContractV2.PublicationProfileId, SourceSessionContractV2.PublicationProfileDefinitionSha256,
                 new[] { "persistent", "interaction", "referents", "catalog" }, limits ?? new(), SourceSessionContractV2.NonClaims)
@@ -53,7 +55,7 @@ public sealed class SourceSessionV2Tests
         internal (FrozenPublicCaptureV2 Capture, FrozenPublicCatalogV2 Catalog) Payload(string epoch)
         {
             string snapshot = "snapshot-" + epoch, scope = "scope-" + epoch, generation = "generation-" + epoch;
-            byte[] catalogBytes = Bytes(new[] { Action }); string structural = SourceCatalogCodec.Digest(new[] { Action });
+            byte[] catalogBytes = Bytes(new[] { nativeAction }); string structural = SourceCatalogCodec.Digest(new[] { nativeAction });
             var catalog = new FrozenPublicCatalog("catalog-" + epoch, snapshot, scope, generation, 1,
                 structural, catalogBytes, SourceSessionContract.Sha256(catalogBytes));
             byte[] captureBytes = Bytes(new

@@ -35,6 +35,80 @@ public sealed class SourceSessionV4Tests
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(body, Json);
         return new("title", id, "scope-title", "generation-title", DateTimeOffset.UnixEpoch, bytes, SourceSessionContract.Sha256(bytes));
     }
+    // Production Store + packer, using the retained Reference PE shape. The map,
+    // ordered empty piles and physical EndTurn witnesses below are synthetic.
+    // This is not a real Human session or proof of native effects/successor.
+    [Fact]
+    public void ReferenceShapedP1PrefixPacksAllOriginalPublicationsAndExactEndTurn()
+    {
+        var action = new SourcePublicAction("native-end-turn", "native_input", "end_turn", "End turn",
+            null, Array.Empty<SourceActionArgument>(), "native");
+        using var f = new SourceSessionV2Tests.Fixture(version: 4, action: action);
+        string root = AppContext.BaseDirectory;
+        while (!Directory.Exists(Path.Combine(root, "components", "connector", "sdk", "typescript", "test", "fixtures", "p1-global")))
+            root = Directory.GetParent(root)?.FullName ?? throw new InvalidOperationException("fixture_root_missing");
+        string fixtures = Path.Combine(root, "components", "connector", "sdk", "typescript", "test", "fixtures", "p1-global");
+        var node = JsonNode.Parse(File.ReadAllBytes(Path.Combine(fixtures, "reference-combat_turn.json")))!;
+        var supplement = JsonNode.Parse(File.ReadAllBytes(Path.Combine(fixtures, "synthetic-complete-combat.json")))!;
+        var map = supplement["reads"]!.AsArray().Single(r => r!["kind"]!.GetValue<string>() == "map")!.DeepClone();
+        node["reads"]!.AsArray().Add(map);
+        node["snapshot"]!["reads"]!.AsArray().Add(supplement["snapshot"]!["reads"]!.AsArray()
+            .Single(r => r!["kind"]!.GetValue<string>() == "map")!.DeepClone());
+        foreach (var zone in node["reads"]!.AsArray().Single(r => r!["kind"]!.GetValue<string>() == "combat_piles")!["response"]!["content"]!["zones"]!.AsArray())
+            if (zone!["zone"]!.GetValue<string>() != "draw") zone["ordering_semantics"] = "native_visible_order";
+        FrozenPublicBasisV4 Freeze(JsonNode current, int captureTick = 0)
+        {
+            var snapshot = current["snapshot"]!;
+            snapshot["session"] = new JsonObject { ["runtime_instance_id"] = f.Environment.RuntimeInstanceId,
+                ["environment_fingerprint"] = f.Environment.EnvironmentFingerprint };
+            snapshot["observed_at"] = DateTimeOffset.UnixEpoch.AddMilliseconds(captureTick);
+            foreach (var read in current["reads"]!.AsArray())
+            {
+                read!["response"]!["expected_snapshot_id"] = snapshot["snapshot_id"]!.DeepClone();
+                read["response"]!["observed_snapshot_id"] = snapshot["snapshot_id"]!.DeepClone();
+                read["response"]!["observed_at"] = snapshot["observed_at"]!.DeepClone();
+                read["response"]!["session"] = snapshot["session"]!.DeepClone();
+                read["response"]!["information_policy"] = snapshot["information_policy"]!.DeepClone();
+            }
+            var body = new JsonObject { ["schema"] = SourceSessionContractV4.PublicBasisSchema, ["revision"] = "1",
+                ["capture_scope"] = SourceSessionContractV4.PublicBasisScope, ["capture_status"] = "complete",
+                ["snapshot"] = snapshot.DeepClone(), ["reads"] = current["reads"]!.DeepClone(), ["missing"] = new JsonArray() };
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(body, Json);
+            return new("title", snapshot["snapshot_id"]!.GetValue<string>(), "scope-title", "generation-title",
+                DateTimeOffset.UnixEpoch.AddMilliseconds(captureTick), bytes, SourceSessionContract.Sha256(bytes));
+        }
+        void Publish(int index, FrozenPublicBasisV4 basis) => f.Store.AppendPublicObservationV2(
+            f.Packet("title", index, "title-continuity") with { PublicBasis = basis });
+        var basis = Freeze(node); Publish(1, basis); Publish(2, Freeze(node, 1));
+        basis = Freeze(node, 2);
+        var token = f.Store.ReserveSourceInputV2("physical-end-turn", new("title", "generation-title", "2"));
+        f.Store.SealSourceInputOrderV3(token, new(SourceSessionContractV3.FrozenBasis, null));
+        var native = f.Payload("title"); f.Store.BindSourceInputBasisV2(token, native.Capture, native.Catalog, basis);
+        f.Store.CompleteSourceInputV2(token, new("exact", 1, action, "native_end_turn_ui", "delivered", null, Array.Empty<SourceInputStageV2>())
+        { NativeFacts = new("native_input", "original-end-button", null, new Dictionary<string, string>(),
+            new[] { new SourceNativeCarrierV4("game_action_submitted", "original-end-action"), new("game_action_accepted", "original-end-action") }, null) });
+        var settling = node.DeepClone(); var snap = settling["snapshot"]!;
+        snap["snapshot_id"] = "semantic-settling"; snap["status"] = "settling";
+        snap["bound_actions"]!["actions"] = new JsonArray(); snap["bound_actions"]!["total_count"] = 0;
+        snap["bound_actions"]!["materialized_count"] = 0; snap["interaction"]!["capabilities"] = new JsonArray();
+        var surface = snap["interaction"]!["content"]!["surface"]!;
+        surface["can_end_turn"] = false; surface["playable_cards"] = new JsonArray();
+        Publish(3, Freeze(settling, 3));
+        node["snapshot"]!["snapshot_id"] = "semantic-new-public-boundary";
+        node["snapshot"]!["persistent"]!["content"]!["player"]!["gold"] = 100;
+        Publish(4, Freeze(node, 4)); Publish(5, Freeze(node, 5));
+        f.Close("title", 5, new[] { new SourceNativeSealV2("title", "generation-title", "5", "5") });
+        var audit = SourceSessionAuditV4.Audit(f.Store.DirectoryPath);
+        Assert.True(audit.Status == "pass", string.Join(",", audit.Errors));
+        string bundle = Path.Combine(f.Root, "bundle");
+        var packed = SourceSessionBundlePackerV4.Pack(f.Store.DirectoryPath, "worker-source4-p1", "campaign-synthetic-prefix", bundle, new string('a', 40));
+        Assert.Equal("pass", packed.Status);
+        string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V4_P1_GOLDEN");
+        if (golden != null)
+            foreach (var path in Directory.EnumerateFiles(bundle, "*", SearchOption.AllDirectories))
+            { string output = Path.Combine(golden, Path.GetRelativePath(bundle, path)); Directory.CreateDirectory(Path.GetDirectoryName(output)!); File.Copy(path, output, overwrite: true); }
+    }
+
     private static void Close(SourceSessionV2Tests.Fixture f) =>
         f.Close("title", 1, new[] { new SourceNativeSealV2("title", "generation-title", "1", "1") });
 

@@ -678,7 +678,17 @@ class Application:
         }
         if (
             not isinstance(body, dict)
-            or set(body) != fields
+            or set(body) not in (fields, fields | {"capture_profile_id"})
+            or (
+                "capture_profile_id" in body
+                and (
+                    body.get("kind") != "start_new_session"
+                    or not isinstance(body["capture_profile_id"], str)
+                    or body["capture_profile_id"] not in {
+                        "native-logical-source-v3", "native-logical-source-v4"
+                    }
+                )
+            )
             or not isinstance(body["kind"], str)
             or body["kind"]
             not in {"start_new_session", "pause", "resume", "change_source", "close"}
@@ -753,6 +763,8 @@ class Application:
                     body["kind"],
                     source_declaration=declaration,
                     command_id=body["command_id"],
+                    **({"capture_profile_id": body["capture_profile_id"]}
+                       if "capture_profile_id" in body else {}),
                 )
                 if not value["accepted"]:
                     raise BoundaryError("recording", "native_recording_rejected")

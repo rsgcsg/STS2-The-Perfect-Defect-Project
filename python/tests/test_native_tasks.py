@@ -514,6 +514,42 @@ def test_source_start_and_paused_change_keep_explicit_declaration_session_segmen
     assert posted["command"]["source_declaration"]["machine_verifiable"] is False
 
 
+def test_source4_explicit_start_status_and_close_keep_profile_and_owner(bridge):
+    client, _, calls, behavior = bridge
+    observed = client.recording_status(behavior["connector_endpoint"])
+    declaration = {"source_kind": "declared_human", "actor_id": "operator",
+                   "declaration_id": "declaration-v4", "machine_verifiable": False}
+    client.recording_command(behavior["connector_endpoint"], observed, "start_new_session",
+                             source_declaration=declaration,
+                             capture_profile_id="native-logical-source-v4")
+    posted = next(body for route, body in calls if route == "/v1/tasks/recording/command")
+    assert posted["command"]["capture_profile_id"] == "native-logical-source-v4"
+    source_status(behavior)
+    behavior["recording"]["capture_profile_id"] = "native-logical-source-v4"
+    observed = client.recording_status(behavior["connector_endpoint"])
+    assert observed["source"]["segment_id"] == "segment-1"
+    client.recording_command(behavior["connector_endpoint"], observed, "close")
+    posted = [body for route, body in calls if route == "/v1/tasks/recording/command"][-1]
+    assert posted["command"]["capture_profile_id"] is None
+    assert posted["recording_session_id"] == "source-session"
+    observed["source"] = None
+    assert not client._recording_status_valid(observed)
+
+
+@pytest.mark.parametrize("profile,kind", [("native-logical-source-v2", "start_new_session"),
+                                        ("native-logical-source-v5", "start_new_session"),
+                                        ("native-logical-source-v4", "close"),
+                                        ([], "start_new_session"), ({}, "start_new_session")])
+def test_source_profile_choice_only_applies_to_supported_start(bridge, profile, kind):
+    client, _, calls, behavior = bridge
+    observed = client.recording_status(behavior["connector_endpoint"])
+    before = len(calls)
+    with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+        client.recording_command(behavior["connector_endpoint"], observed, kind,
+                                 capture_profile_id=profile)
+    assert len(calls) == before
+
+
 @pytest.mark.parametrize("kind", ["pause", "resume", "close"])
 def test_source_lifecycle_commands_have_no_declaration_or_profile_data(bridge, kind):
     client, _, calls, behavior = bridge

@@ -301,3 +301,53 @@ function rewardContextMatches(lowering: Lowering, basis: P1Basis): boolean {
   return !!resolveFollowBasis(lowering.follow[0]!, lowering, basis)
     && reduce(createSession("source-context-check", "reference"), basis).complete;
 }
+
+/** Publication interpretation v1: observations are not choices. Keep the entire
+ * public basis (including every Read instance and binding); only capture time is
+ * ignored for repeated delivery of the same snapshot. A changed Read under the
+ * same snapshot is a new boundary, never navigation noise. */
+export function classifySourceP1Publication(state: P1SessionState, row: SourceP1Publication,
+  previous: SourceP1Publication | null): { status: "context_only" | "unresolved";
+    classification: string; reason: string; advance: boolean } {
+  const unresolved = (reason: string) => ({ status: "unresolved" as const,
+    classification: "unresolved_context", reason, advance: false });
+  try {
+    const current = row as ObjectValue;
+    if (!current.basis || current.gap_after_index !== null) return unresolved("source_publication_basis_missing_or_gap");
+    const value = snapshot(current.basis); reference(current, current.basis);
+    if (value.completeness.missing.length || value.bound_actions.status !== "complete")
+      return unresolved("source_publication_public_information_incomplete");
+    if (previous) {
+      const prior = previous as ObjectValue;
+      if (current.session_id !== prior.session_id || current.timeline_id !== prior.timeline_id)
+        return unresolved("source_publication_session_changed");
+      if (current.epoch_id === prior.epoch_id) {
+        reference(current, current.basis, prior.captured_parts.public_basis);
+        if (ordinal(current.position.publication_index) <= ordinal(prior.position.publication_index))
+          return unresolved("source_publication_order_invalid");
+      }
+    }
+    const reduction = reduce(state, current.basis);
+    // A fully captured waiting state has no choice. Structural/Read omissions
+    // remain unresolved; waiting is not permission to waive required facts.
+    if (value.status === "settling" && value.bound_actions.actions.length === 0
+      && reduction.missing.every(item => item === `scene:${value.interaction.kind}:settling`))
+      return { status: "context_only", classification: "source_settling_context",
+        reason: "original_complete_public_state_waits_for_native_input_owner", advance: false };
+    if (!reduction.complete) return unresolved("source_publication_p1_information_incomplete");
+    const view = (basis: P1Basis) => {
+      const copy = structuredClone(basis) as ObjectValue;
+      delete copy.snapshot.observed_at;
+      for (const read of copy.reads) if (read.response) delete read.response.observed_at;
+      return canonicalJson(copy);
+    };
+    if (previous && (previous as ObjectValue).basis && current.epoch_id === (previous as ObjectValue).epoch_id
+      && current.segment_id === (previous as ObjectValue).segment_id
+      && view(current.basis) === view((previous as ObjectValue).basis))
+      return { status: "context_only", classification: "source_repeated_public_snapshot",
+        reason: "same_original_snapshot_and_all_read_instances_except_capture_time", advance: false };
+    return { status: "context_only", classification: reduction.observation.status === "terminal"
+      ? "p1_terminal_boundary" : previous === null && state.last_snapshot_id === null ? "p1_initial_boundary" : "p1_publication_boundary",
+      reason: "original_public_information_boundary_without_a_native_choice", advance: true };
+  } catch (error) { return unresolved(error instanceof Error ? error.message : "source_publication_invalid"); }
+}
