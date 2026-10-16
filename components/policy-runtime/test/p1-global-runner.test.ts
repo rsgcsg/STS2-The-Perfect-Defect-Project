@@ -11,8 +11,9 @@ const sdkFixture = (name: string) => JSON.parse(readFileSync(new URL(
 const fakeHostRoot = new URL("./fixtures/p1-global-fake-host/", import.meta.url).pathname;
 const firstAgent = new URL("../examples/p1/first_agent.mjs", import.meta.url).pathname;
 
-function scenario(steps: unknown[], observe: unknown[] = []) {
-  const combat = sdkFixture("managed-combat_turn"); const over = sdkFixture("managed-game_over");
+function scenario(steps: unknown[], observe: unknown[] = [], withMap = true) {
+  // Synthetic complete map capture for protocol lifecycle checks; not native capture evidence.
+  const combat = sdkFixture(withMap ? "synthetic-complete-combat" : "managed-combat_turn"); const over = sdkFixture("managed-game_over");
   const reads: Record<string, unknown> = {};
   for (const basis of [combat, over]) for (const read of basis.reads) if (read.response) reads[read.read_id] = read.response;
   const dir = mkdtempSync(join(tmpdir(), "p1-runner-"));
@@ -32,6 +33,14 @@ const steps = (s: ReturnType<typeof scenario>) => existsSync(s.log)
   ? readFileSync(s.log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((r) => r.command === "step") : [];
 
 describe("P1 runner lifecycle against a scripted Host", () => {
+  it("refuses missing unadvertised required map before any gameplay step", async () => {
+    const s = scenario([{ delivery: "delivered", successor: null }], [], false);
+    const row = await run(s);
+    expect(row.censor_reason).toBe("incomplete_observation");
+    expect(row.incomplete_reasons).toContain("required:map");
+    expect(steps(s)).toHaveLength(0);
+  });
+
   it("ends naturally on the native terminal and the record converts byte-identically", async () => {
     const s = scenario([{ delivery: "delivered", successor: null }]);
     const row = await run(s);
