@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using STS2Connector.LiveHost;
 using STS2Connector.LiveHost.Contracts;
 using STS2Connector.PlayerEnvironment.Protocol;
@@ -16,7 +17,10 @@ internal sealed record SnapshotBuildResult(
     PlayerEnvironmentSnapshot Snapshot,
     LiveObservation HostObservation,
     IReadOnlyDictionary<string, PlayerEnvironmentNativeBinding> Bindings,
-    IReadOnlyDictionary<string, PlayerReadBuildResult> ReadBuilds);
+    IReadOnlyDictionary<string, PlayerReadBuildResult> ReadBuilds)
+{
+    [JsonIgnore] internal NativeLogicalGridCaptureResult CapturedLogicalGrid { get; init; } = NativeLogicalGridCaptureResult.NotAttempted;
+}
 
 internal sealed record PlayerEnvironmentNativeBinding(
     NativeUiBoundAction NativeAction,
