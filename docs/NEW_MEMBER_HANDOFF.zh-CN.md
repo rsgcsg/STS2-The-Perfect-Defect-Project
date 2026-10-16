@@ -238,7 +238,7 @@ npm run workbench -- --config /ABS/PRIVATE/project.json --hub-url https://hub.2-
 
 这是日常必守规则，适用于人和 Agent，包括“只改一行”、文档、配置模板和运维脚本。
 
-先按顺序读：根 `AGENTS.md` → `README.md` → `docs/memory/CURRENT.md` → `docs/ARCHITECTURE.md` / `docs/COMPONENTS.md` → 相关组件说明和代码/测试。再读 [开发流程](DEVELOPMENT_WORKFLOW.md)、[测试](TESTING.md)；架构、契约、证据、跨层、云/运行时变更必须读 [治理](ENGINEERING_GOVERNANCE.md)。
+按根 [AGENTS](../AGENTS.md) 的当前入口读：README → CURRENT → WORKING_RULES → 当前任务；再按任务查组件/规格/代码。架构、测试、开发流程和治理只读受影响部分，不把本长指南全篇或旧执行包当每个工程师的启动前置。
 
 在开发 clone（不是运行 checkout）先检查是否有未提交工作，不能 reset/stash 掩盖别人的工作。干净时：
 

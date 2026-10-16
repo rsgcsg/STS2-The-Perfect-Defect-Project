@@ -16,7 +16,7 @@
 
 - Affected contracts / component identity; cross-repository dependency and exact pin:
 - Merge method: normal merge for component source; squash only without component source changes.
-- Test shape and failure family; reviewer-chosen boundary counterexample when material:
+- Test shape, needed guarantee and existing/new/replaced/retired coverage (when affected); relevant counterexample, cost and maintenance owner:
 - Actual commands/results and latest-head CI/status SHA:
 - Evidence level actually proved; build/artifact/runtime/Human/cloud identity when applicable:
 - Remaining non-claims / required gate / next owner and monitor if running:
