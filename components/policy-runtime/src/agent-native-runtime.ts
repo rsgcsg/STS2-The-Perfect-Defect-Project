@@ -1,4 +1,4 @@
-import { type FullPublicBasis, serializePublicBasisRecord, decodePlayerReceipt } from "@rsgcsg/sts2-connector-client";
+import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
 import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
@@ -1397,7 +1397,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           onResponseBytes: async bytes => { const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
             await this.emitGlobal("global_transport_response", { artifact, operation: "step", request_id: requestId }); }
         });
-        const decoded = decodePlayerReceipt(receipt).data;
+        const decoded = decodePublicSourceReceipt(receipt).data;
         const expected = { bound_action_id: bound.bound_action_id, verb: bound.verb, subject_referent_id: bound.subject_referent_id ?? null, arguments: bound.arguments };
         const actual = { ...decoded.action, subject_referent_id: decoded.action.subject_referent_id ?? null };
         if (decoded.request_id !== requestId || canonicalJson(expected) !== canonicalJson(actual)) throw new AgentSessionError("global_original_receipt_binding");

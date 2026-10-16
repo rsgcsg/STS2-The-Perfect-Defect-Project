@@ -12,6 +12,7 @@ internal sealed class RewardPageSnapshotIdentity
 {
     private readonly SnapshotIdentityTracker _native = new();
     private readonly SnapshotIdentityTracker _legacy = new();
+    private readonly SnapshotIdentityTracker _publicBasis = new();
     // Non-wire preparation seed stays within the existing identity owner and never churns the ordinary PE view.
     private readonly SnapshotIdentityTracker _nativePreparation = new();
     private readonly SnapshotIdentityTracker _reward = new();
@@ -26,6 +27,10 @@ internal sealed class RewardPageSnapshotIdentity
 
     internal (string StateId, long Sequence) ObserveNativePreparation(long nativeSequence, string signature) =>
         _nativePreparation.Observe(StableIdentityHash.Object(new { nativeSequence, signature }));
+
+    internal (string StateId, long Sequence) ObservePublicBasis(
+        long nativeSequence, string publicBasisSignature) =>
+        _publicBasis.Observe(StableIdentityHash.Object(new { nativeSequence, publicBasisSignature }));
 
     internal (string StateId, long Sequence) ObserveReward(
         long nativeSequence, string rewardSignature) =>

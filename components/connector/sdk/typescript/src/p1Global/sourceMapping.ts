@@ -1,4 +1,5 @@
-import { decodePlayerRead, decodePlayerSnapshot } from "../protocol.js";
+import { decodePlayerRead } from "../protocol.js";
+import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { createSession, reduce, resolveFollowBasis, type Lowering, type P1Basis, type P1SessionState } from "./reducer.js";
 

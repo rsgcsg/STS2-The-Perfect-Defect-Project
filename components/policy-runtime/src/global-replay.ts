@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { readPublicBasisRecord, decodePlayerReceipt, verifyPublicBasis, decodePublicBasisHandle, decodePublicBasisChunk, assemblePublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
+import { readPublicBasisRecord, decodePublicSourceReceipt, verifyPublicBasis, decodePublicBasisHandle, decodePublicBasisChunk, assemblePublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_RESULT_SCHEMA, canonicalJson, type P1SessionState, type Lowering } from "@rsgcsg/sts2-connector-client/p1-global";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
 import { validateAgentManifest, validateAgentConsumption, validateAgentDirective, supportsProfileValue } from "./agent-session-contracts.js";
@@ -210,7 +210,7 @@ export async function replayGlobalAgentRun(directory: string) {
         && active.dispatches.at(-1)?.request_id === p.request_id && !classifiedReceipts.has(p.request_id)
         && active.deliveries.length + 1 === active.dispatches.length
         && p.source_ordinal === dispatch.source_ordinal, "global_receipt_without_dispatch");
-      const receipt = decodePlayerReceipt(p.receipt).data; const { interaction_id: _i, label: _l, ...bound } = dispatch.bound_action;
+      const receipt = decodePublicSourceReceipt(p.receipt).data; const { interaction_id: _i, label: _l, ...bound } = dispatch.bound_action;
       require(receipt.request_id === p.request_id && same({ ...receipt.action, subject_referent_id: receipt.action.subject_referent_id ?? null }, { ...bound, subject_referent_id: bound.subject_referent_id ?? null }), "global_receipt_binding");
       require((responses.get(p.request_id) ?? []).some(bytes => { try { const wire = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); return same(wire.result?.receipt ?? wire, receipt); } catch { return false; } }), "global_receipt_not_original_bytes");
       classifiedReceipts.add(p.request_id); active.deliveries.push(receipt); if (receipt.delivery === "unknown") unknown = true;

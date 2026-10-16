@@ -64,7 +64,7 @@ export class ReferenceGlobalTransport implements GlobalTransport {
   async acquire(signal: AbortSignal): Promise<void> { signal.throwIfAborted(); await this.controller.credentials(); signal.throwIfAborted(); }
   async step(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }, options: PublicTransportOptions): Promise<PlayerEnvironmentReceipt> {
     const credentials = await this.controller.credentials(); options.signal?.throwIfAborted();
-    return (await this.client.submit({ ...input, ...credentials }, options)).data;
+    return (await this.client.submitPublicBasis({ ...input, ...credentials }, options)).data;
   }
   controlStatus(): "held" | "released" | "unknown" {
     const s = this.controller.snapshot();

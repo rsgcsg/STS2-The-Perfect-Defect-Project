@@ -30,6 +30,18 @@ public sealed class PublicBasisTests
     }, null);
 
     [Fact]
+    public void ExactExecutionProfileVersionsTheBasisWhileLegacyBytesKeepRevisionOne()
+    {
+        var snapshot = Snapshot();
+        JsonNode Freeze() => JsonNode.Parse(PublicBasisAssembly.Freeze(snapshot, new[] { Read(snapshot) }, null, Options).Bytes)!;
+        Assert.Equal("1", Freeze()["revision"]!.GetValue<string>());
+        snapshot["input_profile"] = PublicBasisContract.Profile;
+        Assert.Equal("2", Freeze()["revision"]!.GetValue<string>());
+        snapshot["input_profile"] = "public-basis-2";
+        Assert.Throws<SealedObservationException>(() => Freeze());
+    }
+
+    [Fact]
     public void SharedRetentionOwnsExactDetachedBytesAndRejectsWrongProfile()
     {
         var snapshot = Snapshot(); var read = Read(snapshot);

@@ -354,7 +354,7 @@ internal sealed class RequestNamespace : IDisposable
         && request.ControllerGeneration is > 0
         && request.InputProfile is null or NativeLogicalContract.Profile or TextMenuContract.Profile
             or TextMenuV2Contract.Profile or PlayerEnvironmentContract.OrdinaryRewardPageProfile
-            or PlayerEnvironmentContract.RewardPotionPageProfile;
+            or PlayerEnvironmentContract.RewardPotionPageProfile or PublicBasisContract.Profile;
     private static string Fingerprint(PlayerEnvironmentActionRequest request) => Convert.ToHexString(SHA256.HashData(
         JsonSerializer.SerializeToUtf8Bytes(new { request.ExpectedSnapshotId, request.BoundActionId,
             request.ClientSessionId, request.ControllerLeaseId, request.ControllerGeneration, request.InputProfile }))).ToLowerInvariant();

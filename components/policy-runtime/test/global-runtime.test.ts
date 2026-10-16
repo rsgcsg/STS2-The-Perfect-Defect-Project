@@ -12,6 +12,8 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
       expect((await f.runtime.tick()).type).toBe("delivered");
       expect((await f.runtime.tick()).type).toBe("closed");
       const events = await f.events(); expect(events.at(-1).kind).toBe("stopped"); expect(f.source.steps).toBe(1); expect(f.source.controlHeld).toBe(false);
+      expect(f.source.requests.find(r => r.path === "/api/player-environment/actions")!.body.input_profile).toBe("public-basis-1");
+      expect(events.find(e => e.kind === "global_receipt").payload.receipt.input_profile).toBe("public-basis-1");
       const input = events.find(e=>e.kind==="global_input"); const parsed=JSON.parse(await readFile(join(f.evidence.directory,input.payload.artifact.path),"utf8"));
       expect(parsed.observation.envelope).toBeUndefined(); expect(parsed.observation.session).toBeUndefined();
       expect(JSON.stringify(parsed)).not.toMatch(/runtime_instance_id|source_snapshot_id|bound_action_id|control_token/);

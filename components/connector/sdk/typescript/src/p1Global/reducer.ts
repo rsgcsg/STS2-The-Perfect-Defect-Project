@@ -1,4 +1,5 @@
-import { decodePlayerRead, decodePlayerSnapshot } from "../protocol.js";
+import { decodePlayerRead } from "../protocol.js";
+import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";

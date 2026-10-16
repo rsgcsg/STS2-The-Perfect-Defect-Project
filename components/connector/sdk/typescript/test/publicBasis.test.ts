@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { describe, it, expect } from 'vitest';
 import { decodePublicBasis, verifyPublicBasis, readPublicBasisRecord, serializePublicBasisRecord,
-  PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE, PlayerEnvironmentRestClient } from '../src/index.js';
+  PUBLIC_BASIS_SCHEMA, PUBLIC_BASIS_SCOPE, PlayerEnvironmentRestClient, decodePublicBasisSnapshot,
+  decodePublicBasisReceipt, decodePublicSourceReceipt, decodePlayerReceipt, decodePlayerSnapshot } from '../src/index.js';
 import { publicBytesSha256 } from '../src/retainedBytes.js';
 
 function basis(): any {
@@ -21,6 +22,44 @@ async function archived() {
   return { value, serialized, bytes, capture };
 }
 describe('protocol-neutral original public basis', () => {
+  it('reads tagged revision 2 and historical revision 1 without upgrading historical tokens', () => {
+    const old = basis(); expect(decodePublicBasis(old)).toEqual(old);
+    const current = basis(); current.revision = '2'; current.snapshot.input_profile = 'public-basis-1';
+    expect(decodePublicBasis(current)).toEqual(current);
+    expect(() => decodePlayerSnapshot(current.snapshot)).toThrow();
+    current.revision = '1'; expect(() => decodePublicBasis(current)).toThrow();
+    delete current.snapshot.input_profile; current.revision = '2';
+    expect(() => decodePublicBasis(current)).toThrow();
+  });
+  it('submits and polls with the exact public profile, retaining the original tagged receipt', async () => {
+    const snapshot = { ...basis().snapshot, input_profile: 'public-basis-1' };
+    const receipt = { protocol_version: '1.0.0', schema: 'sts2.player-environment/receipt-1', request_id: 'public-request',
+      input_profile: 'public-basis-1', delivery: 'delivered', action: { bound_action_id: 'bound', verb: 'activate',
+        subject_referent_id: null, arguments: [] }, retry: { allowed: false, reason: 'fresh_snapshot_required' }, successor: snapshot };
+    const calls: { url: string; body: any }[] = [];
+    const client = new PlayerEnvironmentRestClient('http://127.0.0.1:17777', 1000, async (url, init) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify(receipt));
+    });
+    const result = await client.submitPublicBasis({ requestId: 'public-request', expectedSnapshotId: snapshot.snapshot_id,
+      boundActionId: 'bound', clientSessionId: 'client', controllerLeaseId: 'lease', controllerGeneration: 1 });
+    expect(result.raw).toEqual(receipt); expect(result.data.successor).toEqual(snapshot);
+    expect(calls[0]!.body.input_profile).toBe('public-basis-1');
+    expect((await client.pollPublicBasis('public-request')).data).toEqual(result.data);
+    expect(calls[1]!.url).toContain('/actions/public-request?input_profile=public-basis-1');
+    expect(() => decodePlayerReceipt(receipt)).toThrow();
+    expect(decodePublicSourceReceipt(receipt).data).toEqual(result.data);
+    const legacy: any = structuredClone(receipt); delete legacy.input_profile; delete legacy.successor.input_profile;
+    expect(decodePublicSourceReceipt(legacy).data).toEqual(decodePlayerReceipt(legacy).data);
+    expect(() => decodePublicBasisReceipt(legacy)).toThrow();
+    for (const profile of [undefined, 'text-menu-v2', 'public-basis-2']) {
+      const bad: any = structuredClone(receipt); bad.successor.input_profile = profile;
+      expect(() => decodePublicBasisReceipt(bad)).toThrow();
+      expect(() => decodePublicBasisSnapshot(bad.successor)).toThrow();
+      bad.input_profile = profile; expect(() => decodePublicSourceReceipt(bad)).toThrow();
+    }
+    expect(() => decodePublicBasisReceipt({ ...receipt, delivery: 'unknown', retry: { allowed: true, reason: 'retry' } })).toThrow();
+  });
   it('retains exact bytes through archive and keeps P1 completeness separate', async () => {
     const f = await archived(); const full = await verifyPublicBasis(f.capture, f.serialized);
     expect((await readPublicBasisRecord(serializePublicBasisRecord(full))).serializedObservation).toBe(f.serialized);

@@ -1,5 +1,6 @@
 import { PUBLIC_BASIS_ROUTE, PUBLIC_BASIS_PROFILE, assemblePublicBasis,
   decodePublicBasisHandle, decodePublicBasisChunk, decodePublicBasisRelease, decodePublicBasisCapabilities,
+  decodePublicBasisReceipt, type PublicBasisReceipt,
   type PublicBasisHandle, type PublicBasisChunk, type PublicBasisRelease, type FullPublicBasis, type PublicBasisCapabilities } from "./publicBasis.js";
 import {
   SEALED_OBSERVATION_ROUTE, assembleSealedTextMenuV2, validateSealedChunkLimit,
@@ -280,6 +281,17 @@ export class PlayerEnvironmentRestClient {
     }, true, options));
   }
 
+  async submitPublicBasis(input: {
+    requestId: string; expectedSnapshotId: string; boundActionId: string;
+    clientSessionId: string; controllerLeaseId: string; controllerGeneration: number;
+  }, options?: PublicTransportOptions): Promise<DecodedPlayerPayload<PublicBasisReceipt>> {
+    return decodePublicBasisReceipt(await this.post("/api/player-environment/actions", {
+      request_id: input.requestId, expected_snapshot_id: input.expectedSnapshotId, bound_action_id: input.boundActionId,
+      client_session_id: input.clientSessionId, controller_lease_id: input.controllerLeaseId,
+      controller_generation: input.controllerGeneration, input_profile: PUBLIC_BASIS_PROFILE
+    }, true, options));
+  }
+
   async submitRewardPage(input: {
     requestId: string;
     expectedSnapshotId: string;
@@ -358,6 +370,11 @@ export class PlayerEnvironmentRestClient {
 
   async poll(requestId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.get(`/api/player-environment/actions/${encodeURIComponent(requestId)}`));
+  }
+
+  async pollPublicBasis(requestId: string): Promise<DecodedPlayerPayload<PublicBasisReceipt>> {
+    return decodePublicBasisReceipt(await this.get(
+      `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${PUBLIC_BASIS_PROFILE}`));
   }
 
   async pollRewardPage(requestId: string): Promise<DecodedPlayerPayload<RewardPageReceipt>> {
