@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes.Cards;
 
 namespace STS2Platform.NativeFoundation;
 
@@ -25,6 +26,11 @@ internal static class NativeDetachedCardCopy
         AfterCloned(copy);
         return copy;
     }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_model")]
+    internal static extern ref CardModel? UiModel(NCard node);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_subscribedEnchantment")]
+    internal static extern ref EnchantmentModel? UiSubscribedEnchantment(NCard node);
 
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "MemberwiseClone")]
     private static extern object MemberwiseClone(object original);
