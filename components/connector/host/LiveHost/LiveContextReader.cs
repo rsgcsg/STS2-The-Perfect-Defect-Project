@@ -2,6 +2,9 @@ using STS2Connector.NativeUi;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using STS2Platform.NativeFoundation;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
@@ -132,14 +135,19 @@ internal static class LiveContextReader
         };
     }
 
+    internal static VisibleCard BuildRewardCard(CardModel card, string entityId) =>
+        STS2Platform.NativeFoundation.NativeCardRenderTransaction.Run(card, PileType.None,
+            () => BuildCard(card, entityId, displayPile: PileType.None, strictRendering: true) with { TargetType = card.TargetType.ToString() });
+
     public static VisibleCard BuildCard(
         CardModel card,
         string entityId,
         bool selected = false,
         bool includeCombatLegality = false,
-        PileType displayPile = PileType.Hand)
+        PileType displayPile = PileType.Hand,
+        bool strictRendering = false)
     {
-        string cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString();
+        string cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
         string? starCost = card.HasStarCostX
             ? "X"
             : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
@@ -148,7 +156,7 @@ internal static class LiveContextReader
         {
             description = ConnectorMod.StripRichTextTags(card.GetDescriptionForPile(displayPile)).Replace("\n", " ");
         }
-        catch
+        catch when (!strictRendering)
         {
             description = ConnectorMod.SafeGetText(() => card.Description)?.Replace("\n", " ");
         }
@@ -171,6 +179,7 @@ internal static class LiveContextReader
             unplayableReason = reason == UnplayableReason.None ? null : reason.ToString();
         }
 
+        var publicDetails = NativePublicCardDetails.Capture(card, displayPile);
         return new VisibleCard(
             entityId,
             card.Id.Entry,
@@ -185,7 +194,11 @@ internal static class LiveContextReader
             existing,
             includeCombatLegality ? card.TargetType.ToString() : null,
             canPlay,
-            unplayableReason);
+            unplayableReason)
+        {
+            CurrentPublicDetails = JsonSerializer.SerializeToNode(publicDetails.PublicDetail, ConnectorMod._jsonOptions) as JsonObject,
+            CurrentPublicDetailsMissing = publicDetails.Missing
+        };
     }
 
     internal const string RequiredPowerCaptureMissing = "public_combat_power_facts";

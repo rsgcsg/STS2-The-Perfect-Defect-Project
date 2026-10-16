@@ -233,11 +233,15 @@ public sealed class NativeRewardMerchantInformationTests
         var surface = new CardRewardSelectionSurface("card_reward_selection", "screen",
             new[] { new VisibleCard("card", "DEFEND", "Defend", "Skill", "1", null, "Block", "Basic", false, false, null) },
             new[] { new VisibleCardRewardAlternative("skip", 0, "Skip", true), new VisibleCardRewardAlternative("reroll", 1, "Reroll", true) })
-        { SelectableCardEntityIds = opening ? Array.Empty<string>() : new[] { "card" } };
+        { SelectableCardEntityIds = opening ? Array.Empty<string>() : new[] { "card" },
+            ParentGroupId = "parent-group", RewardSetId = "reward-set", SelectionCompletesReward = true };
         var observation = new LiveObservation("source", opening ? "settling" : "ready", new RewardFlowLiveContext("reward_flow", "card_reward"),
             surface, new("contract_complete_for_card_reward_selection", "exact", Array.Empty<string>(), Array.Empty<string>()),
             new("v", "commit", null, null, new("test", true, true, false, "fixture")), Array.Empty<string>());
         var content = PlayerEnvironmentService.ProjectVisibleFacts(surface, observation.Context!);
+        Assert.Equal("parent-group", content.Surface["parent_group_id"]!.GetValue<string>());
+        Assert.Equal("reward-set", content.Surface["reward_set_id"]!.GetValue<string>());
+        Assert.True(content.Surface["selection_completes_reward"]!.GetValue<bool>());
         var page = Page(content.Surface, opening ? "settling" : "interactive");
         string[] additional = { "focus", "topbar", "potion" };
         var infos = additional.Select(key => new TextMenuLeaf(key, "root", key, key, null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),

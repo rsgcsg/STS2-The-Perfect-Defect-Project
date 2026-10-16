@@ -227,14 +227,15 @@ function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "
 function combatDecision() {
   return {
     type: "decision", decision: "combat_play", context: { ...mapDecision().context, floor: 2, total_floor: 2, room_type: "Combat" },
-    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
-    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
+    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1, combat_hud_complete: true,
+    potion_states: [{native_ref:"native-potion-fire",target_type:"AnyEnemy",can_use:true,automatic:false}],
+    energy: 3, max_energy: 3, stars: null, draw_pile_count: 0, discard_pile_count: 0, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{ index: 0, native_ref: "native-card-strike", valid_target_refs: ["native-enemy-a"],
       id: "CARD.STRIKE_IRONCLAD", name: "Strike", can_play: true, target_type: "AnyEnemy",
       type: "Attack", rarity: "Basic", cost: 1 }],
     enemies: [{ index: 0, native_ref: "native-enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
-      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
-    player: { ...mapDecision().player, native_ref: "native-player", potions: [{
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
+    player: { ...mapDecision().player, block: 0, native_ref: "native-player", potions: [{
       slot: 0, native_ref: "native-potion-fire", id: "POTION.FIRE", name: "Fire Potion",
       target_type: "AnyEnemy", can_use: true, can_discard: true, binding_supported: true,
       valid_target_refs: ["native-enemy-a"], hover_facts_complete: true, keywords: [], card_previews: []
@@ -245,12 +246,13 @@ function combatDecision() {
 function rewardDecision(kind = "reward_set") {
   const common = { type: "decision", context: { ...mapDecision().context, floor: 2,
     total_floor: 2, room_type: "Monster" }, player: mapDecision().player };
-  if (kind === "reward_set") return { ...common, decision: kind,
+  if (kind === "reward_set") return { ...common, decision: kind, reward_set_ref: "reward-set",
     rewards: [{ index: 0, native_ref: "reward-card", kind: "card_choice", name: "Add a card" }],
     potion_slots_full: false, can_skip: true, is_terminal: true, can_proceed: true,
     room_ref: "combat-room", is_boss: false };
   if (kind === "card_reward") return { ...common, decision: kind,
-    cards: [{ index: 0, native_ref: "creation-result-a", id: "CARD.STRIKE", name: "Strike" }],
+    parent_reward_ref: "reward-card", reward_set_ref: "reward-set", parent_status: "bound", selection_completes_reward: true,
+    cards: [{ index: 0, native_ref: "creation-result-a", card_entity_ref: "real-card-a", id: "CARD.STRIKE", name: "Strike", type: "Attack", cost: "1", rarity: "Basic", is_upgraded: false, description: "Deal 6 damage.", render_complete: true, target_type: "AnyEnemy", keywords: [], card_previews: [] }],
     alternatives: [
       { index: 0, native_ref: "alternative-skip", id: "Skip", name: "Skip" },
       { index: 1, native_ref: "alternative-reroll", id: "REROLL", name: "Reroll" },
@@ -268,6 +270,9 @@ test("published v1 and v2 contracts cover actual reviewed scene projections", ()
     combatDecision(), selector(), selector({ choose: true, skip: true }),
     selector({ manual: true, selected: true }), rewardDecision(), rewardDecision("card_reward"),
     rewardDecision("combat_rewards_complete"),
+    { ...mapDecision(), decision:"relic_choice", selector_ref:"native-choice", stage:"choosing", can_skip:true, native_relic_complete:true,
+      relics:[{index:0,native_ref:"native-relic-choice",id:"PAELS_WING",name:"Pael's Wing",description:"Visible effect.",
+        hover_facts_complete:true,keywords:[],card_previews:[]}] },
     { ...mapDecision(), decision: "game_over", victory: true }];
   const seenKinds = new Set();
   for (const state of scenes) {

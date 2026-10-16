@@ -349,7 +349,62 @@ function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
   };
 }
 
+function currentMapContent(raw, entityId) {
+  if (!plainObject(raw) || raw.status !== "captured" || raw.kind !== "map" || !Array.isArray(raw.nodes)
+    || !Array.isArray(raw.visited) || !Number.isSafeInteger(raw.act_index) || !("current_position" in raw)) return null;
+  const coordinate = value => plainObject(value) && Number.isSafeInteger(value.col) && Number.isSafeInteger(value.row)
+    && (value.point_type === null || typeof value.point_type === "string");
+  const keys = new Set(), refs = new Set();
+  if (raw.nodes.length === 0 || raw.nodes.some(node => !coordinate(node) || typeof node.native_ref !== "string"
+      || node.native_ref.length === 0 || typeof node.point_type !== "string" || !node.point_type
+      || !["none", "untravelable", "traveled", "travelable"].includes(node.state) || !Array.isArray(node.children)
+      || node.children.some(child => !coordinate(child)) || keys.has(mapCoordinateKey(node.col,node.row))
+      || refs.has(node.native_ref) || !keys.add(mapCoordinateKey(node.col,node.row)) || !refs.add(node.native_ref))) return null;
+  const types = new Map(raw.nodes.map(node => [mapCoordinateKey(node.col,node.row),node.point_type]));
+  const typeMatches = value => !types.has(mapCoordinateKey(value.col,value.row)) ? value.point_type === null
+    : value.point_type === types.get(mapCoordinateKey(value.col,value.row));
+  if (raw.nodes.some(node => node.children.some(child => !keys.has(mapCoordinateKey(child.col,child.row)) || !typeMatches(child)))
+    || raw.visited.some(value => !coordinate(value) || !typeMatches(value))
+    || raw.current_position !== null && (!coordinate(raw.current_position) || !typeMatches(raw.current_position))) return null;
+  const copyCoordinate = value => ({ col: value.col, row: value.row, point_type: value.point_type });
+  return { kind: "map", act_index: raw.act_index,
+    current_position: raw.current_position === null ? null : copyCoordinate(raw.current_position),
+    visited: raw.visited.map(copyCoordinate), nodes: raw.nodes.map(node => ({ entity_id: entityId("map_point",node.native_ref),
+      col: node.col, row: node.row, point_type: node.point_type, state: node.state,
+      children: node.children.map(copyCoordinate) })) };
+}
+
+function mapRead(snapshotId, state, makeId, entityId) {
+  if (!plainObject(state.context) || !("current_map" in state.context) || state.decision === "game_over") return null;
+  const content = currentMapContent(state.context.current_map, entityId);
+  return { descriptor: { read_id: makeId("read",snapshotId,"map"), kind: "map", target_referent_id: null,
+      content_schema: "sts2.player-environment/read/map-1", visibility_basis: "player_openable_current_generated_map",
+      snapshot_bound: true, ordering_semantics: "native_map_topology", hidden_by_policy: [] },
+    content: content ?? { kind: "map" }, completeness: { status: content ? "complete" : "partial",
+      visible_information: "current_generated_map_without_action_authority", interaction_discovery: "read_only",
+      missing: content ? [] : ["current_native_map_read_unavailable"], hidden_by_policy: [] } };
+}
+
 function buildVisibleMap(state, ctx) {
+  if (plainObject(state.context?.current_map)) {
+    const raw = state.context.current_map;
+    const context = currentMapContent(raw, ctx.entityId);
+    if (context === null || !Array.isArray(state.choices)) return null;
+    const travelable = raw.nodes.filter(node => node.state === "travelable");
+    const exact = state.choices.length === travelable.length && state.choices.every(choice =>
+      travelable.filter(node => node.native_ref === choice.native_ref && node.col === choice.col && node.row === choice.row).length === 1);
+    const nextOptions = exact ? state.choices.map(choice => {
+      const node = context.nodes.find(node => node.col === choice.col && node.row === choice.row);
+      const item = ctx.referent({ role: "option", id: node.entity_id, label: null,
+        properties: { col: node.col, row: node.row, point_type: node.point_type } });
+      ctx.action({ verb: "activate", subject: item, label: `Choose ${node.point_type} at (${node.col},${node.row})`,
+        raw: { cmd: "action", action: "select_map_node", args: { col: node.col, row: node.row, map_point_ref: choice.native_ref } } });
+      return item.properties;
+    }) : [];
+    return { context, surface: { kind: "map_navigation", travel_enabled: true, traveling: false,
+      drawing_mode: "none", next_options: nextOptions, can_exit_annotation: false }, complete: exact,
+      missing: exact ? [] : ["current_map_choices_do_not_match_same_native_capture"] };
+  }
   const map = state.visible_map;
   if (!plainObject(map) || map.type !== "map" || !Array.isArray(map.rows)) return null;
   const choices = Array.isArray(state.choices) ? state.choices : [];
@@ -455,7 +510,7 @@ function buildVisibleMap(state, ctx) {
     context: {
       kind: "map",
       act_index: state.context?.act_index,
-      ...(current == null ? {} : { current_position: current }),
+      current_position: current,
       visited,
       nodes
     },
@@ -500,7 +555,7 @@ function visibleCombatCard(card, entityId, depth = 0) {
     is_upgraded: card?.is_upgraded === true || card?.upgraded === true,
     is_selected: false,
     ...(card?.enchantment == null ? {} : {
-      enchantment: {
+      existing_enchantment: {
         definition_id: definitionId(card.enchantment_id ?? card.enchantment),
         name: card.enchantment,
         description: card.enchantment_description ?? null,
@@ -565,6 +620,11 @@ function canonicalHealthComplete(creature) {
 }
 function canonicalHudComplete(hud) {
   return plainObject(hud) && typeof hud.encounter_type === "string" && typeof hud.is_play_phase === "boolean"
+    && Number.isSafeInteger(hud.round) && hud.round >= 1 && typeof hud.turn_owner === "string" && hud.turn_owner.length > 0
+    && ["energy", "max_energy", "orb_slots"].every(key => Number.isSafeInteger(hud[key]))
+    && ["draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key => Number.isSafeInteger(hud[key]) && hud[key] >= 0)
+    && (hud.stars === null || Number.isSafeInteger(hud.stars))
+    && Number.isFinite(plainObject(hud.player) ? hud.player.block : hud.block)
     && Array.isArray(hud.potion_states) && hud.potion_states.every((potion) => typeof potion.native_ref === "string"
       && typeof potion.target_type === "string" && typeof potion.can_use === "boolean" && typeof potion.automatic === "boolean")
     && Array.isArray(hud.orbs) && hud.orbs.every((orb, index) => typeof orb.native_ref === "string"
@@ -579,7 +639,7 @@ function canonicalHudComplete(hud) {
 function currentSurface(state, ctx) {
   const commonContext = {
     kind: "run",
-    run: state.context ?? null,
+    run: plainObject(state.context) ? Object.fromEntries(Object.entries(state.context).filter(([key]) => key !== "current_map")) : null,
     player: withoutDeck(state.player)
   };
   const supported = {
@@ -873,13 +933,14 @@ function currentSurface(state, ctx) {
             enabled,
             // Public stable group identity (alias of the private native reward ref).
             group_id: ctx.entityId("reward_group", reward.native_ref),
+            group_relation: ["independent", "linked"].includes(reward.group_relation) ? reward.group_relation : "unavailable",
             // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
             ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
               ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
-                entity_id: ctx.entityId("card", card?.native_ref), ...cardProperties(card) }))
+                ...visibleCombatCard(card, ctx.entityId("card", card?.native_ref)) }))
               : null,
               card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
-                option_id: option.option_id, title: option.title, after_selected: option.after_selected })) : null,
+                option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_native_skip: option.is_native_skip === true })) : null,
               card_alternatives_complete: reward.card_alternatives_complete === true
                 && Array.isArray(reward.card_alternatives)
                 && reward.card_alternatives.every(option => typeof option?.option_id === "string" && option.option_id.length > 0
@@ -888,7 +949,9 @@ function currentSurface(state, ctx) {
                 && ["can_skip_selection", "can_reroll", "selection_completes_reward"].every(key => typeof reward[key] === "boolean"),
               can_skip_selection: reward.can_skip_selection ?? null,
               can_reroll: reward.can_reroll ?? null,
-              selection_completes_reward: reward.selection_completes_reward ?? null } : {})
+              selection_completes_reward: reward.selection_completes_reward ?? null,
+              native_relic_refresh_subscription: ["attached", "absent"].includes(reward.native_relic_refresh_subscription)
+                ? reward.native_relic_refresh_subscription : "unavailable" } : {})
           }
         });
         if (enabled) {
@@ -964,6 +1027,7 @@ function currentSurface(state, ctx) {
         prompt: null,
         surface: {
           kind: "reward_claim",
+          reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
           rewards,
           potion_slots_full: potionSlotsFull,
           discardable_potions: discardablePotions,
@@ -981,6 +1045,35 @@ function currentSurface(state, ctx) {
           ...(potionIdentityComplete ? [] : ["native_potion_identity"])
         ]
       };
+    }
+    case "relic_choice": {
+      const relics = Array.isArray(state.relics) ? state.relics : [];
+      const exact = state.native_relic_complete === true && typeof state.selector_ref === "string" && state.selector_ref.length > 0
+        && state.stage === "choosing" && state.can_skip === true && relics.length > 0 && relics.length + 1 <= ACTION_LIMIT
+        && relics.every((relic, index) => relic?.index === index && typeof relic.native_ref === "string" && relic.native_ref.length > 0
+          && ["id", "name", "description"].every(key => typeof relic[key] === "string" && relic[key].trim().length > 0)
+          && relic.hover_facts_complete === true && Array.isArray(relic.keywords) && Array.isArray(relic.card_previews))
+        && new Set(relics.map(relic => relic.native_ref)).size === relics.length;
+      const offered = relics.map((relic, index) => {
+        const unique = typeof relic?.native_ref === "string" && relics.filter(option => option?.native_ref === relic.native_ref).length === 1;
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic", relic.native_ref) : ctx.id("unbound_relic", index),
+          label: relic.name, occurrence: index, enabled: exact,
+          properties: { definition_id: definitionId(relic.id), name: visibleText(relic.name), description: visibleText(relic.description),
+            counter: relic.counter ?? null, keywords: visibleHoverKeywords(relic.keywords ?? []),
+            card_previews: visibleHoverCards(relic.card_previews ?? [], ctx.snapshotId, `relic_choice_${index}`, ctx.id) } });
+        if (exact) ctx.action({ verb: "select", subject: item, label: `Choose ${relic.name}`,
+          raw: { cmd: "action", action: "select_native_relic", args: { selector_ref: state.selector_ref, relic_ref: relic.native_ref } } });
+        return item.properties;
+      });
+      if (exact) ctx.action({ verb: "skip", label: "Skip relic selection", raw: {
+        cmd: "action", action: "skip_native_relic", args: { selector_ref: state.selector_ref } } });
+      return { kind: "native_boss_relic_selection", stage: "choosing", prompt: null,
+        surface: { kind: "native_boss_relic_selection", stage: "choosing", selector_profile: "managed-native-relic-presentation-1",
+          relics: offered, selectable_relic_entity_ids: exact ? offered.map(relic => relic.entity_id) : [], can_skip: exact && state.can_skip },
+        context: { ...commonContext, kind: "relic_choice" }, complete: exact,
+        missing: exact ? [] : ["exact_current_native_relic_presentation", ...(state.native_relic_gap ? [state.native_relic_gap] : [])],
+        visibleInformation: "complete_original_native_relic_offer_and_current_public_display",
+        interactionDiscovery: "exact_synchronous_RelicSelectCmd_presentation_and_original_object_completion" };
     }
     case "card_reward": {
       const rawCards = state.cards;
@@ -1010,12 +1103,21 @@ function currentSurface(state, ctx) {
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
         missing: ["exact_current_card_reward_choices"]
       };
+      const metadataComplete = rawCards.every(card => typeof card.card_entity_ref === "string" && card.card_entity_ref.length > 0)
+        && typeof state.parent_reward_ref === "string" && state.parent_reward_ref.length > 0
+        && state.parent_status === "bound" && typeof state.reward_set_ref === "string" && state.reward_set_ref.length > 0
+        && typeof state.selection_completes_reward === "boolean"
+        && rawCards.every(card => card.render_complete === true
+          && ["id", "name", "type", "rarity", "description"].every(key => typeof card[key] === "string" && card[key].length > 0)
+          && (typeof card.cost === "string" || Number.isFinite(card.cost)) && typeof card.is_upgraded === "boolean"
+          && Array.isArray(card.keywords) && Array.isArray(card.card_previews));
       const cards = rawCards.map((card, index) => {
         const item = ctx.referent({
           role: "card",
+          id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index),
           label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: { index: card?.index ?? index, ...cardProperties(card) }
+          properties: { index: card?.index ?? index, ...visibleCombatCard(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index)) }
         });
         ctx.action({
           verb: "select", subject: item, label: `Take ${card.name ?? `card ${index + 1}`}`,
@@ -1028,8 +1130,8 @@ function currentSurface(state, ctx) {
           role: "card_reward_alternative", label: alternative?.name ?? `Alternative ${index + 1}`,
           occurrence: index,
           properties: { option_id: alternative?.option_id ?? alternative?.id ?? null,
-            name: alternative?.name ?? null, title: alternative?.title ?? null,
-            after_selected: alternative?.after_selected ?? null }
+            index, label: alternative?.name ?? null, enabled: true, title: alternative?.title ?? null,
+            after_selected: alternative?.after_selected ?? null, is_native_skip: alternative?.is_native_skip === true }
         });
         ctx.action({
           verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
@@ -1044,12 +1146,18 @@ function currentSurface(state, ctx) {
         stage: "choosing",
         prompt: null,
         surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
+          parent_status: ["bound", "standalone"].includes(state.parent_status) ? state.parent_status : "unavailable",
+          parent_group_id: typeof state.parent_reward_ref === "string" ? ctx.entityId("reward_group", state.parent_reward_ref) : null,
+          reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
+          selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
+          native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
+            ? state.native_relic_refresh_subscription : "unavailable",
           can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip") },
         context: { ...commonContext, kind: "reward" },
-        complete: true,
+        complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
-        missing: []
+        missing: metadataComplete ? [] : ["exact_card_reward_parent_and_card_identity"]
       };
     }
     case "combat_rewards_complete": {
@@ -1355,7 +1463,7 @@ function currentSurface(state, ctx) {
         text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
       const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
-        && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+        && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
         && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
           && card.render_complete === true && cardComplete(card))
@@ -1600,9 +1708,9 @@ function currentSurface(state, ctx) {
         max_energy: state.max_energy,
         stars: state.stars,
         hand: handEntries.map((entry) => entry.card),
-        draw_pile_count: state.draw_pile_count ?? 0,
-        discard_pile_count: state.discard_pile_count ?? 0,
-        exhaust_pile_count: state.exhaust_pile_count ?? 0,
+        draw_pile_count: state.draw_pile_count,
+        discard_pile_count: state.discard_pile_count,
+        exhaust_pile_count: state.exhaust_pile_count,
         statuses: (state.player_statuses ?? []).map(visibleStatus),
         companions: (state.companions ?? []).map((pet) => visibleCompanion(pet, ctx)),
         potion_states: (state.potion_states ?? []).map((potion) => ({
@@ -2090,6 +2198,7 @@ export function projectManagedCandidateDecision({
   stageStarted = performance.now();
   const reads = [
     runDeckRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
+    mapRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
     combatPilesRead(ctx.snapshotId, state, ctx.id)
   ]
     .filter(Boolean);
@@ -2452,7 +2561,7 @@ export class ManagedPlayerEnvironmentSession {
 
   async #setState(state, timeoutMs) {
     let enriched = state;
-    if (state?.decision === "map_select") {
+    if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
       const mapReadStarted = performance.now();
       try {
         const visibleMap = await this.#process.request({ cmd: "get_map" }, timeoutMs);

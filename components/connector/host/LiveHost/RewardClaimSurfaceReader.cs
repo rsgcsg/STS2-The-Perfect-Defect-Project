@@ -139,6 +139,8 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             canProceed,
             proceedButton.IsSkip)
         {
+            RewardSetId = NativeRewardDecisionProvider.ObserveOwner(screen) is { } exactOwner
+                ? entities.GetId(exactOwner.RewardsSet, "reward_set") : null,
             CanLeaveWithUnclaimedRewards = canProceed
                 && NativeRewardDecisionProvider.ObserveOwner(screen)?.RewardsSet.DisallowSkipping == false
         };
@@ -202,7 +204,7 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
         };
         string rewardId = entities.GetId(reward, "reward");
         IReadOnlyList<VisibleCard>? cardOptions = reward is CardReward { IsPopulated: true } cardReward
-            ? cardReward.Cards.Select(card => LiveContextReader.BuildCard(card, entities.GetId(card, "card"))).ToArray()
+            ? cardReward.Cards.Select(card => LiveContextReader.BuildRewardCard(card, entities.GetId(card, "card"))).ToArray()
             : null;
         NativeCardRewardAlternativePreviewResult? preview = reward is CardReward currentCardReward
             ? NativeCardRewardAlternativePreview.Capture(currentCardReward) : null;
@@ -214,13 +216,16 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             button.IsEnabled && claimable)
         {
             GroupId = rewardId,
+            GroupRelation = NativeRewardSetObservation.Relation(reward),
             CardOptions = cardOptions,
             CardAlternatives = preview?.Alternatives?.Select(option =>
-                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected)).ToArray(),
+                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected) { IsNativeSkip = option.IsNativeSkip }).ToArray(),
             CardAlternativesComplete = preview?.Complete == true,
             CanSkipSelection = preview?.CanSkipSelection,
             CanReroll = preview?.CanReroll,
-            SelectionCompletesReward = preview?.SelectionCompletesReward
+            SelectionCompletesReward = preview?.SelectionCompletesReward,
+            NativeRelicRefreshSubscription = reward is CardReward observedReward
+                ? NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(observedReward) : "unavailable"
         };
     }
 
