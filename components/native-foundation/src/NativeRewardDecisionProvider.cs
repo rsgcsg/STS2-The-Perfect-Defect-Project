@@ -26,6 +26,7 @@ public static class NativeRewardDecisionProvider
         RewardsSet set,
         bool isTerminal)
     {
+        NativeRewardSetObservation.Register(set);
         Owners.Remove(screen);
         Owners.Add(screen, new Owner(set, isTerminal));
     }

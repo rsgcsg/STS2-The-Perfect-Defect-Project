@@ -115,6 +115,7 @@ test("projects complete map topology and persistent visible state without exposi
   assert.equal(projection.snapshot.completeness.status, "complete");
   assert.equal(projection.snapshot.persistent.content.run.act_definition_id, "OVERGROWTH");
   assert.equal(projection.snapshot.interaction.content.context.nodes.length, 3);
+  assert.equal(projection.snapshot.interaction.content.context.current_position, null);
   assert.deepEqual(projection.snapshot.referents.map((referent) => referent.role).sort(), [
     "node",
     "node",
@@ -352,14 +353,15 @@ test("projects native reward sets without exposing exact reward or room operands
   }, {
     kind: "reward_claim",
     rewards: [
-      { kind: "gold", label: "17 gold", description: null, enabled: true },
-      { kind: "card", label: "Add a card", description: null, enabled: true, card_options: null,
+      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable" },
+      { kind: "card", label: "Add a card", description: null, enabled: true, group_relation: "unavailable", card_options: null,
         card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null }
     ],
     potion_slots_full: false,
     discardable_potions: [],
     can_proceed: true,
     can_leave_with_unclaimed_rewards: null,
+    reward_set_id: null,
     proceed_skips_remaining_rewards: true
   });
   assert.equal(JSON.stringify(projection.snapshot).includes("reward-gold-a"), false);
@@ -1116,8 +1118,8 @@ test("complete unopened card reward alternatives preserve actual outcomes and ou
   const state = { type: "decision", decision: "reward_set", context: {}, player: player(),
     can_skip: true, is_terminal: true, can_proceed: true, can_leave_with_unclaimed_rewards: false,
     room_ref: "room-original", rewards: [{ native_ref: "group-original", kind: "card_choice", name: "Reward",
-      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward" },
-        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward" }],
+      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_pure_return: false },
+        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward", is_pure_return: false }],
       card_alternatives_complete: true, can_skip_selection: true, can_reroll: false, selection_completes_reward: true }] };
   const result = projectManagedCandidateDecision({ state, ...projectionIdentity }).snapshot.interaction.content.surface;
   assert.deepEqual(result.rewards[0].card_alternatives, state.rewards[0].card_alternatives);
@@ -1132,4 +1134,70 @@ test("complete unopened card reward alternatives preserve actual outcomes and ou
     const output=projectManagedCandidateDecision({ state: changed, ...projectionIdentity }).snapshot.interaction.content.surface;
     assert.equal(output.rewards[0].card_alternatives_complete, false);
   }
+});
+
+
+test("opened reward retains exact parent, set and real card identity while executing original creation result", () => {
+  const aliases = new Map();
+  const card = { native_ref: "real-card", id: "CARD.STRIKE", name: "Strike", type: "Attack", cost: 1,
+    rarity: "Basic", is_upgraded: false, description: "Deal 6 damage.", render_complete: true, keywords: [], card_previews: [] };
+  const common = eventState();
+  const outer = projectManagedCandidateDecision({ ...projectionIdentity, publicEntityAliases: aliases,
+    state: { ...common, decision: "reward_set", reward_set_ref: "native-set", is_terminal: false,
+      rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] } });
+  const opened = { ...common, decision: "card_reward", parent_status: "bound",
+    parent_reward_ref: "native-reward", reward_set_ref: "native-set", selection_completes_reward: true,
+    cards: [{ ...card, native_ref: "creation-result", card_entity_ref: "real-card", index: 0 }], alternatives: [] };
+  const project = state => projectManagedCandidateDecision({ ...projectionIdentity, sequence: 2, state,
+    publicEntityAliases: aliases });
+  const inner = project(opened);
+  const outerSurface = outer.snapshot.interaction.content.surface;
+  const innerSurface = inner.snapshot.interaction.content.surface;
+  assert.equal(innerSurface.parent_group_id, outerSurface.rewards[0].group_id);
+  assert.equal(innerSurface.reward_set_id, outerSurface.reward_set_id);
+  assert.equal(innerSurface.cards[0].entity_id, outerSurface.rewards[0].card_options[0].entity_id);
+  assert.equal(innerSurface.selection_completes_reward, true);
+  assert.deepEqual([...inner.bindings.values()][0].raw_request.args, { card_ref: "creation-result" });
+  assert.equal(JSON.stringify(inner.snapshot).includes("creation-result"), false);
+  assert.equal(JSON.stringify(inner.snapshot).includes("real-card"), false);
+  for (const key of ["parent_reward_ref", "parent_status", "selection_completes_reward"]) {
+    const missing = structuredClone(opened); delete missing[key];
+    assert.ok(project(missing).snapshot.completeness.missing.includes("exact_card_reward_parent_and_card_identity"), key);
+  }
+  const missingCard = structuredClone(opened); delete missingCard.cards[0].card_entity_ref;
+  assert.ok(project(missingCard).snapshot.completeness.missing.includes("exact_card_reward_parent_and_card_identity"));
+});
+
+test("same raw capture supplies the full map Read off page without creating travel actions", () => {
+  const state = eventState();
+  state.context.current_map = { kind: "map", status: "captured", gap: null, act_index: 0,
+    current_position: null, visited: [], nodes: [
+      { native_ref: "start", col: 0, row: -1, point_type: "ancient", state: "travelable", children: [{ col: 0, row: 0, point_type: "monster" }] },
+      { native_ref: "room", col: 0, row: 0, point_type: "monster", state: "untravelable", children: [{ col: 0, row: 1, point_type: "boss" }] },
+      { native_ref: "boss", col: 0, row: 1, point_type: "boss", state: "untravelable", children: [] }
+    ] };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const read = [...projection.reads.values()].find(value => value.descriptor.kind === "map");
+  assert.equal(read.completeness.status, "complete");
+  assert.equal(read.content.current_position, null);
+  assert.equal(read.content.nodes.length, 3);
+  assert.equal(read.content.nodes[1].state, "untravelable");
+  assert.equal(projection.snapshot.interaction.kind, "event_option");
+  assert.equal([...projection.bindings.values()].some(value => value.raw_request.action === "select_map_node"), false);
+  assert.equal(JSON.stringify(projection.snapshot).includes("current_map"), false);
+  assert.equal(JSON.stringify(projection.snapshot).includes('"native_ref"'), false);
+  for (const mutate of [raw => { raw.nodes[1].col = 0; raw.nodes[1].row = -1; },
+    raw => { raw.nodes[1].native_ref = raw.nodes[0].native_ref; },
+    raw => { raw.nodes[0].children[0].row = 99; }, raw => { raw.status = "unsupported"; }]) {
+    const changed = structuredClone(state); mutate(changed.context.current_map);
+    const partial = projectManagedCandidateDecision({ state: changed, ...projectionIdentity });
+    assert.equal([...partial.reads.values()].find(value => value.descriptor.kind === "map").completeness.status, "partial");
+  }
+  const mapState = { ...state, decision: "map_select", choices: [{ native_ref: "start", col: 0, row: -1, type: "Ancient" }] };
+  const current = projectManagedCandidateDecision({ state: mapState, ...projectionIdentity });
+  assert.equal(current.snapshot.interaction.content.context.current_position, null);
+  const mapRead = [...current.reads.values()].find(value => value.descriptor.kind === "map");
+  assert.deepEqual(mapRead.content, current.snapshot.interaction.content.context);
+  assert.equal(current.bindings.size, 1);
+  assert.equal([...current.bindings.values()][0].raw_request.args.map_point_ref, "start");
 });

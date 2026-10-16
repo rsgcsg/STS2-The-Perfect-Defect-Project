@@ -246,12 +246,13 @@ function combatDecision() {
 function rewardDecision(kind = "reward_set") {
   const common = { type: "decision", context: { ...mapDecision().context, floor: 2,
     total_floor: 2, room_type: "Monster" }, player: mapDecision().player };
-  if (kind === "reward_set") return { ...common, decision: kind,
+  if (kind === "reward_set") return { ...common, decision: kind, reward_set_ref: "reward-set",
     rewards: [{ index: 0, native_ref: "reward-card", kind: "card_choice", name: "Add a card" }],
     potion_slots_full: false, can_skip: true, is_terminal: true, can_proceed: true,
     room_ref: "combat-room", is_boss: false };
   if (kind === "card_reward") return { ...common, decision: kind,
-    cards: [{ index: 0, native_ref: "creation-result-a", id: "CARD.STRIKE", name: "Strike" }],
+    parent_reward_ref: "reward-card", reward_set_ref: "reward-set", parent_status: "bound", selection_completes_reward: true,
+    cards: [{ index: 0, native_ref: "creation-result-a", card_entity_ref: "real-card-a", id: "CARD.STRIKE", name: "Strike", type: "Attack", cost: "1", rarity: "Basic", is_upgraded: false, description: "Deal 6 damage.", render_complete: true, target_type: "AnyEnemy", keywords: [], card_previews: [] }],
     alternatives: [
       { index: 0, native_ref: "alternative-skip", id: "Skip", name: "Skip" },
       { index: 1, native_ref: "alternative-reroll", id: "REROLL", name: "Reroll" },

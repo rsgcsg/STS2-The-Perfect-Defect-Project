@@ -132,12 +132,17 @@ internal static class LiveContextReader
         };
     }
 
+    internal static VisibleCard BuildRewardCard(CardModel card, string entityId) =>
+        STS2Platform.NativeFoundation.NativeCardRenderTransaction.Run(card, PileType.None,
+            () => BuildCard(card, entityId, displayPile: PileType.None, strictRendering: true) with { TargetType = card.TargetType.ToString() });
+
     public static VisibleCard BuildCard(
         CardModel card,
         string entityId,
         bool selected = false,
         bool includeCombatLegality = false,
-        PileType displayPile = PileType.Hand)
+        PileType displayPile = PileType.Hand,
+        bool strictRendering = false)
     {
         string cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString();
         string? starCost = card.HasStarCostX
@@ -148,7 +153,7 @@ internal static class LiveContextReader
         {
             description = ConnectorMod.StripRichTextTags(card.GetDescriptionForPile(displayPile)).Replace("\n", " ");
         }
-        catch
+        catch when (!strictRendering)
         {
             description = ConnectorMod.SafeGetText(() => card.Description)?.Replace("\n", " ");
         }

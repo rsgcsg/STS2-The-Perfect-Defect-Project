@@ -95,8 +95,8 @@ test("draw canonicalization preserves duplicate visible instances and every proj
   assert.equal(draw.cards.filter((value) => value.name === "Strike" && value.cost === "1").length, 2);
   const enchanted = draw.cards.find((value) => value.cost === "0");
   assert.equal(enchanted.is_upgraded, true);
-  assert.equal(enchanted.enchantment.description, "Deal 2 more damage.");
-  assert.equal(enchanted.enchantment.amount, 2);
+  assert.equal(enchanted.existing_enchantment.description, "Deal 2 more damage.");
+  assert.equal(enchanted.existing_enchantment.amount, 2);
   assert.equal(enchanted.description, "Deal 6 damage.");
 
   const changed = structuredClone(state);
