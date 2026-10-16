@@ -2273,8 +2273,9 @@ class LocalModelService:
             # never refresh its epoch to make a stale intent eligible again.
             if managed_environment is not None:
                 current_target = self._managed_runtime_target()
-                entry = self.selection(client.startup["agent_manifest_id"])
-                if entry["adapter"] == GLOBAL_ADAPTER:
+                # The owned startup records the adapter; GLOBAL is always an
+                # agent-session startup, policy startups carry no adapter.
+                if client.startup.get("adapter") == GLOBAL_ADAPTER:
                     current_target = {**current_target, "input_profile": "public-basis-1"}
                 confirm_target(managed_environment, current_target)
                 if current_target["runtime_instance_id"] != binding.runtime_instance_id:
