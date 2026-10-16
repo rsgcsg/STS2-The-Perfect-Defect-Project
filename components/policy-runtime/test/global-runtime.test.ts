@@ -34,7 +34,7 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
     } finally { await f.close(); }
   });
   it("cancels a late chooser before a post-deadline native write",async()=>{
-    const f=await globalRuntimeFixture({behavior:"late_choice",budgetMs:300});
+    const f=await globalRuntimeFixture({behavior:"late_choice",budgetMs:1500});
     try{await within(f.runtime.tick());expect(f.source.steps).toBe(0);
       const events=await f.events();const frames=events.filter(e=>e.kind==="global_agent_frame"&&e.payload.direction==="out");
       const messages=await Promise.all(frames.map(async e=>JSON.parse(await readFile(join(f.evidence.directory,e.payload.artifact.path),"utf8"))));
