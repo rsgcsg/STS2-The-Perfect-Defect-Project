@@ -10,9 +10,10 @@ from spireagent.json_boundary import BoundaryError
 TRUSTED_AGENT_ADAPTERS = frozenset({
     "s1-v1", "token-v1", "stpd-m2-decision-adapter", "stpd-s0-structured-adapter",
     "stpd-native-structured-m2-agent", "stpd-public-m0-decision-adapter",
-    "stpd-public-m2-decision-adapter", "stpd-native-public-program-teacher",
+    "stpd-public-m2-decision-adapter", "stpd-native-public-program-teacher", "spireagent-global-public-program",
 })
 AGENT_PROFILES = (
+    ("p1-global-r1", "spireagent-global-public-program", "p1-global-r1", True),
     ("s1-v1", "s1-v1", "text-menu-v1", True),
     ("text-menu-v1", "token-v1", "text-menu-v1", True),
     ("text-menu-m2-v1", "stpd-m2-decision-adapter", "text-menu-v1", True),
@@ -34,6 +35,9 @@ def agent_capabilities() -> list[dict[str, Any]]:
 
 
 def trusted_agent_support(adapter_id: str) -> ModuleType:
+    if adapter_id == "spireagent-global-public-program":
+        from spireagent.workbench import global_program_support
+        return global_program_support
     if adapter_id == "stpd-public-m2-decision-adapter":
         from stpd import public_m2_policy_installation
 

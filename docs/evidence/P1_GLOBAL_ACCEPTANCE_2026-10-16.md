@@ -76,3 +76,25 @@ integration. No PR was merged/closed and no new game/install/training was perfor
 by this initial audit. Local scripts, original logs and reproduction receipts are
 retained in the private `p1-global-acceptance-2026-10-16` evidence package; public
 regressions belong with their repaired owners rather than copied raw runtime data.
+
+
+## Approved foundation integration and subsequent bounded source checks
+
+User separately approved PR187 at ef79a994 on2026-10-16. Fresh GitHub head/base/checks
+matched the independently reviewed candidate; normal merge41e62cd054f960121129df5d174925846484045b
+retains02636a941519ed2db68f0ca46907ef69becc732a and ef79a994f1071e423e241ef2642587bfec143e67
+as its two parents. PR188 remains draft/open at be67e7a1, retargeted to develop without
+changing its submitted head. No PR188 merge approval is implied.
+
+CI188 run38847727149 subsequently ended with two failed Windows jobs,45/48 owner
+stages passing. Two URL.pathname package paths are definite source portability defects;
+the two renewal fixtures fail before their intended Await/Close injection point. The
+Python access violation requires separate bounded diagnosis; a traceback location alone
+is not its root cause. Original ZIP hashes/CRCs and70 indexed files were independently checked.
+
+Shared identity correction ca3897ba was normally integrated and independently reviewed.
+Root ran64 SDK tests plus the four original counterexamples: unknown extension text
+stays literal, ordered selector identity is unaffected by unordered Draw traversal,
+anonymous deck/Draw members do not join through private pointers, and ordered discard
+identity persists. These are synthetic production-code source/test checks, not native
+qualification or proof of the full global information boundary.

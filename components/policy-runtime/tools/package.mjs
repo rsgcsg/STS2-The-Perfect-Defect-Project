@@ -1,26 +1,19 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readIdentityReport } from "../../../tools/component-identity.mjs";
+
+import { npmPackageCommand as npm, packageFileTreeSha256 as fileTreeSha256 } from "../../../tools/bundle-connector-sdk.mjs";
+export { npm, fileTreeSha256 };
 
 export const componentRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(componentRoot, "../..");
 const sdkRoot = path.resolve(componentRoot, "../connector/sdk/typescript");
 const sdkName = "@rsgcsg/sts2-connector-client";
 const sdkSourceDependency = "file:../connector/sdk/typescript";
-export function npm(args, cwd) {
-  const npmPath = process.env.npm_execpath;
-  const result = npmPath
-    ? spawnSync(process.execPath, [npmPath, ...args], { cwd, encoding: "utf8" })
-    : spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, { cwd, encoding: "utf8", shell: process.platform === "win32" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(result.stderr || result.stdout);
-  return result.stdout;
-}
 
 export function packageRuntime(outputDirectory, { allowDirty = false } = {}) {
   const source = JSON.parse(readFileSync(path.join(componentRoot, "package.json"), "utf8"));
@@ -91,21 +84,6 @@ export function packageRuntime(outputDirectory, { allowDirty = false } = {}) {
     writeFileSync(path.join(outputDirectory, "checksums.sha256"), `${sha256}  ${report.filename}\n`);
     return { ...result, tarball };
   } finally { rmSync(stage, { recursive: true, force: true }); rmSync(zodInstall, { recursive: true, force: true }); }
-}
-
-export function fileTreeSha256(root) {
-  const digest = createHash("sha256");
-  function visit(directory, prefix = "") {
-    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const full = path.join(directory, entry.name);
-      if (entry.isDirectory()) visit(full, relative);
-      else if (entry.isFile()) digest.update(relative).update("\0").update(readFileSync(full)).update("\0");
-      else throw new Error(`Connector SDK package contains unsupported entry: ${relative}`);
-    }
-  }
-  visit(root);
-  return digest.digest("hex");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

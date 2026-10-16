@@ -62,9 +62,10 @@
     "check:repository": "node tools/check-repository.mjs",
     "check:docs": "node tools/check-markdown-links.mjs",
     "check:package": "node tools/check-package.mjs",
-    "check": "npm run check:syntax && npm test && npm run check:python && npm run check:docs && npm run check:repository && npm run check:package"
+    "check": "npm run check:syntax && npm test && npm run check:python && npm run check:docs && npm run check:repository && npm run check:package",
+    "package": "node tools/package.mjs"
   },
   "dependencies": {
-    "@rsgcsg/sts2-connector-client": "https://github.com/rsgcsg/STS2-The-Pefect-Defect-Project/releases/download/compat/platform-import-v1/rsgcsg-sts2-connector-client-1.1.0-rc.1.tgz"
+    "@rsgcsg/sts2-connector-client": "file:../connector/sdk/typescript"
   }
 }

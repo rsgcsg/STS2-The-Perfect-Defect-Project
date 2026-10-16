@@ -12,7 +12,7 @@ export interface AgentStateMetadata {
   adapter_code_sha256: string;
   model_bindings: { model_id: string; weights_sha256: string }[];
   input_spec: AgentManifest["input"]["input_spec"];
-  profile: "native-logical-v1";
+  profile: AgentManifest["input"]["profile"];
   state_format_version: string;
   stream_generation: string;
   continuity_token: string;

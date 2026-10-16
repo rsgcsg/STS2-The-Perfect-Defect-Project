@@ -59,7 +59,7 @@ export class AgentJsonLineFramer {
   private buffer = Buffer.alloc(0);
   private bytes = 0;
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
-  constructor(private readonly maxBytes: number, private readonly onValue: (value: unknown) => void) {}
+  constructor(private readonly maxBytes: number, private readonly onValue: (value: unknown) => void, private readonly onFrame?: (bytes: Buffer) => void) {}
 
   push(data: Buffer): void {
     let start = 0;
@@ -68,6 +68,7 @@ export class AgentJsonLineFramer {
       this.add(data.subarray(start, index));
       const raw = this.buffer.subarray(0, this.bytes);
       this.bytes = 0;
+      this.onFrame?.(Buffer.concat([raw, Buffer.from("\n")]));
       if (raw.length === 0) throw new AgentSessionError("empty_message");
       let value: unknown;
       try { value = JSON.parse(this.decoder.decode(raw)); }

@@ -9,7 +9,7 @@ const READY_SCHEMA = "sts2.host-runtime/managed-service-ready-1";
 const RESULT_SCHEMA = "sts2.host-runtime/managed-service-result-1";
 const ERROR_SCHEMA = "sts2.host-runtime/managed-service-error-1";
 const CLIENT_COMMANDS = new Set([
-  "observe", "read", "text_observe", "episode_identity",
+  "observe", "read", "capture", "step", "text_observe", "episode_identity",
   "claim_control", "release_control", "text_submit"
 ]);
 const PUBLIC_ERRORS = new Set([
@@ -203,7 +203,7 @@ export async function startManagedHostService(started, {
       runtime_identity: publicRuntimeIdentity(started.runtime.runtimeIdentity),
       adapter_runtime_instance_id: runtimeInstanceId,
       environment_fingerprint: started.environmentFingerprint,
-      supported_input_profiles: ["text-menu-v1", "text-menu-v2"],
+      supported_input_profiles: ["text-menu-v1", "text-menu-v2", "public-basis-1"],
       text_protocol_version: SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
       text_menu_contracts: [managedTextMenuV1Contract(), managedTextMenuV2Contract()],
       episode: {
@@ -286,7 +286,7 @@ export async function startManagedHostService(started, {
           && (!nonempty(body.control_token) || !nonempty(body.control_epoch))) {
           error(response, 428, "managed_service_control_required"); return;
         }
-        if (command === "claim_control" && (!nonempty(body.expected_runtime_instance_id)
+        if ((command === "claim_control" || command === "capture" || command === "step") && (!nonempty(body.expected_runtime_instance_id)
           || !nonempty(body.expected_game_continuity_id))) {
           error(response, 428, "managed_service_episode_precondition_required"); return;
         }
@@ -310,7 +310,7 @@ export async function startManagedHostService(started, {
           json(response, 200, result(value, binding(value.control_epoch, value.game_continuity_id)));
           return;
         }
-        if (command === "text_submit") {
+        if (command === "text_submit" || command === "step") {
           json(response, 200, result(value,
             binding(body.control_epoch, body.expected_game_continuity_id)));
           return;

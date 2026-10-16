@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { decodeTextMenuV2ActionResult, decodeTextMenuV2ObservationContext, type TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
+import { decodePlayerReceipt, verifyPublicBasis, type FullPublicBasis, type PlayerEnvironmentReceipt, type PublicTransportOptions, decodeTextMenuV2ActionResult, decodeTextMenuV2ObservationContext, type TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
+import { type GlobalIdentity, type GlobalTransport } from "./global-transport.js";
 import { canonicalJson } from "./evidence.js";
 import { validateManagedEnvironmentBinding, type AnyDecisionBundle, type ManagedCapabilities, type ManagedControlConfirmation, type ManagedEnvironmentBinding, type ManagedEnvironmentStatus, type PolicyConnector, type TextInputProfile } from "./contracts.js";
 
@@ -52,11 +53,11 @@ async function privateJson(path: string, maximum: number, privateMode: boolean):
   return { value: object(JSON.parse(bytes.toString("utf8")), "Managed private descriptor"), bytes };
 }
 
-export async function loadManagedAttachment(bindingPath: string, attachmentPath: string): Promise<{
+export async function loadManagedAttachment(bindingPath: string, attachmentPath: string, profile: "text-menu-v2" | "public-basis-1" = "text-menu-v2"): Promise<{
   binding: ManagedEnvironmentBinding; bindingSha256: string; attachment: Attachment;
 }> {
   const { value: publicBinding } = await privateJson(bindingPath, 64 * 1024, false);
-  const binding = validateManagedEnvironmentBinding(publicBinding);
+  const binding = validateManagedEnvironmentBinding(publicBinding, profile);
   const { value: descriptor } = await privateJson(attachmentPath, 8 * 1024, true);
   const attachmentKeys = ["schema", "endpoint", "service_instance_id", "host_identity", "role", "token"];
   if (Object.keys(descriptor).length !== attachmentKeys.length || Object.keys(descriptor).some((key) => !attachmentKeys.includes(key))
@@ -100,7 +101,9 @@ export class ManagedServicePolicyClient implements PolicyConnector {
   private cachedContext: Awaited<ReturnType<ManagedServicePolicyClient["observeTextMenuContext"]>> | null = null;
   private admission: ManagedEnvironmentStatus | null = null;
   private blockedMutations = false;
+  private globalControlUnknown = false;
   private readonly textStateOwner: string;
+  private globalIdentity: GlobalIdentity | null = null;
 
   private constructor(private readonly attachment: Attachment,
                       readonly binding: ManagedEnvironmentBinding,
@@ -129,25 +132,35 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     return client;
   }
 
-  private async exchange(method: "GET" | "POST", route: string, body?: Json): Promise<Json> {
+  private async exchange(method: "GET" | "POST", route: string, body?: Json, options: PublicTransportOptions = {}): Promise<Json> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.attachment.token}` };
     if (method === "POST") {
       headers["content-type"] = "application/json";
       headers["x-sts2-managed-service-id"] = this.attachment.service_instance_id;
     }
-    const response = await fetch(`${this.attachment.endpoint}${route}`, {
-      method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(method === "GET" ? 10_000 : 65_000)
-    });
-    const value = await boundedJson(response);
+    const encoded = body === undefined ? undefined : JSON.stringify(body);
+    const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(options.timeoutMs ?? (method === "GET" ? 10_000 : 65_000))]);
+    signal.throwIfAborted();
+    if (options.beforeSend) await abortable(options.beforeSend(), signal);
+    signal.throwIfAborted();
+    const response = await fetch(`${this.attachment.endpoint}${route}`, { method, headers, ...(encoded === undefined ? {} : { body: encoded }), signal });
+    const chunks: Uint8Array[] = []; let size = 0;
+    for await (const chunk of response.body ?? []) {
+      signal.throwIfAborted(); size += chunk.byteLength;
+      if (size > (options.maxResponseBytes ?? MAX_JSON_BYTES)) throw new Error("Managed service response is oversized");
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks);
+    if (options.onResponseBytes) await abortable(Promise.resolve(options.onResponseBytes(bytes)), signal);
+    const value = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)), "Managed service response");
     if (!response.ok) throw new Error(`Managed service rejected request: ${String(value.error ?? response.status)}`);
     if (value.service_instance_id !== this.attachment.service_instance_id) throw new Error("Managed service instance drift");
     return value;
   }
 
-  private async command(command: string, payload: Json = {}): Promise<{ result: Json; controlBinding: Json | null }> {
+  private async command(command: string, payload: Json = {}, options?: PublicTransportOptions): Promise<{ result: Json; controlBinding: Json | null }> {
     const requestId = `runtime_${randomUUID()}`;
-    const wrapper = await this.exchange("POST", "/v1/command", { command, request_id: requestId, ...payload });
+    const wrapper = await this.exchange("POST", "/v1/command", { command, request_id: requestId, ...payload }, options);
     if (wrapper.schema !== RESULT_SCHEMA) throw new Error("Managed service result schema drift");
     const result = object(wrapper.result, "Managed driver result");
     if (result.request_id !== requestId) throw new Error("Managed driver response request ID drift");
@@ -261,7 +274,7 @@ export class ManagedServicePolicyClient implements PolicyConnector {
   }
 
   private confirmation(raw: Json | null, status: "held" | "released"): ManagedControlConfirmation {
-    const admitted = this.admission;
+    const admitted = this.admission ?? this.globalTarget();
     if (!raw || !admitted || raw.runtime_instance_id !== admitted.runtime_instance_id
         || raw.game_continuity_id !== admitted.game_continuity_id
         || typeof raw.control_epoch !== "string" || !raw.control_epoch) {
@@ -272,19 +285,19 @@ export class ManagedServicePolicyClient implements PolicyConnector {
       game_continuity_id: admitted.game_continuity_id, control_epoch: raw.control_epoch };
   }
 
-  async acquireController(): Promise<ManagedControlConfirmation> {
+  async acquireController(options?: PublicTransportOptions): Promise<ManagedControlConfirmation> {
     if (this.blockedMutations) throw new Error("Managed mutation authority is quarantined");
     if (this.control) throw new Error("Managed controller is already held");
-    const admitted = this.admission;
+    const admitted = this.admission ?? this.globalTarget();
     if (!admitted) throw new Error("Managed environment was not admitted");
     try {
       const { result, controlBinding } = await this.command("claim_control", {
-        text_state_owner: this.textStateOwner,
+        ...(this.globalIdentity ? {} : { text_state_owner: this.textStateOwner }),
         expected_runtime_instance_id: admitted.runtime_instance_id,
         expected_game_continuity_id: admitted.game_continuity_id
-      });
+      }, options);
       if (result.type !== "claim_control_result") throw new Error("Managed claim result drift");
-      if (result.text_state_owner !== this.textStateOwner) {
+      if (!this.globalIdentity && result.text_state_owner !== this.textStateOwner) {
         throw new Error("Managed text state owner binding differs from the control lease");
       }
       const confirmation = this.confirmation(controlBinding, "held");
@@ -294,7 +307,7 @@ export class ManagedServicePolicyClient implements PolicyConnector {
       this.control = { token: string(result.control_token, "Managed control token"), epoch: confirmation.control_epoch,
         runtimeId: confirmation.runtime_instance_id, continuityId: confirmation.game_continuity_id };
       return confirmation;
-    } catch (error) { this.blockedMutations = true; throw error; }
+    } catch (error) { this.blockedMutations = true; this.globalControlUnknown = true; throw error; }
   }
 
   async releaseController(): Promise<ManagedControlConfirmation> {
@@ -309,8 +322,72 @@ export class ManagedServicePolicyClient implements PolicyConnector {
           || result.control_epoch !== control.epoch || confirmation.control_epoch !== control.epoch
           || result.runtime_instance_id !== confirmation.runtime_instance_id
           || result.game_continuity_id !== confirmation.game_continuity_id) throw new Error("Managed release confirmation drift");
-      this.control = null;
+      this.control = null; this.globalControlUnknown = false;
       return confirmation;
+    } catch (error) { this.blockedMutations = true; this.globalControlUnknown = true; throw error; }
+  }
+
+  private globalTarget() { return this.globalIdentity ? { service_instance_id: this.target.serviceInstanceId,
+    runtime_instance_id: this.target.runtimeInstanceId, game_continuity_id: this.target.gameContinuityId } : null; }
+
+  /** Same service, client bearer and actual opaque control epoch; no synthetic TTL lease. */
+  static async attachGlobal(bindingPath: string, attachmentPath: string, target: ManagedTarget, runId: string): Promise<GlobalTransport> {
+    const verified = await loadManagedAttachment(bindingPath, attachmentPath, "public-basis-1");
+    if (verified.attachment.service_instance_id !== target.serviceInstanceId) throw new Error("Managed service target drift");
+    const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target, runId);
+    return { kind: "managed", negotiate: signal => client.negotiateGlobal(signal), capture: options => client.captureGlobal(options),
+      step: (input, options) => client.stepGlobal(input, options),
+      acquire: async signal => { signal.throwIfAborted(); await client.acquireController({ signal }); signal.throwIfAborted(); },
+      controlStatus: () => client.globalControlUnknown ? "unknown" : client.control ? "held" : "released",
+      release: async () => { if (client.control) await client.releaseController(); else if (client.globalControlUnknown) throw new Error("managed_control_unconfirmed"); },
+      close: async () => { if (client.control) await client.releaseController(); else if (client.globalControlUnknown) throw new Error("managed_control_unconfirmed"); } };
+  }
+  private async negotiateGlobal(signal: AbortSignal): Promise<GlobalIdentity> {
+    const ready = await this.exchange("GET", "/v1/ready", undefined, { signal });
+    const episode = object(ready.episode, "Managed episode");
+    if (ready.schema !== READY_SCHEMA || !same(ready.host_identity, this.attachment.host_identity)
+      || ready.adapter_runtime_instance_id !== this.target.runtimeInstanceId || episode.game_continuity_id !== this.target.gameContinuityId
+      || episode.closed !== false || episode.tainted !== false || !Array.isArray(ready.supported_input_profiles)
+      || !ready.supported_input_profiles.includes("public-basis-1")
+      || !same(subset(object(ready.candidate_build, "build"), Object.keys(this.binding.candidate_build)), this.binding.candidate_build))
+      throw new Error("Managed public source admission drift");
+    const { result } = await this.command("episode_identity", {}, { signal });
+    const original = object(result.identity, "original episode identity");
+    if (original.adapter_runtime_instance_id !== this.target.runtimeInstanceId || original.environment_fingerprint !== ready.environment_fingerprint
+      || !same(original.candidate_build, ready.candidate_build) || !same(original.runtime_identity, ready.runtime_identity))
+      throw new Error("Managed loaded episode identity drift");
+    const runtime = object(ready.runtime_identity, "runtime identity"); const { process_id: _pid, ...loaded } = runtime;
+    const identity: GlobalIdentity = { kind: "managed", protocol_version: string(ready.text_protocol_version, "protocol"),
+      session: { runtime_instance_id: this.target.runtimeInstanceId, environment_fingerprint: string(ready.environment_fingerprint, "fingerprint") },
+      game_continuity_id: this.target.gameContinuityId,
+      producer: { host: ready.host_identity, build: ready.candidate_build, loaded }, game: object(ready.exact_game, "game") };
+    if (this.globalIdentity && !same(this.globalIdentity, identity)) throw new Error("Managed global identity changed");
+    this.globalIdentity = identity; return identity;
+  }
+  private async captureGlobal(options: PublicTransportOptions): Promise<FullPublicBasis> {
+    if (!this.globalIdentity) throw new Error("global_source_not_admitted");
+    const { result } = await this.command("capture", { expected_runtime_instance_id: this.target.runtimeInstanceId,
+      expected_game_continuity_id: this.target.gameContinuityId }, options);
+    if (result.type !== "capture_result") throw new Error("managed_capture_response_type");
+    const full = object(result.full, "full public basis");
+    const verified = await verifyPublicBasis(full.capture as FullPublicBasis["capture"], string(full.serializedObservation, "original public bytes"));
+    if (!same(verified.basis, full.basis) || verified.capture.game_continuity_id !== this.target.gameContinuityId
+      || verified.capture.session.runtime_instance_id !== this.target.runtimeInstanceId) throw new Error("managed_capture_world_drift");
+    return verified;
+  }
+  private async stepGlobal(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }, options: PublicTransportOptions): Promise<PlayerEnvironmentReceipt> {
+    const control = this.control;
+    if (!control || this.blockedMutations) throw new Error("managed_global_control_unavailable");
+    try {
+      const { result, controlBinding } = await this.command("step", { mutation_request_id: input.requestId,
+        expected_snapshot_id: input.expectedSnapshotId, bound_action_id: input.boundActionId,
+        expected_runtime_instance_id: control.runtimeId, expected_game_continuity_id: control.continuityId,
+        control_token: control.token, control_epoch: control.epoch }, options);
+      if (result.type !== "step_result" || this.confirmation(controlBinding, "held").control_epoch !== control.epoch) throw new Error("managed_step_binding_drift");
+      const receipt = decodePlayerReceipt(result.receipt).data;
+      if (receipt.request_id !== input.requestId || receipt.action.bound_action_id !== input.boundActionId) throw new Error("managed_receipt_binding_drift");
+      if (receipt.delivery === "unknown") this.blockedMutations = true;
+      return receipt;
     } catch (error) { this.blockedMutations = true; throw error; }
   }
 
@@ -341,4 +418,10 @@ export class ManagedServicePolicyClient implements PolicyConnector {
       return decoded;
     } catch (error) { this.blockedMutations = true; throw error; }
   }
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted(); let abort!: () => void;
+  try { return await Promise.race([operation, new Promise<never>((_, reject) => { abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true }); })]); }
+  finally { signal.removeEventListener("abort", abort); }
 }

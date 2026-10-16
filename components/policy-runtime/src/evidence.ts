@@ -289,6 +289,26 @@ export class AgentRunEvidence {
     } finally { this.pendingSamples -= 1; this.pendingSampleBytes -= charged; }
   }
 
+  /** GLOBAL original bytes share this run's immutable inventory and serialized writer. */
+  async storeGlobalArtifact(role: "source" | "public_input" | "agent_in" | "agent_out" | "response", data: Uint8Array): Promise<GlobalArtifact> {
+    if (this.policyManifest.schema !== "sts2.policy-runtime/agent-manifest-1" || this.policyManifest.input.profile !== "p1-global-r1") throw new Error("global_evidence_profile_required");
+    if (data.byteLength < 1 || data.byteLength > 96 * 1024 * 1024 || this.pendingSampleBytes + data.byteLength > 128 * 1024 * 1024) throw new Error("global_artifact_capacity");
+    const bytes = Buffer.from(data); this.pendingSampleBytes += bytes.length;
+    try { return await this.serialize(async () => {
+      if (this.sealed || this.sampleStorageFailed) throw new Error("global_evidence_sealed_or_failed");
+      const sha256 = sha256Bytes(bytes), path = `global-${sha256}.bin`;
+      try {
+        if (!this.sampleFiles.has(path)) {
+          if (this.sampleFiles.size >= 65536 || this.sampleBytes + bytes.length > 512 * 1024 * 1024) throw new Error("global_storage_capacity");
+          const handle = await open(join(this.directory, path), "wx", 0o600);
+          try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+          this.sampleFiles.add(path); this.sampleBytes += bytes.length;
+        }
+        return { role, path, bytes: bytes.length, sha256 };
+      } catch (error) { this.sampleStorageFailed = true; throw error; }
+    }); } finally { this.pendingSampleBytes -= bytes.length; }
+  }
+
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is already sealed");
@@ -388,3 +408,5 @@ export async function verifyEvidenceDirectory(directory: string): Promise<void> 
   const manifest = JSON.parse(await readFile(join(directory, "evidence-manifest.json"), "utf8")) as ImmutableEvidenceManifest;
   if (manifest.complete !== true || manifest.append_only !== true) throw new Error("evidence manifest is not immutable");
 }
+
+export interface GlobalArtifact { role: "source" | "public_input" | "agent_in" | "agent_out" | "response"; path: string; bytes: number; sha256: string }
