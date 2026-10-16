@@ -54,7 +54,7 @@ describe("P1 r1.1 full-public graph comparison", () => {
   });
   it("keeps chosen target instance relations for two enemies of one definition", () => {
     const a = observation(); const enemy = content(a.combat).enemies[0];
-    const twin = { ...structuredClone(enemy), entity_id: "m999", combat_id: "m999", hp: 1 };
+    const twin = { ...structuredClone(enemy), entity_id: "m999", combat_id: 2, hp: 1 };
     content(a.combat).enemies.push(twin);
     const attack = a.catalog.find(c => c.kind === "combat.play_card" && c.target)!;
     (a.catalog as any[]).push({ ...attack, choice_id: "choice_twin", target: twin.entity_id });

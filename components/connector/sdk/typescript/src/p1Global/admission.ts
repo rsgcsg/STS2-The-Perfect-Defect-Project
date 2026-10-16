@@ -1,8 +1,8 @@
+import { publicCombatContextProblems } from "../publicCombat.js";
 import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
-const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const coordinate = (value: unknown): value is Record<string, unknown> => isObject(value)
   && Number.isSafeInteger(value.col) && Number.isSafeInteger(value.row);
 export const completeCards = (cards: unknown): cards is Record<string, unknown>[] => Array.isArray(cards)
@@ -38,17 +38,11 @@ export function completeMap(value: unknown, actIndex: unknown): boolean {
     && (value.current_position === null ? value.visited.length === 0 : coordinates.has(key(value.current_position)));
 }
 export function completeCombat(value: unknown): boolean {
-  if (!isObject(value) || value.kind !== "combat" || !Number.isSafeInteger(value.round) || !text(value.turn_owner)
-      || !isObject(value.player) || !text(value.player.player_entity_id) || !completeCards(value.player.hand)) return false;
-  const player = value.player;
-  if (!["block", "energy", "max_energy", "draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key => finite(player[key]))
-      || !["statuses", "companions", "potion_states", "orbs"].every(key => Array.isArray(player[key]))
-      || !Array.isArray(value.enemies)) return false;
-  if (new Set(value.enemies.map(enemy => isObject(enemy) ? enemy.entity_id : null)).size !== value.enemies.length) return false;
-  return value.enemies.every(enemy => isObject(enemy) && text(enemy.entity_id) && text(enemy.definition_id)
-    && finite(enemy.block) && (finite(enemy.hp) || enemy.hp === null) && (finite(enemy.max_hp) || enemy.max_hp === null)
-    && Array.isArray(enemy.statuses) && Array.isArray(enemy.intents)
-    && enemy.intents.every(intent => isObject(intent) && text(intent.type)));
+  // The same nested native DTO/health-display schema used by C1, with this
+  // profile's existing extensible public-card schema. No guessed HUD defaults.
+  if (publicCombatContextProblems(value).length > 0 || !isObject(value) || !isObject(value.player)
+      || !completeCards(value.player.hand) || !Array.isArray(value.enemies)) return false;
+  return new Set(value.enemies.map(enemy => (enemy as Record<string, unknown>).entity_id)).size === value.enemies.length;
 }
 
 /** Common typed selector fields; bundle/other shapes need their own contract. */
