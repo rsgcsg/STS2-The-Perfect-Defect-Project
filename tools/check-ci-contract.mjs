@@ -169,9 +169,13 @@ export function ciWorkflowErrors(rawSource) {
 export function repositoryOnlyWorkflowChange(beforeRaw, afterRaw) {
   const before = normalizeNewlines(beforeRaw), after = normalizeNewlines(afterRaw);
   const split = source => {
-    const index = source.indexOf("jobs:\n");
-    if (index < 0) return null;
-    const names = [...source.slice(index + 6).matchAll(/^  ([A-Za-z0-9_-]+):\s*$/gmu)].map(m => m[1]);
+    const index = /^jobs:\n/mu.exec(source)?.index;
+    if (index === undefined) return null;
+    const body = source.slice(index + 6);
+    // YAML permits global env/defaults after jobs; they still affect product
+    // jobs. Our narrow format has no top-level keys in this suffix.
+    if (/^[^\s#]/mu.test(body)) return null;
+    const names = [...body.matchAll(/^  ([A-Za-z0-9_-]+):\s*$/gmu)].map(m => m[1]);
     if (new Set(names).size !== names.length) return null;
     return {header: source.slice(0, index + 6), names};
   };

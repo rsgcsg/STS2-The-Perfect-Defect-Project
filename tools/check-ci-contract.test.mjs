@@ -123,6 +123,7 @@ test("repository-only workflow changes cannot alter product jobs, plan or trigge
     source.replace("dotnet-version: 9.0.x", "dotnet-version: 10.0.x"),
     source.replace("      - develop", "      - other"),
     source + "\n  extra-job:\n    runs-on: ubuntu-latest\n",
+    source + "\nenv:\n  PRODUCT_INPUT: changed\n",
     source.replace("  repository:\n", "  unknown:\n"),
     source.replace("  docs:\n", "  docs:\n  docs:\n")])
     assert.equal(repositoryOnlyWorkflowChange(source, changed), false);
