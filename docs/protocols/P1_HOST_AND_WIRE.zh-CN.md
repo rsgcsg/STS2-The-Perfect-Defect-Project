@@ -70,3 +70,21 @@ Native微步骤数、P1语义决策数、chooser调用数、Model consume/advanc
 必须覆盖 `DisallowSkipping`/强制领取：局部可返回不等集合可放弃，不能全declined后死锁或代选完成。
 每条必须包含stale between steps、partial delivered/unknown、同包重传、真实重访、重复实体、>8详情、required缺失、Stop/期限和记录写失败。合成通过后再exact native与运行验证。
 R0产品suite复用Workbench/Runtime的owned episode，Reference bootstrap移交后不再直接step。策略套件与相同动作对照是两个任务模式；共享Agent/Host/结果定义，不强制共用一个物理循环。
+
+## 当前公开事实包与协议适配
+
+新增 `public-basis-1` 是 Connector 当前 Snapshot1 与全部广告 Read 实例的同边界封存格式，
+不包含 P1 策略、承诺或 Agent 状态。`capture_status=complete` 只说明原生公开目录的取数完整；
+P1 另行验证场景必需资料、完整语义目录和粒度映射，不能用这一标记替代 P1 完整性。
+缺失 Read 保留原 error/partial；不按 kind 覆盖实例，不补抓另一时刻的数据。
+
+该格式复用 SealedObservationStore 的容量、TTL、哈希、连续分块和释放，独立声明
+`/api/player-environment/public-basis/{capabilities,current,read,release}`；旧 C1 及其归档原义保留。
+SDK `getFullPublicBasis` 验证原始字节和 Snapshot/Read/session 绑定，清理失败显式报错。
+调用方可以传外部 AbortSignal、发出前的异步准入与原始响应字节回调；控制、预算和操作账本仍归 Runtime。
+清理使用独立有界信号，未知操作结果不因存在捕获/释放接口而允许重投。
+
+在线映射与离线转换使用同一份已验证原件；独立原生 Recorder 应在原有 prefix/publication
+冻结中复用同次构造的公开事实，不能连续调用两个 Current 再声称同边界。
+本增量先提供格式/封存/SDK接点；地图、完整显示闭包、原生 Source Recorder 与 Managed 接入的
+实际实现和资格仍按活动计划逐项验收，不能从此接口存在推出全局完成。

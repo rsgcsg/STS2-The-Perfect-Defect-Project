@@ -1,3 +1,6 @@
+import { PUBLIC_BASIS_ROUTE, PUBLIC_BASIS_PROFILE, assemblePublicBasis,
+  decodePublicBasisHandle, decodePublicBasisChunk, decodePublicBasisRelease, decodePublicBasisCapabilities,
+  type PublicBasisHandle, type PublicBasisChunk, type PublicBasisRelease, type FullPublicBasis, type PublicBasisCapabilities } from "./publicBasis.js";
 import {
   SEALED_OBSERVATION_ROUTE, assembleSealedTextMenuV2, validateSealedChunkLimit,
   decodeSealedObservationCapabilities, decodeSealedObservationCapture,
@@ -74,6 +77,14 @@ export class PlayerEnvironmentHttpError extends Error {
   }
 }
 
+export interface PublicTransportOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  beforeSend?: () => Promise<void>;
+  onResponseBytes?: (bytes: Uint8Array) => Promise<void> | void;
+}
+
 export class PlayerEnvironmentRestClient {
   constructor(
     private readonly baseUrl: string,
@@ -81,8 +92,8 @@ export class PlayerEnvironmentRestClient {
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
 
-  async capabilities(): Promise<DecodedPlayerPayload<PlayerEnvironmentCapabilities>> {
-    return decodePlayerCapabilities(await this.get("/api/player-environment/capabilities"));
+  async capabilities(options?: PublicTransportOptions): Promise<DecodedPlayerPayload<PlayerEnvironmentCapabilities>> {
+    return decodePlayerCapabilities(await this.get("/api/player-environment/capabilities", options));
   }
 
   async rewardPageCapabilities(): Promise<DecodedPlayerPayload<RewardPageCapabilities>> {
@@ -216,6 +227,41 @@ export class PlayerEnvironmentRestClient {
     finally { await this.releaseP1Capture(capture.capture_id).catch(() => undefined); }
   }
 
+  async publicBasisCapabilities(options?: PublicTransportOptions): Promise<PublicBasisCapabilities> {
+    return decodePublicBasisCapabilities(await this.get(`${PUBLIC_BASIS_ROUTE}/capabilities`, options));
+  }
+  async readCurrentPublicBasis(input: { expectedSnapshotId?: string } = {}, options?: PublicTransportOptions): Promise<PublicBasisHandle> {
+    const query = new URLSearchParams({ input_profile: PUBLIC_BASIS_PROFILE });
+    if (input.expectedSnapshotId !== undefined) query.set("expected_snapshot_id", input.expectedSnapshotId);
+    const capture = decodePublicBasisHandle(await this.get(`${PUBLIC_BASIS_ROUTE}/current?${query}`, options));
+    if (input.expectedSnapshotId !== undefined && capture.source_snapshot_id !== input.expectedSnapshotId)
+      throw new PlayerEnvironmentHttpError("Public basis does not match requested snapshot");
+    return capture;
+  }
+  async readPublicBasis(input: { captureId: string; cursor: string; maxBytes?: number }, options?: PublicTransportOptions): Promise<PublicBasisChunk> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const query = new URLSearchParams({ capture_id: input.captureId, cursor: input.cursor });
+    if (input.maxBytes !== undefined) query.set("max_bytes", String(input.maxBytes));
+    return decodePublicBasisChunk(await this.get(`${PUBLIC_BASIS_ROUTE}/read?${query}`, options));
+  }
+  async releasePublicBasis(captureId: string, options?: PublicTransportOptions): Promise<PublicBasisRelease> {
+    const release = decodePublicBasisRelease(await this.post(`${PUBLIC_BASIS_ROUTE}/release`, { capture_id: captureId }, false, options));
+    if (release.capture_id !== captureId) throw new PlayerEnvironmentHttpError("Public basis release identity mismatch");
+    return release;
+  }
+  async getFullPublicBasis(input: { expectedSnapshotId?: string; maxBytes?: number } = {}, options?: PublicTransportOptions): Promise<FullPublicBasis> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const capture = await this.readCurrentPublicBasis(input, options);
+    let failure: unknown; let failed = false; let full: FullPublicBasis | undefined;
+    try { full = await assemblePublicBasis(capture, request => this.readPublicBasis(request, options), input.maxBytes); }
+    catch (error) { failure = error; failed = true; }
+    // Cleanup remains bounded and independent of revoked action authorization.
+    try { await this.releasePublicBasis(capture.capture_id, { timeoutMs: this.timeoutMs }); }
+    catch (cleanup) { throw new AggregateError(failed ? [failure, cleanup] : [cleanup], "Public basis retention cleanup failed"); }
+    if (failed) throw failure;
+    return full!;
+  }
+
   async submit(input: {
     requestId: string;
     expectedSnapshotId: string;
@@ -223,7 +269,7 @@ export class PlayerEnvironmentRestClient {
     clientSessionId: string;
     controllerLeaseId: string;
     controllerGeneration: number;
-  }): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
+  }, options?: PublicTransportOptions): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.post("/api/player-environment/actions", {
       request_id: input.requestId,
       expected_snapshot_id: input.expectedSnapshotId,
@@ -231,7 +277,7 @@ export class PlayerEnvironmentRestClient {
       client_session_id: input.clientSessionId,
       controller_lease_id: input.controllerLeaseId,
       controller_generation: input.controllerGeneration
-    }, true));
+    }, true, options));
   }
 
   async submitRewardPage(input: {
@@ -424,31 +470,40 @@ export class PlayerEnvironmentRestClient {
     return { raw, encodedByteCount, statusCode };
   }
 
-  private async get(path: string): Promise<JsonObject> {
-    return this.request(path, { method: "GET" });
+  private async get(path: string, options?: PublicTransportOptions): Promise<JsonObject> {
+    return this.request(path, { method: "GET" }, false, undefined, options);
   }
 
   private async post(
     path: string,
     body: JsonObject,
-    acceptReceiptOnError = false
+    acceptReceiptOnError = false,
+    options?: PublicTransportOptions
   ): Promise<JsonObject> {
     return this.request(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
-    }, acceptReceiptOnError);
+    }, acceptReceiptOnError, undefined, options);
   }
 
   private async request(
     path: string,
     init: RequestInit,
     acceptReceiptOnError = false,
-    native?: NativeLogicalTransportOptions & { operation?: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void }
+    native?: NativeLogicalTransportOptions & { operation?: NativeLogicalTransportOperation; maxResponseBytes: number; onResponseBytes(bytes: number): void; onResponseStatus(status: number): void },
+    transport?: PublicTransportOptions
   ): Promise<JsonObject> {
     let response: Response;
-    const requestSignal = native?.signal ? AbortSignal.any([native.signal, AbortSignal.timeout(native.timeoutMs ?? this.timeoutMs)])
-      : AbortSignal.timeout(native?.timeoutMs ?? this.timeoutMs);
+    const scope = transport ?? native;
+    const responseLimit = transport?.maxResponseBytes ?? native?.maxResponseBytes ?? 16 * 1024 * 1024;
+    if (transport && (!Number.isSafeInteger(responseLimit) || responseLimit < 1 || responseLimit > 16 * 1024 * 1024))
+      throw new PlayerEnvironmentHttpError("Invalid response byte budget");
+    const requestSignal = scope?.signal ? AbortSignal.any([scope.signal, AbortSignal.timeout(scope.timeoutMs ?? this.timeoutMs)])
+      : AbortSignal.timeout(scope?.timeoutMs ?? this.timeoutMs);
+    requestSignal.throwIfAborted();
+    await transport?.beforeSend?.();
+    requestSignal.throwIfAborted();
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
@@ -457,8 +512,8 @@ export class PlayerEnvironmentRestClient {
     } catch (error) {
       throw new PlayerEnvironmentHttpError(`Player Environment transport failed: ${safeMessage(error)}`);
     }
-    const value: unknown = native ? await readNativeLogicalResponse(response, native.maxResponseBytes, requestSignal,
-      native.onResponseBytes) : await response.json().catch(() => ({}));
+    const value: unknown = native || transport ? await readNativeLogicalResponse(response, responseLimit, requestSignal,
+      native?.onResponseBytes ?? (() => undefined), transport?.onResponseBytes) : await response.json().catch(() => ({}));
     native?.onResponseStatus(response.status);
     const isReceipt = isJsonObject(value)
       && (value.schema === "sts2.player-environment/receipt-1"
@@ -489,7 +544,7 @@ function isNativeCurrentFailure(status: number, value: unknown): boolean {
 }
 
 async function readNativeLogicalResponse(response: Response, maxBytes: number, signal: AbortSignal | undefined,
-  observedBytes: (bytes: number) => void): Promise<JsonObject> {
+  observedBytes: (bytes: number) => void, originalBytes?: (bytes: Uint8Array) => Promise<void> | void): Promise<JsonObject> {
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^[0-9]+$/u.test(declared) || Number(declared) > maxBytes)) {
     await response.body?.cancel();
@@ -498,7 +553,7 @@ async function readNativeLogicalResponse(response: Response, maxBytes: number, s
   const reader = response.body?.getReader();
   if (!reader) throw new PlayerEnvironmentHttpError("native logical response has no JSON body");
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  const text: string[] = [];
+  const blocks: Uint8Array[] = [];
   let bytes = 0;
   const aborted = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
   signal?.addEventListener("abort", aborted, { once: true });
@@ -510,10 +565,13 @@ async function readNativeLogicalResponse(response: Response, maxBytes: number, s
       if (block.done) break;
       bytes += block.value.byteLength;
       if (bytes > maxBytes) throw new PlayerEnvironmentHttpError("native logical response exceeds its byte budget");
-      text.push(decoder.decode(block.value, { stream: true }));
+      blocks.push(block.value.slice());
     }
-    text.push(decoder.decode());
-    const result = parseNativeLogicalJson(text.join(""));
+    const joined = new Uint8Array(bytes);
+    let offset = 0; for (const block of blocks) { joined.set(block, offset); offset += block.length; }
+    await originalBytes?.(joined.slice());
+    signal?.throwIfAborted();
+    const result = parseNativeLogicalJson(decoder.decode(joined));
     observedBytes(bytes);
     return result;
   } catch (error) {
@@ -521,7 +579,7 @@ async function readNativeLogicalResponse(response: Response, maxBytes: number, s
     throw error;
   } finally {
     signal?.removeEventListener("abort", aborted);
-    text.length = 0;
+    blocks.length = 0;
     reader.releaseLock();
   }
 }
