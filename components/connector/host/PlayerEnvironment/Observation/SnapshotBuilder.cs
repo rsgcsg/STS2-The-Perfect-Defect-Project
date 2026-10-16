@@ -195,6 +195,13 @@ internal static partial class PlayerEnvironmentService
             Dictionary<string, PlayerEnvironmentReferent> referents = Measure(
                 "referent_projection",
                 () => BuildFactReferents(projectionContent));
+            // Aggregate public Reads also detail cards that the current page does not show
+            // (e.g. the deck on a map page). Each targeted card is a current public entity,
+            // so it is a referent; the snapshot contract requires every Read target to be one.
+            if (aggregateCurrentPublicReads)
+                foreach (PlayerEnvironmentLinkedDetailCatalogEntry detail in linkedDetails)
+                    if (detail.Kind == "surface_card")
+                        AddReferent(referents, detail.EntityId, "card", null, null, null);
             BoundActionProjectionResult projected = Measure(
                 "bound_action_projection",
                 () => ProjectBoundActions(nativeBindings, interactionId, referents, actionLimit));

@@ -78,6 +78,19 @@ public sealed class PublicBasisExecutionTests
     }
 
     [Fact]
+    public void EveryAggregateReadTargetIsACurrentReferent()
+    {
+        // Snapshot contract: a targeted Read must name a current referent. Aggregate captures
+        // also detail cards outside the page (deck on a map page), so those cards are referents.
+        foreach (bool sharedRun in new[] { false, true })
+        {
+            var snapshot = new Source().Capture(sharedRun: sharedRun).Snapshot;
+            var referents = snapshot.Referents.Select(r => r.ReferentId).ToHashSet(StringComparer.Ordinal);
+            Assert.All(snapshot.Reads.Where(r => r.TargetReferentId != null), r => Assert.Contains(r.TargetReferentId!, referents));
+        }
+    }
+
+    [Fact]
     public void AggregateProfileSelectsMapAndMaterializesTheAdvertisedInventory()
     {
         var source = new Source(); var publicBasis = source.Capture(sharedRun: true);
