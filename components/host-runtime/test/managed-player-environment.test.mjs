@@ -355,7 +355,8 @@ test("projects native reward sets without exposing exact reward or room operands
     rewards: [
       { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable" },
       { kind: "card", label: "Add a card", description: null, enabled: true, group_relation: "unavailable", card_options: null,
-        card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null }
+        card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null,
+        native_relic_refresh_subscription: "unavailable" }
     ],
     potion_slots_full: false,
     discardable_potions: [],
@@ -1118,12 +1119,14 @@ test("complete unopened card reward alternatives preserve actual outcomes and ou
   const state = { type: "decision", decision: "reward_set", context: {}, player: player(),
     can_skip: true, is_terminal: true, can_proceed: true, can_leave_with_unclaimed_rewards: false,
     room_ref: "room-original", rewards: [{ native_ref: "group-original", kind: "card_choice", name: "Reward",
-      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_pure_return: false },
-        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward", is_pure_return: false }],
-      card_alternatives_complete: true, can_skip_selection: true, can_reroll: false, selection_completes_reward: true }] };
+      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_native_skip: false },
+        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward", is_native_skip: false }],
+      card_alternatives_complete: true, can_skip_selection: true, can_reroll: false, selection_completes_reward: true,
+      native_relic_refresh_subscription: "attached" }] };
   const result = projectManagedCandidateDecision({ state, ...projectionIdentity }).snapshot.interaction.content.surface;
   assert.deepEqual(result.rewards[0].card_alternatives, state.rewards[0].card_alternatives);
   assert.equal(result.rewards[0].card_alternatives_complete, true);
+  assert.equal(result.rewards[0].native_relic_refresh_subscription, "attached");
   assert.equal(result.can_leave_with_unclaimed_rewards, false);
   assert.equal(JSON.stringify(result).includes("group-original"), false);
   for (const mutate of [reward => { reward.card_alternatives = null; },
@@ -1147,6 +1150,7 @@ test("opened reward retains exact parent, set and real card identity while execu
       rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] } });
   const opened = { ...common, decision: "card_reward", parent_status: "bound",
     parent_reward_ref: "native-reward", reward_set_ref: "native-set", selection_completes_reward: true,
+    native_relic_refresh_subscription: "absent",
     cards: [{ ...card, native_ref: "creation-result", card_entity_ref: "real-card", index: 0 }], alternatives: [] };
   const project = state => projectManagedCandidateDecision({ ...projectionIdentity, sequence: 2, state,
     publicEntityAliases: aliases });
@@ -1157,6 +1161,7 @@ test("opened reward retains exact parent, set and real card identity while execu
   assert.equal(innerSurface.reward_set_id, outerSurface.reward_set_id);
   assert.equal(innerSurface.cards[0].entity_id, outerSurface.rewards[0].card_options[0].entity_id);
   assert.equal(innerSurface.selection_completes_reward, true);
+  assert.equal(innerSurface.native_relic_refresh_subscription, "absent");
   assert.deepEqual([...inner.bindings.values()][0].raw_request.args, { card_ref: "creation-result" });
   assert.equal(JSON.stringify(inner.snapshot).includes("creation-result"), false);
   assert.equal(JSON.stringify(inner.snapshot).includes("real-card"), false);

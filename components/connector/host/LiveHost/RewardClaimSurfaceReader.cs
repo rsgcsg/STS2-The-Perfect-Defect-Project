@@ -219,11 +219,13 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             GroupRelation = NativeRewardSetObservation.Relation(reward),
             CardOptions = cardOptions,
             CardAlternatives = preview?.Alternatives?.Select(option =>
-                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected) { IsPureReturn = option.IsPureReturn }).ToArray(),
+                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected) { IsNativeSkip = option.IsNativeSkip }).ToArray(),
             CardAlternativesComplete = preview?.Complete == true,
             CanSkipSelection = preview?.CanSkipSelection,
             CanReroll = preview?.CanReroll,
-            SelectionCompletesReward = preview?.SelectionCompletesReward
+            SelectionCompletesReward = preview?.SelectionCompletesReward,
+            NativeRelicRefreshSubscription = reward is CardReward observedReward
+                ? NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(observedReward) : "unavailable"
         };
     }
 

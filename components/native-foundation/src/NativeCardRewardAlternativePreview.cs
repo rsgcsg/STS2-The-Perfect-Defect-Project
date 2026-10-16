@@ -17,7 +17,7 @@ using MegaCrit.Sts2.Core.Runs;
 namespace STS2Platform.NativeFoundation;
 
 public sealed record NativeCardRewardAlternativePreviewFact(string OptionId, string Title, string AfterSelected)
-{ public bool IsPureReturn { get; init; } }
+{ public bool IsNativeSkip { get; init; } }
 public sealed record NativeCardRewardAlternativePreviewResult(bool Complete,
     IReadOnlyList<NativeCardRewardAlternativePreviewFact>? Alternatives,
     bool? CanSkipSelection, bool? CanReroll, bool? SelectionCompletesReward, string? Gap);
@@ -57,7 +57,30 @@ public static class NativeCardRewardAlternativePreview
 
     private static readonly MethodInfo? EmptySelection = typeof(CardRewardAlternative)
         .GetNestedType("<>c", BindingFlags.NonPublic)?.GetMethod("<.ctor>b__16_0", BindingFlags.Instance | BindingFlags.NonPublic);
-    public static bool IsPureReturn(CardRewardAlternative alternative)
+    /// <summary>Only the currently attached native handler is observed. Absence
+    /// is not history: manually offered rewards may start without this handler.</summary>
+    public static string NativeRelicRefreshSubscription(CardReward reward)
+    {
+        try
+        {
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            FieldInfo? field = typeof(Player).GetField("RelicObtained", flags);
+            MethodInfo? handler = typeof(CardReward).GetMethod("OnRelicObtained", flags, null, new[] { typeof(RelicModel) }, null);
+            PropertyInfo? playerGetter = typeof(Reward).GetProperty("Player", BindingFlags.Instance | BindingFlags.Public);
+            if (typeof(CardReward).Module.ModuleVersionId != new Guid("57785517-0b16-42b9-8b36-bad6fb28384b")
+                || reward.GetType() != typeof(CardReward) || !Unpatched(playerGetter?.GetMethod)
+                || !Unpatched(handler) || field?.FieldType != typeof(Action<RelicModel>)) return "unavailable";
+            Player player = reward.Player;
+            if (player.GetType() != typeof(Player)) return "unavailable";
+            object? current = field.GetValue(player);
+            if (current == null) return "absent";
+            if (current is not Action<RelicModel> listeners) return "unavailable";
+            int count = listeners.GetInvocationList().Count(callback => callback.Method == handler && ReferenceEquals(callback.Target, reward));
+            return count == 0 ? "absent" : count == 1 ? "attached" : "unavailable";
+        }
+        catch { return "unavailable"; }
+    }
+    public static bool IsNativeSkip(CardRewardAlternative alternative)
     {
         if (typeof(CardRewardAlternative).Module.ModuleVersionId != new Guid("57785517-0b16-42b9-8b36-bad6fb28384b")
             || !FactoryIsAudited() || alternative.GetType() != typeof(CardRewardAlternative)
@@ -122,7 +145,7 @@ public static class NativeCardRewardAlternativePreview
                 string? outcome = Outcome(alternative.AfterSelected);
                 if (string.IsNullOrWhiteSpace(alternative.OptionId) || string.IsNullOrWhiteSpace(title) || outcome == null)
                     return Missing("native_alternative_public_fact_unavailable");
-                facts.Add(new(alternative.OptionId, title, outcome) { IsPureReturn = IsPureReturn(alternative) });
+                facts.Add(new(alternative.OptionId, title, outcome) { IsNativeSkip = IsNativeSkip(alternative) });
             }
             if (facts.Select(value => value.OptionId).Distinct(StringComparer.Ordinal).Count() != facts.Count)
                 return Missing("native_alternative_duplicate_option_id");

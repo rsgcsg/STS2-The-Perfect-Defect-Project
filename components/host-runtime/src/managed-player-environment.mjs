@@ -940,7 +940,7 @@ function currentSurface(state, ctx) {
                 ...visibleCombatCard(card, ctx.entityId("card", card?.native_ref)) }))
               : null,
               card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
-                option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_pure_return: option.is_pure_return === true })) : null,
+                option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_native_skip: option.is_native_skip === true })) : null,
               card_alternatives_complete: reward.card_alternatives_complete === true
                 && Array.isArray(reward.card_alternatives)
                 && reward.card_alternatives.every(option => typeof option?.option_id === "string" && option.option_id.length > 0
@@ -949,7 +949,9 @@ function currentSurface(state, ctx) {
                 && ["can_skip_selection", "can_reroll", "selection_completes_reward"].every(key => typeof reward[key] === "boolean"),
               can_skip_selection: reward.can_skip_selection ?? null,
               can_reroll: reward.can_reroll ?? null,
-              selection_completes_reward: reward.selection_completes_reward ?? null } : {})
+              selection_completes_reward: reward.selection_completes_reward ?? null,
+              native_relic_refresh_subscription: ["attached", "absent"].includes(reward.native_relic_refresh_subscription)
+                ? reward.native_relic_refresh_subscription : "unavailable" } : {})
           }
         });
         if (enabled) {
@@ -1129,7 +1131,7 @@ function currentSurface(state, ctx) {
           occurrence: index,
           properties: { option_id: alternative?.option_id ?? alternative?.id ?? null,
             index, label: alternative?.name ?? null, enabled: true, title: alternative?.title ?? null,
-            after_selected: alternative?.after_selected ?? null, is_pure_return: alternative?.is_pure_return === true }
+            after_selected: alternative?.after_selected ?? null, is_native_skip: alternative?.is_native_skip === true }
         });
         ctx.action({
           verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
@@ -1148,6 +1150,8 @@ function currentSurface(state, ctx) {
           parent_group_id: typeof state.parent_reward_ref === "string" ? ctx.entityId("reward_group", state.parent_reward_ref) : null,
           reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
           selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
+          native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
+            ? state.native_relic_refresh_subscription : "unavailable",
           can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip") },
         context: { ...commonContext, kind: "reward" },
         complete: metadataComplete,

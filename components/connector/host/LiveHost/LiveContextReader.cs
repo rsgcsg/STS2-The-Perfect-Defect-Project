@@ -2,6 +2,9 @@ using STS2Connector.NativeUi;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using STS2Platform.NativeFoundation;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
@@ -144,7 +147,7 @@ internal static class LiveContextReader
         PileType displayPile = PileType.Hand,
         bool strictRendering = false)
     {
-        string cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString();
+        string cost = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
         string? starCost = card.HasStarCostX
             ? "X"
             : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
@@ -176,6 +179,7 @@ internal static class LiveContextReader
             unplayableReason = reason == UnplayableReason.None ? null : reason.ToString();
         }
 
+        var publicDetails = NativePublicCardDetails.Capture(card, displayPile);
         return new VisibleCard(
             entityId,
             card.Id.Entry,
@@ -190,7 +194,11 @@ internal static class LiveContextReader
             existing,
             includeCombatLegality ? card.TargetType.ToString() : null,
             canPlay,
-            unplayableReason);
+            unplayableReason)
+        {
+            CurrentPublicDetails = JsonSerializer.SerializeToNode(publicDetails.PublicDetail, ConnectorMod._jsonOptions) as JsonObject,
+            CurrentPublicDetailsMissing = publicDetails.Missing
+        };
     }
 
     internal const string RequiredPowerCaptureMissing = "public_combat_power_facts";

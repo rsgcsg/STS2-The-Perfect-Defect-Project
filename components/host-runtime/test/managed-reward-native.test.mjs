@@ -17,7 +17,10 @@ test("both exact Hosts compile the same native reward/read qualification source"
       .map(line => line.slice(1)).join("\n") + "\n"]));
   for (const name of ["NativeCardRewardAlternativePreview.cs", "NativeRunHookReadQualification.cs",
     "NativeCardRewardSelectionObservation.cs", "NativeRewardSetObservation.cs",
-    "NativeMapReadProjection.cs", "NativeCardRenderTransaction.cs"])
+    "NativeMapReadProjection.cs", "NativeCardRenderTransaction.cs",
+    "NativeCalculatedVariableInventory.cs", "NativeCardPreviewReadQualification.Rendering.cs", "NativeCardPreviewReadQualification.cs",
+    "NativeDetachedCardCopy.cs", "NativeDetachedCardPreview.cs", "NativeEnchantmentMethodInventory.cs",
+    "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs"])
     assert.equal(files.get(`src/Sts2Headless/${name}`),
       readFileSync(path.join(root, "../native-foundation/src", name), "utf8"));
 });
@@ -45,7 +48,7 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
   assert.ok(emitted);
   const facts = JSON.parse(emitted.slice("native-reward-json=".length));
   assert.equal(facts.Complete, true);
-  assert.deepEqual(facts.Alternatives.map(option => option.IsPureReturn), [true,false]);
+  assert.deepEqual(facts.Alternatives.map(option => option.IsNativeSkip), [true,false]);
   assert.deepEqual(facts.Alternatives.map(option => [option.OptionId, option.AfterSelected]), [
     ["Skip", "end_selection_and_do_not_complete_reward"], ["SACRIFICE", "end_selection_and_complete_reward"]
   ]);

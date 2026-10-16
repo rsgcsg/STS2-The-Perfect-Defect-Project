@@ -15,8 +15,8 @@ public sealed class RewardAlternativePublicProjectionTests
         var reward = new VisibleReward("reward", "card", "Choose", "Offered card group", true)
         {
             GroupId="reward", GroupRelation="independent", CardOptions=Array.Empty<VisibleCard>(), CardAlternativesComplete=true,
-            CanSkipSelection=true,CanReroll=true,SelectionCompletesReward=true,
-            CardAlternatives=new[] { new VisibleRewardCardAlternative("Skip", "Skip", "end_selection_and_do_not_complete_reward") { IsPureReturn=true },
+            CanSkipSelection=true,CanReroll=true,SelectionCompletesReward=true,NativeRelicRefreshSubscription="attached",
+            CardAlternatives=new[] { new VisibleRewardCardAlternative("Skip", "Skip", "end_selection_and_do_not_complete_reward") { IsNativeSkip=true },
                 new VisibleRewardCardAlternative("REROLL", "Reroll", "do_nothing") }
         };
         var surface = new RewardClaimSurface("reward_claim","screen",new[]{reward},false,Array.Empty<VisibleCombatPotion>(),true,true)
@@ -27,9 +27,10 @@ public sealed class RewardAlternativePublicProjectionTests
         var group=wire["surface"]!["rewards"]![0]!;
         Assert.True(group["card_alternatives_complete"]!.GetValue<bool>());
         Assert.Equal("independent",group["group_relation"]!.GetValue<string>());
-        Assert.True(group["card_alternatives"]![0]!["is_pure_return"]!.GetValue<bool>());
+        Assert.True(group["card_alternatives"]![0]!["is_native_skip"]!.GetValue<bool>());
         Assert.Equal("REROLL",group["card_alternatives"]![1]!["option_id"]!.GetValue<string>());
         Assert.Equal("do_nothing",group["card_alternatives"]![1]!["after_selected"]!.GetValue<string>());
         Assert.True(group["selection_completes_reward"]!.GetValue<bool>());
+        Assert.Equal("attached",group["native_relic_refresh_subscription"]!.GetValue<string>());
     }
 }

@@ -128,7 +128,7 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             {
                 OptionId = alternativesBoundExactly ? exactAlternatives[index].Alternative.OptionId : null,
                 Title = alternativeLabels[index],
-                IsPureReturn = alternativesBoundExactly && NativeCardRewardAlternativePreview.IsPureReturn(exactAlternatives[index].Alternative),
+                IsNativeSkip = alternativesBoundExactly && NativeCardRewardAlternativePreview.IsNativeSkip(exactAlternatives[index].Alternative),
                 AfterSelected = alternativesBoundExactly
                     ? NativeCardRewardAlternativePreview.Outcome(exactAlternatives[index].Alternative.AfterSelected) : null
             })
@@ -148,6 +148,8 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             ParentGroupId = parent == null ? null : entities.GetId(parent, "reward"),
             RewardSetId = parentSet == null ? null : entities.GetId(parentSet, "reward_set"),
             SelectionCompletesReward = parentPreview?.SelectionCompletesReward,
+            NativeRelicRefreshSubscription = parent == null ? "unavailable"
+                : NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(parent),
             SelectableCardEntityIds = holders
                 .Where(holder => catalogBoundExactly
                                  && IsHolderClickable(holder)

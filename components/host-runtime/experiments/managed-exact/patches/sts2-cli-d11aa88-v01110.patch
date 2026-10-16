@@ -18,7 +18,7 @@ index 0000000..05b940b
 +</Project>
 diff --git a/native-tests/Program.cs b/native-tests/Program.cs
 new file mode 100644
-index 0000000..5525b5e
+index 0000000..33b3e96
 --- /dev/null
 +++ b/native-tests/Program.cs
 @@ -0,0 +1,269 @@
@@ -186,10 +186,10 @@ index 0000000..5525b5e
 +            var options=(IReadOnlyList<CardCreationResult>)tuple.GetField("Item1")!.GetValue(observed)!;
 +            var alternatives=(IReadOnlyList<CardRewardAlternative>)tuple.GetField("Item2")!.GetValue(observed)!;
 +            Check(ReferenceEquals(options.Single(),original.Single())&&ReferenceEquals(options.Single().Card,card),"opened callback retains original creation result and real card entity separately");
-+            Check(NativeCardRewardAlternativePreview.IsPureReturn(alternatives.Single()),"actual native Skip is qualified by its exact empty delegate");
++            Check(NativeCardRewardAlternativePreview.IsNativeSkip(alternatives.Single()),"actual native Skip is qualified by its exact empty delegate");
 +            int customEffects=0;var custom=new CardRewardAlternative("Skip",()=>{customEffects++;return Task.CompletedTask;},
 +                PostAlternateCardRewardAction.EndSelectionAndDoNotCompleteReward);
-+            Check(!NativeCardRewardAlternativePreview.IsPureReturn(custom)&&customEffects==0,"same-label custom Skip is not a pure-return witness and is never invoked");
++            Check(!NativeCardRewardAlternativePreview.IsNativeSkip(custom)&&customEffects==0,"same-label custom Skip is not a native Skip witness and is never invoked");
 +            var opened=(Dictionary<string,object?>)render.Invoke(simulator,new object[]{options.Single().Card,0})!;
 +            Check(JsonSerializer.Serialize(outer)==JsonSerializer.Serialize(opened),"actual original native opened callback matches full outer reward renderer DTO");
 +            Console.WriteLine("native-reward-card-pair="+JsonSerializer.Serialize(new{outer,opened}));
@@ -941,12 +941,824 @@ index 0000000..b11b0f2
 +        };
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeCalculatedVariableInventory.cs b/src/Sts2Headless/NativeCalculatedVariableInventory.cs
+new file mode 100644
+index 0000000..14bc7d2
+--- /dev/null
++++ b/src/Sts2Headless/NativeCalculatedVariableInventory.cs
+@@ -0,0 +1,58 @@
++using System;
++using System.Collections.Generic;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>Exact native multiplier identities used by initialized card vars.
++/// This inventory admits metadata/copy only. It does NOT qualify invoking a
++/// multiplier in combat; the non-combat native Calculate branch skips it.
++/// Unknown delegates are rejected even on that inactive branch.</summary>
++internal static class NativeCalculatedVariableInventory
++{
++    internal static readonly HashSet<string> Multipliers = new(StringComparer.Ordinal)
++    {
++        "MegaCrit.Sts2.Core.Models.Cards.AshenStrike+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Barrage+<>c::<get_CanonicalVars>b__5_0",
++        "MegaCrit.Sts2.Core.Models.Cards.BeatIntoShape+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.BodySlam+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Bully+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.CompileDriver+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.CrescentSpear+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.DeathMarch+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.DemonicShield+<>c::<get_CanonicalVars>b__8_0",
++        "MegaCrit.Sts2.Core.Models.Cards.ExpectAFight+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Finisher+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.FlakCannon+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Flechettes+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.GangUp+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.GoldAxe+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.HelixDrill+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.KnifeTrap+<>c::<get_CanonicalVars>b__5_0",
++        "MegaCrit.Sts2.Core.Models.Cards.LunarBlast+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.MementoMori+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Mimic+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.MindBlast+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Mirage+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Murder+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.NoEscape+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Normality+<>c::<get_CanonicalVars>b__12_0",
++        "MegaCrit.Sts2.Core.Models.Cards.PerfectedStrike+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.PreciseCut+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Protector+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.PullFromBelow+<>c::<get_CanonicalVars>b__5_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Radiate+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Rattle+<>c::<get_CanonicalVars>b__7_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Rend+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Sacrifice+<>c::<get_CanonicalVars>b__8_0",
++        "MegaCrit.Sts2.Core.Models.Cards.SoulStorm+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.SovereignBlade+<>c::<get_CanonicalVars>b__24_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Squeeze+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Stack+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Supermassive+<>c::<get_CanonicalVars>b__2_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Synchronize+<>c::<get_CanonicalVars>b__5_0",
++        "MegaCrit.Sts2.Core.Models.Cards.TearAsunder+<>c::<get_CanonicalVars>b__3_0",
++        "MegaCrit.Sts2.Core.Models.Cards.TimesUp+<>c::<get_CanonicalVars>b__4_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Unleash+<>c::<get_CanonicalVars>b__6_0",
++        "MegaCrit.Sts2.Core.Models.Cards.Voltaic+<>c::<get_CanonicalVars>b__5_0",
++    };
++}
+diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
+new file mode 100644
+index 0000000..5f947fe
+--- /dev/null
++++ b/src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs
+@@ -0,0 +1,373 @@
++using System;
++using System.Collections;
++using System.Collections.Generic;
++using System.Collections.Concurrent;
++using System.Linq;
++using System.Reflection;
++using System.Runtime.CompilerServices;
++using Godot;
++using MegaCrit.Sts2.Core.Assets;
++using MegaCrit.Sts2.Core.Combat;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Entities.Creatures;
++using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.Entities.Orbs;
++using MegaCrit.Sts2.Core.Models.Powers;
++using MegaCrit.Sts2.Core.Models.Relics;
++using MegaCrit.Sts2.Core.ValueProps;
++using MegaCrit.Sts2.Core.Helpers;
++using MegaCrit.Sts2.Core.Hooks;
++using MegaCrit.Sts2.Core.HoverTips;
++using MegaCrit.Sts2.Core.Localization;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Modding;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Cards;
++using MegaCrit.Sts2.Core.Models.Enchantments;
++using MegaCrit.Sts2.Core.Models.Orbs;
++using MegaCrit.Sts2.Core.Runs;
++
++namespace STS2Platform.NativeFoundation;
++
++public static partial class NativeCardPreviewReadQualification
++{
++    private static bool RenderMethodsUnpatched(Type type) => type.GetMethods(NativeMembers | BindingFlags.DeclaredOnly)
++        .All(IsUnpatched) && type.GetConstructors(NativeMembers).All(IsUnpatched);
++    private static bool RenderIteratorUnpatched(MethodInfo? method)
++    {
++        if (!IsUnpatched(method)) return false;
++        Type? iterator = method!.GetCustomAttribute<IteratorStateMachineAttribute>()?.StateMachineType;
++        return iterator == null || RenderMethodsUnpatched(iterator);
++    }
++    private static bool RenderGettersUnpatched(Type type, params string[] names) => names.All(name =>
++        IsUnpatched(type.GetProperty(name, NativeMembers)?.GetMethod));
++    private static bool RenderBase(Type current, string name) => current.GetMethod(name, NativeMembers) is { } method
++        && method.DeclaringType == typeof(CardModel) && IsUnpatched(method);
++    private static bool RenderConstantGetter(MethodInfo method)
++    {
++        // Exact CLR constant-return getter family. No member call, field access,
++        // delegate, allocation, native arithmetic or callback is interpreted.
++        byte[]? il = method.GetMethodBody()?.GetILAsByteArray();
++        return IsUnpatched(method) && il != null && (il.Length == 2 && il[0] is >= 0x15 and <= 0x1e && il[1] == 0x2a
++            || il.Length == 3 && il[0] == 0x1f && il[2] == 0x2a
++            || il.Length == 6 && il[0] == 0x20 && il[5] == 0x2a);
++    }
++    private static bool RenderCardDispatchQualified(CardModel card)
++    {
++        Type type = card.GetType();
++        if (type.Assembly != typeof(CardModel).Assembly || type.Namespace != "MegaCrit.Sts2.Core.Models.Cards") return false;
++        foreach (string name in new[] { "get_Title", "get_CanonicalEnergyCost", "get_HasEnergyCostX", "get_CurrentStarCost",
++            "get_TargetType", "get_Pool", "AddExtraArgsToDescription" })
++            if (!RenderBase(type, name)) return false;
++        foreach (string name in new[] { "get_CanonicalStarCost", "get_HasStarCostX", "get_MaxUpgradeLevel", "get_GainsBlock", "get_OrbEvokeType" })
++            if (type.GetMethod(name, NativeMembers) is not { } method || !IsUnpatched(method)
++                || method.DeclaringType != typeof(CardModel) && !RenderConstantGetter(method)) return false;
++        MethodInfo? hover = type.GetMethod("get_ExtraHoverTips", NativeMembers);
++        // These actual native implementations only construct current public
++        // hover facts; their fixed factories are in the closure below.
++        if (hover == null || !RenderIteratorUnpatched(hover)
++            || hover.DeclaringType != typeof(CardModel)
++                && hover.DeclaringType != typeof(Zap) && hover.DeclaringType != typeof(Dualcast)) return false;
++        return true;
++    }
++    private static bool RenderVariablesQualified(AbstractModel owner, DynamicVarSet? set)
++    {
++        if (set == null || set.GetType() != typeof(DynamicVarSet)
++            || Vars?.GetValue(set) is not Dictionary<string, DynamicVar> values
++            || values.GetType() != typeof(Dictionary<string, DynamicVar>)
++            || !ReferenceEquals(values.Comparer, EqualityComparer<string>.Default)
++            || values.Values.Distinct(ReferenceEqualityComparer.Instance).Count() != values.Count) return false;
++        foreach (var pair in values)
++        {
++            DynamicVar value = pair.Value;
++            Type type = value.GetType();
++            bool calculated = value is CalculatedVar computed && owner is CardModel computedOwner
++                && computedOwner.CombatState == null && CalculatedVariableMetadataQualified(computedOwner, computed);
++            if (type.Assembly != typeof(CardModel).Assembly || type.Namespace != typeof(DynamicVar).Namespace
++                || value is CalculatedVar && !calculated
++                || type.IsGenericType && type.GetGenericArguments().Any(argument => argument.Assembly != typeof(CardModel).Assembly)
++                || type.GetMethod("UpdateCardPreview", NativeMembers)?.DeclaringType is not { } updateOwner
++                || !calculated && updateOwner != typeof(DynamicVar) && updateOwner != typeof(DamageVar) && updateOwner != typeof(BlockVar)
++                || !calculated && type.GetMethod("GetBaseValueForIConvertible", NativeMembers)?.DeclaringType != typeof(DynamicVar)
++                || !ReferenceEquals(VarOwner?.GetValue(value), owner)
++                || !Equals(VarName?.GetValue(value), pair.Key)) return false;
++            // No arbitrary extension or captured callback is admitted merely
++            // because a containing card is from the exact game assembly.
++            for (Type? current = type; current != null && typeof(DynamicVar).IsAssignableFrom(current); current = current.BaseType)
++                if (!RenderMethodsUnpatched(current)
++                    || current.GetFields(NativeMembers | BindingFlags.DeclaredOnly)
++                        .Any(field => typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) != null
++                            && !(calculated && current == typeof(CalculatedVar) && field.Name == "_multiplierCalc"))) return false;
++            if (!calculated && type.GetMethod("SetOwner", NativeMembers)?.DeclaringType != typeof(DynamicVar)) return false;
++        }
++        return true;
++    }
++    private static bool RenderAttachmentQualified(CardModel card)
++    {
++        if (Affliction?.GetValue(card) != null) return false;
++        if (Enchantment?.GetValue(card) is not EnchantmentModel enchantment) return true;
++        Type type = enchantment.GetType();
++        if (type != typeof(Adroit) && type != typeof(Sharp)) return false;
++        if (!RenderMethodsUnpatched(typeof(EnchantmentModel)) || !RenderMethodsUnpatched(type)) return false;
++        // IconPath otherwise probes ResourceLoader and memoizes a path. This
++        // finite branch admits only the already chosen path and a valid hit.
++        if (typeof(EnchantmentModel).GetField("_iconPath", NativeMembers)?.GetValue(enchantment) is not string icon
++            || string.IsNullOrWhiteSpace(icon) || !RenderAssetHitQualified(icon)) return false;
++        var set = typeof(EnchantmentModel).GetField("_dynamicVars", NativeMembers)?.GetValue(enchantment) as DynamicVarSet;
++        return RenderVariablesQualified(enchantment, set);
++    }
++    private static bool RenderAssetHitQualified(string path)
++    {
++        if (!RenderGettersUnpatched(typeof(PreloadManager), "Cache")
++            || !IsUnpatched(typeof(PreloadManager).TypeInitializer) || !FixedConstructorsUnpatched(typeof(AssetCache))
++            || !MethodsUnpatched(typeof(AssetCache), "GetAsset", "GetCompressedTexture2D")
++            || !MethodsUnpatched(typeof(GodotObject), "IsInstanceValid")) return false;
++        if (typeof(PreloadManager).GetField("<Cache>k__BackingField", NativeMembers)?.GetValue(null) is not AssetCache cache
++            || cache.GetType() != typeof(AssetCache)
++            || typeof(AssetCache).GetField("_cache", NativeMembers)?.GetValue(cache) is not ConcurrentDictionary<string, Resource> values
++            || values.GetType() != typeof(ConcurrentDictionary<string, Resource>)
++            || !ReferenceEquals(values.Comparer, EqualityComparer<string>.Default)
++            || !values.TryGetValue(path, out Resource? value)
++            || value?.GetType() != typeof(CompressedTexture2D)) return false;
++        // ContainsKey alone is insufficient: native GetAsset loads and replaces
++        // an invalid/disposed cached resource. Do not call that path on a miss.
++        return GodotObject.IsInstanceValid(value);
++    }
++    private static bool RenderModelLookupQualified(Type modelType, string factory)
++    {
++        if (modelType.Assembly != typeof(CardModel).Assembly
++            || !IsUnpatched(typeof(ModelDb).TypeInitializer)
++            || !MethodsUnpatched(typeof(ModelDb), factory, "Get", "GetId", "GetCategory", "GetCategoryType", "GetEntry")
++            || !MethodsUnpatched(typeof(ModelId), "SlugifyCategory", "GetHashCode", "Equals", "get_EqualityContract", "get_Category", "get_Entry", "ToString")
++            || !FixedConstructorsUnpatched(typeof(ModelId)) || !MethodsUnpatched(typeof(StringHelper), "Slugify")) return false;
++        foreach (string name in new[] { factory, "Get", "GetId" })
++        {
++            MethodInfo? method = typeof(ModelDb).GetMethods(NativeMembers).SingleOrDefault(value => value.Name == name && value.IsGenericMethodDefinition);
++            if (method == null || !IsUnpatched(method.MakeGenericMethod(modelType))) return false;
++        }
++        return typeof(ModelDb).GetField("_contentById", NativeMembers)?.GetValue(null) is Dictionary<ModelId, AbstractModel> models
++            && models.GetType() == typeof(Dictionary<ModelId, AbstractModel>)
++            && ReferenceEquals(models.Comparer, EqualityComparer<ModelId>.Default)
++            && models.Keys.All(key => key is not null && key.GetType() == typeof(ModelId));
++    }
++    private static bool RenderPoolValueQualified(CardPoolModel pool)
++    {
++        Type type = pool.GetType();
++        MethodInfo? color = type.GetProperty("EnergyColorName", NativeMembers)?.GetMethod;
++        byte[]? il = color?.GetMethodBody()?.GetILAsByteArray();
++        // Exact native constant-string getter: ldstr <token>; ret.
++        return type.Assembly == typeof(CardModel).Assembly && type.Namespace == "MegaCrit.Sts2.Core.Models.CardPools"
++            && color != null && IsUnpatched(color) && il is { Length: 6 } && il[0] == 0x72 && il[5] == 0x2a;
++    }
++    private static bool RenderCurrentPoolsQualified(CardModel card)
++    {
++        if (typeof(CardModel).GetField("_pool", NativeMembers)?.GetValue(card) is not CardPoolModel pool
++            || !RenderPoolValueQualified(pool)) return false;
++        if (typeof(CardModel).GetField("_owner", NativeMembers)?.GetValue(card) is not Player player) return true;
++        if (player.GetType() != typeof(Player)) return false;
++        CharacterModel character = player.Character;
++        Type type = character.GetType();
++        if (type.Assembly != typeof(CardModel).Assembly || type.Namespace != "MegaCrit.Sts2.Core.Models.Characters") return false;
++        MethodInfo? getter = type.GetProperty("CardPool", NativeMembers)?.GetMethod;
++        byte[]? body = getter?.GetMethodBody()?.GetILAsByteArray();
++        if (getter == null || !IsUnpatched(getter) || body is not { Length: 6 } || body[0] != 0x28 || body[5] != 0x2a
++            || getter.Module.ResolveMethod(BitConverter.ToInt32(body, 1)) is not MethodInfo factory
++            || factory.DeclaringType != typeof(ModelDb) || factory.Name != "CardPool" || !factory.IsGenericMethod
++            || factory.GetGenericArguments() is not { Length: 1 } arguments
++            || !typeof(CardPoolModel).IsAssignableFrom(arguments[0])
++            || !RenderModelLookupQualified(arguments[0], "CardPool")) return false;
++        return RenderPoolValueQualified(character.CardPool);
++    }
++    private static bool RenderOrbHoverQualified(CardModel card)
++    {
++        if (card is not Zap) return true;
++        if (!RenderModelLookupQualified(typeof(LightningOrb), "Orb") || !MethodsUnpatched(typeof(ImageHelper), "GetImagePath")
++            || !RenderGettersUnpatched(typeof(OrbModel), "DumbHoverTip", "Title", "Description", "Icon", "IconPath")
++            || !RenderMethodsUnpatched(typeof(HoverTip))) return false;
++        LightningOrb lightning = ModelDb.Orb<LightningOrb>();
++        if (lightning.GetType() != typeof(LightningOrb)) return false;
++        string path = ImageHelper.GetImagePath("orbs/" + lightning.Id.Entry.ToLowerInvariant() + ".png");
++        return RenderAssetHitQualified(path);
++    }
++    private static bool RenderFixedClosureUnpatched() =>
++        MethodsUnpatched(typeof(CardModel), "get_TitleLocString", "get_Title", "get_Description", "get_Type", "get_Rarity",
++            "get_IsUpgraded", "get_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "get_Pile", "get_UpgradePreviewType", "get_IsEnchantmentPreview",
++            "get_DynamicVars", "get_EnergyCost", "get_CurrentStarCost", "get_BaseStarCost", "get_TemporaryStarCost", "get_CanonicalStarCost",
++            "get_HasStarCostX", "GetStarCostWithModifiers", "get_Owner", "get_RunState", "get_CombatState", "get_CurrentTarget",
++            "get_Enchantment", "get_Affliction", "get_TargetType", "get_GainsBlock", "get_OrbEvokeType", "get_Keywords", "get_LocalKeywords",
++            "get_IsSlyThisTurn", "get_ShouldRetainThisTurn", "get_BaseReplayCount", "GetEnchantedReplayCount", "GetKeywordsWithSources",
++            "get_Pool", "GetDescriptionForPile", "GetDescriptionForUpgradePreview", "AddExtraArgsToDescription", "UpdateDynamicVarPreview", "get_HoverTips", "get_ExtraHoverTips")
++        && MethodsUnpatched(typeof(AbstractModel), "get_Id", "get_IsMutable", "get_IsCanonical", "AssertMutable")
++        && RenderMethodsUnpatched(typeof(CardEnergyCost)) && RenderMethodsUnpatched(typeof(LocalCostModifier))
++        && RenderMethodsUnpatched(typeof(TemporaryCardCost)) && RenderMethodsUnpatched(typeof(DynamicVarSet))
++        && RenderMethodsUnpatched(typeof(EnergyIconHelper)) && RenderMethodsUnpatched(typeof(LocString))
++        && MethodsUnpatched(typeof(LocManager), "get_Instance", "GetTable", "SmartFormat", "get_CultureInfo")
++        && RenderMethodsUnpatched(typeof(LocTable))
++        && RenderMethodsUnpatched(typeof(IHoverTip)) && RenderMethodsUnpatched(typeof(HoverTip))
++        && RenderMethodsUnpatched(typeof(CardHoverTip)) && RenderMethodsUnpatched(typeof(HoverTipFactory))
++        && RenderMethodsUnpatched(typeof(CardKeywordOrder)) && RenderMethodsUnpatched(typeof(CardModel).Assembly.GetType("MegaCrit.Sts2.Core.Entities.Cards.CardKeywordExtensions")!)
++        && RenderMethodsUnpatched(typeof(SummonVar))
++        && SingletonListUnpatched(typeof(IHoverTip))
++        && typeof(IHoverTip).GetNestedTypes(NativeMembers).All(RenderMethodsUnpatched)
++        && RenderGettersUnpatched(typeof(CardPoolModel), "EnergyColorName")
++        && RenderGettersUnpatched(typeof(Player), "RunState", "Creature", "Character", "IsOstyAlive", "PlayerCombatState")
++        && RenderGettersUnpatched(typeof(Creature), "CombatState", "Player", "Monster", "Powers")
++        && RenderGettersUnpatched(typeof(CardPile), "Type", "IsCombatPile", "Cards")
++        && RenderGettersUnpatched(typeof(CombatManager), "Instance", "IsInProgress", "IsOverOrEnding", "IsStarting");
++
++    private static bool NoFormattingCallbacks(object value)
++    {
++        for (Type? current = value.GetType(); current != null && current != typeof(object); current = current.BaseType)
++            foreach (FieldInfo field in current.GetFields(NativeMembers | BindingFlags.DeclaredOnly))
++                if (!field.IsStatic && typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(value) != null) return false;
++        return true;
++    }
++    private static bool RenderFormattingQualified()
++    {
++        object? formatter = typeof(LocManager).GetField("_smartFormatter", NativeMembers)?.GetValue(null);
++        if (formatter == null || formatter.GetType().FullName != "SmartFormat.SmartFormatter"
++            || formatter.GetType().Module.ModuleVersionId != new Guid("5daab956-3007-40b4-9902-24b91fb5bae9")
++            || !RenderMethodsUnpatched(formatter.GetType()) || !NoFormattingCallbacks(formatter)) return false;
++        foreach (string property in new[] { "Parser", "Settings" })
++        {
++            PropertyInfo? member = formatter.GetType().GetProperty(property, NativeMembers);
++            if (member?.GetMethod is not { } getter || !IsUnpatched(getter) || member.GetValue(formatter) is not { } child
++                || child.GetType().Module != formatter.GetType().Module || !RenderMethodsUnpatched(child.GetType())
++                || !NoFormattingCallbacks(child)) return false;
++        }
++        var accepted = new HashSet<string>(StringComparer.Ordinal)
++        {
++            "SmartFormat.Extensions.ListFormatter", "SmartFormat.Extensions.DictionarySource", "SmartFormat.Extensions.ValueTupleSource",
++            "SmartFormat.Extensions.ReflectionSource", "SmartFormat.Extensions.KeyValuePairSource", "SmartFormat.Extensions.DefaultSource", "SmartFormat.Extensions.PluralLocalizationFormatter",
++            "SmartFormat.Extensions.ConditionalFormatter", "SmartFormat.Extensions.ChooseFormatter", "SmartFormat.Extensions.SubStringFormatter",
++            "SmartFormat.Extensions.IsMatchFormatter", "MegaCrit.Sts2.Core.Localization.Formatters.LocaleNumberFormatter", "SmartFormat.Extensions.DefaultFormatter",
++            "MegaCrit.Sts2.Core.Localization.Formatters.AbsoluteValueFormatter", "MegaCrit.Sts2.Core.Localization.Formatters.EnergyIconsFormatter",
++            "MegaCrit.Sts2.Core.Localization.Formatters.StarIconsFormatter", "MegaCrit.Sts2.Core.Localization.Formatters.HighlightDifferencesFormatter",
++            "MegaCrit.Sts2.Core.Localization.Formatters.HighlightDifferencesInverseFormatter", "MegaCrit.Sts2.Core.Localization.Formatters.PercentMoreFormatter",
++            "MegaCrit.Sts2.Core.Localization.Formatters.PercentLessFormatter", "MegaCrit.Sts2.Core.Localization.Formatters.ShowIfUpgradedFormatter"
++        };
++        foreach (string property in new[] { "SourceExtensions", "FormatterExtensions" })
++        {
++            PropertyInfo? collection = formatter.GetType().GetProperty(property, NativeMembers);
++            if (collection?.GetMethod is not { } getter || !IsUnpatched(getter)
++                || collection.GetValue(formatter) is not IEnumerable extensions) return false;
++            foreach (object extension in extensions)
++                if (!accepted.Contains(extension.GetType().FullName ?? "")
++                    || extension.GetType().Module != ((extension.GetType().FullName ?? "").StartsWith("SmartFormat.", StringComparison.Ordinal)
++                        ? formatter.GetType().Module : typeof(CardModel).Module)
++                    || !RenderMethodsUnpatched(extension.GetType()) || !NoFormattingCallbacks(extension)) return false;
++        }
++        return true;
++    }
++    private static bool RenderKeywordsQualified(CardModel card)
++    {
++        if (Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
++            || keywords.GetType() != typeof(HashSet<CardKeyword>)
++            || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)) return false;
++        return typeof(HoverTipFactory).GetField("_keywordHoverTips", NativeMembers)?.GetValue(null) is Dictionary<CardKeyword, HoverTip> cache
++            && cache.GetType() == typeof(Dictionary<CardKeyword, HoverTip>)
++            && ReferenceEquals(cache.Comparer, EqualityComparer<CardKeyword>.Default)
++            && cache.Values.All(tip => tip != null && tip.GetType() == typeof(HoverTip));
++    }
++
++    private static readonly string[] RenderHookMethods = {
++        "ModifyDamageAdditive", "ModifyDamageMultiplicative", "ModifyDamageCap", "ModifyBlockAdditive", "ModifyBlockMultiplicative",
++        "TryModifyEnergyCostInCombat", "TryModifyEnergyCostInCombatLate", "TryModifyStarCost", "TryModifyKeywordsInCombat"
++    };
++    private static bool RenderCombatListenerQualified(AbstractModel model)
++    {
++        Type current = model.GetType();
++        if (current.Assembly != typeof(CardModel).Assembly) return false;
++        foreach (string name in RenderHookMethods)
++        {
++            MethodInfo? method = current.GetMethod(name, NativeMembers);
++            if (method == null || !IsUnpatched(method)) return false;
++            Type? owner = method.DeclaringType;
++            bool known = owner == typeof(AbstractModel)
++                || owner == typeof(StrengthPower) && name == "ModifyDamageAdditive"
++                || owner == typeof(DexterityPower) && name == "ModifyBlockAdditive"
++                || owner == typeof(FrailPower) && name == "ModifyBlockMultiplicative"
++                || (owner == typeof(WeakPower) || owner == typeof(VulnerablePower)) && name == "ModifyDamageMultiplicative";
++            if (!known) return false;
++        }
++        if (model is WeakPower or VulnerablePower)
++            return RenderMethodsUnpatched(current) && RenderVariablesQualified(model,
++                typeof(PowerModel).GetField("_dynamicVars", NativeMembers)?.GetValue(model) as DynamicVarSet);
++        return true;
++    }
++
++    // This is the child-combat extension of the same Run-listener qualification.
++    // Subscribers and the entire iterator/member-test closure are checked before
++    // the first MoveNext; only then are current effective renderer hooks checked.
++    private static bool RenderCombatQualified(CardModel card, IRunState run, ICombatState combat, out string? gap)
++    {
++        gap = "native_card_render_combat_hook_closure_unqualified";
++        if (combat.GetType() != typeof(CombatState) || !NativeRunHookReadQualification.Preflight(run)
++            || typeof(ModHelper).GetField("_combatHookSubscribers", NativeMembers)?.GetValue(null) is not ICollection { Count: 0 }
++            || !RenderIteratorUnpatched(typeof(CombatState).GetMethod("IterateHookListeners", NativeMembers))
++            || !RenderIteratorUnpatched(typeof(ModHelper).GetMethod("IterateAllCombatStateSubscribers", NativeMembers))
++            || !RenderIteratorUnpatched(typeof(Hook).GetMethod("IterateCombatHookListeners", NativeMembers))
++            || !MethodsUnpatched(typeof(CombatState), "Contains", "get_RunState", "get_Players", "get_PlayerCreatures", "get_Creatures",
++                "get_Modifiers", "get_BadgeModels", "get_MultiplayerScalingModel")
++            || !RenderMethodsUnpatched(typeof(CombatState).GetNestedType("<>c", BindingFlags.NonPublic)!)
++            || !RenderGettersUnpatched(typeof(Creature), "IsPlayer", "Powers", "Player", "Monster", "CombatState", "PetOwner")
++            || !RenderGettersUnpatched(typeof(Player), "IsActiveForHooks", "Relics", "PotionSlots", "PlayerCombatState", "Creature")
++            || !RenderGettersUnpatched(typeof(PlayerCombatState), "AllPiles", "OrbQueue")
++            || !RenderGettersUnpatched(typeof(OrbQueue), "Orbs")
++            || !RenderGettersUnpatched(typeof(PowerModel), "Owner", "Amount")
++            || !RenderGettersUnpatched(typeof(RelicModel), "IsMelted", "HasBeenRemovedFromState", "Owner")
++            || !RenderGettersUnpatched(typeof(PotionModel), "HasBeenRemovedFromState", "Owner")
++            || !RenderGettersUnpatched(typeof(OrbModel), "HasBeenRemovedFromState", "Owner")
++            || !RenderGettersUnpatched(typeof(MonsterModel), "Creature")
++            || !RenderGettersUnpatched(typeof(AfflictionModel), "HasCard", "Card")
++            || !RenderGettersUnpatched(typeof(EnchantmentModel), "HasCard", "Card")
++            || !RenderHookMethods.All(name => MethodsUnpatched(typeof(AbstractModel), name))
++            || !MethodsUnpatched(typeof(Hook), "ModifyBlock", "ModifyDamage", "ModifyDamageInternal", "ModifyEnergyCostInCombat", "ModifyStarCost", "ModifyKeywordsInCombat")
++            || !MethodsUnpatched(typeof(Player), "GetRelic") || !MethodsUnpatched(typeof(Creature), "GetPower")
++            || !RenderMethodsUnpatched(typeof(ValuePropExtensions))
++            || !RenderMethodsUnpatched(typeof(StrengthPower)) || !RenderMethodsUnpatched(typeof(DexterityPower))
++            || !RenderMethodsUnpatched(typeof(FrailPower)) || !RenderMethodsUnpatched(typeof(PaperKrane))
++            || !RenderMethodsUnpatched(typeof(PaperPhrog)) || !RenderMethodsUnpatched(typeof(DebilitatePower))
++            || !RenderMethodsUnpatched(typeof(CrueltyPower))) return false;
++        if (!ReferenceEquals(((CombatState)combat).RunState, run)) return false;
++        AbstractModel[] listeners = run.IterateHookListeners(combat).ToArray();
++        if (!listeners.All(RenderCombatListenerQualified)) { gap = "native_card_render_effective_combat_hook_unqualified"; return false; }
++        gap = null;
++        return true;
++    }
++
++    public static bool TryPreflightRender(CardModel card, CardPreviewMode mode, PileType displayPile,
++        out string? gap, bool refreshPreview = true)
++    {
++        gap = "native_card_render_call_closure_unqualified";
++        try
++        {
++            if (typeof(CardModel).Module.ModuleVersionId != AuditedGameMvid || mode is not (CardPreviewMode.Normal or CardPreviewMode.Upgrade)
++                || displayPile is not (PileType.None or PileType.Deck or PileType.Hand or PileType.Play or PileType.Draw or PileType.Discard or PileType.Exhaust)
++) return false;
++            if (!RenderFixedClosureUnpatched()) { gap = "native_card_render_fixed_closure_unqualified"; return false; }
++            if (!RenderCardDispatchQualified(card)) { gap = "native_card_render_effective_dispatch_unqualified"; return false; }
++            if (!RenderFormattingQualified()) { gap = "native_card_render_formatter_roster_unqualified"; return false; }
++            if (!RenderOrbHoverQualified(card)) { gap = "native_card_render_hover_asset_hit_unqualified"; return false; }
++            if (!RenderKeywordsQualified(card)
++                || !RenderCurrentPoolsQualified(card)
++                || !RenderVariablesQualified(card, CardVars?.GetValue(card) as DynamicVarSet)
++                || !RenderAttachmentQualified(card)) { gap = "native_card_render_current_values_unqualified"; return false; }
++            if (card.RunState is { } run)
++            {
++                if (!NativeRunHookReadQualification.Preflight(run)) { gap = "native_card_render_run_subscribers_unqualified"; return false; }
++                if (card.CombatState is { } combat && !RenderCombatQualified(card, run, combat, out gap)) return false;
++            }
++            else if (card.CombatState != null) { gap = "native_card_render_combat_run_owner_unavailable"; return false; }
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    public static void InvokePreflight(CardModel card, CardPreviewMode mode, PileType displayPile, bool refreshPreview = true)
++    {
++        if (!TryPreflightRender(card, mode, displayPile, out string? gap, refreshPreview))
++            throw new InvalidOperationException(gap);
++    }
++}
+diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
+new file mode 100644
+index 0000000..edded40
+--- /dev/null
++++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
+@@ -0,0 +1,363 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Reflection;
++using HarmonyLib;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Enchantments;
++using MegaCrit.Sts2.Core.Models.Cards;
++using MegaCrit.Sts2.Core.Models.Powers;
++using MegaCrit.Sts2.Core.Nodes.Cards;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>
++/// One exact-game qualification owner for native model copying and presentation.
++/// These checks precede native invocation. A transaction/finally is not a purity
++/// proof. Rendering's operation-specific closure lives in the Rendering partial.
++/// This class never executes a method selected by a consumer or interprets IL.
++/// </summary>
++public static partial class NativeCardPreviewReadQualification
++{
++    internal static readonly Guid AuditedGameMvid = new("57785517-0b16-42b9-8b36-bad6fb28384b");
++    internal const BindingFlags NativeMembers = BindingFlags.Instance | BindingFlags.Static
++        | BindingFlags.Public | BindingFlags.NonPublic;
++
++    public static bool IsUnpatched(MethodBase? method)
++    {
++        try { return method != null && (Harmony.GetPatchInfo(method) is not { } patches || patches.Owners.Count == 0); }
++        catch { return false; }
++    }
++
++    internal static bool MethodsUnpatched(Type owner, params string[] names) => names.All(name =>
++    {
++        MethodInfo[] exact = owner.GetMethods(NativeMembers).Where(method => method.Name == name).ToArray();
++        return exact.Length > 0 && exact.All(IsUnpatched);
++    });
++
++    private static bool FixedConstructorsUnpatched(Type type) =>
++        type.GetConstructors(NativeMembers).All(IsUnpatched);
++
++    private static bool CloneLambdaUnpatched(Type owner)
++    {
++        MethodInfo[] exact = owner.GetNestedType("<>c", BindingFlags.NonPublic)?
++            .GetMethods(NativeMembers).Where(method => method.Name.StartsWith("<Clone>b__", StringComparison.Ordinal)).ToArray()
++            ?? Array.Empty<MethodInfo>();
++        return exact.Length == 1 && IsUnpatched(exact[0]);
++    }
++
++    private static bool BaseImplementation(Type current, Type owner, string method) =>
++        current.GetMethod(method, NativeMembers) is { } effective
++        && effective.DeclaringType == owner && IsUnpatched(effective);
++
++    private static readonly FieldInfo? Mutable = typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers);
++    private static readonly FieldInfo? CardVars = typeof(CardModel).GetField("_dynamicVars", NativeMembers);
++    private static readonly FieldInfo? Vars = typeof(DynamicVarSet).GetField("_vars", NativeMembers);
++    private static readonly FieldInfo? VarName = typeof(DynamicVar).GetField("<Name>k__BackingField", NativeMembers);
++    private static readonly FieldInfo? VarOwner = typeof(DynamicVar).GetField("_owner", NativeMembers);
++    private static readonly FieldInfo? Keywords = typeof(CardModel).GetField("_keywords", NativeMembers);
++    private static readonly FieldInfo? Enchantment = typeof(CardModel).GetField("<Enchantment>k__BackingField", NativeMembers);
++    private static readonly FieldInfo? Affliction = typeof(CardModel).GetField("<Affliction>k__BackingField", NativeMembers);
++    private static readonly FieldInfo? Canonical = typeof(CardModel).GetField("_canonicalInstance", NativeMembers);
++
++    // The native clone only calls base Clone/ResetToBase then SetOwner. Unknown
++    // SetOwner implementations are rejected BEFORE they can run. The exact
++    // CalculatedVar SetOwner/UpdateValues branch only reads the base variable;
++    // multiplier invocation is separately guarded by the rendering operation. DynamicVars must already be initialized on the original: this is
++    // the native mutable-card invariant, not permission to warm a live getter.
++    private static bool CopyVariablesQualified(AbstractModel owner, DynamicVarSet set) =>
++        set.GetType() == typeof(DynamicVarSet)
++        && Vars?.GetValue(set) is Dictionary<string, DynamicVar> values && values.GetType() == typeof(Dictionary<string, DynamicVar>)
++        && ReferenceEquals(values.Comparer, EqualityComparer<string>.Default)
++        && values.All(pair => pair.Value != null
++            && pair.Value.GetType().Assembly == typeof(CardModel).Assembly
++            && VarName?.GetValue(pair.Value) is string name && pair.Key == name
++            && ReferenceEquals(VarOwner?.GetValue(pair.Value), owner)
++            && (pair.Value is CalculatedVar calculated
++                ? owner is CardModel card && CalculatedVariableMetadataQualified(card, calculated)
++                    && values.ContainsKey("CalculationBase")
++                    && values.ContainsKey(calculated.GetType() == typeof(CalculatedDamageVar) ? "ExtraDamage" : "CalculationExtra")
++                : BaseImplementation(pair.Value.GetType(), typeof(DynamicVar), nameof(DynamicVar.SetOwner))))
++        && values.Values.Distinct(ReferenceEqualityComparer.Instance).Count() == values.Count;
++
++
++
++
++    internal static bool CalculatedVariableMetadataQualified(CardModel owner, CalculatedVar value)
++    {
++        Type type = value.GetType();
++        if (type != typeof(CalculatedVar) && type != typeof(CalculatedDamageVar) && type != typeof(CalculatedBlockVar)) return false;
++        if (!BaseImplementation(type, typeof(CalculatedVar), "SetOwner")
++            || !BaseImplementation(type, typeof(CalculatedVar), "GetBaseVar")
++            || !BaseImplementation(type, type == typeof(CalculatedDamageVar) ? typeof(CalculatedDamageVar) : typeof(CalculatedVar), "GetExtraVar")
++            || !MethodsUnpatched(typeof(CalculatedVar), "SetOwner", "UpdateValues", "GetBaseVar", "GetExtraVar", "RecalculateForUpgradeOrEnchant", "Calculate")
++            || !MethodsUnpatched(typeof(DynamicVarSet), "get_CalculationBase", "get_CalculationExtra", "get_ExtraDamage")) return false;
++        object? stored = typeof(CalculatedVar).GetField("_multiplierCalc", NativeMembers)?.GetValue(value);
++        if (stored is not Delegate multiplier || multiplier.GetInvocationList().Length != 1
++            || multiplier.Method.Module.ModuleVersionId != AuditedGameMvid
++            || multiplier.Method.DeclaringType?.DeclaringType != owner.GetType()
++            || !NativeCalculatedVariableInventory.Multipliers.Contains(multiplier.Method.DeclaringType!.FullName + "::" + multiplier.Method.Name)
++            || !IsUnpatched(multiplier.Method)) return false;
++        return multiplier.Method.IsStatic ? multiplier.Target == null : multiplier.Target?.GetType() == multiplier.Method.DeclaringType;
++    }
++
++    private static bool CopyCostQualified(CardModel card)
++    {
++        object? value = typeof(CardModel).GetField("_energyCost", NativeMembers)?.GetValue(card);
++        if (value == null) return true; // native getter initializes the NEW copy
++        return value is CardEnergyCost cost
++            && ReferenceEquals(typeof(CardEnergyCost).GetField("_card", NativeMembers)?.GetValue(cost), card)
++            && typeof(CardEnergyCost).GetField("_localModifiers", NativeMembers)?.GetValue(cost) is List<LocalCostModifier> modifiers
++            && modifiers.GetType() == typeof(List<LocalCostModifier>) && modifiers.All(modifier => modifier != null && modifier.GetType() == typeof(LocalCostModifier));
++    }
++
++    // Only the exact native UI observers audited for this structural bridge.
++    // They do not define clone model values, and are suppressed on the NEW
++    // card before native DeepCloneFields. Unknown observers are never run.
++    private static bool UiObserver(Delegate callback, string method, CardModel original) =>
++        callback is Action && callback.Method == typeof(NCard).GetMethod(method, NativeMembers)
++        && IsUnpatched(callback.Method) && callback.Target is NCard node && node.GetType() == typeof(NCard)
++        && ReferenceEquals(NativeDetachedCardCopy.UiModel(node), original);
++
++    private static bool CopiedDelegatesQualified(CardModel card)
++    {
++        foreach (string name in new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
++                     "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" })
++        {
++            FieldInfo? field = typeof(CardModel).GetField(name, NativeMembers);
++            if (field == null) return false;
++            if (field.GetValue(card) is not Delegate callbacks) continue;
++            string? observer = name switch
++            { "AfflictionChanged" => "OnAfflictionChanged", "EnchantmentChanged" => "OnEnchantmentChanged", _ => null };
++            if (observer == null || callbacks.GetInvocationList().Any(callback => !UiObserver(callback, observer, card))) return false;
++        }
++        return typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers) is { } completed
++            && completed.GetValue(card) == null;
++    }
++
++    private static bool AttachmentCopyQualified(CardModel card)
++    {
++        if (Enchantment == null || Affliction == null) return false;
++        if (Enchantment.GetValue(card) is EnchantmentModel enchantment)
++        {
++            if (enchantment.GetType().Assembly != typeof(CardModel).Assembly || Mutable?.GetValue(enchantment) is not true
++                || typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers)?.GetValue(enchantment) != null
++                || !BaseImplementation(enchantment.GetType(), typeof(EnchantmentModel), "DeepCloneFields")
++                || !BaseImplementation(enchantment.GetType(), typeof(AbstractModel), "AfterCloned")
++                || !ReferenceEquals(typeof(EnchantmentModel).GetField("_card", NativeMembers)?.GetValue(enchantment), card)
++                || typeof(EnchantmentModel).GetField("_dynamicVars", NativeMembers)?.GetValue(enchantment) is not DynamicVarSet vars
++                || !CopyVariablesQualified(enchantment, vars)
++                || !MethodsUnpatched(typeof(AbstractModel), "ClonePreservingMutability")
++                || !MethodsUnpatched(typeof(EnchantmentModel), "DeepCloneFields", "get_DynamicVars", "ApplyInternal",
++                    "get_Card", "set_Card", "get_Amount", "set_Amount")
++                || !MethodsUnpatched(typeof(CardModel), "EnchantInternal", "set_Enchantment")) return false;
++            if (typeof(EnchantmentModel).GetField("StatusChanged", NativeMembers)?.GetValue(enchantment) is Delegate status
++                && status.GetInvocationList().Any(callback => !UiObserver(callback, "OnEnchantmentStatusChanged", card))) return false;
++        }
++        if (Affliction.GetValue(card) is AfflictionModel affliction)
++        {
++            // Native AfterCloned clears _card and AmountChanged, retaining the
++            // existing amount. AfflictInternal then writes the SAME amount;
++            // the native recalculation/event branch is therefore not reached.
++            if (affliction.GetType().Assembly != typeof(CardModel).Assembly || Mutable?.GetValue(affliction) is not true
++                || typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers)?.GetValue(affliction) != null
++                || !BaseImplementation(affliction.GetType(), typeof(AbstractModel), "DeepCloneFields")
++                || !BaseImplementation(affliction.GetType(), typeof(AfflictionModel), "AfterCloned")
++                || !ReferenceEquals(typeof(AfflictionModel).GetField("_card", NativeMembers)?.GetValue(affliction), card)
++                || typeof(AfflictionModel).GetField("AmountChanged", NativeMembers)?.GetValue(affliction) != null
++                || !MethodsUnpatched(typeof(AbstractModel), "ClonePreservingMutability", "DeepCloneFields")
++                || !MethodsUnpatched(typeof(AfflictionModel), "AfterCloned", "get_Card", "set_Card", "get_Amount", "set_Amount")
++                || !MethodsUnpatched(typeof(CardModel), "AfflictInternal", "set_Affliction")) return false;
++        }
++        return true;
++    }
++
++    // All reachable native calls for the initialized/plain-copy branch. In
++    // particular KeywordSources.Local short-circuits before combat hooks;
++    // attachment branches have their own guard below; canonical lookup is excluded by
++    // the existing canonical-instance binding. Framework collection/decimal
++    // primitives are the trusted CLR boundary, not a native plugin callback.
++    private static bool CopyClosureUnpatched() =>
++        MethodsUnpatched(typeof(AbstractModel), "MutableClone", "get_IsMutable", "set_IsMutable", "AssertMutable", "AfterCloned")
++        && MethodsUnpatched(typeof(CardModel), "DeepCloneFields", "AfterCloned", "GetKeywordsWithSources", "get_LocalKeywords",
++            "get_DynamicVars", "get_Enchantment", "get_Affliction", "get_EnergyCost", "get_CanonicalEnergyCost", "get_HasEnergyCostX",
++            "set_CurrentTarget", "set_CurrentPlayIndex", "set_DeckVersion", "set_HasBeenRemovedFromState")
++        && MethodsUnpatched(typeof(DynamicVarSet), "Clone", "get_Values", "InitializeWithOwner", "RecalculateForUpgradeOrEnchant")
++        && FixedConstructorsUnpatched(typeof(DynamicVarSet)) && CloneLambdaUnpatched(typeof(DynamicVarSet))
++        && MethodsUnpatched(typeof(DynamicVar), "Clone", "ResetToBase", "SetOwner", "get_Name", "get_BaseValue", "set_BaseValue",
++            "get_EnchantedValue", "set_EnchantedValue", "get_PreviewValue", "set_PreviewValue", "get_WasJustUpgraded", "set_WasJustUpgraded")
++        && MethodsUnpatched(typeof(CardEnergyCost), "Clone", "get_Canonical", "get_CostsX", "get_WasJustUpgraded", "set_WasJustUpgraded")
++        && FixedConstructorsUnpatched(typeof(CardEnergyCost)) && CloneLambdaUnpatched(typeof(CardEnergyCost))
++        && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "set_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
++        && FixedConstructorsUnpatched(typeof(LocalCostModifier));
++
++    internal static bool TryPreflightCopy(CardModel card, out string? gap)
++    {
++        gap = "native_preview_copy_closure_unqualified";
++        try
++        {
++            if (typeof(CardModel).Assembly.ManifestModule.ModuleVersionId != AuditedGameMvid
++                || card.GetType().Assembly != typeof(CardModel).Assembly
++                || card.GetType().Namespace != "MegaCrit.Sts2.Core.Models.Cards"
++                || Mutable?.GetValue(card) is not true || !CopyClosureUnpatched()
++                || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
++                || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
++                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
++                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_HasEnergyCostX")) return false;
++            if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
++            { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
++            if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
++                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
++                || keywords.GetType() != typeof(HashSet<CardKeyword>) || !ReferenceEquals(keywords.Comparer, EqualityComparer<CardKeyword>.Default)
++                || typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(card) is not List<TemporaryCardCost> temporary
++                || temporary.GetType() != typeof(List<TemporaryCardCost>)
++                || CardVars?.GetValue(card) is not DynamicVarSet vars || !CopyVariablesQualified(card, vars) || !CopyCostQualified(card))
++            { gap = "native_preview_initialized_card_copy_facts_unqualified"; return false; }
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    internal static bool TryPreflightCanonicalHover(CardModel canonical, out string? gap)
++    {
++        gap = "native_canonical_hover_copy_closure_unqualified";
++        try
++        {
++            if (typeof(CardModel).Module.ModuleVersionId != AuditedGameMvid || canonical.GetType() != typeof(Shiv)
++                || Mutable?.GetValue(canonical) is not false || !CopyClosureUnpatched()
++                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "DeepCloneFields")
++                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "AfterCloned")
++                || !MethodsUnpatched(typeof(CardModel), "get_CanonicalKeywords")
++                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars", "get_CanonicalKeywords")
++                || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
++                || !MethodsUnpatched(typeof(DamageVar), "set_Props")
++                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword)) || !CopiedDelegatesQualified(canonical)
++                || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
++                || !CopyCostQualified(canonical)) return false;
++            if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
++            if (Keywords?.GetValue(canonical) is { } keywords
++                && (keywords is not HashSet<CardKeyword> set || set.GetType() != typeof(HashSet<CardKeyword>)
++                    || !ReferenceEquals(set.Comparer, EqualityComparer<CardKeyword>.Default))) return false;
++            if (typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(canonical) is not List<TemporaryCardCost> temporary
++                || temporary.GetType() != typeof(List<TemporaryCardCost>)) return false;
++            if (Canonical?.GetValue(canonical) is { } parent && !ReferenceEquals(parent, canonical)) return false;
++            if (!CanonicalRegistryBindingQualified(canonical))
++            { gap = "native_canonical_hover_registry_binding_unqualified"; return false; }
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    private static bool CanonicalRegistryBindingQualified(CardModel canonical)
++    {
++        if (!MethodsUnpatched(typeof(AbstractModel), "get_Id")
++            || !MethodsUnpatched(typeof(ModelDb), "GetById", "GetByIdOrNull")
++            || !MethodsUnpatched(typeof(ModelId), "GetHashCode", "Equals", "get_EqualityContract", "get_Category", "get_Entry")
++            || !IsUnpatched(typeof(ModelDb).GetMethod("GetById", NativeMembers)?.MakeGenericMethod(typeof(CardModel)))
++            || !IsUnpatched(typeof(ModelDb).GetMethod("GetByIdOrNull", NativeMembers)?.MakeGenericMethod(typeof(CardModel)))) return false;
++        // No arbitrary dictionary comparer or derived ModelId equality can run
++        // during this lookup. Enumeration of these definition keys invokes no
++        // model methods and exposes no catalog/world data to the consumer.
++        if (typeof(ModelDb).GetField("_contentById", NativeMembers)?.GetValue(null) is not Dictionary<ModelId, AbstractModel> registry
++            || registry.GetType() != typeof(Dictionary<ModelId, AbstractModel>)
++            || !ReferenceEquals(registry.Comparer, EqualityComparer<ModelId>.Default)
++            || registry.Keys.Any(key => key is null || key.GetType() != typeof(ModelId))) return false;
++        ModelId id = canonical.Id;
++        return id.GetType() == typeof(ModelId) && registry.TryGetValue(id, out AbstractModel? current)
++            && ReferenceEquals(current, canonical);
++    }
++
++    internal static bool TryPreflightUpgrade(CardModel card, out string? gap)
++    {
++        if (!TryPreflightCopy(card, out gap)) return false;
++        gap = "native_preview_upgrade_closure_unqualified";
++        try
++        {
++            // Explicit exact-build method inventory; it contains no costs,
++            // damage values or other reimplementation of native upgrade rules.
++            if (card.GetType().GetMethod("OnUpgrade", NativeMembers) is not { } upgrade
++                || upgrade.DeclaringType != card.GetType() || !NativeUpgradeMethodInventory.Contains(card.GetType().Name)
++                || !IsUnpatched(upgrade)
++                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
++                || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
++                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
++                    "get_UpgradePreviewType", "set_UpgradePreviewType")
++                || !MethodsUnpatched(typeof(DynamicVar), "UpgradeValueBy", "get_WasJustUpgraded", "set_WasJustUpgraded")
++                || !NativeUpgradeMethodInventory.VariableGetters.All(name => MethodsUnpatched(typeof(DynamicVarSet), name))
++                || !MethodsUnpatched(typeof(CardEnergyCost), "UpgradeBy", "SetCustomBaseCost")
++                || !MethodsUnpatched(typeof(LocalCostModifier), "set_Amount")) return false;
++            if (!card.IsUpgradable) { gap = "native_preview_card_not_upgradable"; return false; }
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    internal static bool TryPreflightSingleEnchant(CardModel card, EnchantmentModel canonical, out string? gap)
++    {
++        if (!TryPreflightCopy(card, out gap)) return false;
++        gap = "native_preview_enchantment_closure_unqualified";
++        try
++        {
++            Type type = canonical.GetType();
++            if (type.Assembly != typeof(CardModel).Assembly || type.Namespace != "MegaCrit.Sts2.Core.Models.Enchantments"
++                || !NativeEnchantmentMethodInventory.Types.Contains(type.Name) || Mutable?.GetValue(canonical) is not false
++                || !MethodsUnpatched(typeof(AbstractModel), "AssertCanonical")
++                || !MethodsUnpatched(typeof(EnchantmentModel), "ToMutable", "DeepCloneFields", "get_DynamicVars", "get_CanonicalVars",
++                    "set_CanonicalInstance", "ApplyInternal", "get_Card", "set_Card", "get_Amount", "set_Amount",
++                    "ModifyCard", "OnEnchant", "RecalculateValues")
++                || !MethodsUnpatched(typeof(CardModel), "EnchantInternal", "set_Enchantment", "set_IsEnchantmentPreview", "AddKeyword", "RemoveKeyword")
++                || !BaseImplementation(type, typeof(EnchantmentModel), "DeepCloneFields")
++                || !BaseImplementation(type, typeof(AbstractModel), "AfterCloned")
++                || typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers)?.GetValue(canonical) != null
++                || typeof(EnchantmentModel).GetField("StatusChanged", NativeMembers)?.GetValue(canonical) != null) return false;
++            if (typeof(EnchantmentModel).GetField("_dynamicVars", NativeMembers)?.GetValue(canonical) is DynamicVarSet existing
++                && !CopyVariablesQualified(canonical, existing)) return false;
++            MethodInfo? onEnchant = type.GetMethod("OnEnchant", NativeMembers);
++            if (!IsUnpatched(onEnchant)) return false;
++            if (onEnchant!.DeclaringType != typeof(EnchantmentModel)
++                && !NativeEnchantmentMethodInventory.KeywordUpdates.Contains(type.Name)
++                && type != typeof(TezcatarasEmber))
++            {
++                // SoulsPower invokes CardCmd.RemoveKeyword -> FindOnTable,
++                // rather than the model-only primitive. Its native UI lookup
++                // closure is an explicit remaining row, never executed here.
++                gap = "native_preview_enchantment_command_ui_lookup_unqualified";
++                return false;
++            }
++            MethodInfo? recalculate = type.GetMethod("RecalculateValues", NativeMembers);
++            if (!IsUnpatched(recalculate) || recalculate!.DeclaringType != typeof(EnchantmentModel) && type != typeof(Adroit)) return false;
++            MethodInfo? factory = type.GetMethod("get_CanonicalVars", NativeMembers);
++            if (!IsUnpatched(factory) || factory!.DeclaringType != typeof(EnchantmentModel)
++                && !NativeEnchantmentMethodInventory.VariableFactories.Contains(type.Name)) return false;
++            if (factory.DeclaringType != typeof(EnchantmentModel)
++                && (!FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(BlockVar))
++                    || !FixedConstructorsUnpatched(typeof(DamageVar)) || !MethodsUnpatched(typeof(DamageVar), "set_Props") || !FixedConstructorsUnpatched(typeof(IntVar))
++                    || !FixedConstructorsUnpatched(typeof(PowerVar<WeakPower>)) || !SingletonVariableListUnpatched())) return false;
++            if (type == typeof(Adroit) && !MethodsUnpatched(typeof(DynamicVarSet), "get_Block")) return false;
++            if (type == typeof(TezcatarasEmber)
++                && (!MethodsUnpatched(typeof(AbstractModel), "get_IsCanonical")
++                    || !MethodsUnpatched(typeof(CardEnergyCost), "GetWithModifiers", "UpgradeBy", "SetCustomBaseCost")
++                    || !MethodsUnpatched(typeof(CardModel), "InvokeEnergyCostChanged")
++                    || !MethodsUnpatched(typeof(LocalCostModifier), "set_Amount"))) return false;
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
++
++    private static bool SingletonListUnpatched(Type element)
++    {
++        Type? fixedType = typeof(CardModel).Assembly.GetType("<>z__ReadOnlySingleElementList`1")?.MakeGenericType(element);
++        return fixedType != null && fixedType.GetMethods(NativeMembers).All(IsUnpatched)
++            && FixedConstructorsUnpatched(fixedType)
++            && fixedType.GetNestedTypes(NativeMembers).All(type => type.GetMethods(NativeMembers).All(IsUnpatched)
++                && FixedConstructorsUnpatched(type));
++    }
++}
 diff --git a/src/Sts2Headless/NativeCardRenderTransaction.cs b/src/Sts2Headless/NativeCardRenderTransaction.cs
 new file mode 100644
-index 0000000..c5cde2f
+index 0000000..9398ed0
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardRenderTransaction.cs
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,82 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -994,12 +1806,9 @@ index 0000000..c5cde2f
 +        || value.GetType().IsGenericType
 +            && value.GetType().GetGenericTypeDefinition() == typeof(PowerVar<>);
 +
-+    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture)
++    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture, CardPreviewMode mode = CardPreviewMode.Normal)
 +    {
-+        if (displayPile is not (PileType.None or PileType.Draw or PileType.Discard or PileType.Exhaust)
-+            || card.Pile?.Type is PileType.Hand or PileType.Play
-+            || card.UpgradePreviewType == CardUpgradePreviewType.Combat || card.IsEnchantmentPreview)
-+            throw new InvalidOperationException("Unqualified native card preview context");
++        NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
 +        DynamicVar[] cardVars = card.DynamicVars.Values.ToArray();
 +        DynamicVar[] enchantVars = card.Enchantment?.DynamicVars.Values.ToArray() ?? [];
 +        DynamicVar[] all = cardVars.Concat(enchantVars).ToArray();
@@ -1011,11 +1820,11 @@ index 0000000..c5cde2f
 +        try
 +        {
 +            card.DynamicVars.ClearPreview();
-+            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, card.CurrentTarget, card.DynamicVars);
++            card.UpdateDynamicVarPreview(mode, card.CurrentTarget, card.DynamicVars);
 +            if (enchantment != null)
 +            {
 +                enchantment.DynamicVars.ClearPreview();
-+                card.UpdateDynamicVarPreview(CardPreviewMode.Normal, card.CurrentTarget, enchantment.DynamicVars);
++                card.UpdateDynamicVarPreview(mode, card.CurrentTarget, enchantment.DynamicVars);
 +            }
 +            return capture();
 +        }
@@ -1034,10 +1843,10 @@ index 0000000..c5cde2f
 +}
 diff --git a/src/Sts2Headless/NativeCardRewardAlternativePreview.cs b/src/Sts2Headless/NativeCardRewardAlternativePreview.cs
 new file mode 100644
-index 0000000..2dbbdce
+index 0000000..18e9db0
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardRewardAlternativePreview.cs
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,161 @@
 +using System;
 +using System.Collections;
 +using System.Collections.Generic;
@@ -1057,7 +1866,7 @@ index 0000000..2dbbdce
 +namespace STS2Platform.NativeFoundation;
 +
 +public sealed record NativeCardRewardAlternativePreviewFact(string OptionId, string Title, string AfterSelected)
-+{ public bool IsPureReturn { get; init; } }
++{ public bool IsNativeSkip { get; init; } }
 +public sealed record NativeCardRewardAlternativePreviewResult(bool Complete,
 +    IReadOnlyList<NativeCardRewardAlternativePreviewFact>? Alternatives,
 +    bool? CanSkipSelection, bool? CanReroll, bool? SelectionCompletesReward, string? Gap);
@@ -1097,7 +1906,30 @@ index 0000000..2dbbdce
 +
 +    private static readonly MethodInfo? EmptySelection = typeof(CardRewardAlternative)
 +        .GetNestedType("<>c", BindingFlags.NonPublic)?.GetMethod("<.ctor>b__16_0", BindingFlags.Instance | BindingFlags.NonPublic);
-+    public static bool IsPureReturn(CardRewardAlternative alternative)
++    /// <summary>Only the currently attached native handler is observed. Absence
++    /// is not history: manually offered rewards may start without this handler.</summary>
++    public static string NativeRelicRefreshSubscription(CardReward reward)
++    {
++        try
++        {
++            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
++            FieldInfo? field = typeof(Player).GetField("RelicObtained", flags);
++            MethodInfo? handler = typeof(CardReward).GetMethod("OnRelicObtained", flags, null, new[] { typeof(RelicModel) }, null);
++            PropertyInfo? playerGetter = typeof(Reward).GetProperty("Player", BindingFlags.Instance | BindingFlags.Public);
++            if (typeof(CardReward).Module.ModuleVersionId != new Guid("57785517-0b16-42b9-8b36-bad6fb28384b")
++                || reward.GetType() != typeof(CardReward) || !Unpatched(playerGetter?.GetMethod)
++                || !Unpatched(handler) || field?.FieldType != typeof(Action<RelicModel>)) return "unavailable";
++            Player player = reward.Player;
++            if (player.GetType() != typeof(Player)) return "unavailable";
++            object? current = field.GetValue(player);
++            if (current == null) return "absent";
++            if (current is not Action<RelicModel> listeners) return "unavailable";
++            int count = listeners.GetInvocationList().Count(callback => callback.Method == handler && ReferenceEquals(callback.Target, reward));
++            return count == 0 ? "absent" : count == 1 ? "attached" : "unavailable";
++        }
++        catch { return "unavailable"; }
++    }
++    public static bool IsNativeSkip(CardRewardAlternative alternative)
 +    {
 +        if (typeof(CardRewardAlternative).Module.ModuleVersionId != new Guid("57785517-0b16-42b9-8b36-bad6fb28384b")
 +            || !FactoryIsAudited() || alternative.GetType() != typeof(CardRewardAlternative)
@@ -1162,7 +1994,7 @@ index 0000000..2dbbdce
 +                string? outcome = Outcome(alternative.AfterSelected);
 +                if (string.IsNullOrWhiteSpace(alternative.OptionId) || string.IsNullOrWhiteSpace(title) || outcome == null)
 +                    return Missing("native_alternative_public_fact_unavailable");
-+                facts.Add(new(alternative.OptionId, title, outcome) { IsPureReturn = IsPureReturn(alternative) });
++                facts.Add(new(alternative.OptionId, title, outcome) { IsNativeSkip = IsNativeSkip(alternative) });
 +            }
 +            if (facts.Select(value => value.OptionId).Distinct(StringComparer.Ordinal).Count() != facts.Count)
 +                return Missing("native_alternative_duplicate_option_id");
@@ -1334,6 +2166,269 @@ index 0000000..381119e
 +            && ReferenceEquals(native, options); }
 +        catch { return false; }
 +    }
++}
+diff --git a/src/Sts2Headless/NativeDetachedCardCopy.cs b/src/Sts2Headless/NativeDetachedCardCopy.cs
+new file mode 100644
+index 0000000..2b9887b
+--- /dev/null
++++ b/src/Sts2Headless/NativeDetachedCardCopy.cs
+@@ -0,0 +1,47 @@
++using System;
++using System.Runtime.CompilerServices;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Nodes.Cards;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>Fixed exact-build structural bridge for presentation only. The
++/// caller must first qualify the effective native copy closure and every
++/// copied delegate. Only the newly allocated copy is changed. All native field
++/// copying and rules remain in DeepCloneFields/AfterCloned and the real native
++/// upgrade/enchantment methods. Never register or dispatch this copy.</summary>
++internal static class NativeDetachedCardCopy
++{
++    internal static CardModel CreateQualifiedCopy(CardModel original)
++    {
++        // Native AbstractModel.MutableClone performs these three structural
++        // steps. Its DeepCloneFields reattaches enchantment/affliction before
++        // AfterCloned clears copied card UI delegates. Isolate those two on
++        // the NEW copy first; never clear/restore an event on the original.
++        var copy = (CardModel)MemberwiseClone(original);
++        SetMutable(copy, true);
++        EnchantmentChanged(copy) = null;
++        AfflictionChanged(copy) = null;
++        DeepCloneFields(copy);
++        AfterCloned(copy);
++        return copy;
++    }
++
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_model")]
++    internal static extern ref CardModel? UiModel(NCard node);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_subscribedEnchantment")]
++    internal static extern ref EnchantmentModel? UiSubscribedEnchantment(NCard node);
++
++    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "MemberwiseClone")]
++    private static extern object MemberwiseClone(object original);
++    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_IsMutable")]
++    private static extern void SetMutable(AbstractModel copy, bool value);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "EnchantmentChanged")]
++    private static extern ref Action? EnchantmentChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "AfflictionChanged")]
++    private static extern ref Action? AfflictionChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "DeepCloneFields")]
++    private static extern void DeepCloneFields(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
++    private static extern void AfterCloned(CardModel copy);
++}
+diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
+new file mode 100644
+index 0000000..f42207a
+--- /dev/null
++++ b/src/Sts2Headless/NativeDetachedCardPreview.cs
+@@ -0,0 +1,176 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Reflection;
++using System.Text.Json.Serialization;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Models;
++
++namespace STS2Platform.NativeFoundation;
++
++internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment }
++
++/// <summary>Process-local presentation only. Original is the game-owned
++/// subject; Display is never added to a scope/pile or used as an input operand.
++/// Public formatting has its own mandatory read preflight.</summary>
++internal sealed record NativeDetachedCardPreview([property: JsonIgnore] CardModel Original, [property: JsonIgnore] CardModel Display,
++    NativeDetachedPreviewKind Kind, PileType DisplayPile, CardPreviewMode PreviewMode);
++
++internal sealed class NativePreviewReadStateViolationException(string message) : Exception(message);
++
++internal static class NativeDetachedCardPreviewFactory
++{
++    internal static bool TryCanonicalHoverCopy(CardModel canonical, out CardModel? copy, out string? gap)
++    {
++        copy = null;
++        if (!NativeCardPreviewReadQualification.TryPreflightCanonicalHover(canonical, out gap)) return false;
++        SourceStamp before = SourceStamp.Card(canonical);
++        try
++        {
++            CardModel display = NativeDetachedCardCopy.CreateQualifiedCopy(canonical);
++            before.AssertUnchanged();
++            if (!NativeCardPreviewReadQualification.TryPreflightCanonicalHover(canonical, out gap)) return false;
++            copy = display;
++            gap = null;
++            return true;
++        }
++        catch (NativePreviewReadStateViolationException) { throw; }
++        catch
++        {
++            before.AssertUnchanged();
++            gap = "native_canonical_hover_copy_failed";
++            return false;
++        }
++    }
++
++    internal static bool TryDeckUpgrade(CardModel original, out NativeDetachedCardPreview? result, out string? gap)
++    {
++        result = null;
++        if (!NativeCardPreviewReadQualification.TryPreflightUpgrade(original, out gap)) return false;
++        SourceStamp before = SourceStamp.Card(original);
++        try
++        {
++            // Use the qualified structural native copy bridge, then the same
++            // native grid UpgradeInternal. Scope.CloneCard would register the
++            // temporary model into live _allCards and is never a read path.
++            CardModel display = NativeDetachedCardCopy.CreateQualifiedCopy(original);
++            display.UpgradeInternal();
++            display.UpgradePreviewType = CardUpgradePreviewType.Deck;
++            before.AssertUnchanged();
++            if (!NativeCardPreviewReadQualification.TryPreflightUpgrade(original, out gap)) return false;
++            result = new(original, display, NativeDetachedPreviewKind.DeckUpgrade, PileType.None, CardPreviewMode.Upgrade);
++            gap = null;
++            return true;
++        }
++        catch (NativePreviewReadStateViolationException) { throw; }
++        catch
++        {
++            before.AssertUnchanged();
++            gap = "native_detached_upgrade_preview_failed";
++            return false;
++        }
++    }
++
++    internal static bool TrySingleEnchant(CardModel original, EnchantmentModel canonicalEnchantment, int amount,
++        out NativeDetachedCardPreview? result, out string? gap)
++    {
++        result = null;
++        if (!NativeCardPreviewReadQualification.TryPreflightSingleEnchant(original, canonicalEnchantment, out gap)) return false;
++        SourceStamp before = SourceStamp.Card(original);
++        SourceStamp enchantmentBefore = SourceStamp.Model(canonicalEnchantment, typeof(EnchantmentModel));
++        try
++        {
++            CardModel display = NativeDetachedCardCopy.CreateQualifiedCopy(original);
++            EnchantmentModel enchantment = canonicalEnchantment.ToMutable();
++            // Native NEnchantPreview.Init model sequence, on the detached copy.
++            // Do not replace it with guessed arithmetic or finalized upgrades.
++            display.EnchantInternal(enchantment, amount);
++            display.IsEnchantmentPreview = true;
++            enchantment.ModifyCard();
++            before.AssertUnchanged();
++            enchantmentBefore.AssertUnchanged();
++            if (!NativeCardPreviewReadQualification.TryPreflightSingleEnchant(original, canonicalEnchantment, out gap)) return false;
++            result = new(original, display, NativeDetachedPreviewKind.SingleEnchantment, PileType.None, CardPreviewMode.Normal);
++            gap = null;
++            return true;
++        }
++        catch (NativePreviewReadStateViolationException) { throw; }
++        catch
++        {
++            before.AssertUnchanged();
++            enchantmentBefore.AssertUnchanged();
++            gap = "native_detached_enchantment_preview_failed";
++            return false;
++        }
++    }
++
++    // An assertion of the audited invocation's original-object footprint. It
++    // does not permit unknown code to run and does not restore/roll back state.
++    // Only fixed native owner fields and plain CLR containers are inspected.
++    private sealed class SourceStamp
++    {
++        private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
++        private readonly List<(object Owner, FieldInfo Field, object? Value)> fields = new();
++        private readonly List<(System.Collections.IList List, object?[] Items)> lists = new();
++        private readonly List<(HashSet<CardKeyword> Set, CardKeyword[] Items)> keywordSets = new();
++
++        internal static SourceStamp Model(object model, Type owner)
++        {
++            var stamp = new SourceStamp();
++            stamp.Add(model, owner);
++            if (owner.GetField("_dynamicVars", Fields)?.GetValue(model) is DynamicVarSet vars) stamp.AddVariables(vars);
++            return stamp;
++        }
++
++        internal static SourceStamp Card(CardModel card)
++        {
++            SourceStamp stamp = Model(card, typeof(CardModel));
++            if (typeof(CardModel).GetField("<Enchantment>k__BackingField", Fields)?.GetValue(card) is EnchantmentModel enchantment)
++            {
++                stamp.Add(enchantment, typeof(EnchantmentModel));
++                if (typeof(EnchantmentModel).GetField("_dynamicVars", Fields)?.GetValue(enchantment) is DynamicVarSet vars) stamp.AddVariables(vars);
++            }
++            if (typeof(CardModel).GetField("<Affliction>k__BackingField", Fields)?.GetValue(card) is AfflictionModel affliction)
++                stamp.Add(affliction, typeof(AfflictionModel));
++            if (typeof(CardModel).GetField("_keywords", Fields)?.GetValue(card) is HashSet<CardKeyword> keywords)
++                stamp.keywordSets.Add((keywords, keywords.ToArray()));
++            if (typeof(CardModel).GetField("_temporaryStarCosts", Fields)?.GetValue(card) is System.Collections.IList temporary)
++                stamp.lists.Add((temporary, temporary.Cast<object?>().ToArray()));
++            if (typeof(CardModel).GetField("_energyCost", Fields)?.GetValue(card) is CardEnergyCost cost)
++            {
++                stamp.Add(cost, typeof(CardEnergyCost));
++                if (typeof(CardEnergyCost).GetField("_localModifiers", Fields)?.GetValue(cost) is System.Collections.IList modifiers)
++                {
++                    stamp.lists.Add((modifiers, modifiers.Cast<object?>().ToArray()));
++                    foreach (object modifier in modifiers) stamp.Add(modifier, typeof(LocalCostModifier));
++                }
++            }
++            return stamp;
++        }
++
++        private void AddVariables(DynamicVarSet vars)
++        {
++            Add(vars, typeof(DynamicVarSet));
++            if (typeof(DynamicVarSet).GetField("_vars", Fields)?.GetValue(vars) is Dictionary<string, DynamicVar> values)
++                foreach (DynamicVar value in values.Values) Add(value, typeof(DynamicVar));
++        }
++
++        private void Add(object owner, Type declaring) => fields.AddRange(declaring.GetFields(Fields)
++            .Where(field => !field.IsStatic).Select(field => (owner, field, field.GetValue(owner))));
++
++        private static bool Same(object? left, object? right) => ReferenceEquals(left, right)
++            || left != null && right != null && left.GetType() == right.GetType()
++                && (left is bool or int or uint or decimal or float or double or long or ulong || left.GetType().IsEnum)
++                && left.Equals(right);
++
++        internal void AssertUnchanged()
++        {
++            if (fields.Any(value => !Same(value.Value, value.Field.GetValue(value.Owner)))
++                || lists.Any(value => value.List.Count != value.Items.Length
++                    || value.List.Cast<object?>().Zip(value.Items).Any(pair => !Same(pair.First, pair.Second)))
++                || keywordSets.Any(value => !value.Set.SetEquals(value.Items)))
++                throw new NativePreviewReadStateViolationException("Native detached preview changed its original model footprint");
++        }
++    }
++}
+diff --git a/src/Sts2Headless/NativeEnchantmentMethodInventory.cs b/src/Sts2Headless/NativeEnchantmentMethodInventory.cs
+new file mode 100644
+index 0000000..9823cd2
+--- /dev/null
++++ b/src/Sts2Headless/NativeEnchantmentMethodInventory.cs
+@@ -0,0 +1,22 @@
++using System;
++using System.Collections.Generic;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>Fixed exact-MVID model-only enchantment copy/update families.
++/// These names select already audited native methods, never replacement rules.
++/// Display hooks/hover text and command/UI lookups have separate qualifications.</summary>
++internal static class NativeEnchantmentMethodInventory
++{
++    internal static readonly HashSet<string> Types = new(StringComparer.Ordinal)
++    {
++        "Adroit", "Clone", "Corrupted", "DeprecatedEnchantment", "Glam", "Goopy",
++        "Imbued", "Inky", "Instinct", "Momentum", "Nimble", "PerfectFit",
++        "RoyallyApproved", "Sharp", "Slither", "SlumberingEssence", "SoulsPower",
++        "Sown", "Spiral", "Steady", "Swift", "TezcatarasEmber", "Vigorous", "MockFreeEnchantment"
++    };
++    internal static readonly HashSet<string> KeywordUpdates = new(StringComparer.Ordinal)
++    { "Goopy", "RoyallyApproved", "Steady" };
++    internal static readonly HashSet<string> VariableFactories = new(StringComparer.Ordinal)
++    { "Adroit", "Glam", "Inky", "Spiral", "TezcatarasEmber" };
 +}
 diff --git a/src/Sts2Headless/NativeEventOptionAdmission.cs b/src/Sts2Headless/NativeEventOptionAdmission.cs
 new file mode 100644
@@ -1633,6 +2728,153 @@ index 0000000..21f689a
 +            || !nativeIsValidTarget(currentPlayer))
 +            return null;
 +        return currentPlayer;
++    }
++}
+diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
+new file mode 100644
+index 0000000..06faa19
+--- /dev/null
++++ b/src/Sts2Headless/NativePublicCardDetails.cs
+@@ -0,0 +1,141 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Reflection;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.HoverTips;
++using MegaCrit.Sts2.Core.Models;
++
++namespace STS2Platform.NativeFoundation;
++
++// Read-only, typed native rendering for the two admitted selector kinds. No raw
++// localization template, manual variable substitution or fallback can be complete.
++public static class NativePublicCardDetails
++{
++    public sealed record Result(Dictionary<string, object?> Card, string[] Missing)
++    {
++        public bool Complete => Missing.Length == 0;
++        public Dictionary<string, object?> PublicCard => NativePublicCardDetails.ToPublicCard(Card);
++        public Dictionary<string, object?> PublicDetail => new()
++        {
++            ["keywords"] = Card.GetValueOrDefault("keywords"),
++            ["card_previews"] = Card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
++                ? previews.Select(ToPublicCard).ToArray() : null
++        };
++    }
++
++    // Shape conversion only. Native owns every value and recursive hover-card
++    // source; these display-only cards are not gameplay operands or action IDs.
++    private static Dictionary<string, object?> ToPublicCard(Dictionary<string, object?> card)
++    {
++        var value = new Dictionary<string, object?>
++        {
++            ["entity_id"] = null, ["definition_id"] = card.GetValueOrDefault("id"),
++            ["name"] = card.GetValueOrDefault("name"), ["type"] = card.GetValueOrDefault("type"),
++            ["cost"] = card.GetValueOrDefault("cost"), ["star_cost"] = card.GetValueOrDefault("star_cost"),
++            ["description"] = card.GetValueOrDefault("description"), ["rarity"] = card.GetValueOrDefault("rarity"),
++            ["is_upgraded"] = card.GetValueOrDefault("is_upgraded"), ["is_selected"] = false,
++            ["target_type"] = card.GetValueOrDefault("target_type"), ["can_play"] = null,
++            ["keywords"] = card.GetValueOrDefault("keywords"),
++            ["card_previews"] = card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
++                ? previews.Select(ToPublicCard).ToArray() : null
++        };
++        if (card.GetValueOrDefault("enchantment") != null)
++            value["existing_enchantment"] = new Dictionary<string, object?>
++            {
++                ["definition_id"] = card.GetValueOrDefault("enchantment_id"), ["name"] = card.GetValueOrDefault("enchantment"),
++                ["description"] = card.GetValueOrDefault("enchantment_description"), ["amount"] = card.GetValueOrDefault("enchantment_amount"),
++                ["visibility_basis"] = "card_hover_semantics"
++            };
++        return value;
++    }
++
++    public static Result Capture(CardModel card, PileType displayPile, CardPreviewMode mode = CardPreviewMode.Normal) =>
++        Capture(card, displayPile, new HashSet<CardModel>(ReferenceEqualityComparer.Instance), mode);
++
++    private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path, CardPreviewMode mode = CardPreviewMode.Normal)
++    {
++        var visible = new Dictionary<string, object?>();
++        var missing = new List<string>();
++        bool addedToPath = false;
++        CardModel subject = card;
++        try
++        {
++            if (path.Count >= 16 || !(addedToPath = path.Add(card)))
++                throw new InvalidOperationException("Unqualified recursive native hover-card display");
++            // A native CardHoverTip may refer to a readonly canonical card.
++            // Initialize/render only a qualified detached presentation copy;
++            // retain the original reference in cycle detection throughout.
++            if (typeof(AbstractModel).GetField("<IsMutable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(card) is false)
++            {
++                if (!NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(card, out CardModel? display, out string? gap)
++                    || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
++                card = display;
++            }
++            NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
++            visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
++            visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
++            visible["name"] = null; visible["description"] = null;
++            NativeCardRenderTransaction.Run(card, displayPile, () =>
++            {
++                visible["name"] = card.Title;
++                visible["description"] = mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
++                    : card.GetDescriptionForPile(displayPile, card.CurrentTarget);
++                visible["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
++                visible["star_cost"] = card.HasStarCostX ? "X"
++                    : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
++                visible["target_type"] = card.TargetType.ToString();
++                if (card.Enchantment != null)
++                {
++                    visible["enchantment_id"] = card.Enchantment.Id.Entry;
++                    visible["enchantment"] = card.Enchantment.Title.GetFormattedText();
++                    visible["enchantment_description"] = card.Enchantment.DynamicDescription.GetFormattedText();
++                    visible["enchantment_amount"] = card.Enchantment.Amount;
++                }
++                var keywords = new List<Dictionary<string, object?>>();
++                var previews = new List<Dictionary<string, object?>>();
++                foreach (IHoverTip tip in IHoverTip.RemoveDupes(card.HoverTips))
++                {
++                    if (tip is HoverTip text)
++                        keywords.Add(new() { ["name"] = text.Title, ["description"] = text.Description });
++                    else if (tip is CardHoverTip preview)
++                    {
++                        Result child = Capture(preview.Card, PileType.None, path);
++                        previews.Add(child.Card);
++                        if (!child.Complete) missing.Add("native_selector_hover_card_incomplete");
++                    }
++                    else missing.Add("unqualified_native_card_hover_preview");
++                }
++                visible["keywords"] = keywords;
++                visible["card_previews"] = previews;
++                return true;
++            }, mode);
++            foreach (string key in new[] { "name", "description", "cost", "target_type" })
++                if (visible.GetValueOrDefault(key) is not string value || string.IsNullOrWhiteSpace(value))
++                    missing.Add("native_selector_card_" + key);
++            // The text profile has no qualified inline-icon projection yet. Do not
++            // erase an icon and retain a misleading allegedly complete description.
++            foreach (string? value in visible.Values.OfType<string>())
++                if (value.Contains("[img", StringComparison.OrdinalIgnoreCase)
++                    || value.Contains('{') || value.Contains('}'))
++                    missing.Add("unqualified_native_selector_rich_text");
++            if (visible.GetValueOrDefault("keywords") is List<Dictionary<string, object?>> tips)
++                foreach (var tip in tips)
++                    if (tip.Values.Any(value => value is not string text || string.IsNullOrWhiteSpace(text))
++                        || tip.Values.OfType<string>().Any(value => value.Contains("[img", StringComparison.OrdinalIgnoreCase)
++                            || value.Contains('{') || value.Contains('}')))
++                        missing.Add("native_selector_hover_text");
++            if (card.Enchantment != null
++                && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
++                missing.Add("native_selector_enchantment_description");
++        }
++        catch (Exception error) when (error is not NativeRenderStateViolationException)
++        {
++            missing.Add(error is InvalidOperationException && error.Message.StartsWith("native_", StringComparison.Ordinal)
++                ? error.Message : "native_selector_card_render_failed");
++            visible["description"] = null;
++        }
++        finally { if (addedToPath) path.Remove(subject); }
++        return new(visible, missing.Distinct(StringComparer.Ordinal).ToArray());
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeRelicPresentation.cs b/src/Sts2Headless/NativeRelicPresentation.cs
@@ -2052,105 +3294,23 @@ index 0000000..d1760cc
 +}
 diff --git a/src/Sts2Headless/NativeSelectorCardDisplay.cs b/src/Sts2Headless/NativeSelectorCardDisplay.cs
 new file mode 100644
-index 0000000..0812746
+index 0000000..251661c
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorCardDisplay.cs
-@@ -0,0 +1,97 @@
-+using STS2Platform.NativeFoundation;
+@@ -0,0 +1,15 @@
++using System.Collections.Generic;
 +using MegaCrit.Sts2.Core.Entities.Cards;
-+using MegaCrit.Sts2.Core.HoverTips;
 +using MegaCrit.Sts2.Core.Models;
-+using MegaCrit.Sts2.Core.TestSupport;
-+
++using STS2Platform.NativeFoundation;
 +namespace Sts2Headless;
-+
-+// Read-only, typed native rendering for the two admitted selector kinds. No raw
-+// localization template, manual variable substitution or fallback can be complete.
 +internal static class NativeSelectorCardDisplay
 +{
 +    internal sealed record Result(Dictionary<string, object?> Card, string[] Missing)
++    { internal bool Complete => Missing.Length == 0; }
++    internal static Result Capture(CardModel card, PileType displayPile)
 +    {
-+        internal bool Complete => Missing.Length == 0;
-+    }
-+
-+    internal static Result Capture(CardModel card, PileType displayPile) => Capture(card, displayPile, new HashSet<CardModel>(ReferenceEqualityComparer.Instance));
-+
-+    private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path)
-+    {
-+        var visible = new Dictionary<string, object?>
-+        {
-+            ["id"] = card.Id.Entry, ["type"] = card.Type.ToString(),
-+            ["rarity"] = card.Rarity.ToString(), ["is_upgraded"] = card.IsUpgraded,
-+            ["name"] = null, ["description"] = null,
-+        };
-+        var missing = new List<string>();
-+        bool addedToPath = false;
-+        try
-+        {
-+            if (path.Count >= 16 || !(addedToPath = path.Add(card)))
-+                throw new InvalidOperationException("Unqualified recursive native hover-card display");
-+            if (card.Affliction != null) missing.Add("unqualified_native_selector_affliction_display");
-+            if (!TestMode.IsOn)
-+                throw new InvalidOperationException("Native formatting errors must propagate in the admitted Managed mode");
-+            NativeCardRenderTransaction.Run(card, displayPile, () =>
-+            {
-+                visible["name"] = card.Title;
-+                visible["description"] = card.GetDescriptionForPile(displayPile, card.CurrentTarget);
-+                visible["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString();
-+                visible["star_cost"] = card.HasStarCostX ? "X"
-+                    : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
-+                visible["target_type"] = card.TargetType.ToString();
-+                if (card.Enchantment != null)
-+                {
-+                    visible["enchantment_id"] = card.Enchantment.Id.Entry;
-+                    visible["enchantment"] = card.Enchantment.Title.GetFormattedText();
-+                    visible["enchantment_description"] = card.Enchantment.DynamicDescription.GetFormattedText();
-+                    visible["enchantment_amount"] = card.Enchantment.Amount;
-+                }
-+                var keywords = new List<Dictionary<string, object?>>();
-+                var previews = new List<Dictionary<string, object?>>();
-+                foreach (IHoverTip tip in IHoverTip.RemoveDupes(card.HoverTips))
-+                {
-+                    if (tip is HoverTip text)
-+                        keywords.Add(new() { ["name"] = text.Title, ["description"] = text.Description });
-+                    else if (tip is CardHoverTip preview)
-+                    {
-+                        Result child = Capture(preview.Card, PileType.None, path);
-+                        previews.Add(child.Card);
-+                        if (!child.Complete) missing.Add("native_selector_hover_card_incomplete");
-+                    }
-+                    else missing.Add("unqualified_native_card_hover_preview");
-+                }
-+                visible["keywords"] = keywords;
-+                visible["card_previews"] = previews;
-+                return true;
-+            });
-+            foreach (string key in new[] { "name", "description", "cost", "target_type" })
-+                if (visible.GetValueOrDefault(key) is not string value || string.IsNullOrWhiteSpace(value))
-+                    missing.Add("native_selector_card_" + key);
-+            // The text profile has no qualified inline-icon projection yet. Do not
-+            // erase an icon and retain a misleading allegedly complete description.
-+            foreach (string? value in visible.Values.OfType<string>())
-+                if (value.Contains("[img", StringComparison.OrdinalIgnoreCase)
-+                    || value.Contains('{') || value.Contains('}'))
-+                    missing.Add("unqualified_native_selector_rich_text");
-+            if (visible.GetValueOrDefault("keywords") is List<Dictionary<string, object?>> tips)
-+                foreach (var tip in tips)
-+                    if (tip.Values.Any(value => value is not string text || string.IsNullOrWhiteSpace(text))
-+                        || tip.Values.OfType<string>().Any(value => value.Contains("[img", StringComparison.OrdinalIgnoreCase)
-+                            || value.Contains('{') || value.Contains('}')))
-+                        missing.Add("native_selector_hover_text");
-+            if (card.Enchantment != null
-+                && (visible.GetValueOrDefault("enchantment_description") is not string text || string.IsNullOrWhiteSpace(text)))
-+                missing.Add("native_selector_enchantment_description");
-+        }
-+        catch (Exception error) when (error is not NativeRenderStateViolationException)
-+        {
-+            missing.Add("native_selector_card_render_failed");
-+            visible["description"] = null;
-+        }
-+        finally { if (addedToPath) path.Remove(card); }
-+        return new(visible, missing.Distinct(StringComparer.Ordinal).ToArray());
++        var captured = NativePublicCardDetails.Capture(card, displayPile);
++        return new(captured.Card, captured.Missing);
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
@@ -2468,6 +3628,597 @@ index 0000000..c06fe31
 +                "The bound closed treasure chest changed before native invocation.");
 +        return open();
 +    }
++}
+diff --git a/src/Sts2Headless/NativeUpgradeMethodInventory.cs b/src/Sts2Headless/NativeUpgradeMethodInventory.cs
+new file mode 100644
+index 0000000..a4d0b80
+--- /dev/null
++++ b/src/Sts2Headless/NativeUpgradeMethodInventory.cs
+@@ -0,0 +1,585 @@
++using System;
++using System.Collections.Generic;
++
++namespace STS2Platform.NativeFoundation;
++
++/// <summary>Audited v0.111.0 / MVID57785517 native OnUpgrade declarations.
++/// All 538 bodies are straight-line calls to DynamicVar.UpgradeValueBy,
++/// CardEnergyCost.UpgradeBy or CardModel.Add/RemoveKeyword, with only native
++/// variable getters and CLR decimal constants. No native rule values are stored.
++/// This fixed method inventory is checked together with current effective
++/// implementations and Harmony state; no runtime type/IL discovery is used.</summary>
++internal static class NativeUpgradeMethodInventory
++{
++    private static readonly HashSet<string> Types = new(StringComparer.Ordinal)
++    {
++        "Abrasive",
++        "Abundance",
++        "Accelerant",
++        "Accuracy",
++        "Acrobatics",
++        "AdaptiveStrike",
++        "Adrenaline",
++        "Afterimage",
++        "Afterlife",
++        "Aggression",
++        "Alchemize",
++        "Alignment",
++        "AllForOne",
++        "Anger",
++        "Anointed",
++        "Anticipate",
++        "Apotheosis",
++        "Apparition",
++        "Arsenal",
++        "AshenStrike",
++        "Assassinate",
++        "AstralPulse",
++        "Automation",
++        "Backflip",
++        "Backstab",
++        "BallLightning",
++        "BansheesCry",
++        "Barrage",
++        "Barricade",
++        "Bash",
++        "BattleTrance",
++        "BeaconOfHope",
++        "BeamCell",
++        "BeatDown",
++        "BeatIntoShape",
++        "BelieveInYou",
++        "BiasedCognition",
++        "BigBang",
++        "BlackHole",
++        "BladeDance",
++        "BladeOfInk",
++        "BladeSymphony",
++        "Blaze",
++        "BlightStrike",
++        "Bloodletting",
++        "BloodWall",
++        "Bludgeon",
++        "Blur",
++        "Bodyguard",
++        "BodySlam",
++        "Bolas",
++        "Bombardment",
++        "BoneShards",
++        "BoostAway",
++        "BootSequence",
++        "BorrowedTime",
++        "BouncingFlask",
++        "Brand",
++        "Break",
++        "Breakthrough",
++        "BrightestFlame",
++        "BubbleBubble",
++        "Buffer",
++        "BulkUp",
++        "BulletTime",
++        "Bully",
++        "Bulwark",
++        "BundleOfJoy",
++        "BurningPact",
++        "Burst",
++        "Bury",
++        "ByrdSwoop",
++        "Cacophony",
++        "Calamity",
++        "Calcify",
++        "CalculatedGamble",
++        "CallOfTheVoid",
++        "Caltrops",
++        "Capacitor",
++        "CaptureSpirit",
++        "Catastrophe",
++        "CelestialMight",
++        "Chaos",
++        "ChargeBattery",
++        "ChildOfTheStars",
++        "Chill",
++        "Cinder",
++        "Clash",
++        "Claw",
++        "Cleanse",
++        "CloakAndDagger",
++        "CloakOfStars",
++        "ColdSnap",
++        "CollisionCourse",
++        "Colossus",
++        "Comet",
++        "Compact",
++        "CompileDriver",
++        "Concoct",
++        "Conflagration",
++        "Conqueror",
++        "Constellation",
++        "ConsumingShadow",
++        "Convergence",
++        "Coolant",
++        "Coolheaded",
++        "Coordinate",
++        "CorrosiveWave",
++        "Corruption",
++        "CosmicIndifference",
++        "Countdown",
++        "CrashLanding",
++        "CreativeAi",
++        "CrescentSpear",
++        "CrimsonMantle",
++        "Cruelty",
++        "CrushUnder",
++        "DaggerSpray",
++        "DaggerThrow",
++        "DanseMacabre",
++        "DarkEmbrace",
++        "DarkShackles",
++        "Dash",
++        "DeadlyPoison",
++        "Deathbringer",
++        "DeathMarch",
++        "DeathsDoor",
++        "Debilitate",
++        "DecisionsDecisions",
++        "DefendDefect",
++        "DefendIronclad",
++        "DefendNecrobinder",
++        "DefendRegent",
++        "DefendSilent",
++        "Defile",
++        "Deflect",
++        "Defragment",
++        "Defy",
++        "Delay",
++        "Demesne",
++        "DemonForm",
++        "DemonicShield",
++        "Devastate",
++        "DevourLife",
++        "Dirge",
++        "Discovery",
++        "Dismantle",
++        "Distraction",
++        "DodgeAndRoll",
++        "Dominate",
++        "DoubleEnergy",
++        "DrainPower",
++        "DramaticEntrance",
++        "Dredge",
++        "DrumOfBattle",
++        "Dualcast",
++        "DualWield",
++        "DyingStar",
++        "EchoForm",
++        "EchoingSlash",
++        "Eidolon",
++        "EndOfDays",
++        "EnergySurge",
++        "EnfeeblingTouch",
++        "Entrench",
++        "Entropy",
++        "Envenom",
++        "Equilibrium",
++        "Eradicate",
++        "EscapePlan",
++        "EternalArmor",
++        "EvilEye",
++        "ExpectAFight",
++        "Expertise",
++        "Expose",
++        "Exterminate",
++        "Fade",
++        "FallingStar",
++        "FanOfKnives",
++        "Fasten",
++        "Fear",
++        "Feed",
++        "FeedingFrenzy",
++        "FeelNoPain",
++        "Feral",
++        "Fetch",
++        "FiendFire",
++        "FightMe",
++        "FightThrough",
++        "Finesse",
++        "Finisher",
++        "Fisticuffs",
++        "FlakCannon",
++        "FlameBarrier",
++        "Flanking",
++        "FlashOfSteel",
++        "Flatten",
++        "Flechettes",
++        "FlickFlack",
++        "FocusedStrike",
++        "Footwork",
++        "ForbiddenGrimoire",
++        "ForegoneConclusion",
++        "ForgottenRitual",
++        "Friendship",
++        "Ftl",
++        "Fuel",
++        "Furnace",
++        "Fusion",
++        "GammaBlast",
++        "GangUp",
++        "GatherLight",
++        "Genesis",
++        "GeneticAlgorithm",
++        "GiantRock",
++        "Glacier",
++        "Glasswork",
++        "Glimmer",
++        "GlimpseBeyond",
++        "Glitterstream",
++        "Glow",
++        "GoForTheEyes",
++        "GoldAxe",
++        "GrandFinale",
++        "Graveblast",
++        "GraveWarden",
++        "GuidingStar",
++        "GunkUp",
++        "Hailstorm",
++        "HammerTime",
++        "HandOfGreed",
++        "HandTrick",
++        "Hang",
++        "Haunt",
++        "Havoc",
++        "Haze",
++        "Headbutt",
++        "HeavenlyDrill",
++        "Hegemony",
++        "HeirloomHammer",
++        "HelixDrill",
++        "HelloWorld",
++        "Hellraiser",
++        "Hemokinesis",
++        "Hibernate",
++        "HiddenCache",
++        "HiddenGem",
++        "HighFive",
++        "Hologram",
++        "Hotfix",
++        "HowlFromBeyond",
++        "HuddleUp",
++        "Hyperbeam",
++        "IAmInvincible",
++        "IceLance",
++        "Ignition",
++        "ImitationLearning",
++        "Impatience",
++        "Impervious",
++        "InfernalBlade",
++        "Inferno",
++        "InfiniteBlades",
++        "Inflame",
++        "Intercept",
++        "Invoke",
++        "IronWave",
++        "Iteration",
++        "JackOfAllTrades",
++        "Jackpot",
++        "Juggernaut",
++        "Juggling",
++        "KinglyKick",
++        "KinglyPunch",
++        "Knockdown",
++        "KnockoutBlow",
++        "KnowThyPlace",
++        "LeadingStrike",
++        "Leap",
++        "LegionOfBone",
++        "LegSweep",
++        "Lethality",
++        "Lift",
++        "LightningRod",
++        "Loop",
++        "Luminesce",
++        "LunarBlast",
++        "MachineLearning",
++        "MadScience",
++        "MakeItSo",
++        "Mangle",
++        "ManifestAuthority",
++        "MasterOfStrategy",
++        "MasterPlanner",
++        "Maul",
++        "Mayhem",
++        "Melancholy",
++        "MementoMori",
++        "Metamorphosis",
++        "MeteorShower",
++        "MeteorStrike",
++        "Midnight",
++        "Mimic",
++        "MindBlast",
++        "MinionDiveBomb",
++        "MinionSacrifice",
++        "MinionStrike",
++        "Mirage",
++        "Misery",
++        "Modded",
++        "MoltenFist",
++        "MomentumStrike",
++        "MonarchsGaze",
++        "Monologue",
++        "Murder",
++        "NecroMastery",
++        "NegativePulse",
++        "NeowsFury",
++        "Neurosurge",
++        "Neutralize",
++        "NeutronAegis",
++        "Nightmare",
++        "NoEscape",
++        "Nostalgia",
++        "NotYet",
++        "NoxiousFumes",
++        "Null",
++        "Oblivion",
++        "Offering",
++        "Omnislice",
++        "OneForAll",
++        "OneTwoPunch",
++        "Orbit",
++        "Outbreak",
++        "Outmaneuver",
++        "Outrage",
++        "Overclock",
++        "PactsEnd",
++        "Pagestorm",
++        "PaleBlueDot",
++        "Panache",
++        "PanicButton",
++        "Parry",
++        "Parse",
++        "ParticleWall",
++        "Patter",
++        "Peck",
++        "PerfectedStrike",
++        "PhantomBlades",
++        "PhotonCut",
++        "PiercingWail",
++        "Pillage",
++        "PillarOfCreation",
++        "Pinpoint",
++        "Plot",
++        "PoisonedStab",
++        "Poke",
++        "PommelStrike",
++        "Pounce",
++        "PreciseCut",
++        "Predator",
++        "Prepared",
++        "PrepTime",
++        "Production",
++        "Prolong",
++        "Prophesize",
++        "Protector",
++        "Prowess",
++        "PullAggro",
++        "PullFromBelow",
++        "Purity",
++        "Putrefy",
++        "Pyre",
++        "Quadcast",
++        "Radiate",
++        "Rage",
++        "Rainbow",
++        "Rally",
++        "Rampage",
++        "Rattle",
++        "Reanimate",
++        "Reap",
++        "ReaperForm",
++        "Reave",
++        "Reboot",
++        "Rebound",
++        "RefineBlade",
++        "Reflect",
++        "Reflex",
++        "Refract",
++        "Relax",
++        "Rend",
++        "Resonance",
++        "Restlessness",
++        "Ricochet",
++        "RightHandHand",
++        "RipAndTear",
++        "RocketPunch",
++        "RollingBoulder",
++        "RoyalGamble",
++        "Royalties",
++        "Rupture",
++        "Sacrifice",
++        "Salvo",
++        "Scavenge",
++        "Scourge",
++        "Scrape",
++        "Scrawl",
++        "SculptingStrike",
++        "Seance",
++        "SecondWind",
++        "SecretTechnique",
++        "SecretWeapon",
++        "SeekerStrike",
++        "SeekingEdge",
++        "SentryMode",
++        "SerpentForm",
++        "SetupStrike",
++        "SevenStars",
++        "Severance",
++        "Shadowmeld",
++        "ShadowShield",
++        "ShadowStep",
++        "SharedFate",
++        "Shatter",
++        "ShiningStrike",
++        "Shiv",
++        "Shockwave",
++        "Shroud",
++        "ShrugItOff",
++        "SicEm",
++        "Sidestep",
++        "SignalBoost",
++        "Skewer",
++        "Skim",
++        "SleightOfFlesh",
++        "Slice",
++        "Smokestack",
++        "Snakebite",
++        "Snap",
++        "Sneaky",
++        "SolarStrike",
++        "Soul",
++        "Soulbound",
++        "SoulStorm",
++        "SovereignBlade",
++        "Sow",
++        "SpectrumShift",
++        "Speedster",
++        "SpiritOfAsh",
++        "Spite",
++        "SpoilsOfBattle",
++        "Spur",
++        "Squash",
++        "Squeeze",
++        "Stack",
++        "Stampede",
++        "Stardust",
++        "Stomp",
++        "StoneArmor",
++        "Storm",
++        "Strangle",
++        "Stratagem",
++        "StrikeDefect",
++        "StrikeIronclad",
++        "StrikeNecrobinder",
++        "StrikeRegent",
++        "StrikeSilent",
++        "Subroutine",
++        "SuckerPunch",
++        "SummonForth",
++        "Sunder",
++        "Supercritical",
++        "Supermassive",
++        "Suppress",
++        "Survivor",
++        "SweepingBeam",
++        "SweepingGaze",
++        "SwordBoomerang",
++        "SwordSage",
++        "Synchronize",
++        "Synthesis",
++        "Tactician",
++        "TagTeam",
++        "Tank",
++        "Taunt",
++        "TearAsunder",
++        "Terraforming",
++        "TeslaCoil",
++        "TheBall",
++        "TheBomb",
++        "TheGambit",
++        "TheHunt",
++        "TheScythe",
++        "TheSealedThrone",
++        "TheSmith",
++        "ThinkingAhead",
++        "Thrash",
++        "ThrummingHatchet",
++        "Thunder",
++        "Thunderclap",
++        "TimesUp",
++        "ToolsOfTheTrade",
++        "ToricToughness",
++        "Tracking",
++        "Transfigure",
++        "TrashToTreasure",
++        "Tremble",
++        "TrueGrit",
++        "Turbo",
++        "Tutor",
++        "TwinStrike",
++        "Tyranny",
++        "UltimateDefend",
++        "UltimateStrike",
++        "Undeath",
++        "Underworld",
++        "Unleash",
++        "Unmovable",
++        "Unrelenting",
++        "Untouchable",
++        "UpMySleeve",
++        "Uppercut",
++        "Uproar",
++        "Veilpiercer",
++        "Venerate",
++        "Vicious",
++        "VoidForm",
++        "Volley",
++        "Voltaic",
++        "WellLaidPlans",
++        "Whirlwind",
++        "Whistle",
++        "WhiteNoise",
++        "Wish",
++        "Wisp",
++        "WraithForm",
++        "WroughtInWar",
++        "Zap",
++    };
++
++    internal static bool Contains(string nativeType) => Types.Contains(nativeType);
++    internal static IEnumerable<string> TypeNames => Types;
++
++    internal static readonly string[] VariableGetters =
++    {
++        "get_Block",
++        "get_CalculationBase",
++        "get_CalculationExtra",
++        "get_Cards",
++        "get_Damage",
++        "get_Dexterity",
++        "get_Doom",
++        "get_Energy",
++        "get_ExtraDamage",
++        "get_Forge",
++        "get_Gold",
++        "get_Heal",
++        "get_HpLoss",
++        "get_Item",
++        "get_MaxHp",
++        "get_OstyDamage",
++        "get_Poison",
++        "get_Repeat",
++        "get_Stars",
++        "get_Strength",
++        "get_Summon",
++        "get_Vulnerable",
++        "get_Weak",
++    };
 +}
 diff --git a/src/Sts2Headless/PerformanceLab.cs b/src/Sts2Headless/PerformanceLab.cs
 new file mode 100644
@@ -2931,7 +4682,7 @@ index 800f139..d950eec 100644
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..7e84531 100644
+index 6b9de4a..5bc95b7 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,6 @@
@@ -4862,7 +6613,7 @@ index 6b9de4a..7e84531 100644
          }
  
          // Check if there's a pending bundle selection (Scroll Boxes: pick 1 of N packs)
-@@ -1813,36 +2201,44 @@ public class RunSimulator
+@@ -1813,36 +2201,45 @@ public class RunSimulator
          }
  
          // Check if there's a pending card reward from event (GetSelectedCardReward blocking)
@@ -4910,6 +6661,7 @@ index 6b9de4a..7e84531 100644
 +                ["parent_status"] = parentReward != null && parentSet != null ? "bound" : "unavailable",
 +                ["parent_observation_status"] = pendingCardReward.ParentStatus,
 +                ["selection_completes_reward"] = parentPreview?.SelectionCompletesReward,
++                ["native_relic_refresh_subscription"] = parentReward == null ? "unavailable" : NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(parentReward),
                  ["context"] = RunContext(),
                  ["cards"] = cards,
 -                ["can_skip"] = true,
@@ -4922,12 +6674,12 @@ index 6b9de4a..7e84531 100644
 +                    ["name"] = alternative.Title.GetFormattedText(),
 +                    ["title"] = alternative.Title.GetFormattedText(),
 +                    ["after_selected"] = NativeCardRewardAlternativePreview.Outcome(alternative.AfterSelected),
-+                    ["is_pure_return"] = NativeCardRewardAlternativePreview.IsPureReturn(alternative),
++                    ["is_native_skip"] = NativeCardRewardAlternativePreview.IsNativeSkip(alternative),
 +                }).ToList(),
                  ["from_event"] = true,
                  ["player"] = PlayerSummary(_runState!.Players[0]),
              };
-@@ -1852,6 +2248,15 @@ public class RunSimulator
+@@ -1852,6 +2249,15 @@ public class RunSimulator
          checkCardSelect:
          if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
          {
@@ -4943,7 +6695,7 @@ index 6b9de4a..7e84531 100644
              var opts = _cardSelector.PendingOptions.Select((card, i) =>
              {
                  var stats = new Dictionary<string, object?>();
-@@ -1860,6 +2265,8 @@ public class RunSimulator
+@@ -1860,6 +2266,8 @@ public class RunSimulator
                  return new Dictionary<string, object?>
                  {
                      ["index"] = i,
@@ -4952,7 +6704,7 @@ index 6b9de4a..7e84531 100644
                      ["id"] = card.Id.ToString(),
                      ["name"] = _loc.Card(card.Id.Entry),
                      ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
-@@ -1870,9 +2277,81 @@ public class RunSimulator
+@@ -1870,9 +2278,81 @@ public class RunSimulator
                      ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
                      ["keywords"] = selkws?.Count > 0 ? selkws : null,
                      ["after_upgrade"] = GetUpgradedInfo(card),
@@ -5034,7 +6786,7 @@ index 6b9de4a..7e84531 100644
              return new Dictionary<string, object?>
              {
                  ["type"] = "decision",
-@@ -1885,20 +2364,23 @@ public class RunSimulator
+@@ -1885,20 +2365,23 @@ public class RunSimulator
              };
          }
  
@@ -5066,7 +6818,7 @@ index 6b9de4a..7e84531 100644
          // Map room — need to select a node
          if (room is MapRoom || room == null)
          {
-@@ -1908,7 +2390,7 @@ public class RunSimulator
+@@ -1908,7 +2391,7 @@ public class RunSimulator
          // Combat room
          if (room is CombatRoom combatRoom)
          {
@@ -5075,7 +6827,7 @@ index 6b9de4a..7e84531 100644
              _syncCtx.Pump();
              WaitForActionExecutor();
  
-@@ -1919,7 +2401,7 @@ public class RunSimulator
+@@ -1919,7 +2402,7 @@ public class RunSimulator
                  goto checkCardSelect;  // Jump back to card_select handling
              }
  
@@ -5084,7 +6836,7 @@ index 6b9de4a..7e84531 100644
              {
                  return CombatPlayState(player);
              }
-@@ -1932,7 +2414,7 @@ public class RunSimulator
+@@ -1932,7 +2415,7 @@ public class RunSimulator
              {
                  _syncCtx.Pump();
                  Thread.Sleep(5);
@@ -5093,7 +6845,7 @@ index 6b9de4a..7e84531 100644
                  if (!CombatManager.Instance.IsInProgress) return DetectPostCombatState(player, combatRoom);
              }
              return CombatPlayState(player);
-@@ -1963,14 +2445,20 @@ public class RunSimulator
+@@ -1963,14 +2446,20 @@ public class RunSimulator
          }
  
          // Fallback
@@ -5121,7 +6873,7 @@ index 6b9de4a..7e84531 100644
      }
  
      private Dictionary<string, object?> MapSelectState()
-@@ -1992,76 +2480,32 @@ public class RunSimulator
+@@ -1992,76 +2481,32 @@ public class RunSimulator
              if (map == null)
                  return Error("No map available");
          }
@@ -5213,7 +6965,7 @@ index 6b9de4a..7e84531 100644
              ["choices"] = choices,
              ["player"] = PlayerSummary(_runState!.Players[0]),
              ["act"] = _runState.CurrentActIndex + 1,
-@@ -2070,6 +2514,38 @@ public class RunSimulator
+@@ -2070,6 +2515,38 @@ public class RunSimulator
          };
      }
  
@@ -5252,7 +7004,7 @@ index 6b9de4a..7e84531 100644
      private Dictionary<string, object?> CombatPlayState(Player player)
      {
          var pcs = player.PlayerCombatState;
-@@ -2079,11 +2555,6 @@ public class RunSimulator
+@@ -2079,11 +2556,6 @@ public class RunSimulator
          if (player.Creature != null && player.Creature.CurrentHp > 0)
              _lastKnownHp = player.Creature.CurrentHp;
  
@@ -5264,7 +7016,7 @@ index 6b9de4a..7e84531 100644
          var hand = pcs?.Hand?.Cards?.Select((c, i) =>
          {
              // Export the *currently resolved* stat values, not the card base: refresh the
-@@ -2109,78 +2580,30 @@ public class RunSimulator
+@@ -2109,78 +2581,30 @@ public class RunSimulator
              }
              catch { }
  
@@ -5355,7 +7107,7 @@ index 6b9de4a..7e84531 100644
              };
              if (starCost > 0)
              {
-@@ -2201,8 +2624,6 @@ public class RunSimulator
+@@ -2201,8 +2625,6 @@ public class RunSimulator
                  cardInfo["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
                  try { if (c.Affliction.Amount != 0) cardInfo["affliction_amount"] = c.Affliction.Amount; } catch { }
              }
@@ -5364,7 +7116,7 @@ index 6b9de4a..7e84531 100644
              return cardInfo;
          }).ToList() ?? new();
  
-@@ -2224,6 +2645,18 @@ public class RunSimulator
+@@ -2224,6 +2646,18 @@ public class RunSimulator
                              {
                                  ["type"] = intent.IntentType.ToString(),
                              };
@@ -5383,7 +7135,7 @@ index 6b9de4a..7e84531 100644
                              // Get damage for attack intents
                              if (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent atk && playerCreatures != null)
                              {
-@@ -2255,33 +2688,27 @@ public class RunSimulator
+@@ -2255,33 +2689,27 @@ public class RunSimulator
                  catch { }
  
                  // Enemy powers
@@ -5424,7 +7176,7 @@ index 6b9de4a..7e84531 100644
  
          var result = new Dictionary<string, object?>
          {
-@@ -2294,9 +2721,31 @@ public class RunSimulator
+@@ -2294,9 +2722,31 @@ public class RunSimulator
              ["hand"] = hand,
              ["enemies"] = enemies,
              ["player"] = PlayerSummary(player),
@@ -5457,7 +7209,7 @@ index 6b9de4a..7e84531 100644
          };
  
          // Character-specific mechanics
-@@ -2346,139 +2795,240 @@ public class RunSimulator
+@@ -2346,139 +2796,241 @@ public class RunSimulator
              Log($"Character-specific data: {ex.Message}");
          }
  
@@ -5549,7 +7301,7 @@ index 6b9de4a..7e84531 100644
 +                    ["type"] = card.Type.ToString(),
 +                    ["cost"] = card.EnergyCost.CostsX
 +                        ? "X"
-+                        : card.EnergyCost.GetAmountToSpend().ToString(),
++                        : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString(),
 +                    ["description"] = ResolveVisibleVariables(
 +                        _loc.Bilingual("cards", card.Id.Entry + ".description"),
 +                        stats).Replace("\n", " "),
@@ -5758,11 +7510,12 @@ index 6b9de4a..7e84531 100644
 +            ["value"] = value,
 +            ["card_options"] = cardOptions,
 +            ["card_alternatives"] = preview?.Alternatives?.Select(option => new Dictionary<string,object?>
-+                { ["option_id"] = option.OptionId, ["title"] = option.Title, ["after_selected"] = option.AfterSelected, ["is_pure_return"] = option.IsPureReturn }).ToArray(),
++                { ["option_id"] = option.OptionId, ["title"] = option.Title, ["after_selected"] = option.AfterSelected, ["is_native_skip"] = option.IsNativeSkip }).ToArray(),
 +            ["card_alternatives_complete"] = preview?.Complete == true,
 +            ["can_skip_selection"] = preview?.CanSkipSelection,
 +            ["can_reroll"] = preview?.CanReroll,
 +            ["selection_completes_reward"] = preview?.SelectionCompletesReward,
++            ["native_relic_refresh_subscription"] = reward is CardReward observedReward ? NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(observedReward) : "unavailable",
 +        };
 +    }
 +
@@ -5798,7 +7551,7 @@ index 6b9de4a..7e84531 100644
      }
  
      private Dictionary<string, object?> EventChoiceState(EventRoom eventRoom)
-@@ -2502,22 +3052,14 @@ public class RunSimulator
+@@ -2502,22 +3054,14 @@ public class RunSimulator
                  _syncCtx.Pump();
              }
              catch { }
@@ -5824,7 +7577,7 @@ index 6b9de4a..7e84531 100644
          }
  
          var options = currentOptions
-@@ -2622,6 +3164,7 @@ public class RunSimulator
+@@ -2622,6 +3166,7 @@ public class RunSimulator
                  return new Dictionary<string, object?>
                  {
                      ["index"] = i,
@@ -5832,7 +7585,7 @@ index 6b9de4a..7e84531 100644
                      ["title"] = title,
                      ["description"] = optDesc,
                      ["text_key"] = opt.TextKey,
-@@ -2650,6 +3193,8 @@ public class RunSimulator
+@@ -2650,6 +3195,8 @@ public class RunSimulator
              ["type"] = "decision",
              ["decision"] = "event_choice",
              ["context"] = RunContext(),
@@ -5841,7 +7594,7 @@ index 6b9de4a..7e84531 100644
              ["event_name"] = eventName,
              ["description"] = eventDesc,
              ["options"] = options,
-@@ -2661,20 +3206,13 @@ public class RunSimulator
+@@ -2661,20 +3208,13 @@ public class RunSimulator
      {
          var options = restRoom.Options;
          var player = _runState!.Players[0];
@@ -5865,7 +7618,7 @@ index 6b9de4a..7e84531 100644
              ["is_enabled"] = opt.IsEnabled,
          }).ToList();
  
-@@ -2684,6 +3222,11 @@ public class RunSimulator
+@@ -2684,6 +3224,11 @@ public class RunSimulator
              ["decision"] = "rest_site",
              ["context"] = RunContext(),
              ["options"] = optionList,
@@ -5877,7 +7630,7 @@ index 6b9de4a..7e84531 100644
              ["player"] = PlayerSummary(player),
          };
      }
-@@ -2691,7 +3234,7 @@ public class RunSimulator
+@@ -2691,7 +3236,7 @@ public class RunSimulator
      private Dictionary<string, object?> ShopState(MerchantRoom merchantRoom, Player player)
      {
          var inv = merchantRoom.GetLocalInventory();
@@ -5886,7 +7639,7 @@ index 6b9de4a..7e84531 100644
  
          var cards = inv.CharacterCardEntries.Concat(inv.ColorlessCardEntries)
              .Select((e, i) =>
-@@ -2723,6 +3266,7 @@ public class RunSimulator
+@@ -2723,6 +3268,7 @@ public class RunSimulator
                  return new Dictionary<string, object?>
                  {
                      ["index"] = i,
@@ -5894,7 +7647,7 @@ index 6b9de4a..7e84531 100644
                      ["name"] = _loc.Card(entry),
                      ["type"] = card?.Type.ToString() ?? "?",
                      ["rarity"] = card?.Rarity.ToString() ?? "?",
-@@ -2733,6 +3277,7 @@ public class RunSimulator
+@@ -2733,6 +3279,7 @@ public class RunSimulator
                      ["after_upgrade"] = card != null ? GetUpgradedInfo(card) : null,
                      ["cost"] = e.Cost,
                      ["is_stocked"] = e.IsStocked,
@@ -5902,7 +7655,7 @@ index 6b9de4a..7e84531 100644
                      ["on_sale"] = e.IsOnSale,
                  };
              }).ToList();
-@@ -2740,19 +3285,23 @@ public class RunSimulator
+@@ -2740,19 +3287,23 @@ public class RunSimulator
          var relics = inv.RelicEntries.Select((e, i) => new Dictionary<string, object?>
          {
              ["index"] = i,
@@ -5926,7 +7679,7 @@ index 6b9de4a..7e84531 100644
          }).ToList();
  
          var removal = merchantRoom.GetLocalInventory().CardRemovalEntry;
-@@ -2766,94 +3315,72 @@ public class RunSimulator
+@@ -2766,94 +3317,72 @@ public class RunSimulator
              ["relics"] = relics,
              ["potions"] = potions,
              ["card_removal_cost"] = removal?.Cost,
@@ -6072,7 +7825,7 @@ index 6b9de4a..7e84531 100644
      }
  
      private Dictionary<string, object?> GameOverState(bool isVictory)
-@@ -2879,6 +3406,44 @@ public class RunSimulator
+@@ -2879,6 +3408,44 @@ public class RunSimulator
  
      #region Helpers
  
@@ -6117,7 +7870,7 @@ index 6b9de4a..7e84531 100644
      private void WaitForActionExecutor()
      {
          try
-@@ -2891,7 +3456,7 @@ public class RunSimulator
+@@ -2891,7 +3458,7 @@ public class RunSimulator
  
              // Executor may stay "running" while the game awaits headless card selection / reward (e.g. Attack Potion).
              // Spinning here would time out and downstream code could mis-handle an in-flight potion use (BUG-026).
@@ -6126,7 +7879,7 @@ index 6b9de4a..7e84531 100644
                  return;
  
              var executor = RunManager.Instance.ActionExecutor;
-@@ -2902,7 +3467,7 @@ public class RunSimulator
+@@ -2902,7 +3469,7 @@ public class RunSimulator
                  for (int i = 0; i < maxPumps; i++)
                  {
                      _syncCtx.Pump();
@@ -6135,7 +7888,7 @@ index 6b9de4a..7e84531 100644
                      Thread.Sleep(1);
                  }
              }
-@@ -2913,6 +3478,60 @@ public class RunSimulator
+@@ -2913,6 +3480,60 @@ public class RunSimulator
          }
      }
  
@@ -6196,7 +7949,7 @@ index 6b9de4a..7e84531 100644
      private void SpinWaitForCombatStable()
      {
          int maxIterations = 200;
-@@ -2920,14 +3539,29 @@ public class RunSimulator
+@@ -2920,14 +3541,29 @@ public class RunSimulator
          {
              _syncCtx.Pump();
              if (!CombatManager.Instance.IsInProgress) return;
@@ -6228,7 +7981,7 @@ index 6b9de4a..7e84531 100644
      private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
      {
          if (!card.IsUpgradable) return null;
-@@ -2969,34 +3603,77 @@ public class RunSimulator
+@@ -2969,34 +3605,77 @@ public class RunSimulator
      {
          return new Dictionary<string, object?>
          {
@@ -6310,7 +8063,7 @@ index 6b9de4a..7e84531 100644
                  };
              }).Where(x => x != null).ToList(),
              ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-@@ -3005,25 +3682,14 @@ public class RunSimulator
+@@ -3005,25 +3684,14 @@ public class RunSimulator
                  var dstats = new Dictionary<string, object?>();
                  try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
                  var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
@@ -6344,7 +8097,7 @@ index 6b9de4a..7e84531 100644
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,16 +3700,150 @@ public class RunSimulator
+@@ -3034,16 +3702,150 @@ public class RunSimulator
          };
      }
  
@@ -6401,7 +8154,7 @@ index 6b9de4a..7e84531 100644
 +            ["id"] = card.Id.Entry,
 +            ["name"] = StripVisibleText(card.Title),
 +            ["type"] = card.Type.ToString(),
-+            ["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString(),
++            ["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString(),
 +            ["star_cost"] = card.HasStarCostX
 +                ? "X"
 +                : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null,
@@ -6496,7 +8249,7 @@ index 6b9de4a..7e84531 100644
          };
  
          // Boss encounter info — use BossEncounter?.Id?.Entry
-@@ -3064,6 +3864,28 @@ public class RunSimulator
+@@ -3064,6 +3866,28 @@ public class RunSimulator
          }
          catch { }
  
@@ -6525,7 +8278,7 @@ index 6b9de4a..7e84531 100644
          return ctx;
      }
  
-@@ -3074,6 +3896,11 @@ public class RunSimulator
+@@ -3074,6 +3898,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -6537,7 +8290,7 @@ index 6b9de4a..7e84531 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +3926,6 @@ public class RunSimulator
+@@ -3099,14 +3928,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -6552,7 +8305,7 @@ index 6b9de4a..7e84531 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +3958,15 @@ public class RunSimulator
+@@ -3139,9 +3960,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -6568,7 +8321,7 @@ index 6b9de4a..7e84531 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +3976,15 @@ public class RunSimulator
+@@ -3151,15 +3978,15 @@ public class RunSimulator
          }
      }
  
@@ -6590,7 +8343,7 @@ index 6b9de4a..7e84531 100644
              _ => null
          };
      }
-@@ -3263,86 +4088,384 @@ public class RunSimulator
+@@ -3263,86 +4090,384 @@ public class RunSimulator
          }
      }
  
@@ -7031,7 +8784,7 @@ index 6b9de4a..7e84531 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4480,36 @@ public class RunSimulator
+@@ -3357,15 +4482,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -7072,7 +8825,7 @@ index 6b9de4a..7e84531 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4519,110 @@ public class RunSimulator
+@@ -3375,55 +4521,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -7217,7 +8970,7 @@ index 6b9de4a..7e84531 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4646,64 @@ public class RunSimulator
+@@ -3447,178 +4648,64 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -7447,7 +9200,7 @@ index 6b9de4a..7e84531 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +4719,6 @@ public class RunSimulator
+@@ -3634,42 +4721,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -7490,7 +9243,7 @@ index 6b9de4a..7e84531 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +4726,79 @@ public class RunSimulator
+@@ -3677,85 +4728,79 @@ public class RunSimulator
          }
      }
  
@@ -7639,7 +9392,7 @@ index 6b9de4a..7e84531 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3789,16 +4832,12 @@ public class RunSimulator
+@@ -3789,16 +4834,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -7658,7 +9411,7 @@ index 6b9de4a..7e84531 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +4865,54 @@ public class RunSimulator
+@@ -3826,36 +4867,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -7732,7 +9485,7 @@ index 6b9de4a..7e84531 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3896,15 +4953,117 @@ public class RunSimulator
+@@ -3896,15 +4955,117 @@ public class RunSimulator
      {
          try
          {

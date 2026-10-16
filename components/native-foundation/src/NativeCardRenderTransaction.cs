@@ -45,12 +45,9 @@ internal static class NativeCardRenderTransaction
         || value.GetType().IsGenericType
             && value.GetType().GetGenericTypeDefinition() == typeof(PowerVar<>);
 
-    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture)
+    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture, CardPreviewMode mode = CardPreviewMode.Normal)
     {
-        if (displayPile is not (PileType.None or PileType.Draw or PileType.Discard or PileType.Exhaust)
-            || card.Pile?.Type is PileType.Hand or PileType.Play
-            || card.UpgradePreviewType == CardUpgradePreviewType.Combat || card.IsEnchantmentPreview)
-            throw new InvalidOperationException("Unqualified native card preview context");
+        NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
         DynamicVar[] cardVars = card.DynamicVars.Values.ToArray();
         DynamicVar[] enchantVars = card.Enchantment?.DynamicVars.Values.ToArray() ?? [];
         DynamicVar[] all = cardVars.Concat(enchantVars).ToArray();
@@ -62,11 +59,11 @@ internal static class NativeCardRenderTransaction
         try
         {
             card.DynamicVars.ClearPreview();
-            card.UpdateDynamicVarPreview(CardPreviewMode.Normal, card.CurrentTarget, card.DynamicVars);
+            card.UpdateDynamicVarPreview(mode, card.CurrentTarget, card.DynamicVars);
             if (enchantment != null)
             {
                 enchantment.DynamicVars.ClearPreview();
-                card.UpdateDynamicVarPreview(CardPreviewMode.Normal, card.CurrentTarget, enchantment.DynamicVars);
+                card.UpdateDynamicVarPreview(mode, card.CurrentTarget, enchantment.DynamicVars);
             }
             return capture();
         }

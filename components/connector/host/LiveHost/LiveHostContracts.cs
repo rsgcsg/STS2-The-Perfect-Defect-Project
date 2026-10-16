@@ -847,11 +847,11 @@ public sealed record VisibleCardRewardAlternative(
     public string? OptionId { get; init; }
     public string? Title { get; init; }
     public string? AfterSelected { get; init; }
-    public bool IsPureReturn { get; init; }
+    public bool IsNativeSkip { get; init; }
 }
 
 public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected)
-{ public bool IsPureReturn { get; init; } }
+{ public bool IsNativeSkip { get; init; } }
 
 /// <summary>
 /// A player-visible room reward. The Host deliberately exposes only the
@@ -878,6 +878,7 @@ public sealed record VisibleReward(
     public bool? CanSkipSelection { get; init; }
     public bool? CanReroll { get; init; }
     public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
 }
 
 public sealed record CardRewardSelectionSurface(
@@ -892,6 +893,7 @@ public sealed record CardRewardSelectionSurface(
     public string ParentStatus { get; init; } = "unavailable";
     public string? RewardSetId { get; init; }
     public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
 }
 
 public sealed record VisibleCardBundle(

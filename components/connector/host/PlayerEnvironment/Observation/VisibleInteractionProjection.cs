@@ -327,6 +327,7 @@ internal static partial class PlayerEnvironmentService
             {
                 value.Kind, value.Cards, value.Alternatives,
                 value.ParentGroupId, value.ParentStatus, value.RewardSetId, value.SelectionCompletesReward,
+                value.NativeRelicRefreshSubscription,
                 value.SelectableCardEntityIds
             }),
             CardBundleSelectionSurface value => ToNode(new
