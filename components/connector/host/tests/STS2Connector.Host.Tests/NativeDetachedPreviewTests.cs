@@ -175,6 +175,7 @@ public sealed class NativeDetachedPreviewTests
     [InlineData(typeof(DynamicVar), "SetOwner")]
     [InlineData(typeof(CardModel), "get_Enchantment")]
     [InlineData(typeof(CardModel), "DeepCloneFields")]
+    [InlineData(typeof(LocalCostModifier), "set_Amount")]
     public void PatchedKnownNativeHookOrGetterIsRejectedBeforeFirstCall(Type type, string method)
     {
         CardModel original = Mutable<StrikeDefect>();
@@ -230,6 +231,27 @@ public sealed class NativeDetachedPreviewTests
             Assert.Same(pool, Field(typeof(CardModel), "_pool").GetValue(canonical));
             Assert.Equal(count, registry.Count); Assert.DoesNotContain(copy, registry.Values);
             Assert.False(canonical.IsMutable); Assert.Same(canonical, copy.CanonicalInstance);
+        }
+        finally { if (!existed) ModelDb.Remove(typeof(Shiv)); }
+    }
+
+    [Theory]
+    [InlineData(typeof(Shiv), "get_CanonicalKeywords")]
+    [InlineData(typeof(DamageVar), "set_Props")]
+    public void PatchedCanonicalHoverFactoryClosureNeverRuns(Type type, string method)
+    {
+        bool existed = ModelDb.Contains(typeof(Shiv));
+        if (!existed) ModelDb.Inject(typeof(Shiv));
+        try
+        {
+            CardModel canonical = ModelDb.Card<Shiv>();
+            object? vars = Field(typeof(CardModel), "_dynamicVars").GetValue(canonical);
+            object? keywords = Field(typeof(CardModel), "_keywords").GetValue(canonical);
+            using var patch = new Patched(type.GetMethod(method, Flags)!);
+            Assert.False(NativeDetachedCardPreviewFactory.TryCanonicalHoverCopy(canonical, out var copy, out _));
+            Assert.Null(copy); Assert.Equal(0, calls);
+            Assert.Same(vars, Field(typeof(CardModel), "_dynamicVars").GetValue(canonical));
+            Assert.Same(keywords, Field(typeof(CardModel), "_keywords").GetValue(canonical));
         }
         finally { if (!existed) ModelDb.Remove(typeof(Shiv)); }
     }

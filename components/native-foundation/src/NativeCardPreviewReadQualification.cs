@@ -190,7 +190,7 @@ public static partial class NativeCardPreviewReadQualification
             "get_EnchantedValue", "set_EnchantedValue", "get_PreviewValue", "set_PreviewValue", "get_WasJustUpgraded", "set_WasJustUpgraded")
         && MethodsUnpatched(typeof(CardEnergyCost), "Clone", "get_Canonical", "get_CostsX", "get_WasJustUpgraded", "set_WasJustUpgraded")
         && FixedConstructorsUnpatched(typeof(CardEnergyCost)) && CloneLambdaUnpatched(typeof(CardEnergyCost))
-        && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
+        && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "set_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
         && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 
     internal static bool TryPreflightCopy(CardModel card, out string? gap)
@@ -230,11 +230,11 @@ public static partial class NativeCardPreviewReadQualification
                 || Mutable?.GetValue(canonical) is not false || !CopyClosureUnpatched()
                 || !BaseImplementation(canonical.GetType(), typeof(CardModel), "DeepCloneFields")
                 || !BaseImplementation(canonical.GetType(), typeof(CardModel), "AfterCloned")
-                || !BaseImplementation(canonical.GetType(), typeof(CardModel), "get_CanonicalKeywords")
                 || !MethodsUnpatched(typeof(CardModel), "get_CanonicalKeywords")
-                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars")
+                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars", "get_CanonicalKeywords")
                 || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
-                || !SingletonVariableListUnpatched() || !CopiedDelegatesQualified(canonical)
+                || !MethodsUnpatched(typeof(DamageVar), "set_Props")
+                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword)) || !CopiedDelegatesQualified(canonical)
                 || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
                 || !CopyCostQualified(canonical)) return false;
             if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
@@ -336,7 +336,7 @@ public static partial class NativeCardPreviewReadQualification
                 && !NativeEnchantmentMethodInventory.VariableFactories.Contains(type.Name)) return false;
             if (factory.DeclaringType != typeof(EnchantmentModel)
                 && (!FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(BlockVar))
-                    || !FixedConstructorsUnpatched(typeof(DamageVar)) || !FixedConstructorsUnpatched(typeof(IntVar))
+                    || !FixedConstructorsUnpatched(typeof(DamageVar)) || !MethodsUnpatched(typeof(DamageVar), "set_Props") || !FixedConstructorsUnpatched(typeof(IntVar))
                     || !FixedConstructorsUnpatched(typeof(PowerVar<WeakPower>)) || !SingletonVariableListUnpatched())) return false;
             if (type == typeof(Adroit) && !MethodsUnpatched(typeof(DynamicVarSet), "get_Block")) return false;
             if (type == typeof(TezcatarasEmber)
@@ -350,9 +350,11 @@ public static partial class NativeCardPreviewReadQualification
         catch { return false; }
     }
 
-    private static bool SingletonVariableListUnpatched()
+    private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
+
+    private static bool SingletonListUnpatched(Type element)
     {
-        Type? fixedType = typeof(CardModel).Assembly.GetType("<>z__ReadOnlySingleElementList`1")?.MakeGenericType(typeof(DynamicVar));
+        Type? fixedType = typeof(CardModel).Assembly.GetType("<>z__ReadOnlySingleElementList`1")?.MakeGenericType(element);
         return fixedType != null && fixedType.GetMethods(NativeMembers).All(IsUnpatched)
             && FixedConstructorsUnpatched(fixedType)
             && fixedType.GetNestedTypes(NativeMembers).All(type => type.GetMethods(NativeMembers).All(IsUnpatched)
