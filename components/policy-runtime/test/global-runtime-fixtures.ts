@@ -19,6 +19,7 @@ const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../co
 const sha = (v: string | Buffer) => createHash("sha256").update(v).digest("hex");
 export class GlobalHttpFixture {
   nextBases: any[] = [];
+  captureObserver: (() => void) | null = null;
   basis = fixture("synthetic-complete-combat"); server?: Server; address = ""; requests: { path: string; body: any }[] = [];
   private held = false; releases = 0; steps = 0; terminalAfterStep = true; captureGate: Promise<void> | null = null;
   delivery: string = "delivered"; wrongRequest = false; wrongAction = false; releaseFailure = false; releaseObserved: (() => void) | null = null;
@@ -53,6 +54,7 @@ export class GlobalHttpFixture {
         if (url.pathname.endsWith("/public-basis/current")) {
           if (this.captureGate) await this.captureGate;
           if(this.steps && this.postCaptureGate) { this.postCaptureEntered?.(); await this.postCaptureGate; }
+          this.captureObserver?.();
           const value = { schema: "sts2.player-environment/public-basis-1", revision: "2", capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete", ...this.basis, snapshot: { ...this.basis.snapshot, input_profile: "public-basis-1" }, missing: this.basis.missing ?? [] };
           const bytes = Buffer.from(JSON.stringify(value)), id = `capture-${this.captures.size + 1}`;
           const handle = { schema: "sts2.player-environment/public-basis-handle-1", read_profile: "public-basis-sealed-1", input_profile: "public-basis-1", capture_id: id,
@@ -110,7 +112,7 @@ export async function globalRuntimeFixture(options: { editManifest?: (manifest: 
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, runtimeVersion: "fixture", runtimeCodeSha256: runtimeCode, mode: "auto" });
   const port = NdjsonAgentSessionPort.spawn(options.program?.command ?? process.execPath, options.program?.args.map(a=>a==="{manifest}"?manifestPath:a) ?? [child, manifestPath, options.behavior ?? "act"], manifest.adapter, manifest.limits, {env:options.program?.env});
   const runtime: NativeAgentRuntimeOwner = await PolicyRuntime.forAgent({ manifest, globalTransport: transport, port, evidence,
-    runtimeIdentity: { version: "fixture", code_sha256: runtimeCode }, mode: "auto", autoBudget: { deadlineMs: options.budgetMs ?? 10000, maxSubmissions: 20, maxPolicyCalls: 40 }, globalPostDeliverySettleMs: 300 });
+    runtimeIdentity: { version: "fixture", code_sha256: runtimeCode }, mode: "auto", autoBudget: { deadlineMs: options.budgetMs ?? 10000, maxSubmissions: 20, maxPolicyCalls: 40 } });
   return { root, manifest, evidence, port, runtime, source,
     events: async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").map((line: string) => JSON.parse(line)),
     close: async () => { await runtime.stop().catch(() => undefined); await source.close(); } };
