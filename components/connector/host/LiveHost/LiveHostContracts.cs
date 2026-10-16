@@ -835,7 +835,14 @@ public sealed record VisibleCardRewardAlternative(
     string EntityId,
     int Index,
     string Label,
-    bool Enabled);
+    bool Enabled)
+{
+    public string? OptionId { get; init; }
+    public string? Title { get; init; }
+    public string? AfterSelected { get; init; }
+}
+
+public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected);
 
 /// <summary>
 /// A player-visible room reward. The Host deliberately exposes only the
@@ -856,6 +863,11 @@ public sealed record VisibleReward(
     /// Read without opening, populating, rerolling or marking content as seen.
     /// </summary>
     public IReadOnlyList<VisibleCard>? CardOptions { get; init; }
+    public IReadOnlyList<VisibleRewardCardAlternative>? CardAlternatives { get; init; }
+    public bool CardAlternativesComplete { get; init; }
+    public bool? CanSkipSelection { get; init; }
+    public bool? CanReroll { get; init; }
+    public bool? SelectionCompletesReward { get; init; }
 }
 
 public sealed record CardRewardSelectionSurface(
@@ -890,7 +902,10 @@ public sealed record RewardClaimSurface(
     bool PotionSlotsFull,
     IReadOnlyList<VisibleCombatPotion> DiscardablePotions,
     bool CanProceed,
-    bool ProceedSkipsRemainingRewards) : ILiveSurface;
+    bool ProceedSkipsRemainingRewards) : ILiveSurface
+{
+    public bool CanLeaveWithUnclaimedRewards { get; init; }
+}
 
 public sealed record VisibleMapChoice(
     string EntityId,
