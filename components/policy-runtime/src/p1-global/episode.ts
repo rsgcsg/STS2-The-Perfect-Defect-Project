@@ -7,6 +7,7 @@ import {
 import { AgentPort, AgentPortError, type AgentLaunch } from "./agent-port.js";
 import { HostDriver, HostDriverError, type HostLaunch } from "./host-driver.js";
 import { EpisodeRecorder } from "./recorder.js";
+import { p1CoreIdentity } from "./core-identity.js";
 
 export interface EpisodeOptions {
   readonly seed: string;
@@ -40,7 +41,7 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
   const recordPath = join(options.recordDir, `${options.episodeId}.p1record.jsonl`);
   const recorder = new EpisodeRecorder(recordPath, {
     episode_id: options.episodeId, seed: options.seed, host_kind: options.host.kind,
-    character: options.host.character, limits: P1G_LIMITS,
+    character: options.host.character, limits: P1G_LIMITS, p1_core: p1CoreIdentity(),
     budgets: { max_decisions: options.maxDecisions, max_episode_seconds: options.maxEpisodeSeconds }
   });
   const row: EpisodeRow = {
@@ -99,7 +100,16 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
       if (Date.now() > deadline) { row.censor_reason = "episode_wall_budget"; break; }
       if (row.decisions >= options.maxDecisions) { row.censor_reason = "decision_budget"; break; }
 
-      const { basis, refs } = await capture(current.snapshot, current.ref);
+      // A consistent bundle needs every Read bound to the same current snapshot. If the game
+      // moved on (stale), take a fresh observation and capture again (reads have no effect).
+      let captured = await capture(current.snapshot, current.ref);
+      for (let attempt = 0; attempt < 8 && captured.basis.reads.some((read) => read.response === null); attempt++) {
+        await sleep(100 * (attempt + 1));
+        const observed = await host.request({ command: "observe" });
+        current = await stable(observed.snapshot, { seq: recorderSeq(), path: "snapshot" });
+        captured = await capture(current.snapshot, current.ref);
+      }
+      const { basis, refs } = captured;
       const reduction = reduce(state, basis);
       state = reduction.state;
       const observation: P1Observation = reduction.observation;
@@ -161,7 +171,7 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
         let receipt: Record<string, any>;
         try {
           receipt = (await host.request({ command: "step", mutation_request_id: mutationId,
-            expected_snapshot_id: expectedSnapshotId, bound_action_id: next.step.bound_action_id }, 120_000)).receipt;
+            expected_snapshot_id: expectedSnapshotId, bound_action_id: next.step.bound_action_id }, options.host.stepTimeoutMs ?? 120_000)).receipt;
         } catch (error) {
           // A missing/failed step response is an unknown delivery: fence, never retry.
           steps.push({ index: steps.length, origin: next.origin, native_verb: next.step.verb, label: next.step.label, delivery: "unknown", reason_code: "step_response_missing" });
@@ -183,7 +193,7 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
         if (rule) {
           followIndex += 1;
           const follow = resolveFollow(rule, lowering, nextSnapshot.snapshot);
-          if (!follow) { status = "interrupted_known"; break; } // new situation: back to the Agent
+          if (!follow) { if (!rule.optional) status = "interrupted_known"; break; } // new situation: back to the Agent
           plan.push({ step: follow, origin: "fold" });
         }
       }
@@ -191,7 +201,8 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
       if (status === "completed") state = applyCommitment(state, lowering, true);
       const result: P1Result = { schema: P1G_RESULT_SCHEMA, occurrence: observation.envelope.occurrence,
         choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment
-          ? { declined_reward_groups: state.reward?.declined ?? [], reward_page_left: state.reward?.left ?? false } : null };
+          ? { declined_reward_groups: (state.reward?.declined ?? []).map((key) => state.aliases[key] ?? "unaliased").sort(),
+            reward_page_left: state.reward?.left ?? false } : null };
       recorder.append("p1_result", { result });
       agent.result(result);
       if (status === "unknown") break;

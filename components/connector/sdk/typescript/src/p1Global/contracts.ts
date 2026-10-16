@@ -26,8 +26,8 @@ export type Availability =
   | "terminal";          // the run has ended
 
 export type SceneFamily =
-  | "combat" | "map" | "reward" | "card_reward" | "selector" | "upgrade" | "shop"
-  | "event" | "rest" | "treasure" | "relic_choice" | "terminal" | "unsupported";
+  | "combat" | "map" | "reward" | "card_reward" | "selector" | "upgrade" | "enchant" | "shop"
+  | "event" | "rest" | "treasure" | "relic_choice" | "other" | "terminal" | "unsupported";
 
 export type HostKind = "reference" | "managed";
 

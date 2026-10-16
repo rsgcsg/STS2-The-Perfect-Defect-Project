@@ -348,12 +348,12 @@ test("projects native reward sets without exposing exact reward or room operands
   assert.equal(projection.snapshot.bound_actions.actions.length, 3);
   assert.deepEqual({
     ...projection.snapshot.interaction.content.surface,
-    rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, ...reward }) => reward)
+    rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, group_id: _groupId, ...reward }) => reward)
   }, {
     kind: "reward_claim",
     rewards: [
       { kind: "gold", label: "17 gold", description: null, enabled: true },
-      { kind: "card", label: "Add a card", description: null, enabled: true }
+      { kind: "card", label: "Add a card", description: null, enabled: true, card_options: null }
     ],
     potion_slots_full: false,
     discardable_potions: [],
@@ -365,6 +365,58 @@ test("projects native reward sets without exposing exact reward or room operands
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.reward_ref === "reward-gold-a"), true);
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
+});
+
+test("a populated card reward publishes its lawfully viewable candidates under a public group id", () => {
+  const state = (options) => ({
+    type: "decision", decision: "reward_set",
+    context: { act: 1, floor: 2, room_type: "Monster" },
+    rewards: [
+      { index: 0, native_ref: "reward-card-a", kind: "card_choice", name: "Add a card", card_options: options },
+      { index: 1, native_ref: "reward-card-b", kind: "card_choice", name: "Add a card" }
+    ],
+    can_skip: true, is_terminal: true, can_proceed: true, room_ref: "combat-room-a", is_boss: false, player: player()
+  });
+  const options = [
+    { index: 0, native_ref: "offer-card-1", id: "ZAP", name: "Zap", cost: 1, type: "Skill", rarity: "Basic" },
+    { index: 1, native_ref: "offer-card-2", id: "DUALCAST", name: "Dualcast", cost: 1, type: "Skill", rarity: "Basic" }
+  ];
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
+  const [first, second] = projection.snapshot.interaction.content.surface.rewards;
+  assert.equal(first.card_options.length, 2);
+  assert.deepEqual(first.card_options.map((card) => card.index), [0, 1]);
+  assert.equal(second.card_options, null);
+  assert.notEqual(first.group_id, second.group_id);
+  const text = JSON.stringify(projection.snapshot);
+  for (const ref of ["reward-card-a", "reward-card-b", "offer-card-1", "offer-card-2"])
+    assert.equal(text.includes(ref), false, ref);
+  // The public group id is stable for the same native reward across snapshots.
+  const again = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
+  assert.equal(again.snapshot.interaction.content.surface.rewards[0].group_id, first.group_id);
+});
+
+test("the exact deck-enchant callback is presented as the native enchant selection", () => {
+  const cards = [
+    { index: 0, native_ref: "card-a", id: "STRIKE_DEFECT", name: "Strike", is_selected: false, is_selectable: true, is_deselectable: false },
+    { index: 1, native_ref: "card-b", id: "DEFEND_DEFECT", name: "Defend", is_selected: false, is_selectable: true, is_deselectable: false }
+  ];
+  const state = (enchantment) => ({
+    type: "decision", decision: "deck_card_select", context: { act: 1, floor: 3, room_type: "Event" }, player: player(),
+    selector_ref: "selector-a", stage: "selecting", origin: "deck_enchant", enchantment,
+    prompt: "Choose a card to enchant.", min_select: 1, max_select: 1,
+    cancelable: false, require_manual_confirmation: true, selected_refs: [],
+    can_cancel_selection: false, can_preview: false, can_cancel_preview: false, can_confirm: false, cards
+  });
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity,
+    state: state({ id: "SOWN", name: "Sown", description: "Gain energy.", amount: 1 }) });
+  assert.equal(projection.snapshot.interaction.kind, "deck_enchant_selection");
+  assert.deepEqual(projection.snapshot.interaction.content.surface.enchantment,
+    { definition_id: "SOWN", name: "Sown", description: "Gain energy.", amount: 1 });
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["select", "select"]);
+  assert.equal(JSON.stringify(projection.snapshot).includes("selector-a"), false);
+  // Without the named enchantment the page is not exact and publishes no action.
+  const unnamed = projectManagedCandidateDecision({ ...projectionIdentity, state: state(null) });
+  assert.equal(unnamed.snapshot.bound_actions.actions.length, 0);
 });
 
 test("a non-skippable terminal reward set offers claims without proceed", () => {

@@ -57,9 +57,11 @@ export interface NativeStep {
 
 /** A declared continuation inside one already chosen P1 intention. */
 export interface FollowRule {
-  readonly rule_id: "upgrade_confirm" | "card_reward_select";
+  readonly rule_id: "upgrade_confirm" | "enchant_confirm" | "card_reward_select" | "selector_preview_confirm" | "reward_completion_proceed";
   readonly expect_native_kind: string;
   readonly expect_verb: string;
+  /** Optional folds stop silently (intention completed) when the successor is not the expected stage. */
+  readonly optional: boolean;
 }
 
 export type Commitment = "decline_group" | "consume_group" | "decline_open_group" | "leave_reward_page"
@@ -100,13 +102,34 @@ export function createSession(episodeId: string, hostKind: HostKind): P1SessionS
 }
 
 const FAMILY: Readonly<Record<string, SceneFamily>> = {
-  combat_turn: "combat", combat_hand_card_selection: "selector", card_selection: "selector",
-  card_bundle_selection: "selector", deck_enchant_selection: "selector", deck_remove_selection: "selector",
-  deck_transform_selection: "selector", deck_upgrade_selection: "upgrade",
+  combat_turn: "combat",
+  combat_hand_card_selection: "selector", card_selection: "selector", card_bundle_selection: "selector",
+  native_combat_pile_selection: "selector", native_deck_card_selection: "selector", native_generated_card_choice: "selector",
+  native_simple_card_selection: "selector", deck_transform_selection: "selector", deck_card_selection: "selector",
+  deck_upgrade_selection: "upgrade", deck_enchant_selection: "enchant",
   card_reward_selection: "card_reward", reward_claim: "reward", reward_completion: "reward",
   map_navigation: "map", event_option: "event", event_dialogue: "event",
   shop_inventory: "shop", shop_room: "shop", rest_site: "rest",
-  treasure_room: "treasure", relic_choice: "relic_choice", game_over: "terminal"
+  treasure_room: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
+  tutorial: "other", game_over: "terminal"
+};
+
+/** Verb-level semantics per family, used when no exact (kind, verb, role) row exists. */
+const FAMILY_VERB: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  selector: { select: "selector.choose", skip: "selector.skip", confirm: "selector.confirm", cancel: "selector.cancel",
+    deselect: "selector.deselect", close: "selector.cancel", activate: "selector.choose" },
+  upgrade: { select: "upgrade.choose", confirm: "upgrade.confirm", cancel: "upgrade.back", close: "upgrade.back",
+    deselect: "upgrade.deselect" },
+  enchant: { select: "enchant.choose", confirm: "enchant.confirm", cancel: "enchant.back", close: "enchant.back",
+    deselect: "enchant.deselect" },
+  card_reward: { select: "card_reward.take", skip: "card_reward.decline", activate: "card_reward.alternative" },
+  event: { activate: "event.choose", select: "event.choose", confirm: "event.continue" },
+  shop: { activate: "shop.activate", close: "shop.leave", open: "shop.open" },
+  rest: { activate: "rest.choose" },
+  treasure: { activate: "treasure.activate", open: "treasure.open", skip: "treasure.skip", select: "treasure.take" },
+  relic_choice: { select: "relic.choose", activate: "relic.choose", skip: "relic.skip" },
+  map: { activate: "map.travel" },
+  other: { activate: "other.continue", confirm: "other.continue", skip: "other.skip" }
 };
 
 /** (native kind, verb, subject role) -> P1 kind. Anything else stays offered as native.* (mapped=false). */
@@ -131,6 +154,9 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_hand_card_selection|confirm|": "selector.confirm",
   "combat_hand_card_selection|cancel|": "selector.cancel",
   "deck_upgrade_selection|select|card": "upgrade.choose",
+  "deck_enchant_selection|select|card": "enchant.choose",
+  "deck_enchant_selection|confirm|": "enchant.confirm",
+  "deck_enchant_selection|cancel|": "enchant.back",
   "deck_upgrade_selection|confirm|": "upgrade.confirm",
   "deck_upgrade_selection|cancel|": "upgrade.back",
   "event_option|activate|option": "event.choose",
@@ -150,9 +176,16 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
  */
 const EXCLUDED_KINDS: Readonly<Record<string, string>> = {
   "upgrade.back": "forward_profile:no_cancel_after_choosing_smith",
+  "enchant.back": "forward_profile:no_cancel_after_choosing_the_enchant_target",
   "selector.cancel": "forward_profile:no_cancel_of_an_entered_selection",
-  "selector.deselect": "forward_profile:selection_is_append_only"
+  "selector.deselect": "forward_profile:selection_is_append_only",
+  "upgrade.deselect": "forward_profile:selection_is_append_only",
+  "enchant.deselect": "forward_profile:selection_is_append_only",
+  "shop.open": "forward_profile:inventory_is_already_attached"
 };
+
+/** Continue-only inputs: the native room/page referent they name carries no decision content. */
+const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "reward.leave", "rest.proceed"]);
 
 /** Declared forced inputs: the only P1 opportunity on these scenes, with no cancel/timing/resource choice. */
 const FORCED_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "rest.proceed", "map.travel", "event.choose"]);
@@ -175,7 +208,7 @@ function aliasFor(work: AliasWork, id: string): string {
   return alias;
 }
 
-const ID_KEY = /(^|_)(entity_id|entity_ids|combat_id|referent_id|player_entity_id|owner_entity_id|orb_entity_id)$/u;
+const ID_KEY = /(^|_)(entity_id|entity_ids|combat_id|referent_id|player_entity_id|owner_entity_id|orb_entity_id|group_id)$/u;
 
 function collectIds(value: unknown, ids: Set<string>, key = ""): void {
   if (typeof value === "string") { if (ID_KEY.test(key)) ids.add(value); return; }
@@ -206,12 +239,17 @@ function stripIds(value: unknown, ids: Set<string>): unknown {
   return value;
 }
 
-/** Unordered multisets are presented canonically so no hidden order survives. */
-function canonicalMultiset(cards: readonly unknown[], ids: Set<string>): unknown[] {
-  return [...cards].sort((a, b) => {
-    const left = canonicalJson(stripIds(a, ids)); const right = canonicalJson(stripIds(b, ids));
-    return left < right ? -1 : left > right ? 1 : 0;
-  });
+/**
+ * Unordered multisets are presented canonically so no hidden order survives: by public
+ * content, then by an already assigned public alias (never by the Host's list position).
+ */
+function canonicalMultiset(cards: readonly unknown[], ids: Set<string>, aliases: Readonly<Record<string, string>> = {}): unknown[] {
+  const key = (card: unknown) => {
+    const entity = isObject(card) && typeof card.entity_id === "string" ? card.entity_id : "";
+    const alias = aliases[entity] ?? "";
+    return `${canonicalJson(stripIds(card, ids))}\u0000${alias.padStart(12, "0")}`;
+  };
+  return [...cards].sort((a, b) => { const left = key(a); const right = key(b); return left < right ? -1 : left > right ? 1 : 0; });
 }
 
 function part<T>(availability: Availability, content: T | null, source: string | null): P1Part<T> {
@@ -226,7 +264,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   const interaction = snapshot.interaction as Record<string, any>;
   const nativeKind = String(interaction.kind);
-  const family: SceneFamily = FAMILY[nativeKind] ?? "unsupported";
+  const family: SceneFamily = FAMILY[nativeKind] ?? "other";
   const missing: string[] = [];
 
   // Occurrence: the same frozen snapshot re-delivered is not a new decision point.
@@ -295,15 +333,19 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     const zones = (Array.isArray(content?.zones) ? content.zones : []).map((zone: Record<string, any>) => {
       const cards = Array.isArray(zone.cards) ? zone.cards : [];
       const draw = zone.zone === "draw" || zone.ordering_semantics === "unordered_multiset";
-      return { ...zone, cards: draw ? canonicalMultiset(cards, ids) : cards,
+      return { ...zone, cards: draw ? canonicalMultiset(cards, ids, work.aliases) : cards,
         ordering: draw ? "unordered_multiset" : "native_visible_order" };
     });
     pilesPart = part("available", aliasTree({ ...content, zones }, work), "read:combat_piles");
   }
 
   const context = interaction.content.context as Record<string, any>;
+  // One Host nests the live combat HUD under a selection context; it is the same public combat state.
+  const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
+    ? context.combat as Record<string, any> : null;
   const combatPart = family === "combat" || context.kind === "combat"
     ? part("available", aliasTree(context, work), "interaction.context")
+    : nestedCombat ? part("available", aliasTree(nestedCombat, work), "interaction.context.combat")
     : part(terminalScene ? "terminal" : "not_applicable", null, null);
   const mapPart = context.kind === "map"
     ? part("available", aliasTree(context, work), "interaction.context")
@@ -311,7 +353,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
 
   const surface = interaction.content.surface as Record<string, any>;
   const sceneContext = context.kind === "combat" || context.kind === "map" ? null
-    : Object.fromEntries(Object.entries(context).filter(([key]) => !["run", "player"].includes(key)));
+    : Object.fromEntries(Object.entries(context).filter(([key]) => !["run", "player"].includes(key) && !(nestedCombat && key === "combat")));
   const sceneContent: Record<string, unknown> = { surface: aliasTree(surface, work) };
   if (sceneContext && Object.keys(sceneContext).length > 1) sceneContent.context = aliasTree(sceneContext, work);
 
@@ -337,10 +379,12 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   for (const action of snapshot.bound_actions.actions as NativeAction[]) {
     const subjectId = action.subject_referent_id ?? null;
     const role = subjectId ? roles.get(subjectId) ?? "" : "";
-    let kind = KIND_TABLE[`${nativeKind}|${action.verb}|${role}`];
+    let kind = KIND_TABLE[`${nativeKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
     const mapped = kind !== undefined;
     kind ??= `native.${nativeKind}.${action.verb}${role ? `.${role}` : ""}`;
     const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+    // The native result is final: inputs on the game-over page only navigate to the run summary.
+    if (terminalScene) { excluded.push({ ...first, rule: "terminal:post_result_navigation" }); continue; }
     const target = action.arguments.find((item) => item.role === "target")?.referent_id ?? null;
     const subjectAlias = subjectId ? aliasFor(work, subjectId) : null;
     const targetAlias = target ? aliasFor(work, target) : null;
@@ -358,7 +402,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
               label: `${action.label} :: ${String(option.name ?? option.definition_id ?? index)}`, mapped: true },
             { ...base, first, group_key: groupKey, option_index: index, option_definition: String(option.definition_id ?? ""),
               option_entity: typeof option.entity_id === "string" ? option.entity_id : null,
-              follow: [{ rule_id: "card_reward_select", expect_native_kind: "card_reward_selection", expect_verb: "select" }],
+              follow: [{ rule_id: "card_reward_select", expect_native_kind: "card_reward_selection", expect_verb: "select", optional: false }],
               commitment: "consume_group" }));
           push({ kind: "reward.decline_group", subject: aliasFor(work, groupKey), target: null, label: `Decline: ${action.label}`, mapped: true },
             { ...base, first: null, group_key: groupKey, commitment: "decline_group" });
@@ -372,16 +416,30 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
         { ...base, first, group_key: groupKey, commitment: groupKey ? "consume_group" : null });
       continue;
     }
+    // A reward page with nothing left to claim only continues: the same mechanical step one Host
+    // shows as a separate completion page ("reward.proceed"), so both read as one forced proceed.
+    const leavesEmptyPage = kind === "reward.leave" && nativeKind === "reward_claim" && rewardItems.length === 0;
+    if (leavesEmptyPage) kind = "reward.proceed";
     const exclusion = EXCLUDED_KINDS[kind];
     if (exclusion) { excluded.push({ ...first, rule: exclusion }); continue; }
     let commitment: Lowering["commitment"] = null; let groupKey: string | null = null;
-    if (kind === "reward.leave") commitment = "leave_reward_page";
+    if (kind === "reward.leave" || leavesEmptyPage) commitment = "leave_reward_page";
     if (kind === "card_reward.decline" && reward?.open_group) { commitment = "decline_open_group"; groupKey = reward.open_group; }
     if (kind === "card_reward.take" && reward?.open_group) { commitment = "consume_open_group"; groupKey = reward.open_group; }
     const follow: FollowRule[] = [];
+    // Single-target selections that move to a preview: confirming is the mechanical rest of the
+    // already chosen intention (cancel/back are excluded by the forward profile).
+    // Leaving the reward page continues to the map; a Host that inserts a completion page with its
+    // single proceed input gets that input folded, so leaving is one P1 choice on every Host.
+    if (kind === "reward.leave" || leavesEmptyPage)
+      follow.push({ rule_id: "reward_completion_proceed", expect_native_kind: "reward_completion", expect_verb: "activate", optional: true });
     if (kind === "upgrade.choose" && interaction.stage !== "preview")
-      follow.push({ rule_id: "upgrade_confirm", expect_native_kind: "deck_upgrade_selection", expect_verb: "confirm" });
-    push({ kind, subject: subjectAlias, target: targetAlias, label: action.label, mapped },
+      follow.push({ rule_id: "upgrade_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
+    if (kind === "enchant.choose" && interaction.stage !== "preview")
+      follow.push({ rule_id: "enchant_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
+    if (kind === "selector.choose" && interaction.stage !== "preview")
+      follow.push({ rule_id: "selector_preview_confirm", expect_native_kind: nativeKind, expect_verb: "confirm", optional: true });
+    push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias, label: action.label, mapped },
       { ...base, first, follow, commitment, group_key: groupKey });
   }
   candidates.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
@@ -392,14 +450,16 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     return { choice_id, ...item.choice };
   });
 
-  const victory = surface?.victory;
+  // Hosts state the native result differently (Managed surface.victory, Reference context.result).
+  const victory = surface?.victory ?? (context.result === "win" ? true : context.result === "loss" ? false : undefined);
   const terminal = terminalScene ? { outcome: (victory === true ? "win" : victory === false ? "loss" : "unknown") as "win" | "loss" | "unknown" } : null;
   const decision = snapshot.status === "interactive" && catalog.length > 0;
-  const status: P1Observation["status"] = terminalScene ? "terminal" : decision && family !== "unsupported" ? "decision" : "unsupported";
+  const status: P1Observation["status"] = terminalScene ? "terminal" : decision ? "decision" : "unsupported";
   if (status === "unsupported") missing.push(`scene:${nativeKind}:${snapshot.status}`);
 
   const commitments: P1Commitments = {
-    declined_reward_groups: [...(reward?.declined ?? [])].sort(),
+    // Commitments name groups by public alias only (the Host group id never reaches the model).
+    declined_reward_groups: [...(reward?.declined ?? [])].map((key) => aliasFor(work, key)).sort(),
     reward_page_left: reward?.left ?? false
   };
 
@@ -466,6 +526,12 @@ export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: u
     const only = matches[0]!;
     return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
   }
+  if (rule.rule_id === "reward_completion_proceed") {
+    if (actions.length !== 1 || actions[0]!.verb !== rule.expect_verb) return null;
+    const only = actions[0]!;
+    return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
+  }
+  if (rule.optional && snapshot.interaction.stage !== "preview") return null;
   const matches = actions.filter((item) => item.verb === rule.expect_verb);
   if (matches.length !== 1) return null;
   const only = matches[0]!;

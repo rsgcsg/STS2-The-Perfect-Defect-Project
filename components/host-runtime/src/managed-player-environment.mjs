@@ -1156,7 +1156,19 @@ function currentSurface(state, ctx) {
       const cardRefs = cards.map((card) => card?.native_ref);
       const stage = state.stage;
       const selectedCount = selectedRefs.length;
-      const exact = state.origin === "deck_generic"
+      // The exact FromDeckForEnchantment callback reuses this selector and is
+      // presented as the native enchant screen, naming the enchantment it applies.
+      const enchant = state.origin === "deck_enchant";
+      const enchantment = enchant && plainObject(state.enchantment)
+        && typeof state.enchantment.id === "string" && state.enchantment.id.length > 0
+        && typeof state.enchantment.name === "string" && state.enchantment.name.length > 0
+        && Number.isSafeInteger(state.enchantment.amount)
+        ? { definition_id: state.enchantment.id, name: state.enchantment.name,
+          description: typeof state.enchantment.description === "string" ? state.enchantment.description : null,
+          amount: state.enchantment.amount }
+        : null;
+      const selectionKind = enchant ? "deck_enchant_selection" : "deck_card_selection";
+      const exact = (state.origin === "deck_generic" || (enchant && enchantment !== null))
         && typeof state.selector_ref === "string" && state.selector_ref.length > 0
         && (stage === "selecting" || stage === "preview")
         && typeof state.prompt === "string" && state.prompt.length > 0
@@ -1243,8 +1255,9 @@ function currentSurface(state, ctx) {
         });
       }
       return {
-        kind: "deck_card_selection", stage, prompt: state.prompt ?? null,
-        surface: { kind: "deck_card_selection", stage,
+        kind: selectionKind, stage, prompt: state.prompt ?? null,
+        surface: { kind: selectionKind, stage,
+          ...(enchant ? { enchantment } : {}),
           cards: referents.map((item) => item.properties),
           min_select: state.min_select, max_select: state.max_select,
           selected_count: selectedCount,
@@ -1259,7 +1272,7 @@ function currentSurface(state, ctx) {
         context: { ...commonContext, kind: "selection" },
         ...supported,
         complete: exact,
-        missing: exact ? [] : ["exact_current_deck_card_selection_binding"]
+        missing: exact ? [] : [`exact_current_${selectionKind}_binding`]
       };
     }
     case "native_card_select": {

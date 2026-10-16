@@ -17,6 +17,8 @@ export interface HostLaunch {
   readonly character: string;
   readonly extraArgs?: readonly string[];
   readonly requestTimeoutMs?: number;
+  /** Bound for one mutation's receipt; expiry makes that delivery unknown (never retried). */
+  readonly stepTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
 }
 

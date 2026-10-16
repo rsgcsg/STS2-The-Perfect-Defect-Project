@@ -3,6 +3,7 @@ import {
   type HostKind, type P1Observation, type P1SessionState, type ReadCapture
 } from "@rsgcsg/sts2-connector-client/p1-global";
 import { readRecord, type RecordLine } from "./recorder.js";
+import { p1CoreIdentity } from "./core-identity.js";
 
 /**
  * Offline conversion: rebuild every P1 observation from the record's exact Host bytes
@@ -13,8 +14,12 @@ export interface ConversionReport {
   schema: "sts2.p1/conversion-report-1";
   record: string; record_sha256: string; episode_id: string; host_kind: HostKind;
   observations: number; identical: number; mismatches: { occurrence: number; seq: number; recorded: string; rebuilt: string }[];
-  results_applied: number; errors: string[]; verdict: "identical" | "mismatch" | "error";
+  results_applied: number; errors: string[]; core: { recorded: unknown; current: unknown; same: boolean }; verdict: "identical" | "mismatch" | "error";
   converted: P1Observation[];
+  /** The choice the Agent (or a declared forced input) took at each converted observation, aligned by index. */
+  chosen: (string | null)[];
+  /** Who took that choice: "agent_choice", a declared "forced" input, or null when none was taken. */
+  origins: (string | null)[];
 }
 
 function snapshotFrom(lines: Map<number, RecordLine>, seq: number, path: string): unknown {
@@ -30,7 +35,9 @@ export function convertRecord(path: string, recordBytesSha: string): ConversionR
   const open = records[0]!;
   const report: ConversionReport = { schema: "sts2.p1/conversion-report-1", record: path, record_sha256: recordBytesSha,
     episode_id: String(open.episode_id), host_kind: open.host_kind as HostKind, observations: 0, identical: 0,
-    mismatches: [], results_applied: 0, errors: [], verdict: "identical", converted: [] };
+    mismatches: [], results_applied: 0, errors: [], verdict: "identical", converted: [], chosen: [], origins: [],
+    core: { recorded: open.p1_core ?? null, current: p1CoreIdentity(), same: false } };
+  report.core.same = JSON.stringify(report.core.recorded) === JSON.stringify(report.core.current);
   let state: P1SessionState = createSession(report.episode_id, report.host_kind);
   let lastLowering: ReturnType<typeof reduce>["lowering"] | null = null;
   let lastChoice: string | null = null;
@@ -54,8 +61,14 @@ export function convertRecord(path: string, recordBytesSha: string): ConversionR
         if (rebuiltSha === line.sha256 && recordedSha === line.sha256) report.identical += 1;
         else report.mismatches.push({ occurrence: Number(line.occurrence), seq: line.seq, recorded: String(line.sha256), rebuilt: rebuiltSha });
         report.converted.push(reduction.observation);
+        report.chosen.push(null);
+        report.origins.push(null);
       } else if (line.kind === "p1_choice") {
         lastChoice = String(line.choice_id);
+        if (report.chosen.length > 0) {
+          report.chosen[report.chosen.length - 1] = lastChoice;
+          report.origins[report.origins.length - 1] = String(line.origin ?? "");
+        }
       } else if (line.kind === "p1_result") {
         const result = line.result as { status: string; choice_id: string };
         if (result.status === "completed" && lastLowering && lastChoice === result.choice_id) {

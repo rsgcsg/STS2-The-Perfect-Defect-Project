@@ -4,12 +4,12 @@ import { isAbsolute, join, resolve } from "node:path";
 import { sha256Hex, canonicalJson } from "@rsgcsg/sts2-connector-client/p1-global";
 import { runEpisode, type EpisodeRow } from "./episode.js";
 import { convertRecord } from "./convert.js";
-import { comparePair } from "./compare.js";
+import { compareDecisions, comparePair } from "./compare.js";
 
 /**
  * sts2-p1 run      --host managed|reference --location DIR --host-runtime DIR --agent "cmd args" --seeds S1,S2|--suite FILE --out DIR
  * sts2-p1 convert  --record FILE [--out FILE]
- * sts2-p1 compare  --left FILE --right FILE [--mode semantic|exact]
+ * sts2-p1 compare  --left FILE --right FILE [--mode decision|semantic|exact]
  */
 function option(args: string[], name: string, fallback: string | null = null): string | null {
   const index = args.indexOf(name);
@@ -87,7 +87,7 @@ async function run(args: string[]): Promise<void> {
 function convert(args: string[]): void {
   const record = abs(required(args, "--record"));
   const report = convertRecord(record, sha256Hex(readFileSync(record)));
-  const { converted, ...summary } = report;
+  const { converted, chosen: _chosen, origins: _origins, ...summary } = report;
   const outPath = option(args, "--out");
   if (outPath) writeFileSync(abs(outPath), JSON.stringify({ ...summary, converted_sha256: sha256Hex(canonicalJson(converted)) }, null, 2));
   process.stdout.write(JSON.stringify(summary) + "\n");
@@ -97,7 +97,11 @@ function convert(args: string[]): void {
 function compare(args: string[]): void {
   const left = convertRecord(abs(required(args, "--left")), "");
   const right = convertRecord(abs(required(args, "--right")), "");
-  const report = comparePair(left.converted, right.converted, (option(args, "--mode", "semantic") as "semantic" | "exact"));
+  const mode = option(args, "--mode", "decision");
+  const pair = (side: typeof left) => side.converted.map((observation, index) => ({ observation, chosen: side.chosen[index] ?? null,
+    origin: side.origins[index] ?? null }));
+  const report = mode === "decision" ? compareDecisions(pair(left), pair(right))
+    : comparePair(left.converted, right.converted, mode as "semantic" | "exact");
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 }
 
