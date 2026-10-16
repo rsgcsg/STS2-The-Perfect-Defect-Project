@@ -21,7 +21,10 @@ internal static class PublicBasisAssembly
             throw new SealedObservationException("too_large", "Public Read inventory exceeds its bound.");
         var advertised = snapshot["reads"] as JsonArray
             ?? throw new SealedObservationException("invalid_public_basis", "The original Read inventory is missing.");
-        if (advertised.Count != reads.Count || reads.Select(r => r.ReadId).Distinct(StringComparer.Ordinal).Count() != reads.Count)
+        var advertisedIds = advertised.Select(item => item?["read_id"]?.GetValue<string>()).ToArray();
+        if (advertisedIds.Any(string.IsNullOrWhiteSpace)
+            || advertisedIds.Distinct(StringComparer.Ordinal).Count() != advertised.Count
+            || advertised.Count != reads.Count || reads.Select(r => r.ReadId).Distinct(StringComparer.Ordinal).Count() != reads.Count)
             throw new SealedObservationException("inconsistent_capture", "Each advertised Read must have one captured result.");
         string id = snapshot["snapshot_id"]!.GetValue<string>();
         var session = snapshot["session"]!.Deserialize<PlayerEnvironmentSessionReference>(options)!;
@@ -44,7 +47,10 @@ internal static class PublicBasisAssembly
                 || !JsonNode.DeepEquals(response["session"], snapshot["session"])
                 || !JsonNode.DeepEquals(response["information_policy"], snapshot["information_policy"])
                 || !JsonNode.DeepEquals(response["target_referent_id"], original["target_referent_id"])
-                || !JsonNode.DeepEquals(response["content_schema"], original["content_schema"]))
+                || !JsonNode.DeepEquals(response["content_schema"], original["content_schema"])
+                || !JsonNode.DeepEquals(response["ordering_semantics"], original["ordering_semantics"])
+                || !JsonNode.DeepEquals(response["visibility_basis"], original["visibility_basis"])
+                || !JsonNode.DeepEquals(response["completeness"]?["hidden_by_policy"], original["hidden_by_policy"]))
                 throw new SealedObservationException("inconsistent_capture", "A Read does not belong to this exact public source.");
             if (response["completeness"]?["status"]?.GetValue<string>() != "complete"
                 || response["completeness"]?["missing"] is not JsonArray { Count: 0 }) missing.Add("read:" + readId + ":partial");
@@ -54,7 +60,9 @@ internal static class PublicBasisAssembly
         // These are original bytes for the existing retention/storage owners. No P1 state is embedded.
         var observation = new PublicBasisObservation(PublicBasisContract.Schema, PublicBasisContract.Revision,
             PublicBasisContract.Scope, missing.Count == 0 ? "complete" : "partial", snapshot, reads, missing);
-        return new(JsonSerializer.SerializeToUtf8Bytes(observation, options), id, session, continuity,
+        using var stream = new BoundedObservationStream(SealedObservationContract.MaxCapsuleBytes);
+        JsonSerializer.Serialize(stream, observation, options);
+        return new(stream.ToArray(), id, session, continuity,
             DateTimeOffset.UtcNow, SealedObservationProfile.PublicBasis);
     }
 }

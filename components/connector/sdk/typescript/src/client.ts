@@ -502,7 +502,7 @@ export class PlayerEnvironmentRestClient {
     const requestSignal = scope?.signal ? AbortSignal.any([scope.signal, AbortSignal.timeout(scope.timeoutMs ?? this.timeoutMs)])
       : AbortSignal.timeout(scope?.timeoutMs ?? this.timeoutMs);
     requestSignal.throwIfAborted();
-    await transport?.beforeSend?.();
+    if (transport?.beforeSend) await boundedHook(transport.beforeSend, requestSignal);
     requestSignal.throwIfAborted();
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -569,7 +569,7 @@ async function readNativeLogicalResponse(response: Response, maxBytes: number, s
     }
     const joined = new Uint8Array(bytes);
     let offset = 0; for (const block of blocks) { joined.set(block, offset); offset += block.length; }
-    await originalBytes?.(joined.slice());
+    if (originalBytes) await boundedHook(() => originalBytes(joined.slice()), signal);
     signal?.throwIfAborted();
     const result = parseNativeLogicalJson(decoder.decode(joined));
     observedBytes(bytes);
@@ -582,6 +582,21 @@ async function readNativeLogicalResponse(response: Response, maxBytes: number, s
     blocks.length = 0;
     reader.releaseLock();
   }
+}
+
+// A hung caller hook must not retain transport authorization or defer capture cleanup.
+// Promise.race observes late rejection; no late completion can resume this request.
+async function boundedHook(hook: () => void | Promise<void>, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (!signal) { await hook(); return; }
+  let abort: () => void = () => undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    await Promise.race([cancelled, Promise.resolve().then(() => { signal.throwIfAborted(); return hook(); })]);
+  } finally { signal.removeEventListener("abort", abort); }
 }
 
 function safeMessage(value: unknown): string {

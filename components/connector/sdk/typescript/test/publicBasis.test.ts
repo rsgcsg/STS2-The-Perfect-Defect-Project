@@ -27,7 +27,7 @@ describe('protocol-neutral original public basis', () => {
     const b = basis(); b.reads = []; b.snapshot.reads = [];
     expect(decodePublicBasis(b).capture_status).toBe('complete'); // Complete original inventory, NOT a complete P1 input.
   });
-  it.each(['omit', 'duplicate', 'foreign_snapshot', 'foreign_session', 'missing_reason', 'false_complete', 'hidden', 'nonfinite'])(
+  it.each(['omit', 'duplicate', 'foreign_snapshot', 'foreign_session', 'missing_reason', 'false_complete', 'hidden', 'nonfinite', 'ordering', 'visibility', 'hidden_policy'])(
     'rejects %s without backfilling', variant => {
       const b = basis();
       if (variant === 'omit') b.reads.pop();
@@ -38,6 +38,9 @@ describe('protocol-neutral original public basis', () => {
       if (variant === 'false_complete') { b.reads[0].response = null; b.reads[0].error = 'missing'; }
       if (variant === 'hidden') b.snapshot.information_policy.includes_hidden_information = true;
       if (variant === 'nonfinite') b.snapshot.extra = Infinity;
+      if (variant === 'ordering') b.reads[0].response.ordering_semantics = 'different';
+      if (variant === 'hidden_policy') b.reads[0].response.completeness.hidden_by_policy = ['different'];
+      if (variant === 'visibility') b.reads[0].response.visibility_basis = 'different';
       expect(() => decodePublicBasis(b)).toThrow();
     });
   it('preserves a failed Read and refuses tampered original byte identity', async () => {
@@ -80,4 +83,25 @@ describe('protocol-neutral original public basis', () => {
     await expect(client.capabilities({ onResponseBytes: value => { original = value; } })).rejects.toThrow();
     expect(original).toEqual(bytes);
   });
+  it.each(['beforeSend', 'onResponseBytes'] as const)('bounds a stalled %s hook by external cancellation', async hookName => {
+    const f = await archived(); const controller = new AbortController(); let releases = 0; let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const client = new PlayerEnvironmentRestClient('http://fixture', 1000, (async (url: any) => {
+      if (String(url).includes('/release')) { releases++; return Response.json({ schema: 'sts2.player-environment/public-basis-release-1', capture_id: 'capture-1', released: true }); }
+      if (String(url).includes('/current')) return Response.json(f.capture);
+      return Response.json({ schema: 'sts2.player-environment/public-basis-chunk-1', capture_id: 'capture-1', sha256: f.capture.sha256,
+        offset: 0, total_bytes: f.bytes.length, data_base64: f.bytes.toString('base64'), next_cursor: null, end: true });
+    }) as typeof fetch);
+    const never = () => { entered(); return new Promise<void>(() => undefined); };
+    // Only block a chunk hook after the capture handle is known, so cleanup has a retained owner.
+    let responses = 0;
+    const call = hookName === 'beforeSend'
+      ? client.capabilities({ signal: controller.signal, beforeSend: never })
+      : client.getFullPublicBasis({}, { signal: controller.signal, onResponseBytes: () => { if (++responses === 2) return never(); } });
+    const rejected = expect(call).rejects.toThrow();
+    await started; controller.abort(new Error('cancelled'));
+    await Promise.race([rejected, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('hook held cancellation')), 250))]);
+    expect(releases).toBe(hookName === 'onResponseBytes' ? 1 : 0);
+  });
+
 });

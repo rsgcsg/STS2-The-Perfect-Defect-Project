@@ -84,7 +84,9 @@ export function decodePublicBasis(value: unknown): PublicBasis {
     const read = decodePlayerRead(captured.response).data;
     if (captured.error !== null || read.read_id !== listed.read_id || read.kind !== listed.kind
       || read.expected_snapshot_id !== snapshot.snapshot_id || read.observed_snapshot_id !== snapshot.snapshot_id
-      || read.content_schema !== listed.content_schema || (read.target_referent_id ?? null) !== (listed.target_referent_id ?? null)
+      || read.content_schema !== listed.content_schema || read.ordering_semantics !== listed.ordering_semantics
+      || read.visibility_basis !== listed.visibility_basis
+      || canonical(read.completeness.hidden_by_policy) !== canonical(listed.hidden_by_policy) || (read.target_referent_id ?? null) !== (listed.target_referent_id ?? null)
       || canonical(read.session) !== canonical(snapshot.session)
       || canonical(read.information_policy) !== canonical(snapshot.information_policy)) throw new Error("Read source binding mismatch");
     if (read.completeness.status !== "complete" || read.completeness.missing.length) missing.push(`read:${listed.read_id}:partial`);

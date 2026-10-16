@@ -51,6 +51,10 @@ public sealed class PublicBasisTests
     [InlineData("foreign_session")]
     [InlineData("foreign_context")]
     [InlineData("error_with_response")]
+    [InlineData("ordering")]
+    [InlineData("visibility")]
+    [InlineData("duplicate_advertisement")]
+    [InlineData("hidden_policy")]
     public void RejectsInventedOrMismatchedReadInventory(string variant)
     {
         var snapshot = Snapshot(); var read = Read(snapshot); var reads = new[] { read };
@@ -59,6 +63,14 @@ public sealed class PublicBasisTests
         if (variant == "foreign_snapshot") read.Response!["observed_snapshot_id"] = "other";
         if (variant == "foreign_session") read.Response!["session"]!["runtime_instance_id"] = "other";
         if (variant == "foreign_context") read.Response!["target_referent_id"] = "different-card";
+        if (variant == "ordering") read.Response!["ordering_semantics"] = "different";
+        if (variant == "hidden_policy") read.Response!["completeness"]!["hidden_by_policy"] = new JsonArray("different");
+        if (variant == "visibility") read.Response!["visibility_basis"] = "different";
+        if (variant == "duplicate_advertisement")
+        {
+            ((JsonArray)snapshot["reads"]!).Add(snapshot["reads"]![0]!.DeepClone());
+            reads = new[] { read, read with { ReadId = "extra" } };
+        }
         if (variant == "error_with_response") reads = new[] { read with { Error = "failed" } };
         Assert.Throws<SealedObservationException>(() => PublicBasisAssembly.Freeze(snapshot, reads, null, Options));
     }
@@ -71,5 +83,12 @@ public sealed class PublicBasisTests
         Assert.Equal("partial", source["capture_status"]!.GetValue<string>());
         Assert.Equal("read:read:deck:native_unavailable", source["missing"]![0]!.GetValue<string>());
         Assert.Null(source["reads"]![0]!["response"]);
+    }
+
+    [Fact]
+    public void ByteLimitIsEnforcedWhileSerializing()
+    {
+        var snapshot = Snapshot(); snapshot["large_public_text"] = new string('x', SealedObservationContract.MaxCapsuleBytes);
+        Assert.Throws<SealedObservationException>(() => PublicBasisAssembly.Freeze(snapshot, new[] { Read(snapshot) }, null, Options));
     }
 }
