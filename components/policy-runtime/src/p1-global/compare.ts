@@ -1,64 +1,32 @@
 import { canonicalJson, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
-  type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
+  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
  * transformations require an owning schema/path declaration; r1.1 uses literal text.
  * Entity aliases may be renamed only through one injective global mapping. */
 export interface FirstDifference { path: string; left: unknown; right: unknown; reason?: string }
 type Verdict = "equal" | "different" | "incomparable";
-const normalize = (path: string) => path.replace(/\[\d+\]/gu, "[]");
-const ENTITY_PATHS = new Set([
-  "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
-  "player.content.relics[].card_previews[].entity_id", "player.content.potions[].card_previews[].entity_id",
-  "deck.content.cards[].entity_id", "map.content.nodes[].entity_id",
-  "run.content.modifiers[].card_previews[].entity_id", "combat.content.player.player_entity_id",
-  ...["hand", "companions", "potion_states", "orbs"].map(kind => `combat.content.player.${kind}[].entity_id`),
-  "combat.content.enemies[].entity_id", "combat.content.enemies[].combat_id",
-  "piles.content.zones[].cards[].entity_id",
-  "commitments.declined_reward_groups[]", "catalog[].subject", "catalog[].target"
-]);
-const SELECTOR_NATIVE_KINDS = new Set(["card_selection", "combat_hand_card_selection", "native_combat_pile_selection",
-  "native_deck_card_selection", "native_generated_card_choice", "native_simple_card_selection", "deck_transform_selection",
-  "deck_card_selection", "deck_upgrade_selection", "deck_enchant_selection"]);
-function surfaceEntityPaths(kind: string): Set<string> {
-  const fields = SELECTOR_NATIVE_KINDS.has(kind) ? ["cards[].entity_id", "selected_card_entity_ids[]", "selectable_card_entity_ids[]",
-    "deselectable_card_entity_ids[]", "screen_entity_id", "hand_entity_id"]
-    : kind === "combat_turn" ? ["room_entity_id", ...["playable_cards", "usable_potions", "discardable_potions"].flatMap(key =>
-      [`${key}[].entity_id`, `${key}[].target_entity_ids[]`])]
-    : kind === "map_navigation" ? ["next_options[].entity_id"]
-    : kind === "reward_claim" ? ["rewards[].entity_id", "rewards[].group_id", "rewards[].card_options[].entity_id", "discardable_potions[].entity_id"]
-    : kind === "card_reward_selection" ? ["cards[].entity_id", "alternatives[].entity_id", "screen_entity_id"]
-    : kind === "card_bundle_selection" ? ["bundles[].entity_id", "bundles[].cards[].entity_id", "screen_entity_id"]
-    : ["event_option", "event_dialogue", "rest_site"].includes(kind) ? ["options[].entity_id", "screen_entity_id", "room_entity_id"]
-    : ["treasure_room", "treasure_chest", "treasure_relic_selection", "treasure_completion", "relic_choice", "native_boss_relic_selection"].includes(kind)
-      ? ["room_entity_id", "screen_entity_id", "relics[].entity_id", "selectable_relic_entity_ids[]"]
-    : kind === "shop_inventory" ? ["screen_entity_id", "cards[].entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
-      "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]
-    : kind === "shop_room" ? ["room_entity_id"] : [];
-  return new Set(fields.map(field => `scene.content.surface.${field}`));
-}
 function closedEntityRelations(observation: P1Observation): boolean {
-  const surfacePaths = surfaceEntityPaths(observation.scene.native_kind);
+  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads);
   const declared = new Set<string>(); const referenced: string[] = [];
   const visit = (value: unknown, path: string): void => {
-    const relative = normalize(path).replace(/^\./u, "");
-    if (typeof value === "string" && (ENTITY_PATHS.has(relative) || surfacePaths.has(relative))) {
-      if (/\.(?:subject|target)$/u.test(relative) || /(?:_entity_ids|declined_reward_groups)\[\]$/u.test(relative)) referenced.push(value);
+    const relation = policy.relation(path);
+    if (typeof value === "string" && relation) {
+      if (relation === "reference") referenced.push(value);
       else declared.add(value);
     } else if (Array.isArray(value)) value.forEach((item, i) => visit(item, `${path}[${i}]`));
-    else if (value && typeof value === "object") Object.entries(value).forEach(([key, child]) => visit(child, `${path}.${key}`));
+    else if (value && typeof value === "object") Object.entries(value).forEach(([key, child]) => visit(child, publicFieldPath(path, key)));
   };
   visit(modelView(observation), "");
   return referenced.every(value => declared.has(value));
 }
-function graphPolicy(identicalFacts: boolean, nativeKind: string) {
-  const surfacePaths = surfaceEntityPaths(nativeKind);
+function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
+  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads);
   return createPublicGraphComparator({
     alias(value, _key, path) {
-      const p = normalize(path);
-      if (p === "$.chosen" || p === "$.observation.catalog[].choice_id") return { kind: "action", id: value };
-      const relative = p.replace(/^\$\.observation\./u, "");
-      return (ENTITY_PATHS.has(relative) || surfacePaths.has(relative)) ? { kind: "entity", id: value } : null;
+      const p = normalizePublicPath(path);
+      if (p === "$.chosen" || p === "catalog[].choice_id") return { kind: "action", id: value };
+      return policy.relation(path) ? { kind: "entity", id: value } : null;
     },
     unordered(path, parent) {
       return path === "$.observation.catalog" || !identicalFacts && (
@@ -124,7 +92,7 @@ function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: str
     const { catalog: ca, ...oa } = a.observation; const { catalog: cb, ...ob } = b.observation;
     // Identical complete fact bytes admit the identity bijection, including repeated cards.
     // Traverse those arrays positionally to establish it; this does not align renamed ambiguities.
-    const graph = graphPolicy(canonicalJson(oa) === canonicalJson(ob), left.scene.native_kind);
+    const graph = graphPolicy(canonicalJson(oa) === canonicalJson(ob), left);
     graph.compare(oa, ob, "$.observation");
     graph.unordered(ca, cb, "$.observation.catalog");
     graph.compare(chosenLeft, chosenRight, "$.chosen");
