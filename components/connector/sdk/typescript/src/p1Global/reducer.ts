@@ -1,4 +1,5 @@
 import { decodePlayerRead, decodePlayerSnapshot } from "../protocol.js";
+import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import {
@@ -264,6 +265,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
   const missing: string[] = [];
+  if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
   if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
   if (!(nativeKind in FAMILY)) missing.push(`required:scene_contract:${nativeKind}`);
   if (interaction.content_schema !== `sts2.player-environment/surface/${nativeKind}-1`

@@ -38,6 +38,13 @@ describe("shared native public combat context boundary", () => {
     c.player.orbs = [{ entity_id: "orb", definition_id: "LIGHTNING", passive_value: 3, evoke_value: 8, queue_index: 0, is_next_to_evoke: true }];
     expect(publicCombatContextProblems(c)).toEqual([]); expect(completeCombat(c)).toBe(true);
   });
+  it("preserves the same finite-number fence across all required facts and Reads", () => {
+    for (const mutate of [(b: any) => { b.snapshot.persistent.content.player.hp = Infinity; },
+      (b: any) => { b.reads.find((r: any) => r.kind === "map").response.content.extension = { value: JSON.parse("1e999") }; }]) {
+      const b = basis(); mutate(b);
+      expect(reduce(createSession("finite-public-facts", "managed"), b).missing).toContain("required:finite_public_numbers");
+    }
+  });
   it("does not admit nonfinite public numbers", () => {
     const c = context(); c.enemies[0].hp = Infinity;
     expect(publicCombatContextProblems(c).length).toBeGreaterThan(0);
