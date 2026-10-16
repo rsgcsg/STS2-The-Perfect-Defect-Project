@@ -19,7 +19,8 @@ internal static partial class PlayerEnvironmentService
             surface with
             {
                 PlayableCards = Array.Empty<VisibleCombatCommandOption>(),
-                UsablePotions = Array.Empty<VisibleCombatCommandOption>()
+                UsablePotions = Array.Empty<VisibleCombatCommandOption>(),
+                DiscardablePotions = Array.Empty<VisibleCombatPotion>()
             });
 
     private static IReadOnlyList<NativeUiBoundAction> BuildTextCombatBindings(

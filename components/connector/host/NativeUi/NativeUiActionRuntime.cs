@@ -148,6 +148,21 @@ internal static partial class NativeUiActionRuntime
         {
             if (BindActionToCurrentObservation(draft, descriptor) is not { } binding)
                 continue;
+            if (descriptor.Kind == "discard_combat_potion")
+            {
+                string potionId = binding.Candidate.Operands["potion_id"];
+                VisibleCombatPotion potion = surface.DiscardablePotions.Single(value => value.EntityId == potionId);
+                var operands = new Dictionary<string, string>(binding.Candidate.Operands, StringComparer.Ordinal)
+                {
+                    ["potion_slot"] = potion.Slot.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                };
+                result.Add(binding with { Candidate = binding.Candidate with
+                {
+                    Operands = operands,
+                    CandidateId = BuildCandidateId(binding.Candidate.Command, binding.Candidate.Operation, operands)
+                } });
+                continue;
+            }
             string role = descriptor.Kind == "play_card" ? "card" : "potion";
             string operandName = descriptor.Kind == "play_card" ? "card_id" : "potion_id";
             ActionEntityBinding? primary = descriptor.EntityBindings?
@@ -215,6 +230,12 @@ internal static partial class NativeUiActionRuntime
                     .Concat(potion.TargetEntityIds.Select(id => new ActionEntityBinding("target", id)))
                     .ToArray()));
         }
+        foreach (VisibleCombatPotion potion in surface.DiscardablePotions)
+            commands.Add(NativeDescriptor(
+                $"discard_combat_potion:{surface.RoomEntityId}:{potion.EntityId}:{potion.Slot}",
+                "discard_combat_potion", "combat", $"Discard {potion.Name ?? potion.DefinitionId}",
+                "NPotionPopup.OnDiscardButtonPressed+DiscardPotionGameAction+exact-current-slot",
+                new[] { new ActionEntityBinding("potion", potion.EntityId) }));
         if (surface.CanEndTurn)
         {
             commands.Add(NativeDescriptor(
@@ -2127,7 +2148,8 @@ internal static partial class NativeUiActionRuntime
 
     private static NativeInputResult StartCombatCommand(
         LiveObservation draft,
-        NativeUiInput request)
+        NativeUiInput request,
+        NativeUiBoundAction binding)
     {
         if (draft.Surface is not CombatTurnSurface surface)
             return NativeInputResult.Rejected(
@@ -2138,6 +2160,13 @@ internal static partial class NativeUiActionRuntime
 
         return request.Command switch
         {
+            "activate_control" when binding.Candidate.Operation == "discard_combat_potion"
+                && operands.TryGetValue("potion_id", out string? discardId)
+                && operands.TryGetValue("potion_slot", out string? slotValue)
+                && int.TryParse(slotValue, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out int discardSlot) =>
+                CombatTurnSurfaceReader.StartDirectDiscardPotion(Entities,
+                    surface.RoomEntityId, discardId, discardSlot),
             "play_card" when operands.TryGetValue("card_id", out string? cardId) =>
                 CombatTurnSurfaceReader.StartDirectPlayCard(
                     Entities,

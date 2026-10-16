@@ -810,6 +810,8 @@ public sealed record CombatTurnSurface(
         Array.Empty<VisibleCombatCommandOption>();
     public IReadOnlyList<VisibleCombatCommandOption> UsablePotions { get; init; } =
         Array.Empty<VisibleCombatCommandOption>();
+    public IReadOnlyList<VisibleCombatPotion> DiscardablePotions { get; init; } =
+        Array.Empty<VisibleCombatPotion>();
 }
 
 public sealed record CombatHandCardSelectionSurface(

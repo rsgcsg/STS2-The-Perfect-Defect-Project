@@ -26,7 +26,7 @@ const REVIEWED_TEXT_MENU_SURFACES = new Set(REVIEWED_TEXT_MENU_KINDS);
 // page catalog remains the action authority, including future bound verbs.
 const CURRENT_NATIVE_VERBS = Object.freeze([
   "activate", "cancel", "close", "confirm", "deselect", "end_turn",
-  "play", "preview", "select", "skip", "use"
+  "open", "play", "select", "skip", "use"
 ]);
 
 export function managedTextMenuV1Contract() {
