@@ -32,7 +32,7 @@ export function textBoundaryErrors(relative, contents) {
       "NativeCardPreviewReadQualification.cs",
       "NativeCardRewardAlternativePreview.cs"
     ].map(name => `components/native-foundation/src/${name}`));
-    let ownershipText = contents.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu, "");
+    let ownershipText = contents.replace(/^[ \t]*\/\/[^\r\n]*$/gmu, "");
     if (readQualificationFiles.has(normalized)) {
       ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
         .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");

@@ -95,3 +95,12 @@ test("Host workspace dependency is exactly the public SDK boundary", () => {
   for (const dependency of ["file:../connector", "file:../connector/host", "file:../../annotator", "*", undefined])
     assert.equal(hostSdkDependencyErrors(dependency).length, 1);
 });
+
+
+test("comment-like string literals cannot hide native patch ownership", () => {
+  const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
+  for (const source of [
+    'using HarmonyLib;\nvar text = "//"; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar open = "/*"; var owner = new Harmony("x"); var close = "*/";'
+  ]) assert.equal(textBoundaryErrors(owner, source).length, 1);
+});
