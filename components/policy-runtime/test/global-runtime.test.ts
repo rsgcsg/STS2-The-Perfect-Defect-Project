@@ -93,4 +93,13 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
     try{expect((await f.runtime.tick()).type).toBe("not_admitted");expect(source.steps).toBe(0);expect((await f.events()).some(e=>e.kind==="global_input")).toBe(false);}finally{await f.close();}
   });
 
+  it("refuses an otherwise complete decision outside the Agent's declared interaction support", async () => {
+    const f = await globalRuntimeFixture({ editManifest: m => { m.support.interaction_kinds = ["not_this_scene"]; } });
+    try {
+      expect((await f.runtime.tick()).type).toBe("not_admitted"); expect(f.source.steps).toBe(0);
+      expect((await f.events()).some(e => e.kind === "global_input")).toBe(false);
+      await f.runtime.stop(); expect((await replayGlobalAgentRun(f.evidence.directory)).results).toBe(0);
+    } finally { await f.close(); }
+  });
+
 });

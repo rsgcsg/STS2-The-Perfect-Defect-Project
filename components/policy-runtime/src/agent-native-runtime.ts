@@ -1,6 +1,6 @@
 import { type FullPublicBasis, serializePublicBasisRecord, decodePlayerReceipt } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollow, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
-import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, globalDigest } from "./global-transport.js";
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
+import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
 import type { GlobalArtifact } from "./evidence.js";
 import type { ConnectorPolicyRequirements } from "./contracts.js";
@@ -1259,11 +1259,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (!("kind" in expected) || expected.kind !== "global-public-basis" || !this.manifest.input.global
       || this.manifest.input.global.core_sha256 !== p1CoreIdentity().module_digest) throw new AgentSessionError("global_core_or_environment_contract");
     const identity = await transport.negotiate(signal); this.checkActive(this.owner.epoch, signal);
-    assertGlobalIdentity(identity, expected); this.globalIdentity = identity;
+    assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest); this.globalIdentity = identity;
     this.globalState = createSession(this.options.evidence.runId, transport.kind);
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
     await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
   private async emitGlobal(kind: string, data: Record<string, unknown>): Promise<void> {
     // Same error fence and original fsynced writer as every Runtime event.
@@ -1313,6 +1314,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (source.full.basis.capture_status !== "complete" || !reduction.complete || reduction.observation.status === "unsupported"
         || this.globalEpisode === null && reduction.observation.status !== "terminal")
         throw new AgentSessionError("global_required_information_unavailable");
+      if (!supportsProfileValue(this.manifest.support.interaction_kinds, reduction.observation.scene.native_kind))
+        throw new AgentSessionError("global_interaction_unsupported");
       this.globalState = reduction.state;
       if (this.globalPrepared?.reduction.observation.envelope.occurrence === reduction.observation.envelope.occurrence) {
         if (canonicalJson(modelView(reduction.observation)) !== canonicalJson(this.globalPrepared.acquisition.observation)) throw new AgentSessionError("global_same_occurrence_drift");
@@ -1402,8 +1405,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         this.lastResult = { request_id: requestId, snapshot_id: String(source.full.basis.snapshot.snapshot_id), action_id: choiceId,
           status: "terminal", delivery: decoded.delivery, execution: null, effect: null, cancel: null, reason: decoded.reason_code ?? null };
         const successorDrift = decoded.successor && canonicalJson(decoded.successor.session) !== canonicalJson(this.globalIdentity!.session);
-        if (successorDrift && decoded.delivery !== "delivered")
+        if (successorDrift && decoded.delivery !== "delivered") {
           await this.emitGlobal("global_dispatch_error", { request_id: requestId, sent, reason: "global_receipt_successor_identity_drift" });
+          // Identity failure fences further submissions without rewriting the known Receipt.
+          await this.taint("global_receipt_successor_identity_drift");
+        }
         if (decoded.delivery === "unknown") { status = "unknown"; break; }
         if (decoded.delivery === "not_delivered") { status = steps.length === 1 ? "not_started" : "interrupted_known"; break; }
         if (successorDrift) throw new AgentSessionError("global_receipt_successor_identity_drift");
@@ -1421,7 +1427,13 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         this.checkActive(epoch, signal);
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
         if (!rule) break;
-        next = resolveFollow(rule, lowering, source.full.basis.snapshot);
+        while (source.full.basis.capture_status === "complete"
+          && (source.full.basis.snapshot.interaction as { kind: string }).kind !== "game_over"
+          && ["settling", "observed"].includes(String(source.full.basis.snapshot.status))) {
+          await globalDelay(50, signal); this.checkActive(epoch, signal);
+          source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        }
+        next = source.full.basis.capture_status === "complete" ? resolveFollowBasis(rule, lowering, source.full.basis) : null;
         if (!next && !rule.optional) status = "interrupted_known";
       } catch (error) {
         status = "interrupted_known";
@@ -1434,8 +1446,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       catch { status = steps.length ? "interrupted_known" : "not_started"; }
     }
     const result: P1Result = { schema: P1G_RESULT_SCHEMA, occurrence: prepared.reduction.observation.envelope.occurrence,
-      choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment ? {
-        declined_reward_groups: (this.globalState!.reward?.declined ?? []).map(key => this.globalState!.aliases[key] ?? "unaliased").sort(), reward_page_left: this.globalState!.reward?.left ?? false } : null };
+      choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment ? commitmentView(this.globalState!) : null };
     await this.emitGlobal("global_result", { acquisition_id: this.basisId, result });
     if (status === "unknown") { await this.taint("global_delivery_unknown"); return { type: "unknown", error: "global_delivery_unknown", status: this.status() }; }
     if (this.mode === "one_step") await this.handoff("global_one_step_completed");

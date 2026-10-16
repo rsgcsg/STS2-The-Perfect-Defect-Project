@@ -18,6 +18,7 @@ import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const sha = (v: string | Buffer) => createHash("sha256").update(v).digest("hex");
 export class GlobalHttpFixture {
+  nextBases: any[] = [];
   basis = fixture("synthetic-complete-combat"); server?: Server; address = ""; requests: { path: string; body: any }[] = [];
   private held = false; releases = 0; steps = 0; terminalAfterStep = true; captureGate: Promise<void> | null = null;
   delivery: string = "delivered"; wrongRequest = false; wrongAction = false; releaseFailure = false; releaseObserved: (() => void) | null = null;
@@ -78,7 +79,8 @@ export class GlobalHttpFixture {
           this.steps++; const bound = this.basis.snapshot.bound_actions.actions.find((a: any) => a.bound_action_id === body.bound_action_id)!;
           const { interaction_id: _i, label: _l, ...action } = bound;
           if (this.wrongAction) action.bound_action_id = "foreign-action";
-          if (this.terminalAfterStep) { this.basis = fixture("managed-game_over"); this.basis.snapshot.session = this.capabilitiesSession(); for (const r of this.basis.reads) r.response.session = this.capabilitiesSession(); }
+          if (this.nextBases.length) this.basis = this.nextBases.shift();
+          else if (this.terminalAfterStep) { this.basis = fixture("managed-game_over"); this.basis.snapshot.session = this.capabilitiesSession(); for (const r of this.basis.reads) r.response.session = this.capabilitiesSession(); }
           else { this.basis.snapshot.snapshot_id += "-next"; this.basis.snapshot.sequence++; for (const r of this.basis.reads) { r.response.expected_snapshot_id = r.response.observed_snapshot_id = this.basis.snapshot.snapshot_id; } }
           if(this.afterStepContinuity!==undefined)this.continuity=this.afterStepContinuity;
           const successor=structuredClone(this.basis.snapshot);if(this.wrongSuccessorSession)successor.session.runtime_instance_id="foreign-runtime";
@@ -94,14 +96,14 @@ export class GlobalHttpFixture {
   private capabilitiesSession() { return { runtime_instance_id: this.capabilities.host.runtime_instance_id, environment_fingerprint: this.capabilities.environment_fingerprint }; }
   async close() { this.server?.closeAllConnections(); await new Promise<void>(done => this.server!.close(() => done())); }
 }
-export async function globalRuntimeFixture(options: { behavior?: string; budgetMs?: number; source?: GlobalHttpFixture; transport?: GlobalTransport; program?: {command:string;args:string[];adapter:AgentAdapterIdentity;artifact:Buffer;env?:NodeJS.ProcessEnv} } = {}) {
+export async function globalRuntimeFixture(options: { editManifest?: (manifest: any) => void; behavior?: string; budgetMs?: number; source?: GlobalHttpFixture; transport?: GlobalTransport; program?: {command:string;args:string[];adapter:AgentAdapterIdentity;artifact:Buffer;env?:NodeJS.ProcessEnv} } = {}) {
   const source = options.source ?? new GlobalHttpFixture(); await source.start();
   const root = await mkdtemp(join(tmpdir(), "global-product-")), transport = options.transport ?? new ReferenceGlobalTransport(new PlayerEnvironmentRestClient(source.address, 2000), { productVersion: "fixture", clientInstanceId: "fixture-client" });
   const identity = await transport.negotiate(new AbortController().signal), artifact = options.program?.artifact ?? Buffer.from('{"program":"synthetic conformance"}'), artifactPath = join(root, "program.json"); await writeFile(artifactPath, artifact);
   const child = fileURLToPath(new URL("./fixtures/global-agent-child.mjs", import.meta.url));
   const manifest = createGlobalProgramManifest({ episodeId: "synthetic-episode", identity, artifactPath, artifactBytes: artifact,
     adapter: options.program?.adapter ?? { id: "global-conformance", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(await readFile(child)) } });
-  manifest.limits.agent_timeout_ms = 5000;
+  manifest.limits.agent_timeout_ms = 5000; options.editManifest?.(manifest);
   const manifestPath = join(root, "agent.json"); await writeFile(manifestPath, JSON.stringify(manifest));
   const runtimeCode = await globalRuntimeCodeDigest(fileURLToPath(new URL("../dist/", import.meta.url)));
   const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, runtimeVersion: "fixture", runtimeCodeSha256: runtimeCode, mode: "auto" });

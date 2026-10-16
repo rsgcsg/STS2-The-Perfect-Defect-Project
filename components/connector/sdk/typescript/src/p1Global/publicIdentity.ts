@@ -9,7 +9,7 @@ export const publicFieldPath = (path: string, key: string): string => /^[A-Za-z0
 export type PublicEntityRelation = "declared" | "reference";
 const BASE_PATHS = [
   "player.content.entity_id", "player.content.relics[].entity_id", "player.content.potions[].entity_id",
-  "map.content.nodes[].entity_id", "combat.content.player.player_entity_id",
+  "commitments.reward_dispositions[].group", "map.content.nodes[].entity_id", "combat.content.player.player_entity_id",
   ...["companions", "potion_states", "orbs"].map(kind => `combat.content.player.${kind}[].entity_id`),
   "combat.content.enemies[].entity_id"
 ];

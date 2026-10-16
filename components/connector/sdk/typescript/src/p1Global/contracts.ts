@@ -31,7 +31,7 @@ export type SceneFamily =
 
 /** r1.1 has explicit content validators only for these information shapes.
  * Other family mappings remain diagnostic until their full-information schema closes. */
-export const P1G_INFORMATION_SHAPES: readonly SceneFamily[] = Object.freeze(["combat", "map", "selector", "terminal"] as SceneFamily[]);
+export const P1G_INFORMATION_SHAPES: readonly SceneFamily[] = Object.freeze(["combat", "map", "selector", "reward", "card_reward", "terminal"] as SceneFamily[]);
 
 export type HostKind = "reference" | "managed";
 
@@ -58,6 +58,8 @@ export interface P1Choice {
   readonly target: string | null;
   readonly label: string;
   readonly mapped: boolean;
+  /** Public native alternative type within the named reward group, never a binding token. */
+  readonly option?: string;
 }
 
 export interface P1Commitments {
@@ -65,6 +67,7 @@ export interface P1Commitments {
   readonly declined_reward_groups: readonly string[];
   /** True once the Agent left the current reward page; remaining rewards were declined. */
   readonly reward_page_left: boolean;
+  readonly reward_dispositions?: readonly { readonly group: string; readonly selection_cleanup: "delivered"; readonly native_disposition: "pending_owner_skip" }[];
 }
 
 export interface P1Observation {
