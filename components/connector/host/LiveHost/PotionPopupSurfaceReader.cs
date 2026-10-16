@@ -6,6 +6,8 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Extensions;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Potions;
+using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Entities.Players;
 using STS2Connector.LiveHost.Contracts;
 using STS2Connector.NativeUi;
 using STS2Platform.NativeFoundation;
@@ -19,6 +21,41 @@ namespace STS2Connector.LiveHost;
 internal static class PotionPopupSurfaceReader
 {
     private static readonly FieldInfo? Holder = typeof(NPotionPopup).GetField("_holder", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo? HolderUsable = typeof(NPotionHolder).GetField("_isUsable", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo? HolderDisabled = typeof(NPotionHolder).GetField("_disabledUntilPotionRemoved", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    // Direct combat discard uses the very same current belt control and pending
+    // removal latch as NPotionPopup. A failed binding is different from a known
+    // disabled control and must not be advertised as a complete catalog.
+    internal static bool TryCurrentDiscardHolder(Player player, PotionModel potion, int slot,
+        out NPotionHolder? holder, out bool bindingKnown)
+    {
+        holder = null;
+        bindingKnown = false;
+        var topBar = NRun.Instance?.GlobalUi.TopBar;
+        var container = topBar?.PotionContainer;
+        if (container == null || topBar == null || HolderUsable == null || HolderDisabled == null
+            || slot < 0 || slot >= player.PotionSlots.Count
+            || !ReferenceEquals(player.GetPotionAtSlotIndex(slot), potion))
+            return false;
+        NPotionHolder[] holders = ConnectorMod.FindAll<NPotionHolder>(container).ToArray();
+        if (holders.Length != player.PotionSlots.Count || !ConnectorMod.IsLiveNode(holders[slot])
+            || !ReferenceEquals(holders[slot].Potion?.Model, potion))
+            return false;
+        try
+        {
+            if (HolderUsable.GetValue(holders[slot]) is not bool usable
+                || HolderDisabled.GetValue(holders[slot]) is not bool disabled)
+                return false;
+            bindingKnown = true;
+            if (!usable || disabled || !holders[slot].IsEnabled
+                || !ConnectorMod.IsNodeVisible(topBar) || !ConnectorMod.IsNodeVisible(holders[slot]))
+                return false;
+            holder = holders[slot];
+            return true;
+        }
+        catch (Exception) { bindingKnown = false; return false; }
+    }
     internal static NPotionPopup? Current()
     {
         var root = NGame.Instance?.GetTree()?.Root;
