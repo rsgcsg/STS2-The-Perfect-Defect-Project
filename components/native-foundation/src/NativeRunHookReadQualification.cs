@@ -6,6 +6,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
@@ -35,6 +37,39 @@ public static class NativeRunHookReadQualification
             && IsUnpatched(stateMachine.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic));
     }
 
+    private static bool GetterIsUnpatched(Type owner, string property) =>
+        IsUnpatched(owner.GetProperty(property, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetMethod);
+
+    private static bool NativeLambdaIsUnpatched(Type owner, string sourceMethod)
+    {
+        MethodInfo[] methods = owner.GetNestedType("<>c", BindingFlags.NonPublic)?
+            .GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(method => method.Name.StartsWith("<" + sourceMethod + ">b__", StringComparison.Ordinal)).ToArray()
+            ?? Array.Empty<MethodInfo>();
+        return methods.Length == 1 && IsUnpatched(methods[0]);
+    }
+
+    // Exact direct game-call closure of the audited iterator and Contains.
+    // All checks happen before its first MoveNext, including deferred LINQ
+    // predicates and mutable-owner assertions reached by native membership.
+    private static bool IteratorReadClosureIsUnpatched() =>
+        new[] { "Players", "Modifiers", "BadgeModels", "MultiplayerScalingModel" }
+            .All(name => GetterIsUnpatched(typeof(RunState), name))
+        && new[] { "IsActiveForHooks", "Deck", "Relics", "Potions" }
+            .All(name => GetterIsUnpatched(typeof(Player), name))
+        && GetterIsUnpatched(typeof(CardPile), "Cards")
+        && new[] { "Enchantment", "HasBeenRemovedFromState", "Owner" }
+            .All(name => GetterIsUnpatched(typeof(CardModel), name))
+        && new[] { "IsMelted", "HasBeenRemovedFromState", "Owner" }
+            .All(name => GetterIsUnpatched(typeof(RelicModel), name))
+        && new[] { "HasBeenRemovedFromState", "Owner" }
+            .All(name => GetterIsUnpatched(typeof(PotionModel), name))
+        && new[] { "HasCard", "Card" }.All(name => GetterIsUnpatched(typeof(EnchantmentModel), name))
+        && IsUnpatched(typeof(AbstractModel).GetMethod(nameof(AbstractModel.AssertMutable)))
+        && GetterIsUnpatched(typeof(AbstractModel), "IsMutable")
+        && NativeLambdaIsUnpatched(typeof(RunState), "IterateHookListeners")
+        && NativeLambdaIsUnpatched(typeof(Player), "get_Potions");
+
     public static bool Preflight(IRunState run)
     {
         try
@@ -42,6 +77,7 @@ public static class NativeRunHookReadQualification
             return run.GetType() == typeof(RunState)
                 && typeof(RunState).Assembly.ManifestModule.ModuleVersionId == AuditedGameMvid
                 && Subscribers?.GetValue(null) is ICollection { Count: 0 }
+                && IteratorReadClosureIsUnpatched()
                 && IteratorIsUnpatched(typeof(RunState).GetMethod(nameof(RunState.IterateHookListeners), new[] { typeof(ICombatState) }))
                 && IteratorIsUnpatched(typeof(ModHelper).GetMethod(nameof(ModHelper.IterateAllRunStateSubscribers)))
                 && IsUnpatched(typeof(RunState).GetMethod("Contains", BindingFlags.Static | BindingFlags.NonPublic));
