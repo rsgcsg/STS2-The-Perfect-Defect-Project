@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { combatContextSchemaFor } from "./publicCombat.js";
+import { combatContextSchemaFor, hasFinitePublicNumbers } from "./publicCombat.js";
 import { isJsonObject, isJsonValue, type JsonObject, type JsonValue } from "./json.js";
 import { decodePlayerSnapshot, type DecodedPlayerPayload } from "./protocol.js";
 import { SEALED_OBSERVATION_MAX_BYTES, SEALED_OBSERVATION_DEFAULT_CHUNK_BYTES,
@@ -150,18 +150,6 @@ function compatibleSourceCards(left: JsonObject, right: JsonObject): boolean {
     if ((field === "name" || field === "description") && (a === null || b === null)) return true;
     return isJsonObject(a) && isJsonObject(b) ? compatibleSourceCards(a, b) : a === b;
   });
-}
-function hasFinitePublicNumbers(value: unknown): boolean {
-  const pending: unknown[] = [value];
-  const seen = new Set<object>();
-  while (pending.length > 0) {
-    const item = pending.pop();
-    if (typeof item === "number" && !Number.isFinite(item)) return false;
-    if (typeof item === "object" && item !== null && !seen.has(item)) {
-      seen.add(item); pending.push(...Object.values(item));
-    }
-  }
-  return true;
 }
 const observationSchema = z.object({
   schema: z.literal(P1_CAPTURE_OBSERVATION_SCHEMA), input_profile: z.literal(P1_CAPTURE_PROFILE),
