@@ -558,10 +558,10 @@ def test_original_cancel_clock_stops_fixture_held_child_without_completion(
             if fixture_target == "terminal_hold":
                 target_ready = target_ready and any("callback_completed_at" in row
                                                     for row in phases.get("terminals", []))
+            assert time.monotonic() < preparation_deadline, "fixture target was not established"
             if target_ready:
                 break
             assert service._thread.is_alive(), "fixture target exited before preparation"
-            assert time.monotonic() < preparation_deadline, "fixture target was not established"
             threading.Event().wait(0.005)
         assert all((row["operation_id"], row["attempt_id"], row["pid"], row["ppid"]) == (
             started["operation_id"], started["attempt_id"], observer.binding["pid"],
