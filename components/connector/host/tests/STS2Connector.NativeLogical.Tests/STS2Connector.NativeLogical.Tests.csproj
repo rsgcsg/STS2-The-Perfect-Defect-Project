@@ -23,6 +23,8 @@
     <Compile Include="../../PlayerEnvironment/Protocol/P1CaptureContracts.cs" Link="Protocol/P1CaptureContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Reads/SealedObservationStore.cs" Link="Reads/SealedObservationStore.cs" />
     <Compile Include="../../PlayerEnvironment/Reads/P1CaptureCore.cs" Link="Reads/P1CaptureCore.cs" />
+    <Compile Include="../../PlayerEnvironment/Protocol/PublicBasisContracts.cs" Link="Protocol/PublicBasisContracts.cs" />
+    <Compile Include="../../PlayerEnvironment/Reads/PublicBasisCore.cs" Link="Reads/PublicBasisCore.cs" />
     <Compile Include="../../PlayerEnvironment/Requests/*.cs" Link="Requests/%(Filename)%(Extension)" />
     <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
     <Compile Include="../../PlayerEnvironment/Protocol/ClientRevocationWire.cs" Link="Protocol/ClientRevocationWire.cs" />

@@ -132,7 +132,7 @@ test("session retains public object links, exact private bindings and snapshot-v
   assert.equal(deck.content.cards.at(-1).entity_id, hand[0].entity_id);
   const enemies = snapshot.interaction.content.context.enemies;
   assert.equal(new Set(enemies.map((value) => value.entity_id)).size, 2);
-  assert.notEqual(enemies[0].combat_id, before.enemies[0].combat_id);
+  assert.equal(enemies[0].combat_id, before.enemies[0].combat_id); // Typed public native combat id.
   const action = snapshot.bound_actions.actions.find((value) => value.verb === "play"
     && value.subject_referent_id === hand[0].entity_id
     && value.arguments[0].referent_id === enemies[0].entity_id);

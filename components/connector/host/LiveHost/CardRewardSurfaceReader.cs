@@ -124,7 +124,13 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
                         "card_reward_alternative_binding"),
                 index,
                 alternativeLabels[index]!,
-                catalogBoundExactly && button.IsEnabled && !button.IsQueuedForDeletion()))
+                catalogBoundExactly && button.IsEnabled && !button.IsQueuedForDeletion())
+            {
+                OptionId = alternativesBoundExactly ? exactAlternatives[index].Alternative.OptionId : null,
+                Title = alternativeLabels[index],
+                AfterSelected = alternativesBoundExactly
+                    ? NativeCardRewardAlternativePreview.Outcome(exactAlternatives[index].Alternative.AfterSelected) : null
+            })
             .ToArray();
 
         var surface = new CardRewardSelectionSurface(

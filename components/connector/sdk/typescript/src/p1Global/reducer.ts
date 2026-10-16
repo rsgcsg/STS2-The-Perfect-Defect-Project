@@ -2,6 +2,7 @@ import { decodePlayerRead, decodePlayerSnapshot } from "../protocol.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
 import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
+import { projectCombatContext } from "./combatProjection.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
@@ -189,17 +190,13 @@ const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "rewar
 
 // r1.1 has no qualified mandatory-input producer proof. Singleton choices remain Agent choices.
 
-const ALIAS_PREFIX: Readonly<Record<string, string>> = {
-  card: "c", hover: "h", enemy: "m", relic: "r", potion: "p", player: "pl", ref: "u", companion: "a", orb: "o"
-};
-
-interface AliasWork { aliases: Record<string, string>; counts: Record<string, number>; ids: Set<string> }
+interface AliasWork { aliases: Record<string, string>; counts: Record<string, number>; ids: Set<string>; anonymous: Set<string> }
 
 function aliasFor(work: AliasWork, id: string): string {
   const existing = work.aliases[id];
   if (existing) return existing;
-  const head = id.includes("_") ? id.slice(0, id.indexOf("_")) : "x";
-  const prefix = ALIAS_PREFIX[head] ?? "x";
+  // Source token spelling/counters never select a model-visible alias.
+  const prefix = work.anonymous.has(id) ? "a" : "e";
   const next = (work.counts[prefix] ?? 0) + 1;
   work.counts[prefix] = next;
   const alias = `${prefix}${next}`;
@@ -216,23 +213,23 @@ function collectIds(value: unknown, ids: Set<string>, key = ""): void {
 }
 
 /** Replace every native id by its public alias, visiting keys in sorted order (deterministic). */
-function aliasTree(value: unknown, work: AliasWork): unknown {
-  if (typeof value === "string") return work.ids.has(value) ? aliasFor(work, value) : value;
-  if (Array.isArray(value)) return value.map((item) => aliasTree(item, work));
+function aliasTree(value: unknown, work: AliasWork, key = ""): unknown {
+  if (typeof value === "string") return ID_KEY.test(key) && work.ids.has(value) ? aliasFor(work, value) : value;
+  if (Array.isArray(value)) return value.map((item) => aliasTree(item, work, key));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work);
+    for (const key of Object.keys(value).sort()) out[key] = aliasTree(value[key], work, key);
     return out;
   }
   return value;
 }
 
-function stripIds(value: unknown, ids: Set<string>): unknown {
-  if (typeof value === "string") return ids.has(value) ? "" : value;
-  if (Array.isArray(value)) return value.map((item) => stripIds(item, ids));
+function stripIds(value: unknown, ids: Set<string>, key = ""): unknown {
+  if (typeof value === "string") return ID_KEY.test(key) && ids.has(value) ? "" : value;
+  if (Array.isArray(value)) return value.map((item) => stripIds(item, ids, key));
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], ids);
+    for (const key of Object.keys(value).sort()) out[key] = stripIds(value[key], ids, key);
     return out;
   }
   return value;
@@ -323,7 +320,29 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   for (const referent of snapshot.referents as NativeReferent[]) ids.add(referent.referent_id);
   collectIds(snapshot.persistent, ids); collectIds(interaction.content, ids);
   for (const { read } of readInstances) if (read) collectIds(read.content, ids);
-  const work: AliasWork = { aliases: { ...state.aliases }, counts: { ...state.alias_counts }, ids };
+  // Publicly distinguished entities retain continuity. Indistinguishable
+  // unordered members get observation-local slots; their hidden pointer-to-slot
+  // assignment must never persist into a later public draw.
+  const distinguished = new Set<string>();
+  collectIds(snapshot.persistent, distinguished);
+  collectIds(interaction.content, distinguished);
+  const anonymous = new Set<string>();
+  for (const { read } of readInstances) if (read) {
+    const groups: unknown[][] = read.kind === "run_deck" ? [read.content.cards]
+      : read.kind === "combat_piles" && Array.isArray(read.content.zones)
+        ? read.content.zones.filter((zone: any) => isObject(zone) && zone.zone === "draw").map((zone: any) => zone.cards) : [];
+    for (const cards of groups) if (Array.isArray(cards)) {
+      const equal = new Map<string, string[]>();
+      for (const card of cards) if (isObject(card) && typeof card.entity_id === "string") {
+        const key = canonicalJson(stripIds(card, ids));
+        const members = equal.get(key) ?? []; members.push(card.entity_id); equal.set(key, members);
+      }
+      for (const members of equal.values()) if (members.length > 1)
+        for (const id of members) if (!distinguished.has(id)) anonymous.add(id);
+    }
+  }
+  const work: AliasWork = { aliases: { ...state.aliases }, counts: { ...state.alias_counts, a: 0 }, ids, anonymous };
+  for (const id of anonymous) delete work.aliases[id];
 
   const persistent = snapshot.persistent?.content as Record<string, any> | undefined;
   const terminalScene = family === "terminal";
@@ -370,9 +389,12 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   // One Host nests the live combat HUD under a selection context; it is the same public combat state.
   const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
     ? context.combat as Record<string, any> : null;
+  const combatSource = family === "combat" || context.kind === "combat" ? context : nestedCombat;
+  const publicCombat = combatSource ? projectCombatContext(combatSource) : null;
+  if (publicCombat) missing.push(...publicCombat.missing);
   const combatPart = family === "combat" || context.kind === "combat"
-    ? part("available", aliasTree(context, work), "interaction.context")
-    : nestedCombat ? part("available", aliasTree(nestedCombat, work), "interaction.context.combat")
+    ? part("available", aliasTree(publicCombat!.content, work), "interaction.context")
+    : nestedCombat ? part("available", aliasTree(publicCombat!.content, work), "interaction.context.combat")
     : part(terminalScene ? "terminal" : "not_applicable", null, null);
   const mapRead = aggregate("map");
   const mapPart = context.kind === "map"
@@ -518,7 +540,8 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
 
   const nextState: P1SessionState = {
     ...state, occurrence, last_snapshot_id: String(snapshot.snapshot_id), last_commitments: canonicalJson(reward ?? null),
-    aliases: work.aliases, alias_counts: work.counts, reward_pages: rewardPages, reward
+    aliases: Object.fromEntries(Object.entries(work.aliases).filter(([id]) => !anonymous.has(id))),
+    alias_counts: { ...work.counts, a: 0 }, reward_pages: rewardPages, reward
   };
   const complete = missing.length === 0 || (status === "terminal" && missing.every((item) => item.startsWith("read:")));
   return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, required_information_complete: complete } },

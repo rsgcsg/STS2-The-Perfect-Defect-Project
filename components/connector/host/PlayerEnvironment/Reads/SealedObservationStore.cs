@@ -28,6 +28,9 @@ internal sealed record SealedObservationProfile(
     internal static readonly SealedObservationProfile P1Capture = new(
         P1CaptureContract.CaptureSchema, P1CaptureContract.ReadProfile, P1CaptureContract.Profile,
         P1CaptureContract.ChunkSchema, P1CaptureContract.ReleaseSchema);
+    internal static readonly SealedObservationProfile PublicBasis = new(
+        PublicBasisContract.CaptureSchema, PublicBasisContract.ReadProfile, PublicBasisContract.Profile,
+        PublicBasisContract.ChunkSchema, PublicBasisContract.ReleaseSchema);
 }
 
 /// <summary>Only frozen public bytes. No native objects, callbacks or controller state are retained.</summary>
