@@ -20,7 +20,7 @@ Reference / Managed → 完整、公平的 P1 观察和单向动作 → 任意�
 
 达到后开 PR 收敛到 develop。合并要用户批准。之后 P1 r1 冻结，新需求进 r2 或 P2。
 
-## 待办（按顺序；每项都是真实失败，含复现）
+## 待办（按顺序 T1、T2、T7、T3、T4；每项都是真实失败，含复现）
 
 复现时使用的变量：
 - `W`：仓库根；
@@ -104,6 +104,23 @@ node tools/source4-to-p1.mjs --bundle /ABS/NEW_BUNDLE --python /ABS/PYTHON_GE_3_
 `NativeRewardCardRendererTests.SameActualNativeRewardCardRetainsTheFullReferenceDtoAfterExactParentScreenBinding` 失败。
 原因：本轮按"原生逻辑优先、不做纯度证明"去掉了变量、卡池、悬停图标和格式化器白名单，被打补丁的固定闭包仍然拒绝。这个测试还在断言这些白名单会拒绝。
 用户批准后，把这几段断言改成新规则；或者恢复白名单。**不要自行删除断言。**
+
+### T7 投递后的"等待稳定"改为原生信号（用户要求，优先于 T3）
+
+现状：本轮为跑通 Reference，在 `agent-native-runtime.ts` 加了一个临时补丁（选项 `globalPostDeliverySettleMs`，默认 15 秒）。已知投递后，如果 Host 返回 `capture_status: partial`，就每 100 ms 重读一次，直到完整或超时。它只重读、不重发，但判断"稳定"的依据是时间，这不符合要求。
+
+要求（用户确认）：
+- P1、Connector 和 Runtime 判断"可以给 Agent 下一个观察"时，**以原生事件或原生状态为准**，不靠读秒。
+- 只有在原生确实没有信号、或原来就是计时实现时，才用计时，并且要在文档里写明原因。
+
+做法：
+1. 在 Connector 找出投递后不完整的真实原因：过场或动画、动作队列未清空、页面未就绪、某个 Read 暂时不可用。复现用本轮 Reference 套件（`tools/p1-suite.mjs --host reference`）。
+2. 对这些情况，用原生状态标 `status: settling`（已有字段，Runtime 已经会无时限等待 settling），不要发 `partial`。可用的原生依据：ActionQueue 或命令队列是否空闲、NOverlayStack / ActiveScreenContext 是否已切到目标页面、过渡或动画是否结束。现有的就绪判断优先复用。
+3. 真正缺信息时仍发 `partial`。Runtime 收到 `partial` 时立即按原逻辑停下，不再计时重读。
+4. 时间上限只防卡死（例如 settling 长时间不结束）。超时要明确停局并记录原因，不得当作稳定。
+5. 删除 `globalPostDeliverySettleMs` 的重读循环，或把它改成只防卡死。改测试（`global-forward-runtime.test.ts` 的部分抓取用例），再用 Reference 套件重跑。
+
+验收：Reference 5 局结果不差于本轮（4/5 终局，修复后 5/5），事件日志里没有因计时放行的观察。
 
 ## 交接格式
 
