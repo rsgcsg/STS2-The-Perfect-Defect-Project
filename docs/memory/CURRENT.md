@@ -1,45 +1,22 @@
-# Current — bounded PR191 CI integration
+# Current — P1 r1 package 1
 
-模型方案冻结：开。Resolve live GitHub refs; current source and original records
-override this file.
-PR merge/close, research/spending and deployment keep their explicit boundaries.
+[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) is the current assignment.
+User approved merge-commit landing of PR189/191; both are merged, latest baseline
+`29d889bc`. Old T7 card A is obsolete and is not a parallel work queue.
 
-## Current delivery
+Codex integrates B/C/S/T6 in one package. r1 support scope v0.2 and fixed full-public
+comparison criteria are approved. Deadline2026-10-17 18:30 Australia/Brisbane;
+short attempts <=8 at <=5min each, full40/20 batches <=3, no training. Preserve
+actual run denominators and first differences; never infer qualification from CI.
 
-[P1-TU](../plans/P1_TERMINAL_UPGRADE_2026-10-17.md), Draft PR191
-`codex/p1-terminal-upgrade`: Root is the sole integrator. Start986e3f95;
-normal merges7b0deb0a/0efccea9 retain task1/8b83a7f1 and task2/93fd596b.
-Before publication parent PR189 advanced toc5fbbd11; reviewed normal merge51c65a2e
-resolves its BOM conflict, retains both worker fixes and its late-chooser fixture
-startup allowance. Product deadlines/assertions stay unchanged; only that case is
-rechecked after the parent increment, then final identity/package/repository gates.
-Task1 uses fileURLToPath for the real diagnostic child, retaining duplicate-instance
-assertions. Task2 drains the started original-response write before capture closure;
-Stop/budget still releases control independently. Combined focused regression45pass;
-typecheck/build/package, repository/identity/BOM and closeout passed. Scoped non-author
-review accepted the combined implementation and original failure/validation evidence.
-Policy Runtime BOM is recalculated from the combined tree, not either worker tree.
+T6 and selector producer/consumer source regressions passed their scoped tests.
+An intermediate B+T6 Managed replay crossed the original T1 point0, then exposed
+combat DTO/detail differences now being repaired in Managed. Reference selector
+canary reached the new page, then stopped partial on the unified Mod's own observer
+patch qualification. That integration repair and final combined suites are pending. Current
+Source4, Human, Boss, victory and strategy claims are not established by this work.
 
-Old986e3f95 CI38925913234 failed on Windows child path, Linux capture-record order,
-and Windows Python AV. Its formal mypy379source files passed; earlier local missing-
-extras diagnostics remain historical. Task3 found no proven AV owner:0xC0000005 after
-60s traceback, CPython/faulthandler strongest hypothesis, native Windows dump absent.
-That crash remains a blocker; investigation completion is not a repair or runner
-waiver. The Windows single-test native-dump proposal is unexecuted, not dispatched.
-
-Reference history stays bound to333094d4: historical2attempts (88decisions/loss;
-91submissions/toggle then diagnostic fail-closed); separate1of2new attempts completed
-preview→legal choice→required confirm→event_option and visible deck upgrade after
-93submissions.0native unknown/fail-closed in that successful follow-up, replay verified.
-Stop200/released/no pending request; cancelled Next left opaque Agent state uncertain;
-Host close200/exit0. Original records unchanged. This integration changes Runtime
-capture accounting, so those old records are not fresh evidence for the new Runtime.
-No new game, installed Mod, Human, training, spending or deployment in this slice.
-
-Next: publish one stable candidate, report real selected CI outcome and stop. Keep
-Draft and unresolved Windows AV; no PR merge/close. No T1/T2/T6.
-
-## Remaining Platform non-claims
-
-No new Windows execution, Host equivalence, full-P1, Human, training or strategy
-qualification. Unresolved Windows Python AV stays visible even if a later run passes.
+Next: integrate the remaining Managed facts, verify the shortest real selector and
+card-reward chains, then run stable-candidate suites within the approved window.
+Retained S semantic differences require the user's section17 exception decision;
+this package PR has no merge approval.
