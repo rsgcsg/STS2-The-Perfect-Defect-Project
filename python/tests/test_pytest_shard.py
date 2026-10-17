@@ -23,8 +23,9 @@ def test_default_inventory_and_explicit_top_level_only() -> None:
     full = portable_commands("python")
     for value in ("1/2", "2/2"):
         sharded = portable_commands("python", pytest_shard=parse_pytest_shard(value))
-        assert len(full) == len(sharded)
-        for original, partition in zip(full, sharded, strict=True):
+        originals = full if value == "1/2" else tuple(c for c in full if c[:3] == ("python", "-m", "pytest"))
+        assert len(originals) == len(sharded)
+        for original, partition in zip(originals, sharded, strict=True):
             if original[:3] == ("python", "-m", "pytest"):
                 assert partition[:len(original)] == original
                 assert partition[len(original):] == (
