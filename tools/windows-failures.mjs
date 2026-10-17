@@ -30,7 +30,8 @@ export function updateChecklist(previous, failures, {run, date}) {
   for (const test of [...new Set(failures)]) {
     const entry = entries.get(test) ?? {test, first_seen: date, runs: []};
     if (!entry.runs.includes(run)) entry.runs = [...entry.runs, run];
-    entry.last_seen = date;
+    entry.first_seen = [entry.first_seen, date].sort()[0];
+    entry.last_seen = [entry.last_seen ?? date, date].sort().at(-1);
     entries.set(test, entry);
   }
   return [...entries.values()].sort((a, b) => a.test.localeCompare(b.test));
