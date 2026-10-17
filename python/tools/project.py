@@ -75,7 +75,7 @@ def portable_commands(python: str = sys.executable, *,
         pytest_options = ("-p", "tools.pytest_shard", f"--portable-shard-index={index}",
                           f"--portable-shard-count={count}",
                           "--portable-shard-manifest=.local/pytest-shard.json")
-    return (
+    commands = (
         (python, "tools/doctor.py"),
         (python, "-m", "ruff", "check", "."),
         (python, "-m", "mypy", "stpd", "spireagent", "tools"),
@@ -90,6 +90,10 @@ def portable_commands(python: str = sys.executable, *,
         ("git", "diff", "--check"),
         ("git", "show", "--format=", "--check", "HEAD"),
     )
+    if pytest_shard is not None and pytest_shard[0] == 2:
+        return tuple(command for command in commands if command[1:3] == ("-m", "pytest"))
+    return commands
+
 
 
 def invoke(command: tuple[str, ...], root: Path) -> None:

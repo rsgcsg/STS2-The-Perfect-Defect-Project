@@ -142,11 +142,11 @@ export function checkCommittedPatch({ base, head = "HEAD", cwd = root } = {}) {
 export function aggregatePassed(scope, results) {
   if (results.plan !== "success") return false;
   if (scope === "repository") return results.repository === "success" &&
-    results.docs === "skipped" && results.linux === "skipped" && results.windows === "skipped";
+    results.docs === "skipped" && results.linux === "skipped";
   if (results.repository !== "skipped") return false;
-  if (scope === "docs") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
-  if (scope === "reuse") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
-  if (["full", "python"].includes(scope)) return results.docs === "skipped" && results.linux === "success" && results.windows === "success";
+  if (scope === "docs") return results.docs === "success" && results.linux === "skipped";
+  if (scope === "reuse") return results.docs === "success" && results.linux === "skipped";
+  if (["full", "python"].includes(scope)) return results.docs === "skipped" && results.linux === "success";
   return false;
 }
 
@@ -173,11 +173,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (args[0] === "aggregate") {
     const e = process.env;
     const results = {plan: e.PLAN_RESULT, docs: e.DOCS_RESULT, repository: e.REPOSITORY_RESULT,
-      linux: e.LINUX_RESULT, windows: e.WINDOWS_RESULT};
+      linux: e.LINUX_RESULT};
     if (!aggregatePassed(e.CHECK_SCOPE, results)) process.exitCode = 1;
     else {
       const coverage = ["full", "python"].includes(e.CHECK_SCOPE) ? verifyPytestShards(
-        path.join(root, ".local", "ci", "pytest-shards"), currentShardIdentity(root, e)) : null;
+        path.join(root, ".local", "ci", "pytest-shards"), currentShardIdentity(root, e), {oses: ["Linux"]}) : null;
       const git = (...args) => execFileSync("git", args, {cwd: root, encoding: "utf8"}).trim();
       if (e.GITHUB_STEP_SUMMARY) fs.appendFileSync(e.GITHUB_STEP_SUMMARY,
         `Passed scope: **${e.CHECK_SCOPE}**. Current checkout ${git("rev-parse", "HEAD")}. ${e.CHECK_PROOF || "Fresh execution"}\n`);

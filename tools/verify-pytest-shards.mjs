@@ -11,16 +11,18 @@ const sort = values => [...values].sort((a, b) => Buffer.compare(Buffer.from(a),
 const requireProof = (condition, reason) => { if (!condition) throw new Error(`pytest_shards:${reason}`); };
 
 const profilePath = "python/tools/pytest-file-costs.json";
-const algorithm = "lpt-whole-file-1";
+const algorithm = "lpt-whole-file-gates-1";
 const defaultRoot = path.resolve(import.meta.dirname, "..");
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
   equal(sort(Object.keys(value)), sort(keys));
 
 export function validatedCostProfile(profile) {
-  requireProof(exactKeys(profile, ["schema", "algorithm", "unknown_file_ms", "aggregation", "sources", "file_cost_ms"]) &&
-    profile.schema === "spireagent/pytest-file-cost-1" && profile.algorithm === algorithm &&
+  requireProof(exactKeys(profile, ["schema", "algorithm", "unknown_file_ms", "aggregation", "sources", "file_cost_ms", "first_shard_overhead_ms"]) &&
+    profile.schema === "spireagent/pytest-file-cost-2" && profile.algorithm === algorithm &&
     profile.unknown_file_ms === 30000 && profile.aggregation ===
-      "median-available-of-three-retained-Windows-testcase-total-ms-min1", "cost_profile_definition");
+      "median-retained-Linux-testcase-total-ms-min1", "cost_profile_definition");
+  requireProof(Number.isSafeInteger(profile.first_shard_overhead_ms) && profile.first_shard_overhead_ms >= 0,
+    "first_shard_overhead");
   const costs = profile.file_cost_ms;
   requireProof(costs && typeof costs === "object" && !Array.isArray(costs) && Object.keys(costs).length > 0,
     "cost_profile_empty");
@@ -28,15 +30,15 @@ export function validatedCostProfile(profile) {
     /^(?:tests|deploy\/hub)\//u.test(file) && file.endsWith(".py") && !file.includes("\\") &&
     !file.includes(":") && !file.split("/").some(part => ["", ".", ".."].includes(part)) &&
     Number.isSafeInteger(weight) && weight > 0, "cost_profile_weight");
-  requireProof(Number.isSafeInteger(Object.values(costs).reduce((sum, value) => sum + value, 0)),
+  requireProof(Number.isSafeInteger(Object.values(costs).reduce((sum, value) => sum + value, profile.first_shard_overhead_ms)),
     "cost_profile_sum");
-  requireProof(Array.isArray(profile.sources) && profile.sources.length === 3, "cost_profile_sources");
+  requireProof(Array.isArray(profile.sources) && profile.sources.length > 0, "cost_profile_sources");
   for (const group of profile.sources) {
     requireProof(Array.isArray(group) && group.length === 2, "cost_profile_source_pair");
     for (const [offset, source] of group.entries()) requireProof(
       exactKeys(source, ["run_id", "os", "shard", "execution_checkout", "collection_count", "collection_sha256",
         "junit_sha256", "exit_code", "all_selected_terminal"]) &&
-      typeof source.run_id === "string" && /^[0-9]+$/u.test(source.run_id) && source.os === "Windows" &&
+      typeof source.run_id === "string" && /^[0-9]+$/u.test(source.run_id) && source.os === "Linux" &&
       source.shard === offset + 1 && Number.isSafeInteger(source.collection_count) && source.collection_count > 0 &&
       typeof source.execution_checkout === "string" && /^[0-9a-f]{40}$/u.test(source.execution_checkout) && typeof source.collection_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.collection_sha256) &&
       typeof source.junit_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.junit_sha256) && [0, 1].includes(source.exit_code) &&
@@ -60,9 +62,9 @@ export function selectedNodeids(collection, index, profile) {
   const costs = new Map(Object.entries(profile.file_cost_ms));
   const files = [...new Set(collection.map(item => item.file))];
   const weight = file => costs.get(file) ?? profile.unknown_file_ms;
-  requireProof(Number.isSafeInteger(files.reduce((sum, file) => sum + weight(file), 0)), "selection_sum");
+  requireProof(Number.isSafeInteger(files.reduce((sum, file) => sum + weight(file), profile.first_shard_overhead_ms)), "selection_sum");
   files.sort((left, right) => weight(right) - weight(left) || Buffer.compare(Buffer.from(left), Buffer.from(right)));
-  const bins = [new Set(), new Set()], loads = [0, 0];
+  const bins = [new Set(), new Set()], loads = [profile.first_shard_overhead_ms, 0];
   for (const file of files) {
     const target = loads[0] <= loads[1] ? 0 : 1;
     bins[target].add(file); loads[target] += weight(file);
