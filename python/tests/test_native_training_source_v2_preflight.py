@@ -25,6 +25,7 @@ from spireagent.workbench.native_agent_support import native_package_execution_p
 from spireagent.workbench.native_workbench_api import COMMAND_SCHEMA, PREFIX
 from spireagent.workbench.recipe_contracts import TrainingRequest, validate_limits
 from spireagent.workbench.recipes.structured import (
+    StructuredPreflight,
     StructuredRecipeAdapter,
     verify_run_execution_policy,
 )
@@ -73,7 +74,15 @@ def test_parent_requires_exact_prior_train_reservation(tmp_path, original, which
         else owner.reserve_verified_ordered_source
     )
     reserve(store, partition.manifest.artifact_id)
-    assert adapter.preflight_request(store, owner, request) == partition.dataset
+    prepared = adapter.preflight_request(store, owner, request)
+    assert isinstance(prepared, StructuredPreflight)
+    assert prepared.dataset == partition.dataset
+    assert prepared.data_counts.value()["contexts"] == sum(
+        len(run.steps) for run in partition.dataset.runs
+    )
+    assert prepared.distinct_N_basis == (
+        "qualified_original_train_run_and_source_occurrence_identity"
+    )
     assert partition.dataset.input_spec.value() == INPUT_SPEC
     # The actual pure package-policy owner consumes the same declared AgentSpec;
     # numerical package generation/weights/export remain a separate gate.

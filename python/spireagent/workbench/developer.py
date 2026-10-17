@@ -22,14 +22,18 @@ import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields, text
 from spireagent.package_identity import PackageIdentityError, validate_installed_package
 from spireagent.source import REPOSITORY_URLS
 
+if TYPE_CHECKING:
+    from spireagent.workbench.remote_training_operation import ConfiguredTrainingTarget
+
 CONFIG_SCHEMA = "stpd/developer-project-v1"
+REMOTE_TRAINING_CONFIG_SCHEMA = "spireagent/remote-training-configuration-v1"
 COMBINATION_SCHEMA = "stpd/developer-combination-v1"
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / ".local" / "developer" / "project.json"
@@ -117,6 +121,36 @@ class LocalResearchWorkspaceConfig:
 
 
 @dataclass(frozen=True)
+class RemoteTrainingConfiguration:
+    """Operator-owned nonsecret fixed Modal targets; no downloaded factory or command."""
+
+    targets: tuple[ConfiguredTrainingTarget, ...]
+
+    def __post_init__(self) -> None:
+        from spireagent.workbench.remote_training_operation import ConfiguredTrainingTarget
+
+        if (not isinstance(self.targets, tuple) or not 1 <= len(self.targets) <= 32
+                or any(not isinstance(item, ConfiguredTrainingTarget) for item in self.targets)
+                or len({(item.recipe_id, item.placement_id) for item in self.targets})
+                != len(self.targets)):
+            raise BoundaryError("project.config", "invalid_remote_training_targets")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema": REMOTE_TRAINING_CONFIG_SCHEMA,
+                "targets": [target.to_dict() for target in self.targets]}
+
+    @classmethod
+    def from_dict(cls, value: object) -> RemoteTrainingConfiguration:
+        from spireagent.workbench.remote_training_operation import ConfiguredTrainingTarget
+
+        row = object_fields(value, {"schema", "targets"}, "project.config")
+        if (row["schema"] != REMOTE_TRAINING_CONFIG_SCHEMA or not isinstance(row["targets"], list)
+                or not 1 <= len(row["targets"]) <= 32):
+            raise BoundaryError("project.config", "invalid_remote_training_configuration")
+        return cls(tuple(ConfiguredTrainingTarget.from_dict(item) for item in row["targets"]))
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     state_dir: Path
     hub_url: str
@@ -124,6 +158,12 @@ class ProjectConfig:
     delivery_config: Path | None
     combination: dict[str, Any]
     research_workspace: LocalResearchWorkspaceConfig | None = None
+    remote_training: RemoteTrainingConfiguration | None = None
+
+    def __post_init__(self) -> None:
+        if self.remote_training is not None and not isinstance(
+                self.remote_training, RemoteTrainingConfiguration):
+            raise BoundaryError("project.config", "typed_remote_training_configuration_required")
 
     def to_dict(self) -> dict[str, Any]:
         value = {
@@ -136,6 +176,11 @@ class ProjectConfig:
         }
         if self.research_workspace is not None:
             value["research_workspace"] = self.research_workspace.to_dict()
+        if self.remote_training is not None:
+            if not isinstance(self.remote_training, RemoteTrainingConfiguration):
+                raise BoundaryError(
+                    "project.config", "typed_remote_training_configuration_required")
+            value["remote_training"] = self.remote_training.to_dict()
         return value
 
     @classmethod
@@ -151,10 +196,7 @@ class ProjectConfig:
             "delivery_config",
             "combination",
         }
-        if frozenset(raw) not in {
-            frozenset(fields),
-            frozenset(fields | {"research_workspace"}),
-        }:
+        if not fields <= set(raw) or set(raw) - fields - {"research_workspace", "remote_training"}:
             raise BoundaryError("project.config", "missing_or_unknown_fields")
         obj = object_fields(raw, set(raw), "project.config")
         if obj["schema"] != CONFIG_SCHEMA or not isinstance(obj["combination"], dict):
@@ -186,6 +228,8 @@ class ProjectConfig:
             Path(delivery) if delivery is not None else None,
             dict(obj["combination"]),
             research_workspace,
+            RemoteTrainingConfiguration.from_dict(obj["remote_training"])
+            if "remote_training" in obj else None,
         )
 
 
@@ -251,6 +295,7 @@ def _setup_unlocked(
         delivery_config.expanduser().resolve() if delivery_config else None,
         combination(),
         current_config.research_workspace if current_config is not None else None,
+        current_config.remote_training if current_config is not None else None,
     )
     if path.exists() and not replace_config:
         current = ProjectConfig.load(path)

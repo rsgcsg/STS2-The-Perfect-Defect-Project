@@ -412,13 +412,18 @@ def test_native_numerical_potential_import_inventory_is_closed():
     check_static_closure(NATIVE_SCOPE, TRAINING_PATHS_NATIVE)
 
 
-def test_native_inference_identity_does_not_inherit_training_or_application_edits(tmp_path):
+@pytest.mark.parametrize("training_path", [
+    "stpd/fullrun/native_training_sequences.py", "stpd/structured_remote_contracts.py",
+])
+def test_native_inference_identity_does_not_inherit_training_or_application_edits(
+    tmp_path, training_path
+):
     for relative in {*PATHS, *TRAINING_PATHS_NATIVE, "uv.lock"}:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((ROOT / relative).read_bytes())
     inference, numerical = native_code_identity(tmp_path), native_training_code_identity(tmp_path)
-    path = tmp_path / "stpd/fullrun/native_training_sequences.py"
+    path = tmp_path / training_path
     path.write_bytes(path.read_bytes() + b"\n# source change\n")
     assert native_code_identity(tmp_path) == inference
     assert native_training_code_identity(tmp_path) != numerical

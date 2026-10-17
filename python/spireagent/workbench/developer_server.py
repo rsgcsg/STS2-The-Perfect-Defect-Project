@@ -232,6 +232,16 @@ class Application:
         from spireagent.workbench.local_recordings import LocalRecordingCatalog
         from spireagent.workbench.local_training import LocalTrainingService
 
+        remote_bindings: tuple[Any, ...] = ()
+        if config.remote_training is not None:
+            from spireagent.workbench.developer import RemoteTrainingConfiguration
+            from spireagent.workbench.remote_training_operation import RemoteTrainingBinding
+
+            if not isinstance(config.remote_training, RemoteTrainingConfiguration):
+                raise BoundaryError(
+                    "project.config", "typed_remote_training_configuration_required")
+            remote_bindings = tuple(RemoteTrainingBinding.modal(target)
+                                    for target in config.remote_training.targets)
         self.config = config
         self.config_path = config_path
         self.instance_id = secrets.token_hex(16)
@@ -288,7 +298,7 @@ class Application:
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
-        self.local_training = LocalTrainingService(config)
+        self.local_training = LocalTrainingService(config, remote_bindings=remote_bindings)
         self.local_memory_evaluation = LocalMemoryEvaluationService(config)
         self.local_model_export = LocalModelExport(config)
         self.local_model_registration = LocalModelRegistration(

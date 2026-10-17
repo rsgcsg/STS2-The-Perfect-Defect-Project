@@ -39,6 +39,8 @@ from ..structured_profiles import (
     source_verification,
     validate_profile,
 )
+from ..structured_workload_contracts import ChunkPlan as ChunkPlan
+from ..structured_workload_contracts import chunk_plans as _plans
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .structured_m2 import GRAPH_ID, WIDTH, StructuredM2
 from .structured_training import StructuredTrainingConfig, evaluate_runs
@@ -137,15 +139,6 @@ def execution_identity(
 
 
 @dataclass(frozen=True)
-class ChunkPlan:
-    run_index: int
-    start: int
-    end: int
-    advances: int
-    labels: int
-
-
-@dataclass(frozen=True)
 class TrainingCursor:
     epoch: int
     chunk: int
@@ -165,26 +158,15 @@ class ChunkProgress:
     training_complete: bool
 
 
-def _plans(dataset: StructuredDataset, config: StructuredTrainingConfig) -> tuple[ChunkPlan, ...]:
-    result = []
-    for run_index, run in enumerate(run for run in dataset.runs if run.split == "train"):
-        start = advances = labels = 0
-        for index, step in enumerate(run.steps):
-            if index > start and (
-                step.reset_before or step.advance and advances == config.tbptt_advances
-            ):
-                result.append(ChunkPlan(run_index, start, index, advances, labels))
-                start, advances, labels = index, 0, 0
-            advances += step.advance
-            labels += step.chosen_action_id is not None
-        result.append(ChunkPlan(run_index, start, len(run.steps), advances, labels))
-    return tuple(result)
-
-
 class StructuredTrainingEngine:
-    def __init__(self, dataset: StructuredDataset, config: StructuredTrainingConfig, *,
-                 code_scope: str = LEGACY_SCOPE,
-                 model_control: NativeGraphControl | None = None) -> None:
+    def __init__(
+        self,
+        dataset: StructuredDataset,
+        config: StructuredTrainingConfig,
+        *,
+        code_scope: str = LEGACY_SCOPE,
+        model_control: NativeGraphControl | None = None,
+    ) -> None:
         config.validate()
         if not isinstance(dataset, StructuredDataset):
             raise BoundaryError("structured_engine", "typed_dataset_required")
@@ -197,11 +179,9 @@ class StructuredTrainingEngine:
         self.code_scope = code_scope
         self.model_control = optional_control(model_control)
         self.checkpoint_schema = checkpoint_schema(code_scope)
-        self.identity = execution_identity(
-            dataset, config, code_scope=code_scope, model_control=self.model_control
-        )
-        self.plans = _plans(dataset, config)
-        self.model = StructuredM2(seed=config.seed, model_control=self.model_control)
+        self.identity = self._execution_identity()
+        self.plans = self._chunk_plans()
+        self.model = self._construct_model()
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
         self.parameter_names = tuple(name for name, _ in self.model.named_parameters())
         # AdamW initializes state lazily, only for parameters with an actual gradient.
@@ -222,18 +202,52 @@ class StructuredTrainingEngine:
 
     @property
     def cursor(self) -> TrainingCursor:
-        if self.epoch >= self.config.epochs:
-            return TrainingCursor(self.epoch, self.chunk, None, None)
-        plan = self.plans[self.chunk]
-        return TrainingCursor(self.epoch, self.chunk, plan.run_index, plan.start)
+        return self._cursor_for(self.epoch, self.chunk)
+
+    def _chunk_plans(self) -> tuple[ChunkPlan, ...]:
+        return _plans(self.dataset, self.config)
+
+    def _cursor_for(self, epoch: int, chunk: int) -> TrainingCursor:
+        if epoch >= self.config.epochs:
+            return TrainingCursor(epoch, chunk, None, None)
+        plan = self.plans[chunk]
+        return TrainingCursor(epoch, chunk, plan.run_index, plan.start)
+
+    def _memory_shape(self) -> tuple[int, ...]:
+        return (self.model.slots, WIDTH)
+
+    def _expected_memory_run(self, chunk: int) -> int | None:
+        return None if chunk == 0 else self.plans[chunk - 1].run_index
+
+    def _checkpoint_extension(self) -> dict[str, Any]:
+        return {}
+
+    def _validate_checkpoint_extension(self, value: dict[str, Any], epoch: int, chunk: int) -> None:
+        pass
+
+    def _execution_identity(self) -> dict[str, Any]:
+        """Trusted training subclasses may bind a separately declared runtime.
+
+        The ordinary CPU engine retains its exact default identity. Artifacts
+        cannot select or supply an executable subclass or model factory.
+        """
+        return execution_identity(
+            self.dataset,
+            self.config,
+            code_scope=self.code_scope,
+            model_control=self.model_control,
+        )
+
+    def _construct_model(self) -> StructuredM2:
+        return StructuredM2(seed=self.config.seed, model_control=self.model_control)
 
     def _assert_live(self) -> None:
         if self.failed:
             raise BoundaryError("structured_engine", "failed_engine_requires_restore")
-        if self.model.model_control != self.model_control or execution_identity(
-            self.dataset, self.config, code_scope=self.code_scope,
-            model_control=self.model_control
-        ) != self.identity:
+        if (
+            self.model.model_control != self.model_control
+            or self._execution_identity() != self.identity
+        ):
             self.failed = True
             raise BoundaryError("structured_engine", "runtime_code_or_input_changed")
 
@@ -256,7 +270,11 @@ class StructuredTrainingEngine:
                 if step.chosen_action_id is not None:
                     scores = self.model.score(step.frame, entities, memory)
                     target = step.frame.action_ids.index(step.chosen_action_id)
-                    losses.append(F.cross_entropy(scores.unsqueeze(0), torch.tensor([target])))
+                    losses.append(
+                        F.cross_entropy(
+                            scores.unsqueeze(0), torch.tensor([target], device=scores.device)
+                        )
+                    )
             loss_value = None
             if losses:
                 loss = torch.stack(losses).mean()
@@ -349,6 +367,7 @@ class StructuredTrainingEngine:
             raise BoundaryError("structured_checkpoint", "unsupported_numpy_rng")
         payload = {
             "schema": self.checkpoint_schema,
+            **self._checkpoint_extension(),
             "identity": self.identity,
             "parameter_names": self.parameter_names,
             "model": dict(self.model.state_dict()),
@@ -402,16 +421,13 @@ class StructuredTrainingEngine:
                 "initial_train",
                 "partitions",
                 "rng",
-            },
+            } | set(self._checkpoint_extension()),
             "structured_checkpoint",
         )
         if (
             value["schema"] != self.checkpoint_schema
             or value["identity"] != self.identity
-            or execution_identity(
-                self.dataset, self.config, code_scope=self.code_scope,
-            model_control=self.model_control
-            ) != self.identity
+            or self._execution_identity() != self.identity
             or value["parameter_names"] != self.parameter_names
         ):
             raise BoundaryError("structured_checkpoint", "exact_resume_identity_mismatch")
@@ -431,12 +447,12 @@ class StructuredTrainingEngine:
         ):
             raise BoundaryError("structured_checkpoint", "cursor_outside_plan")
         boundary = epoch * len(self.plans) + chunk
-        expected_plan = None if epoch == self.config.epochs else self.plans[chunk]
+        expected_cursor = self._cursor_for(epoch, chunk)
         if (
             type(value["boundary"]) is not int
             or value["boundary"] != boundary
-            or cursor["run_index"] != (None if expected_plan is None else expected_plan.run_index)
-            or cursor["next_step"] != (None if expected_plan is None else expected_plan.start)
+            or cursor["run_index"] != expected_cursor.run_index
+            or cursor["next_step"] != expected_cursor.next_step
         ):
             raise BoundaryError("structured_checkpoint", "cursor_plan_mismatch")
         done = list(self.plans) * epoch + list(self.plans[:chunk])
@@ -482,14 +498,15 @@ class StructuredTrainingEngine:
         memory = value["memory"]
         if (
             not isinstance(memory, Tensor)
-            or memory.shape != (self.model.slots, WIDTH)
+            or memory.shape != self._memory_shape()
             or memory.dtype != torch.float32
             or memory.device.type != "cpu"
         ):
             raise BoundaryError("structured_checkpoint", "memory_tensor_mismatch")
-        expected_memory_run = None if chunk == 0 else self.plans[chunk - 1].run_index
+        expected_memory_run = self._expected_memory_run(chunk)
         if value["memory_run"] != expected_memory_run:
             raise BoundaryError("structured_checkpoint", "memory_cursor_mismatch")
+        self._validate_checkpoint_extension(value, epoch, chunk)
         optimizer = object_fields(
             value["optimizer"], {"state", "param_groups"}, "structured_checkpoint.optimizer"
         )

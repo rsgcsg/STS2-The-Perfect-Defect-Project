@@ -10,10 +10,11 @@ import math
 import os
 import sys
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from spireagent.artifact_contracts import Producer
-from spireagent.json_boundary import BoundaryError, decode_json, digest
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
@@ -23,6 +24,7 @@ from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
     NATIVE_SAMPLED_RECIPE,
     ORDERED_RECIPES,
+    STRUCTURED_RECIPES,
     checked_recipe_execution_policy,
     structured_recipe_scope,
     typed_recipe_checkpoint_schema,
@@ -33,10 +35,49 @@ from spireagent.workbench.trusted_recipes import (
 _private_child = private_child
 
 
+@dataclass(frozen=True)
+class StructuredPreflight:
+    dataset: Any
+    data_counts: FrozenObject
+    distinct_N_basis: str
+
+
+def _preflight_result(dataset: Any, index: Any, with_monitor_facts: bool) -> Any:
+    if not with_monitor_facts:
+        return dataset
+    runs = tuple(run for run in dataset.runs if run.split == "train")
+    labelled = {(run.run_id, step.position) for run in runs for step in run.steps
+                if step.chosen_action_id is not None}
+    counts = {
+        "distinct_supervised_N":len(labelled),
+        "contexts":sum(len(run.steps) for run in runs),
+        "unlabelled_contexts":sum(
+            step.chosen_action_id is None for run in runs for step in run.steps),
+        "excluded_N":None,
+        "captured_readiness_dispositions":0,
+    }
+    basis = "admitted_train_run_step_identity"
+    if index and all("N_eligible" in row for row in index):
+        counts["distinct_supervised_N"] = len({(row["raw_id"], row["occurrence_id"])
+            for row in index if row["N_eligible"]})
+        basis = "qualified_original_train_run_and_source_occurrence_identity"
+        if all("original_N_candidate" in row for row in index):
+            counts["excluded_N"] = sum(row["original_N_candidate"] and not row["N_eligible"]
+                                       for row in index)
+        counts["captured_readiness_dispositions"] = sum(
+            row.get("target_eligibility") in {
+                "empty_C_readiness_not_sample", "unchanged_current_readiness_not_sample",
+                "discarded_readiness_no_sample", "unchanged_original_unit_no_student_sample"}
+            for row in index)
+    return StructuredPreflight(dataset, FrozenObject.of(counts), basis)
+
+
 def verify_run_execution_policy(run: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
     """The admitted request and immutable Run select the same package policy."""
     request = TrainingRequest.from_dict(operation["request"])
     info = run.parameters.value()
+    if request.batch_policy != info.get("execution_identity", {}).get("batch_policy"):
+        raise BoundaryError("local_training", "training_batch_policy_mismatch")
     policy = (checked_recipe_execution_policy(operation["recipe"], info["execution_policy"])
               if "execution_policy" in info else None)
     if request.recipe_id != operation["recipe"] or request.execution_policy != policy:
@@ -117,6 +158,10 @@ class StructuredRecipeAdapter:
         self.recipe_id = recipe_id
 
     def preflight(self, store: Any, owner: Any, source_id: str) -> Any:
+        return self._structured_preflight(store, owner, source_id)
+
+    def _structured_preflight(self, store: Any, owner: Any, source_id: str,
+                              *, with_monitor_facts: bool = False) -> Any:
         from stpd.fullrun.structured_sequences import (
             MAX_SOURCE_BYTES,
             SOURCE_SCHEMA,
@@ -134,7 +179,7 @@ class StructuredRecipeAdapter:
             if not any(step.chosen_action_id is not None
                        for run in verified.dataset.runs for step in run.steps):
                 raise BoundaryError("local_training", "sampled_no_eligible_N_for_training")
-            return verified.dataset
+            return _preflight_result(verified.dataset, verified.index, with_monitor_facts)
         if info.get("partition_schema") == "stpd/source3-ordered-partition-v1":
             from stpd.fullrun.ordered_source import verify_ordered_source_partition
             from stpd.ordered_source_spec import checked_view, recipe_view
@@ -158,7 +203,8 @@ class StructuredRecipeAdapter:
                 for step in run.steps
             ):
                 raise BoundaryError("local_training", "source3_no_eligible_N_for_training")
-            return verified_ordered.dataset
+            return _preflight_result(
+                verified_ordered.dataset, verified_ordered.index, with_monitor_facts)
         if self.recipe_id in ORDERED_RECIPES:
             raise BoundaryError("local_training", "typed_source3_partition_required")
         if "partition_schema" in info:
@@ -171,7 +217,7 @@ class StructuredRecipeAdapter:
                 raise BoundaryError("local_training", "train_only_source_required")
             if owner.ledger.dataset(source_id) != ("training", set(verified.runs)):
                 raise BoundaryError("local_training", "training_claim_mismatch")
-            return verified.dataset
+            return _preflight_result(verified.dataset, verified.index, with_monitor_facts)
         payload = source.payload("source")
         if (
             source.kind != "dataset"
@@ -201,7 +247,7 @@ class StructuredRecipeAdapter:
             or owner.ledger.source_runs(source_id) != runs
         ):
             raise BoundaryError("local_training", "source_index_incomplete")
-        return dataset
+        return _preflight_result(dataset, None, with_monitor_facts)
 
     def record_training_use(self, owner: Any, store: Any, operation: dict[str, Any],
                             source_id: str, identity: str, runs: set[str]) -> None:
@@ -228,7 +274,208 @@ class StructuredRecipeAdapter:
 
 
     def preflight_request(self, store: Any, owner: Any, request: TrainingRequest) -> Any:
-        return self.preflight(store, owner, request.source_id)
+        return self._structured_preflight(store, owner, request.source_id, with_monitor_facts=True)
+
+    def training_plan(self, store: Any, owner: Any, request: TrainingRequest,
+                      *, prepared_dataset: Any = None) -> dict[str, Any]:
+        from stpd.structured_workload_contracts import (
+            StructuredBatchPolicy,
+            StructuredTrainingConfig,
+            frozen_training_plan,
+        )
+
+        prepared = (self.preflight_request(store, owner, request)
+                    if prepared_dataset is None else prepared_dataset)
+        if not isinstance(prepared, StructuredPreflight):
+            raise BoundaryError("local_training", "verified_preflight_monitor_facts_required")
+        config = StructuredTrainingConfig(**{key:item for key,item in request.config.items()
+                                            if key != "checkpoint_every_boundaries"})
+        return frozen_training_plan(prepared.dataset, config,
+            data_counts=prepared.data_counts.value(), distinct_N_basis=prepared.distinct_N_basis,
+            batch_policy=(None if request.batch_policy is None else
+                          StructuredBatchPolicy.from_dict(request.batch_policy)))
+
+    def preflight_remote(self, request: TrainingRequest, target: Any) -> None:
+        from stpd.structured_code_scope import LEGACY_SCOPE
+        from stpd.structured_remote_contracts import remote_code_closure_sha256
+
+        if (request.recipe_id != self.recipe_id or target.recipe_id != self.recipe_id
+                or structured_recipe_scope(request.recipe_id) == LEGACY_SCOPE
+                or target.code_closure_sha256 != remote_code_closure_sha256(
+                    structured_recipe_scope(request.recipe_id))
+                or target.producer != source_identity(ROOT)):
+            raise BoundaryError("local_training", "remote_exact_source_scope_required")
+
+    @staticmethod
+    def _remote_request(operation: dict[str, Any], store: Any, dataset: Any,
+                        target: Any) -> Any:
+        from spireagent.training_execution_contracts import PreparedTrainingAttempt
+        from spireagent.workbench.remote_training_operation import RemotePreparedWorkload
+        from stpd.structured_remote_contracts import (
+            StructuredDevicePolicy,
+            build_structured_remote_request,
+            numerical_projection,
+            sha256,
+        )
+        from stpd.structured_workload_contracts import StructuredWorkloadRequest
+        from stpd.workers.structured_remote_domain import build_structured_projection
+
+        run = store.get_manifest(operation["run_id"])
+        request = TrainingRequest.from_dict(operation["request"])
+        identity = run.parameters.value()["execution_identity"]
+        workload = StructuredWorkloadRequest(
+            operation["run_id"], operation["input_id"], operation["operation_id"],
+            operation["attempt_id"], mode=operation["mode"],
+            resume_checkpoint_id=operation.get("resume_checkpoint_id"),
+            checkpoint_every_boundaries=request.config.get("checkpoint_every_boundaries", 100))
+        events = ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id)
+        raw_request = build_structured_remote_request(
+            workload, execution_identity=identity,
+            code_scope=structured_recipe_scope(request.recipe_id),
+            device_policy=StructuredDevicePolicy(target.placement.device),
+            numerical_projection_sha256=sha256(numerical_projection(dataset)),
+            grant_expires_at_ms=int(operation["remote"]["deadline_at"] * 1000),
+            event_step=len(events))
+        checkpoint = None
+        if workload.mode == "resume":
+            checkpoint = b"".join(store.read_payload(store.get_manifest(
+                workload.resume_checkpoint_id).payload("checkpoint")))
+        projection = build_structured_projection(dataset, workload,
+            maximum=target.limits.max_projection_bytes, resume_checkpoint=checkpoint)
+        prepared = PreparedTrainingAttempt(
+            workload.run_id, workload.training_input_id, workload.operation_id, workload.attempt_id,
+            sha256(raw_request), sha256(projection), target.producer, target.code_closure_sha256,
+            target.worker_capability, target.runtime, target.placement, target.limits)
+        return RemotePreparedWorkload(prepared, raw_request, projection)
+
+    def prepare_remote(self, service: Any, path: Any, identity: str, owner: Any,
+                       store: Any, target: Any, *, budget: Any) -> Any:
+        from spireagent.training_execution_contracts import training_execution_binding
+        from stpd.native_graph_spec import NativeGraphControl
+        from stpd.structured_profiles import CONTROL_SCOPES
+        from stpd.structured_remote_contracts import StructuredDevicePolicy
+        from stpd.structured_workload_contracts import StructuredTrainingConfig
+        from stpd.workers.structured_run import prepare_structured_run
+
+        budget.assert_preparation_budget()
+        operation = service._read(path, owner.identity)
+        request = TrainingRequest.from_dict(operation["request"])
+        self.preflight_remote(request, target)
+        dataset = self.preflight(store, owner, request.source_id)
+        self.record_training_use(owner, store, operation, request.source_id, identity,
+                                 {run.run_id for run in dataset.runs})
+        budget.assert_preparation_budget()
+        scope = structured_recipe_scope(request.recipe_id)
+        if operation["mode"] == "start":
+            config = StructuredTrainingConfig(**{key: item for key, item in request.config.items()
+                                                if key != "checkpoint_every_boundaries"})
+            binding = training_execution_binding(target.producer, target.code_closure_sha256,
+                target.worker_capability, target.runtime, target.placement, target.limits)
+            run = prepare_structured_run(store, dataset, target.producer, config,
+                operation_id=identity, source_id=request.source_id, code_scope=scope,
+                model_control=NativeGraphControl() if scope in CONTROL_SCOPES else None,
+                execution_policy=request.execution_policy,
+                remote_binding={"runtime": target.runtime.value(),
+                    "device_policy": StructuredDevicePolicy(target.placement.device).to_dict(),
+                    "execution_binding_id": binding,
+                    "code_closure_sha256": target.code_closure_sha256,
+                    "batch_policy": request.batch_policy})
+            with service._lock:
+                budget.assert_preparation_budget()
+                service._advance(path, identity, use_state="reserved", stage="training",
+                                 run_id=run.artifact_id, input_id=run.parent("training_input"))
+            operation = service._read(path, owner.identity)
+        else:
+            verify_run_execution_policy(store.get_manifest(operation["run_id"]), operation)
+            self.verify_remote_resume(store, operation, operation["resume_checkpoint_id"])
+        budget.assert_preparation_budget()
+        return self._remote_request(operation, store, dataset, target)
+
+    def accept_remote_candidate(self, store: Any, operation: dict[str, Any], candidate: Any,
+                                workload: Any, *, budget: Any) -> dict[str, Any]:
+        from spireagent.workbench.remote_training_operation import remote_terminal_proven
+        from stpd.workers.structured_remote_domain import (
+            check_structured_remote_candidate,
+            publish_structured_remote_candidate,
+        )
+
+        if not operation["writer_terminal"] or not remote_terminal_proven(operation["remote"]):
+            raise BoundaryError("local_training", "remote_terminal_proof_required")
+        owner = budget.owner
+        request = TrainingRequest.from_dict(operation["request"])
+        dataset = self.preflight(store, owner, request.source_id)
+        self.record_training_use(owner, store, operation, request.source_id,
+                                 operation["operation_id"], {run.run_id for run in dataset.runs})
+        run = store.get_manifest(operation["run_id"])
+        verify_run_execution_policy(run, operation)
+        from spireagent.training_execution_contracts import StopInspection
+        checked = check_structured_remote_candidate(workload.prepared,
+            workload.request_bytes, workload.projection_bytes, candidate,
+            StopInspection.from_dict(operation["remote"]["stop_inspection"]))
+
+        class Authority:
+            def assert_current(self, run_id: str, operation_id: str, attempt_id: str) -> None:
+                current = budget.current()
+                if (current.get("run_id") != run_id or current["operation_id"] != operation_id
+                        or current["attempt_id"] != attempt_id or not current["writer_terminal"]
+                        or not remote_terminal_proven(current["remote"])
+                        or budget.remaining_seconds(workload.prepared.identity) <= 0):
+                    raise BoundaryError("local_training", "remote_parent_adoption_fence_lost")
+
+        accepted = publish_structured_remote_candidate(store,
+            ObjectStoreRunReporter(store, store.blobs), checked, workload.prepared, run, dataset,
+            code_scope=structured_recipe_scope(request.recipe_id), authority=Authority())
+        state = checked.state
+        counters = {"optimizer_updates": state["counters"]["updates"],
+            "label_uses": state["counters"]["labels"],
+            "observations": state["counters"]["observations"], "boundaries": state["boundary"],
+            "epoch": state["cursor"]["epoch"], "whole_cohort_passes": state["cursor"]["epoch"]}
+        return {**accepted, "state": "completed" if checked.training_complete else "paused",
+            "run_id": operation["run_id"], "attempt_id": operation["attempt_id"],
+            "accepted_counters": counters, "checkpoint_progress": {
+                "checkpoint_id": accepted["checkpoint_id"],
+                "optimizer_updates": counters["optimizer_updates"],
+                "boundaries": counters["boundaries"], "epoch": counters["epoch"]}}
+
+    def verify_remote_resume(self, store: Any, operation: dict[str, Any],
+                             checkpoint_id: Any) -> None:
+        from spireagent.workbench.remote_training_operation import ConfiguredTrainingTarget
+        from stpd.structured_remote_contracts import CHECKPOINT_SCHEMA
+        from stpd.workers.structured_remote_domain import verify_structured_remote_checkpoint
+
+        run = store.get_manifest(operation["run_id"])
+        verify_run_execution_policy(run, operation)
+        checkpoint = store.get_manifest(digest(checkpoint_id, "local_training.checkpoint_id"))
+        info = checkpoint.parameters.value()
+        prior = {row["attempt_id"]: row for row in operation["attempts"] if row["writer_terminal"]}
+        if operation["writer_terminal"]:
+            prior[operation["attempt_id"]] = operation
+        if (checkpoint.kind != "checkpoint" or info.get("schema") != CHECKPOINT_SCHEMA
+                or checkpoint.parent("run") != run.artifact_id
+                or checkpoint.parent("training_input") != operation["input_id"]
+                or info.get("attempt") not in prior):
+            raise BoundaryError("local_training", "remote_checkpoint_writer_binding")
+        events = ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id)
+        if not any(event.kind == "run_event" and event.parent("run") == run.artifact_id
+                   and event.producer == checkpoint.producer
+                   and event.parameters.value().get("attempt") == info["attempt"]
+                   and event.parameters.value().get("kind") == "checkpoint"
+                   and event.parameters.value().get("details", {}).get(
+                       "checkpoint_id") == checkpoint_id
+                   for event in events):
+            raise BoundaryError("local_training", "checkpoint_event_required")
+        from stpd.structured_profiles import parse_dataset
+        dataset = parse_dataset(b"".join(store.read_payload(store.get_manifest(
+            operation["input_id"]).payload("source"))),
+            structured_recipe_scope(operation["recipe"]))
+        target = ConfiguredTrainingTarget.from_dict(operation["remote"]["target"])
+        # Build only the frozen numerical request; no provider or mutation occurs.
+        probe = dict(operation, mode="resume", resume_checkpoint_id=checkpoint_id)
+        workload = self._remote_request(probe, store, dataset, target)
+        from stpd.structured_remote_contracts import numerical_projection
+        checkpoint_raw = b"".join(store.read_payload(checkpoint.payload("checkpoint")))
+        verify_structured_remote_checkpoint(checkpoint_raw,
+                                            workload.request_bytes, numerical_projection(dataset))
 
     def validate_terminal(self, store: Any, operation: dict[str, Any],
                           terminal: dict[str, Any]) -> None:
@@ -244,6 +491,7 @@ class StructuredRecipeAdapter:
         runs = {run.run_id for run in dataset.runs}
         source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
         scoped = typed_recipe_is_scoped(operation["recipe"])
+        structured_monitor = operation["recipe"] in STRUCTURED_RECIPES
         attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
                             source_identity(ROOT))
         expected_run_schema = typed_recipe_run_schema(operation["recipe"])
@@ -320,6 +568,15 @@ class StructuredRecipeAdapter:
                             or training.producer != run.producer
                             or training.parent("source") != source_id):
                         raise BoundaryError("local_training", "child_preparation_invalid")
+                    plan = recorded.get("training_plan") if structured_monitor else None
+                    if plan is not None and (
+                            plan["source_sha256"] != run.parameters.value()["source_sha256"]
+                            or any(plan[field] != run.parameters.value()["config"][config_field]
+                                   for field, config_field in (
+                                       ("epochs", "epochs"), ("update_cap", "max_updates"),
+                                       ("tbptt_advances", "tbptt_advances")))):
+                        raise BoundaryError(
+                            "local_training", "frozen_training_plan_binding_mismatch")
                     service._advance(path, identity, run_id=run_id, input_id=input_id,
                                      stage="training")
                 elif kind == "event":
@@ -358,12 +615,45 @@ class StructuredRecipeAdapter:
                                 or checkpoint.parameters.value().get("attempt") != attempt_id):
                             raise BoundaryError("local_training", "child_checkpoint_invalid")
                         update["checkpoint_id"] = cp_id
+                        if structured_monitor:
+                            update["last_checkpoint_at"] = time.time()
+                            update["checkpoint_progress"] = {
+                                "checkpoint_id":cp_id,
+                                "optimizer_updates":cp_info["optimizer_updates"],
+                                "boundaries":cp_info["boundary"],
+                                "epoch":cp_info["cursor"]["epoch"]}
+                    counters = (event_details.get("accepted_counters")
+                                if structured_monitor else None)
+                    if counters is not None:
+                        if (not isinstance(counters, dict) or set(counters) != {
+                                "optimizer_updates", "label_uses", "observations", "boundaries",
+                                "epoch", "whole_cohort_passes"}
+                                or any(type(item) is not int or item < 0
+                                       for item in counters.values())
+                                or counters["optimizer_updates"] != event_details.get(
+                                    "optimizer_updates")
+                                or counters["boundaries"] != event_details.get("boundary")
+                                or counters["epoch"] != event_details.get("cursor", {}).get("epoch")
+                                or counters["whole_cohort_passes"] != counters["epoch"]):
+                            raise BoundaryError("local_training", "child_progress_invalid")
+                        prior_counters = recorded.get("accepted_counters", {})
+                        if any(counters[key] < prior_counters.get(key, 0) for key in counters):
+                            raise BoundaryError("local_training", "child_progress_regressed")
+                        update["accepted_counters"] = counters
+                        if info.get("kind") == "progress" and counters != prior_counters:
+                            update["last_progress_at"] = time.time()
                     if "optimizer_updates" in event_details:
                         updates = event_details["optimizer_updates"]
                         if type(updates) is not int or not 0 <= updates <= 10000:
                             raise BoundaryError("local_training", "child_progress_invalid")
-                        update.update(last_progress_at=time.time(), progress={
-                            "unit": "optimizer_update", "completed": updates, "total": None})
+                        update["progress"] = {
+                            "unit":"optimizer_update", "completed":updates,
+                            "total":(recorded.get("training_plan", {}).get(
+                                "planned_optimizer_updates") if structured_monitor else None)}
+                        if (not structured_monitor
+                                or counters is None and info.get("kind") == "progress"
+                                and updates > recorded.get("progress", {}).get("completed", 0)):
+                            update["last_progress_at"] = time.time()
                     service._advance(path, identity, **update)
                 elif kind == "terminal":
                     keys = {"state", "run_id", "attempt_id", "checkpoint_id", "result_id",
@@ -455,7 +745,10 @@ class StructuredRecipeAdapter:
             current()
             completion = {"checkpoint_id": terminal["checkpoint_id"],
                           "progress": {"unit": "optimizer_update",
-                                       "completed": terminal["optimizer_updates"], "total": None}}
+                                       "completed": terminal["optimizer_updates"],
+                                       "total":(current().get("training_plan", {}).get(
+                                           "planned_optimizer_updates")
+                                           if structured_monitor else None)}}
             if terminal["state"] == "completed":
                 completion.update(result_id=terminal["result_id"], model_id=terminal["model_id"],
                                   evaluation_status="not_run", stage="completed")

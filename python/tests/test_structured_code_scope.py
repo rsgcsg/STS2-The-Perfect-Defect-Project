@@ -118,6 +118,7 @@ def test_workbench_is_excluded_but_legacy_digest_stays_broad(source_tree):
     ("stpd/models/structured_engine.py", {TRAINING_SCOPE}),
     ("stpd/models/structured_training.py", {TRAINING_SCOPE}),
     ("stpd/structured_workload_contracts.py", {TRAINING_SCOPE}),
+    ("stpd/structured_remote_contracts.py", {TRAINING_SCOPE}),
     ("stpd/workers/structured_execution.py", {TRAINING_SCOPE}),
     ("stpd/workers/structured_run.py", {TRAINING_SCOPE}),
     ("spireagent/storage/store.py", {TRAINING_SCOPE}),
