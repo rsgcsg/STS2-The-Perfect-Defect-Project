@@ -778,7 +778,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
       && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis)) {
     const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
     const surface = snapshot.interaction.content.surface;
-    const controls = surface.current_controls.filter((c: Record<string, any>) => c.operation === "confirm");
+    const controls = surface.current_controls.filter((c: Record<string, any>) => (c.operation === "confirm" || c.operation === "confirm_selection"));
     if (controls.length !== 1) return null;
     const actions = snapshot.bound_actions.actions.filter((a: NativeAction) => a.verb === "confirm"
       && a.subject_referent_id === controls[0].entity_id);

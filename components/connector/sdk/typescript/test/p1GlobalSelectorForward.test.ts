@@ -111,6 +111,23 @@ describe("same-request forward selector intention", () => {
     expect(reduced.excluded.map(c => c.bound_action_id)).toContain("remove-first");
     expect(reduced.excluded.map(c => c.bound_action_id)).toContain("discard-set");
   });
+  it("folds the current enchant confirm_selection control after the full set reaches max", () => {
+      const kind = 'deck_enchant_selection', family = 'deck_enchant';
+      const { outer, preview } = pair();
+      for (const basis of [outer, preview]) {
+        const snapshot = basis.snapshot; const surface = snapshot.interaction.content.surface;
+        snapshot.interaction.kind = surface.kind = kind;
+        snapshot.interaction.content_schema = `sts2.player-environment/surface/${kind}-1`;
+        surface.selector_request.family = family;
+      }
+      preview.snapshot.interaction.content.surface.current_controls[0].operation = "confirm_selection";
+      const r = project(outer); const choice = r.observation.catalog.find(c => c.kind.endsWith(".choose"))!;
+      expect(r.complete).toBe(true);
+      const low = r.lowering[choice.choice_id]!;
+      expect(resolveFollowBasis(low.follow[0]!, low, preview)?.bound_action_id).toBe("exact-confirm");
+      preview.snapshot.interaction.content.surface.current_controls[0].operation = "unknown_confirmation";
+      expect(resolveFollowBasis(low.follow[0]!, low, preview)).toBeNull();
+    });
   it("offers the chosen original with full after information and follows the exact native confirmation", () => {
     const { outer, preview } = pair();
     expect(completeSelectorFacts(outer.snapshot.interaction.content.surface)).toBe(true);
