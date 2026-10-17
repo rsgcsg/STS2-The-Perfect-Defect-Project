@@ -4796,7 +4796,7 @@ index 800f139..d950eec 100644
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..b2cd18b 100644
+index 6b9de4a..7760e94 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,6 @@
@@ -4881,6 +4881,17 @@ index 6b9de4a..b2cd18b 100644
  }
  
  /// <summary>
+@@ -98,8 +136,8 @@ internal class LocLookup
+     public LocLookup()
+     {
+         var baseDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
+-        Load(Path.Combine(baseDir, "localization_eng"), _eng);
+-        Load(Path.Combine(baseDir, "localization_zhs"), _zhs);
++        Load(Path.Combine(baseDir, "lib", "native-localization", "eng"), _eng);
++        Load(Path.Combine(baseDir, "lib", "native-localization", "zhs"), _zhs);
+     }
+ 
+     private static void Load(string dir, Dictionary<string, Dictionary<string, string>> target)
 @@ -205,6 +243,7 @@ internal class LocLookup
  /// </summary>
  public class RunSimulator
@@ -9407,11 +9418,11 @@ index 6b9de4a..b2cd18b 100644
 +        var baseDirectory = Path.GetFullPath(Path.Combine(
 +            AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        var englishTables = LoadNativeLocalizationTables(
-+            Path.Combine(baseDirectory, "localization_eng"));
++            Path.Combine(baseDirectory, "lib", "native-localization", "eng"));
 +        var selectedTables = language == "eng"
 +            ? englishTables
 +            : LoadNativeLocalizationTables(
-+                Path.Combine(baseDirectory, $"localization_{language}"), englishTables);
++                Path.Combine(baseDirectory, "lib", "native-localization", language), englishTables);
 +
 +        var manager = LocManager.Instance;
 +        SetLocManagerField(manager, "_tables", selectedTables);
