@@ -61,3 +61,33 @@ test("forward open dispatches the original bound owner and advances to the actua
   assert.ok(proceed);
   assert.deepEqual(requests.map(request => request.action), ["open_shop_inventory", "close_shop_inventory"]);
 });
+
+
+test("inventory close retains the same semantic shop context while public world facts remain available", () => {
+  // FULL02 exposed the same original merchant with duplicated run/player context
+  // only on its open inventory; the SDK correctly refused that context drift.
+  const room = shopRoom();
+  room.context = { ...room.context, floor: 7, total_floor: 7, room_type: "Shop" };
+  room.player = { ...room.player, hp: 11, gold: 26 };
+  const inventory = { ...room, decision: "shop", cards: [], relics: [], potions: [], card_removal: null,
+    presentation_owner: { ...room.presentation_owner, stage: "inventory" } };
+  const aliases = new Map();
+  const open = projectManagedCandidateDecision({ state: inventory, ...identity, publicEntityAliases: aliases });
+  const closed = projectManagedCandidateDecision({ state: room, ...identity, sequence: 2, publicEntityAliases: aliases });
+  assert.deepEqual(open.snapshot.interaction.content.context, { kind: "shop" });
+  assert.deepEqual(closed.snapshot.interaction.content.context, open.snapshot.interaction.content.context);
+  assert.equal(open.snapshot.interaction.content.surface.shop_session_entity_id,
+    closed.snapshot.interaction.content.surface.shop_session_entity_id);
+  assert.equal(open.snapshot.completeness.status, "complete");
+  assert.equal(closed.snapshot.completeness.status, "complete");
+  assert.deepEqual(open.snapshot.persistent, closed.snapshot.persistent);
+  assert.equal(open.snapshot.persistent.content.run.floor, 7);
+  assert.equal(open.snapshot.persistent.content.player.hp, 11);
+  assert.equal(open.snapshot.persistent.content.player.gold, 26);
+  const deck = projection => [...projection.reads.values()].find(read => read.descriptor.kind === "run_deck");
+  assert.equal(deck(open).completeness.status, "complete");
+  assert.equal(deck(open).content.card_count, room.player.deck.length);
+  assert.deepEqual(deck(open).content, deck(closed).content);
+  assert.deepEqual(open.snapshot.bound_actions.actions.map(action => action.verb), ["close"]);
+  assert.deepEqual(closed.snapshot.bound_actions.actions.map(action => action.verb), ["open", "activate"]);
+});

@@ -2171,7 +2171,7 @@ function currentSurface(state, ctx) {
           potions,
           card_removal: cardRemoval
         },
-        context: { ...commonContext, kind: "shop" },
+        context: { kind: "shop" },
         complete,
         visibleInformation: "contract_complete_for_current_native_shop_interaction",
         interactionDiscovery: "derived_from_same_current_native_shop_interaction_as_execution",
