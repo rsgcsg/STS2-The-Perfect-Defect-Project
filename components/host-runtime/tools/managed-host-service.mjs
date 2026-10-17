@@ -91,12 +91,15 @@ try {
   throw error;
 }
 service.server.once("close", () => {
-  if (diagnosticsFile) writeFileSync(diagnosticsFile, `${JSON.stringify(started.runtime.process.diagnostics, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   removeOwnAttachment(clientRecord);
   removeOwnAttachment(managerRecord);
   if (service.cleanupError != null) {
     process.stderr.write("Managed service native close unconfirmed.\n");
     process.exitCode = 1;
+  }
+  if (diagnosticsFile) {
+    try { writeFileSync(diagnosticsFile, `${JSON.stringify(started.runtime.process.diagnostics, null, 2)}\n`, { mode: 0o600, flag: "wx" }); }
+    catch (error) { process.stderr.write(`Managed candidate diagnostics write failed: ${error.message}\n`); process.exitCode = 1; }
   }
 });
 process.stdout.write(`${JSON.stringify({
