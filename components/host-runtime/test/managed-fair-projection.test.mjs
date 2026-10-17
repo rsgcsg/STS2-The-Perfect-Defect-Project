@@ -33,11 +33,11 @@ function bundleDigest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-test("explicitly absent native stars survive JSON while missing or invalid HUD metrics mark the capture incomplete", () => {
+test("absent native stars use the Reference DTO omission while missing or invalid source HUD metrics mark capture incomplete", () => {
   const state = combatState();
   const complete = projectManagedCandidateDecision({ state, ...identity });
   assert.equal(complete.snapshot.completeness.status, "complete");
-  assert.equal(JSON.parse(JSON.stringify(complete.snapshot)).interaction.content.context.player.stars, null);
+  assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(complete.snapshot)).interaction.content.context.player, "stars"), false);
   for (const key of ["stars", "round", "turn_owner", "energy", "max_energy", "orb_slots",
     "draw_pile_count", "discard_pile_count", "exhaust_pile_count"]) {
     const missing = structuredClone(state);
@@ -52,6 +52,35 @@ test("explicitly absent native stars survive JSON while missing or invalid HUD m
     const projection = projectManagedCandidateDecision({ state: invalid, ...identity });
     assert.equal(projection.snapshot.completeness.status, "partial");
   }
+});
+
+test("combat hand and piles keep canonical base DTOs and full details in linked same-snapshot Reads", () => {
+  const state = combatState();
+  state.hand[0].keywords = [{ name: "Block", description: "Prevent damage." }];
+  state.hand[0].public_details.keywords = structuredClone(state.hand[0].keywords);
+  state.combat_piles[0].cards[0].public_details.card_previews = [{ entity_id: null, definition_id: "FUEL",
+    name: "Fuel", description: "Gain Energy.", cost: "0", type: "Skill", rarity: "Special", is_upgraded: false,
+    is_selected: false, target_type: "Self", can_play: null, keywords: [], card_previews: [] }];
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  const hand = projection.snapshot.interaction.content.context.player.hand;
+  assert.ok(hand.every(card => !Object.hasOwn(card, "keywords") && !Object.hasOwn(card, "card_previews")));
+  const reads = [...projection.reads.values()];
+  const handRead = reads.find(read => read.content.display_context === "hand"
+    && read.content.entity_id === hand[0].entity_id);
+  assert.deepEqual(handRead.content.keywords, state.hand[0].public_details.keywords);
+  assert.equal(handRead.content.display_owner_entity_id, projection.snapshot.persistent.content.player.entity_id);
+  assert.equal(handRead.descriptor.snapshot_bound, true);
+  const piles = reads.find(read => read.descriptor.kind === "combat_piles");
+  assert.ok(piles.content.zones.every(zone => zone.cards.every(card => !Object.hasOwn(card, "keywords")
+    && !Object.hasOwn(card, "card_previews") && !Object.hasOwn(card, "can_play") && !Object.hasOwn(card, "target_type"))));
+  const previewRead = reads.find(read => read.content.display_context === "draw" && read.content.card_previews?.length);
+  assert.equal(previewRead.content.parent_read_id, piles.descriptor.read_id);
+  assert.equal(previewRead.content.card_previews[0].definition_id, "FUEL");
+  for (const read of reads.filter(read => ["hand", "draw", "discard", "exhaust"].includes(read.content.display_context)))
+    assert.ok(projection.snapshot.referents.some(ref => ref.referent_id === read.descriptor.target_referent_id));
+  state.hand[0].public_details_missing = ["native_card_render_failed"];
+  const incomplete = projectManagedCandidateDecision({ state, ...identity });
+  assert.equal([...incomplete.reads.values()].find(read => read.content.display_context === "hand").completeness.status, "partial");
 });
 
 for (const identityMode of ["crypto", "sequence"]) {

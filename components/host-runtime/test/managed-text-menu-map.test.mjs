@@ -1,3 +1,4 @@
+import { publicSelector } from "./fixtures/managed-selector-public.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -263,7 +264,7 @@ function rewardDecision(kind = "reward_set") {
 
 test("published v1 and v2 contracts cover actual reviewed scene projections", () => {
   const contracts = [managedTextMenuV1Contract(), managedTextMenuV2Contract()];
-  const scenes = [mapDecision(), restDecision(), eventDecision(),
+  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }),
     treasureDecision(), treasureDecision("treasure_relic"),
     treasureDecision("treasure_complete"),
     deckUpgradeDecision(), deckUpgradeDecision("preview"),

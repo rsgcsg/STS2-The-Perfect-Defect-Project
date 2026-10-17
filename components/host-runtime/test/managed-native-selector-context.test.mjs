@@ -28,7 +28,8 @@ test("choose and combat publish every original occurrence, current HUD and stric
     assert.equal(s.completeness.status, "complete");
     assert.equal(s.bound_actions.status, "complete");
     assert.deepEqual(nativeCardSelectionProblems(s), []);
-    assert.equal(s.referents.filter((r) => r.role === "card").length, 2);
+    const currentCardIds = s.interaction.content.surface.cards.map(card => card.entity_id);
+    assert.equal(s.referents.filter(r => r.role === "card" && currentCardIds.includes(r.referent_id)).length, 2);
     assert.equal(s.interaction.content.context.combat.player.block, 3);
     assert.equal(s.interaction.content.context.combat.enemies[0].hp, 7);
     assert.deepEqual(s.interaction.content.context.combat.player.hand.map((card) => card.definition_id), ["STRIKE", "DEFEND"]);

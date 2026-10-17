@@ -123,17 +123,18 @@ function createProjectionContext({
     selected = null,
     occurrence = 0,
     id = null,
-    includeEntityId = true
+    includeEntityId = true,
+    kind = "entity"
   }) {
     const referentId = id ?? makeId("ref", snapshotId, role, properties, occurrence);
     const value = {
       referent_id: referentId,
       role,
-      kind: "entity",
+      kind,
       label: label == null ? null : String(label),
       state: visibleState({ enabled, selected }),
-      properties_schema: `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
-      properties: { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
+      properties_schema: properties === null ? null : `sts2.player-environment/referent/${role.replace(/[^a-z0-9_]+/giu, "_").toLowerCase()}-1`,
+      properties: properties === null ? null : { ...properties, ...(includeEntityId ? { entity_id: referentId } : {}) }
     };
     referents.push(value);
     return value;
@@ -176,6 +177,7 @@ function createProjectionContext({
     referents,
     actions,
     bindings,
+    detailReads: [],
     id: makeId,
     entityId,
     referent,
@@ -574,6 +576,11 @@ function visibleCombatCard(card, entityId, depth = 0) {
   };
 }
 
+function visibleCardBase(card, entityId) {
+  const { keywords: _keywords, card_previews: _previews, ...base } = visibleCombatCard(card, entityId);
+  return base;
+}
+
 function visibleStatus(status) {
   return {
     definition_id: definitionId(status?.id ?? status?.name),
@@ -597,13 +604,14 @@ function visibleHealth(creature) {
   return Object.fromEntries(["hp", "max_hp", "block", "health_bar_visible", "hp_display_mode",
     "hp_numbers_available", "health_display"].map((key) => [key, creature[key]]));
 }
-function visibleOrb(orb, ctx) {
+function visibleOrb(orb, ctx, selectorProfile = false) {
   return { entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
     name: visibleText(orb.name), description: visibleText(orb.description),
     passive_value: orb.passive_value, evoke_value: orb.evoke_value,
     queue_index: orb.queue_index, is_next_to_evoke: orb.is_next_to_evoke,
     passive: orb.passive, evoke: orb.evoke,
-    keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) };
+    ...(selectorProfile ? { keywords: (orb.keywords ?? []).map(tip => ({ name: visibleText(tip.name),
+      description: visibleText(tip.description) })) } : {}) };
 }
 function visibleCompanion(pet, ctx) {
   return { entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
@@ -634,6 +642,108 @@ function canonicalHudComplete(hud) {
       && typeof pet.native_ref === "string" && typeof pet.id === "string" && typeof pet.is_alive === "boolean")
     && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => canonicalHealthComplete(enemy)
       && (enemy.combat_id === null || Number.isSafeInteger(enemy.combat_id) && enemy.combat_id >= 0 && enemy.combat_id <= 4_294_967_295));
+}
+
+function canonicalSelectorSurface(state, ctx, commonContext) {
+  const facts = state.selector_public;
+  const request = facts.selector_request;
+  const rawCards = Array.isArray(state.cards) ? state.cards : [];
+  const options = Array.isArray(facts.preview_options) ? facts.preview_options : [];
+  const selectedRefs = Array.isArray(state.selected_refs) ? state.selected_refs : [];
+  const cardRefs = rawCards.map(card => card.native_ref);
+  const text = value => typeof value === "string" && value.length > 0;
+  const exact = plainObject(request) && text(state.selector_ref)
+    && text(request.entity_id) && request.owner_entity_id === state.selector_ref
+    && ["deck_upgrade", "deck_card", "deck_enchant"].includes(request.family)
+    && request.family === (state.decision === "deck_upgrade_select" ? "deck_upgrade"
+      : state.origin === "deck_enchant" ? "deck_enchant" : "deck_card")
+    && request.stage === state.stage && ["selecting", "preview"].includes(state.stage)
+    && Number.isSafeInteger(state.min_select) && state.min_select >= 0
+    && Number.isSafeInteger(state.max_select) && state.max_select >= state.min_select
+    && request.min_select === state.min_select && request.max_select === state.max_select
+    && request.require_manual_confirmation === state.require_manual_confirmation
+    && rawCards.length === options.length && rawCards.length <= ACTION_LIMIT - 4
+    && cardRefs.every(text) && new Set(cardRefs).size === cardRefs.length
+    && selectedRefs.every(ref => cardRefs.includes(ref)) && new Set(selectedRefs).size === selectedRefs.length
+    && JSON.stringify(request.selected_entity_ids) === JSON.stringify(selectedRefs)
+    && options.every((option, index) => option?.subject_entity_id === cardRefs[index]
+      && plainObject(option.before) && option.before.entity_id === cardRefs[index]
+      && option.before.is_selected === selectedRefs.includes(cardRefs[index])
+      && (option.after === null || plainObject(option.after) && option.after.entity_id === cardRefs[index])
+      && Array.isArray(option.missing))
+    && rawCards.every(card => typeof card.is_selectable === "boolean" && typeof card.is_deselectable === "boolean")
+    && Array.isArray(facts.current_controls) && request.mechanics_qualified === true;
+  const missing = [...new Set([...(Array.isArray(facts.missing) ? facts.missing : []),
+    ...(Array.isArray(request?.missing) ? request.missing : []),
+    ...(exact ? [] : ["exact_current_native_selector_public_binding"])])];
+  const ownerId = ctx.entityId("screen", state.selector_ref);
+  const requestId = ctx.entityId("native_selector_request", request?.entity_id);
+  const previewOptions = options.map((option, index) => {
+    const entityId = ctx.entityId("card", cardRefs[index]);
+    const before = { ...structuredClone(option.before), entity_id: entityId };
+    const after = option.after === null ? null : { ...structuredClone(option.after), entity_id: entityId };
+    const subject = ctx.referent({ role: "card", id: entityId, label: before.name,
+      selected: before.is_selected, enabled: exact && (rawCards[index].is_selectable || rawCards[index].is_deselectable),
+      properties: before });
+    if (exact) for (const [field, verb, action] of [
+      ["is_selectable", "select", state.decision === "deck_upgrade_select" ? "select_upgrade_card" : "select_deck_card"],
+      ["is_deselectable", "deselect", state.decision === "deck_upgrade_select" ? "deselect_upgrade_card" : "deselect_deck_card"]
+    ]) if (rawCards[index][field]) ctx.action({ verb, subject, label: `${verb} ${before.name}`,
+      raw: { cmd: "action", action, args: { selector_ref: state.selector_ref, card_ref: cardRefs[index] } } });
+    for (const [card, context, renderMissing] of [[before, `selector_original:${request?.family}`, option.before_missing ?? option.missing],
+      ...(after === null ? [] : [[after, option.display_context, option.after_missing ?? option.missing]])]) {
+      const { keywords, card_previews: cardPreviews, ...base } = card;
+      ctx.detailReads.push(publicCardDetailRead(ctx, Object.fromEntries(Object.entries(base).filter(([, value]) => value !== null)),
+        { keywords, card_previews: cardPreviews }, renderMissing, context, ownerId));
+    }
+    return { subject_entity_id: entityId, before, after, display_context: option.display_context,
+      after_availability: option.after_availability, missing: [...option.missing] };
+  });
+  const controls = [];
+  const operations = {
+    open_preview: ["open", "preview_deck_selection"],
+    confirm: ["confirm", "confirm_upgrade_selection"],
+    confirm_selection: ["confirm", "confirm_deck_selection"],
+    cancel_preview: ["cancel", state.decision === "deck_upgrade_select" ? "cancel_upgrade_preview" : "cancel_deck_preview"],
+    cancel_selection: ["cancel", state.decision === "deck_upgrade_select" ? "cancel_upgrade_selection" : "cancel_deck_selection"]
+  };
+  if (exact) for (const control of facts.current_controls) {
+    const operation = control.operation;
+    if (!operations[operation]) { missing.push("unregistered_native_selector_control"); continue; }
+    const [verb, action] = operations[operation];
+    const id = ctx.entityId("selector_control", `${state.selector_ref}:${operation}`);
+    const subject = ctx.referent({ role: "selector_control", id, label: operation,
+      enabled: true, kind: "control", properties: null });
+    controls.push({ entity_id: id, operation });
+    ctx.action({ verb, subject, label: operation, raw: { cmd: "action", action,
+      args: { selector_ref: state.selector_ref,
+        ...(verb === "confirm" ? { selected_refs: selectedRefs.join(",") } : {}) } } });
+  }
+  const kind = request?.family === "deck_upgrade" ? "deck_upgrade_selection"
+    : request?.family === "deck_enchant" ? "deck_enchant_selection" : "native_deck_card_selection";
+  const selectedIds = selectedRefs.map(ref => ctx.entityId("card", ref));
+  const complete = exact && missing.length === 0 && request.preview_information_complete === true
+    && request.preview_projection_qualified === true;
+  return {
+    kind, stage: state.stage, prompt: state.prompt ?? null,
+    surface: { kind, stage: state.stage, screen_entity_id: ownerId, request_entity_id: requestId,
+      prompt: state.prompt ?? null, cards: previewOptions.map(option => option.before),
+      selector_request: { ...structuredClone(request), entity_id: requestId, owner_entity_id: ownerId,
+        selected_entity_ids: selectedIds }, preview_options: previewOptions,
+      enchantment_summary: structuredClone(facts.enchantment_summary ?? null),
+      min_select: state.min_select, max_select: state.max_select,
+      require_manual_confirmation: state.require_manual_confirmation, selected_count: selectedIds.length,
+      selected_card_entity_ids: selectedIds,
+      selectable_card_entity_ids: rawCards.filter(card => exact && card.is_selectable).map(card => ctx.entityId("card", card.native_ref)),
+      deselectable_card_entity_ids: rawCards.filter(card => exact && card.is_deselectable).map(card => ctx.entityId("card", card.native_ref)),
+      can_confirm: controls.some(control => ["confirm", "confirm_selection"].includes(control.operation)),
+      cancelable: exact ? state.cancelable : null, current_controls: controls,
+      is_peeking: false, showing_upgrade_previews: false,
+      ordering_basis: "exact_current_native_grid_logical_list" },
+    context: { ...commonContext, kind: "selection" }, complete, actionComplete: exact,
+    visibleInformation: "complete_entered_native_logical_grid_list",
+    interactionDiscovery: "registered_native_card_model_callbacks_and_current_controls", missing
+  };
 }
 
 function currentSurface(state, ctx) {
@@ -1229,6 +1339,7 @@ function currentSurface(state, ctx) {
       };
     }
     case "deck_upgrade_select": {
+      if (plainObject(state.selector_public)) return canonicalSelectorSurface(state, ctx, commonContext);
       const cards = Array.isArray(state.cards) ? state.cards : [];
       const selectedRefs = Array.isArray(state.selected_refs) ? state.selected_refs : [];
       const cardRefs = cards.map((card) => card.native_ref);
@@ -1326,6 +1437,7 @@ function currentSurface(state, ctx) {
       };
     }
     case "deck_card_select": {
+      if (plainObject(state.selector_public)) return canonicalSelectorSurface(state, ctx, commonContext);
       const cards = Array.isArray(state.cards) ? state.cards : [];
       const selectedRefs = Array.isArray(state.selected_refs) ? state.selected_refs : [];
       const cardRefs = cards.map((card) => card?.native_ref);
@@ -1551,7 +1663,7 @@ function currentSurface(state, ctx) {
           hand: hud.hand.map((card) => publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
             "discard_pile_count", "exhaust_pile_count", "orb_slots"].map((key) => [key, hud[key]])),
-          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx)),
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, true)),
           potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
             target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
           companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
@@ -1649,7 +1761,7 @@ function currentSurface(state, ctx) {
       ]));
       const handEntries = rawHand.map((card, index) => {
         const entityId = ctx.entityId("card", card.native_ref);
-        const visibleCard = visibleCombatCard(card, entityId);
+        const visibleCard = visibleCardBase(card, entityId);
         const playable = card.can_play === true;
         const validTargets = (card.valid_target_refs ?? [])
           .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
@@ -1715,7 +1827,7 @@ function currentSurface(state, ctx) {
         block: state.player?.block,
         energy: state.energy,
         max_energy: state.max_energy,
-        stars: state.stars,
+        ...(state.stars == null ? {} : { stars: state.stars }),
         hand: handEntries.map((entry) => entry.card),
         draw_pile_count: state.draw_pile_count,
         discard_pile_count: state.discard_pile_count,
@@ -2120,6 +2232,29 @@ function runDeckRead(snapshotId, state, makeId, entityId) {
   };
 }
 
+function publicCardDetailRead(ctx, visible, details, missing, displayContext, ownerId = null, parentReadId = null) {
+  const gaps = [...missing];
+  if (!plainObject(details)) gaps.push("current_native_public_card_details_not_captured");
+  else for (const field of ["keywords", "card_previews"])
+    if (!Array.isArray(details[field])) gaps.push(`current_native_public_card_${field}_not_captured`);
+  return {
+    descriptor: {
+      read_id: ctx.id("read", ctx.snapshotId, "surface_card", displayContext, ownerId, visible.entity_id),
+      kind: "surface_card", target_referent_id: visible.entity_id,
+      content_schema: "sts2.player-environment/read/surface_card-1",
+      visibility_basis: "normal_player_visible_surface_card", snapshot_bound: true,
+      ordering_semantics: "single_entity", hidden_by_policy: []
+    },
+    content: { ...visible, public_details_revision: "1", display_context: displayContext,
+      parent_read_id: parentReadId, display_owner_entity_id: ownerId,
+      ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
+      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}) },
+    completeness: { status: gaps.length === 0 ? "complete" : "partial",
+      visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
+      missing: [...new Set(gaps)], hidden_by_policy: [] }
+  };
+}
+
 function deckCardDetailReads(ctx, state, deckRead) {
   if (deckRead === null) return [];
   return state.player.deck.map((card, index) => {
@@ -2164,11 +2299,13 @@ function deckCardDetailReads(ctx, state, deckRead) {
   });
 }
 
-function combatPilesRead(snapshotId, state, makeId) {
+function combatPilesRead(ctx, state) {
   if (!Array.isArray(state.combat_piles)) return null;
+  const { snapshotId, id: makeId } = ctx;
+  const parentReadId = makeId("read", snapshotId, "combat_piles");
   return {
     descriptor: {
-      read_id: makeId("read", snapshotId, "combat_piles"),
+      read_id: parentReadId,
       kind: "combat_piles",
       target_referent_id: null,
       content_schema: "sts2.player-environment/read/combat_piles-1",
@@ -2183,11 +2320,12 @@ function combatPilesRead(snapshotId, state, makeId) {
         // Project the complete allowed card facts BEFORE ordering/aliasing.
         // A stable tie between equal visible values carries no hidden identity:
         // equal occurrences receive separate public slots, without deduplication.
-        const cards = (zone.cards ?? []).map((card) => visibleCombatCard(card, null));
+        const cards = (zone.cards ?? []).map((raw) => ({ raw, visible: visibleCardBase(raw, null),
+          sort: visibleCombatCard(raw, null) }));
         if (zone.pile === "draw") {
           cards.sort((left, right) => {
-            const a = JSON.stringify(canonicalValue(left));
-            const b = JSON.stringify(canonicalValue(right));
+            const a = JSON.stringify(canonicalValue(left.sort));
+            const b = JSON.stringify(canonicalValue(right.sort));
             return a < b ? -1 : a > b ? 1 : 0;
           });
         }
@@ -2195,9 +2333,14 @@ function combatPilesRead(snapshotId, state, makeId) {
           zone: zone.pile,
           card_count: cards.length,
           ordering_semantics: zone.pile === "draw" ? "unordered_multiset" : "native_visible_order",
-          cards: cards.map((card, index) => ({
-            ...card, entity_id: makeId("pile_card", snapshotId, zone.pile, index, card)
-          }))
+          cards: cards.map(({ raw, visible }, index) => {
+            const { target_type: _target, can_play: _canPlay, ...base } = visible;
+            const card = { ...base, entity_id: makeId("pile_card", snapshotId, zone.pile, index, visible) };
+            ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
+            ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
+              Array.isArray(raw.public_details_missing) ? raw.public_details_missing : [], zone.pile, null, parentReadId));
+            return card;
+          })
         };
       })
     },
@@ -2209,6 +2352,20 @@ function combatPilesRead(snapshotId, state, makeId) {
       hidden_by_policy: ["draw_pile_true_order"]
     }
   };
+}
+
+function handCardDetailReads(ctx, state) {
+  const hand = state.decision === "combat_play" ? state.hand : state.combat_context?.hand;
+  const playerRef = state.decision === "combat_play" ? state.player?.native_ref : state.combat_context?.player_ref;
+  if (!Array.isArray(hand)) return [];
+  const owner = ctx.entityId("player", playerRef);
+  return hand.map(raw => {
+    const card = visibleCardBase(raw, ctx.entityId("card", raw.native_ref));
+    if (!ctx.referents.some(referent => referent.referent_id === card.entity_id))
+      ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
+    return publicCardDetailRead(ctx, Object.fromEntries(Object.entries(card).filter(([, value]) => value !== null)),
+      raw.public_details, Array.isArray(raw.public_details_missing) ? raw.public_details_missing : [], "hand", owner);
+  });
 }
 
 export function projectManagedCandidateDecision({
@@ -2255,8 +2412,10 @@ export function projectManagedCandidateDecision({
   const reads = [
     deckRead,
     mapRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
-    combatPilesRead(ctx.snapshotId, state, ctx.id),
-    ...deckCardDetailReads(ctx, state, deckRead)
+    combatPilesRead(ctx, state),
+    ...deckCardDetailReads(ctx, state, deckRead),
+    ...handCardDetailReads(ctx, state),
+    ...ctx.detailReads
   ]
     .filter(Boolean);
   const readsMs = performance.now() - stageStarted;
