@@ -40,6 +40,7 @@ function startService() {
   for (const f of [clientAtt, managerAtt]) { try { if (existsSync(f)) execFileSync("rm", ["-f", f]); } catch { /* own files */ } }
   svc = spawn(process.execPath, [join(worktree, "components/host-runtime/tools/managed-host-service.mjs"),
     "--candidate", candidate, "--client-attachment", clientAtt, "--manager-attachment", managerAtt,
+    "--diagnostics-file", join(priv, `candidate-diagnostics-${svcGeneration}.json`),
     "--character", opt("--character", "Defect"), "--language", opt("--language", "en")], { stdio: ["ignore", "pipe", "pipe"] });
   svc.stderr.on("data", (d) => { svcErr += d; if (svcErr.length > 2e6) svcErr = svcErr.slice(-1e6); });
 }

@@ -48,6 +48,7 @@ const args = process.argv.slice(2);
 const candidateDirectory = option(args, "--candidate");
 const clientAttachment = option(args, "--client-attachment");
 const managerAttachment = option(args, "--manager-attachment");
+const diagnosticsFile = option(args, "--diagnostics-file");
 if (!candidateDirectory || !clientAttachment || !managerAttachment
   || path.resolve(clientAttachment) === path.resolve(managerAttachment)) {
   throw new Error("Managed service requires --candidate and distinct --client-attachment/--manager-attachment paths.");
@@ -90,6 +91,7 @@ try {
   throw error;
 }
 service.server.once("close", () => {
+  if (diagnosticsFile) writeFileSync(diagnosticsFile, `${JSON.stringify(started.runtime.process.diagnostics, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   removeOwnAttachment(clientRecord);
   removeOwnAttachment(managerRecord);
   if (service.cleanupError != null) {
