@@ -185,6 +185,7 @@ internal static partial class PlayerEnvironmentService
     {
         JsonNode visibleSurface = surface switch
         {
+            NativePublicBasisGridSurface value => value.PublicSurface.DeepClone(),
             DeckEnchantSelectionSurface value => ToNode(new
             {
                 value.Kind, value.Stage, value.Prompt,

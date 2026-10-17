@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using Godot;
+using MegaCrit.Sts2.Core.Nodes.Cards;
+using STS2Connector.LiveHost;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -141,16 +145,33 @@ internal static class NativeLogicalGridCapture
             ["is_peeking"] = isPeeking, ["showing_upgrade_previews"] = state.UpgradeView,
             ["ordering_basis"] = "exact_current_native_grid_logical_list", ["native_preview_text"] = CapturePreviewText(state)
         };
-        JsonObject neutral = (JsonObject)nativeSurface.DeepClone();
-        neutral["cards"] = new JsonArray(projected.Options.Select(option => option!["before"]!.DeepClone()).ToArray());
-        neutral["selector_request"] = projected.Request.DeepClone();
-        neutral["preview_options"] = projected.Options.DeepClone();
-        neutral["enchantment_summary"] = projected.EnchantmentSummary?.DeepClone();
-        neutral["prompt"] = prompt;
+        bool previewQualified = PreviewMatchesCurrentWidget(state, facts, projected, Render);
+        var neutralMissing = projected.Missing.ToHashSet(StringComparer.Ordinal);
+        if (!previewQualified) neutralMissing.Add("native_selector_actual_preview_projection_unavailable");
+        projected.Request["preview_projection_qualified"] = previewQualified;
+        var neutral = new JsonObject
+        {
+            ["kind"] = kind, ["stage"] = state.Stage, ["screen_entity_id"] = ownerId,
+            ["request_entity_id"] = requestId, ["prompt"] = prompt,
+            ["cards"] = new JsonArray(projected.Options.Select(option => option!["before"]!.DeepClone()).ToArray()),
+            ["selector_request"] = projected.Request.DeepClone(), ["preview_options"] = projected.Options.DeepClone(),
+            ["enchantment_summary"] = projected.EnchantmentSummary?.DeepClone(),
+            ["min_select"] = facts.Request.MinSelect, ["max_select"] = facts.Request.MaxSelect,
+            ["require_manual_confirmation"] = facts.Request.RequireManualConfirmation,
+            ["selected_count"] = selectedIds.Length, ["selected_card_entity_ids"] = Strings(selectedIds),
+            ["selectable_card_entity_ids"] = Strings(inputs.Where(input => input.NativeVerb == "select").Select(input => input.SubjectEntityId)),
+            ["deselectable_card_entity_ids"] = Strings(inputs.Where(input => input.NativeVerb == "deselect").Select(input => input.SubjectEntityId)),
+            ["can_confirm"] = inputs.Any(input => input.NativeVerb is "confirm" or "confirm_selection"),
+            ["cancelable"] = facts.Request.MechanicsQualified ? state.Preferences.Cancelable : null,
+            ["current_controls"] = new JsonArray(inputs.Where(input => input.Kind == NativeLogicalGridInputKind.Control)
+                .Select(input => (JsonNode)new JsonObject { ["entity_id"] = input.SubjectEntityId, ["operation"] = input.NativeVerb }).ToArray()),
+            ["is_peeking"] = isPeeking, ["showing_upgrade_previews"] = state.UpgradeView,
+            ["ordering_basis"] = "exact_current_native_grid_logical_list"
+        };
         var neutralSurface = new NativePublicBasisGridSurface(kind, state.Stage, ownerId, requestId, fullCards.ToArray())
         {
             PublicSurface = neutral, CardDisplays = displays.ToArray(), Referents = neutralReferents.ToArray(),
-            Inputs = inputs.ToArray(), Missing = projected.Missing.ToArray()
+            Inputs = inputs.ToArray(), Missing = neutralMissing.Order(StringComparer.Ordinal).ToArray()
         };
         return new(state, ownerId, requestId, nativeSurface, nativeReferents.ToArray(), inputs.ToArray(),
             nativeMissing.Order(StringComparer.Ordinal).ToArray(), prompt, neutralSurface);
@@ -159,6 +180,106 @@ internal static class NativeLogicalGridCapture
             NativeLogicalGridInputKind inputKind, CardModel? card = null, bool? expected = null, NButton? control = null) =>
             new("logical_grid_request:" + requestId + ":" + leaf, leaf, requestId, verb, publicVerb, state.Stage,
                 label, subject, inputKind, state, card, expected, control);
+    }
+
+    internal static LiveObservation? PublicBasisObservation(NativeLogicalGridCaptureResult? capture,
+        NativeEntityRegistry entities, GameBuildIdentity game)
+    {
+        if (capture?.Grid is { } grid) return PublicBasisObservation(grid, LiveContextReader.Build(entities), game);
+        if (capture?.Missing.Count > 0)
+            return new(StableIdentityHash.Object(capture.Missing), "unsupported", LiveContextReader.Build(entities),
+                new UnsupportedSurface("native_logical_grid_unresolved", capture.Missing[0], "The current native grid could not be captured."),
+                new("partial_current_structured_ui", "empty_fail_closed", Array.Empty<string>(), capture.Missing), game, Array.Empty<string>());
+        return null;
+    }
+
+    internal static LiveObservation PublicBasisObservation(NativeLogicalCapturedGrid grid, ILiveContext context, GameBuildIdentity game)
+    {
+        NativePublicBasisGridSurface surface = grid.NeutralSurface;
+        bool actionable = surface.Inputs.Count > 0 && surface.Stage is not ("settling" or "completed");
+        return new(StableIdentityHash.Object(new { game.Version, context, surface.PublicSurface }),
+            surface.Stage == "settling" ? "settling" : actionable ? "ready" : "observed", context, surface,
+            new(surface.Missing.Count == 0 ? "complete_current_structured_ui" : "partial_current_structured_ui",
+                "registered_native_card_model_callbacks_and_current_controls",
+                new[] { "complete_entered_native_logical_grid_list" }, surface.Missing), game, Array.Empty<string>());
+    }
+
+    private static bool PreviewMatchesCurrentWidget(NativeLogicalGridState state, NativeSelectorPreviewFacts facts,
+        NativeSelectorPublicProjection.Result projected,
+        Func<CardModel, PileType, CardPreviewMode, NativeSelectorPublicProjection.Presentation> render)
+    {
+        if (state.Stage != "preview") return true;
+        Control? root = null;
+        bool singleAfter = false;
+        switch (state.Owner)
+        {
+            case NDeckUpgradeSelectScreen:
+                root = VisibleRoot("%UpgradeSinglePreviewContainer");
+                singleAfter = root != null;
+                root ??= VisibleRoot("%UpgradeMultiPreviewContainer")?.GetNodeOrNull<Control>("Cards");
+                break;
+            case NDeckEnchantSelectScreen:
+                root = VisibleRoot("%EnchantSinglePreviewContainer");
+                singleAfter = root != null;
+                root ??= VisibleRoot("%EnchantMultiPreviewContainer")?.GetNodeOrNull<Control>("Cards");
+                break;
+            case NDeckCardSelectScreen:
+                root = VisibleRoot("%PreviewContainer");
+                break;
+            default: return false;
+        }
+        if (singleAfter)
+        {
+            string nodeName = state.Owner is NDeckUpgradeSelectScreen ? "UpgradePreview" : "EnchantPreview";
+            Node? preview = root?.GetNodeOrNull<Node>(nodeName);
+            if (preview == null || preview.GetType().Assembly != typeof(CardModel).Assembly) return false;
+            root = preview.GetType().GetField("_after", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(preview) as Control;
+        }
+        if (root == null) return false;
+        CardModel[] actual = ConnectorMod.FindAll<NPreviewCardHolder>(root)
+            .Where(holder => ConnectorMod.IsNodeVisible(holder) && holder.CardModel != null)
+            .Select(holder => holder.CardModel!).ToArray();
+        var expected = new List<JsonObject>();
+        var observed = new List<JsonObject>();
+        foreach (CardModel original in state.Selected)
+        {
+            int index = NativeLogicalGridState.ReferenceIndex(state.Cards, original);
+            if (index < 0) return false;
+            JsonObject option = (JsonObject)projected.Options[index]!;
+            JsonObject? row = option["after"] as JsonObject ?? option["before"] as JsonObject;
+            if (row == null) return false;
+            expected.Add(row);
+        }
+        PileType pile = facts.RequiresAggregateAfterPresentation ? PileType.None : state.DisplayPile;
+        CardPreviewMode mode = state.Owner is NDeckUpgradeSelectScreen ? CardPreviewMode.Upgrade : CardPreviewMode.Normal;
+        foreach (CardModel card in actual)
+        {
+            var value = render(card, pile, mode);
+            if (value.Missing.Count != 0) return false;
+            observed.Add(JsonSerializer.SerializeToNode(value.Card)!.AsObject());
+        }
+        return PreviewRowsMatch(expected, observed);
+        Control? VisibleRoot(string path) => state.Owner.GetNodeOrNull<Control>(path) is { } node
+            && ConnectorMod.IsNodeVisible(node) ? node : null;
+    }
+
+    internal static bool PreviewRowsMatch(IReadOnlyList<JsonObject> expected, IReadOnlyList<JsonObject> actual)
+    {
+        if (expected.Count != actual.Count || expected.Count == 0) return false;
+        JsonObject Facts(JsonObject value)
+        {
+            var row = (JsonObject)value.DeepClone();
+            row.Remove("entity_id"); row.Remove("is_selected");
+            return row;
+        }
+        var remaining = actual.Select(Facts).ToList();
+        foreach (JsonObject row in expected.Select(Facts))
+        {
+            int index = remaining.FindIndex(value => JsonNode.DeepEquals(row, value));
+            if (index < 0) return false;
+            remaining.RemoveAt(index);
+        }
+        return true;
     }
 
     /// <summary>Pure composition: no current-screen lookup, State.Capture,

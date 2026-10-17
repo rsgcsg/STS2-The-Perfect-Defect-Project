@@ -41,6 +41,7 @@ internal static class NativeLogicalCapturePolicy
         if (source.Kind != expectedKind) return false;
         string? sourceOwnerId = source switch
         {
+            NativePublicBasisGridSurface value => value.ScreenEntityId,
             NativeDeckCardSelectionSurface value => value.ScreenEntityId,
             NativeDeckUpgradeSelectionSurface value => value.ScreenEntityId,
             DeckTransformSelectionSurface value => value.ScreenEntityId,

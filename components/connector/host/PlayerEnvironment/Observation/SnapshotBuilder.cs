@@ -18,6 +18,7 @@ internal sealed record SnapshotBuildInput(GameBuildIdentity Game, LiveObservatio
     PersistentVisibleStateBuildResult Persistent, RewardPageSnapshotIdentity Identity)
 {
     internal Func<string, PlayerReadBuildResult>? Read { get; init; }
+    internal NativeLogicalGridCaptureResult? GridCapture { get; init; }
 }
 
 internal static partial class PlayerEnvironmentService
@@ -49,9 +50,14 @@ internal static partial class PlayerEnvironmentService
         GameBuildIdentity game = Measure(
             "game_identity",
             () => capturedInput?.Game ?? EnvironmentIdentityRuntime.ReadGame());
+        NativeLogicalGridCaptureResult? gridCapture = publicBasisProfile
+            ? capturedInput?.GridCapture ?? (capturedInput == null
+                ? Measure("native_logical_grid", () => NativeLogicalGridCapture.CaptureCurrent(Entities, game)) : null)
+            : null;
         LiveObservation draft = Measure("native_surface_state", () =>
             capturedInput?.Observation ?? LiveObservationReader.Build(Entities, game, () =>
-            NativeGeneratedCardChoice.TryBuild(Entities, game)
+            NativeLogicalGridCapture.PublicBasisObservation(gridCapture, Entities, game)
+                ?? NativeGeneratedCardChoice.TryBuild(Entities, game)
                 ?? NativeBossRelicSelection.TryBuild(Entities, game)
                 ?? NativeSimpleCardSelection.TryBuild(Entities, game)
                 ?? NativeDeckUpgradeSelection.TryBuild(Entities, game)
@@ -60,6 +66,9 @@ internal static partial class PlayerEnvironmentService
                 ?? NativeDeckCardSelection.TryBuild(Entities, game)
                 ?? NativeRestSite.TryBuild(Entities, game),
                 rewardPageProfile: !ordinaryProjection));
+        if (capturedInput != null && publicBasisProfile && gridCapture?.Grid is { } frozenGrid)
+            draft = LiveObservationReader.ApplyRequiredContextCompleteness(
+                NativeLogicalGridCapture.PublicBasisObservation(frozenGrid, draft.Context, game));
         LiveObservation nativeDraft = draft;
         // Native lifecycle availability is observed once on the complete base
         // capture, before any profile branch. Rich leaves cannot renew its clock.
@@ -147,7 +156,8 @@ internal static partial class PlayerEnvironmentService
         };
         JsonNode rawSurface = Measure(
             "surface_serialization",
-            () => JsonSerializer.SerializeToNode(
+            () => draft.Surface is NativePublicBasisGridSurface publicGrid ? publicGrid.PublicSurface.DeepClone()
+                : JsonSerializer.SerializeToNode(
                 draft.Surface,
                 draft.Surface.GetType(),
                 ConnectorMod._jsonOptions) ?? new JsonObject());

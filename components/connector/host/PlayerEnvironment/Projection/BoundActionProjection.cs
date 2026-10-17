@@ -35,6 +35,15 @@ internal static partial class PlayerEnvironmentService
     private static IReadOnlyList<NativeUiBoundAction> BuildPlayerEnvironmentBindings(
         LiveObservation draft)
     {
+        if (draft.Surface is NativePublicBasisGridSurface grid)
+            return grid.Inputs.Select(spec => new NativeUiBoundAction(new NativeUiActionCandidate(
+                spec.Key, "native_logical_grid_input", spec.NativeVerb, spec.Label,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                { ["screen_id"] = grid.ScreenEntityId, ["entity_id"] = spec.SubjectEntityId },
+                new Dictionary<string, NativeUiOperandDomain>(StringComparer.Ordinal),
+                new[] { new ActionEntityBinding("screen", grid.ScreenEntityId),
+                    new ActionEntityBinding(spec.Card == null ? "control" : "card", spec.SubjectEntityId) },
+                "exact_native_logical_grid_input")) { GridInput = spec }).ToArray();
         IReadOnlyList<NativeUiActionDescriptor>? descriptors = draft.Surface switch
         {
             NativeDeckUpgradeSelectionSurface deckUpgradeSelection =>
@@ -97,7 +106,7 @@ internal static partial class PlayerEnvironmentService
                 PlayerEnvironmentBoundActionArgument[] arguments = publicBindings
                     .Where((_, index) => index != subjectIndex)
                     .ToArray();
-                string action = GenericAction(binding.Candidate.Command, binding.Candidate.Operation);
+                string action = binding.GridInput?.PublicVerb ?? GenericAction(binding.Candidate.Command, binding.Candidate.Operation);
                 string boundActionId = "bound_action_" + StableIdentityHash.Object(new
                 {
                     binding.Candidate.CandidateId,
