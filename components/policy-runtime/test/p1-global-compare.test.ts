@@ -79,9 +79,24 @@ describe("P1 r1.1 full-public graph comparison", () => {
     const b = structuredClone(a); (b.commitments as any).declined_reward_groups = ["group-b"];
     expect(compare(a, b).verdict).not.toBe("equal");
   });
-  it("reports ambiguous unseen duplicate alias mappings incomparable", () => {
+  it("accepts symmetric duplicate instances only through a bijection of the complete public graph", () => {
     const a = observation(); const b = renamed(a);
-    expect(compare(a, b).verdict).toBe("incomparable");
+    expect(compare(a, b).verdict).toBe("equal");
+    const deck = content(b.deck).cards;
+    deck[1].entity_id = deck[0].entity_id;
+    expect(compare(a, b).verdict).not.toBe("equal");
+  });
+  it("preserves full detail inventory multiplicity and its same-instance relations across transport reordering", () => {
+    const a = observation();
+    (a as any).extra_reads = content(a.deck).cards.map((card: any) => ({ kind: "surface_card", availability: "available",
+      content: { ...structuredClone(card), public_details_revision: "1", display_context: "deck",
+        display_owner_entity_id: null, keywords: [], card_previews: [] } }));
+    const b = renamed(a); (b.extra_reads as any[]).reverse();
+    expect(compare(a, b).verdict).toBe("equal");
+    const changed = structuredClone(b); (changed.extra_reads[0]!.content as any).description += " real difference";
+    expect(compare(a, changed).verdict).not.toBe("equal");
+    const lost = structuredClone(b); (lost.extra_reads as any[]).pop();
+    expect(compare(a, lost).verdict).not.toBe("equal");
   });
   it("never normalizes future literal entity_id fields or localized display fields globally", () => {
     const a = unambiguousObservation(); const b = structuredClone(a);

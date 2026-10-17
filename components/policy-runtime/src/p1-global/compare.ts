@@ -1,4 +1,4 @@
-import { canonicalJson, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
+import { canonicalJson, completeCards, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
   createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
@@ -22,6 +22,9 @@ function closedEntityRelations(observation: P1Observation): boolean {
 }
 function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
   const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads);
+  // This declared inventory is entirely current-card DTOs. Unknown extra Read
+  // schemas retain their literal order and identity policy.
+  const cardInventory = observation.extra_reads.every(read => read.kind === "surface_card" && completeCards([read.content]));
   return createPublicGraphComparator({
     alias(value, _key, path) {
       const p = normalizePublicPath(path);
@@ -31,6 +34,7 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
     unordered(path, parent) {
       return path === "$.observation.catalog" || !identicalFacts && (
         ["$.observation.deck.content.cards", "$.observation.map.content.nodes"].includes(path)
+        || path === "$.observation.extra_reads" && cardInventory
         || path === "$.observation.piles.content.zones[].cards" && parent?.ordering === "unordered_multiset");
     }
   });
@@ -95,14 +99,10 @@ function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: str
   // Identity is itself a bijection and preserves every field/edge, including duplicates.
   if (canonicalJson(a) === canonicalJson(b)) return { verdict: "equal", difference: null };
   try {
-    // Facts establish entity mappings before catalog matching; chosen uses the same action mapping.
-    const { catalog: ca, ...oa } = a.observation; const { catalog: cb, ...ob } = b.observation;
-    // Identical complete fact bytes admit the identity bijection, including repeated cards.
-    // Traverse those arrays positionally to establish it; this does not align renamed ambiguities.
-    const graph = graphPolicy(canonicalJson(oa) === canonicalJson(ob), left);
-    graph.compare(oa, ob, "$.observation");
-    graph.unordered(ca, cb, "$.observation.catalog");
-    graph.compare(chosenLeft, chosenRight, "$.chosen");
+    // Inventory order is transport metadata. Repeated cards/Reads must be solved
+    // jointly with their catalog and chosen edges, under one global bijection.
+    const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
+    graph.compareWhole(a, b);
     return { verdict: "equal", difference: null };
   } catch (error) {
     if (error instanceof PublicGraphDifference) return { verdict: error.incomparable ? "incomparable" : "different",

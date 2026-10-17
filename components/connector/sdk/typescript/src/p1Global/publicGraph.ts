@@ -77,5 +77,83 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
     }
     if (a !== b) fail(path, "semantic_value_changed");
   }
-  return { compare, unordered };
+  /** Compare a complete graph when inventory duplicates need a joint mapping.
+   * Each branch retains one global bijection and verifies every remaining field;
+   * equal local signatures only select candidates, never establish equality.
+   * The existing work bound covers all branches, including failed ones. */
+  function compareWhole(a: unknown, b: unknown, path = "$"): void {
+    type Task = { kind: "value"; a: unknown; b: unknown; path: string; key: string;
+      parent: Record<string, unknown> | null; depth: number }
+      | { kind: "members"; a: readonly unknown[]; b: readonly unknown[]; index: number; path: string; key: string; depth: number };
+    type State = { tasks: Task[]; forward: Map<string, string>; reverse: Map<string, string> };
+    const valueTask = (a: unknown, b: unknown, path: string, key: string, parent: Record<string, unknown> | null, depth: number): Task =>
+      ({ kind: "value", a, b, path, key, parent, depth });
+    const pending: State[] = [{ tasks: [valueTask(a, b, path, "", null, 0)], forward: new Map(forward), reverse: new Map(reverse) }];
+    let firstFailure: PublicGraphDifference | null = null;
+    while (pending.length) {
+      const state = pending.pop()!;
+      try {
+        while (state.tasks.length) {
+          const task = state.tasks.pop()!;
+          if (++comparedNodes > 500_000 || task.depth > 64) fail("$", "comparison_work_bound", true);
+          if (task.kind === "members") {
+            if (task.index === task.a.length) continue;
+            const currentPath = `${task.path}[${task.index}]`;
+            const signature = (value: unknown, side: "left" | "right") => canonicalJson(selector(
+              policy.selectUnorderedMember?.(value, task.path) ?? value, side, task.key,
+              `${task.path}[0]`, task.depth, state));
+            const expected = signature(task.a[task.index], "left");
+            const candidates = task.b.flatMap((item, index) => signature(item, "right") === expected ? [index] : []);
+            if (candidates.length === 0) fail(currentPath, "collection_member_or_relation_changed");
+            const tasksFor = (index: number): Task[] => [...state.tasks,
+              { ...task, index: task.index + 1, b: task.b.filter((_, i) => i !== index) },
+              valueTask(task.a[task.index], task.b[index], currentPath, task.key, null, task.depth + 1)];
+            // DFS retains alternatives until the entire graph has been checked.
+            for (const index of candidates.slice(1).reverse()) pending.push({ tasks: tasksFor(index),
+              forward: new Map(state.forward), reverse: new Map(state.reverse) });
+            state.tasks = tasksFor(candidates[0]!);
+            continue;
+          }
+          const { a: leftValue, b: rightValue, path: currentPath, key, parent, depth } = task;
+          if (typeof leftValue === "string" && typeof rightValue === "string") {
+            const left = policy.alias(leftValue, key, currentPath), right = policy.alias(rightValue, key, currentPath);
+            if (left && right && left.kind === right.kind) {
+              const ka = `${left.kind}:${left.id}`, kb = `${right.kind}:${right.id}`;
+              if (state.forward.has(ka) && state.forward.get(ka) !== right.id
+                  || state.reverse.has(kb) && state.reverse.get(kb) !== left.id)
+                fail(currentPath, "opaque_alias_equality_or_bijection_changed");
+              state.forward.set(ka, right.id); state.reverse.set(kb, left.id); continue;
+            }
+            if (left || right) fail(currentPath, "alias_domain_changed");
+          }
+          if (Array.isArray(leftValue) && Array.isArray(rightValue)) {
+            if (leftValue.length !== rightValue.length) fail(currentPath,
+              policy.unordered?.(normalized(currentPath), parent) ? "collection_multiplicity_changed" : "sequence_length_changed");
+            if (policy.unordered?.(normalized(currentPath), parent)) state.tasks.push({ kind: "members",
+              a: leftValue, b: rightValue, index: 0, path: currentPath, key, depth });
+            else for (let i = leftValue.length - 1; i >= 0; i--)
+              state.tasks.push(valueTask(leftValue[i], rightValue[i], `${currentPath}[${i}]`, key, null, depth + 1));
+            continue;
+          }
+          if (isObject(leftValue) && isObject(rightValue)) {
+            const ak = Object.keys(leftValue).sort(), bk = Object.keys(rightValue).sort();
+            if (canonicalJson(ak) !== canonicalJson(bk)) fail(currentPath, "field_presence_changed");
+            for (const child of ak.reverse()) state.tasks.push(valueTask(leftValue[child], rightValue[child],
+              `${currentPath}.${safeKey(child)}`, child, leftValue, depth + 1));
+            continue;
+          }
+          if (leftValue !== rightValue) fail(currentPath, "semantic_value_changed");
+        }
+        forward.clear(); reverse.clear();
+        for (const [key, value] of state.forward) forward.set(key, value);
+        for (const [key, value] of state.reverse) reverse.set(key, value);
+        return;
+      } catch (error) {
+        if (!(error instanceof PublicGraphDifference) || error.incomparable) throw error;
+        firstFailure ??= error;
+      }
+    }
+    throw firstFailure!;
+  }
+  return { compare, unordered, compareWhole };
 }
