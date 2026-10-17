@@ -168,4 +168,22 @@ public sealed class NativeLogicalCapturedGridTests
         }
     }
 
+    [Fact]
+    public void PublicBasisInspectorUsesProtocolOpenWhileRetainingExactNativeInput()
+    {
+        var (source, grid) = Captured();
+        var inspect = grid.Inputs[0] with { Key = "request-original:inspect:card-63", NativeLeafKey = "logical_grid_inspect:card-63",
+            NativeVerb = "inspect_card", PublicVerb = "inspect", Kind = NativeLogicalGridInputKind.Inspect };
+        grid = grid with { NeutralSurface = grid.NeutralSurface with { Inputs = new[] { inspect } } };
+        var input = new SnapshotBuildInput(source.HostObservation.Game, source.HostObservation,
+            new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = new(true, grid, Array.Empty<string>()),
+            Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        var built = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        var action = Assert.Single(built.Snapshot.BoundActions.Actions);
+        Assert.Equal("open", action.Verb);
+        Assert.Same(inspect, built.Bindings[action.BoundActionId].NativeAction.GridInput);
+        Assert.Equal("inspect_card", inspect.NativeVerb);
+    }
+
 }

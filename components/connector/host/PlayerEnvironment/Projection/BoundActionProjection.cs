@@ -106,7 +106,8 @@ internal static partial class PlayerEnvironmentService
                 PlayerEnvironmentBoundActionArgument[] arguments = publicBindings
                     .Where((_, index) => index != subjectIndex)
                     .ToArray();
-                string action = binding.GridInput?.PublicVerb ?? GenericAction(binding.Candidate.Command, binding.Candidate.Operation);
+                string action = binding.GridInput is { Kind: NativeLogicalGridInputKind.Inspect } ? "open"
+                    : binding.GridInput?.PublicVerb ?? GenericAction(binding.Candidate.Command, binding.Candidate.Operation);
                 string boundActionId = "bound_action_" + StableIdentityHash.Object(new
                 {
                     binding.Candidate.CandidateId,
