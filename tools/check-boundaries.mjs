@@ -29,6 +29,7 @@ export function textBoundaryErrors(relative, contents) {
     // These exact shared read qualifiers inspect patches; they never install them.
     const readQualificationFiles = new Set([
       "NativeRunHookReadQualification.cs",
+      "NativeSelectorReadQualification.cs",
       "NativeCardPreviewReadQualification.cs",
       "NativeCardRewardAlternativePreview.cs"
     ].map(name => `components/native-foundation/src/${name}`));
