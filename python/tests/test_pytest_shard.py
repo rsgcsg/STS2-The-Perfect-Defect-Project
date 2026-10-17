@@ -23,8 +23,10 @@ def test_default_inventory_and_explicit_top_level_only() -> None:
     full = portable_commands("python")
     for value in ("1/2", "2/2"):
         sharded = portable_commands("python", pytest_shard=parse_pytest_shard(value))
-        assert len(full) == len(sharded)
-        for original, partition in zip(full, sharded, strict=True):
+        originals = (full if value == "1/2" else
+                     tuple(c for c in full if c[:3] == ("python", "-m", "pytest")))
+        assert len(originals) == len(sharded)
+        for original, partition in zip(originals, sharded, strict=True):
             if original[:3] == ("python", "-m", "pytest"):
                 assert partition[:len(original)] == original
                 assert partition[len(original):] == (
@@ -119,9 +121,10 @@ def test_two():
     files["python/tools/pytest_shard.py"] = (ROOT / "python/tools/pytest_shard.py").read_text(
         encoding="utf-8"
     )
-    files["python/tools/pytest-file-costs.json"] = (
-        ROOT / "python/tools/pytest-file-costs.json"
-    ).read_text(encoding="utf-8")
+    profile = load_profile()
+    profile["first_shard_overhead_ms"] = 0
+    files["python/tools/pytest-file-costs.json"] = json.dumps(profile)
+
     for name, text in files.items():
         file = root / name
         file.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +259,7 @@ def test_real_negative_outcomes_remain_original(tmp_path: Path, failure: str) ->
 
 def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
     profile = load_profile()
+    profile["first_shard_overhead_ms"] = 0
     profile["file_cost_ms"] = {"tests/test_a.py": 100, "tests/test_b.py": 80,
                                "tests/test_c.py": 20, "tests/test_d.py": 10,
                                "tests/retired.py": 999999}
@@ -277,12 +281,22 @@ def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
                   for file in ("tests/é.py", "tests/z.py")]
     assert selected_ids(collection, 1, 2, profile) == ["tests/z.py::test_case"]
 
+    profile["first_shard_overhead_ms"] = 100000
+    profile["file_cost_ms"] = {"tests/a.py": 200000, "tests/b.py": 180000,
+                               "tests/c.py": 100000}
+    weighted = [{"file": file, "nodeid": file + "::test_case"}
+                for file in profile["file_cost_ms"]]
+    assert selected_ids(weighted, 1, 2, profile) == ["tests/b.py::test_case"]
+    assert selected_ids(weighted, 2, 2, profile) == ["tests/a.py::test_case",
+                                                  "tests/c.py::test_case"]
+
 
 @pytest.mark.parametrize("mutation", [
     lambda value: value.update(schema="unknown"),
     lambda value: value.update(algorithm="rank-2"),
     lambda value: value.update(unknown_file_ms=0),
     lambda value: value.update(extra="ignored"),
+    lambda value: value.update(first_shard_overhead_ms=-1),
     lambda value: value.update(file_cost_ms={}),
     lambda value: value.update(file_cost_ms={"../foreign.py": 1}),
     lambda value: value.update(file_cost_ms={"tests/x.py": True}),

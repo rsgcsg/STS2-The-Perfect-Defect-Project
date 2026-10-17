@@ -135,12 +135,12 @@ test("required aggregate rejects missing, failed, cancelled or unexpectedly skip
   const full = { repository: "skipped", plan: "success", docs: "skipped", linux: "success", windows: "success" };
   const docs = { repository: "skipped", plan: "success", docs: "success", linux: "skipped", windows: "skipped" };
   assert.ok(aggregatePassed("full", full)); assert.ok(aggregatePassed("docs", docs));
-  for (const key of ["plan", "linux", "windows"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("full", { ...full, [key]: value }), false);
+  for (const key of ["plan", "linux"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("full", { ...full, [key]: value }), false);
   for (const key of ["plan", "docs"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("docs", { ...docs, [key]: value }), false);
   assert.equal(aggregatePassed("unknown", full), false);
 });
 
-test("Python owner changes retain repository guards and both OS Python consumers", () => {
+test("Python owner changes retain repository guards and installed Python consumers", () => {
   for (const file of ["python/spireagent/hub/exports.py", "python/stpd/models/new.py", "python/tests/new.py"])
     for (const status of ["M", "A", "D"]) assert.equal(classifyChanges([{file,status}]).scope, "python");
   for (const file of ["python/pyproject.toml", "python/uv.lock", "python/tools/project.py", "components/evidence/src/a.py", "python/deploy/hub/Dockerfile", "contracts/new.json"])
@@ -150,7 +150,7 @@ test("Python owner changes retain repository guards and both OS Python consumers
   assert.deepEqual(scopeCommands("reuse"), ["check:repository"]);
   assert.throws(() => scopeCommands("typo"));
 });
-test("reuse requires fresh repository checks; Python scope still requires Windows", () => {
+test("reuse requires fresh repository checks; Python scope uses only Linux for PRs", () => {
   const reused = {repository:"skipped",plan:"success",docs:"success",linux:"skipped",windows:"skipped"};
   assert.ok(aggregatePassed("reuse",reused));
   for (const key of ["plan","docs"]) assert.equal(aggregatePassed("reuse",{...reused,[key]:"failure"}),false);
@@ -244,7 +244,7 @@ test("protected instruction names cannot qualify as Python report companions", (
 });
 
 
-test("management prose uses fresh repository guards, tools use both-OS repository scope", () => {
+test("management prose uses fresh repository guards, tools use repository scope", () => {
   for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/WORKING_RULES.zh-CN.md",
     "docs/AI_COLLABORATION.md", ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/engineering_task.yml"])
@@ -265,7 +265,7 @@ test("repository aggregate requires its entire matrix and cannot fabricate a ful
   assert.ok(aggregatePassed("repository", good));
   for (const key of ["plan", "repository"]) for (const result of ["failure", "cancelled", "skipped", "", undefined])
     assert.equal(aggregatePassed("repository", {...good, [key]:result}), false);
-  for (const key of ["docs", "linux", "windows"]) for (const result of ["success", "failure", "", undefined])
+  for (const key of ["docs", "linux"]) for (const result of ["success", "failure", "", undefined])
     assert.equal(aggregatePassed("repository", {...good, [key]:result}), false);
   for (const scope of ["full", "python", "reuse", "docs"]) assert.equal(aggregatePassed(scope, good), false);
 });
@@ -288,4 +288,12 @@ test("real Git workflow comparison bounds repository-only routing and forced ful
     git("commit","-am","product build input changes");
     assert.equal(makePlan({base,cwd}).scope,"full");
   } finally {fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+
+test("Windows outcomes never hold the required PR aggregate", () => {
+  for (const windows of ["failure", "cancelled", "skipped", "success", undefined]) {
+    assert.ok(aggregatePassed("full", {plan: "success", repository: "skipped", docs: "skipped", linux: "success", windows}));
+    assert.ok(aggregatePassed("python", {plan: "success", repository: "skipped", docs: "skipped", linux: "success", windows}));
+  }
 });

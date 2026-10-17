@@ -28,12 +28,14 @@ export function workspaceStages(scope, {pytestShard} = {}) {
   if (!["full", "python", "components"].includes(scope)) throw new Error("unknown_workspace_scope");
   const partition = pytestPartition(pytestShard);
   if (partition && scope === "components") throw new Error("pytest_shard_requires_python_scope");
-  const guards = scope === "components" ? [] : ["repository"];
-  const stages = scope === "components" ? [] : [
+  // Shard 1 owns non-pytest gates. Each isolated runner still builds its own clients.
+  const pythonOnly = partition?.index === 2;
+  const guards = scope === "components" || pythonOnly ? [] : ["repository"];
+  const stages = scope === "components" || pythonOnly ? [] : [
     { id: "repository", args: ["run", "check:repository"], requires: [] },
   ];
   stages.push({ id: "shared-client-build", args: ["run", "precheck:s0"], requires: guards });
-  if (scope !== "components") stages.push({
+  if (scope !== "components" && !pythonOnly) stages.push({
     id: "s0-consumers", args: ["run", "check:s0-tests"], requires: ["shared-client-build"],
   });
   // Complete readers of this generation before owner check scripts rebuild the
@@ -43,7 +45,7 @@ export function workspaceStages(scope, {pytestShard} = {}) {
     id: "python", args: ["run", "check:python", ...(partition ? ["--", "--pytest-shard", pytestShard] : [])],
     requires: ["shared-client-build"],
   });
-  if (scope !== "python") {
+  if (scope !== "python" && !pythonOnly) {
     for (const [id, owner, script] of owners) stages.push({
       id, args: ["--prefix", owner, "run", script],
       // These consumers import the shared generated SDK/Runtime output. A failed

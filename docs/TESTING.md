@@ -218,7 +218,7 @@ build/artifact, install/load, rollback and stop prerequisites pass. Match this
 ordering to the diagnostic's claim and authorization; it is not a blanket waiver
 of a task or owner dependency. Do not bypass a failed relevant gate or unknown,
 or rebuild local generated output while the runtime consumes it. Selected full
-dual-OS portable checks remain required for merge, portability and stronger
+selected Linux portable checks remain required for merge, portability and stronger
 promotion. This scheduling rule grants no additional native attempt, Human
 recording, training, spending or deployment authority.
 
@@ -284,9 +284,9 @@ The router uses actual committed Git changes, not a caller-selected test list:
 | Scope | Selected checks | Eligible changes |
 |---|---|---|
 | `docs` | fresh repository/link/governance/identity/BOM/boundary/history checks on Linux | explicit regular editorial/management files, root AGENTS and existing report surfaces; human review judges policy meaning |
-| `repository` | complete repository/tooling checks on Linux and Windows, with locked Node dependencies | explicit project-system/governance/check-planner/workflow-validator tools, their tests and management companions; narrowly verified workflow routing/setup edits |
-| `python` | repository guards plus the entire Python gate on Linux and Windows | only Python application/research/test owners, optionally declared prose/management companions |
-| `full` | complete root gate on both OSes | Platform, shared contracts/locks/build inputs, product-job CI changes, deployment, unknown executable paths or uncertain Git state |
+| `repository` | complete repository/tooling checks on Linux, with locked Node dependencies | explicit project-system/governance/check-planner/workflow-validator tools, their tests and management companions; narrowly verified workflow routing/setup edits |
+| `python` | repository guards plus the entire Python gate on Linux | only Python application/research/test owners, optionally declared prose/management companions |
+| `full` | complete root gate on Linux | Platform, shared contracts/locks/build inputs, product-job CI changes, deployment, unknown executable paths or uncertain Git state |
 | `reuse` | fresh repository checks referencing a verified executed receipt | eligible integration/promotion with identical content and check definition |
 
 The planner owns the exact finite path lists. Regular additions/modifications
@@ -297,7 +297,7 @@ Changes to repository tools run their actual cross-platform tests, not the Pytho
 training suite merely because their filenames start with `check-`.
 
 A workflow change takes repository scope only when its trigger/header, plan job,
-Linux product job and Windows product job are unchanged, all job names are known,
+Linux product job, Windows product job and Windows checklist job are unchanged, all job names are known,
 and the resulting workflow passes the workflow contract. Thus only the existing
 repository/docs setup, repository lane and aggregate wiring may differ. Product
 commands/environments, partitioning, dependencies, unknown workflow structure or
@@ -357,7 +357,7 @@ frozen full result. Cancellation prevents subsequent execution; any required
 failure or blocked stage keeps the aggregate failed. Cancellation terminates the
 owned process group/tree and reports unresolved cleanup as a failure, rather than
 killing only an npm wrapper and leaving its descendants running. This changes diagnostic
-collection, not the dual-OS requirement, supported scope or scientific claims.
+collection, not the selected gate requirement, supported scope or scientific claims.
 CI preserves `.local/checks/workspace-*.json` alongside pytest results, including
 on failure; synthetic fixture diagnostics retain bounded phases, whitelisted operation
 fields and stacks without locals under `python/.local/fixture-diagnostics/`, with no
@@ -387,46 +387,76 @@ the scope of an invalid expectation.
 The Python scope still covers installed Platform consumers, application/research tests,
 SDK contracts, typecheck, CPU E2E and packaging. Platform never imports Python applications;
 repository boundary guards run in both scopes. This is owner-level routing, not yet a
-per-test UI/research selector. Windows is not dropped. Renames use Git's no-renames A/D
+per-test UI/research selector. Windows runs separately as described below. Renames use Git's no-renames A/D
 representation: both paths must qualify. Type changes, dirty worktrees and unresolved
 refs fall back to full. Local uncommitted regression is useful, but final routing uses a
 clean committed diff. `npm run check` always runs full.
 
-`portable` is the required aggregate: plan and all selected jobs must succeed;
+`portable` is the required aggregate: plan and all selected Linux/docs/repository jobs must succeed;
 unselected jobs must be skipped. Failure/cancellation never becomes a PASS. A Python,
-docs, repository or reuse result is labelled as such, not as a new full dual-OS execution.
+docs, repository or reuse result is labelled as such, not as a new full Linux execution.
 
 The local diagnostic scope may be smaller than merge or release scope. The current
 router, every selected leaf and `portable`, plus any stronger active-task
 prerequisite, remain binding until a separately reviewed policy/code change alters
 them. Management-only and repository-tool changes use the reviewed scopes above;
-product changes retain their full/Python inventories and both OS requirements.
+product PRs retain their full/Python inventories on Linux.
 Choosing a relevant scope is not deleting a test or claiming unexecuted coverage.
+
+### Windows cadence and deferred adaptation
+
+Windows 每天检查一次，发布前检查一次，不是 PR 的门。
+User decision:2026-10-17. `portable` depends on plan/docs/repository/Linux only.
+Current main/develop branch protection requires only `portable`; its name is unchanged,
+so no GitHub protection setting change is needed. Windows runs daily at21:17 UTC
+(07:17 Australia/Brisbane the next day), and on PRs/pushes to main. Before a release,
+run CI via workflow_dispatch with `windows=true` on the exact candidate and inspect
+both Windows shard results. Linux can finish independently. No automatic retries.
+The schedule becomes active when this workflow reaches the repository default branch.
+
+`windows-failures` reads original Windows job logs and carries one cumulative
+checklist as the90-day `windows-failures-history` artifact plus its job summary:
+test/failed gate, first/last observed Brisbane date, repeated occurrence and run count.
+A failed/cancelled job remains visible even if it produced no test report. History
+starts with the first run of this checklist, carries forward while a prior artifact
+is available, and keeps failures after a later passing day. Infrastructure/API errors
+fail the summary visibly; the summary never changes test outcomes or blocks `portable`.
+Download the checklist before a90-day hiatus if that history must be retained.
+
+Windows support scope confirmed by the user on2026-10-17: the local-use and
+collection chain below. No new adaptation work is included here:
+
+| Candidate use | Existing grounding |
+|---|---|
+| Game Mod and ingame UI | `apps/game-mod/README.md`: Windows Mod settings preservation; `components/annotator/tools/workstation-platform.test.mjs`: Windows install/settings tests |
+| Connector/SDK and Host Runtime | `components/connector/tools/connector.mjs`: Windows command/path handling; `components/host-runtime/README.md`: experimental Windows route and retained, separately qualified build tuple |
+| Annotator, Evidence, upload/download and local Workbench | `components/annotator/tools/workstation-platform.mjs`: Windows paths/settings; `python/docs/B_PIPELINE_HANDOFF.md`: `%LOCALAPPDATA%` Workbench configuration; `python/spireagent/workbench/instance_lock.py`: Windows locking |
+| Policy Runtime and external Agent integration | `components/policy-runtime` consumes the same Connector/Host APIs in the existing Windows source/test lane |
+
+This confirmed support scope is not native Windows qualification. Windows Hub hosting,
+research/training and new platform targets are not added by this CI change.
 
 ### Hosted pytest partition and complete execution proof
 
-Full and Python scopes use two isolated runner leaves per OS, with matrix
+Full and Python scopes use two isolated runner leaves, with matrix
 `fail-fast: false` and finite per-leaf job limits: Linux55 minutes, Windows75.
-Windows95d evidence recorded a50.37-minute pytest command before the remaining
-required checks and an official55-minute job cancellation. The capacity increase
-keeps all four leaves, case/owner inventories and same-run receipt requirements.
-It does not change any fixture/product deadline or turn a failed setup into a pass;
-two Windows leaves have at most40 additional runner-minutes per run. Actual cost
-and speed remain measured outcomes, not a guarantee. Each leaf repeats
-its selected repository guards, fresh SDK/Runtime build, full S0 checks, Python
-nonpytest commands and component-owner inventory. Only the top-level Python
-pytest invocation is partitioned. Local `npm run check` and Python `check`
-defaults remain complete and unpartitioned.
+Shard1 runs repository guards, S0 consumers, nonpytest Python checks and the selected
+component-owner inventory once per OS. Shard2 runs only its complementary pytest
+selection. Each isolated runner builds its own SDK/Runtime output for real Python
+consumers; generated output is not shared between runners. Local `npm run check`
+and Python `check` defaults remain complete and unpartitioned.
 
 Each top-level invocation explicitly loads `tools.pytest_shard` with shard
 index/count and a manifest path. It collects the unchanged default testpaths,
 normalizes relative POSIX node IDs/files and assigns whole files using the static
-`python/tools/pytest-file-costs.json` profile and `lpt-whole-file-1`: descending
-integer cost, UTF-8 file tie order, then the lower-load shard (ties shard 1).
+`python/tools/pytest-file-costs.json` profile and `lpt-whole-file-gates-1`: descending
+integer cost, UTF-8 file tie order, then the lower-load shard (ties shard1).
+Shard1 starts with its measured non-pytest gate overhead; shard2 starts at zero.
 Parameters, classes and module fixtures stay together. New files join automatically
 with a nonzero 30,000 ms scheduling weight; retired profile entries do not select tests.
-The reviewed profile uses median whole-file testcase milliseconds from three retained
-Windows runs, including failed runs as cost observations, never successful receipts.
+The reviewed profile uses whole-file testcase milliseconds from retained Linux
+JUnit reports (median if multiple runs), plus shard1 non-pytest overhead from the
+same run logs. These are scheduling observations, never successful receipts.
 Invalid/missing profiles fail closed; weights are not deadlines or performance promises. No manually curated test list, `PYTEST_ADDOPTS`,
 automatic inherited environment plugin or conftest filters nested pytest.
 The Modal fresh child and other nested invocations keep their full case sets.
@@ -434,7 +464,7 @@ The Modal fresh child and other nested invocations keep their full case sets.
 Unique OS/shard/attempt artifacts retain the original complete collection,
 selection, actual setup/call/teardown and subtest outcomes, terminal execution,
 source identities and workspace results. Before sealing a fresh receipt,
-`portable` downloads the four current-run artifact directories separately and
+`portable` downloads the two Linux current-run artifact directories separately and
 verifies clean exact head/tree/workflow/selector and cost-profile Git blob/raw SHA256
 plus routing algorithm, run/attempt/scope/OS, identical
 same-OS collection, disjoint/exhaustive deterministic selections, and terminal
@@ -446,7 +476,7 @@ independently recompute whole-file assignments from the current complete collect
 A profile change is a source-tree change, so an old tree receipt cannot cover it.
 The small existing execution receipt adds only coverage digests/counts/routing identity;
 original manifests remain diagnostics. Receipt eligibility, freshness, source
-binding, required OS groups and higher evidence gates remain unchanged.
+binding, higher evidence gates remain unchanged; required PR coverage is Linux.
 
 This changes scheduling, not coverage or deadlines. Historical timing estimates
 are predictions: duplicated session fixtures, collection, setup and other gates
@@ -458,12 +488,12 @@ claiming a speedup or that the candidate fits its budget.
 Normal topic PRs always execute. Pushes to protected main/develop and `release/` PRs
 to main may reference a fresh executed result from this repository's CI workflow.
 Executable main promotion requires full scope, so a Python-only receipt cannot satisfy it.
-Manual dispatch and the weekly Sunday 21:17 UTC run always execute full; use dispatch
+Manual dispatch always executes full Linux. The daily21:17 UTC schedule executes full Windows; use dispatch
 when a runner/environment change or independent requalification requires fresh evidence.
 
 The shared verifier checks: successful completed original run and current attempt;
 repository and event; exact tree (therefore tracked source, tests, workflow and locks);
-workflow blob; executed scope and both OS outcomes; actual tested checkout recorded in
+workflow blob; executed scope and required Linux outcome; actual tested checkout recorded in
 the receipt; and a maximum seven-day age from the original run creation (reruns cannot refresh it). It downloads only the named small receipt,
 checks the GitHub artifact SHA256 and never executes artifact content. Missing/expired
 artifacts, unknown refs, API failure or mismatch select real execution. Reused runs do
