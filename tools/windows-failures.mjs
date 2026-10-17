@@ -85,12 +85,14 @@ async function main() {
       const log = gh(['api', '--allow-escape-sequences', `repos/${repository}/actions/jobs/${job.id}/logs`]);
       failures.push(...failureNames(log), `job: ${job.name} (${job.conclusion})`);
     }
-    const entries = updateChecklist(previous, failures, {run, date: info.created_at.slice(0, 10)});
+    const date = new Intl.DateTimeFormat("en-CA", {timeZone: "Australia/Brisbane",
+      year: "numeric", month: "2-digit", day: "2-digit"}).format(new Date(info.created_at));
+    const entries = updateChecklist(previous, failures, {run, date});
     const report = {run, checkout: info.head_sha, consumed_runs: [...consumed, run],
-      date_basis: 'UTC run creation date', entries};
+      date_basis: 'Australia/Brisbane run creation date', entries};
     const escape = value => String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
     const markdown = `# Windows failure checklist\n\nOriginal run: ${info.html_url}. No automatic rerun. Prior failures remain listed after a passing day.\n\n` +
-      '| Test or failed gate | First seen (UTC) | Last seen (UTC) | Repeated | Runs |\n|---|---|---|---|---|\n' +
+      '| Test or failed gate | First seen (Brisbane) | Last seen (Brisbane) | Repeated | Runs |\n|---|---|---|---|---|\n' +
       entries.map(entry => `| ${escape(entry.test)} | ${entry.first_seen} | ${entry.last_seen} | ${entry.runs.length > 1 ? 'yes' : 'no'} | ${entry.runs.length} |`).join('\n') +
       (entries.length ? '\n' : '\nNo failures recorded.\n');
     fs.mkdirSync('.local/ci', {recursive: true});

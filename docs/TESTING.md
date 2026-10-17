@@ -407,7 +407,7 @@ Choosing a relevant scope is not deleting a test or claiming unexecuted coverage
 
 Windows 每天检查一次，发布前检查一次，不是 PR 的门。
 User decision:2026-10-17. `portable` depends on plan/docs/repository/Linux only.
-Current develop branch protection requires only `portable`; its name is unchanged,
+Current main/develop branch protection requires only `portable`; its name is unchanged,
 so no GitHub protection setting change is needed. Windows runs daily at21:17 UTC
 (07:17 Australia/Brisbane the next day), and on PRs/pushes to main. Before a release,
 run CI via workflow_dispatch with `windows=true` on the exact candidate and inspect
@@ -416,14 +416,15 @@ The schedule becomes active when this workflow reaches the repository default br
 
 `windows-failures` reads original Windows job logs and carries one cumulative
 checklist as the90-day `windows-failures-history` artifact plus its job summary:
-test/failed gate, first/last observed UTC date, repeated occurrence and run count.
+test/failed gate, first/last observed Brisbane date, repeated occurrence and run count.
 A failed/cancelled job remains visible even if it produced no test report. History
 starts with the first run of this checklist, carries forward while a prior artifact
 is available, and keeps failures after a later passing day. Infrastructure/API errors
 fail the summary visibly; the summary never changes test outcomes or blocks `portable`.
 Download the checklist before a90-day hiatus if that history must be retained.
 
-Windows support candidates awaiting user confirmation (no new adaptation work here):
+Windows support scope confirmed by the user on2026-10-17: the local-use and
+collection chain below. No new adaptation work is included here:
 
 | Candidate use | Existing grounding |
 |---|---|
@@ -432,7 +433,7 @@ Windows support candidates awaiting user confirmation (no new adaptation work he
 | Annotator, Evidence, upload/download and local Workbench | `components/annotator/tools/workstation-platform.mjs`: Windows paths/settings; `python/docs/B_PIPELINE_HANDOFF.md`: `%LOCALAPPDATA%` Workbench configuration; `python/spireagent/workbench/instance_lock.py`: Windows locking |
 | Policy Runtime and external Agent integration | `components/policy-runtime` consumes the same Connector/Host APIs in the existing Windows source/test lane |
 
-This candidate list is not native Windows qualification. Windows Hub hosting,
+This confirmed support scope is not native Windows qualification. Windows Hub hosting,
 research/training and new platform targets are not added by this CI change.
 
 ### Hosted pytest partition and complete execution proof
@@ -448,12 +449,14 @@ and Python `check` defaults remain complete and unpartitioned.
 Each top-level invocation explicitly loads `tools.pytest_shard` with shard
 index/count and a manifest path. It collects the unchanged default testpaths,
 normalizes relative POSIX node IDs/files and assigns whole files using the static
-`python/tools/pytest-file-costs.json` profile and `lpt-whole-file-1`: descending
-integer cost, UTF-8 file tie order, then the lower-load shard (ties shard 1).
+`python/tools/pytest-file-costs.json` profile and `lpt-whole-file-gates-1`: descending
+integer cost, UTF-8 file tie order, then the lower-load shard (ties shard1).
+Shard1 starts with its measured non-pytest gate overhead; shard2 starts at zero.
 Parameters, classes and module fixtures stay together. New files join automatically
 with a nonzero 30,000 ms scheduling weight; retired profile entries do not select tests.
-The reviewed profile uses median whole-file testcase milliseconds from three retained
-Windows runs, including failed runs as cost observations, never successful receipts.
+The reviewed profile uses whole-file testcase milliseconds from retained Linux
+JUnit reports (median if multiple runs), plus shard1 non-pytest overhead from the
+same run logs. These are scheduling observations, never successful receipts.
 Invalid/missing profiles fail closed; weights are not deadlines or performance promises. No manually curated test list, `PYTEST_ADDOPTS`,
 automatic inherited environment plugin or conftest filters nested pytest.
 The Modal fresh child and other nested invocations keep their full case sets.

@@ -12,16 +12,22 @@ const write = (file, value) => { fs.mkdirSync(path.dirname(file), {recursive: tr
 
 // Validator fixtures model completed owner stages; they are not full-suite receipts.
 function fixture() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pytest-proof-"));
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pytest-proof-"));
+  const directory = path.join(temporary, "artifacts");
+  fs.mkdirSync(directory);
+  const profileRoot = temporary;
+  const profile = structuredClone(readCostProfile().profile);
+  profile.first_shard_overhead_ms = 0;
+  write(path.join(profileRoot, "python/tools/pytest-file-costs.json"), profile);
   const expected = {source: {head: "a".repeat(40), tree: "b".repeat(40), workflow: "c".repeat(40),
     selector: "d".repeat(40), cost_profile: "e".repeat(40),
-    cost_profile_sha256: readCostProfile().sha256, routing_algorithm: "lpt-whole-file-1", dirty: false}, repository: "owner/repo", run_id: "123", run_attempt: "1", scope: "full"};
+    cost_profile_sha256: readCostProfile(profileRoot).sha256, routing_algorithm: "lpt-whole-file-gates-1", dirty: false}, repository: "owner/repo", run_id: "123", run_attempt: "1", scope: "full"};
   const collection = ["deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py"].flatMap(file =>
     ["one", "two"].map(value => ({file, nodeid: `${file}::test_value[${value}]`})));
   const leaves = [];
   for (const os of ["Linux", "Windows"]) for (const index of [1, 2]) {
     const root = path.join(directory, `pytest-${os}-shard-${index}-1`);
-    const selected = selectedNodeids(collection, index, readCostProfile().profile);
+    const selected = selectedNodeids(collection, index, profile);
     const report = {schema: "spireagent/pytest-shard-2", run: {repository: expected.repository,
       run_id: "123", run_attempt: "1", job: os === "Linux" ? "linux-portability" : "windows-portability", os, scope: "full"},
       shard: {index, count: 2}, source_at_start: expected.source, source_at_end: expected.source,
@@ -43,13 +49,13 @@ function fixture() {
     fs.writeFileSync(path.join(root, "python", ".local", "pytest.xml"), "<testsuite/>\n");
     leaves.push({root, manifest, stageFile, report, workspace});
   }
-  return {directory, expected, leaves};
+  return {directory, temporary, profileRoot, expected, leaves};
 }
 
 test("complete deterministic same-OS selections seal a small digest/count proof", () => {
   const data = fixture();
   try {
-    const result = verifyPytestShards(data.directory, data.expected);
+    const result = verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot});
     assert.equal(result.complete, true);
     assert.equal(result.leaves.length, 4);
     assert.equal(result.leaves.reduce((total, leaf) => total + leaf.selected, 0), 12);
@@ -59,8 +65,8 @@ test("complete deterministic same-OS selections seal a small digest/count proof"
     item.phases = ["setup", "teardown"].map(when => ({when, outcome: when === "setup" ? "skipped" : "passed", subtest: false, wasxfail: null}));
     item.status = "skipped";
     write(data.leaves[0].manifest, data.leaves[0].report);
-    assert.equal(verifyPytestShards(data.directory, data.expected).leaves[0].skipped, 1);
-  } finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
+    assert.equal(verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot}).leaves[0].skipped, 1);
+  } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
 });
 
 test("missing/extra/foreign/unfinished/failed evidence cannot turn green job groups into coverage", () => {
@@ -103,8 +109,8 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
     const data = fixture();
     try {
       mutation(data.leaves[0]); write(data.leaves[0].manifest, data.leaves[0].report); write(data.leaves[0].stageFile, data.leaves[0].workspace);
-      assert.throws(() => verifyPytestShards(data.directory, data.expected), undefined, `mutation ${index}`);
-    } finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
+      assert.throws(() => verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot}), undefined, `mutation ${index}`);
+    } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
   }
   for (const mutation of [
     data => fs.rmSync(data.leaves[0].manifest),
@@ -114,13 +120,14 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
     data => fs.writeFileSync(path.join(data.leaves[0].root, "python", ".local", "pytest.xml"), Buffer.alloc(5_000_001)),
   ]) {
     const data = fixture();
-    try { mutation(data); assert.throws(() => verifyPytestShards(data.directory, data.expected)); }
-    finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
+    try { mutation(data); assert.throws(() => verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot})); }
+    finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
   }
 });
 
 test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic", () => {
   const profile = structuredClone(readCostProfile().profile);
+  profile.first_shard_overhead_ms = 0;
   profile.file_cost_ms = {"tests/test_a.py": 100000, "tests/test_b.py": 80000,
     "tests/test_c.py": 20000, "tests/test_d.py": 10000, "tests/retired.py": 999999000};
   const collection = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/new.py"]
@@ -133,12 +140,17 @@ test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic"
   profile.file_cost_ms = {"tests/é.py": 50, "tests/z.py": 50};
   assert.deepEqual(selectedNodeids(Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`})), 1, profile),
     ["tests/z.py::test_case"]);
+  profile.first_shard_overhead_ms = 100000;
+  profile.file_cost_ms = {"tests/a.py": 200000, "tests/b.py": 180000, "tests/c.py": 100000};
+  const weighted = Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`}));
+  assert.deepEqual(selectedNodeids(weighted, 1, profile), ["tests/b.py::test_case"]);
+  assert.deepEqual(selectedNodeids(weighted, 2, profile), ["tests/a.py::test_case", "tests/c.py::test_case"]);
 });
 
 test("invalid cost definitions never fall back to an unverified assignment", () => {
   for (const mutation of [
     p => p.schema = "unknown", p => p.algorithm = "rank-2", p => p.unknown_file_ms = 0,
-    p => p.extra = "ignored", p => p.file_cost_ms = {}, p => p.file_cost_ms = {"../foreign.py": 1},
+    p => p.extra = "ignored", p => p.first_shard_overhead_ms = -1, p => p.file_cost_ms = {}, p => p.file_cost_ms = {"../foreign.py": 1},
     ...[true, 1.5, -1, Infinity, Number.MAX_SAFE_INTEGER + 1].map(value => p => p.file_cost_ms = {"tests/x.py": value}),
     p => p.file_cost_ms = {"tests/x.py": Number.MAX_SAFE_INTEGER, "tests/y.py": 1},
     p => p.sources[0][0].all_selected_terminal = false, p => p.sources[0][0].junit_sha256 = "foreign",
@@ -160,15 +172,15 @@ test("an exhaustive whole-file swap and a foreign cost definition cannot seal co
         write(leaf.manifest, leaf.report);
       }
     }
-    assert.throws(() => verifyPytestShards(data.directory, data.expected), /deterministic_selection/);
-  } finally { fs.rmSync(data.directory, {recursive: true, force: true}); }
+    assert.throws(() => verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot}), /deterministic_selection/);
+  } finally { fs.rmSync(data.temporary, {recursive: true, force: true}); }
   const other = fixture();
   try {
     const foreign = structuredClone(other.expected);
     foreign.source.cost_profile_sha256 = "0".repeat(64);
-    assert.throws(() => verifyPytestShards(other.directory, foreign), /cost_profile_identity/);
+    assert.throws(() => verifyPytestShards(other.directory, foreign, {profileRoot: other.profileRoot}), /cost_profile_identity/);
     foreign.source.cost_profile_sha256 = other.expected.source.cost_profile_sha256;
     foreign.source.routing_algorithm = "rank-2";
-    assert.throws(() => verifyPytestShards(other.directory, foreign), /cost_profile_identity/);
-  } finally { fs.rmSync(other.directory, {recursive: true, force: true}); }
+    assert.throws(() => verifyPytestShards(other.directory, foreign, {profileRoot: other.profileRoot}), /cost_profile_identity/);
+  } finally { fs.rmSync(other.temporary, {recursive: true, force: true}); }
 });
