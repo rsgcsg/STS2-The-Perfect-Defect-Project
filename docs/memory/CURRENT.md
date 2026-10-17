@@ -1,22 +1,34 @@
 # Current — P1 r1 package 1
 
-[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) is the current assignment.
-User approved merge-commit landing of PR189/191; both are merged, latest baseline
-`29d889bc`. Old T7 card A is obsolete and is not a parallel work queue.
+[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) owns this assignment.
+Base develop29d889bc follows approved PR189/191 merge commits. Old T7 card A is
+obsolete. No package2/3, training, freeze or new PR merge is assigned.
 
-Codex integrates B/C/S/T6 in one package. r1 support scope v0.2 and fixed full-public
-comparison criteria are approved. Deadline2026-10-17 18:30 Australia/Brisbane;
-short attempts <=8 at <=5min each, full40/20 batches <=3, no training. Preserve
-actual run denominators and first differences; never infer qualification from CI.
+User-approved scopev0.2 and full-public comparison remain fixed. Latest S decision:
+append-only card choice or Finish, selected/remaining-capacity observations,
+no Back/deselect, default transform choice commits without animated preview,
+matching normal forward shop.open. Shop departure includes inventory close plus
+same-room proceed. This uses revisionr1.2 and a new Input/Agent binding; oldr1.1
+records retain their original identity. Actual Claws→Maul custom transformation
+in Act3 remains explicitly unqualified. Draft mandatory rewards are outside the
+standard run; linked producer was not found in bounded source investigation.
+Both are r1-not-encountered, with no new section17 exception or extra engineering.
 
-T6 and selector producer/consumer source regressions passed their scoped tests.
-An intermediate B+T6 Managed replay crossed the original T1 point0, then exposed
-combat DTO/detail differences now being repaired in Managed. Reference selector
-canary reached the new page, then stopped partial on the unified Mod's own observer
-patch qualification. That integration repair and final combined suites are pending. Current
-Source4, Human, Boss, victory and strategy claims are not established by this work.
+Managed includes full deck/hand/pile details, exact installed localization,
+merchant presentation ownership and original Task-bound transform selection.
+DARKNESS inherited a native no-op OnUpgrade; the former false rejection is fixed
+while patched effective base methods still fail. Final source and real suites
+remain separate claims.
 
-Next: integrate the remaining Managed facts, verify the shortest real selector and
-card-reward chains, then run stable-candidate suites within the approved window.
-Retained S semantic differences require the user's section17 exception decision;
-this package PR has no merge approval.
+The first earlier-tuple batch finished39 natural losses/40, one upgrade block,
+zero unknown and40 verified replays. It predates new S semantics. Intermediate
+T1 crossedpoint0; final-tuple T1 replay and original T2 positive chain remain
+unproved. The scratch Agent's instance-mapping defect invalidated its strict
+prefix claim; source fixes cannot replace the missing choice/Receipt/successor.
+
+Deadline2026-10-17 18:30 Australia/Brisbane. Short budget8/8 consumed, no ninth;
+full batches1/3 consumed, two left for stable finalManaged40 andReference20.
+Next: final shared gates, install/load repaired Mod, collect both full denominators,
+then open the package PR or hand off the recoverable incomplete increment.
+Unknown, natural loss, budget stop and product blocks stay separate. No CI/Human/
+Boss/victory/strategy qualification is inferred from source tests or cleanup.
