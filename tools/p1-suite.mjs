@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run a P1 Agent over a seed suite on a real Host (Managed service or Reference game) through the existing Policy Runtime.
 // node tools/p1-suite.mjs [--worktree W (default: this repository)] [--host managed --candidate C [--character Defect --language en|zh] | --host reference --local-root DIR [--template T]]
-//   --seeds S1,S2|--suite FILE [--limit N] --out DIR --agent "cmd args"
+//   --seeds S1,S2|--suite FILE [--limit N] [--episode-budget-ms N] --out DIR --agent "cmd args"
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -25,6 +25,13 @@ const { ManagedServicePolicyClient } = await import(pathToFileURL(join(dist, "ma
 const { createGlobalProgramManifest } = await import(pathToFileURL(join(dist, "global-program.js")));
 
 const host = opt("--host", "managed");
+const episodeBudgetMs = Number(opt("--episode-budget-ms", "1200000"));
+if (!Number.isSafeInteger(episodeBudgetMs) || episodeBudgetMs <= 0) throw new Error("episode-budget-ms must be a positive integer");
+const remainingEpisodeMs = (started) => {
+  const remaining = episodeBudgetMs - (Date.now() - started);
+  if (remaining <= 0) throw new Error("episode_budget_exhausted");
+  return remaining;
+};
 const rows = [];
 if (host === "reference") { await runReference(); process.exit(0); }
 let svc = null, svcErr = "", svcGeneration = 0;
@@ -42,7 +49,7 @@ async function runRuntime(dir, manifestPath, hostArgs, started) {
       const port = await freePort();
       const args = [join(worktree, "components/policy-runtime/bin/policy-runtime.mjs"), "--manifest", manifestPath, "--adapter-command", process.execPath,
         `--adapter-arg=${bridge}`, `--adapter-arg=${manifestPath}`, ...agentCmd.map((v) => `--adapter-arg=${v}`), "--mode", "auto", "--listen-port", String(port),
-        "--evidence-root", join(dir, "evidence"), "--max-auto-submissions", "4000", "--max-policy-calls", "8000", "--auto-deadline-ms", "1200000",
+        "--evidence-root", join(dir, "evidence"), "--max-auto-submissions", "4000", "--max-policy-calls", "8000", "--auto-deadline-ms", String(remainingEpisodeMs(started)),
         ...hostArgs];
       const rt = spawn(process.execPath, args, { cwd: worktree, stdio: ["ignore", "pipe", "pipe"] });
       let err = ""; rt.stderr.on("data", (d) => { err += d; });
@@ -55,7 +62,7 @@ async function runRuntime(dir, manifestPath, hostArgs, started) {
         const rdir = runDir(); const events = rdir && existsSync(join(rdir, "events.jsonl")) ? readFileSync(join(rdir, "events.jsonl"), "utf8") : "";
         if (rt.exitCode !== null) ended = "exited";
         else if (/"kind":"(stopped|handoff_to_human|fail_closed|runtime_tainted)"/.test(events)) ended = "stopped";
-        else if (Date.now() - started > 1300000) ended = "timeout";
+        else if (Date.now() - started > episodeBudgetMs + 10000) ended = "timeout";
       }
       if (rt.exitCode === null) { rt.kill("SIGTERM"); await exited; }
       const rdir = runDir(); const row = {}; row.run_dir = rdir;
@@ -83,23 +90,23 @@ async function runRuntime(dir, manifestPath, hostArgs, started) {
 
 try {
   let manager, client, ep;
-  const attach = async () => { await until(() => existsSync(clientAtt) && existsSync(managerAtt), 120000, "attachments");
+  const attach = async (started) => { await until(() => existsSync(clientAtt) && existsSync(managerAtt), started == null ? 120000 : Math.min(120000, remainingEpisodeMs(started)), "attachments");
     manager = JSON.parse(readFileSync(managerAtt, "utf8")); client = JSON.parse(readFileSync(clientAtt, "utf8")); ep = client.endpoint.replace(/\/$/, ""); };
   await attach();
-  const ready = async () => (await fetch(ep + "/v1/ready", { headers: { authorization: `Bearer ${client.token}` } })).json();
+  const ready = async (started) => (await fetch(ep + "/v1/ready", { headers: { authorization: `Bearer ${client.token}` }, signal: AbortSignal.timeout(remainingEpisodeMs(started)) })).json();
   // An unknown delivery fences the Managed process (never retried); a suite continues on a fresh process.
-  const freshService = async () => { svc.kill("SIGTERM"); await new Promise((r) => setTimeout(r, 1500)); startService(); await attach(); };
+  const freshService = async (started) => { svc.kill("SIGTERM"); await new Promise((r) => setTimeout(r, 1500)); startService(); await attach(started); };
   for (const [index, seed] of seeds.entries()) {
     const episode = `managed-${String(index + 1).padStart(4, "0")}-${seed}`, dir = join(outDir, episode); mkdirSync(dir, { recursive: true });
-    const started = Date.now(); const row = { episode, seed };
+    const started = Date.now(); const row = { episode, seed, episode_budget_ms: episodeBudgetMs };
     try {
-      let r0 = await ready();
-      if (r0.episode?.tainted || r0.episode?.closed || index > 0 && rows.at(-1)?.unknown) { await freshService(); r0 = await ready(); row.service_generation = svcGeneration; }
+      let r0 = await ready(started);
+      if (r0.episode?.tainted || r0.episode?.closed || index > 0 && rows.at(-1)?.unknown) { await freshService(started); r0 = await ready(started); row.service_generation = svcGeneration; }
       const reset = await fetch(ep + "/v1/admin/reset", { method: "POST", headers: { authorization: `Bearer ${manager.token}`, "content-type": "application/json",
-        "x-sts2-managed-service-id": manager.service_instance_id }, body: JSON.stringify({ request_id: "reset-" + randomUUID(), seed,
+        "x-sts2-managed-service-id": manager.service_instance_id }, signal: AbortSignal.timeout(remainingEpisodeMs(started)), body: JSON.stringify({ request_id: "reset-" + randomUUID(), seed,
         expected_runtime_instance_id: r0.adapter_runtime_instance_id, expected_game_continuity_id: r0.episode?.game_continuity_id ?? null }) });
       if (reset.status !== 200) throw new Error("reset_" + reset.status + ":" + (await reset.text()).slice(0, 300));
-      const rd = await ready(); const h = rd.host_identity;
+      const rd = await ready(started); const h = rd.host_identity;
       const binding = { schema: "sts2.policy-runtime/managed-environment-binding-1", profile_sha256: sha("p1-suite"), input_profile: "public-basis-1",
         host_package_identity: { package: h.package_name, version: h.version, source_revision: h.source_revision, component_tree_revision: h.component_tree_revision,
           release_asset_sha256: "0".repeat(64), package_content_sha256: "0".repeat(64) },
@@ -108,12 +115,13 @@ try {
       const target = { serviceInstanceId: client.service_instance_id, runtimeInstanceId: rd.adapter_runtime_instance_id, gameContinuityId: rd.episode.game_continuity_id };
       const artifactPath = join(dir, "program.json"); writeFileSync(artifactPath, JSON.stringify({ program: "p1-suite", agent: agentCmd }));
       const t = await ManagedServicePolicyClient.attachGlobal(bindingPath, clientAtt, target, "run-" + randomUUID());
-      const identity = await t.negotiate(AbortSignal.timeout(10000));
+      const identity = await t.negotiate(AbortSignal.timeout(Math.min(10000, remainingEpisodeMs(started))));
       const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity, artifactPath, artifactBytes: readFileSync(artifactPath),
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--managed-binding", bindingPath, "--managed-attachment", clientAtt, "--managed-expected-service-instance-id", target.serviceInstanceId, "--managed-expected-runtime-instance-id", target.runtimeInstanceId, "--managed-expected-game-continuity-id", target.gameContinuityId], started));
     } catch (error) { row.error = String(error.message).slice(0, 400); }
+    row.budget_exhausted = !row.terminal && Date.now() - started >= episodeBudgetMs;
     row.seconds = Math.round((Date.now() - started) / 1000);
     rows.push(row); console.log(JSON.stringify(row));
     writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, rows }, null, 1));
@@ -139,14 +147,15 @@ async function runReference() {
     "--display-mode", opt("--display-mode", "headless"), "--experimental-connector"];
   // One driver per episode: after release_bootstrap the Runtime owns the Host, and the
   // driver refuses a second reset (reference_bootstrap_transferred).
-  const startDriver = () => {
+  const startDriver = (started) => {
     const driver = spawn(process.execPath, driverArgs, { stdio: ["pipe", "pipe", "pipe"] });
     let dErr = ""; driver.stderr.on("data", (d) => { dErr += d; if (dErr.length > 2e6) dErr = dErr.slice(-1e6); });
     const lines = []; let buf = ""; driver.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { lines.push(buf.slice(0, i)); buf = buf.slice(i + 1); } });
     const next = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (lines.length) return JSON.parse(lines.shift()); await new Promise((r) => setTimeout(r, 100)); } throw new Error("driver_timeout " + dErr.slice(-500)); };
     let counter = 0; const call = async (command, extra = {}, ms = 300000) => {
       const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
-      const r = await next(ms); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
+      const remaining = command === "close" ? ms : Math.min(ms, remainingEpisodeMs(started));
+      const r = await next(remaining); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
     const close = async (dir) => {
       try { await call("close", {}, 120000); } catch { /* best effort */ }
       driver.kill("SIGTERM"); writeFileSync(join(dir, "driver.stderr"), dErr);
@@ -155,10 +164,10 @@ async function runReference() {
   };
   for (const [index, seed] of seeds.entries()) {
     const episode = `reference-${String(index + 1).padStart(4, "0")}-${seed}`, dir = join(outDir, episode); mkdirSync(dir, { recursive: true });
-    const started = Date.now(); const row = { episode, seed };
-    const { next, call, close } = startDriver();
+    const started = Date.now(); const row = { episode, seed, episode_budget_ms: episodeBudgetMs };
+    const { next, call, close } = startDriver(started);
     try {
-      const ready = await next(300000); if (ready.type !== "ready") throw new Error("driver_not_ready " + JSON.stringify(ready).slice(0, 300));
+      const ready = await next(Math.min(300000, remainingEpisodeMs(started))); if (ready.type !== "ready") throw new Error("driver_not_ready " + JSON.stringify(ready).slice(0, 300));
       await call("reset", { seed }, 600000);
       const identity = (await call("episode_identity")).identity;
       const prov = identity.episode_provenance ?? {};
@@ -166,13 +175,14 @@ async function runReference() {
       await call("release_bootstrap", { expected_runtime_instance_id: identity.host.runtime_instance_id });
       const artifactPath = join(dir, "program.json"); writeFileSync(artifactPath, JSON.stringify({ program: "p1-suite", agent: agentCmd }));
       const t = new ReferenceGlobalTransport(new sdk.PlayerEnvironmentRestClient(endpoint, 5000), { productVersion: "p1-suite", clientInstanceId: "suite-" + randomUUID() });
-      const gid = await t.negotiate(AbortSignal.timeout(15000)); await t.close().catch(() => {});
+      const gid = await t.negotiate(AbortSignal.timeout(Math.min(15000, remainingEpisodeMs(started)))); await t.close().catch(() => {});
       const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity: gid, artifactPath, artifactBytes: readFileSync(artifactPath),
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--connector-endpoint", endpoint], started));
     } catch (error) { row.error = String(error.message).slice(0, 400); }
     finally { await close(dir); }
+    row.budget_exhausted = !row.terminal && Date.now() - started >= episodeBudgetMs;
     row.seconds = Math.round((Date.now() - started) / 1000); rows.push(row); console.log(JSON.stringify(row));
     writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, rows }, null, 1));
   }
