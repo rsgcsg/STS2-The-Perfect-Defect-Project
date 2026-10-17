@@ -94,8 +94,13 @@ export function nativeCardSelectionProblems(snapshot: unknown): string[] {
   const referents = snapshot.referents;
   if (!Array.isArray(referents)) return ["native card selection requires current card referents"];
   const cardRefs = referents.filter((ref) => isJsonObject(ref) && ref.role === "card");
-  if (cardRefs.length !== cards.length || cardRefs.some((ref) => !isJsonObject(ref)
-      || !ids.includes(ref.referent_id))) return ["native card selection card/referent closure is incomplete"];
+  const detailTargets = new Set(Array.isArray(snapshot.reads) ? snapshot.reads.filter(read => isJsonObject(read)
+    && read.kind === "surface_card" && read.content_schema === "sts2.player-environment/read/surface_card-1")
+    .map(read => isJsonObject(read) ? read.target_referent_id : null) : []);
+  if (ids.some(id => cardRefs.filter(ref => isJsonObject(ref) && ref.referent_id === id).length !== 1)
+      || new Set(cardRefs.map(ref => isJsonObject(ref) ? ref.referent_id : null)).size !== cardRefs.length
+      || cardRefs.some(ref => !isJsonObject(ref) || !ids.includes(ref.referent_id) && !detailTargets.has(ref.referent_id)))
+    return ["native card selection card/referent closure is incomplete"];
   const expected = values.flatMap((card) => [
     ...(card.is_selectable ? [`select:${card.entity_id}`] : []),
     ...(card.is_deselectable ? [`deselect:${card.entity_id}`] : [])
