@@ -50,7 +50,7 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["merge-multiple: false", "merge-multiple: true", "portable must download separate original current-run shard artifacts"],
-    ["pattern: pytest-*-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
+    ["pattern: pytest-Linux-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
   ]) assert.ok(ciWorkflowErrors(currentSource().replaceAll(before, after)).includes(error), error);
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
 });
@@ -73,9 +73,9 @@ test("aggregate implementation verifies original coverage before minting a fresh
   assert.ok(source.includes("pytest_coverage: coverage"));
 });
 
-test("CI contract rejects a required status that does not aggregate Windows", () => {
+test("CI contract rejects a required status that omits selected Linux gates", () => {
   const source = currentSource().replace(
-    "needs: [plan, docs, repository, linux-portability, windows-portability]",
+    "needs: [plan, docs, repository, linux-portability]",
     "needs: [linux-portability]"
   );
   assert.ok(ciWorkflowErrors(source).includes("portable must aggregate plan and selected lanes"));
@@ -106,9 +106,9 @@ test("both language environments remain required on both OS lanes", () => {
 });
 
 
-test("repository CI installs its real dependencies and retains both OSes", () => {
+test("repository CI installs its real dependencies on Linux", () => {
   const source = currentSource();
-  for (const changed of [source.replace("os: [ubuntu-latest, windows-latest]", "os: [ubuntu-latest]"),
+  for (const changed of [source.replace("runs-on: ubuntu-latest", "runs-on: windows-latest").replaceAll("runs-on: ubuntu-latest", "runs-on: windows-latest"),
     source.replaceAll("run: npm ci\n", "run: echo no-install\n"),
     source.replace("REPOSITORY_RESULT:", "OMITTED_RESULT:")])
     assert.ok(ciWorkflowErrors(changed).length > 0);
@@ -127,4 +127,33 @@ test("repository-only workflow changes cannot alter product jobs, plan or trigge
     source.replace("  repository:\n", "  unknown:\n"),
     source.replace("  docs:\n", "  docs:\n  docs:\n")])
     assert.equal(repositoryOnlyWorkflowChange(source, changed), false);
+});
+
+import {failureNames, updateChecklist, mergeChecklists} from './windows-failures.mjs';
+
+test('original test failures and a crash remain actionable names', () => {
+  assert.deepEqual(failureNames(`2026-10-17T00:00:00Z FAILED tests/test_one.py::test_case - AssertionError
+not ok 7 - child exits
+ FAIL tests/runtime.test.ts > releases controller
+Windows fatal exception: access violation
+{"stage":"workspace_gate","id":"python","status":"failed"}`), [
+    'Python process: access violation', 'child exits', 'gate: python (failed)',
+    'tests/runtime.test.ts > releases controller', 'tests/test_one.py::test_case',
+  ]);
+});
+test('checklist keeps first date, deduplicates one run and marks recurrence across runs', () => {
+  const first = updateChecklist([], ['test_a', 'test_a'], {run: '10', date: '2026-10-17'});
+  assert.equal(first.length, 1);
+  const repeat = updateChecklist(first, ['test_a'], {run: '11', date: '2026-10-18'});
+  assert.deepEqual(repeat[0], {test: 'test_a', first_seen: '2026-10-17', runs: ['10', '11'], last_seen: '2026-10-18'});
+  assert.deepEqual(updateChecklist(repeat, [], {run: '12', date: '2026-10-19'}), repeat);
+});
+
+test('overlapping Windows histories retain both runs without double counting', () => {
+  const common = updateChecklist([], ['shared'], {run: '1', date: '2026-10-16'});
+  const left = updateChecklist(common, ['only-left', 'shared'], {run: '2', date: '2026-10-17'});
+  const right = updateChecklist(common, ['only-right', 'shared'], {run: '3', date: '2026-10-17'});
+  const combined = mergeChecklists(left, right);
+  assert.deepEqual(combined.map(entry => entry.test).sort(), ['only-left', 'only-right', 'shared']);
+  assert.deepEqual(combined.find(entry => entry.test === 'shared').runs, ['1', '2', '3']);
 });

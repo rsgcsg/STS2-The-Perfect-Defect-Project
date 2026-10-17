@@ -7,16 +7,20 @@ import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspace
 
 const root = path.resolve(import.meta.dirname, "..");
 
-test("explicit pytest partitions preserve every stage and npm argument boundary; defaults remain full", () => {
-  for (const scope of ["full", "python"]) for (const pytestShard of ["1/2", "2/2"]) {
-    const original = workspaceStages(scope), partitioned = workspaceStages(scope, {pytestShard});
-    assert.deepEqual(partitioned.map(stage => stage.id), original.map(stage => stage.id));
-    for (const [index, stage] of partitioned.entries()) {
-      assert.deepEqual(stage.requires, original[index].requires);
-      assert.deepEqual(stage.args, stage.id === "python"
-        ? ["run", "check:python", "--", "--pytest-shard", pytestShard] : original[index].args);
+test("partition union retains every gate once and fresh builds on both leaves", () => {
+  for (const scope of ["full", "python"]) {
+    const original = workspaceStages(scope);
+    const first = workspaceStages(scope, {pytestShard: "1/2"});
+    const second = workspaceStages(scope, {pytestShard: "2/2"});
+    assert.deepEqual(first.map(stage => stage.id), original.map(stage => stage.id));
+    assert.deepEqual(second.map(stage => stage.id), ["shared-client-build", "python"]);
+    assert.deepEqual(second[0].requires, []);
+    assert.deepEqual(second[1].requires, ["shared-client-build"]);
+    for (const [index, stages] of [[1, first], [2, second]]) {
+      assert.deepEqual(stages.find(stage => stage.id === "python").args,
+        ["run", "check:python", "--", "--pytest-shard", `${index}/2`]);
+      assert.equal(pytestPartition(`${index}/2`).complete, false);
     }
-    assert.equal(pytestPartition(pytestShard).complete, false);
   }
   assert.equal(pytestPartition(undefined), null);
   for (const value of ["", "0/2", "3/2", "1/1", "1/3", "all"]) assert.throws(() => pytestPartition(value));
