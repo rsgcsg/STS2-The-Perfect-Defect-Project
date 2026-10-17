@@ -630,13 +630,19 @@ public sealed record ShopInventorySurface(
     IReadOnlyList<VisibleShopRelicOffer> Relics,
     IReadOnlyList<VisibleShopPotionOffer> Potions,
     VisibleShopCardRemovalOffer? CardRemoval,
-    bool CanClose) : ILiveSurface;
+    bool CanClose) : ILiveSurface
+{
+    public string? ShopSessionEntityId { get; init; }
+}
 
 public sealed record ShopRoomSurface(
     string Kind,
     string RoomEntityId,
     bool CanOpenInventory,
-    bool CanProceed) : ILiveSurface;
+    bool CanProceed) : ILiveSurface
+{
+    public string? ShopSessionEntityId { get; init; }
+}
 
 /// <summary>
 /// The single-player treasure-room lifecycle. Chest opening, relic choice,

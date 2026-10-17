@@ -5,7 +5,7 @@ import type { P1Basis } from "./reducer.js";
 
 const text = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 const operations = new Set(["open_preview", "toggle_upgrade_view", "confirm", "confirm_selection", "cancel_preview", "cancel_selection"]);
-const families = new Set(["deck_card", "deck_upgrade", "deck_enchant", "simple", "combat_pile"]);
+const families = new Set(["deck_card", "deck_upgrade", "deck_enchant", "deck_transform", "simple", "combat_pile"]);
 const sorted = (ids: readonly string[]) => [...ids].sort();
 
 /** An opt-in native producer contract. Legacy selectors keep their explicit inputs. */

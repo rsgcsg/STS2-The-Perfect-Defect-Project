@@ -34,7 +34,7 @@ export function createPublicIdentityPolicy(nativeKind: string,
     card("cards[]"); add(["screen_entity_id", "hand_entity_id", "request_entity_id", "current_controls[].entity_id"]);
     refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]",
       "selector_request.entity_id", "selector_request.owner_entity_id", "selector_request.selected_entity_ids[]",
-      "preview_options[].subject_entity_id"]);
+      "preview_options[].subject_entity_id", "selection_progress.selected_card_entity_ids[]"]);
     card("preview_options[].before"); card("preview_options[].after");
     if (nativeKind === "deck_upgrade_selection") card("preview_cards[]");
   } else if (nativeKind === "combat_turn") {
@@ -57,10 +57,10 @@ export function createPublicIdentityPolicy(nativeKind: string,
   else if (["treasure_room", "treasure_chest", "treasure_relic_selection", "treasure_completion", "relic_choice", "native_boss_relic_selection"].includes(nativeKind)) {
     add(["room_entity_id", "screen_entity_id", "relics[].entity_id"]); refs(["selectable_relic_entity_ids[]"]);
   } else if (nativeKind === "shop_inventory") {
-    add(["screen_entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
+    add(["screen_entity_id", "shop_session_entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
       "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]);
     card("cards[]");
-  } else if (nativeKind === "shop_room") add(["room_entity_id"]);
+  } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
     && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));

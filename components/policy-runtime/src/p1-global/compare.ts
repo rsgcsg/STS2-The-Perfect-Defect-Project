@@ -1,8 +1,8 @@
 import { canonicalJson, completeCards, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
-  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
+  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
- * transformations require an owning schema/path declaration; r1.1 uses literal text.
+ * transformations require an owning schema/path declaration; r1.2 uses literal text.
  * Entity aliases may be renamed only through one injective global mapping. */
 export interface FirstDifference { path: string; left: unknown; right: unknown; reason?: string }
 type Verdict = "equal" | "different" | "incomparable";
@@ -40,7 +40,7 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
   });
 }
 function supported(observation: P1Observation): string | null {
-  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || observation.revision !== "r1.1")
+  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || observation.revision !== P1G_REVISION)
     return "unsupported_profile_revision";
   if (observation.scene.content_schema !== `sts2.player-environment/surface/${observation.scene.native_kind}-1`
       || (observation.scene.content as any)?.surface?.kind !== observation.scene.native_kind) return "unsupported_scene_schema_or_kind";

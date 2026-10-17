@@ -98,15 +98,16 @@ describe("P1 global r1 shared reducer", () => {
     }
   });
 
-  it("retains native deselect inside an upgrade/enchant selection", () => {
+  it("accounts for native deselect privately while r1.2 selection only appends", () => {
     const basis = clone(fixture("managed-deck_enchant_selection"));
     const actions = (basis.snapshot as any).bound_actions.actions as any[];
     actions.push({ ...actions[0], bound_action_id: "action_deselect_test", verb: "deselect", label: "Deselect" });
     (basis.snapshot as any).bound_actions.materialized_count = actions.length;
     (basis.snapshot as any).bound_actions.total_count = actions.length;
     const result = reduce(createSession("e", "managed"), basis);
-    expect(result.excluded).toEqual([]);
-    expect(result.observation.catalog.some((choice) => choice.kind === "enchant.deselect")).toBe(true);
+    expect(result.excluded).toEqual([expect.objectContaining({ bound_action_id: "action_deselect_test",
+      rule: "forward_profile:selection_append_only" })]);
+    expect(result.observation.catalog.some((choice) => choice.kind === "enchant.deselect")).toBe(false);
     expect(result.observation.catalog.length + result.excluded.length).toBe(actions.length);
   });
 

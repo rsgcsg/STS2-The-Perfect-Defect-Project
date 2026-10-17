@@ -1039,7 +1039,7 @@ public sealed class PlayerEnvironmentContractTests
             Array.Empty<VisibleShopRelicOffer>(),
             Array.Empty<VisibleShopPotionOffer>(),
             CardRemoval: null,
-            CanClose: true);
+            CanClose: true) { ShopSessionEntityId = "merchant-session" };
 
         string facts = JsonSerializer.Serialize(
             PlayerEnvironmentService.ProjectVisibleFacts(
@@ -1048,6 +1048,12 @@ public sealed class PlayerEnvironmentContractTests
 
         Assert.Contains("offer-visible", facts);
         Assert.Contains("card-visible", facts);
+        Assert.Contains("merchant-session", facts);
+        string roomFacts = JsonSerializer.Serialize(PlayerEnvironmentService.ProjectVisibleFacts(
+            new ShopRoomSurface("shop_room", "room-private", true, true)
+                { ShopSessionEntityId = "merchant-session" }, new ShopLiveContext("shop")));
+        Assert.Contains("merchant-session", roomFacts);
+        Assert.DoesNotContain("room-private", roomFacts);
         Assert.DoesNotContain("screen-private", facts);
         Assert.DoesNotContain("slot-private", facts);
         Assert.DoesNotContain("screen_entity_id", facts);

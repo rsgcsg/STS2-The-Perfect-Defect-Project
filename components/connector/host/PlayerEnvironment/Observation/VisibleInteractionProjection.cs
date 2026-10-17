@@ -267,7 +267,7 @@ internal static partial class PlayerEnvironmentService
             }),
             ShopInventorySurface value => ToNode(new
             {
-                value.Kind,
+                value.Kind, value.ShopSessionEntityId,
                 Cards = value.Cards.Select(ProjectShopCardOffer).ToArray(),
                 Relics = value.Relics.Select(ProjectShopRelicOffer).ToArray(),
                 Potions = value.Potions.Select(ProjectShopPotionOffer).ToArray(),
@@ -278,7 +278,7 @@ internal static partial class PlayerEnvironmentService
             }),
             ShopRoomSurface value => ToNode(new
             {
-                value.Kind, value.CanOpenInventory, value.CanProceed
+                value.Kind, value.ShopSessionEntityId, value.CanOpenInventory, value.CanProceed
             }),
             TreasureRoomSurface value => ToNode(new
             {

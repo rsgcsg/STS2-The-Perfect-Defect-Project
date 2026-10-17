@@ -8,7 +8,7 @@ import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js
 import { completeSelectorFacts, selectorOperation, selectorIntention, matchesSelectorIntention,
   type SelectorIntention } from "./selectorForward.js";
 import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
-  matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
+  matchesRewardIntention, rewardWorldFacts, type RewardIntention } from "./rewardForward.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
@@ -67,7 +67,7 @@ export interface NativeStep {
 
 /** A declared continuation inside one already chosen P1 intention. */
 export interface FollowRule {
-  readonly rule_id: "upgrade_confirm" | "enchant_confirm" | "card_reward_select" | "selector_preview_confirm" | "reward_completion_proceed" | "reward_intention" | "selector_intention";
+  readonly rule_id: "upgrade_confirm" | "enchant_confirm" | "card_reward_select" | "selector_preview_confirm" | "reward_completion_proceed" | "reward_intention" | "selector_intention" | "shop_leave";
   readonly expect_native_kind: string;
   readonly expect_verb: string;
   /** Optional folds stop silently (intention completed) when the successor is not the expected stage. */
@@ -93,6 +93,7 @@ export interface Lowering {
   readonly option_public: string | null;
   readonly reward_intention?: RewardIntention;
   readonly selector_intention?: SelectorIntention;
+  readonly shop_leave?: { readonly owner: string; readonly world: string; readonly context: string };
 }
 
 export interface ExcludedNative { readonly bound_action_id: string; readonly verb: string; readonly label: string; readonly rule: string }
@@ -191,16 +192,18 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "shop_inventory|activate|shop_service": "shop.service",
   "shop_inventory|close|": "shop.leave",
   // Reference spells the same native "Close shop inventory" input as cancel.
-  "shop_inventory|cancel|": "shop.leave"
+  "shop_inventory|cancel|": "shop.leave",
+  "shop_room|activate|": "shop.leave"
 };
 
-// r1.1 preserves native cancellation, deselection and browsing until a
-// mechanism-specific full-information/intention proof qualifies their removal.
+// r1.2 selectors append originals irreversibly. Finish commits the current
+// selection through a currently offered native completion; empty Finish declines.
 
 /** Continue-only inputs: the native room/page referent they name carries no decision content. */
-const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "reward.leave", "reward.leave_remaining", "rest.proceed"]);
+const SUBJECTLESS_KINDS: ReadonlySet<string> = new Set(["reward.proceed", "reward.leave", "reward.leave_remaining", "rest.proceed",
+  "selector.finish", "upgrade.finish", "enchant.finish", "shop.open", "shop.leave"]);
 
-// r1.1 has no qualified mandatory-input producer proof. Singleton choices remain Agent choices.
+// Singleton choices remain Agent choices; automatic mandatory input is not inferred from count.
 
 interface AliasWork {
   aliases: Record<string, string>; counts: Record<string, number>;
@@ -490,6 +493,9 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   if (nativeKind === "reward_claim" && !completeRewardSurface(surface)) missing.push("required:reward:invalid_content");
   if (nativeKind === "card_reward_selection" && !completeCardRewardSurface(surface)) missing.push("required:card_reward:invalid_content");
+  if (["shop_room", "shop_inventory"].includes(nativeKind)
+      && !(typeof surface.shop_session_entity_id === "string" && surface.shop_session_entity_id.length > 0))
+    missing.push("required:shop:session_identity");
   // Declared r1 exception (protocol §5): ordinary native open→Skip detaches a CardReward's
   // passive RelicObtained refresh. P1 does not offer that "freeze these candidates" input;
   // the subscription state stays public on the group (native_relic_refresh_subscription)
@@ -515,6 +521,10 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const declined = new Set(reward?.declined ?? []);
   const excluded: ExcludedNative[] = [];
   const qualifiedSelector = completeSelectorFacts(surface);
+  const selectionFamily = ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
+  const hasSelectionCompletion = selectionFamily && (snapshot.bound_actions.actions as NativeAction[]).some(action =>
+    action.verb === "confirm" || qualifiedSelector && ["open_preview", "confirm_selection", "confirm"]
+      .includes(selectorOperation(surface, action.subject_referent_id ?? null) ?? ""));
   if (Object.hasOwn(surface, "selector_request") && !qualifiedSelector)
     missing.push("required:selector:public_facts_incomplete");
   const push = (choice: Omit<P1Choice, "choice_id">, low: Lowering) => candidates.push({ choice, lowering: low,
@@ -524,6 +534,22 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     const role = subjectId ? roles.get(subjectId) ?? "" : "";
     const operation = qualifiedSelector ? selectorOperation(surface, subjectId) : null;
     const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+    if (selectionFamily && (action.verb === "deselect" || operation === "cancel_preview"
+        || !operation && ["cancel", "close"].includes(action.verb) && surface.stage === "preview")) {
+      excluded.push({ ...first, rule: "forward_profile:selection_append_only" }); continue;
+    }
+    if (selectionFamily && action.verb === "select" && (surface.selected_count >= surface.max_select
+        || surface.selected_card_entity_ids.includes(subjectId))) {
+      excluded.push({ ...first, rule: "forward_profile:selection_capacity_or_already_selected" }); continue;
+    }
+    const declineSelection = selectionFamily && (operation === "cancel_selection"
+      || !operation && ["skip", "cancel", "close"].includes(action.verb));
+    if (declineSelection && surface.selected_count !== 0) {
+      excluded.push({ ...first, rule: "forward_profile:keep_selected_originals" }); continue;
+    }
+    if (declineSelection && hasSelectionCompletion) {
+      excluded.push({ ...first, rule: "forward_profile:empty_selection_uses_completion" }); continue;
+    }
     if (qualifiedSelector && (action.verb === "open" && role === "card"
         || operation === "toggle_upgrade_view")) {
       excluded.push({ ...first, rule: "forward_profile:complete_selector_public_presentations" }); continue;
@@ -532,6 +558,8 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
       : operation === "cancel_selection" ? `${family}.cancel`
       : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;
+    if (selectionFamily && (declineSelection || action.verb === "confirm"
+        || ["open_preview", "confirm_selection", "confirm"].includes(operation ?? ""))) kind = `${family}.finish`;
     const mapped = kind !== undefined;
     kind ??= `native.${nativeKind}.${action.verb}${role ? `.${role}` : ""}`;
     // The native result is final: inputs on the game-over page only navigate to the run summary.
@@ -593,8 +621,16 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     const intention = qualifiedSelector ? selectorIntention(surface, basis, action.verb, subjectId) : null;
     if (intention) follow.push({ rule_id: "selector_intention", expect_native_kind: nativeKind,
       expect_verb: "confirm", optional: false });
-    push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias, label: action.label, mapped },
-      { ...base, first, follow, commitment, group_key: groupKey, ...(intention ? { selector_intention: intention } : {}) });
+    const shopLeave = nativeKind === "shop_inventory" && kind === "shop.leave"
+      && typeof surface.shop_session_entity_id === "string" && surface.shop_session_entity_id.length > 0
+      ? { owner: surface.shop_session_entity_id, world: rewardWorldFacts(basis),
+        context: canonicalJson(snapshot.interaction.content.context) } : null;
+    if (shopLeave) follow.push({ rule_id: "shop_leave", expect_native_kind: "shop_room",
+      expect_verb: "activate", optional: false });
+    push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias,
+      label: selectionFamily && kind === `${family}.finish` ? "Finish selection" : action.label, mapped },
+      { ...base, first, follow, commitment, group_key: groupKey, ...(intention ? { selector_intention: intention } : {}),
+        ...(shopLeave ? { shop_leave: shopLeave } : {}) });
   }
   candidates.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
   if (candidates.length > P1G_LIMITS.catalog_choices) missing.push("catalog_over_limit");
@@ -603,6 +639,15 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     lowering[choice_id] = item.lowering;
     return { choice_id, ...item.choice };
   });
+  if (selectionFamily && completeSelector(surface)) {
+    (sceneContent.surface as Record<string, any>).selection_progress = {
+      mode: "forward_append_only",
+      selected_card_entity_ids: (sceneContent.surface as Record<string, any>).selected_card_entity_ids,
+      remaining_slots: surface.max_select - surface.selected_count,
+      minimum_additional_cards: Math.max(0, surface.min_select - surface.selected_count),
+      finish_available: catalog.some(choice => choice.kind === `${family}.finish`)
+    };
+  }
 
   // Hosts state the native result differently (Managed surface.victory, Reference context.result).
   const victory = surface?.victory ?? (context.result === "win" ? true : context.result === "loss" ? false : undefined);
@@ -705,7 +750,7 @@ export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: u
     return { bound_action_id: only.bound_action_id, verb: only.verb, label: only.label };
   }
   // A matching kind plus a unique confirm/continue is not an intention/owner proof.
-  // r1.1 emits no such automatic plans while those producer contracts are absent.
+  // Selector/shop folds require a complete sealed basis; a snapshot alone is not that proof.
   return null;
 }
 
@@ -713,6 +758,17 @@ export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: u
 export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: P1Basis): NativeStep | null {
   const next = reduce(createSession("continuation-check", "reference"), basis);
   if (!next.complete || next.observation.status !== "decision") return null;
+  if (rule.rule_id === "shop_leave" && lowering.shop_leave && !rule.optional
+      && rule.expect_native_kind === "shop_room" && rule.expect_verb === "activate") {
+    const snapshot = basis.snapshot as Record<string, any>;
+    const surface = snapshot.interaction.content.surface;
+    if (snapshot.interaction.kind !== "shop_room" || surface.shop_session_entity_id !== lowering.shop_leave.owner
+        || surface.can_proceed !== true || rewardWorldFacts(basis) !== lowering.shop_leave.world
+        || canonicalJson(snapshot.interaction.content.context) !== lowering.shop_leave.context) return null;
+    const choices = next.observation.catalog.filter(choice => choice.kind === "shop.leave");
+    const first = choices.length === 1 ? next.lowering[choices[0]!.choice_id]?.first : null;
+    return first?.verb === "activate" ? first : null;
+  }
   if (rule.rule_id === "selector_intention" && lowering.selector_intention && !rule.optional
       && rule.expect_native_kind === lowering.selector_intention.native_kind
       && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis)) {
