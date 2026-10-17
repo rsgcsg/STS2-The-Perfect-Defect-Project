@@ -2275,7 +2275,7 @@ class LocalModelService:
                 current_target = self._managed_runtime_target()
                 # The owned startup records the adapter; GLOBAL is always an
                 # agent-session startup, policy startups carry no adapter.
-                if client.startup.get("adapter") == GLOBAL_ADAPTER:
+                if client.startup.get("adapter", {}).get("id") == GLOBAL_ADAPTER:
                     current_target = {**current_target, "input_profile": "public-basis-1"}
                 confirm_target(managed_environment, current_target)
                 if current_target["runtime_instance_id"] != binding.runtime_instance_id:

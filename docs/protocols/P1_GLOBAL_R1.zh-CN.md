@@ -1,15 +1,15 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.1，P1 的唯一权威文档**（2026-10-16 起）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；与本文冲突时以本文和代码为准。
+状态：**r1.1，P1 的唯一权威文档**（2026-10-16 起）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前进度与下一步见第 16–18 节。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
 产品路径：`PolicyRuntime`（agent-session-1）→ Managed 用 `ManagedServicePolicyClient.attachGlobal`，Reference 用 `ReferenceGlobalTransport`；简单外部 Agent 经 `components/policy-runtime/examples/p1/session-bridge.mjs` 接入（`sts2.p1/agent-port-1`）。
-套件入口：`node tools/p1-suite.mjs`；离线检查 `sts2-p1 replay|trajectory`。第 1–13 节是协议语义（r1.0 起不变，除非第 17 节登记）；第 14–15 节是 r1.0 的历史实测。
+套件入口：`node tools/p1-suite.mjs`；离线检查 `sts2-p1 replay|trajectory`。第 1–13 节定义协议语义与当前实现边界；本轮审计纠正其中与共享核心不符的旧描述，语义例外仍须第17节登记；第 14–15 节是 r1.0 的历史实测。
 
 ## 1. P1 是什么、为什么要
 
-P1 是 Agent 与《杀戮尖塔 2》之间唯一的决策协议：每个决策点给 Agent 一份完整的公开观察和一份**只含前进动作**的语义动作清单，Agent 选一个，协议把它落实成游戏里的原生操作。
+P1 是本轮为 Agent 与《杀戮尖塔 2》选定的决策协议：每个决策点给 Agent 一份完整的公开观察和一份**只含前进动作**的语义动作清单，Agent 选一个，协议把它落实成游戏里的原生操作。
 
 要它的原因：
 - 原生界面充满纯导航（打开奖励、看卡、返回、确认），让模型学这些既浪费又制造循环（历史上真实出现过"打开卡牌奖励 → 跳过 → 回到同一页"）；
@@ -24,7 +24,7 @@ P1 不新增游戏规则、不判断合法性：每个 P1 动作都落到游戏�
 2. **信息给全、尽量 Markov**：每份观察都附上此刻合法可看且查看无效果的全部信息——牌组、战斗中三个牌堆、遗物药水、当前页面内容；本来要打开才看得到的（例如每个卡牌奖励组的候选卡）直接放进来。P1 自己做出的不可撤回承诺（已放弃的奖励组）也公开在观察里。不宣称严格 Markov，Agent 可以保留记忆。
 3. **不暴露真实的未来**：抽牌真实顺序、未揭示的奖励、随机结果、未来敌人行动永不进入观察；也不能从别名、排序或摘要里间接泄漏（第 5 节）。付款、开箱、出牌等效果先真实发生，之后才给新内容。
 4. **不加提示**：没有推荐、访问计数、"你又来了"之类程序推导的信息。
-5. **完整才发布**：任何必需部分取不到，这份观察就不交给 Agent（执行器先重新取，仍不行则如实删失）。
+5. **完整才发布**：任何必需部分取不到，这份观察就不交给 Agent。原生明确报告 `settling` 时等待；离开该状态后仍缺必需信息即如实停止，不对任意 `partial` 施加重读宽限。读取轮询间隔仅为现有pull接口调度，不能证明就绪；原预算/Stop限制等待。
 
 ## 3. 分层与现有组件
 
@@ -78,7 +78,7 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 | --- | --- | --- |
 | combat | `combat.play_card(牌, 目标)`、`potion.use(药水, 目标)`、`potion.discard`、`combat.end_turn` | 一对一 |
 | map | `map.travel(节点)` | 一对一 |
-| reward | `reward.claim(组)`（金币/药水/遗物）、`reward.take_card(组, 卡)`、`reward.decline_group(组)`、`reward.leave`、`reward.proceed` | take_card = 打开该组 → 核对打开页确实是预览的那张卡 → 选择；decline_group 是纯 P1 承诺，不发原生输入 |
+| reward | `reward.claim(组)`（金币/药水/遗物）、`reward.take_card(组, 卡)`、`reward.decline_group(组)`、`reward.leave`、`reward.proceed` | take_card = 打开该组 → 核对打开页确实是预览的那张卡 → 选择；decline_group = 打开该组 → 合格原生 Skip → P1 关闭该组；不能把它误述为纯本地承诺 |
 | card_reward（游戏端直接弹出时） | `card_reward.take`、`card_reward.decline` | 一对一 |
 | upgrade / enchant | `upgrade.choose(卡)`、`enchant.choose(卡)` | 选卡 → 出现预览时自动确认 |
 | selector（各类选牌器） | `selector.choose`、`selector.skip`、`selector.confirm` | 单选出现预览时自动确认；多选逐张追加、由 Agent 决定何时确认 |
@@ -88,11 +88,11 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 **排除（单向规则）**：`upgrade.back`、`enchant.back`、`selector.cancel`、`selector.deselect`、`upgrade.deselect`、`enchant.deselect`、`shop.open`；终局页上的全部原生输入（只是去结算页的导航，规则 `terminal:post_result_navigation`）。有预览时不再提供 `reward.open_card_group`；只有游戏端给不出预览时才保留它。
 
-**强制步骤**（不调用 Agent，记录 origin=forced）：地图只有一条路、事件只有一个选项、`reward.proceed`、`rest.proceed`，以及所有奖励组都已领取或放弃后的 `reward.leave`。只剩一个金币、只剩"结束回合"不算强制。
+**强制步骤的当前边界**：共享核心目前返回 `forced_choice_id=null`，并未启用上述chooser旁路。一个按钮或一个动作不足以证明强制；未来若启用，必须逐机制证明没有其他有意义机会、保留context与origin，并按版本记录。已选意图内部的合格机械fold是另一回事。
 
-**两端呈现差异的统一**：奖励页全部领完后，Managed 给单独的"前往地图"页，Reference 停在空奖励页给"继续"——两者都读作一个强制 `reward.proceed`。`reward.leave` 之后若出现只有一个"前往地图"输入的完成页，把它作为同一意图的折叠步骤执行。继续类动作（`reward.proceed/leave`、`rest.proceed`）不带主语（原生房间引用不含决策信息）。
+**两端呈现差异的统一**：奖励页全部领完后，Managed 给单独的"前往地图"页，Reference 停在空奖励页给"继续"——两者都映射为 `reward.proceed`；当前仍由chooser选择，不因单例自行执行。`reward.leave` 之后若出现只有一个"前往地图"输入的完成页，把它作为同一意图的折叠步骤执行。继续类动作（`reward.proceed/leave`、`rest.proceed`）不带主语（原生房间引用不含决策信息）。
 
-**奖励组承诺**：组身份来自 Host 的 `group_id`，从不用标签、位置或观察 ID 代替；Host 不提供时该页标为不完整。放弃后同一组在本奖励页内不再提供，并公开在 `commitments`；原生奖励仍在原处，离开奖励页时由游戏原生处理（P1 不伪造原生 Skip）。
+**奖励组承诺**：组身份来自 Host 的 `group_id`，从不用标签、位置或观察 ID 代替；Host 不提供时该页标为不完整。放弃后同一组在本奖励页内不再提供，并公开在 `commitments`；P1提交关闭承诺前已执行合格原生Skip并核后件；原生组的最终处置仍由原owner退出处理，不用本地ledger伪造OnSkipped。
 
 ## 7. 结果与失败（`sts2.p1/result-1`）
 
@@ -115,6 +115,10 @@ Agent → 执行器：ready{protocol, agent_id, agent_version}
 Agent → 执行器：choose{occurrence, choice_id} | abstain{reason}
 执行器 → Agent：result{result} …… episode_end{outcome, censor_reason}
 ```
+
+终局同样先发送完整 `observation{requires_choice:false}`，再发送 `episode_end`；不能仅凭结束通知或空choice判定跨Host终局相同。对照须已匹配前缀、Reference最后一点为明确终局、无删失，并比较双方完整公共终局（包含win/loss）。桥接器在返回Runtime close前让子Agent处理完终局并退出，异常退出不伪称完整交付；原Runtime预算仍约束等待。
+
+升级页已有的subjectless原生 `activate`（切换当前/升级预览）映射为 `upgrade.toggle_preview`，保留原bound_action_id并由原生执行时复验，不等同选牌/确认，也不扩成所有activate的兜底。
 
 Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`components/policy-runtime/examples/p1/`（随机、首项、人工选择器）。
 
@@ -196,10 +200,10 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 | 运行 | 宿主 | 结果 |
 | --- | --- | --- |
 | suite-b，10 种子 | Managed（Ironclad，en） | 9/10 自然终局，0 unknown，10/10 回放校验通过 |
-| census40，40 种子（统计 38 局） | Managed（Defect，zh） | 32/38 自然终局，0 unknown，2519 个决策；6 局都卡在选卡页元数据（续作 T2）；另 2 局因本机磁盘满中断，不计入 |
-| ref5，test-1000 前 5 种子 | Reference（真实游戏 + 开发 Mod，Defect，zh） | 4/5 自然终局，343 个决策，5/5 回放校验通过；第 4 局在第 44 步出现 unknown（请求层“未交付”回执不带 subject，见下）。修复后重跑该种子：自然终局，57 个决策，0 unknown，回放校验通过 |
+| census40，40计划/40尝试 | Managed（Defect，zh） | 32失败终局、6选卡卡点、2磁盘中断；有效38局2428决策，全部40尝试2519决策；跨两种core，属于探索记录，不是同候选通过率 |
+| ref5，test-1000 前 5 种子 | Reference（真实游戏 + 开发 Mod，Defect，zh） | 4/5 自然终局，343 个决策，5/5 回放校验通过；第 4 局在第 44 步出现 unknown（请求层“未交付”回执不带 subject，见下）。修复后另跑该种子：失败终局，57 个决策，0 unknown；原report回放检查失败，后续独立按当前读者验证通过；不拼作原套件5/5 |
 | Managed→Managed 重放 | Managed | 70/70 匹配，终局相同 |
-| Reference→Managed 重放，96 步轨迹 | Reference 原件在 Managed 上重放 | 第 0 步分叉：Managed 缺牌组卡详情（续作 T1） |
+| Reference→Managed 重放，96个决策点（无终局，旧ref-probe4） | Reference 原件在 Managed 上重放 | 第 0 步分叉：Managed 缺牌组卡详情（续作 T1） |
 
 本轮为让真实宿主跑通而修的问题（每个都来自真实运行）：
 - Managed 战斗 HUD 白名单过严，原来 1 步就停；
@@ -208,7 +212,7 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 - 富文本图标被拒；
 - 牌组卡详情读取目标不是当前实体；
 - 地图 `current_position` 为 null 时被省略；
-- 投递后过渡态没有等待（临时用 15 秒内重读，不重发；这不符合“以原生信号为准”的要求，续作 T7 改成由原生 settling 判断）；
+- 投递后过渡态：旧Runtime对任意partial设15秒重读窗口；T7源码修复先处理原生settling，再判断完整性，不重发。原Reference记录已经给出settling，不能把问题一概归为Connector未标记；当前真实复验结果另列。
 - 游戏结束页仍声明地图读取；
 - Reference 商店关闭动作的动词是 `cancel`；
 - 请求层"未交付"回执不带 subject，被误判为 unknown；
@@ -220,18 +224,19 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 | --- | --- | --- | --- |
 | E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
 
-另有两条用户确认的规则：
-- Reference 是真相，Managed 跟随；等价性通过在 Managed 上重放 Reference 原件来检验，分叉默认是 Managed 缺陷。
+对照范围与判据：
+- STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。
 - Managed 只需在 P1 语境里绝大多数情况与原版一致，功能齐全、逻辑相同；不要求逐字节相同。
 
 ## 18. 当前已知缺口（r1.1）
 
-按续作计划 T1–T6 处理：
+按续作计划处理：
 - T1：Managed 缺牌组卡详情和空字段形状，是等价的第一分叉。
 - T2：Managed 选卡页元数据不完整。
 - T3：Reference 20 局套件还没跑。
 - T4：Reference→Managed 等价套件还没跑。
 - T5：真人 Source4 短录制还没做。
-- T6：卡牌渲染白名单测试，待用户决定。
-- 第 15 节的 r1.0 缺口仍然有效，除非已在第 16 节列为已修。
+- T6：卡牌渲染的native覆盖与外来执行检查需窄修；不能简单删断言或恢复全部名单。
+- T7：Runtime已按原生settling等待，短真实回归已跨过原过渡；新暴露升级activate映射缺口，尚未全机制验收。
+- 历史第15节只保留当时结果；当前覆盖以同候选原件和逐项检查为准，不能从旧摘要自动继承支持或缺口。
 - 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、发布级资格、训练数据可用性。

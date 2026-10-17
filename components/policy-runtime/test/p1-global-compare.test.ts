@@ -125,7 +125,7 @@ describe("P1 r1.1 full-public graph comparison", () => {
       ...Array.from({ length: 30 }, () => ({ type: "observation", observation: a, requires_choice: true })), { type: "episode_end" }];
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("../examples/p1/signature_agent.mjs", import.meta.url))],
       { input: messages.map(m => JSON.stringify(m)).join("\n") + "\n", encoding: "utf8" });
-    expect(result.status).toBe(0); const replies = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+    expect(result.status, result.stderr).toBe(0); const replies = result.stdout.trim().split("\n").map(line => JSON.parse(line));
     expect(replies[0].agent_id).toBe("external-instance-choice-diagnostic");
     expect(new Set(replies.filter(m => m.type === "choose").map(m => m.choice_id))).toEqual(new Set(["one", "two"]));
   });

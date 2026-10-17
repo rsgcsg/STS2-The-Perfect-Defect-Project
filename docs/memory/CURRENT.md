@@ -1,46 +1,45 @@
-# Current project context (2026-10-17)
+# Current — bounded PR191 CI integration
 
-模型方案冻结：开。Resolve live GitHub refs before acting; current source and original
-evidence override this file. New research configurations, spending and per-PR
-merge/close still require their existing user approvals.
+模型方案冻结：开。Resolve live GitHub refs; current source and original records
+override this file.
+PR merge/close, research/spending and deployment keep their explicit boundaries.
 
-## Read first
+## Current delivery
 
-1. [WORKING_RULES](../WORKING_RULES.zh-CN.md) — 日常工作规则（§9 是 P1 专用约定）。
-2. [P1 全局 r1](../protocols/P1_GLOBAL_R1.zh-CN.md) — P1 唯一权威（r1.1）。其他 P1 文档是背景。
-3. [续作计划](../plans/P1_R1_CONTINUATION_2026-10-16.zh-CN.md) — 停止线和按顺序的真实任务。
+[P1-TU](../plans/P1_TERMINAL_UPGRADE_2026-10-17.md), Draft PR191
+`codex/p1-terminal-upgrade`: Root is the sole integrator. Start986e3f95;
+normal merges7b0deb0a/0efccea9 retain task1/8b83a7f1 and task2/93fd596b.
+Before publication parent PR189 advanced toc5fbbd11; reviewed normal merge51c65a2e
+resolves its BOM conflict, retains both worker fixes and its late-chooser fixture
+startup allowance. Product deadlines/assertions stay unchanged; only that case is
+rechecked after the parent increment, then final identity/package/repository gates.
+Task1 uses fileURLToPath for the real diagnostic child, retaining duplicate-instance
+assertions. Task2 drains the started original-response write before capture closure;
+Stop/budget still releases control independently. Combined focused regression45pass;
+typecheck/build/package, repository/identity/BOM and closeout passed. Scoped non-author
+review accepted the combined implementation and original failure/validation evidence.
+Policy Runtime BOM is recalculated from the combined tree, not either worker tree.
 
-## Where things are
+Old986e3f95 CI38925913234 failed on Windows child path, Linux capture-record order,
+and Windows Python AV. Its formal mypy379source files passed; earlier local missing-
+extras diagnostics remain historical. Task3 found no proven AV owner:0xC0000005 after
+60s traceback, CPython/faulthandler strongest hypothesis, native Windows dump absent.
+That crash remains a blocker; investigation completion is not a repair or runner
+waiver. The Windows single-test native-dump proposal is unexecuted, not dispatched.
 
-- The management baseline (MGMT-1, PR #190) is integrated in develop; it has no
-  further assignment.
-- P1 product topic: `claude/p1-complete`
-  ([PR189](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/189), draft to
-  develop). It holds Codex's p1-global-completion round plus Claude's fixes that made
-  the product path run. PR187 is merged; PR188 (r1.0) is superseded.
-- Product path: Policy Runtime (agent-session-1) → Managed service / Reference game.
-  External Agents plug in through `examples/p1/session-bridge.mjs` (`sts2.p1/agent-port-1`).
-- Suite entry: `node tools/p1-suite.mjs` (report.json with full denominators).
+Reference history stays bound to333094d4: historical2attempts (88decisions/loss;
+91submissions/toggle then diagnostic fail-closed); separate1of2new attempts completed
+preview→legal choice→required confirm→event_option and visible deck upgrade after
+93submissions.0native unknown/fail-closed in that successful follow-up, replay verified.
+Stop200/released/no pending request; cancelled Next left opaque Agent state uncertain;
+Host close200/exit0. Original records unchanged. This integration changes Runtime
+capture accounting, so those old records are not fresh evidence for the new Runtime.
+No new game, installed Mod, Human, training, spending or deployment in this slice.
 
-## Current measured state (local source + runtime, not hosted CI)
-
-- Managed (Ironclad en, 10 seeds): 9/10 natural terminal, 0 unknown, 10/10 replay verified.
-- Managed (Defect zh, 38 seeds counted): 32/38 natural terminal, 0 unknown, 2519 decisions;
-  all 6 stops are T2 (card reward metadata).
-- Reference (Defect zh, first 5 test-1000 seeds): 4/5 natural terminal, 343 decisions,
-  5/5 replay verified; the one unknown was fixed and that seed reran to natural terminal.
-- Reference→Managed replay: diverges at step 0 on Managed deck card details (T1).
-- A separate local T7 candidate (not on this branch) reached 90 decisions, 0 unknown,
-  stopped at an upgrade mapping gap; not a completed run or this branch's validation.
-
-## Next
-
-P1 continuation (T1 → T2 → T7 → T3 → T4) is the next product assignment once the user
-assigns it. Decisions waiting for the user are listed in the plan (T6) and the PR body.
+Next: publish one stable candidate, report real selected CI outcome and stop. Keep
+Draft and unresolved Windows AV; no PR merge/close. No T1/T2/T6.
 
 ## Remaining Platform non-claims
 
-GLOBAL P1 r1.1 is not frozen, installed for release, Human-validated or Managed-equivalent.
-Random early-loss runs are not full coverage, win coverage or strategy strength. Required
-missing information keeps its original denominator; unknown never retries. Each PR
-merge/closure, deployment and branch/worktree/data deletion needs separate approval.
+No new Windows execution, Host equivalence, full-P1, Human, training or strategy
+qualification. Unresolved Windows Python AV stays visible even if a later run passes.

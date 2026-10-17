@@ -40,8 +40,6 @@ interface SharedAgentRuntimeOptions {
   autoBudget?: Partial<AutonomyBudgetConfig>;
   monotonicNow?: () => number;
   now?: () => string;
-  /** How long a known delivery may re-read a partial native basis while it settles (default 15 s). */
-  globalPostDeliverySettleMs?: number;
 }
 export type NativeAgentRuntimeOptions = SharedAgentRuntimeOptions & (
   { environment: PlayerEnvironmentRestClient; globalTransport?: never } | { environment?: never; globalTransport: GlobalTransport });
@@ -1277,11 +1275,23 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const captureRequestId = `capture-request-${randomUUID()}`;
     await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
     try {
-    const full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
-      onResponseBytes: async bytes => {
-        const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
-        await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
-      } });
+    let responseWrite = Promise.resolve();
+    let full: FullPublicBasis;
+    try {
+      full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
+        onResponseBytes: bytes => {
+          responseWrite = (async () => {
+            const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
+            await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
+          })();
+          return responseWrite;
+        } });
+    } finally {
+      // Transport cancellation may overtake its bounded response hook. Finish
+      // our original-byte accounting before closing this capture request; the
+      // lifecycle owner releases control independently of this durable write.
+      await responseWrite;
+    }
     const artifact = await this.options.evidence.storeGlobalArtifact("source", Buffer.from(serializePublicBasisRecord(full), "utf8"));
     const ordinal = ++this.globalSourceOrdinal;
     await this.emitGlobal("global_source", { ordinal, artifact, capture_request_id: captureRequestId });
@@ -1437,21 +1447,17 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try {
         this.checkActive(epoch, signal);
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
-        // A real Host is briefly incomplete while native animations/transitions settle after a
-        // known delivery. Re-reading (never re-dispatching) until it publishes is the native wait.
-        for (const deadline = Date.now() + (this.options.globalPostDeliverySettleMs ?? 15_000);
-          source.full.basis.capture_status !== "complete" && Date.now() < deadline;) {
-          await globalDelay(100, signal); this.checkActive(epoch, signal);
+        // Native readiness and capture completeness are different facts. The
+        // Reference Host already publishes settling/no_action during e.g. combat
+        // setup, even when an advertised map Read is temporarily unavailable.
+        // The delay only paces this pull-only transport; it never proves readiness.
+        // The existing operation budget and Stop abort the wait and release control.
+        while (source.full.basis.snapshot.status === "settling") {
+          await globalDelay(50, signal); this.checkActive(epoch, signal);
           source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
         }
         if (source.full.basis.capture_status !== "complete") throw new AgentSessionError("global_post_delivery_capture_incomplete");
         if (!rule) break;
-        while (source.full.basis.capture_status === "complete"
-          && (source.full.basis.snapshot.interaction as { kind: string }).kind !== "game_over"
-          && ["settling", "observed"].includes(String(source.full.basis.snapshot.status))) {
-          await globalDelay(50, signal); this.checkActive(epoch, signal);
-          source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
-        }
         next = source.full.basis.capture_status === "complete" ? resolveFollowBasis(rule, lowering, source.full.basis) : null;
         if (!next && !rule.optional) status = "interrupted_known";
       } catch (error) {
