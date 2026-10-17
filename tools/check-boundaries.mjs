@@ -39,6 +39,7 @@ export function textBoundaryErrors(relative, contents) {
     for (const prose of [
       "/// callback. No Harmony callback is installed here and no successor is",
       "/// implementations and Harmony state; no runtime type/IL discovery is used.</summary>",
+      "// Harmony keys inherited methods by their actual declaration.",
       "// Harmony initialization or an idempotent command callback"
     ]) ownershipText = ownershipText.replaceAll(prose, "");
     if (readQualificationFiles.has(normalized)) {
