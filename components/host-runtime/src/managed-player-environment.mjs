@@ -1103,14 +1103,18 @@ function currentSurface(state, ctx) {
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
         missing: ["exact_current_card_reward_choices"]
       };
-      const metadataComplete = rawCards.every(card => typeof card.card_entity_ref === "string" && card.card_entity_ref.length > 0)
-        && typeof state.parent_reward_ref === "string" && state.parent_reward_ref.length > 0
+      const cardIdentityComplete = rawCards.every(card => typeof card.card_entity_ref === "string" && card.card_entity_ref.length > 0);
+      const parentComplete = typeof state.parent_reward_ref === "string" && state.parent_reward_ref.length > 0
         && state.parent_status === "bound" && typeof state.reward_set_ref === "string" && state.reward_set_ref.length > 0
-        && typeof state.selection_completes_reward === "boolean"
-        && rawCards.every(card => card.render_complete === true
+        && typeof state.selection_completes_reward === "boolean";
+      const renderMissing = rawCards.flatMap((card, index) => card.render_complete === true
           && ["id", "name", "type", "rarity", "description"].every(key => typeof card[key] === "string" && card[key].length > 0)
           && (typeof card.cost === "string" || Number.isFinite(card.cost)) && typeof card.is_upgraded === "boolean"
-          && Array.isArray(card.keywords) && Array.isArray(card.card_previews));
+          && Array.isArray(card.keywords) && Array.isArray(card.card_previews) ? [] : [
+            `card_reward_render:${index}:incomplete`,
+            ...(Array.isArray(card.render_missing) ? card.render_missing.map(reason => `card_reward_render:${index}:${reason}`) : [])
+          ]);
+      const metadataComplete = cardIdentityComplete && parentComplete && renderMissing.length === 0;
       const cards = rawCards.map((card, index) => {
         const item = ctx.referent({
           role: "card",
@@ -1159,7 +1163,10 @@ function currentSurface(state, ctx) {
         complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
-        missing: metadataComplete ? [] : ["exact_card_reward_parent_and_card_identity"]
+        missing: metadataComplete ? [] : ["exact_card_reward_parent_and_card_identity",
+          ...(cardIdentityComplete ? [] : ["native_card_reward_card_identity"]),
+          ...(parentComplete ? [] : ["native_card_reward_parent_identity"]),
+          ...renderMissing]
       };
     }
     case "combat_rewards_complete": {
@@ -2094,10 +2101,11 @@ function runDeckRead(snapshotId, state, makeId, entityId) {
       card_count: state.player.deck.length,
       cards: state.player.deck.map((card) => {
         const cardEntityId = entityId("card", card.native_ref);
-        return {
-          ...visibleCombatCard(card, cardEntityId),
-          is_selected: false
-        };
+        // The Reference deck DTO contains no combat legality or inline hover
+        // extensions. Rich hover facts are separate same-snapshot Reads below.
+        const { target_type: _targetType, can_play: _canPlay,
+          keywords: _keywords, card_previews: _previews, ...visible } = visibleCombatCard(card, cardEntityId);
+        return visible;
       })
     },
     completeness: {
@@ -2110,6 +2118,50 @@ function runDeckRead(snapshotId, state, makeId, entityId) {
       hidden_by_policy: []
     }
   };
+}
+
+function deckCardDetailReads(ctx, state, deckRead) {
+  if (deckRead === null) return [];
+  return state.player.deck.map((card, index) => {
+    const visible = deckRead.content.cards[index];
+    if (!ctx.referents.some(referent => referent.referent_id === visible.entity_id))
+      ctx.referent({ role: "card", id: visible.entity_id, label: visible.name, properties: visible });
+    const details = card.public_details;
+    const missing = Array.isArray(card.public_details_missing) ? [...card.public_details_missing] : [];
+    if (!plainObject(details)) missing.push("current_native_public_card_details_not_captured");
+    else for (const field of ["keywords", "card_previews"])
+      if (!Array.isArray(details[field])) missing.push(`current_native_public_card_${field}_not_captured`);
+    if (card.public_details_complete !== true && missing.length === 0)
+      missing.push("current_native_public_card_detail_incomplete");
+    return {
+      descriptor: {
+        read_id: ctx.id("read", ctx.snapshotId, "surface_card", "deck", visible.entity_id),
+        kind: "surface_card",
+        target_referent_id: visible.entity_id,
+        content_schema: "sts2.player-environment/read/surface_card-1",
+        visibility_basis: "normal_player_visible_surface_card",
+        snapshot_bound: true,
+        ordering_semantics: "single_entity",
+        hidden_by_policy: []
+      },
+      content: {
+        ...visible,
+        public_details_revision: "1",
+        display_context: "deck",
+        parent_read_id: deckRead.descriptor.read_id,
+        display_owner_entity_id: null,
+        ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
+        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {})
+      },
+      completeness: {
+        status: missing.length === 0 ? "complete" : "partial",
+        visible_information: "complete_current_player_visible_card_detail",
+        interaction_discovery: "read_only",
+        missing: [...new Set(missing)],
+        hidden_by_policy: []
+      }
+    };
+  });
 }
 
 function combatPilesRead(snapshotId, state, makeId) {
@@ -2199,10 +2251,12 @@ export function projectManagedCandidateDecision({
     ctx.bindings.clear();
   }
   stageStarted = performance.now();
+  const deckRead = runDeckRead(ctx.snapshotId, state, ctx.id, ctx.entityId);
   const reads = [
-    runDeckRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
+    deckRead,
     mapRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
-    combatPilesRead(ctx.snapshotId, state, ctx.id)
+    combatPilesRead(ctx.snapshotId, state, ctx.id),
+    ...deckCardDetailReads(ctx, state, deckRead)
   ]
     .filter(Boolean);
   const readsMs = performance.now() - stageStarted;

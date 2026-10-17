@@ -11,6 +11,7 @@ import {
 } from "../src/managed-player-environment.mjs";
 import { chooseManagedPlayerEnvironmentAction } from "../src/managed-player-environment-probe.mjs";
 import { chooseManagedCandidateAction } from "../src/managed-candidate.mjs";
+import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
 
 const projectionIdentity = {
   runtimeInstanceId: "managed-runtime-test",
@@ -34,7 +35,10 @@ function player() {
       type: "Attack",
       rarity: "Basic",
       upgraded: false,
-      description: "Deal 6 damage."
+      description: "Deal 6 damage.",
+      public_details: { keywords: [], card_previews: [] },
+      public_details_complete: true,
+      public_details_missing: []
     }]
   };
 }
@@ -117,6 +121,7 @@ test("projects complete map topology and persistent visible state without exposi
   assert.equal(projection.snapshot.interaction.content.context.nodes.length, 3);
   assert.equal(projection.snapshot.interaction.content.context.current_position, null);
   assert.deepEqual(projection.snapshot.referents.map((referent) => referent.role).sort(), [
+    "card",
     "node",
     "node",
     "option"
@@ -1171,6 +1176,85 @@ test("opened reward retains exact parent, set and real card identity while execu
   }
   const missingCard = structuredClone(opened); delete missingCard.cards[0].card_entity_ref;
   assert.ok(project(missingCard).snapshot.completeness.missing.includes("exact_card_reward_parent_and_card_identity"));
+});
+
+test("deck hover details are separate snapshot-bound Reads with the same public card identity", () => {
+  const state = eventState();
+  const preview = { entity_id: null, definition_id: "FUEL", name: "Fuel", type: "Skill", cost: "0",
+    description: "Gain 1 Energy.", rarity: "Token", is_upgraded: false, is_selected: false,
+    target_type: "Self", can_play: null, keywords: [], card_previews: [] };
+  state.player.deck[0].public_details = {
+    keywords: [{ name: "Energy", description: "Used to play cards." }], card_previews: [preview]
+  };
+  state.player.deck.push({ ...structuredClone(state.player.deck[0]), native_ref: "second-identical-card" });
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const reads = [...projection.reads.values()];
+  const deck = reads.find(read => read.descriptor.kind === "run_deck");
+  const details = reads.filter(read => read.descriptor.kind === "surface_card");
+  assert.equal(details.length, 2);
+  assert.notEqual(details[0].descriptor.target_referent_id, details[1].descriptor.target_referent_id);
+  for (const [index, detail] of details.entries()) {
+    assert.equal(detail.descriptor.snapshot_bound, true);
+    assert.equal(detail.descriptor.target_referent_id, deck.content.cards[index].entity_id);
+    assert.equal(detail.content.entity_id, deck.content.cards[index].entity_id);
+    assert.equal(detail.content.parent_read_id, deck.descriptor.read_id);
+    assert.equal(detail.content.public_details_revision, "1");
+    assert.equal(detail.content.display_context, "deck");
+    assert.equal(detail.content.display_owner_entity_id, null);
+    assert.deepEqual(detail.content.keywords, state.player.deck[index].public_details.keywords);
+    assert.deepEqual(detail.content.card_previews, [preview]);
+    assert.equal(detail.completeness.status, "complete");
+    for (const key of ["target_type", "can_play", "keywords", "card_previews"])
+      assert.equal(Object.hasOwn(deck.content.cards[index], key), false, key);
+  }
+  assert.equal(JSON.stringify(reads).includes("second-identical-card"), false);
+});
+
+test("missing or failed native deck details keep the sealed basis partial without hiding the deck", async () => {
+  for (const mutate of [card => { delete card.public_details; }, card => {
+    card.public_details_complete = false;
+    card.public_details_missing = ["native_selector_hover_card_incomplete"];
+  }]) {
+    const state = eventState();
+    mutate(state.player.deck[0]);
+    const session = new ManagedPlayerEnvironmentSession({
+      process: { async request() { return state; } },
+      runtimeInstanceId: projectionIdentity.runtimeInstanceId,
+      environmentFingerprint: projectionIdentity.environmentFingerprint
+    });
+    const snapshot = await session.mount({ seed: "DECK-DETAILS" });
+    const detail = snapshot.reads.find(read => read.kind === "surface_card");
+    const read = session.read({ readId: detail.read_id, expectedSnapshotId: snapshot.snapshot_id });
+    assert.equal(decodePlayerRead(read).data.completeness.status, "partial");
+    assert.ok(read.completeness.missing.length > 0);
+    assert.throws(() => session.read({ readId: detail.read_id, expectedSnapshotId: "old" }), /stale_snapshot/u);
+    const deck = snapshot.reads.find(read => read.kind === "run_deck");
+    assert.equal(session.read({ readId: deck.read_id, expectedSnapshotId: snapshot.snapshot_id }).completeness.status, "complete");
+    const captured = captureManagedPublicBasis(session, { generationId: "generation-1", gameContinuityId: "continuity-1", ordinal: 1 });
+    assert.equal(captured.basis.capture_status, "partial");
+    assert.ok(captured.basis.missing.includes(`read:${detail.read_id}:partial`));
+  }
+});
+
+test("reward diagnostics distinguish incomplete native rendering from the exact parent binding", () => {
+  const state = { ...eventState(), decision: "card_reward", parent_status: "bound",
+    parent_reward_ref: "native-reward", reward_set_ref: "native-set", selection_completes_reward: true,
+    alternatives: [], cards: [{ ...player().deck[0], native_ref: "creation-result", card_entity_ref: "real-card", index: 0,
+      render_complete: false, render_missing: ["native_selector_hover_card_incomplete"], keywords: [], card_previews: [] }] };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const missing = projection.snapshot.completeness.missing;
+  assert.ok(missing.includes("exact_card_reward_parent_and_card_identity"));
+  assert.ok(missing.includes("card_reward_render:0:native_selector_hover_card_incomplete"));
+  assert.equal(missing.includes("native_card_reward_parent_identity"), false);
+  assert.equal(missing.includes("native_card_reward_card_identity"), false);
+  assert.deepEqual(projection.snapshot.bound_actions.actions, []);
+  state.cards[0].render_complete = true;
+  state.cards[0].render_missing = [];
+  state.cards[0].is_upgraded = false;
+  delete state.parent_reward_ref;
+  const parentMissing = projectManagedCandidateDecision({ state, ...projectionIdentity }).snapshot.completeness.missing;
+  assert.ok(parentMissing.includes("native_card_reward_parent_identity"));
+  assert.equal(parentMissing.some(reason => reason.startsWith("card_reward_render:")), false);
 });
 
 test("same raw capture supplies the full map Read off page without creating travel actions", () => {
