@@ -1,12 +1,37 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, completeCombatSurface, createSession, reduce, resolveFollow, type Lowering, type P1Basis } from "../src/p1Global/index.js";
+import { canonicalJson, completeCombatSurface, completeSelector, createSession, reduce, resolveFollow, type Lowering, type P1Basis } from "../src/p1Global/index.js";
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`./fixtures/p1-global/${name}.json`, import.meta.url), "utf8"));
 const project = (basis: P1Basis) => reduce(createSession("admission", "managed"), basis);
 const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis.snapshot.bound_actions.materialized_count = basis.snapshot.bound_actions.actions.length; };
 const read = (basis: any, kind: string): any => basis.reads.find((item: any) => item.kind === kind).response;
 
 describe("P1 r1.2 explicit complete-capture admission", () => {
+  it("admits the native generated-card chooser without inventing grid preferences or confirmation", () => {
+    const b = fixture("synthetic-complete-combat");
+    const original = b.snapshot.interaction.content.context.player.hand[0];
+    const cards = [0, 1, 2].map(index => ({ ...structuredClone(original), entity_id: `generated_${index}`, is_selected: false }));
+    const surface = { kind: "native_generated_card_choice", stage: "choosing", prompt: "Choose one card",
+      cards, selectable_card_entity_ids: cards.map(card => card.entity_id), can_skip: true, is_peeking: false };
+    Object.assign(b.snapshot.interaction, { kind: surface.kind, stage: surface.stage,
+      content_schema: `sts2.player-environment/surface/${surface.kind}-1` });
+    b.snapshot.interaction.content = { surface, context: { kind: "selection", combat: b.snapshot.interaction.content.context } };
+    b.snapshot.referents.push(...cards.map(card => ({ referent_id: card.entity_id, kind: "entity", role: "card", label: card.name,
+      state: { visible: true, observation_basis: "native_visible_fact" }, properties_schema: "sts2.player-environment/referent/card-1", properties: card })));
+    b.snapshot.bound_actions.actions = cards.map((card, index) => ({ ...b.snapshot.bound_actions.actions[0],
+      bound_action_id: `generated_select_${index}`, verb: "select", subject_referent_id: card.entity_id, arguments: [] })); count(b);
+    expect(completeSelector(surface)).toBe(true);
+    const r = project(b); expect(r.missing).toEqual([]); expect(r.complete).toBe(true);
+    expect(r.observation.catalog).toHaveLength(3);
+    for (const choice of r.observation.catalog) {
+      expect(choice.kind).toBe("selector.choose"); expect(r.lowering[choice.choice_id]!.follow).toEqual([]);
+    }
+    expect(surface).not.toHaveProperty("min_select"); expect(surface).not.toHaveProperty("selected_card_entity_ids");
+    for (const broken of [{ ...surface, selectable_card_entity_ids: ["foreign"] },
+      { ...surface, selectable_card_entity_ids: [cards[0].entity_id, cards[0].entity_id] },
+      { ...surface, is_peeking: true }, { ...surface, can_skip: undefined }]) expect(completeSelector(broken)).toBe(false);
+  });
+
   it.each([false, true])("retains the legacy toggle binding privately but withholds its incomplete presentation (showing=%s)", showing => {
     const b = fixture("managed-deck_upgrade_selection");
     Object.assign(b.snapshot.interaction.content.surface, { showing_upgrade_previews: showing, can_toggle_upgrade_view: true });

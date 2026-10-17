@@ -522,7 +522,8 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const declined = new Set(reward?.declined ?? []);
   const excluded: ExcludedNative[] = [];
   const qualifiedSelector = completeSelectorFacts(surface);
-  const selectionFamily = ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
+  const selectionFamily = nativeKind !== "native_generated_card_choice"
+    && ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
   const hasSelectionCompletion = selectionFamily && (snapshot.bound_actions.actions as NativeAction[]).some(action =>
     action.verb === "confirm" || qualifiedSelector && ["open_preview", "confirm_selection", "confirm"]
       .includes(selectorOperation(surface, action.subject_referent_id ?? null) ?? ""));
