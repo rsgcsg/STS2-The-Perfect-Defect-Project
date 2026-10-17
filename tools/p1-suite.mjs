@@ -154,7 +154,9 @@ async function runReference() {
     const driver = spawn(process.execPath, driverArgs, { stdio: ["pipe", "pipe", "pipe"] });
     let dErr = ""; driver.stderr.on("data", (d) => { dErr += d; if (dErr.length > 2e6) dErr = dErr.slice(-1e6); });
     const lines = []; let buf = ""; driver.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { lines.push(buf.slice(0, i)); buf = buf.slice(i + 1); } });
-    const next = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (lines.length) return JSON.parse(lines.shift()); await new Promise((r) => setTimeout(r, 100)); }
+    const next = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (lines.length) return JSON.parse(lines.shift());
+      if (driver.exitCode !== null || driver.signalCode !== null) throw new Error(`driver_exited:${driver.exitCode ?? driver.signalCode}:` + dErr.slice(-500));
+      await new Promise((r) => setTimeout(r, 100)); }
       if (Date.now() - started >= episodeBudgetMs) throw new Error("episode_budget_exhausted");
       throw new Error("driver_timeout " + dErr.slice(-500)); };
     let counter = 0; const call = async (command, extra = {}, ms = 300000) => {
@@ -162,7 +164,7 @@ async function runReference() {
       const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
       const r = await next(remaining); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
     const close = async (dir) => {
-      try { await call("close", {}, 120000); } catch { /* best effort */ }
+      try { if (driver.exitCode === null && driver.signalCode === null) await call("close", {}, 120000); } catch { /* best effort */ }
       driver.kill("SIGTERM"); writeFileSync(join(dir, "driver.stderr"), dErr);
     };
     return { next, call, close };
