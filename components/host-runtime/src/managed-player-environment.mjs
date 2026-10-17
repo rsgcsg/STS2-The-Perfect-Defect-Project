@@ -654,9 +654,9 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
   const text = value => typeof value === "string" && value.length > 0;
   const exact = plainObject(request) && text(state.selector_ref)
     && text(request.entity_id) && request.owner_entity_id === state.selector_ref
-    && ["deck_upgrade", "deck_card", "deck_enchant"].includes(request.family)
+    && ["deck_upgrade", "deck_card", "deck_enchant", "deck_transform"].includes(request.family)
     && request.family === (state.decision === "deck_upgrade_select" ? "deck_upgrade"
-      : state.origin === "deck_enchant" ? "deck_enchant" : "deck_card")
+      : state.origin === "deck_enchant" ? "deck_enchant" : state.origin === "deck_transform" ? "deck_transform" : "deck_card")
     && request.stage === state.stage && ["selecting", "preview"].includes(state.stage)
     && Number.isSafeInteger(state.min_select) && state.min_select >= 0
     && Number.isSafeInteger(state.max_select) && state.max_select >= state.min_select
@@ -721,7 +721,8 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
         ...(verb === "confirm" ? { selected_refs: selectedRefs.join(",") } : {}) } } });
   }
   const kind = request?.family === "deck_upgrade" ? "deck_upgrade_selection"
-    : request?.family === "deck_enchant" ? "deck_enchant_selection" : "native_deck_card_selection";
+    : request?.family === "deck_enchant" ? "deck_enchant_selection"
+      : request?.family === "deck_transform" ? "deck_transform_selection" : "native_deck_card_selection";
   const selectedIds = selectedRefs.map(ref => ctx.entityId("card", ref));
   const complete = exact && missing.length === 0 && request.preview_information_complete === true
     && request.preview_projection_qualified === true;
@@ -1997,6 +1998,32 @@ function currentSurface(state, ctx) {
         complete: typeof state.victory === "boolean",
         missing: typeof state.victory === "boolean" ? [] : ["native_terminal_victory_fact"]
       };
+    case "shop_room": {
+      const owner = state.presentation_owner;
+      const exact = plainObject(owner) && owner.kind === "managed_merchant_presentation" && owner.stage === "room"
+        && typeof state.room_ref === "string" && state.room_ref.length > 0
+        && typeof state.inventory_ref === "string" && state.inventory_ref.length > 0
+        && state.shop_ref === state.room_ref
+        && typeof owner.player_ref === "string" && owner.player_ref.length > 0
+        && owner.room_ref === state.room_ref && owner.inventory_ref === state.inventory_ref
+        && owner.player_ref === state.player?.native_ref
+        && typeof state.can_open_inventory === "boolean" && typeof state.can_proceed === "boolean";
+      if (exact && state.can_open_inventory) ctx.action({
+        verb: "open", label: "Open shop inventory", raw: { cmd: "action", action: "open_shop_inventory",
+          args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } }
+      });
+      if (exact && state.can_proceed) ctx.action({
+        verb: "activate", label: "Leave shop and open map", raw: { cmd: "action", action: "leave_shop",
+          args: { room_ref: state.room_ref } }
+      });
+      return { kind: "shop_room", stage: "ready", prompt: null,
+        surface: { kind: "shop_room", shop_session_entity_id: ctx.entityId("shop_session", state.shop_ref),
+          can_open_inventory: state.can_open_inventory, can_proceed: state.can_proceed },
+        context: { kind: "shop" }, complete: exact,
+        visibleInformation: "contract_complete_for_visible_normal_merchant_room_controls",
+        interactionDiscovery: "derived_from_exact_merchant_presentation_owner",
+        missing: exact ? [] : ["exact_current_merchant_presentation_owner"] };
+    }
     case "shop": {
       const rawCards = Array.isArray(state.cards) ? state.cards : [];
       const rawRelics = Array.isArray(state.relics) ? state.relics : [];
@@ -2120,12 +2147,14 @@ function currentSurface(state, ctx) {
         }
         cardRemoval = item.properties;
       }
-      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
+      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0
+        && state.shop_ref === state.room_ref && typeof state.inventory_ref === "string" && state.inventory_ref.length > 0;
       if (roomIdentityComplete) {
         ctx.action({
           verb: "close",
-          label: "Leave shop",
-          raw: { cmd: "action", action: "leave_shop", args: { room_ref: state.room_ref } }
+          label: "Close shop inventory",
+          raw: { cmd: "action", action: "close_shop_inventory",
+            args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } }
         });
       }
       const complete = roomIdentityComplete && catalogComplete;
@@ -2136,6 +2165,7 @@ function currentSurface(state, ctx) {
         surface: {
           kind: "shop_inventory",
           stage: "choosing",
+          shop_session_entity_id: ctx.entityId("shop_session", state.shop_ref),
           cards,
           relics,
           potions,

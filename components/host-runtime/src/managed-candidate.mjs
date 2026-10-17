@@ -607,9 +607,13 @@ export function chooseManagedCandidateAction(state) {
       return (state.cards ?? []).length === 0
         ? { cmd: "action", action: "skip_select" }
         : { cmd: "action", action: "select_cards", args: { indices: "0" } };
-    case "shop":
-      return typeof state.room_ref === "string"
+    case "shop_room":
+      return typeof state.room_ref === "string" && state.can_proceed === true
         ? { cmd: "action", action: "leave_shop", args: { room_ref: state.room_ref } }
+        : null;
+    case "shop":
+      return typeof state.room_ref === "string" && typeof state.inventory_ref === "string"
+        ? { cmd: "action", action: "close_shop_inventory", args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } }
         : null;
     case "game_over":
       return null;

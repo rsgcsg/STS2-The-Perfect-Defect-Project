@@ -22,7 +22,7 @@ export function publicSelector({ preview = false, family = "deck_upgrade" } = {}
     can_decline_now: false, mechanics_qualified: true, preview_information_complete: true,
     preview_projection_qualified: true, capability_revision: "sts2.native-selector-public-facts/1", missing: [] };
   return { ...state, decision: family === "deck_upgrade" ? "deck_upgrade_select" : "deck_card_select",
-    selector_ref: request.owner_entity_id, origin: family === "deck_enchant" ? "deck_enchant" : "deck_generic",
+    selector_ref: request.owner_entity_id, origin: family === "deck_enchant" || family === "deck_transform" ? family : "deck_generic",
     stage: request.stage, prompt: "Choose a card.",
     cards: [{ ...before, index: 0, native_ref: before.entity_id, is_selectable: !preview, is_deselectable: false }],
     selected_refs: request.selected_entity_ids, min_select: 1, max_select: 1,

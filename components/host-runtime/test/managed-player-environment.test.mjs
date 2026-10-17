@@ -895,7 +895,7 @@ test("projects shop entries from native actionability and keeps purchase identit
       type: "decision",
       decision: "shop",
       context: { act: 1, floor: 3, room_type: "Shop" },
-      room_ref: "room-a",
+      room_ref: "room-a", shop_ref: "room-a", inventory_ref: "inventory-a",
       cards: [{
         native_ref: "card-entry-a",
         name: "Pommel Strike",
@@ -917,7 +917,7 @@ test("projects shop entries from native actionability and keeps purchase identit
     "Buy Fire Potion",
     "Buy Pommel Strike",
     "Buy card removal",
-    "Leave shop"
+    "Close shop inventory"
   ]);
   assert.equal(projection.snapshot.interaction.content.surface.cards[0].cost, "1");
   assert.equal(projection.snapshot.interaction.content.surface.cards[0].price, 50);

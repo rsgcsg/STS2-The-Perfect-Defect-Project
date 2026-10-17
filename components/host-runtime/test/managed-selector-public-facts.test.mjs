@@ -51,7 +51,7 @@ test("same owner with a new original Task rotates request identity without relab
 });
 
 test("every deck family dispatches either public confirm spelling to its owning raw handler", async () => {
-  for (const family of ["deck_upgrade", "deck_card", "deck_enchant"])
+  for (const family of ["deck_upgrade", "deck_card", "deck_enchant", "deck_transform"])
     for (const operation of ["confirm", "confirm_selection"]) {
       const state = selector({ preview: true, family });
       state.selector_public.current_controls = [{ operation }];
@@ -103,4 +103,18 @@ test("missing original or after facts keep public displays while fencing complet
   const projection = projectManagedCandidateDecision({ state: stale, ...identity });
   assert.equal(projection.snapshot.bound_actions.status, "unavailable");
   assert.equal(projection.bindings.size, 0);
+});
+
+test("transformation exposes exact original choices without evaluating a replacement preview", () => {
+  const projection = projectManagedCandidateDecision({ state: selector({ family: "deck_transform" }), ...identity });
+  const surface = projection.snapshot.interaction.content.surface;
+  assert.equal(projection.snapshot.completeness.status, "complete");
+  assert.equal(surface.kind, "deck_transform_selection");
+  assert.equal(surface.selector_request.family, "deck_transform");
+  assert.equal(surface.selector_request.selection_model, "native_selected_original_set");
+  assert.equal(surface.selector_request.add_transition, "native_preview_at_max");
+  assert.ok(surface.preview_options.every(option => option.after === null && option.after_availability === "not_applicable"));
+  assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
+  const reads = [...projection.reads.values()].filter(read => read.content.display_owner_entity_id === surface.screen_entity_id);
+  assert.deepEqual(reads.map(read => read.content.display_context), ["selector_original:deck_transform"]);
 });
