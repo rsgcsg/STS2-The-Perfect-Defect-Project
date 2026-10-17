@@ -22,7 +22,7 @@ function pair(): { outer: any; preview: any } {
     selector_request: { entity_id: "task-one", owner_entity_id: "owner-one", family: "deck_upgrade", stage: "selecting",
       selection_model: "native_selected_original_set", add_transition: "native_preview_at_max", min_select: 1, max_select: 1,
       require_manual_confirmation: false, displayed_holder_count: null, selected_entity_ids: [], can_finish_now: false,
-      can_decline_now: true, mechanics_qualified: true, preview_information_complete: true,
+      can_decline_now: true, mechanics_qualified: true, preview_information_complete: true, preview_projection_qualified: true,
       capability_revision: "sts2.native-selector-public-facts/1", missing: [] },
     preview_options: [{ subject_entity_id: card.entity_id, before: structuredClone(card), after,
       display_context: "native_deck_upgrade_after", after_availability: "available", missing: [] }], enchantment_summary: null

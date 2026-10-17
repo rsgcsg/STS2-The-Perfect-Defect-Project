@@ -23,7 +23,7 @@ export function completeSelectorFacts(surface: unknown): surface is Record<strin
       || typeof r.require_manual_confirmation !== "boolean"
       || !(r.displayed_holder_count === null || Number.isSafeInteger(r.displayed_holder_count) && Number(r.displayed_holder_count) >= 0)
       || typeof r.can_finish_now !== "boolean" || typeof r.can_decline_now !== "boolean"
-      || r.mechanics_qualified !== true || r.preview_information_complete !== true
+      || r.mechanics_qualified !== true || r.preview_information_complete !== true || r.preview_projection_qualified !== true
       || r.capability_revision !== "sts2.native-selector-public-facts/1"
       || !Array.isArray(r.missing) || r.missing.length !== 0
       || canonicalJson(r.selected_entity_ids) !== canonicalJson(surface.selected_card_entity_ids)
