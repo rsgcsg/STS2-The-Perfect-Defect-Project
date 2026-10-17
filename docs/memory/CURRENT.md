@@ -29,10 +29,24 @@ T1 crossedpoint0; final-tuple T1 replay and original T2 positive chain remain
 unproved. The scratch Agent's instance-mapping defect invalidated its strict
 prefix claim; source fixes cannot replace the missing choice/Receipt/successor.
 
-Deadline2026-10-17 18:30 Australia/Brisbane. Short budget8/8 consumed, no ninth;
-full batches1/3 consumed, two left for stable finalManaged40 andReference20.
-Next: final shared gates, install/load repaired Mod, collect both full denominators,
-then open the package PR or hand off the recoverable incomplete increment.
+On the frozen cbce10c8 runtime tuple, Managed40 finished40 natural losses;
+Reference20 finished18 natural losses, one generated-card chooser/map Read product
+block and one driver module-load infrastructure interruption. Zero unknown in
+both batches. Reference's original row5 replay CLI failed during an accidental
+SDK dist rebuild; a separate immutable replay verified it. Row6 has no Runtime
+trajectory. Preserve both failures and the full20 denominator.
+
+The Managed40 audit found incomplete shop-departure and enchant-confirm folds.
+The subsequent source fixes stabilize the same merchant context and recognize
+the native confirm_selection control under the unchanged complete-proof guard.
+Their source tests and retained-basis checks do not qualify another40-run tuple.
+The installed Mod is d2984cfd/MVIDd5ba51b8; Managed DLL e6f68ebb/MVID12a48a52.
+The later Host JS/SDK source is distinct from the full-run tuple.
+
+Deadline2026-10-17 18:30 Australia/Brisbane. Short budget8/8 and full batches3/3
+are consumed. Package1 is incomplete: final-source T1, original T2 choice/Receipt/
+successor, repaired Managed folds and actual Boss coverage remain unqualified.
+Stop for the user's next-window/budget decision; no additional native episode.
 Unknown, natural loss, budget stop and product blocks stay separate. No CI/Human/
 Boss/victory/strategy qualification is inferred from source tests or cleanup.
 
