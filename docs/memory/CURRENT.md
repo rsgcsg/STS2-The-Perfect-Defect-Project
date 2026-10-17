@@ -48,7 +48,7 @@ mechanical folds. Custom Claws->Maul in Act3 and Draft mandatory reward producti
 remain r1-not-encountered under the recorded source investigation; no new section17
 exception is registered.
 
-The continuation used14 short attempts and both authorized final batches within
+The continuation used16 short attempts and both authorized final batches within
 the2.5h window ending2026-10-18 03:43:38 Australia/Brisbane. Every short had a new
 implementation or stated hypothesis; no unknown was retried. Previous-window
 failed rows and their original replay errors remain separate historical evidence.
@@ -61,9 +61,12 @@ and dropped display_owner_entity_id to null.50 attached->attached and14 absent->
 subscriptions exclude E1 as the explanation. This is a real remaining S bug,
 not new game information. The Reference producer now keeps bound card rewards'
 original reward_candidate/ParentGroupId display ownership; standalone pages keep
-their own context. SDK full-fact guards remain unchanged. New native regression,
-Mod build and one new-code short check are in progress; no third full batch is
-authorized and old f0830e97 suites cannot qualify the later Mod.
+their own context. SDK full-fact guards remain unchanged. The regression and exact-game Host909 tests pass. New Mod d06a9e8b/MVID860493b7
+is installed; targeted shorts15/16 each execute open plus actual take/Skip in
+one completed intention, zero unknown and verified replay. Hologram enters the
+deck on take; decline preserves the deck and explicitly records pending_owner_skip.
+SDK105 and Runtime111 frozen files remain byte-identical. No third full batch
+is authorized; the old f0830e97 suite cannot qualify d06a9e8b Reference20.
 
 No actual Boss positive chain is established. A full terminal P1 human chooser
 and a one-page recording guide are available, but no real user recording is
