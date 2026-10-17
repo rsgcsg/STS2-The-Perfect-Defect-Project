@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
+import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
 import { projectManagedTextMenuV1 } from "../src/managed-text-menu-map.mjs";
 import { publicSelector as selector } from "./fixtures/managed-selector-public.mjs";
 
@@ -48,6 +48,37 @@ test("same owner with a new original Task rotates request identity without relab
   const second = projectManagedCandidateDecision({ state: next, ...identity, sequence: 2, publicEntityAliases: aliases });
   assert.equal(first.snapshot.interaction.content.surface.cards[0].entity_id, second.snapshot.interaction.content.surface.cards[0].entity_id);
   assert.notEqual(first.snapshot.interaction.content.surface.request_entity_id, second.snapshot.interaction.content.surface.request_entity_id);
+});
+
+test("every deck family dispatches either public confirm spelling to its owning raw handler", async () => {
+  for (const family of ["deck_upgrade", "deck_card", "deck_enchant"])
+    for (const operation of ["confirm", "confirm_selection"]) {
+      const state = selector({ preview: true, family });
+      state.selector_public.current_controls = [{ operation }];
+      const expected = family === "deck_upgrade" ? "confirm_upgrade_selection" : "confirm_deck_selection";
+      const dispatched = [];
+      const handlers = {
+        [expected](request) {
+          assert.deepEqual(request.args, { selector_ref: "private-selector-owner", selected_refs: "private-card-original" });
+          dispatched.push(request.action);
+          return selector({ family });
+        }
+      };
+      const session = new ManagedPlayerEnvironmentSession({ ...identity, process: {
+        async request(request) {
+          if (request.cmd === "start_run") return state;
+          assert.equal(request.cmd, "action");
+          assert.ok(handlers[request.action], `${family}/${operation}: wrong owning raw handler ${request.action}`);
+          return handlers[request.action](request);
+        }
+      } });
+      const snapshot = await session.mount({ seed: "synthetic-selector-dispatch" });
+      const confirm = snapshot.bound_actions.actions.find(action => action.verb === "confirm");
+      const receipt = await session.submit({ requestId: `${family}/${operation}`, expectedSnapshotId: snapshot.snapshot_id,
+        boundActionId: confirm.bound_action_id });
+      assert.equal(receipt.delivery, "delivered", `${family}/${operation}`);
+      assert.deepEqual(dispatched, [expected]);
+    }
 });
 
 test("missing original or after facts keep public displays while fencing complete-basis admission", () => {

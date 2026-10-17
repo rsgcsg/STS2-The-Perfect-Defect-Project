@@ -700,10 +700,11 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       after_availability: option.after_availability, missing: [...option.missing] };
   });
   const controls = [];
+  const confirmAction = state.decision === "deck_upgrade_select" ? "confirm_upgrade_selection" : "confirm_deck_selection";
   const operations = {
     open_preview: ["open", "preview_deck_selection"],
-    confirm: ["confirm", "confirm_upgrade_selection"],
-    confirm_selection: ["confirm", "confirm_deck_selection"],
+    confirm: ["confirm", confirmAction],
+    confirm_selection: ["confirm", confirmAction],
     cancel_preview: ["cancel", state.decision === "deck_upgrade_select" ? "cancel_upgrade_preview" : "cancel_deck_preview"],
     cancel_selection: ["cancel", state.decision === "deck_upgrade_select" ? "cancel_upgrade_selection" : "cancel_deck_selection"]
   };
