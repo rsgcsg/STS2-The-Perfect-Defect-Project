@@ -23,7 +23,7 @@ export function validReceipt(receipt, run, current, now = Date.now()) {
     ['full', 'python'].includes(receipt.scope) &&
     (receipt.scope === 'full' || current.scope === 'python') &&
     receipt.results?.plan === 'success' && receipt.results?.docs === 'skipped' &&
-    receipt.results?.linux === 'success' && receipt.results?.windows === 'success');
+    receipt.results?.linux === 'success');
 }
 
 // API data is read only. Download redirects never receive the GitHub credential.

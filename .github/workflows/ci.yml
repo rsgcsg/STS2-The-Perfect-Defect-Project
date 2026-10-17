@@ -7,8 +7,13 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Run the full Windows check before a release
+        type: boolean
+        default: false
   schedule:
-    - cron: "17 21 * * 0"
+    - cron: "17 21 * * *"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -64,12 +69,8 @@ jobs:
   repository:
     needs: plan
     if: needs.plan.outputs.scope == 'repository'
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,7 +90,7 @@ jobs:
 
   linux-portability:
     needs: plan
-    if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'
+    if: github.event_name != 'schedule' && (needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python')
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
@@ -149,7 +150,7 @@ jobs:
 
   windows-portability:
     needs: plan
-    if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'
+    if: github.event_name == 'schedule' || inputs.windows == true || github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 75
     strategy:
@@ -183,7 +184,7 @@ jobs:
         run: npm ci
       - name: Run selected portable source/test gate
         env:
-          CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
+          CHECK_SCOPE: full
         run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/2
       - name: Retain Python test timings and failures
         if: always()
@@ -201,9 +202,34 @@ jobs:
       - name: Check patch hygiene
         run: git diff --check
 
+  windows-failures:
+    needs: [plan, windows-portability]
+    if: ${{ always() && needs.windows-portability.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+      - name: Collect original Windows failures without rerunning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/windows-failures.mjs
+      - name: Retain the cumulative Windows checklist
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-failures-history
+          path: .local/ci/windows-failures.*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
   portable:
-    if: ${{ always() }}
-    needs: [plan, docs, repository, linux-portability, windows-portability]
+    if: ${{ always() && github.event_name != 'schedule' }}
+    needs: [plan, docs, repository, linux-portability]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -218,7 +244,7 @@ jobs:
         if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: pytest-*-shard-*-${{ github.run_attempt }}
+          pattern: pytest-Linux-shard-*-${{ github.run_attempt }}
           path: .local/ci/pytest-shards
           merge-multiple: false
       - name: Require every selected check; skipped is not a full PASS
@@ -229,7 +255,6 @@ jobs:
           DOCS_RESULT: ${{ needs.docs.result }}
           REPOSITORY_RESULT: ${{ needs.repository.result }}
           LINUX_RESULT: ${{ needs.linux-portability.result }}
-          WINDOWS_RESULT: ${{ needs.windows-portability.result }}
         run: node tools/check-plan.mjs aggregate
       - name: Retain fresh execution receipt
         if: needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python'

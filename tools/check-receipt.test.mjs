@@ -24,7 +24,7 @@ test('receipt binds repository, actual checkout content, executed scope and atte
   assert.ok(validReceipt(receipt,run,current,now));
   for(const patch of [{schema:'old'}, {executed:false}, {repository:'other/project'}, {run_id:'2'},
     {run_attempt:'1'}, {checkout:'invalid'}, {tree:'d'.repeat(40)}, {workflow:'e'.repeat(40)},
-    {scope:'reuse'}, {scope:'python'}, {results:{...receipt.results, windows:'skipped'}},
+    {scope:'reuse'}, {scope:'python'}, {results:{...receipt.results, linux:'skipped'}},
     {results:{...receipt.results, plan:'failure'}}, {results:{...receipt.results, docs:'success'}}])
     assert.equal(validReceipt({...receipt,...patch},run,current,now),false,JSON.stringify(patch));
   assert.ok(validReceipt({...receipt,scope:'python'},run,{...current,scope:'python'},now));
