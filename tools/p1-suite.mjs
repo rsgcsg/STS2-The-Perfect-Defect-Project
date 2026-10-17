@@ -72,6 +72,7 @@ async function runRuntime(dir, manifestPath, hostArgs, started) {
       const obs = events.filter((e) => e.kind === "global_observation"); const last = obs.at(-1)?.payload ?? {};
       row.decisions = kinds.global_choice ?? 0; row.dispatches = kinds.global_dispatch ?? 0;
       row.terminal = last.status === "terminal"; row.end = ended;
+      row.budget_exhausted = !row.terminal && (ended === "timeout" || !!kinds.autonomy_budget_exhausted);
       row.taint = events.find((e) => e.kind === "runtime_tainted")?.payload.reason ?? null;
       row.handoff = !!kinds.handoff_to_human; row.last_missing = last.missing ?? [];
       try {
@@ -121,8 +122,9 @@ try {
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--managed-binding", bindingPath, "--managed-attachment", clientAtt, "--managed-expected-service-instance-id", target.serviceInstanceId, "--managed-expected-runtime-instance-id", target.runtimeInstanceId, "--managed-expected-game-continuity-id", target.gameContinuityId], started));
-    } catch (error) { row.error = String(error.message).slice(0, 400); }
-    row.budget_exhausted = !row.terminal && Date.now() - started >= episodeBudgetMs;
+    } catch (error) { row.error = String(error.message).slice(0, 400);
+      row.budget_exhausted = error.message === "episode_budget_exhausted"
+        || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
     row.seconds = Math.round((Date.now() - started) / 1000);
     rows.push(row); console.log(JSON.stringify(row));
     writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, rows }, null, 1));
@@ -152,10 +154,12 @@ async function runReference() {
     const driver = spawn(process.execPath, driverArgs, { stdio: ["pipe", "pipe", "pipe"] });
     let dErr = ""; driver.stderr.on("data", (d) => { dErr += d; if (dErr.length > 2e6) dErr = dErr.slice(-1e6); });
     const lines = []; let buf = ""; driver.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { lines.push(buf.slice(0, i)); buf = buf.slice(i + 1); } });
-    const next = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (lines.length) return JSON.parse(lines.shift()); await new Promise((r) => setTimeout(r, 100)); } throw new Error("driver_timeout " + dErr.slice(-500)); };
+    const next = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (lines.length) return JSON.parse(lines.shift()); await new Promise((r) => setTimeout(r, 100)); }
+      if (Date.now() - started >= episodeBudgetMs) throw new Error("episode_budget_exhausted");
+      throw new Error("driver_timeout " + dErr.slice(-500)); };
     let counter = 0; const call = async (command, extra = {}, ms = 300000) => {
-      const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
       const remaining = command === "close" ? ms : Math.min(ms, remainingEpisodeMs(started));
+      const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
       const r = await next(remaining); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
     const close = async (dir) => {
       try { await call("close", {}, 120000); } catch { /* best effort */ }
@@ -181,9 +185,10 @@ async function runReference() {
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--connector-endpoint", endpoint], started));
-    } catch (error) { row.error = String(error.message).slice(0, 400); }
+    } catch (error) { row.error = String(error.message).slice(0, 400);
+      row.budget_exhausted = error.message === "episode_budget_exhausted"
+        || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
     finally { await close(dir); }
-    row.budget_exhausted = !row.terminal && Date.now() - started >= episodeBudgetMs;
     row.seconds = Math.round((Date.now() - started) / 1000); rows.push(row); console.log(JSON.stringify(row));
     writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, rows }, null, 1));
   }
