@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run a P1 Agent over a seed suite on a real Host (Managed service or Reference game) through the existing Policy Runtime.
 // node tools/p1-suite.mjs [--worktree W (default: this repository)] [--host managed --candidate C [--character Defect --language en|zh] | --host reference --local-root DIR [--template T]]
-//   --seeds S1,S2|--suite FILE [--limit N] [--episode-budget-ms N] --out DIR --agent "cmd args"
+//   --seeds S1,S2|--suite FILE [--limit N] [--episode-budget-ms N] [--agent-timeout-ms N (default 30000, max 300000)] --out DIR --agent "cmd args"
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -26,6 +26,9 @@ const { createGlobalProgramManifest } = await import(pathToFileURL(join(dist, "g
 
 const host = opt("--host", "managed");
 const episodeBudgetMs = Number(opt("--episode-budget-ms", "1200000"));
+const agentTimeoutMs = Number(opt("--agent-timeout-ms", "30000"));
+if (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0 || agentTimeoutMs > 300000)
+  throw new Error("agent-timeout-ms must be a positive integer at most 300000");
 if (!Number.isSafeInteger(episodeBudgetMs) || episodeBudgetMs <= 0) throw new Error("episode-budget-ms must be a positive integer");
 const remainingEpisodeMs = (started) => {
   const remaining = episodeBudgetMs - (Date.now() - started);
@@ -52,7 +55,8 @@ async function runRuntime(dir, manifestPath, hostArgs, started) {
         `--adapter-arg=${bridge}`, `--adapter-arg=${manifestPath}`, ...agentCmd.map((v) => `--adapter-arg=${v}`), "--mode", "auto", "--listen-port", String(port),
         "--evidence-root", join(dir, "evidence"), "--max-auto-submissions", "4000", "--max-policy-calls", "8000", "--auto-deadline-ms", String(remainingEpisodeMs(started)),
         ...hostArgs];
-      const rt = spawn(process.execPath, args, { cwd: worktree, stdio: ["ignore", "pipe", "pipe"] });
+      const rt = spawn(process.execPath, args, { cwd: worktree, stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, P1_AGENT_TIMEOUT_MS: String(agentTimeoutMs) } });
       let err = ""; rt.stderr.on("data", (d) => { err += d; });
       // Watch the run's events: the Runtime keeps serving after handoff/terminal; stop it once it has stopped driving.
       const runDir = () => { const e = join(dir, "evidence"); const r = existsSync(e) ? readdirSync(e).filter((n) => n.startsWith("run-")) : []; return r.length ? join(e, r[0]) : null; };
@@ -118,7 +122,7 @@ try {
       const artifactPath = join(dir, "program.json"); writeFileSync(artifactPath, JSON.stringify({ program: "p1-suite", agent: agentCmd }));
       const t = await ManagedServicePolicyClient.attachGlobal(bindingPath, clientAtt, target, "run-" + randomUUID());
       const identity = await t.negotiate(AbortSignal.timeout(Math.min(10000, remainingEpisodeMs(started))));
-      const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity, artifactPath, artifactBytes: readFileSync(artifactPath),
+      const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity, artifactPath, artifactBytes: readFileSync(artifactPath), agentTimeoutMs,
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--managed-binding", bindingPath, "--managed-attachment", clientAtt, "--managed-expected-service-instance-id", target.serviceInstanceId, "--managed-expected-runtime-instance-id", target.runtimeInstanceId, "--managed-expected-game-continuity-id", target.gameContinuityId], started));
@@ -127,14 +131,14 @@ try {
         || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
     row.seconds = Math.round((Date.now() - started) / 1000);
     rows.push(row); console.log(JSON.stringify(row));
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, rows }, null, 1));
+    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, rows }, null, 1));
   }
 } finally { svc?.kill("SIGTERM"); writeFileSync(join(outDir, "service.stderr"), svcErr); }
 function writeSummary() {
 const summary = { planned: seeds.length, terminal: rows.filter((r) => r.terminal).length, handoff: rows.filter((r) => r.handoff).length,
   taint: rows.filter((r) => r.taint).length, unknown: rows.filter((r) => r.unknown).length, errors: rows.filter((r) => r.error).length,
   replay_verified: rows.filter((r) => r.replay === "verified").length, decisions: rows.reduce((a, r) => a + (r.decisions ?? 0), 0) };
-writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, summary, rows }, null, 1));
+writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, summary, rows }, null, 1));
 console.log(JSON.stringify({ summary }));
 }
 writeSummary();
@@ -183,7 +187,7 @@ async function runReference() {
       const artifactPath = join(dir, "program.json"); writeFileSync(artifactPath, JSON.stringify({ program: "p1-suite", agent: agentCmd }));
       const t = new ReferenceGlobalTransport(new sdk.PlayerEnvironmentRestClient(endpoint, 5000), { productVersion: "p1-suite", clientInstanceId: "suite-" + randomUUID() });
       const gid = await t.negotiate(AbortSignal.timeout(Math.min(15000, remainingEpisodeMs(started)))); await t.close().catch(() => {});
-      const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity: gid, artifactPath, artifactBytes: readFileSync(artifactPath),
+      const manifest = createGlobalProgramManifest({ episodeId: episode, manifestId: episode, identity: gid, artifactPath, artifactBytes: readFileSync(artifactPath), agentTimeoutMs,
         adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1", code_sha256: sha(readFileSync(bridge)) } });
       const manifestPath = join(dir, "agent.json"); writeFileSync(manifestPath, JSON.stringify(manifest));
       Object.assign(row, await runRuntime(dir, manifestPath, ["--connector-endpoint", endpoint], started));
@@ -192,7 +196,7 @@ async function runReference() {
         || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
     finally { await close(dir); }
     row.seconds = Math.round((Date.now() - started) / 1000); rows.push(row); console.log(JSON.stringify(row));
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, rows }, null, 1));
+    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, rows }, null, 1));
   }
   writeSummary();
 }

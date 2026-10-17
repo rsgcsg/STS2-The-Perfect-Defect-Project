@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  supportsProfileValue, validateAgentManifest, validateAgentDirective, type AgentManifest, type AgentConsumption
+  supportsProfileValue, validateAgentManifest, validateAgentDirective, DEFAULT_AGENT_TIMEOUT_MS, type AgentManifest, type AgentConsumption
 } from "../src/agent-session-contracts.js";
+import { createGlobalProgramManifest } from "../src/global-program.js";
+import type { GlobalIdentity } from "../src/global-transport.js";
 import { AgentConsumptionLedger, type AgentAcquisition } from "../src/agent-session-consumption.js";
 import { AgentJsonLineFramer, encodeBoundedAgentJson } from "../src/agent-session-json.js";
 
@@ -298,5 +300,24 @@ describe("bounded Agent NDJSON", () => {
     const unterminated = new AgentJsonLineFramer(20, () => {});
     unterminated.push(Buffer.from("{}")); expect(() => unterminated.end()).toThrow("unterminated_message");
     expect(() => new AgentJsonLineFramer(20, () => {}).push(Buffer.from([123, 255, 125, 10]))).toThrow("invalid_json_or_utf8");
+  });
+});
+
+
+describe("explicit human response budget on the existing Agent port", () => {
+  const build = (agentTimeoutMs?: number) => createGlobalProgramManifest({ episodeId: "manual-budget", artifactPath: "program.json",
+    artifactBytes: Buffer.from("manual-program"), adapter: shared.manifest.adapter, agentTimeoutMs,
+    identity: { kind: "reference", protocol_version: "1.0.0", producer: { synthetic: true },
+      game: { version: "synthetic", commit: "synthetic" } } as unknown as GlobalIdentity });
+  it("retains the program default while admitting an explicit five-minute human wait", () => {
+    expect(build().limits.agent_timeout_ms).toBe(DEFAULT_AGENT_TIMEOUT_MS);
+    expect(DEFAULT_AGENT_TIMEOUT_MS).toBe(30_000);
+    expect(validateAgentManifest(build(300_000)).limits.agent_timeout_ms).toBe(300_000);
+    expect(build(300_000).claims.human_origin).toBe(false);
+  });
+  it.each([0, -1, 1.5, Number.NaN, 300_001])("rejects an invalid explicit response budget %s", value => {
+    expect(() => build(value)).toThrow("agentTimeoutMs");
+    const edited = manifest(); edited.limits.agent_timeout_ms = value;
+    expect(() => validateAgentManifest(edited)).toThrow();
   });
 });
