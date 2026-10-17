@@ -1,5 +1,8 @@
 # Current — P1 r1 package 1
 
+Resolve live GitHub refs; current source and original records override this file.
+The research model configuration remains frozen.
+
 [P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) owns this assignment.
 Base develop29d889bc follows approved PR189/191 merge commits. Old T7 card A is
 obsolete. No package2/3, training, freeze or new PR merge is assigned.
@@ -32,3 +35,7 @@ Next: final shared gates, install/load repaired Mod, collect both full denominat
 then open the package PR or hand off the recoverable incomplete increment.
 Unknown, natural loss, budget stop and product blocks stay separate. No CI/Human/
 Boss/victory/strategy qualification is inferred from source tests or cleanup.
+
+## Remaining Platform non-claims
+
+No full-P1, Windows, Host-equivalence, Human, training or strategy qualification.
