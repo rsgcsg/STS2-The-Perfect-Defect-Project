@@ -21,7 +21,7 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.24";
+    public const string Version = "1.3.0-rc.25";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
@@ -316,7 +316,11 @@ public static partial class ConnectorMod
             }
             else if (path.StartsWith(P1CaptureContract.Route + "/", StringComparison.Ordinal))
             {
-                HandleSealedObservation(path[(P1CaptureContract.Route.Length + 1)..], request, response, p1Capture: true);
+                HandleSealedObservation(path[(P1CaptureContract.Route.Length + 1)..], request, response, SealedPublicFormat.LegacyP1C1);
+            }
+            else if (path.StartsWith(PublicBasisContract.Route + "/", StringComparison.Ordinal))
+            {
+                HandleSealedObservation(path[(PublicBasisContract.Route.Length + 1)..], request, response, SealedPublicFormat.PublicBasis);
             }
             else if (path.StartsWith("/api/player-environment/reads/", StringComparison.Ordinal))
             {

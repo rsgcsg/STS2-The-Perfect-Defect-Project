@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using STS2Connector.LiveHost.Contracts;
+using STS2Platform.NativeFoundation;
 
 namespace STS2Connector.LiveHost;
 
@@ -36,6 +37,7 @@ internal sealed record PlayerReadBuildResult(
 
 internal static class PlayerVisibleReadBuilder
 {
+    public const string MapKind = "map";
     public const string RunDeckKind = "run_deck";
     public const string CombatPilesKind = "combat_piles";
     public const string ShopCatalogKind = "shop_catalog";
@@ -55,6 +57,7 @@ internal static class PlayerVisibleReadBuilder
             return kind switch
             {
                 RunDeckKind => BuildRunDeck(entities),
+                MapKind => BuildMap(entities),
                 CombatPilesKind => BuildCombatPiles(context, entities),
                 ShopCatalogKind => BuildShopCatalog(context, entities),
                 _ => PlayerReadBuildResult.Failure(
@@ -68,6 +71,30 @@ internal static class PlayerVisibleReadBuilder
                 "read_binding_failed",
                 $"Player read binding failed closed with {ex.GetType().Name}.");
         }
+    }
+
+    private static PlayerReadBuildResult BuildMap(NativeEntityRegistry entities)
+    {
+        RunState? run = RunManager.Instance.DebugOnlyGetState();
+        if (run == null || LocalContext.GetMe(run) == null)
+            return PlayerReadBuildResult.Failure("read_not_applicable", "There is no current local run map.");
+        var entry = NativeMapInformation.CaptureReadEntry(run);
+        if (entry.Status != "captured") return PlayerReadBuildResult.Failure(entry.Status, entry.Gap!);
+        NativeMapReadResult captured = NativeMapReadProjection.Capture(run);
+        if (captured.Status != "captured") return PlayerReadBuildResult.Failure(captured.Status, captured.Gap!);
+        var types = captured.Nodes.ToDictionary(node => (node.Coordinate.col, node.Coordinate.row), node => node.PointType);
+        VisibleMapCoordinate Coordinate(MegaCrit.Sts2.Core.Map.MapCoord coord) => new(coord.col, coord.row,
+            types.TryGetValue((coord.col, coord.row), out string? type) ? type : null);
+        var content = new MapLiveContext("map", captured.ActIndex,
+            captured.Current is { } current ? Coordinate(current) : null,
+            captured.Visited.Select(Coordinate).ToArray(), captured.Nodes.Select(node => new VisibleMapNode(
+                entities.GetId(node.Point, "map_point"), node.Coordinate.col, node.Coordinate.row,
+                node.PointType, node.State, node.Children.Select(Coordinate).ToArray())).ToArray());
+        if (!entry.StillCurrent()) return PlayerReadBuildResult.Failure("unknown", "native_map_information_entry_changed");
+        return PlayerReadBuildResult.Success(new PlayerReadDraft(MapKind, "normal_player_read", "native_map_topology", content,
+            new PlayerReadCompleteness("complete_for_current_player_openable_generated_map_without_action_authority",
+                new[] { "RunState.Map+VisitedMapCoords", "ActMap.Grid+StartingMapPoint+BossMapPoint+SecondBossMapPoint",
+                    "NativeMapDecisionProvider.GetDestinations", "NTopBarMapButton current native entry" }, Array.Empty<string>())));
     }
 
     private static PlayerReadBuildResult BuildRunDeck(NativeEntityRegistry entities)
@@ -131,7 +158,7 @@ internal static class PlayerVisibleReadBuilder
         return PlayerReadBuildResult.Success(new PlayerReadDraft(
             CombatPilesKind,
             "normal_player_read",
-            "unordered_multiset",
+            "per_zone",
             content,
             new PlayerReadCompleteness(
                 "complete_for_player_visible_combat_pile_contents_without_draw_order",
@@ -247,13 +274,19 @@ internal static class PlayerVisibleReadBuilder
         PileType pileType,
         NativeEntityRegistry entities)
     {
-        VisibleCard[] cards = BuildCards(pile.Cards, pileType, entities);
+        VisibleCard[] cards = OrderCombatPileCards(pileType, pile.Cards
+            .Select(card => LiveContextReader.BuildCard(card, entities.GetId(card, "card"), displayPile: pileType)));
         return new CombatPileReadZone(
             zone,
             cards.Length,
-            "unordered_multiset",
+            pileType == PileType.Draw ? "unordered_multiset" : "native_visible_order",
             cards);
     }
+
+    // Exact NCardPileScreen.OnPileContentsChanged sorts Draw only. The other
+    // two grids retain their native pile order, which is public information.
+    internal static VisibleCard[] OrderCombatPileCards(PileType pile, IEnumerable<VisibleCard> cards) =>
+        pile == PileType.Draw ? OrderPublicReadCards(cards) : cards.ToArray();
 
     private static VisibleCard[] BuildCards(
         IEnumerable<CardModel> source,

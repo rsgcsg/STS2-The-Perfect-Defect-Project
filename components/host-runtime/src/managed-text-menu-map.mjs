@@ -19,14 +19,14 @@ const REVIEWED_TEXT_MENU_KINDS = Object.freeze([
   "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
   "deck_card_selection", "card_selection", "shop_inventory", "combat_turn",
   "treasure_chest", "treasure_relic_selection", "treasure_completion",
-  "reward_claim", "card_reward_selection", "reward_completion"
+  "reward_claim", "card_reward_selection", "reward_completion", "native_boss_relic_selection"
 ]);
 const REVIEWED_TEXT_MENU_SURFACES = new Set(REVIEWED_TEXT_MENU_KINDS);
 // Describes verbs emitted by current native projections. The exact current
 // page catalog remains the action authority, including future bound verbs.
 const CURRENT_NATIVE_VERBS = Object.freeze([
   "activate", "cancel", "close", "confirm", "deselect", "end_turn",
-  "play", "preview", "select", "skip", "use"
+  "open", "play", "select", "skip", "use"
 ]);
 
 export function managedTextMenuV1Contract() {

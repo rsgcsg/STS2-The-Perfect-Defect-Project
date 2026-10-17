@@ -20,16 +20,24 @@ public sealed record NativeLogicalSourceInputPrefix(string RequestId, string Cli
     NativeLogicalSourcePosition PrePosition, long EncodingDeadlineMonotonicMs, string NativeMechanism = "connector_native_logical_input");
 public sealed record NativeLogicalSourceBasisOrder(string Status, string? ReasonCode);
 public sealed record NativeLogicalSourceBasisMapping(string MappingStatus, int MatchCount, string? ActionId);
+public sealed record NativeLogicalSourceNativeFacts(string Origin, string? OwnerRef, string? SubjectRef,
+    IReadOnlyDictionary<string, string> Arguments);
+public sealed record NativeLogicalSourceCarrier(string Kind, string CarrierRef);
 public sealed record NativeLogicalSourceInputTerminal(string Delivery, string? Reason, IReadOnlyList<NativeLogicalInputStage> Stages);
 
 /// <summary>Passive typed sink. Prefix and native metadata callbacks must perform no I/O or native input.</summary>
 public interface INativeLogicalSourceSink
 {
     bool RequiresOrderedBasis => false;
+    bool RequiresPublicBasis => false;
     void Epoch(NativeLogicalSourceEpoch epoch);
     void Boundary(NativeLogicalSourceTransition transition, NativeLogicalSourcePosition position);
     object? AdmitInput(NativeLogicalSourceInputPrefix prefix);
     void InputBasis(object originalToken, string? captureId, IDisposable? retainedInput, string? missingReason);
+    void InputSourcePayload(object originalToken, string? payloadId, IDisposable? retention, string? missingReason)
+        => InputBasis(originalToken, null, retention, missingReason ?? "source_public_basis_sink_unsupported");
+    void InputNativeFacts(object originalToken, NativeLogicalSourceNativeFacts facts) { }
+    void InputCarrier(object originalToken, NativeLogicalSourceCarrier carrier) { }
     void InputFrozen(object originalToken, NativeLogicalSourceBasisOrder order) { }
     void InputMapping(object originalToken, NativeLogicalSourceBasisMapping mapping) { }
     void InputTerminal(object originalToken, NativeLogicalSourceInputTerminal terminal);
@@ -43,14 +51,14 @@ public sealed class NativeLogicalSourceRecordingAttachment : IDisposable
     internal readonly string RegistrationId, ClientId;
     internal INativeLogicalSourceSink? Sink;
     internal bool Closing, Disposed;
-    internal readonly bool OrderedBasis;
+    internal readonly bool OrderedBasis, PublicBasis;
     internal string? Failure;
     private readonly NativeLogicalSourceEpoch initialEpoch;
     internal NativeLogicalSourceEpoch Current;
     internal readonly Dictionary<string, NativeLogicalSourceEpoch> IssuedEpochs = new(StringComparer.Ordinal);
     internal NativeLogicalSourceRecordingAttachment(NativeLogicalService owner, string registrationId, string clientId,
-        NativeLogicalSourceEpoch epoch, PlayerEnvironmentCapabilitiesResponse capabilities, string sourceDigest, bool orderedBasis)
-    { OrderedBasis = orderedBasis; this.owner = owner; RegistrationId = registrationId; ClientId = clientId; Current = initialEpoch = epoch; Capabilities = capabilities; ConnectorSourceDigest = sourceDigest; IssuedEpochs.Add(epoch.EpochId, epoch); }
+        NativeLogicalSourceEpoch epoch, PlayerEnvironmentCapabilitiesResponse capabilities, string sourceDigest, bool orderedBasis, bool publicBasis)
+    { OrderedBasis = orderedBasis; PublicBasis = publicBasis; this.owner = owner; RegistrationId = registrationId; ClientId = clientId; Current = initialEpoch = epoch; Capabilities = capabilities; ConnectorSourceDigest = sourceDigest; IssuedEpochs.Add(epoch.EpochId, epoch); }
     public NativeLogicalSourceEpoch InitialEpoch => initialEpoch;
     public PlayerEnvironmentCapabilitiesResponse Capabilities { get; }
     public string ConnectorSourceDigest { get; }
@@ -65,6 +73,7 @@ public sealed class NativeLogicalSourceRecordingAttachment : IDisposable
     public bool ReleaseEpoch(NativeLogicalSourceEpoch original) => owner.ReleaseSourceEpoch(this, original);
     public void Renew() => owner.RenewSource(this);
     public NativeLogicalSourceCopy CopyFrozen(string captureId) => owner.CopySourceFrozen(this, captureId);
+    public NativeLogicalSourcePayloadCopy CopyPayload(string payloadId) => owner.CopySourcePayload(this, payloadId);
     public void Dispose() => owner.DisposeSource(this);
 }
 
@@ -78,8 +87,18 @@ public sealed class NativeLogicalSourceCopy : IDisposable
     public void Dispose() { value = null; Interlocked.Exchange(ref budget, null)?.Dispose(); }
 }
 
+public sealed class NativeLogicalSourcePayloadCopy : IDisposable
+{
+    private IDisposable? budget;
+    private NativeLogicalSourceFrozenPayload? value;
+    public NativeLogicalSourceFrozenPayload Value => value ?? throw new ObjectDisposedException(nameof(NativeLogicalSourcePayloadCopy));
+    internal NativeLogicalSourcePayloadCopy(NativeLogicalSourceFrozenPayload value, IDisposable budget) { this.value = value; this.budget = budget; }
+    public void Dispose() { value = null; Interlocked.Exchange(ref budget, null)?.Dispose(); }
+}
+
 public static class NativeLogicalSourceRecording
 {
     // The recording application invokes this in its native command turn, before activating any sink.
-    public static NativeLogicalSourceRecordingAttachment Attach(bool requireOrderedBasis = false) => PlayerEnvironmentService.NativeLogical.AttachSource(requireOrderedBasis);
+    public static NativeLogicalSourceRecordingAttachment Attach(bool requireOrderedBasis = false, bool requirePublicBasis = false)
+        => PlayerEnvironmentService.NativeLogical.AttachSource(requireOrderedBasis, requirePublicBasis);
 }

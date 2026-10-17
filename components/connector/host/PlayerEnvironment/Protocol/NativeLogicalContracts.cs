@@ -89,7 +89,11 @@ public sealed record NativeLogicalGap(string Reason, string FromPublicationIndex
 public sealed record NativeLogicalEvent(string Schema, string Cursor, string StreamGeneration,
     string PublicationIndex, string Kind, string SourceSeam, string SourcePhase, string SourceIndex,
     string ScopeId, string? CaptureRef, string? MissingReason, string Coverage,
-    NativeLogicalCapture? PayloadReference);
+    NativeLogicalCapture? PayloadReference)
+{
+    [JsonIgnore] public string? SourcePayloadRef { get; init; }
+    [JsonIgnore] public global::STS2Connector.PlayerEnvironment.NativeLogical.NativeLogicalSourceStage? SourceStage { get; init; }
+}
 public sealed record NativeLogicalEventAvailability(NativeLogicalEvent Event, string Availability);
 public sealed record NativeLogicalEventBatch(IReadOnlyList<NativeLogicalEventAvailability> Events,
     string NextCursor, string HighWatermark, string RetainedStartCursor, NativeLogicalGap? Gap,

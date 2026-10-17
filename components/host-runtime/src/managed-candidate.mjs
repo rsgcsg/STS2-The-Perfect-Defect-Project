@@ -391,7 +391,10 @@ export async function prepareManagedCandidate({
     }
   }
   const project = path.join(destination, manifest.setup_contract.managed_project);
-  await run(dotnet.command, ["build", project, "-c", "Release", "--nologo"], {
+  // Map the candidate's absolute location away so the artifact identity depends on the
+  // source and inputs, not on where the candidate directory happens to live.
+  await run(dotnet.command, ["build", project, "-c", "Release", "--nologo", "-p:Deterministic=true",
+    `-p:PathMap=${destination}=/_/candidate/`], {
     cwd: destination,
     timeout: 600_000,
     env: { ...process.env, STS2_LIB: path.join(destination, "lib") }

@@ -1,5 +1,7 @@
 # Offline C1 archive comparison
 
+> 背景/历史文档。P1 的唯一权威是 [P1 全局 r1](protocols/P1_GLOBAL_R1.zh-CN.md)（r1.1）；冲突时以它和代码为准。
+
 This project engineering tool compares the content of two declared original
 `p1-atomic-capture-c1-1` archival records. Connector's current built SDK exclusively
 validates each record, exact public-byte digest and complete C1 coverage. The

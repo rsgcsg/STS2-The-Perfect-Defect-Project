@@ -10,6 +10,7 @@ assignment; product plans below are background/backlog until assigned.
 
 - [P1 public information and decision grain](protocols/P1.zh-CN.md)
 - [P1 Host and wire mapping](protocols/P1_HOST_AND_WIRE.zh-CN.md)
+- [P1 global r1 executable contract, evidence and gaps](protocols/P1_GLOBAL_R1.zh-CN.md)
 - [Offline C1 archival comparison](P1_CAPTURE_COMPARISON.md)
 - [ADR-0017: P1 forward profile](adr/0017-p1-forward-decision-profile.md)
 - [P1 plan and bounded history](plans/P1_FORWARD_2026-10-15.zh-CN.md)

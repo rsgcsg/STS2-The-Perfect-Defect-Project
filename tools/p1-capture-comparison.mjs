@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createPublicGraphComparator, PublicGraphDifference } from "../components/connector/sdk/typescript/dist/p1Global/index.js";
 import { readP1CaptureRecord, P1_CAPTURE_FULL_MISSING, P1_CAPTURE_SCOPE } from "../components/connector/sdk/typescript/dist/index.js";
 
 export const P1_COMPARISON_DECLARATION = "sts2.project/p1-c1-comparison-declaration-1";
@@ -69,7 +70,6 @@ class Difference extends Error {
   constructor(path, reason, incomparable = false) { super(reason); this.path = path.slice(0, 240); this.reason = reason; this.incomparable = incomparable; }
 }
 const fail = (path, reason, incomparable = false) => { throw new Difference(path, reason, incomparable); };
-const safeKey = key => /^[A-Za-z0-9_:-]{1,80}$/u.test(key) ? key : "<field>";
 function parseDocument(text, path) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_DOCUMENT_BYTES) fail(path, "missing_or_oversized_document", true);
   try { return JSON.parse(text); } catch { fail(path, "invalid_json", true); }
@@ -159,75 +159,21 @@ export async function compareP1CaptureRecords({ reference, candidate, declaratio
     }
     const a = left.observation; const b = right.observation;
     const aliasKind = aliasPolicy(a);
-    const forward = new Map(); const reverse = new Map();
-    function alias(kind, a, b, path) {
-      const ka = `${kind}:${a}`; const kb = `${kind}:${b}`;
-      if ((forward.has(ka) && forward.get(ka) !== b) || (reverse.has(kb) && reverse.get(kb) !== a))
-        fail(path, "opaque_alias_equality_or_bijection_changed");
-      forward.set(ka, b); reverse.set(kb, a);
-    }
-    // Fingerprints only select a unique candidate. They never establish equality;
-    // compare() still verifies every field and a single global bijection.
-    function selector(value, side, key = "", path = "$", depth = 0, mapping = { forward, reverse }) {
-      if (depth > 64) fail("$", "comparison_depth_bound", true);
-      // Unknown aliases on either side have no identifying power.
-      if (typeof value === "string" && aliasKind(key, path) && aliasKind(key, path) !== "requirement") {
+    const { compare, unordered } = createPublicGraphComparator({
+      alias(value, key, path) {
         const kind = aliasKind(key, path);
-        return ["alias", kind, side === "left" ? (mapping.forward.has(`${kind}:${value}`) ? value : "<unbound>")
-          : mapping.reverse.get(`${kind}:${value}`) ?? "<unbound>"];
+        if (kind === "requirement") return value.startsWith("read_instance:") ? { kind: "instance", id: value.slice(14) } : null;
+        return kind ? { kind, id: value } : null;
+      },
+      unordered(path, parent) {
+        return path === "$.coverage[].read_instance_ids" || path === "$.reads.combat_piles.content.zones[].cards"
+          && parent?.ordering_semantics === "unordered_multiset";
+      },
+      selectUnorderedMember(value, path) {
+        return path === "$.reads.surface_card" ? { kind: value.kind, target_entity_id: value.target_entity_id,
+          display_context: value.display_context, parent_read_instance_id: value.parent_read_instance_id } : value;
       }
-      if (typeof value === "string" && aliasKind(key, path) === "requirement" && value.startsWith("read_instance:"))
-        return ["requirement_instance", side === "left" ? value.slice(14) : mapping.reverse.get(`instance:${value.slice(14)}`) ?? "<unbound>"];
-      if (Array.isArray(value)) {
-        const children = value.map((child, index) => selector(child, side, key, `${path}[${index}]`, depth + 1, mapping));
-        return path.replace(/\[\d+\]/gu, "[]") === "$.coverage[].read_instance_ids" ? children.sort((a, b) => canonical(a).localeCompare(canonical(b))) : children;
-      }
-      if (!object(value)) return value;
-      return Object.fromEntries(Object.keys(value).sort().map(child => [child, selector(value[child], side, child, `${path}.${safeKey(child)}`, depth + 1, mapping)]));
-    }
-    function unordered(a, b, path, key, identityOnly = false) {
-      if (a.length !== b.length) fail(path, "collection_multiplicity_changed");
-      const groups = new Map();
-      // Freeze the selector view: matching earlier members can grow the global
-      // bijection, but cannot invalidate keys already indexed in this collection.
-      const mapping = { forward: new Map(forward), reverse: new Map(reverse) };
-      const signature = (value, side) => canonical(selector(identityOnly ? {
-        kind: value.kind, target_entity_id: value.target_entity_id, display_context: value.display_context,
-        parent_read_instance_id: value.parent_read_instance_id
-      } : value, side, key, `${path}[0]`, 0, mapping));
-      for (const value of b) { const sig = signature(value, "right"); const group = groups.get(sig) ?? []; group.push(value); groups.set(sig, group); }
-      for (let index = 0; index < a.length; index++) {
-        const group = groups.get(signature(a[index], "left"));
-        if (!group?.length) fail(`${path}[${index}]`, "collection_member_or_relation_changed");
-        if (group.length !== 1) fail(`${path}[${index}]`, "ambiguous_unordered_alias_mapping", true);
-        compare(a[index], group.pop(), `${path}[${index}]`, key);
-      }
-    }
-    let comparedNodes = 0;
-    function compare(a, b, path, key = "", parent = null, depth = 0) {
-      if (++comparedNodes > 500_000 || depth > 64) fail("$", "comparison_work_bound", true);
-      if (typeof a === "string" && typeof b === "string") {
-        if (aliasKind(key, path) === "requirement" && a.startsWith("read_instance:") && b.startsWith("read_instance:"))
-          return alias("instance", a.slice(14), b.slice(14), path);
-        const kind = aliasKind(key, path); if (kind && kind !== "requirement") return alias(kind, a, b, path);
-      }
-      if (Array.isArray(a) && Array.isArray(b)) {
-        const normalized = path.replace(/\[\d+\]/gu, "[]");
-        if (normalized === "$.coverage[].read_instance_ids" || normalized === "$.reads.combat_piles.content.zones[].cards"
-            && parent?.ordering_semantics === "unordered_multiset")
-          return unordered(a, b, path, key);
-        if (a.length !== b.length) fail(path, "sequence_length_changed");
-        for (let i = 0; i < a.length; i++) compare(a[i], b[i], `${path}[${i}]`, key, null, depth + 1);
-        return;
-      }
-      if (object(a) && object(b)) {
-        const ak = Object.keys(a).sort(); const bk = Object.keys(b).sort();
-        if (canonical(ak) !== canonical(bk)) fail(path, "field_presence_changed");
-        for (const child of ak) compare(a[child], b[child], `${path}.${safeKey(child)}`, child, a, depth + 1);
-        return;
-      }
-      if (a !== b) fail(path, "semantic_value_changed");
-    }
+    });
     const basis = observation => { const { session, sequence, observed_at, ...semantic } = observation.native_basis; return semantic; };
     compare(a.source_snapshot_id, b.source_snapshot_id, "$.source_snapshot_id", "source_snapshot_id");
     compare(basis(a), basis(b), "$.native_basis"); result.compared_sections.push("native_basis");
@@ -235,7 +181,7 @@ export async function compareP1CaptureRecords({ reference, candidate, declaratio
     for (const kind of ["run_deck", "combat_piles"]) {
       compare(a.reads.find(read => read.kind === kind), b.reads.find(read => read.kind === kind), `$.reads.${kind}`);
     }
-    unordered(a.reads.filter(read => read.kind === "surface_card"), b.reads.filter(read => read.kind === "surface_card"), "$.reads.surface_card", "", true);
+    unordered(a.reads.filter(read => read.kind === "surface_card"), b.reads.filter(read => read.kind === "surface_card"), "$.reads.surface_card", "");
     if (a.reads.some(read => !["surface_card", "run_deck", "combat_piles"].includes(read.kind))
         || b.reads.some(read => !["surface_card", "run_deck", "combat_piles"].includes(read.kind)))
       fail("$.reads", "unsupported_read_mapping", true);
@@ -245,7 +191,7 @@ export async function compareP1CaptureRecords({ reference, candidate, declaratio
     compare(metadata(a), metadata(b), "$"); result.compared_sections.push("scope_and_full_p1_gaps");
     result.verdict = "c1_scope_match";
   } catch (error) {
-    if (!(error instanceof Difference)) {
+    if (!(error instanceof Difference) && !(error instanceof PublicGraphDifference)) {
       result.first_difference = { path: "$", reason: "unsupported_document_structure" };
       return result;
     }

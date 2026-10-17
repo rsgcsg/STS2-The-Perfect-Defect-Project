@@ -18,9 +18,8 @@ public static class SourceSessionAuditV2
         resolver.Modifiers.Add(info =>
         {
             if (info.Kind != JsonTypeInfoKind.Object) return;
-            if (!format.Ordered)
-                for (int i = info.Properties.Count - 1; i >= 0; i--)
-                    if (SourceSessionWireFormat.IsOrderMember(info.Type, info.Properties[i].Name)) info.Properties.RemoveAt(i);
+            for (int i = info.Properties.Count - 1; i >= 0; i--)
+                if (!format.Includes(info.Type, info.Properties[i].Name)) info.Properties.RemoveAt(i);
             foreach (var property in info.Properties)
             {
                 bool omittedManifestExtension = manifest && info.Type == typeof(CurrentRecordingManifest)
@@ -49,7 +48,7 @@ public static class SourceSessionAuditV2
         var kinds = new HashSet<string>(StringComparer.Ordinal); var errors = new List<string>();
         try
         {
-            CheckPaths(directory);
+            CheckPaths(directory, format.PublicBasis);
             Require(!File.Exists(Path.Combine(directory, "source-accounting-failure.json")), "source_accounting_failed");
             var manifest = Read<CurrentRecordingManifest>("recording-manifest.json");
             var profile = Read<SourceCaptureProfileV2>("capture-profile.json"); session = manifest.SessionId;
@@ -195,6 +194,7 @@ public static class SourceSessionAuditV2
                 }
                 Require((row.Capture == null || row.Capture.EpochId == row.EpochId) && (row.Catalog == null || row.Catalog.EpochId == row.EpochId), "source_observation_epoch_mismatch");
                 Join(row.Capture, row.Catalog, row.Completeness == "complete");
+                JoinParts(row.CapturedParts, row.EpochId, true, row.SourceSeam == "native_input_callback" && row.Phase == "card_play_canceled");
                 if (row.OwnerOccurrence != null)
                 {
                     SourceSessionContract.Identifier(row.OwnerOccurrence);
@@ -218,6 +218,9 @@ public static class SourceSessionAuditV2
                 Require(segmentIndex + 1 == segmentRows.Count || Compare(row.PrePosition, segmentRows[segmentIndex + 1].BoundaryPosition) <= 0, "source_input_original_segment_mismatch");
                 Require((row.PreCapture == null || row.PreCapture.EpochId == row.EpochId) && (row.Catalog == null || row.Catalog.EpochId == row.EpochId), "source_input_epoch_mismatch");
                 Join(row.PreCapture, row.Catalog, row.Outcome.MappingStatus == "exact"); var outcome = row.Outcome;
+                JoinParts(row.CapturedParts, row.EpochId, row.BasisOrder?.Status == SourceSessionContractV3.FrozenBasis);
+                if (format.PublicBasis)
+                { Require(outcome.NativeFacts != null, "source_native_facts_missing"); SourcePublicBasisCodecV4.Validate(outcome.NativeFacts!); }
                 Require(outcome.MappingStatus is "exact" or "unmapped" or "ambiguous" or "capture_missing"
                     && outcome.Delivery is "rejected_before_input" or "delivered" or "partially_delivered" or "unknown"
                     && outcome.MatchCount is >= 0 and <= 65536 && outcome.Stages.Count <= 16, "source_input_outcome_invalid");
@@ -308,6 +311,21 @@ public static class SourceSessionAuditV2
                 Require(SourceSessionContract.IsSha256(hash) && relative == family + "/sha256/" + hash[..2] + "/" + hash + ".bin" && length is > 0 && length <= profile.Limits.MaxCaptureBytes, "source_blob_reference_invalid");
                 byte[] bytes = File.ReadAllBytes(Path.Combine(directory, relative)); Require(bytes.LongLength == length && SourceSessionContract.Sha256(bytes) == hash, "source_blob_missing_or_changed"); payloads.Add(relative); return bytes;
             }
+            void JoinParts(SourceCapturedPartsV4? parts, string epochId, bool proven, bool allowStage = false)
+            {
+                Require(format.PublicBasis == (parts != null), "source_captured_parts_profile_invalid");
+                if (parts == null) return;
+                if (parts.NativeStage is { } stage)
+                { Require(allowStage, "source_native_stage_publication_invalid"); SourcePublicBasisCodecV4.Validate(stage); }
+                if (parts.PublicBasis is not { } basis)
+                { Require(!string.IsNullOrWhiteSpace(parts.PublicBasisMissingReason), "source_public_basis_reason_missing"); SourceSessionContractV2.Text(parts.PublicBasisMissingReason); return; }
+                var epoch = epochs[epochId];
+                Require(proven && parts.PublicBasisMissingReason == null && basis.EpochId == epochId
+                    && basis.ScopeId == epoch.Context.ScopeId && basis.StreamGeneration == epoch.Context.StreamGeneration,
+                    "source_public_basis_binding_invalid");
+                SourceSessionContract.Identifier(basis.SnapshotId);
+                SourcePublicBasisCodecV4.Validate(Blob(basis.PayloadRef, basis.Sha256, basis.ByteCount, "public-bases"), basis.SnapshotId, environment);
+            }
             void Join(PublicCaptureReferenceV2? capture, PublicCatalogReferenceV2? catalog, bool full = false)
             {
                 JsonDocument? document = null;
@@ -357,7 +375,7 @@ public static class SourceSessionAuditV2
         { var names = new HashSet<string>(StringComparer.Ordinal); foreach (var property in value.EnumerateObject()) { Require(names.Add(property.Name), "source_json_duplicate_field"); UniqueJson(property.Value); } }
         else if (value.ValueKind == JsonValueKind.Array) foreach (var item in value.EnumerateArray()) UniqueJson(item);
     }
-    internal static void CheckPaths(string directory)
+    internal static void CheckPaths(string directory, bool publicBasis = false)
     {
         Require(Directory.Exists(directory) && !new DirectoryInfo(directory).Attributes.HasFlag(FileAttributes.ReparsePoint), "source_directory_missing_or_link");
         var allowed = new HashSet<string>(SourceSessionContractV2.StreamFiles, StringComparer.Ordinal)
@@ -371,10 +389,14 @@ public static class SourceSessionAuditV2
                 string path = Path.GetRelativePath(directory, entry.FullName).Replace('\\', '/');
                 if (entry is DirectoryInfo)
                 {
-                    Require(System.Text.RegularExpressions.Regex.IsMatch(path, "^(public-captures|public-catalogs)(/sha256(/[0-9a-f]{2})?)?$"), "source_unexpected_raw_directory");
+                    Require(System.Text.RegularExpressions.Regex.IsMatch(path, publicBasis
+                        ? "^(public-captures|public-catalogs|public-bases)(/sha256(/[0-9a-f]{2})?)?$"
+                        : "^(public-captures|public-catalogs)(/sha256(/[0-9a-f]{2})?)?$"), "source_unexpected_raw_directory");
                     pending.Push(entry.FullName);
                 }
-                else Require(allowed.Contains(path) || System.Text.RegularExpressions.Regex.IsMatch(path, "^(public-captures|public-catalogs)/sha256/[0-9a-f]{2}/[0-9a-f]{64}\\.bin$"), "source_unexpected_raw_file");
+                else Require(allowed.Contains(path) || System.Text.RegularExpressions.Regex.IsMatch(path, publicBasis
+                    ? "^(public-captures|public-catalogs|public-bases)/sha256/[0-9a-f]{2}/[0-9a-f]{64}\\.bin$"
+                    : "^(public-captures|public-catalogs)/sha256/[0-9a-f]{2}/[0-9a-f]{64}\\.bin$"), "source_unexpected_raw_file");
             }
     }
 }

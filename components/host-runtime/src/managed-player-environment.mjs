@@ -9,6 +9,7 @@ import {
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
+const CARD_ALTERNATIVE_OUTCOMES = new Set(["do_nothing", "end_selection_and_complete_reward", "end_selection_and_do_not_complete_reward"]);
 // Pinned native TargetType values supported by the current Managed combat
 // inputs. AnyAlly lacks a complete published single-player target domain.
 // Potion values must also agree with the exact native binding switch; its
@@ -348,7 +349,62 @@ function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
   };
 }
 
+function currentMapContent(raw, entityId) {
+  if (!plainObject(raw) || raw.status !== "captured" || raw.kind !== "map" || !Array.isArray(raw.nodes)
+    || !Array.isArray(raw.visited) || !Number.isSafeInteger(raw.act_index) || !("current_position" in raw)) return null;
+  const coordinate = value => plainObject(value) && Number.isSafeInteger(value.col) && Number.isSafeInteger(value.row)
+    && (value.point_type === null || typeof value.point_type === "string");
+  const keys = new Set(), refs = new Set();
+  if (raw.nodes.length === 0 || raw.nodes.some(node => !coordinate(node) || typeof node.native_ref !== "string"
+      || node.native_ref.length === 0 || typeof node.point_type !== "string" || !node.point_type
+      || !["none", "untravelable", "traveled", "travelable"].includes(node.state) || !Array.isArray(node.children)
+      || node.children.some(child => !coordinate(child)) || keys.has(mapCoordinateKey(node.col,node.row))
+      || refs.has(node.native_ref) || !keys.add(mapCoordinateKey(node.col,node.row)) || !refs.add(node.native_ref))) return null;
+  const types = new Map(raw.nodes.map(node => [mapCoordinateKey(node.col,node.row),node.point_type]));
+  const typeMatches = value => !types.has(mapCoordinateKey(value.col,value.row)) ? value.point_type === null
+    : value.point_type === types.get(mapCoordinateKey(value.col,value.row));
+  if (raw.nodes.some(node => node.children.some(child => !keys.has(mapCoordinateKey(child.col,child.row)) || !typeMatches(child)))
+    || raw.visited.some(value => !coordinate(value) || !typeMatches(value))
+    || raw.current_position !== null && (!coordinate(raw.current_position) || !typeMatches(raw.current_position))) return null;
+  const copyCoordinate = value => ({ col: value.col, row: value.row, point_type: value.point_type });
+  return { kind: "map", act_index: raw.act_index,
+    current_position: raw.current_position === null ? null : copyCoordinate(raw.current_position),
+    visited: raw.visited.map(copyCoordinate), nodes: raw.nodes.map(node => ({ entity_id: entityId("map_point",node.native_ref),
+      col: node.col, row: node.row, point_type: node.point_type, state: node.state,
+      children: node.children.map(copyCoordinate) })) };
+}
+
+function mapRead(snapshotId, state, makeId, entityId) {
+  if (!plainObject(state.context) || !("current_map" in state.context) || state.decision === "game_over") return null;
+  const content = currentMapContent(state.context.current_map, entityId);
+  return { descriptor: { read_id: makeId("read",snapshotId,"map"), kind: "map", target_referent_id: null,
+      content_schema: "sts2.player-environment/read/map-1", visibility_basis: "player_openable_current_generated_map",
+      snapshot_bound: true, ordering_semantics: "native_map_topology", hidden_by_policy: [] },
+    content: content ?? { kind: "map" }, completeness: { status: content ? "complete" : "partial",
+      visible_information: "current_generated_map_without_action_authority", interaction_discovery: "read_only",
+      missing: content ? [] : ["current_native_map_read_unavailable"], hidden_by_policy: [] } };
+}
+
 function buildVisibleMap(state, ctx) {
+  if (plainObject(state.context?.current_map)) {
+    const raw = state.context.current_map;
+    const context = currentMapContent(raw, ctx.entityId);
+    if (context === null || !Array.isArray(state.choices)) return null;
+    const travelable = raw.nodes.filter(node => node.state === "travelable");
+    const exact = state.choices.length === travelable.length && state.choices.every(choice =>
+      travelable.filter(node => node.native_ref === choice.native_ref && node.col === choice.col && node.row === choice.row).length === 1);
+    const nextOptions = exact ? state.choices.map(choice => {
+      const node = context.nodes.find(node => node.col === choice.col && node.row === choice.row);
+      const item = ctx.referent({ role: "option", id: node.entity_id, label: null,
+        properties: { col: node.col, row: node.row, point_type: node.point_type } });
+      ctx.action({ verb: "activate", subject: item, label: `Choose ${node.point_type} at (${node.col},${node.row})`,
+        raw: { cmd: "action", action: "select_map_node", args: { col: node.col, row: node.row, map_point_ref: choice.native_ref } } });
+      return item.properties;
+    }) : [];
+    return { context, surface: { kind: "map_navigation", travel_enabled: true, traveling: false,
+      drawing_mode: "none", next_options: nextOptions, can_exit_annotation: false }, complete: exact,
+      missing: exact ? [] : ["current_map_choices_do_not_match_same_native_capture"] };
+  }
   const map = state.visible_map;
   if (!plainObject(map) || map.type !== "map" || !Array.isArray(map.rows)) return null;
   const choices = Array.isArray(state.choices) ? state.choices : [];
@@ -454,7 +510,7 @@ function buildVisibleMap(state, ctx) {
     context: {
       kind: "map",
       act_index: state.context?.act_index,
-      ...(current == null ? {} : { current_position: current }),
+      current_position: current,
       visited,
       nodes
     },
@@ -486,7 +542,7 @@ function visibleHoverCards(cards, snapshotId, ownerKey, makeId) {
   ));
 }
 
-function visibleCombatCard(card, entityId) {
+function visibleCombatCard(card, entityId, depth = 0) {
   return {
     entity_id: entityId,
     definition_id: definitionId(card?.id ?? card?.name),
@@ -499,7 +555,7 @@ function visibleCombatCard(card, entityId) {
     is_upgraded: card?.is_upgraded === true || card?.upgraded === true,
     is_selected: false,
     ...(card?.enchantment == null ? {} : {
-      enchantment: {
+      existing_enchantment: {
         definition_id: definitionId(card.enchantment_id ?? card.enchantment),
         name: card.enchantment,
         description: card.enchantment_description ?? null,
@@ -509,7 +565,12 @@ function visibleCombatCard(card, entityId) {
     }),
     target_type: card?.target_type ?? null,
     can_play: card?.can_play ?? null,
-    ...(card?.unplayable_reason == null ? {} : { unplayable_reason: card.unplayable_reason })
+    ...(card?.unplayable_reason == null ? {} : { unplayable_reason: card.unplayable_reason }),
+    ...(Array.isArray(card?.keywords) ? { keywords: card.keywords.map((tip) => ({
+      name: visibleText(tip?.name), description: visibleText(tip?.description)
+    })) } : {}),
+    ...(depth < 16 && Array.isArray(card?.card_previews) ? { card_previews: card.card_previews.map((preview) =>
+      visibleCombatCard(preview, null, depth + 1)) } : {})
   };
 }
 
@@ -532,10 +593,53 @@ function visibleIntent(intent) {
   };
 }
 
+function visibleHealth(creature) {
+  return Object.fromEntries(["hp", "max_hp", "block", "health_bar_visible", "hp_display_mode",
+    "hp_numbers_available", "health_display"].map((key) => [key, creature[key]]));
+}
+function visibleOrb(orb, ctx) {
+  return { entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
+    name: visibleText(orb.name), description: visibleText(orb.description),
+    passive_value: orb.passive_value, evoke_value: orb.evoke_value,
+    queue_index: orb.queue_index, is_next_to_evoke: orb.is_next_to_evoke,
+    passive: orb.passive, evoke: orb.evoke,
+    keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) };
+}
+function visibleCompanion(pet, ctx) {
+  return { entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
+    name: visibleText(pet.name), is_alive: pet.is_alive, alive: pet.alive, ...visibleHealth(pet),
+    statuses: (pet.statuses ?? []).map(visibleStatus) };
+}
+function canonicalHealthComplete(creature) {
+  return plainObject(creature) && typeof creature.health_bar_visible === "boolean"
+    && ["normal", "infinite_with_numbers", "infinite_without_numbers"].includes(creature.hp_display_mode)
+    && typeof creature.hp_numbers_available === "boolean" && Number.isFinite(creature.block)
+    && creature.hp_numbers_available === (creature.health_bar_visible && creature.hp_display_mode !== "infinite_without_numbers")
+    && (creature.hp_numbers_available ? Number.isFinite(creature.hp) && Number.isFinite(creature.max_hp)
+      : creature.hp === null && creature.max_hp === null);
+}
+function canonicalHudComplete(hud) {
+  return plainObject(hud) && typeof hud.encounter_type === "string" && typeof hud.is_play_phase === "boolean"
+    && Number.isSafeInteger(hud.round) && hud.round >= 1 && typeof hud.turn_owner === "string" && hud.turn_owner.length > 0
+    && ["energy", "max_energy", "orb_slots"].every(key => Number.isSafeInteger(hud[key]))
+    && ["draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key => Number.isSafeInteger(hud[key]) && hud[key] >= 0)
+    && (hud.stars === null || Number.isSafeInteger(hud.stars))
+    && Number.isFinite(plainObject(hud.player) ? hud.player.block : hud.block)
+    && Array.isArray(hud.potion_states) && hud.potion_states.every((potion) => typeof potion.native_ref === "string"
+      && typeof potion.target_type === "string" && typeof potion.can_use === "boolean" && typeof potion.automatic === "boolean")
+    && Array.isArray(hud.orbs) && hud.orbs.every((orb, index) => typeof orb.native_ref === "string"
+      && typeof orb.id === "string" && typeof orb.description === "string" && Number.isFinite(orb.passive_value)
+      && Number.isFinite(orb.evoke_value) && orb.queue_index === index && orb.is_next_to_evoke === (index === 0))
+    && Array.isArray(hud.companions) && hud.companions.every((pet) => canonicalHealthComplete(pet)
+      && typeof pet.native_ref === "string" && typeof pet.id === "string" && typeof pet.is_alive === "boolean")
+    && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => canonicalHealthComplete(enemy)
+      && (enemy.combat_id === null || Number.isSafeInteger(enemy.combat_id) && enemy.combat_id >= 0 && enemy.combat_id <= 4_294_967_295));
+}
+
 function currentSurface(state, ctx) {
   const commonContext = {
     kind: "run",
-    run: state.context ?? null,
+    run: plainObject(state.context) ? Object.fromEntries(Object.entries(state.context).filter(([key]) => key !== "current_map")) : null,
     player: withoutDeck(state.player)
   };
   const supported = {
@@ -826,7 +930,28 @@ function currentSurface(state, ctx) {
             kind,
             label,
             description: reward.description ?? null,
-            enabled
+            enabled,
+            // Public stable group identity (alias of the private native reward ref).
+            group_id: ctx.entityId("reward_group", reward.native_ref),
+            group_relation: ["independent", "linked"].includes(reward.group_relation) ? reward.group_relation : "unavailable",
+            // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
+            ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
+              ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
+                ...visibleCombatCard(card, ctx.entityId("card", card?.native_ref)) }))
+              : null,
+              card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
+                option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_native_skip: option.is_native_skip === true })) : null,
+              card_alternatives_complete: reward.card_alternatives_complete === true
+                && Array.isArray(reward.card_alternatives)
+                && reward.card_alternatives.every(option => typeof option?.option_id === "string" && option.option_id.length > 0
+                  && typeof option.title === "string" && option.title.length > 0 && CARD_ALTERNATIVE_OUTCOMES.has(option.after_selected))
+                && new Set(reward.card_alternatives.map(option => option.option_id)).size === reward.card_alternatives.length
+                && ["can_skip_selection", "can_reroll", "selection_completes_reward"].every(key => typeof reward[key] === "boolean"),
+              can_skip_selection: reward.can_skip_selection ?? null,
+              can_reroll: reward.can_reroll ?? null,
+              selection_completes_reward: reward.selection_completes_reward ?? null,
+              native_relic_refresh_subscription: ["attached", "absent"].includes(reward.native_relic_refresh_subscription)
+                ? reward.native_relic_refresh_subscription : "unavailable" } : {})
           }
         });
         if (enabled) {
@@ -902,10 +1027,12 @@ function currentSurface(state, ctx) {
         prompt: null,
         surface: {
           kind: "reward_claim",
+          reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
           rewards,
           potion_slots_full: potionSlotsFull,
           discardable_potions: discardablePotions,
           can_proceed: state.is_terminal === true && state.can_proceed === true,
+          can_leave_with_unclaimed_rewards: state.can_leave_with_unclaimed_rewards ?? null,
           proceed_skips_remaining_rewards: rewards.length > 0
         },
         context: { kind: "reward_flow", reward_kind: "room_rewards" },
@@ -918,6 +1045,35 @@ function currentSurface(state, ctx) {
           ...(potionIdentityComplete ? [] : ["native_potion_identity"])
         ]
       };
+    }
+    case "relic_choice": {
+      const relics = Array.isArray(state.relics) ? state.relics : [];
+      const exact = state.native_relic_complete === true && typeof state.selector_ref === "string" && state.selector_ref.length > 0
+        && state.stage === "choosing" && state.can_skip === true && relics.length > 0 && relics.length + 1 <= ACTION_LIMIT
+        && relics.every((relic, index) => relic?.index === index && typeof relic.native_ref === "string" && relic.native_ref.length > 0
+          && ["id", "name", "description"].every(key => typeof relic[key] === "string" && relic[key].trim().length > 0)
+          && relic.hover_facts_complete === true && Array.isArray(relic.keywords) && Array.isArray(relic.card_previews))
+        && new Set(relics.map(relic => relic.native_ref)).size === relics.length;
+      const offered = relics.map((relic, index) => {
+        const unique = typeof relic?.native_ref === "string" && relics.filter(option => option?.native_ref === relic.native_ref).length === 1;
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic", relic.native_ref) : ctx.id("unbound_relic", index),
+          label: relic.name, occurrence: index, enabled: exact,
+          properties: { definition_id: definitionId(relic.id), name: visibleText(relic.name), description: visibleText(relic.description),
+            counter: relic.counter ?? null, keywords: visibleHoverKeywords(relic.keywords ?? []),
+            card_previews: visibleHoverCards(relic.card_previews ?? [], ctx.snapshotId, `relic_choice_${index}`, ctx.id) } });
+        if (exact) ctx.action({ verb: "select", subject: item, label: `Choose ${relic.name}`,
+          raw: { cmd: "action", action: "select_native_relic", args: { selector_ref: state.selector_ref, relic_ref: relic.native_ref } } });
+        return item.properties;
+      });
+      if (exact) ctx.action({ verb: "skip", label: "Skip relic selection", raw: {
+        cmd: "action", action: "skip_native_relic", args: { selector_ref: state.selector_ref } } });
+      return { kind: "native_boss_relic_selection", stage: "choosing", prompt: null,
+        surface: { kind: "native_boss_relic_selection", stage: "choosing", selector_profile: "managed-native-relic-presentation-1",
+          relics: offered, selectable_relic_entity_ids: exact ? offered.map(relic => relic.entity_id) : [], can_skip: exact && state.can_skip },
+        context: { ...commonContext, kind: "relic_choice" }, complete: exact,
+        missing: exact ? [] : ["exact_current_native_relic_presentation", ...(state.native_relic_gap ? [state.native_relic_gap] : [])],
+        visibleInformation: "complete_original_native_relic_offer_and_current_public_display",
+        interactionDiscovery: "exact_synchronous_RelicSelectCmd_presentation_and_original_object_completion" };
     }
     case "card_reward": {
       const rawCards = state.cards;
@@ -947,12 +1103,21 @@ function currentSurface(state, ctx) {
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
         missing: ["exact_current_card_reward_choices"]
       };
+      const metadataComplete = rawCards.every(card => typeof card.card_entity_ref === "string" && card.card_entity_ref.length > 0)
+        && typeof state.parent_reward_ref === "string" && state.parent_reward_ref.length > 0
+        && state.parent_status === "bound" && typeof state.reward_set_ref === "string" && state.reward_set_ref.length > 0
+        && typeof state.selection_completes_reward === "boolean"
+        && rawCards.every(card => card.render_complete === true
+          && ["id", "name", "type", "rarity", "description"].every(key => typeof card[key] === "string" && card[key].length > 0)
+          && (typeof card.cost === "string" || Number.isFinite(card.cost)) && typeof card.is_upgraded === "boolean"
+          && Array.isArray(card.keywords) && Array.isArray(card.card_previews));
       const cards = rawCards.map((card, index) => {
         const item = ctx.referent({
           role: "card",
+          id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index),
           label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: { index: card?.index ?? index, ...cardProperties(card) }
+          properties: { index: card?.index ?? index, ...visibleCombatCard(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index)) }
         });
         ctx.action({
           verb: "select", subject: item, label: `Take ${card.name ?? `card ${index + 1}`}`,
@@ -964,7 +1129,9 @@ function currentSurface(state, ctx) {
         const item = ctx.referent({
           role: "card_reward_alternative", label: alternative?.name ?? `Alternative ${index + 1}`,
           occurrence: index,
-          properties: { option_id: alternative?.id ?? null, name: alternative?.name ?? null }
+          properties: { option_id: alternative?.option_id ?? alternative?.id ?? null,
+            index, label: alternative?.name ?? null, enabled: true, title: alternative?.title ?? null,
+            after_selected: alternative?.after_selected ?? null, is_native_skip: alternative?.is_native_skip === true }
         });
         ctx.action({
           verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
@@ -979,12 +1146,20 @@ function currentSurface(state, ctx) {
         stage: "choosing",
         prompt: null,
         surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
-          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip") },
+          parent_status: ["bound", "standalone"].includes(state.parent_status) ? state.parent_status : "unavailable",
+          parent_group_id: typeof state.parent_reward_ref === "string" ? ctx.entityId("reward_group", state.parent_reward_ref) : null,
+          reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
+          selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
+          native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
+            ? state.native_relic_refresh_subscription : "unavailable",
+          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip"),
+          // Same fact as the Reference card reward page: every offered card has its select input.
+          selectable_card_entity_ids: cards.map((card) => card.entity_id) },
         context: { ...commonContext, kind: "reward" },
-        complete: true,
+        complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
-        missing: []
+        missing: metadataComplete ? [] : ["exact_card_reward_parent_and_card_identity"]
       };
     }
     case "combat_rewards_complete": {
@@ -1149,7 +1324,19 @@ function currentSurface(state, ctx) {
       const cardRefs = cards.map((card) => card?.native_ref);
       const stage = state.stage;
       const selectedCount = selectedRefs.length;
-      const exact = state.origin === "deck_generic"
+      // The exact FromDeckForEnchantment callback reuses this selector and is
+      // presented as the native enchant screen, naming the enchantment it applies.
+      const enchant = state.origin === "deck_enchant";
+      const enchantment = enchant && plainObject(state.enchantment)
+        && typeof state.enchantment.id === "string" && state.enchantment.id.length > 0
+        && typeof state.enchantment.name === "string" && state.enchantment.name.length > 0
+        && Number.isSafeInteger(state.enchantment.amount)
+        ? { definition_id: state.enchantment.id, name: state.enchantment.name,
+          description: typeof state.enchantment.description === "string" ? state.enchantment.description : null,
+          amount: state.enchantment.amount }
+        : null;
+      const selectionKind = enchant ? "deck_enchant_selection" : "deck_card_selection";
+      const exact = (state.origin === "deck_generic" || (enchant && enchantment !== null))
         && typeof state.selector_ref === "string" && state.selector_ref.length > 0
         && (stage === "selecting" || stage === "preview")
         && typeof state.prompt === "string" && state.prompt.length > 0
@@ -1211,7 +1398,9 @@ function currentSurface(state, ctx) {
           });
         }
         if (state.can_preview) ctx.action({
-          verb: "preview", label: "Preview card selection",
+          // Same wire meaning as Reference's open_player_environment_deck_preview.
+          // This opens the native confirmation stage; it does not commit the cards.
+          verb: "open", label: "Preview card selection",
           raw: { cmd: "action", action: "preview_deck_selection", args: {
             selector_ref: state.selector_ref
           } }
@@ -1236,8 +1425,9 @@ function currentSurface(state, ctx) {
         });
       }
       return {
-        kind: "deck_card_selection", stage, prompt: state.prompt ?? null,
-        surface: { kind: "deck_card_selection", stage,
+        kind: selectionKind, stage, prompt: state.prompt ?? null,
+        surface: { kind: selectionKind, stage,
+          ...(enchant ? { enchantment } : {}),
           cards: referents.map((item) => item.properties),
           min_select: state.min_select, max_select: state.max_select,
           selected_count: selectedCount,
@@ -1252,7 +1442,7 @@ function currentSurface(state, ctx) {
         context: { ...commonContext, kind: "selection" },
         ...supported,
         complete: exact,
-        missing: exact ? [] : ["exact_current_deck_card_selection_binding"]
+        missing: exact ? [] : [`exact_current_${selectionKind}_binding`]
       };
     }
     case "native_card_select": {
@@ -1273,10 +1463,20 @@ function currentSurface(state, ctx) {
         && (card.enchantment == null || text(card.enchantment) && text(card.enchantment_description));
       const statusComplete = (values) => Array.isArray(values) && values.every((value) =>
         text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
-      const hudComplete = plainObject(hud) && hud.player_ref === state.player?.native_ref
+      const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
         && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
-        && ["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count", "discard_pile_count",
+        && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
           "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
+        && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
+          && card.render_complete === true && cardComplete(card))
+        && new Set(hud.hand.map((card) => card.native_ref)).size === hud.hand.length
+        && Array.isArray(state.combat_piles) && state.combat_piles.length === 3
+        && ["draw", "discard", "exhaust"].every((pile) => {
+          const zones = state.combat_piles.filter((zone) => zone?.pile === pile);
+          return zones.length === 1 && zones[0].ordering_semantics === (pile === "draw" ? "unordered_multiset" : "native_visible_order")
+            && Array.isArray(zones[0].cards) && zones[0].cards.length === hud[`${pile}_pile_count`]
+            && zones[0].cards.every((card) => card?.render_complete === true && cardComplete(card));
+        })
         && statusComplete(hud.statuses) && Array.isArray(hud.orbs) && hud.orbs.every((orb) => text(orb?.native_ref)
           && text(orb?.id) && text(orb?.name) && Number.isFinite(orb.passive) && Number.isFinite(orb.evoke)
           && Array.isArray(orb.keywords) && orb.keywords.every((tip) => text(tip?.name) && text(tip?.description)))
@@ -1338,22 +1538,18 @@ function currentSurface(state, ctx) {
             selector_ref: state.selector_ref, selected_refs: selected.join(",") } } });
       }
       const publicHud = hudComplete ? {
-        kind: "combat", round: hud.round, turn_owner: hud.turn_owner,
+        kind: "combat", encounter_type: hud.encounter_type, is_play_phase: hud.is_play_phase,
+        round: hud.round, turn_owner: hud.turn_owner,
         player: { player_entity_id: ctx.entityId("player", hud.player_ref),
+          hand: hud.hand.map((card) => publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
             "discard_pile_count", "exhaust_pile_count", "orb_slots"].map((key) => [key, hud[key]])),
-          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => ({
-            entity_id: ctx.entityId("orb", orb.native_ref), definition_id: definitionId(orb.id),
-            name: visibleText(orb.name), passive: orb.passive, evoke: orb.evoke,
-            keywords: (orb.keywords ?? []).map((tip) => ({ name: visibleText(tip.name), description: visibleText(tip.description) })) })),
-          companions: hud.companions.map((pet) => ({
-            entity_id: ctx.entityId("companion", pet.native_ref), definition_id: definitionId(pet.id),
-            hp: pet.hp, max_hp: pet.max_hp, block: pet.block, alive: pet.alive,
-            health_bar_visible: pet.health_bar_visible, health_display: pet.health_display,
-            statuses: (pet.statuses ?? []).map(visibleStatus) })) },
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx)),
+          potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
+            target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
+          companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
         enemies: hud.enemies.map((enemy) => ({ entity_id: ctx.entityId("enemy", enemy.native_ref),
-          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), hp: enemy.hp, max_hp: enemy.max_hp,
-          block: enemy.block, health_bar_visible: enemy.health_bar_visible, health_display: enemy.health_display,
+          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), combat_id: enemy.combat_id, ...visibleHealth(enemy),
           statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
       } : null;
       return { kind: "card_selection", stage: "choosing", prompt: state.prompt ?? null,
@@ -1402,7 +1598,8 @@ function currentSurface(state, ctx) {
             || potion.valid_target_refs.some((nativeRef) => nativeRef !== state.player?.native_ref)
             || (potion.can_use === true && potion.valid_target_refs.length !== 1))));
       const playWindowOpen = state.is_play_phase === true;
-      const semanticFactsComplete = typeof state.encounter_type === "string"
+      const semanticFactsComplete = state.combat_hud_complete === true && canonicalHudComplete(state)
+        && typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"
         && typeof state.is_play_phase === "boolean"
         && Number.isSafeInteger(state.exhaust_pile_count)
@@ -1411,7 +1608,7 @@ function currentSurface(state, ctx) {
         && Array.isArray(state.companions)
         && Array.isArray(state.player_statuses)
         && rawEnemies.every((enemy) => typeof enemy.id === "string"
-          && Number.isSafeInteger(enemy.combat_id)
+          && (enemy.combat_id === null || Number.isSafeInteger(enemy.combat_id))
           && Array.isArray(enemy.statuses)
           && (enemy.intents ?? []).every((intent) =>
             typeof intent.label === "string"
@@ -1421,12 +1618,10 @@ function currentSurface(state, ctx) {
       const enemyEntries = rawEnemies.map((enemy, index) => {
         const properties = {
           entity_id: ctx.entityId("enemy", enemy.native_ref),
-          combat_id: ctx.entityId("enemy", enemy.native_ref),
+          combat_id: enemy.combat_id,
           definition_id: definitionId(enemy.id),
           name: enemy.name ?? null,
-          hp: enemy.hp,
-          max_hp: enemy.max_hp,
-          block: enemy.block,
+          ...visibleHealth(enemy),
           statuses: (enemy.statuses ?? []).map(visibleStatus),
           intents: (enemy.intents ?? []).map(visibleIntent)
         };
@@ -1510,23 +1705,24 @@ function currentSurface(state, ctx) {
       const playerEntityId = ctx.entityId("player", state.player?.native_ref);
       const playerContext = {
         player_entity_id: playerEntityId,
-        block: state.player?.block ?? 0,
-        energy: state.energy ?? 0,
-        max_energy: state.max_energy ?? 0,
+        block: state.player?.block,
+        energy: state.energy,
+        max_energy: state.max_energy,
+        stars: state.stars,
         hand: handEntries.map((entry) => entry.card),
-        draw_pile_count: state.draw_pile_count ?? 0,
-        discard_pile_count: state.discard_pile_count ?? 0,
-        exhaust_pile_count: state.exhaust_pile_count ?? 0,
+        draw_pile_count: state.draw_pile_count,
+        discard_pile_count: state.discard_pile_count,
+        exhaust_pile_count: state.exhaust_pile_count,
         statuses: (state.player_statuses ?? []).map(visibleStatus),
-        companions: state.companions ?? [],
-        potion_states: rawPotions.map((potion) => ({
+        companions: (state.companions ?? []).map((pet) => visibleCompanion(pet, ctx)),
+        potion_states: (state.potion_states ?? []).map((potion) => ({
           entity_id: ctx.entityId("potion", potion.native_ref),
           target_type: potion.target_type,
-          can_use: potion.can_use === true,
-          automatic: potion.usage === "Automatic"
+          can_use: potion.can_use,
+          automatic: potion.automatic
         })),
-        orbs: state.orbs ?? [],
-        orb_slots: state.orb_slots ?? 0
+        orbs: (state.orbs ?? []).map((orb) => visibleOrb(orb, ctx)),
+        orb_slots: state.orb_slots
       };
       const playerReferent = ctx.referent({
         role: "player",
@@ -1652,7 +1848,8 @@ function currentSurface(state, ctx) {
         complete,
         missing: [
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
-          ...(semanticFactsComplete ? [] : ["complete_visible_combat_context"]),
+          ...(semanticFactsComplete ? [] : ["complete_visible_combat_context",
+            ...(typeof state.combat_hud_gap === "string" ? [`combat_hud_gap:${state.combat_hud_gap}`] : [])]),
           ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
           ...(unsupportedCardTarget ? ["native_unsupported_card_target_type"] : []),
           ...(unsupportedPotionTarget ? ["native_unsupported_potion_target_type_or_binding"] : [])
@@ -1925,7 +2122,7 @@ function combatPilesRead(snapshotId, state, makeId) {
       content_schema: "sts2.player-environment/read/combat_piles-1",
       visibility_basis: "player_openable_draw_discard_exhaust_pile_views",
       snapshot_bound: true,
-      ordering_semantics: "unordered_multiset",
+      ordering_semantics: "per_zone",
       hidden_by_policy: ["draw_pile_true_order"]
     },
     content: {
@@ -1945,7 +2142,7 @@ function combatPilesRead(snapshotId, state, makeId) {
         return {
           zone: zone.pile,
           card_count: cards.length,
-          ordering_semantics: "unordered_multiset",
+          ordering_semantics: zone.pile === "draw" ? "unordered_multiset" : "native_visible_order",
           cards: cards.map((card, index) => ({
             ...card, entity_id: makeId("pile_card", snapshotId, zone.pile, index, card)
           }))
@@ -2004,6 +2201,7 @@ export function projectManagedCandidateDecision({
   stageStarted = performance.now();
   const reads = [
     runDeckRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
+    mapRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
     combatPilesRead(ctx.snapshotId, state, ctx.id)
   ]
     .filter(Boolean);
@@ -2366,7 +2564,7 @@ export class ManagedPlayerEnvironmentSession {
 
   async #setState(state, timeoutMs) {
     let enriched = state;
-    if (state?.decision === "map_select") {
+    if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
       const mapReadStarted = performance.now();
       try {
         const visibleMap = await this.#process.request({ cmd: "get_map" }, timeoutMs);

@@ -13,6 +13,13 @@ using STS2Connector.PlayerEnvironment.Witness;
 
 namespace STS2Connector.PlayerEnvironment;
 
+// Detached acquisition seam: projection, identity, bindings and submission remain production code.
+internal sealed record SnapshotBuildInput(GameBuildIdentity Game, LiveObservation Observation,
+    PersistentVisibleStateBuildResult Persistent, RewardPageSnapshotIdentity Identity)
+{
+    internal Func<string, PlayerReadBuildResult>? Read { get; init; }
+}
+
 internal static partial class PlayerEnvironmentService
 {
     internal static SnapshotBuildResult BuildSnapshot(
@@ -23,9 +30,16 @@ internal static partial class PlayerEnvironmentService
         string? inputProfile = null,
         bool textMenuCapture = false,
         int maximumBoundActions = MaxBoundActions,
-        Func<LiveObservation, IReadOnlyCollection<string>>? requiredReadKindsForObservation = null)
+        Func<LiveObservation, IReadOnlyCollection<string>>? requiredReadKindsForObservation = null,
+        bool aggregateCurrentPublicReads = false,
+        Action<SnapshotBuildResult>? sourcePublicProjection = null,
+        SnapshotBuildInput? capturedInput = null)
     {
+        bool publicBasisProfile = inputProfile == PublicBasisContract.Profile;
+        bool ordinaryProjection = inputProfile == null || publicBasisProfile;
+        aggregateCurrentPublicReads |= publicBasisProfile;
         P1CaptureGuard.ObserveSnapshotBuild();
+        DateTimeOffset captureTime = DateTimeOffset.UtcNow;
         if (!IsSupportedInputProfile(inputProfile)
             || inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile)
             throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
@@ -34,9 +48,9 @@ internal static partial class PlayerEnvironmentService
 
         GameBuildIdentity game = Measure(
             "game_identity",
-            EnvironmentIdentityRuntime.ReadGame);
+            () => capturedInput?.Game ?? EnvironmentIdentityRuntime.ReadGame());
         LiveObservation draft = Measure("native_surface_state", () =>
-            LiveObservationReader.Build(Entities, game, () =>
+            capturedInput?.Observation ?? LiveObservationReader.Build(Entities, game, () =>
             NativeGeneratedCardChoice.TryBuild(Entities, game)
                 ?? NativeBossRelicSelection.TryBuild(Entities, game)
                 ?? NativeSimpleCardSelection.TryBuild(Entities, game)
@@ -45,14 +59,14 @@ internal static partial class PlayerEnvironmentService
                 ?? NativeCombatPileSelection.TryBuild(Entities, game)
                 ?? NativeDeckCardSelection.TryBuild(Entities, game)
                 ?? NativeRestSite.TryBuild(Entities, game),
-                rewardPageProfile: inputProfile != null));
+                rewardPageProfile: !ordinaryProjection));
         LiveObservation nativeDraft = draft;
         // Native lifecycle availability is observed once on the complete base
         // capture, before any profile branch. Rich leaves cannot renew its clock.
         PersistentVisibleStateBuildResult shared = Measure(
-            "persistent_visible_state", () => game.Compatibility.StateObservationAllowed
+            "persistent_visible_state", () => capturedInput?.Persistent ?? (game.Compatibility.StateObservationAllowed
                 ? PersistentVisibleStateReader.Build(Entities)
-                : new PersistentVisibleStateBuildResult(false, null, null));
+                : new PersistentVisibleStateBuildResult(false, null, null)));
         draft = CombatInputAvailability.Attach(draft, shared.RunActive && shared.State != null && shared.Failure == null,
             Environment.TickCount64);
         nativeDraft = draft;
@@ -61,7 +75,7 @@ internal static partial class PlayerEnvironmentService
         bool rewardPotionProfile = inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile;
         if (rewardPotionProfile)
             draft = draft with { RewardPotionFacts = RewardPotionProfileReader.Capture(draft, Entities) };
-        if (inputProfile != null && (rewardPotionProfile
+        if (!ordinaryProjection && (rewardPotionProfile
                 ? !IsRewardPotionPage(draft)
                 : !IsOrdinaryRewardPage(draft)))
         {
@@ -94,27 +108,31 @@ internal static partial class PlayerEnvironmentService
                     "The exact current native UI owns input.")
         };
 
-        long nativeSequence = RewardPageIdentity.ObserveNative(
+        var identity = capturedInput?.Identity ?? RewardPageIdentity;
+        long nativeSequence = identity.ObserveNative(
             CommonNativeSignature(game, nativeDraft, shared.State));
         draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
-        IReadOnlyCollection<string>? selectedReadKinds = inputProfile == null
-            ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
-                ?? requiredReadKindsForObservation?.Invoke(draft)
-            : null;
-        IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
-            "required_read_builds",
-            () => BuildRequiredReads(selectedReadKinds, draft.Context));
         PlayerVisibilityProjection information = Measure("visibility_catalog", () =>
         {
             bool shopCatalogAvailable = ShopSurfaceFacts.TryGetCurrent(out _, out _, out _);
-            return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable);
+            return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable, aggregateCurrentPublicReads);
         });
-        IReadOnlyList<PlayerReadCatalogEntry> readCatalog = inputProfile == null
+        IReadOnlyCollection<string>? selectedReadKinds = ordinaryProjection
+            ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
+                ?? (aggregateCurrentPublicReads ? information.ReadCatalog.Select(read => read.Kind).Distinct(StringComparer.Ordinal).ToArray()
+                    : requiredReadKindsForObservation?.Invoke(draft))
+            : null;
+        IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
+            "required_read_builds",
+            () => capturedInput?.Read is { } read
+                ? MaterializeRequiredReads(selectedReadKinds, read)
+                : BuildRequiredReads(selectedReadKinds, draft.Context));
+        IReadOnlyList<PlayerReadCatalogEntry> readCatalog = ordinaryProjection
             ? information.ReadCatalog
             : Array.Empty<PlayerReadCatalogEntry>();
         IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry> linkedDetails =
-            inputProfile == null
-                ? BuildLinkedDetailCatalog(draft.Surface)
+            ordinaryProjection
+                ? BuildLinkedDetailCatalog(draft.Surface, draft.Context, readBuilds, includePublicCardDetails: aggregateCurrentPublicReads)
                 : Array.Empty<PlayerEnvironmentLinkedDetailCatalogEntry>();
         PlayerVisibilityState visibility = information.Visibility with
         {
@@ -136,130 +154,164 @@ internal static partial class PlayerEnvironmentService
         PlayerEnvironmentInteractionContent surfaceContent = Measure(
             "visible_surface_projection",
             () => ProjectVisibleFacts(draft.Surface, draft.Context));
-        if (inputProfile != null && draft.Surface is CardRewardSelectionSurface
+        if (!ordinaryProjection && draft.Surface is CardRewardSelectionSurface
             && draft.RewardPageFacts is { Qualified: true } profileFacts
             && surfaceContent.Surface is JsonObject page)
             ProjectRewardPageFacts(page, profileFacts);
         if (rewardPotionProfile && draft.RewardPotionFacts is { Qualified: true } potionFacts
             && surfaceContent.Surface is JsonObject potionPage)
             ProjectRewardPotionFacts(potionPage, draft.Surface, potionFacts);
-        IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
-            "native_binding_catalog",
-            () => CanPublishMutationAuthority(draft.Readiness)
-                ? textMenuCapture && draft.Surface is CombatTurnSurface combat
-                    ? BuildTextCombatBindings(draft, combat)
-                    : rewardPotionProfile
-                    ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
-                    : BuildPlayerEnvironmentBindings(draft)
-                : Array.Empty<NativeUiBoundAction>());
-        string interactionId = ReadFirstString(
-            rawSurface,
-            "screen_entity_id",
-            "room_entity_id",
-            "hand_entity_id",
-            "map_screen_entity_id")
-            ?? nativeBindings.SelectMany(item => item.Candidate.EntityBindings)
-                .FirstOrDefault(entity => IsOwnerRole(entity.Role))?.EntityId
-            ?? "interaction_" + StableIdentityHash.Object(new { draft.Surface.Kind, draft.Signature })[..20];
-        Dictionary<string, PlayerEnvironmentReferent> referents = Measure(
-            "referent_projection",
-            () => BuildFactReferents(surfaceContent));
-        BoundActionProjectionResult projected = Measure(
-            "bound_action_projection",
-            () => ProjectBoundActions(nativeBindings, interactionId, referents, maximumBoundActions));
-        bool profileCatalogIncomplete = inputProfile != null
-            && projected.Projection.Status != "complete";
-        if (profileCatalogIncomplete)
-            projected = CloseIncompleteRewardCatalog(projected);
-        IReadOnlyList<PlayerEnvironmentInteractionCapability> capabilities =
-            ProjectInteractionCapabilities(projected.Projection, referents);
-        string stage = ReadFirstString(rawSurface, "stage") ?? draft.Readiness;
-        string? prompt = ReadFirstString(rawSurface, "prompt", "body", "message");
-        IReadOnlyList<PlayerEnvironmentReadOpportunity> reads = readCatalog
-            .Select(entry => new PlayerEnvironmentReadOpportunity(
-                $"read:{entry.Kind}",
-                entry.Kind,
-                null,
-                PlayerEnvironmentContract.ReadContentSchema(entry.Kind),
-                entry.VisibilityBasis,
-                SnapshotBound: true,
-                entry.OrderingSemantics,
-                entry.HiddenByPolicy))
-            .Concat(linkedDetails.Select(entry => new PlayerEnvironmentReadOpportunity(
-                $"read:{entry.Kind}:{entry.EntityId}",
-                entry.Kind,
-                entry.EntityId,
-                PlayerEnvironmentContract.ReadContentSchema(entry.Kind),
-                entry.VisibilityBasis,
-                SnapshotBound: true,
-                "single_entity",
-                Array.Empty<string>())))
-            .OrderBy(read => read.ReadId, StringComparer.Ordinal)
-            .ToArray();
-        var view = FinalSnapshotView(draft, projected.Projection, visibility.HiddenByPolicy,
-            profileCatalogIncomplete, textMenuCapture, stage);
-        stage = view.Stage;
-        string signature = Measure("stable_snapshot_signature", () => StableIdentityHash.Object(new
+        if (sourcePublicProjection != null)
         {
-            game.Version,
-            game.Commit,
-            shared.State,
-            draft.Readiness,
-            surface = surfaceContent,
-            interactionId,
-            referents = referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
-            authority = CanonicalAuthoritySignature(nativeBindings),
-            reads,
-            visibility.HiddenByPolicy
-        }));
-        signature = FinalSnapshotSignature(signature, draft.CombatWithdrawal, view);
-        if (rewardPotionProfile && draft.RewardPotionFacts is { } exact)
-            signature = RewardPotionViewSignature(signature, exact);
-        (string snapshotId, long sequence) = inputProfile == null
-            ? RewardPageIdentity.ObserveLegacy(nativeSequence, signature)
-            : rewardPotionProfile
-                ? RewardPageIdentity.ObserveRewardPotion(nativeSequence, signature)
-                : RewardPageIdentity.ObserveReward(nativeSequence, signature);
-        string status = view.Status;
-        PlayerEnvironmentCompleteness completeness = view.Completeness;
-        var snapshot = new PlayerEnvironmentSnapshot(
-            PlayerEnvironmentContract.ProtocolVersion,
-            inputProfile == null
-                ? PlayerEnvironmentContract.SnapshotSchema
-                : rewardPotionProfile
-                    ? PlayerEnvironmentContract.RewardPotionSnapshotSchema
-                    : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
-            snapshotId,
-            sequence,
-            DateTimeOffset.UtcNow,
-            status,
-            shared.State == null
-                ? null
-                : new PlayerEnvironmentContent(
-                    "sts2.player-environment/persistent/run-player-1",
-                    JsonSerializer.SerializeToNode(shared.State, ConnectorMod._jsonOptions) ?? new JsonObject()),
-            new PlayerEnvironmentInteraction(
+            if (inputProfile != null || !textMenuCapture || !aggregateCurrentPublicReads)
+                throw new InvalidOperationException("source_projection_profile_invalid");
+            sourcePublicProjection(ProjectSnapshot(false, MaxBoundActions, false));
+            return ProjectSnapshot(true, maximumBoundActions, true);
+        }
+        return ProjectSnapshot(textMenuCapture, maximumBoundActions, false);
+
+        SnapshotBuildResult ProjectSnapshot(bool asTextMenu, int actionLimit, bool privatePreparation)
+        {
+            var projectionContent = new PlayerEnvironmentInteractionContent(
+                surfaceContent.Surface.DeepClone(), surfaceContent.Context.DeepClone());
+            IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
+                "native_binding_catalog",
+                () => CanPublishMutationAuthority(draft.Readiness)
+                    ? asTextMenu && draft.Surface is CombatTurnSurface combat
+                        ? BuildTextCombatBindings(draft, combat)
+                        : rewardPotionProfile
+                        ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
+                        : BuildPlayerEnvironmentBindings(draft)
+                    : Array.Empty<NativeUiBoundAction>());
+            string interactionId = ReadFirstString(
+                rawSurface,
+                "screen_entity_id",
+                "room_entity_id",
+                "hand_entity_id",
+                "map_screen_entity_id")
+                ?? nativeBindings.SelectMany(item => item.Candidate.EntityBindings)
+                    .FirstOrDefault(entity => IsOwnerRole(entity.Role))?.EntityId
+                ?? "interaction_" + StableIdentityHash.Object(new { draft.Surface.Kind, draft.Signature })[..20];
+            Dictionary<string, PlayerEnvironmentReferent> referents = Measure(
+                "referent_projection",
+                () => BuildFactReferents(projectionContent));
+            // Aggregate public Reads also detail cards that the current page does not show
+            // (e.g. the deck on a map page). Each targeted card is a current public entity,
+            // so it is a referent; the snapshot contract requires every Read target to be one.
+            if (aggregateCurrentPublicReads)
+                foreach (PlayerEnvironmentLinkedDetailCatalogEntry detail in linkedDetails)
+                    if (detail.Kind == "surface_card")
+                        AddReferent(referents, detail.EntityId, "card", null, null, null);
+            BoundActionProjectionResult projected = Measure(
+                "bound_action_projection",
+                () => ProjectBoundActions(nativeBindings, interactionId, referents, actionLimit));
+            bool profileCatalogIncomplete = !ordinaryProjection
+                && projected.Projection.Status != "complete";
+            if (profileCatalogIncomplete)
+                projected = CloseIncompleteRewardCatalog(projected);
+            IReadOnlyList<PlayerEnvironmentInteractionCapability> capabilities =
+                ProjectInteractionCapabilities(projected.Projection, referents);
+            string stage = ReadFirstString(rawSurface, "stage") ?? draft.Readiness;
+            string? prompt = ReadFirstString(rawSurface, "prompt", "body", "message");
+            IReadOnlyList<PlayerEnvironmentReadOpportunity> reads = readCatalog
+                .Select(entry => new PlayerEnvironmentReadOpportunity(
+                    $"read:{entry.Kind}",
+                    entry.Kind,
+                    null,
+                    PlayerEnvironmentContract.ReadContentSchema(entry.Kind),
+                    entry.VisibilityBasis,
+                    SnapshotBound: true,
+                    entry.OrderingSemantics,
+                    entry.HiddenByPolicy))
+                .Concat(linkedDetails.Select(entry => new PlayerEnvironmentReadOpportunity(
+                    $"read:{entry.Kind}:{entry.DetailKey ?? entry.EntityId}",
+                    entry.Kind,
+                    entry.EntityId,
+                    PlayerEnvironmentContract.ReadContentSchema(entry.Kind),
+                    entry.VisibilityBasis,
+                    SnapshotBound: true,
+                    "single_entity",
+                    Array.Empty<string>())))
+                .OrderBy(read => read.ReadId, StringComparer.Ordinal)
+                .ToArray();
+            var view = FinalSnapshotView(draft, projected.Projection, visibility.HiddenByPolicy,
+                profileCatalogIncomplete, asTextMenu, stage);
+            stage = view.Stage;
+            string signature = Measure("stable_snapshot_signature", () => StableIdentityHash.Object(new
+            {
+                game.Version,
+                game.Commit,
+                shared.State,
+                draft.Readiness,
+                surface = projectionContent,
                 interactionId,
-                draft.Surface.Kind,
-                stage,
-                prompt,
-                inputProfile == null
-                    ? SurfaceContentSchema(draft.Surface.Kind)
-                    : $"sts2.player-environment/surface/{draft.Surface.Kind}-{(rewardPotionProfile ? 3 : 2)}",
-                surfaceContent,
-                capabilities),
-            referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
-            projected.Projection,
-            reads,
-            completeness,
-            ToSessionReference(EnvironmentIdentityRuntime.HostIdentity(), game),
-            ToInformationPolicy(EnvironmentIdentityRuntime.InformationPolicy()))
-        { InputProfile = inputProfile };
-        return new SnapshotBuildResult(
-            snapshot,
-            draft,
-            projected.Bindings,
-            readBuilds);
+                referents = referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
+                authority = CanonicalAuthoritySignature(nativeBindings),
+                reads,
+                visibility.HiddenByPolicy
+            }));
+            signature = FinalSnapshotSignature(signature, draft.CombatWithdrawal, view);
+            if (rewardPotionProfile && draft.RewardPotionFacts is { } exact)
+                signature = RewardPotionViewSignature(signature, exact);
+            (string snapshotId, long sequence) = privatePreparation
+                ? identity.ObserveNativePreparation(nativeSequence, signature)
+                : publicBasisProfile
+                ? identity.ObservePublicBasis(nativeSequence, signature)
+                : inputProfile == null
+                ? identity.ObserveLegacy(nativeSequence, signature)
+                : rewardPotionProfile
+                    ? identity.ObserveRewardPotion(nativeSequence, signature)
+                    : identity.ObserveReward(nativeSequence, signature);
+            string status = view.Status;
+            PlayerEnvironmentCompleteness completeness = view.Completeness;
+            var snapshot = new PlayerEnvironmentSnapshot(
+                PlayerEnvironmentContract.ProtocolVersion,
+                ordinaryProjection
+                    ? PlayerEnvironmentContract.SnapshotSchema
+                    : rewardPotionProfile
+                        ? PlayerEnvironmentContract.RewardPotionSnapshotSchema
+                        : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
+                snapshotId,
+                sequence,
+                captureTime,
+                status,
+                shared.State == null
+                    ? null
+                    : new PlayerEnvironmentContent(
+                        "sts2.player-environment/persistent/run-player-1",
+                        JsonSerializer.SerializeToNode(shared.State, ConnectorMod._jsonOptions) ?? new JsonObject()),
+                new PlayerEnvironmentInteraction(
+                    interactionId,
+                    draft.Surface.Kind,
+                    stage,
+                    prompt,
+                    ordinaryProjection
+                        ? SurfaceContentSchema(draft.Surface.Kind)
+                        : $"sts2.player-environment/surface/{draft.Surface.Kind}-{(rewardPotionProfile ? 3 : 2)}",
+                    projectionContent,
+                    capabilities),
+                referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
+                projected.Projection,
+                reads,
+                completeness,
+                ToSessionReference(EnvironmentIdentityRuntime.HostIdentity(), game),
+                ToInformationPolicy(EnvironmentIdentityRuntime.InformationPolicy()))
+            { InputProfile = inputProfile };
+            return new SnapshotBuildResult(
+                snapshot,
+                draft,
+                projected.Bindings,
+                readBuilds);
+        }
+    }
+
+    internal sealed record SourceSnapshotBuild(SnapshotBuildResult PublicBasis, SnapshotBuildResult NativePreparation);
+    internal static SourceSnapshotBuild BuildSourceSnapshot()
+    {
+        SnapshotBuildResult? ordinary = null;
+        var native = BuildSnapshot(textMenuCapture: true, maximumBoundActions: NativeLogicalCapture.MaximumActions,
+            aggregateCurrentPublicReads: true, sourcePublicProjection: value => ordinary = value);
+        return new(ordinary ?? throw new InvalidOperationException("source_public_projection_missing"), native);
     }
 
     internal static CombatInputView FinalSnapshotView(LiveObservation draft, PlayerEnvironmentBoundActionProjection projection,

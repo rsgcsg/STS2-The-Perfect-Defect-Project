@@ -18,15 +18,20 @@ internal static class PlayerVisibilityCatalog
     public static PlayerVisibilityProjection Build(
         LiveObservation draft,
         bool activeRunSharedStateAvailable,
-        bool shopCatalogSourceAvailable)
+        bool shopCatalogSourceAvailable,
+        bool aggregateCurrentPublicReads = false)
     {
         var entries = new List<PlayerReadCatalogEntry>();
         foreach (string kind in CurrentReadKinds(
                      draft,
                      activeRunSharedStateAvailable,
-                     shopCatalogSourceAvailable))
+                     shopCatalogSourceAvailable, aggregateCurrentPublicReads))
         {
-            if (kind == PlayerVisibleReadBuilder.RunDeckKind && activeRunSharedStateAvailable)
+            if (kind == PlayerVisibleReadBuilder.MapKind)
+                entries.Add(new PlayerReadCatalogEntry(kind, "active_run", "player_visible",
+                    "player_openable_current_generated_map", true, false, "native_map_topology", "low",
+                    new[] { "route_planning" }, Array.Empty<string>()));
+            else if (kind == PlayerVisibleReadBuilder.RunDeckKind && activeRunSharedStateAvailable)
             {
                 entries.Add(new PlayerReadCatalogEntry(
                     kind,
@@ -49,7 +54,7 @@ internal static class PlayerVisibilityCatalog
                     "player_openable_draw_discard_exhaust_pile_views",
                     StateBound: true,
                     CreatesActionAuthority: false,
-                    "unordered_multiset",
+                    "per_zone",
                     "medium",
                     new[] { "combat_planning", "discard_sensitive_effect", "exhaust_sensitive_effect" },
                     PlayerVisibleReadBuilder.HiddenByPolicyFor(kind)));
@@ -93,11 +98,17 @@ internal static class PlayerVisibilityCatalog
     private static IReadOnlyList<string> CurrentReadKinds(
         LiveObservation draft,
         bool activeRunSharedStateAvailable,
-        bool shopCatalogSourceAvailable)
+        bool shopCatalogSourceAvailable,
+        bool aggregateCurrentPublicReads = false)
     {
         var kinds = new List<string>();
         if (activeRunSharedStateAvailable)
+        {
             kinds.Add(PlayerVisibleReadBuilder.RunDeckKind);
+            // The game-over screen has no openable map (native entry is unsupported there).
+            if (aggregateCurrentPublicReads && draft.Context.Kind is not ("terminal" or "game_over"))
+                kinds.Add(PlayerVisibleReadBuilder.MapKind);
+        }
         if (draft.Context.Kind == "combat")
             kinds.Add(PlayerVisibleReadBuilder.CombatPilesKind);
         if (draft.Context.Kind == "shop" && shopCatalogSourceAvailable)

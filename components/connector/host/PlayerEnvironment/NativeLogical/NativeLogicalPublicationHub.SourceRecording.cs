@@ -129,6 +129,7 @@ public sealed partial class NativeLogicalPublicationHub
                 { Completed = original.Completed };
             if (original.Outcomes.Remove(sub.Value.SubscriptionId, out var outcome)) copy.Outcomes.Add(sub.Value.SubscriptionId, outcome);
             if (original.Pins.Remove(sub.Value.SubscriptionId, out var pin)) copy.Pins.Add(sub.Value.SubscriptionId, pin);
+            if (original.SourcePins.Remove(sub.Value.SubscriptionId, out var sourcePin)) copy.SourcePins.Add(sub.Value.SubscriptionId, sourcePin);
             view.Slots.Add(copy.Index, copy);
         }
         if (close) { owner.CloseRequested = true; owner.Closing = view; }
@@ -186,6 +187,7 @@ public sealed partial class NativeLogicalPublicationHub
                 throw new NativeLogicalException("invalid_projection", "Original reservation metadata changed.");
             var outcome = outcomes.SingleOrDefault(o => o.ScopeId == view.Subscription.Value.ScopeId);
             if (!slot.Subscriptions.Contains(view.Subscription.Value.SubscriptionId) || outcome is null) continue;
+            ValidateSourcePayload(outcome, reservation.StreamGeneration);
             if (outcome.Capture is null && outcome.MissingReason is null || outcome.Capture is not null && outcome.MissingReason is not null)
                 throw new NativeLogicalException("invalid_projection", "Each original projection has exactly one capture or missing outcome.");
             if (outcome.MissingReason is not null) NativeLogicalWire.Text(outcome.MissingReason, limits.MaxMetadataFieldBytes);
@@ -222,8 +224,9 @@ public sealed partial class NativeLogicalPublicationHub
                     slot.Pins.Add(view.Subscription.Value.SubscriptionId, store.Retain("hub:" + view.Subscription.Value.SubscriptionId, outcome.Capture.CaptureId));
                 }
                 catch (NativeLogicalException e) when (e.Code is "payload_expired" or "capacity_exceeded")
-                { outcome = new(view.Subscription.Value.ScopeId, null, e.Code); }
+                { outcome = new(view.Subscription.Value.ScopeId, null, e.Code) { SourcePayload = outcome.SourcePayload, SourceStage = outcome.SourceStage }; }
             }
+            PinSourcePayload(slot, view.Subscription.Value.SubscriptionId, ref outcome);
             slot.Outcomes.Add(view.Subscription.Value.SubscriptionId, outcome); slot.Completed = true;
             AdvanceSourceHigh(view); completed = true;
         }
@@ -304,7 +307,10 @@ public sealed partial class NativeLogicalPublicationHub
                 var sub = SourceActive(owner, subscriptionId); ulong through = Parse(sub, throughCursor);
                 if (through > high) throw new NativeLogicalException("cursor_mismatch", "Acknowledgement is above completed source positions.");
                 foreach (var slot in ring.OfType<Slot>().Where(s => s.Index <= through))
+                {
                     if (slot.Pins.Remove(subscriptionId, out var pin)) store.Release("hub:" + subscriptionId, pin);
+                    if (slot.SourcePins.Remove(subscriptionId, out var sourcePin)) sourcePin.Dispose();
+                }
             }
         }
     }

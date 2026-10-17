@@ -56,8 +56,25 @@ internal static class NativeLogicalCardRewardCapture
         TextMenuFrame frame = Compose(source.HostObservation, current, bindings.Page, information.Concat(potions).ToArray(),
             () => state.Current(entities), executeLegacy,
             key + ":" + entities.GetId(state.Completion, "native_reward_request"));
+        frame = AttachSourceSelectionWitnesses(frame, owner, state.Cards.Select(value =>
+                (Id: entities.GetId(value.Model, "card"), Subject: (object)value.Model))
+            .Concat(state.Alternatives.Select(value =>
+                (Id: entities.GetId(value.Model, "card_reward_alternative"), Subject: (object)value.Model)))
+            .ToDictionary(value => value.Id, value => value.Subject, StringComparer.Ordinal));
         return NativeTextMenuInformation.AppendCardRewardInformation(frame, state, entities);
     }
+
+    // Called only with the already owner-proved native information occurrence above.
+    // Private Source joins observe original operands; public actions, Human witnesses and dispatch stay unchanged.
+    internal static TextMenuFrame AttachSourceSelectionWitnesses(TextMenuFrame frame, object exactOwner,
+        IReadOnlyDictionary<string, object> exactSubjects) => frame with
+    {
+        Leaves = frame.Leaves.Select(leaf => leaf.NativeSourceWitness == null && leaf.Verb == "select"
+            && leaf.Arguments.Count == 0 && leaf.SubjectReferentId is { } id
+            && exactSubjects.TryGetValue(id, out var originalSubject)
+                ? leaf with { NativeSourceWitness = new(exactOwner, originalSubject,
+                    new Dictionary<string, object>(StringComparer.Ordinal)) } : leaf).ToArray()
+    };
 
     private static bool ExactIds(IEnumerable<string> expected, IEnumerable<string> actual)
     {

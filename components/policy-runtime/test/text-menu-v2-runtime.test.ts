@@ -152,17 +152,22 @@ function managedCapabilities() {
 }
 
 function nativeCombatDecision() {
+  // Synthetic current RunSimulator HUD; real HTTP ownership below must not
+  // depend on the former incomplete-HUD fallback being admitted.
   return { type: "decision", decision: "combat_play",
     context: { act: 1, act_index: 0, act_definition_id: "OVERGROWTH", act_name: "Overgrowth",
       floor: 2, total_floor: 2, ascension: 0, room_type: "Combat", bosses: [], modifiers: [] },
+    combat_hud_complete: true, potion_states: [], stars: null,
+    draw_pile_count: 0, discard_pile_count: 0,
     encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
     energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [],
     player_statuses: [], hand: [{ index: 0, native_ref: "native-strike", id: "CARD.STRIKE",
       name: "Strike", can_play: true, target_type: "AnyEnemy", valid_target_refs: ["native-enemy"],
       type: "Attack", rarity: "Basic", cost: 1 }],
     enemies: [{ index: 0, native_ref: "native-enemy", id: "MONSTER.CULTIST", combat_id: 1,
-      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
-    player: { name: "The Defect", character_id: "DEFECT", hp: 70, max_hp: 70, gold: 99,
+      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [],
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true }],
+    player: { name: "The Defect", character_id: "DEFECT", hp: 70, max_hp: 70, block: 0, gold: 99,
       native_ref: "native-player", max_potion_slots: 3, relics: [], potions: [], deck: [] } };
 }
 
@@ -298,7 +303,7 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
         evidence: { append: async () => {}, finalize: async () => {} } as never,
         statefulPolicy: inference });
       const firstResult = await runtime.tick();
-      expect(firstResult.type).toBe("navigated");
+      expect(firstResult.type, JSON.stringify(firstResult)).toBe("navigated");
       expect(order).toEqual(["claim", "observe", "release", "policy", "claim", "submit"]);
       expect(service.driver.status().control_held).toBe(true);
       const beforeSecondTick = order.length;

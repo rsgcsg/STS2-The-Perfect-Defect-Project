@@ -125,9 +125,15 @@ internal static class NativeTextMenuFrameBuilder
         if (nativeLogical && NativeLogicalCardRewardCapture.TryCapture(legacy, page, leaves, entities, executeLegacy) is { } cardReward)
             return cardReward;
 
-        if (nativeLogical && NativeLogicalGridCapture.TryCapture(legacy, page, leaves, entities) is { } logicalGrid)
-            return logicalGrid.LogicalGridProof is { } proof
-                ? NativeTextMenuInformation.AppendLogicalGridInformation(logicalGrid, proof, entities) : logicalGrid;
+        if (nativeLogical)
+        {
+            NativeLogicalGridCaptureResult captured = legacy.CapturedLogicalGrid;
+            if (!captured.Attempted)
+                captured = NativeLogicalGridCapture.CaptureCurrent(entities, legacy.HostObservation.Game);
+            if (NativeLogicalGridCapture.ComposeNativeFrame(legacy, page, leaves, captured) is { } logicalGrid)
+                return logicalGrid.LogicalGridProof is { } proof
+                    ? NativeTextMenuInformation.AppendLogicalGridInformation(logicalGrid, proof, entities) : logicalGrid;
+        }
 
         if (nativeLogical && NativeLogicalNonGridPeek.TryCapture(legacy, page, entities) is { } nativePeek)
             return nativePeek;

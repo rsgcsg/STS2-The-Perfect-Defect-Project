@@ -105,3 +105,10 @@ Auto-fix/外部作者只有一个明确写入owner。观察者只观察，不自
 | 文档、交接和资产清理 | PROJECT_SYSTEM与CURRENT；更改影响到的入口/声明，短增量交接。只有不再需要且有权限的工作树/资产才清理，不以数量目标批量删除。 |
 
 主管在已批准目标内可以自主派发下一项有界任务，无需每次让用户重新授权；但完成当前任务不自动获得另一个目标，历史待办也不能自行复活。重要未决取舍要交用户，普通可逆工程选择由负责人完成。
+
+## 9. P1 专用约定（用户确认，2026-10-16）
+
+- **以原生事件或原生状态为准，不靠读秒。** 投递后是否稳定、能否给 Agent 下一个观察，由原生状态（如 Snapshot `status: settling`、动作队列空闲、目标页面就绪）判断。只有原生确实没有信号、或原来就是计时实现时才计时，并在文档写明原因；超时只防卡死，要明确停局并记录，不能当作稳定。当前临时计时补丁及替换任务见 P1 续作计划 T7。
+- **Reference 是真相，Managed 跟随。** 两端等价的口径是把 Reference 的真实轨迹在 Managed 上重放对比；分叉默认先查 Managed，但按原生事实定位 owner。Managed 在 P1 语境里绝大多数情况和原版一致即可，不追求逐字节相同。
+- **协议例外先交用户审核，再写进协议文档的“登记例外”表**（`docs/protocols/P1_GLOBAL_R1.zh-CN.md`），不能在代码里悄悄拒绝或放行。
+- 标准复现入口：套件 `node tools/p1-suite.mjs --host managed|reference ...`（`report.json` 带完整分母和卡点原因）；单局回放 `sts2-p1 replay --run-directory <dir>`；Reference→Managed 对照 `sts2-p1 trajectory` + `examples/p1/replay_agent.mjs`。

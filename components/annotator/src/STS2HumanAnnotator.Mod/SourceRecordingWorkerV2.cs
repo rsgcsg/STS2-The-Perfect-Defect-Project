@@ -24,7 +24,9 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         internal readonly string Mechanism = mechanism;
         internal NativeLogicalSourceBasisMapping? Mapping;
         internal bool OrderReady;
-        internal string? CaptureId, Missing;
+        internal string? CaptureId, PayloadId, Missing;
+        internal NativeLogicalSourceNativeFacts? NativeFacts;
+        internal readonly List<SourceNativeCarrierV4> Carriers = new();
         internal IDisposable? Retention, Budget;
         internal bool BasisReady, BasisBound, BasisCaptured, Complete;
         internal SourcePublicAction? Selected;
@@ -43,6 +45,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
     private string? failure;
     internal Task Completion { get; }
     public bool RequiresOrderedBasis => store.IsOrderedSourceSession;
+    public bool RequiresPublicBasis => store.IsPublicBasisSourceSession;
     internal SourceSessionStatusV2 Status => store.GetSourceStatusV2()!;
     internal string? SnapshotId { get; private set; }
 
@@ -94,6 +97,10 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         }
     }
     public void InputBasis(object originalToken, string? captureId, IDisposable? retainedInput, string? missingReason)
+        => AdmitBasis(originalToken, captureId, null, retainedInput, missingReason);
+    public void InputSourcePayload(object originalToken, string? payloadId, IDisposable? retainedInput, string? missingReason)
+        => AdmitBasis(originalToken, null, payloadId, retainedInput, missingReason);
+    private void AdmitBasis(object originalToken, string? captureId, string? payloadId, IDisposable? retainedInput, string? missingReason)
     {
         lock (metadataGate)
         {
@@ -110,7 +117,29 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 return;
             }
             if (input.BasisReady) { retainedInput?.Dispose(); AccountingFailed("source_input_basis_duplicate"); return; }
-            input.CaptureId = captureId; input.Retention = retainedInput; input.Missing = missingReason; input.BasisReady = true;
+            input.CaptureId = captureId; input.PayloadId = payloadId; input.Retention = retainedInput; input.Missing = missingReason; input.BasisReady = true;
+        }
+    }
+    public void InputNativeFacts(object originalToken, NativeLogicalSourceNativeFacts facts)
+    {
+        lock (metadataGate)
+        {
+            if (originalToken is not Input input || disposed || input.Complete
+                || !inputs.TryGetValue(input.Token.InputId, out var issued) || !ReferenceEquals(issued, input)) return;
+            if (input.NativeFacts != null) { AccountingFailed("source_native_facts_duplicate"); return; }
+            input.NativeFacts = facts;
+        }
+    }
+    public void InputCarrier(object originalToken, NativeLogicalSourceCarrier carrier)
+    {
+        lock (metadataGate)
+        {
+            if (originalToken is not Input input || disposed || input.Complete
+                || !inputs.TryGetValue(input.Token.InputId, out var issued) || !ReferenceEquals(issued, input)) return;
+            var value = new SourceNativeCarrierV4(carrier.Kind, carrier.CarrierRef);
+            if (input.Carriers.Contains(value)) return;
+            if (input.Carriers.Count >= 8) { AccountingFailed("source_native_carrier_capacity"); return; }
+            input.Carriers.Add(value);
         }
     }
     public void InputFrozen(object originalToken, NativeLogicalSourceBasisOrder order)
@@ -247,11 +276,21 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             var occurrence = availability.Event;
             var position = new SourceNativePositionV2(epoch.Original.EpochId, occurrence.StreamGeneration, occurrence.PublicationIndex);
             FrozenPublicCaptureV2? capture = null; FrozenPublicCatalogV2? catalog = null;
+            FrozenPublicBasisV4? publicBasis = null;
+            string? publicMissing = RequiresPublicBasis ? "source_public_basis_missing" : null;
             string? missing = occurrence.MissingReason;
             IDisposable? budget = null;
             try
             {
-                if (occurrence.CaptureRef is { } captureId && availability.Availability == "available"
+                if (RequiresPublicBasis && occurrence.SourcePayloadRef is { } payloadId
+                    && !store.IsSourceObservationPausedV2(position))
+                {
+                    var copy = attachment.CopyPayload(payloadId); budget = copy;
+                    (capture, catalog, publicBasis) = Copies(epoch.Original.EpochId, copy.Value);
+                    missing = copy.Value.Descriptor.NativeMissingReason;
+                    publicMissing = copy.Value.Descriptor.PublicMissingReason;
+                }
+                else if (occurrence.CaptureRef is { } captureId && availability.Availability == "available"
                     && !store.IsSourceObservationPausedV2(position))
                 {
                     var copy = attachment.CopyFrozen(captureId); budget = copy;
@@ -260,13 +299,17 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 else if (occurrence.CaptureRef != null && !store.IsSourceObservationPausedV2(position)) missing ??= "payload_expired";
                 store.AppendPublicObservationV2(new(position, occurrence.SourceSeam, occurrence.SourceIndex, occurrence.SourcePhase,
                     occurrence.PayloadReference?.SnapshotId, null, epoch.Original.ContinuityId,
-                    capture != null && catalog != null ? "complete" : "failed", capture, catalog, capture != null && catalog != null ? null : missing ?? "source_payload_missing"));
+                    capture != null && catalog != null ? "complete" : "failed", capture, catalog, capture != null && catalog != null ? null : missing ?? "source_payload_missing")
+                    { PublicBasis = publicBasis, PublicBasisMissingReason = publicMissing,
+                        NativeStage = RequiresPublicBasis ? Stage(occurrence.SourceStage) : null });
                 SnapshotId = occurrence.PayloadReference?.SnapshotId;
             }
             catch (NativeLogicalException exception) when (exception.Code is "source_copied_payload_capacity" or "payload_expired" or "not_captured")
             {
                 store.AppendPublicObservationV2(new(position, occurrence.SourceSeam, occurrence.SourceIndex, occurrence.SourcePhase,
-                    occurrence.PayloadReference?.SnapshotId, null, epoch.Original.ContinuityId, "failed", null, null, exception.Code));
+                    occurrence.PayloadReference?.SnapshotId, null, epoch.Original.ContinuityId, "failed", null, null, exception.Code)
+                    { PublicBasisMissingReason = RequiresPublicBasis ? exception.Code : null,
+                        NativeStage = RequiresPublicBasis ? Stage(occurrence.SourceStage) : null });
             }
             finally { budget?.Dispose(); }
         }
@@ -291,6 +334,9 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             }
         }
     }
+    private static SourceNativeStageV4? Stage(NativeLogicalSourceStage? value) => value == null ? null
+        : new(value.Kind, value.OwnerRef, value.SubjectRef,
+            new Dictionary<string, string>(value.Arguments, StringComparer.Ordinal), value.Evidence, value.NoSubmission);
     private static (FrozenPublicCaptureV2 Capture, FrozenPublicCatalogV2 Catalog) Copies(string epoch, NativeLogicalFrozenInput frozen)
     {
         var descriptor = frozen.Capture; var relation = frozen.Catalog ?? throw new InvalidDataException("source_complete_catalog_missing");
@@ -298,6 +344,34 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
             descriptor.CapturedAt, frozen.CopyCaptureBytes(), descriptor.Sha256)),
             new(epoch, new(relation.Descriptor.CatalogRef, relation.Descriptor.SnapshotId, relation.Descriptor.ScopeId,
                 relation.Descriptor.StreamGeneration, checked((int)relation.Descriptor.TotalCount!.Value), relation.Descriptor.Digest!, relation.CopyBytes(), relation.PayloadSha256)));
+    }
+    private static (FrozenPublicCaptureV2? Capture, FrozenPublicCatalogV2? Catalog, FrozenPublicBasisV4? PublicBasis)
+        Copies(string epoch, NativeLogicalSourceFrozenPayload frozen)
+    {
+        FrozenPublicCaptureV2? capture = null; FrozenPublicCatalogV2? catalog = null;
+        if (frozen.Native is { } native)
+        {
+            var descriptor = native.Capture;
+            capture = new(epoch, new(descriptor.CaptureId, descriptor.SnapshotId, descriptor.ScopeId, descriptor.StreamGeneration,
+                descriptor.CapturedAt, native.CopyCaptureBytes(), descriptor.Sha256));
+            if (native.Catalog is { } relation)
+                catalog = new(epoch, new(relation.Descriptor.CatalogRef, relation.Descriptor.SnapshotId, relation.Descriptor.ScopeId,
+                    relation.Descriptor.StreamGeneration, checked((int)relation.Descriptor.TotalCount!.Value), relation.Descriptor.Digest!,
+                    relation.CopyBytes(), relation.PayloadSha256));
+        }
+        var source = frozen.Descriptor;
+        var bytes = frozen.CopyPublicBytes();
+        var basis = bytes == null ? null : new FrozenPublicBasisV4(epoch, source.PublicSnapshotId!, source.ScopeId,
+            source.StreamGeneration, source.CapturedAt, bytes, source.PublicSha256!);
+        return (capture, catalog, basis);
+    }
+    private SourceNativeFactsV4? OriginalFacts(Input input)
+    {
+        if (!RequiresPublicBasis) return null;
+        lock (metadataGate)
+            return input.NativeFacts is { } facts ? new(facts.Origin, facts.OwnerRef, facts.SubjectRef,
+                facts.Arguments, input.Carriers.ToArray(), null) : new("missing", null, null,
+                    new Dictionary<string, string>(), input.Carriers.ToArray(), "source_native_operand_refs_unavailable");
     }
     private void DrainInput(Input input)
     {
@@ -310,15 +384,28 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         if (!input.BasisBound)
         {
             FrozenPublicCaptureV2? capture = null; FrozenPublicCatalogV2? catalog = null;
-            if (input.CaptureId != null)
+            FrozenPublicBasisV4? publicBasis = null;
+            string? publicMissing = RequiresPublicBasis ? input.Missing ?? "source_public_basis_missing" : null;
+            if (input.CaptureId != null || input.PayloadId != null)
             {
                 try
                 {
-                    var copy = attachment.CopyFrozen(input.CaptureId); input.Budget = copy;
-                    (capture, catalog) = Copies(input.Token.PrePosition.EpochId, copy.Value);
+                    if (input.PayloadId != null)
+                    {
+                        var copy = attachment.CopyPayload(input.PayloadId); input.Budget = copy;
+                        (capture, catalog, publicBasis) = Copies(input.Token.PrePosition.EpochId, copy.Value);
+                        input.Missing = copy.Value.Descriptor.NativeMissingReason;
+                        publicMissing = copy.Value.Descriptor.PublicMissingReason;
+                    }
+                    else
+                    {
+                        var copy = attachment.CopyFrozen(input.CaptureId!); input.Budget = copy;
+                        (capture, catalog) = Copies(input.Token.PrePosition.EpochId, copy.Value);
+                    }
                     var actionId = input.Mapping?.ActionId ?? (input.ActionId.Length == 0 ? null : input.ActionId);
-                    var matches = SourceCatalogCodec.Decode(catalog.Catalog.Bytes).Where(x => x.ActionId == actionId).ToArray();
-                    if (input.Mapping?.MappingStatus == "exact" || input.Mapping == null)
+                    var matches = catalog == null ? Array.Empty<SourcePublicAction>()
+                        : SourceCatalogCodec.Decode(catalog.Catalog.Bytes).Where(x => x.ActionId == actionId).ToArray();
+                    if (catalog != null && (input.Mapping?.MappingStatus == "exact" || input.Mapping == null))
                     {
                         if (matches.Length != 1) throw new InvalidDataException("source_original_selected_action_membership_missing");
                         input.Selected = matches[0];
@@ -331,7 +418,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 }
                 catch (NativeLogicalException exception) when (exception.Code is "payload_expired" or "not_captured") { input.Missing = exception.Code; }
             }
-            store.BindSourceInputBasisV2(input.Token, capture, catalog); input.BasisBound = true; input.BasisCaptured = capture != null && catalog != null;
+            store.BindSourceInputBasisV2(input.Token, capture, catalog, publicBasis, publicMissing); input.BasisBound = true; input.BasisCaptured = capture != null && catalog != null;
             input.Retention?.Dispose(); input.Retention = null;
         }
         NativeLogicalSourceInputTerminal? terminal; lock (metadataGate) terminal = input.Terminal;
@@ -339,7 +426,8 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
         var outcome = new SourceInputOutcomeV2(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
             mapping == "exact" ? input.Selected : null, input.Mechanism, terminal.Delivery, terminal.Reason ?? input.Missing,
-            terminal.Stages.Select(x => new SourceInputStageV2(x.Stage, x.Delivery, x.Evidence)).ToArray());
+            terminal.Stages.Select(x => new SourceInputStageV2(x.Stage, x.Delivery, x.Evidence)).ToArray())
+            { NativeFacts = OriginalFacts(input) };
         store.CompleteSourceInputV2(input.Token, outcome); input.Complete = true; input.Budget?.Dispose(); input.Budget = null;
     }
     private void CloseInput(Input input)
@@ -347,7 +435,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         if (!input.BasisBound) { store.BindSourceInputBasisV2(input.Token, null, null); input.BasisBound = true; }
         string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
         store.CompleteSourceInputV2(input.Token, new(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
-            mapping == "exact" ? input.Selected : null, input.Mechanism, "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()));
+            mapping == "exact" ? input.Selected : null, input.Mechanism, "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()) { NativeFacts = OriginalFacts(input) });
         input.Complete = true; input.Retention?.Dispose(); input.Retention = null; input.Budget?.Dispose(); input.Budget = null;
     }
     public void Dispose()

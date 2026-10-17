@@ -683,6 +683,71 @@ def _native(
     _terminal(outcome, observed, available)
 
 
+def _global_program(outcome, value, manifest, events, original):
+    """GLOBAL public observations remain separate from a Task success predicate."""
+    package = json.loads(original) if original is not None else None
+    if (
+        not isinstance(package, dict)
+        or package.get("schema") != "spireagent/global-public-program-1"
+        or hashlib.sha256(original).hexdigest() != manifest["artifact"]["sha256"]
+        or package.get("adapter") != manifest["adapter"]
+        or package.get("agent_spec", {}).get("model_bindings") != []
+        or manifest["input"]["state_recovery"]["model_bindings"] != []
+    ):
+        raise BoundaryError("agent_task_outcome", "global_original_program_unavailable")
+    outcome["agent_composition"].update(
+        models=[],
+        model=None,
+        program_spec=package["agent_spec"],
+        task_spec=package["agent_spec"].get("task_spec"),
+        binding="original_public_program_artifact",
+    )
+    outcome["task_completion"].update(
+        status="unproved",
+        task_spec=package["agent_spec"].get("task_spec"),
+        reason_codes=["program_declares_no_task_success_predicate"],
+        witness=None,
+    )
+    sources = {
+        event["payload"]["ordinal"]: event["payload"]["artifact"]
+        for event in events
+        if event["kind"] == "global_source"
+    }
+    terminals = []
+    for event in events:
+        if (
+            event["kind"] != "global_observation"
+            or event["payload"]["status"] != "terminal"
+            or not event["payload"]["complete"]
+        ):
+            continue
+        ref = sources[event["payload"]["source_ordinal"]]
+        record = json.loads(_verified_bytes(value, ref["path"], MAX_BODY_BYTES))
+        basis = json.loads(record["serialized_observation"])
+        surface = basis["snapshot"]["interaction"]["content"]["surface"]
+        victory = surface.get("victory")
+        result = "win" if victory is True else "loss" if victory is False else None
+        if basis["capture_status"] == "complete" and result is not None:
+            terminals.append(
+                {
+                    "result": result,
+                    "source": _file_reference(value, ref["path"]),
+                    "event_sequence": event["sequence"],
+                }
+            )
+    results = {item["result"] for item in terminals}
+    outcome["terminal_observation"].update(
+        status="observed"
+        if len(results) == 1
+        else "ambiguous"
+        if len(results) > 1
+        else "not_observed",
+        result=next(iter(results)) if len(results) == 1 else None,
+        ready_summary=None,
+        witnesses=terminals,
+    )
+
+
 def project(
     result: Any,
     *,
@@ -715,7 +780,9 @@ def project(
             "agent_manifest_sha256" if native else "policy_manifest_sha256"
         ]
         outcome["agent_composition"] = composition
-        if native:
+        if native and manifest.get("input", {}).get("profile") == "p1-global-r1":
+            _global_program(outcome, value, manifest, events, native_package)
+        elif native:
             package = None
             if native_package is not None:
                 try:

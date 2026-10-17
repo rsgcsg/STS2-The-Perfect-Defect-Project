@@ -1,3 +1,9 @@
+import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
+import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
+import { p1CoreIdentity } from "./p1-global/core-identity.js";
+import type { GlobalArtifact } from "./evidence.js";
+import type { ConnectorPolicyRequirements } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   EnvironmentControllerSession, NativeLogicalSession,
@@ -18,15 +24,15 @@ import { AgentConsumptionLedger, type AgentAcquisition, type AgentNativeUnitWitn
 import { NdjsonAgentSessionPort, type AgentPortHandlers } from "./agent-session-port.js";
 import { AgentSessionError, sessionText, supportsProfileValue, validateAgentManifest, sameAgentExecutionPolicy,
   isKnownStaleResult, AGENT_KNOWN_NOT_STARTED_OUTCOME_SCHEMA, AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA,
-  type AgentOperationalOutcome, type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
+  type AgentConsumeInput, type AgentOperationalOutcome, type AgentDirectiveOutput, type AgentConsumption, type AgentManifest, type AgentSessionContext } from "./agent-session-contracts.js";
 import { canonicalStateMetadata, type AgentOpaqueState, type AgentStateMetadata } from "./agent-session-state.js";
 import type { AgentPendingRequest, AgentReconcileResult, AgentRuntimeStatus, AgentRuntimeTickResult,
   RuntimeServiceOwner } from "./agent-runtime-contracts.js";
 import type { AgentAcquisitionWitness, AgentRuntimeEventKind, AgentRuntimeEventPayloads } from "./agent-runtime-events.js";
 
-export interface NativeAgentRuntimeOptions {
+
+interface SharedAgentRuntimeOptions {
   manifest: AgentManifest;
-  environment: PlayerEnvironmentRestClient;
   port: NdjsonAgentSessionPort;
   evidence: AgentRunEvidence;
   runtimeIdentity: { version: string; code_sha256: string };
@@ -34,7 +40,13 @@ export interface NativeAgentRuntimeOptions {
   autoBudget?: Partial<AutonomyBudgetConfig>;
   monotonicNow?: () => number;
   now?: () => string;
+  /** How long a known delivery may re-read a partial native basis while it settles (default 15 s). */
+  globalPostDeliverySettleMs?: number;
 }
+export type NativeAgentRuntimeOptions = SharedAgentRuntimeOptions & (
+  { environment: PlayerEnvironmentRestClient; globalTransport?: never } | { environment?: never; globalTransport: GlobalTransport });
+interface GlobalSource { full: FullPublicBasis; artifact: GlobalArtifact; ordinal: number }
+interface GlobalPrepared { source: GlobalSource; reduction: ReturnType<typeof reduce>; acquisition: AgentAcquisition; unit: string }
 export interface NativeAgentRuntimeOwner extends RuntimeServiceOwner {
   status(): AgentRuntimeStatus;
   setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<AgentRuntimeStatus>;
@@ -50,8 +62,14 @@ export interface NativeAgentRuntimeOwner extends RuntimeServiceOwner {
 class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private readonly manifest: AgentManifest;
   private readonly owner: RuntimeLifecycleOwner;
-  private readonly controller: EnvironmentControllerSession;
-  private readonly native: NativeLogicalSession;
+  private readonly controller: EnvironmentControllerSession | null;
+  private readonly native: NativeLogicalSession | null;
+  private globalIdentity?: GlobalIdentity;
+  private globalState?: P1SessionState;
+  private globalPrepared?: GlobalPrepared;
+  private globalPendingSource: GlobalSource | null = null;
+  private globalSourceOrdinal = 0;
+  private globalEpisode: string | null = null;
   private readonly budget: AgentByteBudget;
   private readonly ledger: AgentConsumptionLedger;
   private readonly sessionId = `agent-${randomUUID()}`;
@@ -123,11 +141,16 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       throw new AgentSessionError("agent_shared_byte_budget_mismatch");
     this.ledger = new AgentConsumptionLedger(this.manifest, `continuity-${randomUUID()}`, this.budget);
     this.port = options.port;
-    this.controller = new EnvironmentControllerSession(options.environment, {
+    if ((this.manifest.input.profile === "p1-global-r1") !== Boolean(options.globalTransport)) throw new AgentSessionError("global_transport_profile_mismatch");
+    this.controller = options.globalTransport ? null : new EnvironmentControllerSession(options.environment!, {
       productId: "sts2.policy-runtime", productName: "STS2 Policy Runtime", productVersion: options.runtimeIdentity.version,
       clientInstanceId: options.evidence.runId
     });
-    this.native = new NativeLogicalSession(options.environment, this.controller);
+    this.native = options.globalTransport ? null : new NativeLogicalSession(options.environment!, this.controller!);
+    if (options.globalTransport) this.port.setFrameObserver(async (direction, bytes) => {
+      const artifact = await options.evidence.storeGlobalArtifact(direction === "in" ? "agent_in" : "agent_out", bytes);
+      await this.emitGlobal("global_agent_frame", { direction, artifact });
+    });
   }
 
   async initialize(): Promise<void> {
@@ -140,13 +163,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         throw new AgentSessionError("scoped_opaque_state_binding_unsupported");
       if (this.manifest.input.gap_policy !== "handoff") throw new AgentSessionError("native_explicit_reset_unsupported");
       await this.options.evidence.attestAdapter(await this.port.ready(undefined, active.signal));
+      if (this.options.globalTransport) { await this.initializeGlobal(active.signal); return; }
       active.signal.throwIfAborted();
-      const reply = await this.native.capabilities(active.signal);
+      const reply = await this.native!.capabilities(active.signal);
       this.admitCapabilities(reply.data); this.capabilities = reply.data;
-      this.environment = nativeEnvironment(reply.data, this.manifest.requirements.environment.host_kind);
-      await this.controller.register(reply.data.session, reply.data.control_policy);
+      this.environment = nativeEnvironment(reply.data, (this.manifest.requirements.environment as ConnectorPolicyRequirements["environment"]).host_kind);
+      await this.controller!.register(reply.data.session, reply.data.control_policy);
       active.signal.throwIfAborted();
-      const attached = (await this.native.attach({ eagerScope: this.manifest.input.attachment.eager_scope,
+      const attached = (await this.native!.attach({ eagerScope: this.manifest.input.attachment.eager_scope,
         requiredSeams: this.manifest.input.attachment.required_seams,
         deliveryMode: this.manifest.input.attachment.delivery_mode, signal: active.signal })).data;
       if (attached.status !== "attached" || !attached.subscription) throw new AgentSessionError(`native_attach_${attached.status}`);
@@ -161,7 +185,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.owner.cancelActive(error); this.port.close();
       await this.release().catch(() => undefined);
       await this.quiesceRenewal();
-      if (this.native.subscription) await this.native.detach().catch(() => undefined);
+      if (this.native?.subscription) await this.native!.detach().catch(() => undefined);
       this.owner.clearDeadline();
       // Deadline expiry owns serialized evidence even when initialization
       // aborts. Finish that write before the caller releases failed-run files.
@@ -180,7 +204,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       agent_manifest_sha256: this.manifestSha256, run_id: this.options.evidence.runId,
       lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(),
       autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing,
-      environment: this.environment, session: { ...this.context(), profile: "native-logical-v1",
+      environment: this.environment, session: { ...this.context(), profile: this.manifest.input.profile,
         input_spec: { ...this.manifest.input.input_spec }, stream_generation: this.capabilities?.stream_generation ?? null,
         continuity_token: this.ledger.continuityToken, state_version: this.ledger.stateVersion,
         consumption_id: this.ledger.consumptionId, prefix: this.ledger.prefix(), agent_state: this.agentUncertain ? "uncertain" : "known" },
@@ -271,7 +295,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
             const waitId = randomUUID().replaceAll("-", "");
             const timeout = Math.min(output.directive.timeout_ms, this.budgetStatus().remaining_ms);
             if (timeout <= 0) { this.expireBudget(); return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() }; }
-            const result = (await this.native.await({ waitId, afterCursor: output.directive.after_cursor,
+            if (this.options.globalTransport) { await globalDelay(timeout, active.signal); this.checkActive(epoch, active.signal); return { type: "awaited", status: this.status() }; }
+            const result = (await this.native!.await({ waitId, afterCursor: output.directive.after_cursor,
               condition: output.directive.condition, timeoutMs: timeout,
               controlDependent: this.mode === "auto" && this.controllerStatus() === "held", signal: active.signal })).data;
             this.checkActive(epoch, active.signal);
@@ -292,6 +317,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       } catch (error) {
         if (offer.pending) this.agentUncertain = true;
         const reason = errorMessage(error);
+        if (this.options.globalTransport && (this.budgetFenced || this.stopping))
+          return { type: "not_admitted", reason: this.terminationReason ?? "stopped", status: this.status() };
         if (this.windowHandoffOwnsCleanup())
           return { type: "not_admitted", reason: this.terminationReason!, status: this.status() };
         await this.failClosed(reason);
@@ -324,7 +351,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
       if (this.mode !== "human") throw new RuntimeControlPreconditionError("runtime_reconcile_requires_human", 409);
       try {
-        const lookup = await this.native.result(original.request_id, undefined, original.dispatch_binding);
+        const lookup = await this.native!.result(original.request_id, undefined, original.dispatch_binding);
         if (lookup.status === "pending") {
           await this.emit("native_request_reconciled", { ...this.context(), original, resolution: "pending", result: null });
           return { request_id: requestId, resolution: "pending", status: this.status() };
@@ -404,7 +431,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
 
   private context(): AgentSessionContext { return { session_id: this.sessionId, recovery_epoch: this.owner.epoch }; }
   private controllerStatus(): RuntimeStatus["controller"] {
-    const value = this.controller.snapshot();
+    if (this.options.globalTransport) return this.releaseInFlight > 0 ? "unknown" : this.options.globalTransport.controlStatus();
+    const value = this.controller!.snapshot();
     return this.releaseInFlight > 0 || value.controller_release_uncertain === true || value.controller_acquire_uncertain === true ? "unknown"
       : value.controller_lease_id === null ? "released" : "held";
   }
@@ -430,7 +458,13 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private async freshRuntime(): Promise<string> {
     try {
-      const capabilities = (await this.native.capabilities()).data;
+      if (this.options.globalTransport) {
+        const identity = await this.options.globalTransport.negotiate(new AbortController().signal);
+        const expected = this.manifest.requirements.environment;
+        if (!("kind" in expected)) throw new AgentSessionError("global_environment_contract");
+        assertGlobalIdentity(identity, expected, this.globalIdentity); return identity.session.runtime_instance_id;
+      }
+      const capabilities = (await this.native!.capabilities()).data;
       this.admitCapabilities(capabilities);
       if (this.environment && capabilities.session.runtime_instance_id !== this.environment.runtime_instance_id)
         throw new RuntimeControlPreconditionError("runtime_game_mismatch", 409);
@@ -449,7 +483,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.owner.checkEpoch(expected?.recoveryEpoch);
   }
   private admitCapabilities(c: NativeLogicalCapabilities): void {
-    const e = this.manifest.requirements.environment;
+    const e = this.manifest.requirements.environment as ConnectorPolicyRequirements["environment"];
     if (c.protocol_version !== this.manifest.requirements.connector_protocol_version || c.input_profile !== "native-logical-v1")
       throw new AgentSessionError("connector_native_profile_unsupported");
     if (c.host.host_kind !== e.host_kind || c.host.version !== e.connector_version
@@ -476,13 +510,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.ledger.noteReceived(cursor, count);
   }
   private async receive(signal: AbortSignal, epoch: number, handlers: AgentPortHandlers, offer: { pending: boolean }): Promise<void> {
+    if (this.options.globalTransport) return this.receiveGlobal(signal, epoch, handlers, offer);
     if (this.cursor === null) throw new AgentSessionError("native_subscription_required");
     this.refreshing = true;
     try {
       for (;;) {
       const limit = Math.min(64, this.capabilities!.limits.max_events);
       const before = this.cursor;
-      const batch = (await this.native.events({ afterCursor: before, limit, signal })).data;
+      const batch = (await this.native!.events({ afterCursor: before, limit, signal })).data;
       this.checkActive(epoch, signal);
       if (batch.gap) {
         if (this.manifest.input.history_mode === "sampled_current") {
@@ -506,7 +541,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         }
         if (original.event.payload_reference.byte_count > this.manifest.limits.max_capture_bytes) throw new AgentSessionError("capture_byte_capacity");
         if (!this.owner.consumeCall()) { this.expireBudget(); throw new AgentSessionError("autonomy_budget_exhausted"); }
-        const full = await this.native.getFullEvent(original, { signal, budget: this.assemblyBudget(), maxActions: this.manifest.limits.max_catalog_actions });
+        const full = await this.native!.getFullEvent(original, { signal, budget: this.assemblyBudget(), maxActions: this.manifest.limits.max_catalog_actions });
         try {
           const id = await this.register(full, full.actions, original.event.publication_index);
           const a = this.ledger.get(id);
@@ -624,6 +659,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       catalog_count: c.total_count as number | null, catalog_materialized: a.catalog_materialized };
   }
   private handlers(epoch: number): AgentPortHandlers {
+    if (this.options.globalTransport) return this.globalHandlers(epoch);
     return { queryOffered: (result, requestId) => {
       if (this.manifest.input.history_mode !== "sampled_current" || result.acquisition_id === null) return;
       const payload = this.samplePayloads.get(result.acquisition_id);
@@ -656,7 +692,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const a = this.ledger.get(report.acquisition_id), o = a.observation;
       this.lastAckMetadata = immutable({ agent_artifact_id: this.manifest.artifact.id, agent_artifact_sha256: this.manifest.artifact.sha256,
         adapter_code_sha256: this.manifest.adapter.code_sha256, model_bindings: this.manifest.input.state_recovery.model_bindings,
-        input_spec: this.manifest.input.input_spec, profile: this.manifest.input.profile, state_format_version: this.manifest.input.state_format_version,
+        input_spec: this.manifest.input.input_spec, profile: "native-logical-v1", state_format_version: this.manifest.input.state_format_version,
         stream_generation: String(a.capture.stream_generation), continuity_token: ack.prefix.continuity_token,
         consumption_id: ack.consumption_id, state_version: ack.state_version, prefix: ack.prefix,
         last_acknowledged_basis: { acquisition_id: report.acquisition_id, capture_sha256: String(a.capture.sha256),
@@ -675,7 +711,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const args = query.arguments as JsonObject;
       if (query.method === "current") {
         if (Object.hasOwn(args, "client_session_id")) throw new AgentSessionError("query_cannot_supply_credentials");
-        const body = { ...args, client_session_id: this.controller.clientIdentity()!.clientSessionId } as JsonObject;
+        const body = { ...args, client_session_id: this.controller!.clientIdentity()!.clientSessionId } as JsonObject;
         validateNativeLogicalRequest("current", body);
         let ownedReply: NativeLogicalOwnedCurrentReply | undefined;
         let captured: NativeLogicalCapturedObservation | undefined;
@@ -685,19 +721,19 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           const request = { eagerScope: body.eager_scope as NativeLogicalScopeField[],
             expectedSnapshotId: body.expected_snapshot_id as string | null, signal };
           const current = this.manifest.execution_policy
-            ? (ownedReply = await this.native.currentOwned(request)).data
-            : (await this.native.current(request)).data;
+            ? (ownedReply = await this.native!.currentOwned(request)).data
+            : (await this.native!.current(request)).data;
           if (!current.capture || !current.context || !["captured", "partial"].includes(current.status))
             throw new AgentSessionError(`query_current_${current.status}`);
           if (current.capture.byte_count > this.manifest.limits.max_capture_bytes) {
-            if (!ownedReply && current.retention) await this.native.release(current.retention.retention_handle_id);
+            if (!ownedReply && current.retention) await this.native!.release(current.retention.retention_handle_id);
             throw new AgentSessionError("capture_byte_capacity");
           }
           const assembly = { capture: current.capture, context: current.context, retention: current.retention,
             signal, budget: this.assemblyBudget(), ...(ownedReply ? { readerLease: ownedReply.takeRetention() } : {}) };
           captured = this.manifest.input.history_mode !== "scoped_query"
-            ? await this.native.getFull({ ...assembly, maxActions: this.manifest.limits.max_catalog_actions })
-            : await this.native.getCapture({ ...assembly, eagerScope: body.eager_scope as NativeLogicalScopeField[] });
+            ? await this.native!.getFull({ ...assembly, maxActions: this.manifest.limits.max_catalog_actions })
+            : await this.native!.getCapture({ ...assembly, eagerScope: body.eager_scope as NativeLogicalScopeField[] });
           if (ownedReply) stackLease = captured.transferRetention();
           this.checkActive(epoch, signal);
           const catalog = this.manifest.input.history_mode !== "scoped_query" ? (captured as NativeLogicalFullCapture).actions : null;
@@ -726,7 +762,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (query.method === "read") {
         const capture = [...this.knownAcquisitions].find(id => this.ledger.get(id).capture.capture_id === args.capture_id);
         if (!capture) throw new AgentSessionError("query_read_unknown_capture");
-        return { method: query.method, acquisition_id: null, value: (await this.native.read({ captureId: args.capture_id as string,
+        return { method: query.method, acquisition_id: null, value: (await this.native!.read({ captureId: args.capture_id as string,
           cursor: args.cursor as string, maxBytes: args.max_bytes as number, signal })).data };
       }
       const id = [...this.knownAcquisitions].find(id => {
@@ -735,10 +771,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       });
       if (!id) throw new AgentSessionError("query_unknown_catalog");
       const value = query.method === "catalog"
-        ? (await this.native.list({ catalogRef: args.catalog_ref as string, streamGeneration: args.stream_generation as string,
+        ? (await this.native!.list({ catalogRef: args.catalog_ref as string, streamGeneration: args.stream_generation as string,
           prefix: args.prefix as NativeLogicalPrefix | null, cursor: args.cursor as string | null,
           limit: args.limit as number, maxPageBytes: args.max_page_bytes as number, signal })).data
-        : (await this.native.resolve({ catalogRef: args.catalog_ref as string, streamGeneration: args.stream_generation as string,
+        : (await this.native!.resolve({ catalogRef: args.catalog_ref as string, streamGeneration: args.stream_generation as string,
           expression: args.expression as NativeLogicalExpression, signal })).data;
       this.checkActive(epoch, signal);
       if ("actions" in value) {
@@ -766,6 +802,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       || output.state_version !== this.ledger.stateVersion) throw new AgentSessionError("directive_durable_watermark_mismatch");
   }
   private async act(output: AgentDirectiveOutput, epoch: number, signal: AbortSignal): Promise<AgentRuntimeTickResult> {
+    if (this.options.globalTransport) return this.actGlobal(output, epoch, signal);
     if (output.directive.type !== "act") throw new AgentSessionError("Act_required");
     const submissionGeneration = this.owner.generation;
     const directive = output.directive, a = this.ledger.get(directive.basis_acquisition_id), descriptor = a.observation.catalog as Record<string, unknown>;
@@ -776,14 +813,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (directive.selection.kind === "handle") action = this.knownActions.get(a.acquisition_id)?.get(directive.selection.action_id);
     else {
       if (!this.manifest.requirements.required_methods.includes("resolve")) throw new AgentSessionError("resolve_method_not_declared");
-      const resolved = (await this.native.resolve({ catalogRef: String(descriptor.catalog_ref), streamGeneration: String(a.capture.stream_generation),
+      const resolved = (await this.native!.resolve({ catalogRef: String(descriptor.catalog_ref), streamGeneration: String(a.capture.stream_generation),
         expression: directive.selection.expression as unknown as NativeLogicalExpression, signal })).data;
       if (resolved.status === "unique" && resolved.action) action = resolved.action;
     }
     if (!action || !supportsProfileValue(this.manifest.support.action_verbs, action.verb)) throw new AgentSessionError("Act_requires_known_native_member");
     this.checkActive(epoch, signal);
     if (this.mode === "shadow") return { type: "shadow", status: this.status() };
-    await this.controller.credentials(); this.checkActive(epoch, signal);
+    await this.controller!.credentials(); this.checkActive(epoch, signal);
     await this.emit("controller_acquired", { ...this.context(), controller: "held" });
     this.checkActive(epoch, signal);
     if (this.freshDecision) throw new AgentSessionError("fresh_decision_requires_changed_acknowledged_input");
@@ -798,7 +835,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     let lookup, started = false;
     try {
       this.checkActive(epoch, signal);
-      lookup = await this.native.submit({ requestId, expectedSnapshotId: String(a.observation.snapshot_id), actionId: action.action_id,
+      lookup = await this.native!.submit({ requestId, expectedSnapshotId: String(a.observation.snapshot_id), actionId: action.action_id,
         preSubmitSignal: signal, ...(optIn ? { onDispatchBinding: async (binding: Readonly<NativeLogicalDispatchBinding>) => {
           this.checkActive(epoch, signal);
           if (binding.runtime_instance_id !== intent.runtime_instance_id) throw new AgentSessionError("dispatch_runtime_binding");
@@ -944,7 +981,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       for (const id of new Set([...this.knownAcquisitions, ...this.readerLeases.keys()]))
         await attempt(() => this.releaseAcquisition(id));
       await released;
-      if (this.native.subscription) await attempt(() => this.native.detach());
+      if (this.native?.subscription) await attempt(() => this.native!.detach());
       this.ledger.close(); this.knownAcquisitions.clear(); this.knownActions.clear();
       for (const held of this.actionReservations.values()) for (const reservation of held) reservation.release();
       this.actionReservations.clear();
@@ -969,7 +1006,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.agentUncertain || this.tainted || this.pending || this.sampleSegmentEnded || this.renewalFailed)
       return "runtime_fresh_decision_fenced";
     if (!this.owner.available()) { this.expireBudget(); return this.terminationReason ?? "autonomy_budget_exhausted"; }
-    const controller = this.controller.snapshot();
+    const controller = this.controller!.snapshot();
     if (this.controllerStatus() !== "held" || controller.client_session_closed === true || controller.client_revoked === true)
       return "runtime_controller_unresolved";
     if (controller.client_session_id !== binding.client_session_id || controller.controller_lease_id !== binding.controller_lease_id
@@ -1006,7 +1043,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     // its one durable classification, including overlapping expiry/Stop/Human.
     const flight = Promise.resolve().then(async () => {
       try {
-        await this.controller.releaseControl();
+        await (this.options.globalTransport ? this.options.globalTransport.release() : this.controller!.releaseControl());
         if (before !== "released") await this.emit("controller_released", { ...this.context(), controller: "released" });
       } catch (error) {
         this.tainted = true; this.taintReason = "controller_release_unconfirmed";
@@ -1052,8 +1089,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     }).catch(error => { this.tainted = true; this.taintReason = `autonomy_budget_handoff_failed:${errorMessage(error)}`; });
   }
   private scheduleRenewal(): void {
-    if (this.stopped || this.stopping || this.renewalFailed || this.renewalFlight || this.renewalTimer !== undefined || !this.native.subscription) return;
-    const remaining = Date.parse(this.native.subscription.expires_at) - Date.now();
+    if (this.options.globalTransport || this.stopped || this.stopping || this.renewalFailed || this.renewalFlight || this.renewalTimer !== undefined || !this.native!.subscription) return;
+    const remaining = Date.parse(this.native!.subscription.expires_at) - Date.now();
     if (!Number.isFinite(remaining) || remaining <= 0) { this.failRenewal({ reason: "subscription_expired" }); return; }
     const generation = this.renewalGeneration;
     // Renew halfway through the actual remaining TTL, capped for ordinary long
@@ -1065,12 +1102,12 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       const cursor = this.cursor, controller = new AbortController();
       this.renewalAbort = controller;
       const timeout = setTimeout(() => controller.abort("native_renew_timeout"), Math.max(1,
-        Math.min(5000, this.manifest.limits.agent_timeout_ms, Date.parse(this.native.subscription!.expires_at) - Date.now())));
+        Math.min(5000, this.manifest.limits.agent_timeout_ms, Date.parse(this.native!.subscription!.expires_at) - Date.now())));
       timeout.unref?.();
       // Passive resource renewal has no Model/ledger/action work. It cannot sit
       // behind a long owned Consume/Next/Await in the operational queue.
       const flight: Promise<void> = (async () => {
-        const result = (await this.native.renew(cursor, controller.signal)).data;
+        const result = (await this.native!.renew(cursor, controller.signal)).data;
         if (generation !== this.renewalGeneration || this.stopped || this.stopping) return;
         if (result.status !== "renewed") this.failRenewal(result.gap ?? { reason: `subscription_${result.status}` });
         else if (result.gap) {
@@ -1148,7 +1185,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       } };
   }
   private async finishStop(): Promise<void> {
-    if (!this.manifest.execution_policy) return this.finishStopLegacy();
+    if (!this.manifest.execution_policy && !this.options.globalTransport) return this.finishStopLegacy();
     if (this.stopped) return;
     this.stopping = true; this.terminationReason ??= "stopped"; this.owner.end("stopped");
     const errors: unknown[] = [];
@@ -1174,9 +1211,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       // One failure must not skip another lease or leave the child alive.
       for (const id of new Set([...this.knownAcquisitions, ...this.readerLeases.keys()]))
         await attempt(() => this.releaseAcquisition(id));
-      if (this.native.subscription) await attempt(async () => { await this.native.detach(); });
-      await attempt(() => this.controller.close());
+      if (this.native?.subscription) await attempt(async () => { await this.native!.detach(); });
+      await attempt(() => this.options.globalTransport ? this.options.globalTransport.close() : this.controller!.close());
       await attempt(() => this.port.close());
+      await attempt(() => this.port.framesDrained());
       await attempt(() => this.ledger.close()); this.knownAcquisitions.clear(); this.knownActions.clear();
       for (const held of this.actionReservations.values()) for (const reservation of held)
         await attempt(() => reservation.release());
@@ -1208,7 +1246,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     } finally {
       // Failed evidence must not keep the child, passive subscription or owned
       // buffers alive. Finalization retains the tainted failure classification.
-      if (this.native.subscription) await this.native.detach().catch(error => { this.tainted = true; this.taintReason = `native_detach_failed:${errorMessage(error)}`; });
+      if (this.native?.subscription) await this.native!.detach().catch(error => { this.tainted = true; this.taintReason = `native_detach_failed:${errorMessage(error)}`; });
       this.port.close();
       this.ledger.close(); this.knownAcquisitions.clear(); this.knownActions.clear();
       for (const held of this.actionReservations.values()) for (const reservation of held) reservation.release();
@@ -1219,6 +1257,222 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       finally { this.stopped = true; }
     }
   }
+  private async initializeGlobal(signal: AbortSignal): Promise<void> {
+    const transport = this.options.globalTransport!, expected = this.manifest.requirements.environment;
+    if (!("kind" in expected) || expected.kind !== "global-public-basis" || !this.manifest.input.global
+      || this.manifest.input.global.core_sha256 !== p1CoreIdentity().module_digest) throw new AgentSessionError("global_core_or_environment_contract");
+    const identity = await transport.negotiate(signal); this.checkActive(this.owner.epoch, signal);
+    assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest); this.globalIdentity = identity;
+    this.globalState = createSession(this.options.evidence.runId, transport.kind);
+    this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
+      producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
+    await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
+  }
+  private async emitGlobal(kind: string, data: Record<string, unknown>): Promise<void> {
+    // Same error fence and original fsynced writer as every Runtime event.
+    await this.emit(kind as AgentRuntimeEventKind, { ...this.context(), ...data } as never);
+  }
+  private async captureGlobal(signal: AbortSignal, epoch: number, postDelivery = false): Promise<GlobalSource> {
+    const captureRequestId = `capture-request-${randomUUID()}`;
+    await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
+    try {
+    const full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
+      onResponseBytes: async bytes => {
+        const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
+        await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
+      } });
+    const artifact = await this.options.evidence.storeGlobalArtifact("source", Buffer.from(serializePublicBasisRecord(full), "utf8"));
+    const ordinal = ++this.globalSourceOrdinal;
+    await this.emitGlobal("global_source", { ordinal, artifact, capture_request_id: captureRequestId });
+    try {
+      if (!this.globalIdentity || canonicalJson(full.capture.session) !== canonicalJson(this.globalIdentity.session)
+        || (this.globalIdentity.game_continuity_id !== null && full.capture.game_continuity_id !== this.globalIdentity.game_continuity_id)
+        || (this.globalEpisode !== null && full.capture.game_continuity_id !== this.globalEpisode)
+        || full.capture.total_bytes > this.manifest.limits.max_capture_bytes) throw new AgentSessionError("global_capture_identity_or_capacity");
+      if (this.globalEpisode === null && full.capture.game_continuity_id !== null) {
+        this.globalEpisode = full.capture.game_continuity_id;
+        await this.emitGlobal("global_episode_bound", { game_continuity_id: this.globalEpisode, source_ordinal: ordinal });
+      }
+      this.checkActive(epoch, signal);
+      if (postDelivery) await this.emitGlobal("global_source_retained", { source_ordinal: ordinal, disposition: "pending_next_receive" });
+      return { full, artifact, ordinal };
+    } catch (error) { await this.emitGlobal("global_source_rejected", { source_ordinal: ordinal, reason: errorMessage(error) }); throw error; }
+    } catch (error) { await this.emitGlobal("global_capture_error", { request_id: captureRequestId, reason: errorMessage(error) }); throw error; }
+  }
+  private async receiveGlobal(signal: AbortSignal, epoch: number, handlers: AgentPortHandlers, offer: { pending: boolean }): Promise<void> {
+    this.refreshing = true;
+    try { for (;;) {
+      this.checkActive(epoch, signal);
+      const source = this.globalPendingSource ?? await this.captureGlobal(signal, epoch); this.globalPendingSource = null;
+      const before = this.globalState!;
+      const reduction = reduce(before, source.full.basis);
+      await this.emitGlobal("global_observation", { source_ordinal: source.ordinal, occurrence: reduction.observation.envelope.occurrence,
+        complete: reduction.complete, missing: [...reduction.missing], status: reduction.observation.status, excluded: reduction.excluded,
+        observation_sha256: globalDigest(reduction.observation) });
+      const snapshot = source.full.basis.snapshot;
+      if (snapshot.status === "settling" || snapshot.status === "observed" && reduction.observation.status !== "terminal") {
+        await globalDelay(50, signal); continue;
+      }
+      if (source.full.basis.capture_status !== "complete" || !reduction.complete || reduction.observation.status === "unsupported"
+        || this.globalEpisode === null && reduction.observation.status !== "terminal")
+        throw new AgentSessionError("global_required_information_unavailable");
+      if (!supportsProfileValue(this.manifest.support.interaction_kinds, reduction.observation.scene.native_kind))
+        throw new AgentSessionError("global_interaction_unsupported");
+      this.globalState = reduction.state;
+      if (this.globalPrepared?.reduction.observation.envelope.occurrence === reduction.observation.envelope.occurrence) {
+        if (canonicalJson(modelView(reduction.observation)) !== canonicalJson(this.globalPrepared.acquisition.observation)) throw new AgentSessionError("global_same_occurrence_drift");
+        this.globalPrepared = { ...this.globalPrepared, source, reduction }; return;
+      }
+      const id = `acquisition-${randomUUID()}`, occurrence = reduction.observation.envelope.occurrence;
+      const acquisition: AgentAcquisition = { acquisition_id: id, capture: { source_ordinal: source.ordinal, source_sha256: source.full.capture.sha256 },
+        observation: modelView(reduction.observation) as unknown as Record<string, unknown>, catalog: reduction.observation.catalog as unknown as Record<string, unknown>[],
+        catalog_materialized: true, publication_index: String(occurrence) };
+      this.ledger.registerGlobal(acquisition, source.full.basis, before); this.knownAcquisitions.add(id);
+      const prior = this.globalPrepared?.acquisition.acquisition_id;
+      const unit = `unit-${randomUUID()}`;
+      this.globalPrepared = { source, reduction, acquisition, unit };
+      this.noteCursor(`cursor-${randomUUID()}`, 1);
+      const input: AgentConsumeInput = { acquisition_id: id, input_spec: this.manifest.input.input_spec,
+        continuity_token: this.ledger.continuityToken, previous_consumption_id: this.ledger.consumptionId,
+        observation: acquisition.observation, catalog: acquisition.catalog, consumption_unit: { id: unit } };
+      const publicInput = await this.options.evidence.storeGlobalArtifact("public_input", Buffer.from(canonicalJson(input)));
+      await this.emitGlobal("global_input", { acquisition_id: id, source_ordinal: source.ordinal, occurrence, artifact: publicInput, unit });
+      if (!this.owner.consumeCall()) { this.expireBudget(); throw new AgentSessionError("autonomy_budget_exhausted"); }
+      await this.port.consume(this.context(), input, handlers, signal, () => { offer.pending = true; });
+      offer.pending = false; this.checkActive(epoch, signal);
+      if (prior && prior !== id) await this.releaseAcquisition(prior);
+      this.lastObservation = { acquisition_id: id, capture_sha256: source.full.capture.sha256, snapshot_id: String(snapshot.snapshot_id),
+        revision: occurrence, status: reduction.observation.status, publication_index: String(occurrence), included: [], missing: [], catalog_count: acquisition.catalog!.length };
+      return;
+    } } finally { this.refreshing = false; }
+  }
+  private globalHandlers(epoch: number): AgentPortHandlers {
+    return { query: async () => { throw new AgentSessionError("global_program_query_unsupported"); },
+      consumed: async (report, signal, requestId) => {
+        this.checkActive(epoch, signal);
+        if (report.acquisition_id !== this.globalPrepared?.acquisition.acquisition_id) throw new AgentSessionError("global_consumption_binding");
+        const acknowledgement = this.ledger.accept(report);
+        await this.emitGlobal("global_consumed", { request_id: requestId, report, acknowledgement });
+        this.checkActive(epoch, signal); this.basisId = report.acquisition_id; return acknowledgement;
+      } };
+  }
+  private async actGlobal(output: AgentDirectiveOutput, epoch: number, signal: AbortSignal): Promise<AgentRuntimeTickResult> {
+    if (output.directive.type !== "act" || output.directive.selection.kind !== "handle") throw new AgentSessionError("global_handle_required");
+    const choiceId = output.directive.selection.action_id;
+    const prepared = this.globalPrepared!, directive = output.directive;
+    if (directive.basis_acquisition_id !== this.basisId || directive.basis_acquisition_id !== prepared.acquisition.acquisition_id)
+      throw new AgentSessionError("global_acknowledged_basis_required");
+    const choice = prepared.reduction.observation.catalog.find(c => c.choice_id === choiceId), lowering = prepared.reduction.lowering[choiceId];
+    if (!choice || !lowering || !supportsProfileValue(this.manifest.support.action_verbs, choice.kind)) throw new AgentSessionError("global_choice_not_in_catalog");
+    if (directive.scores && (directive.scores.catalog_digest !== globalDigest(prepared.acquisition.catalog)
+      || directive.scores.values.length !== prepared.acquisition.catalog!.length)) throw new AgentSessionError("global_scores_binding");
+    this.checkActive(epoch, signal);
+    if (this.mode === "shadow") return { type: "shadow", status: this.status() };
+    await this.emitGlobal("global_choice", { acquisition_id: this.basisId, occurrence: prepared.reduction.observation.envelope.occurrence, choice_id: choiceId, origin: "agent_choice" });
+    const steps: P1StepRecord[] = []; let status: P1Result["status"] = "completed";
+    let source = prepared.source, next = lowering.first, followIndex = 0;
+    while (next) {
+      if (steps.length >= P1G_LIMITS.macro_steps) { status = "interrupted_known"; break; }
+      try {
+        this.checkActive(epoch, signal); await this.options.globalTransport!.acquire(signal); this.checkActive(epoch, signal);
+        await this.emit("controller_acquired", { ...this.context(), controller: "held" }); this.checkActive(epoch, signal);
+      } catch (error) {
+        await this.emitGlobal("global_dispatch_error", { request_id: null, sent: false, reason: `controller_acquire:${errorMessage(error)}` });
+        status = steps.length ? "interrupted_known" : "not_started"; break;
+      }
+      const requestId = `request-${randomUUID()}`, step = next;
+      const bound = (source.full.basis.snapshot.bound_actions as { actions: Record<string, unknown>[] }).actions.find(a => a.bound_action_id === step.bound_action_id);
+      if (!bound) { status = steps.length ? "interrupted_known" : "not_started"; break; }
+      let sent = false, classified = false;
+      try {
+        const receipt = await this.options.globalTransport!.step({ requestId, expectedSnapshotId: String(source.full.basis.snapshot.snapshot_id), boundActionId: step.bound_action_id }, {
+          signal, maxResponseBytes: Math.min(this.manifest.limits.max_message_bytes, 8 * 1024 * 1024),
+          beforeSend: async () => {
+            this.checkActive(epoch, signal);
+            if (!this.owner.available() || this.controllerStatus() !== "held" || this.mode === "human" || this.tainted) throw new AgentSessionError("global_dispatch_not_authorized");
+            await this.emitGlobal("global_dispatch", { request_id: requestId, acquisition_id: this.basisId, source_ordinal: source.ordinal,
+              choice_id: choiceId, step_index: steps.length, bound_action: bound, expected_snapshot_id: source.full.basis.snapshot.snapshot_id });
+            this.checkActive(epoch, signal);
+            if (!this.owner.consumeSubmission()) { this.expireBudget(); throw new AgentSessionError("autonomy_budget_exhausted"); }
+            sent = true;
+          },
+          onResponseBytes: async bytes => { const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
+            await this.emitGlobal("global_transport_response", { artifact, operation: "step", request_id: requestId }); }
+        });
+        const decoded = decodePublicSourceReceipt(receipt).data;
+        const expected = { bound_action_id: bound.bound_action_id, verb: bound.verb, subject_referent_id: bound.subject_referent_id ?? null, arguments: bound.arguments };
+        const actual = { ...decoded.action, subject_referent_id: decoded.action.subject_referent_id ?? null };
+        // A request-level not_delivered rejection (e.g. a stale snapshot) is issued before the
+        // Host binds the action, so it echoes only the bound action id; nothing was applied.
+        const bindingMatches = decoded.delivery === "not_delivered"
+          ? actual.bound_action_id === expected.bound_action_id
+          : canonicalJson(expected) === canonicalJson(actual);
+        if (decoded.request_id !== requestId || !bindingMatches) throw new AgentSessionError("global_original_receipt_binding");
+        await this.emitGlobal("global_receipt", { request_id: requestId, source_ordinal: source.ordinal, receipt: decoded });
+        steps.push({ index: steps.length, origin: steps.length ? "fold" : "agent_choice", native_verb: step.verb, label: step.label,
+          delivery: decoded.delivery, reason_code: decoded.reason_code ?? null });
+        classified = true;
+        this.lastResult = { request_id: requestId, snapshot_id: String(source.full.basis.snapshot.snapshot_id), action_id: choiceId,
+          status: "terminal", delivery: decoded.delivery, execution: null, effect: null, cancel: null, reason: decoded.reason_code ?? null };
+        const successorDrift = decoded.successor && canonicalJson(decoded.successor.session) !== canonicalJson(this.globalIdentity!.session);
+        if (successorDrift && decoded.delivery !== "delivered") {
+          await this.emitGlobal("global_dispatch_error", { request_id: requestId, sent, reason: "global_receipt_successor_identity_drift" });
+          // Identity failure fences further submissions without rewriting the known Receipt.
+          await this.taint("global_receipt_successor_identity_drift");
+        }
+        if (decoded.delivery === "unknown") { status = "unknown"; break; }
+        if (decoded.delivery === "not_delivered") { status = steps.length === 1 ? "not_started" : "interrupted_known"; break; }
+        if (successorDrift) throw new AgentSessionError("global_receipt_successor_identity_drift");
+      } catch (error) {
+        await this.emitGlobal("global_dispatch_error", { request_id: requestId, sent, reason: errorMessage(error) });
+        if (classified) { status = "interrupted_known"; await this.taint("global_receipt_successor_identity_drift"); }
+        else if (sent) { steps.push({ index: steps.length, origin: steps.length ? "fold" : "agent_choice", native_verb: step.verb, label: step.label, delivery: "unknown", reason_code: "response_unclassified" }); status = "unknown"; }
+        else status = steps.length ? "interrupted_known" : "not_started";
+        break;
+      }
+      // Every known delivery gets an actual sealed successor capture, including
+      // single-step choices. The Receipt successor is not a substitute for it.
+      const rule = lowering.follow[followIndex++];
+      try {
+        this.checkActive(epoch, signal);
+        source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        // A real Host is briefly incomplete while native animations/transitions settle after a
+        // known delivery. Re-reading (never re-dispatching) until it publishes is the native wait.
+        for (const deadline = Date.now() + (this.options.globalPostDeliverySettleMs ?? 15_000);
+          source.full.basis.capture_status !== "complete" && Date.now() < deadline;) {
+          await globalDelay(100, signal); this.checkActive(epoch, signal);
+          source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        }
+        if (source.full.basis.capture_status !== "complete") throw new AgentSessionError("global_post_delivery_capture_incomplete");
+        if (!rule) break;
+        while (source.full.basis.capture_status === "complete"
+          && (source.full.basis.snapshot.interaction as { kind: string }).kind !== "game_over"
+          && ["settling", "observed"].includes(String(source.full.basis.snapshot.status))) {
+          await globalDelay(50, signal); this.checkActive(epoch, signal);
+          source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        }
+        next = source.full.basis.capture_status === "complete" ? resolveFollowBasis(rule, lowering, source.full.basis) : null;
+        if (!next && !rule.optional) status = "interrupted_known";
+      } catch (error) {
+        status = "interrupted_known";
+        if (!this.stopping && !this.budgetFenced) await this.taint(`global_post_delivery_capture:${errorMessage(error)}`);
+        break;
+      }
+    }
+    if (status === "completed") {
+      try { this.checkActive(epoch, signal); this.globalState = applyCommitment(this.globalState!, lowering, true); }
+      catch { status = steps.length ? "interrupted_known" : "not_started"; }
+    }
+    const result: P1Result = { schema: P1G_RESULT_SCHEMA, occurrence: prepared.reduction.observation.envelope.occurrence,
+      choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment ? commitmentView(this.globalState!) : null };
+    await this.emitGlobal("global_result", { acquisition_id: this.basisId, result });
+    if (status === "unknown") { await this.taint("global_delivery_unknown"); return { type: "unknown", error: "global_delivery_unknown", status: this.status() }; }
+    if (this.mode === "one_step") await this.handoff("global_one_step_completed");
+    if (!this.owner.available() && this.mode !== "human") this.expireBudget();
+    return { type: status === "completed" ? "delivered" : "not_delivered", status: this.status() };
+  }
+
   private async emit<K extends AgentRuntimeEventKind>(kind: K, payload: AgentRuntimeEventPayloads[K]): Promise<void> {
     try { await this.options.evidence.append(kind, payload as unknown as Record<string, unknown>, this.now()); }
     catch (error) {
@@ -1228,7 +1482,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.mode = "human"; this.owner.end("mode_changed"); this.owner.cancelActive(error);
       // Evidence failure must not leave a held lease with its deadline cleared.
       // Direct SDK cleanup avoids recursive attempts to write failed evidence.
-      await this.controller.releaseControl().catch(() => undefined);
+      await (this.options.globalTransport ? this.options.globalTransport.release() : this.controller!.releaseControl()).catch(() => undefined);
       throw error;
     }
   }
@@ -1242,10 +1496,16 @@ function immutable<T>(value: T): T {
   return value;
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-function nativeEnvironment(c: NativeLogicalCapabilities, hostKind: AgentManifest["requirements"]["environment"]["host_kind"]): NonNullable<RuntimeStatus["environment"]> {
+function nativeEnvironment(c: NativeLogicalCapabilities, hostKind: ConnectorPolicyRequirements["environment"]["host_kind"]): NonNullable<RuntimeStatus["environment"]> {
   return { runtime_instance_id: c.session.runtime_instance_id, environment_fingerprint: c.session.environment_fingerprint,
     host_kind: hostKind, connector_protocol_version: c.protocol_version, connector_version: c.host.version,
     connector_source_revision: c.host.implementation.source_revision, connector_artifact_sha256: c.host.implementation.artifact_sha256,
     connector_module_version_id: c.host.implementation.module_version_id, game_version: c.game.version, game_commit: c.game.commit,
     modset_status: c.game.modset.status, modset_fingerprint: c.game.modset.fingerprint, loaded_mod_ids: [...c.game.modset.loaded_mod_ids] };
+}
+
+async function globalDelay(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted(); await new Promise<void>((resolve, reject) => { const done = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); resolve(); };
+    const abort = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); };
+    const timer = setTimeout(done, ms); signal.addEventListener("abort", abort, { once: true }); });
 }

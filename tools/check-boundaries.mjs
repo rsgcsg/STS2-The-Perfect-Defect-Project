@@ -25,15 +25,45 @@ export function textBoundaryErrors(relative, contents) {
       && /(?:from\s+|import\s*\()\s*["'][^"']*(?:host-runtime|annotator)/u.test(contents)) {
     errors.push(`${normalized}: Connector imports a downstream component`);
   }
-  if (normalized.startsWith("components/native-foundation/")
-      && /STS2Connector|STS2HumanAnnotator|HarmonyLib|System\.Text\.Json/u.test(contents)) {
-    errors.push(`${normalized}: Native Foundation imports transport, evidence, or patch ownership`);
+  if (normalized.startsWith("components/native-foundation/")) {
+    // These exact shared read qualifiers inspect patches; they never install them.
+    const readQualificationFiles = new Set([
+      "NativeRunHookReadQualification.cs",
+      "NativeCardPreviewReadQualification.cs",
+      "NativeCardRewardAlternativePreview.cs"
+    ].map(name => `components/native-foundation/src/${name}`));
+    // Do not parse comments with a regex: comment-like text inside a C# string
+    // can precede executable code. Only these fixed, inert prose fragments are
+    // ignored; no source line or arbitrary comment body is ever discarded.
+    let ownershipText = contents;
+    for (const prose of [
+      "/// callback. No Harmony callback is installed here and no successor is",
+      "/// implementations and Harmony state; no runtime type/IL discovery is used.</summary>",
+      "// Harmony initialization or an idempotent command callback"
+    ]) ownershipText = ownershipText.replaceAll(prose, "");
+    if (readQualificationFiles.has(normalized)) {
+      ownershipText = ownershipText.replace(/^using HarmonyLib;\s*$/gmu, "")
+        .replace(/\bHarmony\.GetPatchInfo(?=\s*\()/gu, "readPatchInfo");
+    }
+    // This process-local preview uses only exclusion attributes; no JSON I/O.
+    if (normalized === "components/native-foundation/src/NativeDetachedCardPreview.cs") {
+      ownershipText = ownershipText.replace(/^using System\.Text\.Json\.Serialization;\s*$/gmu, "")
+        .replace(/\[property: JsonIgnore\]/gu, "");
+    }
+    if (/STS2Connector|STS2HumanAnnotator|\bHarmony(?:Lib)?\b|System\.Text\.Json/u.test(ownershipText))
+      errors.push(`${normalized}: Native Foundation imports transport, evidence, or patch ownership`);
   }
   if (normalized.startsWith("components/host-runtime/")
       && /(?:from\s+|import\s*\()\s*["'][^"']*(?:\.\.\/)+(?:connector|annotator)(?:\/|["'])/u.test(contents)) {
     errors.push(`${normalized}: Host Runtime imports another component implementation`);
   }
   return errors;
+}
+
+export function hostSdkDependencyErrors(dependency) {
+  return dependency === "file:../connector/sdk/typescript"
+    || /^https:\/\/github\.com\/rsgcsg\/STS2-The-Pefect-Defect-Project\/releases\/download\/compat\/platform-import-v1\//u.test(dependency ?? "")
+    ? [] : ["Host Runtime must consume the public Connector SDK package, not another component implementation"];
 }
 
 export function packageEntrypointErrors(
@@ -119,10 +149,16 @@ export function collectBoundaryErrors(workspaceRoot = root) {
     "utf8"
   ));
   const sdkDependency = hostPackage.dependencies?.["@rsgcsg/sts2-connector-client"];
-  if (!/^https:\/\/github\.com\/rsgcsg\/STS2-The-Pefect-Defect-Project\/releases\/download\/compat\/platform-import-v1\//u.test(
-    sdkDependency ?? ""
-  )) {
-    errors.push("Host Runtime must consume the versioned public Platform Connector SDK asset");
+  errors.push(...hostSdkDependencyErrors(sdkDependency));
+  if (sdkDependency === "file:../connector/sdk/typescript") {
+    // Source workspaces consume the same public SDK. Release packaging must
+    // bundle its exact bytes and assert no file dependency reaches consumers.
+    const packaging = fs.readFileSync(path.join(workspaceRoot, "components/host-runtime/tools/package.mjs"), "utf8");
+    const packageCheck = fs.readFileSync(path.join(workspaceRoot, "components/host-runtime/tools/check-package.mjs"), "utf8");
+    if (!packaging.includes("bundleConnectorSdk(stage,")
+        || !packageCheck.includes('includes("file:")')
+        || !packageCheck.includes("connector_sdk_resolved_outside_workspace"))
+      errors.push("Host workspace SDK requires exact bundling and external installed-package verification");
   }
 
   const connectorRelease = fs.readFileSync(

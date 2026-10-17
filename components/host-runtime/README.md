@@ -415,3 +415,17 @@ The reference handoff status query uses the existing public
 and envelope checks. This preserves the standalone Host package's intentionally
 pinned released SDK, which supports controller close but predates the new SDK
 status getter. There is no route fallback or local dependency override.
+
+
+### Standalone candidate packaging
+
+The source workspace consumes the exact sibling Connector SDK candidate through
+its checked file dependency. `npm run package -- --output /absolute/directory`
+builds that SDK and emits a portable Host tarball containing the exact SDK and
+locked Zod bytes, a shrinkwrap and `package-identity.json`; the sibling source
+path is not a published dependency. External packaging requires clean Host and
+Connector source. `check:package` preserves the existing inventory, executable
+and forbidden-file checks and additionally proves deterministic archives,
+offline installation outside this workspace, original Managed service imports,
+public-basis SDK exports, and SDK/Zod bundle hashes. Packaging remains separate
+from game build, load, runtime and native qualification.

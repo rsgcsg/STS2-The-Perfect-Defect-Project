@@ -43,10 +43,13 @@ public sealed class SourceNativeProducerTests
         internal string? Continuity;
         internal string Surface = "title";
         internal Action? OnDispatch;
-        internal int Dispatches, SourceRegistrations;
+        internal int Dispatches, SourceRegistrations, SourceCaptures, LegacyCaptures;
+        internal bool PartialNative, MissingNeutral, ThrowCarrierAlias;
         internal Action? OnCapture;
         internal readonly object PhysicalOwner = new();
         internal int PhysicalMatchCount = 1;
+        internal string PhysicalLeafVerb = "confirm";
+        internal string? PhysicalSourcePrefixVerb;
         internal readonly MutationControllerCoordinator Controller = new("runtime-fixture", enableDeadlineTimer: false);
         internal readonly MutationClientRegistrationResult client;
         private readonly MutationLease lease;
@@ -60,24 +63,29 @@ public sealed class SourceNativeProducerTests
             {
                 Requests = new("runtime-fixture", Controller.ValidateActiveControl, Controller.TryAdmitRequest, Controller.TryBegin,
                     (request, result) => Owner.NotifyOriginalTerminal(request, result), enableTimer: false);
-                Owner = new(Frame, () => Continuity, Requests,
+                Owner = new(() => { LegacyCaptures++; return Frame(); }, () => Continuity, Requests,
                     (work, _) => Task.FromResult(work()), () => true, new Lifetime(Controller), Controller.IsActiveClient,
                     () => Actual, () => (Capabilities(), new string('c', 64)),
-                    request => { SourceRegistrations++; return Controller.Register(request); });
+                    request => { SourceRegistrations++; return Controller.Register(request); },
+                    captureSource: version == 4 ? SourceFrame : null,
+                    sourceAlias: value => ReferenceEquals(value, PhysicalOwner) ? "native-owner-physical"
+                        : ThrowCarrierAlias ? throw new InvalidOperationException("synthetic_carrier_alias_failure") : "native-object-" + RuntimeHelpers.GetHashCode(value));
                 Controller.ClientClosed += closure => { Requests.ClientClosed(closure); Owner.ExpireClient(closure.ClientSessionId, closure.Reason); };
                 Owner.Initialize();
                 Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId, NativeLogicalPublicationProfile.DefinitionSha256,
                     NativeLogicalPublicationProfile.RequiredCoverage);
                 if (beforeInitialCapture != null) OnCapture = () => beforeInitialCapture(this);
-                Attachment = Owner.AttachSource(version == 3);
+                Attachment = Owner.AttachSource(version >= 3, version == 4);
                 var epoch = SourceRecordingWorkerV2.Packet(Attachment.InitialEpoch, EnvironmentIdentity);
                 var profile = new SourceCaptureProfileV2("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version,
                     "native-logical-v1", epoch.Context.PublicationProfileId, epoch.Context.PublicationProfileDefinitionSha256,
-                    epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims);
+                    epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims)
+                    { PublicBasis = version == 4 ? SourceSessionContractV4.PublicBasis : null };
                 var manifest = new CurrentRecordingManifest(version, "sts2.annotator/source-session-manifest-" + version, "session-fixture", "timeline-fixture", DateTimeOffset.UnixEpoch,
                     "fixture", new string('e', 40), "fixture-platform", profile.ProfileId, SourceSessionContractV2.ProfileDigest(profile),
                     Array.Empty<string>(), SourceSessionContractV2.NonClaims) { SourceSchemaVersion = version, SourceEnvironment = EnvironmentIdentity, RecoverySchemaVersion = 1 };
-                Store = version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch)
+                Store = version == 4 ? RecordingSessionStore.CreateSourceV4(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch)
+                    : version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch)
                     : RecordingSessionStore.CreateSourceV2(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch);
                 Worker = new(Store, Attachment, EnvironmentIdentity);
             });
@@ -122,13 +130,25 @@ public sealed class SourceNativeProducerTests
                 "interactive", null, new("interaction", Surface, "ready", null, "fixture-surface",
                     new(new JsonObject { ["kind"] = Surface }, new JsonObject { ["kind"] = "fixture-context" }), Array.Empty<PlayerEnvironmentInteractionCapability>()),
                 Array.Empty<PlayerEnvironmentReferent>(), new("sts2.player-environment/bound-actions-1", "complete", 0, 0, 65536, "native", Array.Empty<PlayerEnvironmentBoundAction>()),
-                Array.Empty<PlayerEnvironmentReadOpportunity>(), new("complete", "public", "complete", Array.Empty<string>(), Array.Empty<string>()),
+                Array.Empty<PlayerEnvironmentReadOpportunity>(), new(PartialNative ? "partial" : "complete", "public", "complete", Array.Empty<string>(), PartialNative ? new[] { "synthetic_native_relation_missing" } : Array.Empty<string>()),
                 new("runtime-fixture", "environment-fixture"), new("player_visible_v1", "current_page", false, "omit"));
             var leaves = Enumerable.Range(0, Math.Max(1, PhysicalMatchCount)).Select(index => new TextMenuLeaf("binding-" + Surface + "-" + index,
-                "root", "confirm", "Confirm", null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                "root", PhysicalLeafVerb, "Confirm", null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
                 () => { Dispatches++; OnDispatch?.Invoke(); return NativeInputResult.Delivered("synthetic_native_callback"); },
-                PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, null, new Dictionary<string, object>(StringComparer.Ordinal)))).ToArray();
+                PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, null, new Dictionary<string, object>(StringComparer.Ordinal))) { NativeSourcePrefixVerb = PhysicalSourcePrefixVerb }).ToArray();
             return new(page, Surface, leaves) { GameContinuityId = Continuity };
+        }
+        internal NativeLogicalService.NativeLogicalSourceCapture SourceFrame()
+        {
+            SourceCaptures++;
+            var frame = Frame();
+            // These independent detached public projections simulate the production single-capture seam.
+            var ordinary = frame.Page with { SnapshotId = "ordinary-" + Surface,
+                Completeness = new("complete", "public", "complete", Array.Empty<string>(), Array.Empty<string>()) };
+            var node = (JsonObject)JsonSerializer.SerializeToNode(ordinary, ConnectorMod._jsonOptions)!;
+            var frozen = PublicBasisAssembly.Freeze(node, Array.Empty<PublicBasisRead>(), Continuity, ConnectorMod._jsonOptions, ordinary.ObservedAt);
+            return new(frame, MissingNeutral ? null : new(frozen.SnapshotId, frozen.Bytes, frozen.CapturedAt),
+                MissingNeutral ? "synthetic_neutral_capture_failed" : null);
         }
         private static PlayerEnvironmentCapabilitiesResponse Capabilities() => new(PlayerEnvironmentContract.ProtocolVersion, TextMenuContract.SnapshotSchema,
             PlayerEnvironmentContract.ActionSchema, TextMenuContract.ResultSchema, PlayerEnvironmentContract.ControlSchema, "implemented",

@@ -17,7 +17,7 @@ public sealed class PlatformRecordingCommandsTests
             new("source_bridge", "healthy", "healthy", "/private/disk-error", DateTimeOffset.UtcNow), null!,
             new("idle", null, null, null), "source_recording", "private detail", null, null, [], 0)
         {
-            SourceV2 = profile is SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId
+            SourceV2 = profile is SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId
                 ? new("epoch-1", "segment-1", new("agent_native_ui", "operator", "declaration-1", false),
                     7, 3, 1, 1, 0, false, "/private/source-error") : null
         };
@@ -59,6 +59,19 @@ public sealed class PlatformRecordingCommandsTests
         Assert.Equal(kind == "change_source" ? "segment-1" : null, request.Command.ExpectedSourceSegmentId);
         if (kind is "start_new_session" or "change_source") Assert.False(request.Command.SourceDeclaration!.MachineVerifiable);
         else Assert.Null(request.Command.SourceDeclaration);
+    }
+
+    [Fact]
+    public void ExplicitSource4StartAndCloseRetainTheSharedCommandAndTypedStatus()
+    {
+        var body = Request(); body["command"]!["capture_profile_id"] = SourceSessionContractV4.ProfileId;
+        var start = Read(body); Assert.Equal(SourceSessionContractV4.ProfileId, start.Command.CaptureProfileId);
+        var status = Status(SourceSessionContractV4.ProfileId);
+        var projected = PlatformRecordingCommands.Project("game-1", status);
+        Assert.Equal(SourceSessionContractV4.ProfileId, projected.CaptureProfileId);
+        Assert.NotNull(projected.Source);
+        Assert.Equal(SourceSessionContractV2.CommandSchema,
+            PlatformRecordingCommands.ForStatus(status, RecordingCommandKind.Close, Guid.NewGuid().ToString("D")).Schema);
     }
 
     [Theory]
@@ -106,6 +119,7 @@ public sealed class PlatformRecordingCommandsTests
     [InlineData(SourceSessionContract.ProfileId, RecordingApplicationContract.SourceCommandSchema)]
     [InlineData(SourceSessionContractV2.ProfileId, SourceSessionContractV2.CommandSchema)]
     [InlineData(SourceSessionContractV3.ProfileId, SourceSessionContractV2.CommandSchema)]
+    [InlineData(SourceSessionContractV4.ProfileId, SourceSessionContractV2.CommandSchema)]
     public void ProductionModelHandoffChoosesTheActiveOwnersSchemaAndWaitsForClose(string? profile, string schema)
     {
         var current = Status(profile);

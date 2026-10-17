@@ -20,6 +20,7 @@ internal sealed class SourceSessionEpochLedgerV2
         internal readonly SourceInputTokenV2 Token = token;
         internal PublicCaptureReferenceV2? Capture;
         internal PublicCatalogReferenceV2? Catalog;
+        internal SourceCapturedPartsV4? CapturedParts;
         internal bool BasisBound;
         internal SourceBasisOrderV3? BasisOrder;
         internal string? TerminalSignature;
@@ -213,16 +214,18 @@ internal sealed class SourceSessionEpochLedgerV2
             input.BasisOrder = order;
         }
     }
-    internal void BindInput(SourceInputTokenV2 token, PublicCaptureReferenceV2? capture, PublicCatalogReferenceV2? catalog)
+    internal void BindInput(SourceInputTokenV2 token, PublicCaptureReferenceV2? capture, PublicCatalogReferenceV2? catalog,
+        SourceCapturedPartsV4? parts = null)
     {
         lock (metadataGate)
         {
             var input = ExactInput(token);
-            if (input.BasisBound && (input.Capture != capture || input.Catalog != catalog))
+            if (input.BasisBound && (input.Capture != capture || input.Catalog != catalog || input.CapturedParts != parts))
                 throw new InvalidDataException("source_input_basis_changed");
-            if (format.Ordered && input.BasisOrder?.Status != SourceSessionContractV3.FrozenBasis && (capture != null || catalog != null))
+            if (format.Ordered && input.BasisOrder?.Status != SourceSessionContractV3.FrozenBasis
+                && (capture != null || catalog != null || parts?.PublicBasis != null))
                 throw new InvalidDataException("source_unproven_input_has_capture");
-            input.Capture = capture; input.Catalog = catalog; input.BasisBound = true;
+            input.Capture = capture; input.Catalog = catalog; input.CapturedParts = parts; input.BasisBound = true;
         }
     }
     internal bool CompleteInput(SourceInputTokenV2 token, string signature)

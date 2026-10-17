@@ -7,7 +7,7 @@ internal static partial class RecorderRuntime
 {
     private static SourceRecordingWorkerV2? _sourceWorkerV2;
     private static SourceSessionStatusV2? _lastSourceStatusV2;
-    private static bool IsSourceRecordingV2 => _activeCaptureProfileId is SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId;
+    private static bool IsSourceRecordingV2 => _activeCaptureProfileId is SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;
 
     private static RecordingCommandResult ExecuteSourceCommandV2(RecordingCommand command, RecordingSessionExpectation? expectedSession)
     {
@@ -38,7 +38,7 @@ internal static partial class RecorderRuntime
             {
                 if (command.Kind == RecordingCommandKind.StartNewSession)
                 {
-                    if (command.CaptureProfileId is not (SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId) || command.SourceDeclaration == null)
+                    if (command.CaptureProfileId is not (SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId) || command.SourceDeclaration == null)
                         throw new InvalidDataException("source_v2_profile_and_declaration_required");
                     result = RecordingLifecycleStateMachine.Apply(_lifecycle, command.Kind,
                         "session-" + Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, false);
@@ -80,9 +80,9 @@ internal static partial class RecorderRuntime
     private static void StartSourceSessionV2(RecordingLifecycleSnapshot lifecycle, SourceDeclaration source, string profileId)
     {
         if (_configuration == null || _sourceRevision == null) throw new InvalidOperationException("source_runtime_unavailable");
-        int version = profileId == SourceSessionContractV3.ProfileId ? 3 : 2;
+        int version = profileId == SourceSessionContractV4.ProfileId ? 4 : profileId == SourceSessionContractV3.ProfileId ? 3 : 2;
         var format = SourceSessionWireFormat.ForVersion(version);
-        var attachment = NativeLogicalSourceRecording.Attach(version == 3);
+        var attachment = NativeLogicalSourceRecording.Attach(version >= 3, version == 4);
         RecordingSessionStore? store = null;
         try
         {
@@ -90,13 +90,14 @@ internal static partial class RecorderRuntime
             var epoch = SourceRecordingWorkerV2.Packet(attachment.InitialEpoch, environment);
             var profile = new SourceCaptureProfileV2(format.Schema("source-capture-profile"), format.ProfileId,
                 "native-logical-v1", epoch.Context.PublicationProfileId, epoch.Context.PublicationProfileDefinitionSha256,
-                epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims);
+                epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims) { PublicBasis = version == 4 ? SourceSessionContractV4.PublicBasis : null };
             var manifest = new CurrentRecordingManifest(version, format.Schema("source-session-manifest"), lifecycle.SessionId!,
                 "timeline-" + Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow, RecorderMod.Version, _sourceRevision,
                 System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier, profile.ProfileId,
                 SourceSessionContractV2.ProfileDigest(profile), Array.Empty<string>(), SourceSessionContractV2.NonClaims)
             { SourceSchemaVersion = version, SourceEnvironment = environment, RecoverySchemaVersion = 1 };
-            store = version == 3 ? RecordingSessionStore.CreateSourceV3(_configuration.RecordingRoot, manifest, profile, source, epoch)
+            store = version == 4 ? RecordingSessionStore.CreateSourceV4(_configuration.RecordingRoot, manifest, profile, source, epoch)
+                : version == 3 ? RecordingSessionStore.CreateSourceV3(_configuration.RecordingRoot, manifest, profile, source, epoch)
                 : RecordingSessionStore.CreateSourceV2(_configuration.RecordingRoot, manifest, profile, source, epoch);
             var worker = new SourceRecordingWorkerV2(store, attachment, environment);
             _store = store; _sourceWorkerV2 = worker; _lastSourceStatusV2 = store.GetSourceStatusV2();

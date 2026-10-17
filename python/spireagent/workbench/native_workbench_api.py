@@ -410,7 +410,9 @@ class NativeWorkbenchApi:
                     if isinstance(owner_status, dict)
                     else None
                 )
-                source3 = owner_status.get("capture_profile_id") == "native-logical-source-v3"
+                source_recording = owner_status.get("capture_profile_id") in {
+                    "native-logical-source-v3", "native-logical-source-v4"
+                }
                 pending = owner_view.get("command_pending") is True
                 recovery = owner_view.get("recovery_required") is True
                 fresh = state in {"ready", "closed"} and (
@@ -433,14 +435,23 @@ class NativeWorkbenchApi:
                         action(
                             "recording.start",
                             "开始原生交互与观察录制",
-                            declaration_fields,
+                            [*declaration_fields, field(
+                                "capture_profile_id", "录制格式", "enum",
+                                "native-logical-source-v3",
+                                [
+                                    {"value": "native-logical-source-v3",
+                                     "label": "Source3（默认）"},
+                                    {"value": "native-logical-source-v4",
+                                     "label": "Source4（保留 P1 公共基底）"},
+                                ],
+                            )],
                             enabled=fresh and not pending,
                             reason=None if fresh else "recording_start_unavailable",
                         ),
                         action(
                             "recording.pause",
                             "暂停录制",
-                            enabled=source3
+                            enabled=source_recording
                             and state == "recording"
                             and not pending
                             and not recovery,
@@ -448,18 +459,21 @@ class NativeWorkbenchApi:
                         action(
                             "recording.resume",
                             "继续录制",
-                            enabled=source3 and state == "paused" and not pending and not recovery,
+                            enabled=source_recording and state == "paused"
+                            and not pending and not recovery,
                         ),
                         action(
                             "recording.change_source",
                             "更改操作来源",
                             declaration_fields,
-                            enabled=source3 and state == "paused" and not pending and not recovery,
+                            enabled=source_recording and state == "paused"
+                            and not pending and not recovery,
                         ),
                         action(
                             "recording.close",
                             "结束并封存录制",
-                            enabled=source3 and state in {"recording", "paused"} and not pending,
+                            enabled=source_recording and state in {"recording", "paused"}
+                            and not pending,
                         ),
                     ]
                 )
@@ -818,7 +832,7 @@ class NativeWorkbenchApi:
         if action_id.startswith("recording."):
             exact(
                 body,
-                {
+                ({"capture_profile_id"} if "capture_profile_id" in body else set()) | {
                     "kind",
                     "runtime_instance_id",
                     "recording_session_id",

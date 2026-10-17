@@ -16,6 +16,10 @@ function withPotion(overrides = {}) {
     hover_facts_complete: true, target_type: "AnyPlayer", usage: "CombatOnly",
     can_use: true, can_discard: true, binding_supported: true,
     valid_target_refs: [state.player.native_ref], ...overrides }];
+  state.potion_states = state.player.potions.map(potion => ({
+    native_ref: potion.native_ref, target_type: potion.target_type,
+    can_use: potion.can_use, automatic: false
+  }));
   return state;
 }
 

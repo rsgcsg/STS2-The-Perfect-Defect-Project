@@ -2,6 +2,7 @@ using STS2Connector.Authority;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace STS2Connector.LiveHost.Contracts;
@@ -190,7 +191,13 @@ public sealed record VisibleCard(
     VisibleEnchantment? ExistingEnchantment,
     string? TargetType = null,
     bool? CanPlay = null,
-    string? UnplayableReason = null);
+    string? UnplayableReason = null)
+{
+    // Retained with this exact captured card instance. Legacy card serialization
+    // remains unchanged; only the explicitly enriched bounded detail Read uses it.
+    [JsonIgnore] public JsonObject? CurrentPublicDetails { get; init; }
+    [JsonIgnore] public IReadOnlyList<string> CurrentPublicDetailsMissing { get; init; } = Array.Empty<string>();
+}
 
 public sealed record VisibleStatus(
     string DefinitionId,
@@ -461,9 +468,11 @@ public sealed record VisibleMapNode(
 public sealed record MapLiveContext(
     string Kind,
     int ActIndex,
+    // Always written: null is the public fact "no node visited yet this act".
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     VisibleMapCoordinate? CurrentPosition,
     IReadOnlyList<VisibleMapCoordinate> Visited,
-    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext;
+    IReadOnlyList<VisibleMapNode> Nodes) : ILiveContext, IPlayerReadContent;
 
 public sealed record CombatTransitionLiveContext(
     string Kind,
@@ -810,6 +819,8 @@ public sealed record CombatTurnSurface(
         Array.Empty<VisibleCombatCommandOption>();
     public IReadOnlyList<VisibleCombatCommandOption> UsablePotions { get; init; } =
         Array.Empty<VisibleCombatCommandOption>();
+    public IReadOnlyList<VisibleCombatPotion> DiscardablePotions { get; init; } =
+        Array.Empty<VisibleCombatPotion>();
 }
 
 public sealed record CombatHandCardSelectionSurface(
@@ -833,7 +844,16 @@ public sealed record VisibleCardRewardAlternative(
     string EntityId,
     int Index,
     string Label,
-    bool Enabled);
+    bool Enabled)
+{
+    public string? OptionId { get; init; }
+    public string? Title { get; init; }
+    public string? AfterSelected { get; init; }
+    public bool IsNativeSkip { get; init; }
+}
+
+public sealed record VisibleRewardCardAlternative(string OptionId, string Title, string AfterSelected)
+{ public bool IsNativeSkip { get; init; } }
 
 /// <summary>
 /// A player-visible room reward. The Host deliberately exposes only the
@@ -844,7 +864,24 @@ public sealed record VisibleReward(
     string Kind,
     string Label,
     string? Description,
-    bool Enabled);
+    bool Enabled)
+{
+    /// <summary>Public stable identity of this reward group (same alias owner as EntityId).</summary>
+    public string? GroupId { get; init; }
+    public string GroupRelation { get; init; } = "unavailable";
+
+    /// <summary>
+    /// Lawfully viewable candidates of an offered, already populated card reward.
+    /// Read without opening, populating, rerolling or marking content as seen.
+    /// </summary>
+    public IReadOnlyList<VisibleCard>? CardOptions { get; init; }
+    public IReadOnlyList<VisibleRewardCardAlternative>? CardAlternatives { get; init; }
+    public bool CardAlternativesComplete { get; init; }
+    public bool? CanSkipSelection { get; init; }
+    public bool? CanReroll { get; init; }
+    public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
+}
 
 public sealed record CardRewardSelectionSurface(
     string Kind,
@@ -854,6 +891,11 @@ public sealed record CardRewardSelectionSurface(
 {
     public IReadOnlyList<string> SelectableCardEntityIds { get; init; } =
         Array.Empty<string>();
+    public string? ParentGroupId { get; init; }
+    public string ParentStatus { get; init; } = "unavailable";
+    public string? RewardSetId { get; init; }
+    public bool? SelectionCompletesReward { get; init; }
+    public string NativeRelicRefreshSubscription { get; init; } = "unavailable";
 }
 
 public sealed record VisibleCardBundle(
@@ -878,7 +920,11 @@ public sealed record RewardClaimSurface(
     bool PotionSlotsFull,
     IReadOnlyList<VisibleCombatPotion> DiscardablePotions,
     bool CanProceed,
-    bool ProceedSkipsRemainingRewards) : ILiveSurface;
+    bool ProceedSkipsRemainingRewards) : ILiveSurface
+{
+    public bool CanLeaveWithUnclaimedRewards { get; init; }
+    public string? RewardSetId { get; init; }
+}
 
 public sealed record VisibleMapChoice(
     string EntityId,

@@ -1146,6 +1146,10 @@ class AgentSessionRunEvidenceVerifier:
     def _verify(
         self, directory: Path, expected: Mapping[str, object] | None
     ) -> AgentSessionRunEvidence:
+        candidate = _json((directory / "agent-manifest.json").read_bytes(), "agent-manifest.json")
+        if isinstance(candidate.get("input"), dict) and candidate["input"].get("profile") == "p1-global-r1":
+            from .global_agent_session_run_evidence import verify_global_session
+            return verify_global_session(directory, expected)
         entries = list(directory.iterdir())
         _require(
             all(path.is_file() and not path.is_symlink() for path in entries),

@@ -1,0 +1,8 @@
+{
+  "source_fixture": "../source_session_v4/bundle",
+  "interpretation": "retained minimal production packer golden; unchanged original bytes",
+  "complete": false,
+  "actions_count": 0,
+  "basis_missing_reason": "p1_public_basis_decoder_refused_original",
+  "input_reason": "no_original_complete_p1_boundary_basis"
+}

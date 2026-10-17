@@ -116,8 +116,18 @@ const transport = read("host/ConnectorMod.cs")
 for (const retiredRoute of ["/api/v1", "/api/v2", "/api/v3", "/api/he"]) {
   if (transport.includes(retiredRoute)) failures.push(`transport retains retired route ${retiredRoute}`);
 }
-if (read("host/STS2Connector.Host.csproj").includes("0Harmony")) {
-  failures.push("host/STS2Connector.Host.csproj: Host retains an unnecessary Harmony dependency");
+// Native Foundation's read qualification inspects installed Harmony patches.
+// The dependency belongs to those linked sources, never a second Host patch owner.
+const hostProject = "host/STS2Connector.Host.csproj";
+requireText(hostProject, '<Compile Include="../../native-foundation/src/*.cs"',
+  "shared Native Foundation source owner");
+requireText(hostProject, '<Reference Include="0Harmony">', "native read qualification dependency");
+requireText(hostProject, '<HintPath>$(STS2GameDataDir)/0Harmony.dll</HintPath>',
+  "exact game Harmony dependency");
+for (const source of sourceFiles("host").filter(file =>
+  !/[\\/](?:tests|tools|obj|bin)[\\/]/u.test(file))) {
+  if (/\b(?:HarmonyLib|Harmony)\b/u.test(readFileSync(source, "utf8")))
+    failures.push(`${path.relative(workspace, source)}: Host must not own Harmony patching or qualification`);
 }
 for (const relative of ["host/ConnectorMod.cs", "tools/connector.mjs", "docs/INSTALLATION.md"]) {
   requireText(relative, "STS2_MCP.conf", "stable major-1 runtime config identity");

@@ -85,6 +85,9 @@ PUBLIC_M2_ADAPTER = "stpd-public-m2-decision-adapter"
 NATIVE_PROFILE = "native-logical-v1"
 NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 TEACHER_ADAPTER = "stpd-native-public-program-teacher"
+GLOBAL_ADAPTER = "spireagent-global-public-program"
+GLOBAL_PROFILE = "p1-global-r1"
+PROGRAM_ADAPTERS = frozenset({TEACHER_ADAPTER, GLOBAL_ADAPTER})
 NATIVE_AGENT_ADAPTERS = frozenset({NATIVE_ADAPTER, TEACHER_ADAPTER})
 
 
@@ -595,6 +598,7 @@ class LocalModelService:
                         "stpd-s0-structured-adapter",
                         NATIVE_ADAPTER,
                         TEACHER_ADAPTER,
+                        GLOBAL_ADAPTER,
                         PUBLIC_M0_ADAPTER,
                         PUBLIC_M2_ADAPTER,
                     }
@@ -640,14 +644,25 @@ class LocalModelService:
             if entry.get("adapter") == PUBLIC_M2_ADAPTER and profile != PUBLIC_M2_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             if "runtime_profile" in entry and (
-                (profile == PUBLIC_M0_PROFILE and entry.get("adapter") != PUBLIC_M0_ADAPTER)
+                (profile == GLOBAL_PROFILE and entry.get("adapter") != GLOBAL_ADAPTER)
+                or (entry.get("adapter") == GLOBAL_ADAPTER and profile != GLOBAL_PROFILE)
+                or (profile == PUBLIC_M0_PROFILE and entry.get("adapter") != PUBLIC_M0_ADAPTER)
                 or (profile == PUBLIC_M2_PROFILE and entry.get("adapter") != PUBLIC_M2_ADAPTER)
                 or (profile == NATIVE_PROFILE and entry.get("adapter") not in NATIVE_AGENT_ADAPTERS)
-                or (profile not in {NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}
-                    and (profile not in TEXT_PROFILES
-                or (entry.get("adapter") != TEXT_PROFILES[profile][0]
-                    and not (profile == "text-menu-m2-v2" and
-                             entry.get("adapter") == "stpd-s0-structured-adapter"))))
+                or (
+                    profile
+                    not in {NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE, GLOBAL_PROFILE}
+                    and (
+                        profile not in TEXT_PROFILES
+                        or (
+                            entry.get("adapter") != TEXT_PROFILES[profile][0]
+                            and not (
+                                profile == "text-menu-m2-v2"
+                                and entry.get("adapter") == "stpd-s0-structured-adapter"
+                            )
+                        )
+                    )
+                )
             ):
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
@@ -700,10 +715,10 @@ class LocalModelService:
         manifest, manifest_file_sha = frozen(manifest_path)
         config, config_file_sha = frozen(config_path)
         original = None
-        if entry["adapter"] == TEACHER_ADAPTER:
-            from .native_teacher_support import metadata
-
-            original = metadata(self.entry_root(entry), config, manifest)
+        if entry["adapter"] in PROGRAM_ADAPTERS:
+            original = policy_support(entry["adapter"]).metadata(
+                self.entry_root(entry), config, manifest
+            )
         value = describe(entry, manifest, config, original)
         value["implementation"].update(
             manifest_file_sha256=manifest_file_sha,
@@ -948,6 +963,11 @@ class LocalModelService:
             "typeof runtime.validateAgentManifest!=='function')"
             "throw Error('native_runtime_required');"
             "runtime.validateAgentManifest(manifest);"
+            "if(manifest.input.profile==='p1-global-r1'){"
+            "if(manifest.input.global?.core_sha256!==runtime.p1CoreIdentity?.().module_digest||"
+            "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT))"
+            "throw Error('global_runtime_core_or_program_input_required');"
+            "}else{"
             "const history=manifest.input.history_mode;"
             "if(history!=='full_reference'&&history!=='sampled_current')"
             "throw Error('native_model_history_unsupported');"
@@ -975,7 +995,7 @@ class LocalModelService:
             "JSON.stringify(manifest.input.attachment.eager_scope)!==JSON.stringify(eager)||"
             "manifest.input.attachment.delivery_mode!==delivery)"
             "throw Error('fixed_native_profile_mismatch');"
-            "}else{runtime.validatePolicyManifest(manifest);}"
+            "}}else{runtime.validatePolicyManifest(manifest);}"
         )
         environment = {
             key: value
@@ -1160,7 +1180,12 @@ class LocalModelService:
         for entry in self.registry()["policies"]:
             manifest = _object_file(self.entry_path(entry, "manifest"))
             bounded = entry.get("runtime_profile") in {
-                *TEXT_PROFILES, NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}
+                *TEXT_PROFILES,
+                NATIVE_PROFILE,
+                PUBLIC_M0_PROFILE,
+                PUBLIC_M2_PROFILE,
+                GLOBAL_PROFILE,
+            }
             profiles = [{"id": "short", "label": "短时检查" if bounded else "默认运行",
                          "limits": RUN_PROFILES["short"] if bounded else None}]
             if bounded:
@@ -1284,7 +1309,7 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        if entry["adapter"] == TEACHER_ADAPTER:
+        if entry["adapter"] in PROGRAM_ADAPTERS:
             adapter = policy_support(entry["adapter"])
             checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
                                           binding_root=self.entry_root(entry)))
@@ -1327,10 +1352,10 @@ class LocalModelService:
             "loaded": False,
             "environment_compatible": "checked_by_runtime_before_decision",
             "qwen_weights": "not_applicable"
-            if entry["adapter"] == TEACHER_ADAPTER
+            if entry["adapter"] in PROGRAM_ADAPTERS
             else "checked_by_adapter_during_loading",
             "checkpoint_identity": "not_applicable"
-            if entry["adapter"] == TEACHER_ADAPTER
+            if entry["adapter"] in PROGRAM_ADAPTERS
             else "checked_by_adapter_during_loading",
             "support": manifest["support"],
         }
@@ -1546,7 +1571,7 @@ class LocalModelService:
             raise BoundaryError("local_model", "unsupported_run_profile")
         bounded = self.selection(identity).get("runtime_profile") in {
             *TEXT_PROFILES,
-            NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE,
+            NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE, GLOBAL_PROFILE,
         }
         if profile == "extended" and not bounded:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
@@ -1824,6 +1849,8 @@ class LocalModelService:
                 and native_context.get("intent_generation") == intent):
             raise BoundaryError("local_model", "native_model_target_unavailable")
         target = self._managed_runtime_target() if managed else None
+        if target is not None and entry["adapter"] == GLOBAL_ADAPTER:
+            target = {**target, "input_profile": "public-basis-1"}
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
                      _loopback(self.config.platform_url or "http://127.0.0.1:15526"))
@@ -2246,6 +2273,10 @@ class LocalModelService:
             # never refresh its epoch to make a stale intent eligible again.
             if managed_environment is not None:
                 current_target = self._managed_runtime_target()
+                # The owned startup records the adapter; GLOBAL is always an
+                # agent-session startup, policy startups carry no adapter.
+                if client.startup.get("adapter") == GLOBAL_ADAPTER:
+                    current_target = {**current_target, "input_profile": "public-basis-1"}
                 confirm_target(managed_environment, current_target)
                 if current_target["runtime_instance_id"] != binding.runtime_instance_id:
                     raise BoundaryError("local_model", "runtime_game_mismatch")
@@ -2411,7 +2442,9 @@ class LocalModelService:
         if native:
             from sts2_platform_evidence import verify_agent_session_run_evidence
 
-            result: Any = verify_agent_session_run_evidence(directory, startup)
+            result: Any = verify_agent_session_run_evidence(
+                directory, self._agent_evidence_expected(startup)
+            )
         else:
             result = verify_agent_run_evidence(directory, startup)
         if not result.passed or result.value is None:
@@ -2790,33 +2823,58 @@ class LocalModelService:
         with self.lock:
             self.state["evaluation"] = report
 
+    def _agent_evidence_expected(self, startup):
+        expected = dict(startup)
+        entry = self.selection(startup["agent_manifest_id"])
+        if entry["adapter"] == GLOBAL_ADAPTER:
+            self._runtime_package(entry["id"])
+            expected["global_runtime_directory"] = str(
+                (self._node_modules(entry["id"]) / RUNTIME_PACKAGE / "dist").resolve()
+            )
+        return expected
+
     def _native_operation_handoff(self, startup: dict[str, Any]) -> None:
         from sts2_platform_evidence import verify_agent_session_run_evidence
 
         from .agent_task_outcome import project
 
         directory = self.directory / "agent-runs" / startup["run_id"]
-        result = verify_agent_session_run_evidence(directory, startup)
+        result = verify_agent_session_run_evidence(
+            directory, self._agent_evidence_expected(startup)
+        )
         package, package_reason = self._original_native_composition(result)
         request_link = self._original_agent_request(startup)
         report: dict[str, Any] = {
             "schema": "stpd/local-native-agent-operation-handoff-v1",
             "agent_execution": request_link,
             "agent_run_request": request_link.get("request"),
-            "selection_id": self.state["selection_id"], "run_id": startup["run_id"],
+            "selection_id": self.state["selection_id"],
+            "run_id": startup["run_id"],
             "model_sha256": startup["agent_artifact_sha256"],
             "agent_manifest_sha256": startup["agent_manifest_sha256"],
             "runtime_code_sha256": startup["runtime_code_sha256"],
             "evidence_verification": result.status,
             "findings": [finding.code for finding in result.findings],
-            "scope": "bounded_native_agent_operation", "game_outcome": "not_measured",
-            "scientific_verdict": "not_claimed", "training_admission": "not_claimed",
-            "human_origin": "not_claimed", "native_coverage": "not_qualified",
-            "tainted": None, "pending_request": None, "agent_state": None,
-            "submission_attempt_count": None, "request_outcome_counts": None,
-            "agent_task_outcome": project(result, native=True, native_package=package,
-                                          package_reason=package_reason,
-                                          application_request_status=request_link["status"]),
+            "scope": "bounded_global_program_operation"
+            if self.selection(startup["agent_manifest_id"])["adapter"] == GLOBAL_ADAPTER
+            else "bounded_native_agent_operation",
+            "game_outcome": "not_measured",
+            "scientific_verdict": "not_claimed",
+            "training_admission": "not_claimed",
+            "human_origin": "not_claimed",
+            "native_coverage": "not_qualified",
+            "tainted": None,
+            "pending_request": None,
+            "agent_state": None,
+            "submission_attempt_count": None,
+            "request_outcome_counts": None,
+            "agent_task_outcome": project(
+                result,
+                native=True,
+                native_package=package,
+                package_reason=package_reason,
+                application_request_status=request_link["status"],
+            ),
         }
         if result.value is not None:
             raw = (directory / "events.jsonl").read_bytes()
@@ -2834,6 +2892,14 @@ class LocalModelService:
                     event["kind"] == "native_request_reconciled" and payload["result"] is not None
                 ):
                     outcomes[payload["result"]["request_id"]] = payload["result"]
+                if event["kind"] == "global_receipt":
+                    outcomes[payload["receipt"]["request_id"]] = payload["receipt"]
+                elif (
+                    event["kind"] == "global_dispatch_error"
+                    and payload["sent"]
+                    and payload["request_id"] not in outcomes
+                ):
+                    outcomes[payload["request_id"]] = {"delivery": "unknown"}
                 if event["kind"] == "stopped":
                     stop = payload
             report.update(
@@ -2841,7 +2907,9 @@ class LocalModelService:
                 event_count=result.value.event_count,
                 event_counts=dict(counts),
                 tainted=result.value.manifest["tainted"],
-                submission_attempt_count=counts.get("native_submission_requested", 0),
+                submission_attempt_count=counts.get("global_dispatch", 0)
+                if result.value.agent_manifest["input"]["profile"] == GLOBAL_PROFILE
+                else counts.get("native_submission_requested", 0),
                 request_outcome_counts=dict(
                     Counter(item["delivery"] for item in outcomes.values())
                 ),
@@ -2930,15 +2998,23 @@ class LocalModelService:
             registered = _object_file(self.entry_path(entry, "manifest"))
             if canonical_json(registered) != canonical_json(original):
                 return None, "original_registered_manifest_unavailable"
-            if entry["adapter"] == TEACHER_ADAPTER:
-                from .native_teacher_support import original_artifact
-
+            if entry["adapter"] in PROGRAM_ADAPTERS:
                 config = _object_file(self.entry_path(entry, "config"))
-                raw, descriptor = original_artifact(self.entry_root(entry), config, original)
+                raw, descriptor = policy_support(entry["adapter"]).original_artifact(
+                    self.entry_root(entry), config, original
+                )
                 if (
-                    descriptor.get("schema") != "stpd/native-program-teacher-artifact-v1"
+                    descriptor.get("schema")
+                    != (
+                        "spireagent/global-public-program-1"
+                        if entry["adapter"] == GLOBAL_ADAPTER
+                        else "stpd/native-program-teacher-artifact-v1"
+                    )
                     or descriptor.get("adapter") != original["adapter"]
-                    or descriptor.get("input_spec") != original["input"]["input_spec"]
+                    or (
+                        entry["adapter"] != GLOBAL_ADAPTER
+                        and descriptor.get("input_spec") != original["input"]["input_spec"]
+                    )
                     or descriptor.get("agent_spec", {}).get("id") != original["agent"]["id"]
                     or descriptor.get("agent_spec", {}).get("version")
                     != original["agent"]["version"]

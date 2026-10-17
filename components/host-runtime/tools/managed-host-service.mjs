@@ -62,6 +62,8 @@ const started = await startManagedPlayerEnvironmentSession({
   root: ROOT, candidateDirectory,
   diskIdentity: readDiskIdentity(resolveInstallation(gameDirectory)),
   character: option(args, "--character", "Ironclad"),
+  // Presentation language of native text (en|zh); Reference profiles may be Chinese.
+  language: option(args, "--language", "en"),
   requestTimeoutMs,
   quietDiagnostics: args.includes("--quiet-diagnostics")
 });

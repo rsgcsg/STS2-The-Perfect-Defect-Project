@@ -22,6 +22,9 @@ public sealed class P1CaptureProjectionTests
             new("public", "native", Array.Empty<string>(), Array.Empty<string>()),
             new("v0.111.0", "41cef1ea", null, 0, new("exact", true, true, true, "fixture")), Array.Empty<string>());
         Assert.Equal(new[] { "run_deck", "combat_piles" }, PlayerEnvironmentService.P1CaptureReadKinds(ready));
+        // Exercise the actual descriptor producer, not a hand-authored archived descriptor.
+        var advertised = PlayerVisibilityCatalog.Build(ready, true, false).ReadCatalog.Single(read => read.Kind == "combat_piles");
+        Assert.Equal("per_zone", advertised.OrderingSemantics);
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { Readiness = "settling" }));
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { Context = context with { IsPlayPhase = false } }));
         Assert.Empty(PlayerEnvironmentService.P1CaptureReadKinds(ready with { InputOwnership = new("none_fail_closed", null, "fixture") }));
@@ -77,5 +80,23 @@ public sealed class P1CaptureProjectionTests
                 true, null, options, DateTimeOffset.Parse("2026-10-15T00:00:00+00:00"));
         }
         Assert.Equal(Freeze(before).Bytes, Freeze(after).Bytes);
+    }
+
+    [Fact]
+    public void CombatPileReadPreservesNativeDiscardAndExhaustGridOrder()
+    {
+        VisibleCard Card(string id, string definition) => new(id, definition, definition, "Skill", "1", null,
+            "Visible", "Common", false, false, null);
+        VisibleCard[] cards = { Card("first", "ZAP"), Card("second", "DEFEND"), Card("third", "ZAP") };
+        foreach (var pile in new[] { MegaCrit.Sts2.Core.Entities.Cards.PileType.Discard,
+            MegaCrit.Sts2.Core.Entities.Cards.PileType.Exhaust })
+        {
+            Assert.Equal(cards, PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards));
+            Assert.Equal(cards.Reverse(), PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards.Reverse()));
+            Assert.NotEqual(PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards),
+                PlayerVisibleReadBuilder.OrderCombatPileCards(pile, cards.Reverse()));
+        }
+        Assert.Equal(PlayerVisibleReadBuilder.OrderCombatPileCards(MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw, cards),
+            PlayerVisibleReadBuilder.OrderCombatPileCards(MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw, cards.Reverse()));
     }
 }

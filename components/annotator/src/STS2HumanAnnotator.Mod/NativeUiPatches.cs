@@ -53,7 +53,8 @@ internal static class NativeCardStartPatch
         RecorderRuntime.ObserveSourceCardStart(__state, __instance, holder);
 
     private static Exception? Finalizer(IDisposable? __state, Exception? __exception) =>
-        NativeNestedCallbackSafety.Finalize("card_start.scope", __exception, () => __state?.Dispose());
+        NativeNestedCallbackSafety.Finalize("card_start.scope", __exception,
+            () => RecorderRuntime.FinishNativeCardStartScope(__state, __exception));
 }
 
 [HarmonyPatch]
@@ -72,6 +73,23 @@ internal static class NativeCardPlayFactoryPatch
         if (__result != null)
             NativeNestedCallbackSafety.Run("card_play.factory", () =>
             { NativeSourceInputProvider.BindCreatedCardPlay(__result); RecorderRuntime.BindStagedCardPlay(__result); });
+    }
+}
+
+[HarmonyPatch]
+internal static class NativeSourceCardPlayCancelPatch
+{
+    internal static MethodBase TargetMethod() => AccessTools.DeclaredMethod(typeof(NCardPlay), "CancelPlayCard")
+        ?? throw new MissingMethodException(typeof(NCardPlay).FullName, "CancelPlayCard");
+    private static void Prefix(NCardPlay __instance, out NativeSourceCardPlayCancelScope? __state)
+    {
+        NativeSourceInputProvider.BeforeInputPrefix(); // Acquisition invalidation only; never admits a new input root.
+        __state = NativeSourceInputProvider.BeginCardPlayCancel(__instance);
+    }
+    private static Exception? Finalizer(NativeSourceCardPlayCancelScope? __state, Exception? __exception)
+    {
+        NativeSourceInputProvider.FinishCardPlayCancel(__state, __exception);
+        return __exception;
     }
 }
 
@@ -1982,6 +2000,7 @@ internal static class NativeRewardClaimCompletionPatch
         [HarmonyArgument(0)] Reward reward,
         Task<bool> __result)
     {
+        if (NativeSourceInputProvider.BindOriginalRewardTask(reward, __result)) return;
         var outcome = new NativeUiAttemptOutcome(reward, __result);
         if (HumanActionScope.Current is { } context)
             context.NativeAttemptOutcome = outcome;

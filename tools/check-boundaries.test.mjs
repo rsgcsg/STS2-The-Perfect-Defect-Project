@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { packageEntrypointErrors, textBoundaryErrors } from "./check-boundaries.mjs";
+import { packageEntrypointErrors, textBoundaryErrors, hostSdkDependencyErrors } from "./check-boundaries.mjs";
 import { managedSelectorArtifact, managedSelectorArtifactErrors, generatedPath } from "./generate-managed-selector-validator.mjs";
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -66,4 +66,43 @@ test("declared package entrypoints must exist in the Git source authority", () =
     new Set(["apps/fixture/bin/tool.mjs"]),
     () => true
   ), []);
+});
+
+
+test("native read qualifiers admit only the audited patch-info query and keep patch ownership out", () => {
+  const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
+  const read = "using HarmonyLib;\nvar patches = Harmony.GetPatchInfo(method);";
+  assert.deepEqual(textBoundaryErrors(owner, read), []);
+  assert.equal(textBoundaryErrors("components/native-foundation/src/Other.cs", read).length, 1);
+  for (const mutation of ["new Harmony(id)", "Harmony.Patch(method)", "Harmony.UnpatchAll()",
+    "typeof(Harmony)", "using H = HarmonyLib.Harmony;", "Harmony.CreateAndPatchAll(type)"]) {
+    assert.equal(textBoundaryErrors(owner, `${read}\n${mutation};`).length, 1, mutation);
+  }
+  assert.equal(textBoundaryErrors(owner, `${read}\nusing STS2Connector;`).length, 1);
+});
+
+
+test("native preview exclusion attributes do not permit JSON serialization ownership", () => {
+  const owner = "components/native-foundation/src/NativeDetachedCardPreview.cs";
+  const exclusion = "using System.Text.Json.Serialization;\n[property: JsonIgnore] CardModel Original";
+  assert.deepEqual(textBoundaryErrors(owner, exclusion), []);
+  assert.equal(textBoundaryErrors(owner, `${exclusion}\nSystem.Text.Json.JsonSerializer.Serialize(value);`).length, 1);
+  assert.equal(textBoundaryErrors("components/native-foundation/src/Other.cs", exclusion).length, 1);
+});
+
+test("Host workspace dependency is exactly the public SDK boundary", () => {
+  assert.deepEqual(hostSdkDependencyErrors("file:../connector/sdk/typescript"), []);
+  for (const dependency of ["file:../connector", "file:../connector/host", "file:../../annotator", "*", undefined])
+    assert.equal(hostSdkDependencyErrors(dependency).length, 1);
+});
+
+
+test("comment-like string literals cannot hide native patch ownership", () => {
+  const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
+  for (const source of [
+    'using HarmonyLib;\nvar text = "//"; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar text = @"first\n//"; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar text = """\n// harmless\n"""; var owner = new Harmony("x");',
+    'using HarmonyLib;\nvar open = "/*"; var owner = new Harmony("x"); var close = "*/";'
+  ]) assert.equal(textBoundaryErrors(owner, source).length, 1);
 });

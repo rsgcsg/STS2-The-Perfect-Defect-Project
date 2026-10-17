@@ -75,32 +75,12 @@ public static class NativeMapDecisionProvider
         }
     }
 
-    internal static IReadOnlyList<MapPoint> GetDestinations(RunState run)
-        => GetDestinations(
-            run.Map,
-            run.VisitedMapCoords,
-            run.CurrentMapPoint,
-            current => MapTravel.GetTravelablePointsFrom(run, current));
+    internal static IReadOnlyList<MapPoint> GetDestinations(RunState run) =>
+        NativeMapReadProjection.GetDestinations(run);
 
-    internal static IReadOnlyList<MapPoint> GetDestinations(
-        ActMap map,
-        IReadOnlyList<MapCoord> visited,
-        MapPoint? current,
-        Func<MapPoint, IEnumerable<MapPoint>> travelableFrom)
-    {
-        if (visited.Count == 0 || current == null)
-            return new[] { map.StartingMapPoint };
-
-        if (map.SecondBossMapPoint != null
-            && current.coord.Equals(map.BossMapPoint.coord))
-        {
-            return new[] { map.SecondBossMapPoint };
-        }
-        if (current.coord.row == map.GetRowCount() - 1)
-            return new[] { map.BossMapPoint };
-
-        return travelableFrom(current).ToArray();
-    }
+    internal static IReadOnlyList<MapPoint> GetDestinations(ActMap map, IReadOnlyList<MapCoord> visited,
+        MapPoint? current, Func<MapPoint, IEnumerable<MapPoint>> travelableFrom) =>
+        NativeMapReadProjection.GetDestinations(map, visited, current, travelableFrom);
 
     private static NativeMapDecision Unavailable(string status, string detail) =>
         new(

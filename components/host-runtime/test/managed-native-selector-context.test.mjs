@@ -31,6 +31,11 @@ test("choose and combat publish every original occurrence, current HUD and stric
     assert.equal(s.referents.filter((r) => r.role === "card").length, 2);
     assert.equal(s.interaction.content.context.combat.player.block, 3);
     assert.equal(s.interaction.content.context.combat.enemies[0].hp, 7);
+    assert.deepEqual(s.interaction.content.context.combat.player.hand.map((card) => card.definition_id), ["STRIKE", "DEFEND"]);
+    const piles = [...p.reads.values()].find((read) => read.descriptor.kind === "combat_piles");
+    assert.deepEqual(piles.content.zones.map((zone) => [zone.zone, zone.ordering_semantics, zone.cards.length]), [
+      ["draw", "unordered_multiset", 2], ["discard", "native_visible_order", 2], ["exhaust", "native_visible_order", 0]
+    ]);
     assert.equal(s.bound_actions.actions.length, state.can_skip ? 3 : 2);
     assert.equal(new Set(s.bound_actions.actions.filter((a) => a.verb === "select").map((a) => a.subject_referent_id)).size, 2);
     assert.equal(projectManagedTextMenuV1(s).menu_actions.status, "complete");
@@ -58,7 +63,18 @@ test("missing exact scope, renderer, bounds, flags or HUD fences the entire cand
     s => { s.cards[1].native_ref = s.cards[0].native_ref; }, s => { s.can_skip = true; },
     s => { s.cancelable = true; }, s => { s.max_select = 2; }, s => { s.combat_context = null; },
     s => { s.combat_context.player_ref = "foreign-player"; }, s => { s.cards[0].is_selected = true; },
-    s => { s.cards[0].is_selectable = false; }, s => { s.combat_context.enemies[0].intents = [{ type: "Attack" }]; }];
+    s => { s.cards[0].is_selectable = false; }, s => { s.combat_context.enemies[0].intents = [{ type: "Attack" }]; },
+    s => { delete s.combat_context.hand; }, s => { s.combat_context.hand[0].render_complete = false; },
+    s => { s.combat_context.hand[1].native_ref = s.combat_context.hand[0].native_ref; },
+    s => { delete s.combat_piles; }, s => { s.combat_piles.pop(); },
+    s => { s.combat_piles[1].ordering_semantics = "unordered_multiset"; },
+    s => { s.combat_piles[0].cards[0].description = "Deal {Damage} damage."; },
+    s => { s.combat_context.draw_pile_count++; },
+    s => { delete s.combat_context.encounter_type; }, s => { delete s.combat_context.is_play_phase; },
+    s => { delete s.combat_context.potion_states; },
+    s => { delete s.combat_context.enemies[0].hp_numbers_available; },
+    s => { s.combat_context.enemies[0].combat_id = "opaque-id"; },
+    s => { s.combat_context.enemies[0].hp_display_mode = "unknown"; }];
   for (const mutate of mutations) {
     const state = selector(); mutate(state); const p = project(state);
     assert.equal(p.snapshot.completeness.status, "partial");
@@ -191,5 +207,31 @@ test("empty intent label is a native display value with required hover meaning",
     const value = project(invalid).snapshot;
     assert.equal(value.bound_actions.status, "unavailable");
     assert.deepEqual(value.bound_actions.actions, []);
+  }
+});
+
+
+test("canonical current selector HUD preserves numeric ids, native potion flags and orb queue facts", () => {
+  const state = selector();
+  state.combat_context.orbs = [{ native_ref: "native-orb-a", id: "LIGHTNING", name: "Lightning",
+    description: "Deal 3 damage.", passive_value: 3, evoke_value: 8, queue_index: 0, is_next_to_evoke: true,
+    passive: 3, evoke: 8, keywords: [] }];
+  state.combat_context.potion_states = [{ native_ref: "native-potion-a", target_type: "Self", can_use: false, automatic: true }];
+  state.combat_context.companions = [{ native_ref: "native-pet-a", id: "OSTY", name: "Osty", is_alive: false, alive: false,
+    hp: null, max_hp: null, block: 0, health_bar_visible: false, health_display: "InfiniteWithoutNumbers",
+    hp_display_mode: "infinite_without_numbers", hp_numbers_available: false, statuses: [] }];
+  const value = project(state).snapshot.interaction.content.context.combat;
+  assert.equal(value.enemies[0].combat_id, 17);
+  assert.equal(value.is_play_phase, false);
+  assert.equal(value.player.orbs[0].passive_value, 3);
+  assert.equal(value.player.orbs[0].queue_index, 0);
+  assert.equal(value.player.potion_states[0].automatic, true);
+  assert.equal(value.player.companions[0].is_alive, false);
+  for (const mutate of [hud => { delete hud.orbs[0].passive_value; },
+    hud => { hud.orbs[0].queue_index = 1; }, hud => { delete hud.potion_states[0].automatic; },
+    hud => { delete hud.companions[0].is_alive; }]) {
+    const other = structuredClone(state); mutate(other.combat_context);
+    assert.equal(project(other).snapshot.completeness.status, "partial");
+    assert.equal(project(other).snapshot.bound_actions.actions.length, 0);
   }
 });

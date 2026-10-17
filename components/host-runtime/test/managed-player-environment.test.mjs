@@ -115,6 +115,7 @@ test("projects complete map topology and persistent visible state without exposi
   assert.equal(projection.snapshot.completeness.status, "complete");
   assert.equal(projection.snapshot.persistent.content.run.act_definition_id, "OVERGROWTH");
   assert.equal(projection.snapshot.interaction.content.context.nodes.length, 3);
+  assert.equal(projection.snapshot.interaction.content.context.current_position, null);
   assert.deepEqual(projection.snapshot.referents.map((referent) => referent.role).sort(), [
     "node",
     "node",
@@ -348,16 +349,20 @@ test("projects native reward sets without exposing exact reward or room operands
   assert.equal(projection.snapshot.bound_actions.actions.length, 3);
   assert.deepEqual({
     ...projection.snapshot.interaction.content.surface,
-    rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, ...reward }) => reward)
+    rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, group_id: _groupId, ...reward }) => reward)
   }, {
     kind: "reward_claim",
     rewards: [
-      { kind: "gold", label: "17 gold", description: null, enabled: true },
-      { kind: "card", label: "Add a card", description: null, enabled: true }
+      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable" },
+      { kind: "card", label: "Add a card", description: null, enabled: true, group_relation: "unavailable", card_options: null,
+        card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null,
+        native_relic_refresh_subscription: "unavailable" }
     ],
     potion_slots_full: false,
     discardable_potions: [],
     can_proceed: true,
+    can_leave_with_unclaimed_rewards: null,
+    reward_set_id: null,
     proceed_skips_remaining_rewards: true
   });
   assert.equal(JSON.stringify(projection.snapshot).includes("reward-gold-a"), false);
@@ -365,6 +370,117 @@ test("projects native reward sets without exposing exact reward or room operands
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.reward_ref === "reward-gold-a"), true);
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
+});
+
+test("a populated card reward publishes its lawfully viewable candidates under a public group id", () => {
+  const state = (options) => ({
+    type: "decision", decision: "reward_set",
+    context: { act: 1, floor: 2, room_type: "Monster" },
+    rewards: [
+      { index: 0, native_ref: "reward-card-a", kind: "card_choice", name: "Add a card", card_options: options },
+      { index: 1, native_ref: "reward-card-b", kind: "card_choice", name: "Add a card" }
+    ],
+    can_skip: true, is_terminal: true, can_proceed: true, room_ref: "combat-room-a", is_boss: false, player: player()
+  });
+  const options = [
+    { index: 0, native_ref: "offer-card-1", id: "ZAP", name: "Zap", cost: 1, type: "Skill", rarity: "Basic" },
+    { index: 1, native_ref: "offer-card-2", id: "DUALCAST", name: "Dualcast", cost: 1, type: "Skill", rarity: "Basic" }
+  ];
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
+  const [first, second] = projection.snapshot.interaction.content.surface.rewards;
+  assert.equal(first.card_options.length, 2);
+  assert.deepEqual(first.card_options.map((card) => card.index), [0, 1]);
+  assert.equal(second.card_options, null);
+  assert.notEqual(first.group_id, second.group_id);
+  const text = JSON.stringify(projection.snapshot);
+  for (const ref of ["reward-card-a", "reward-card-b", "offer-card-1", "offer-card-2"])
+    assert.equal(text.includes(ref), false, ref);
+  // The public group id is stable for the same native reward across snapshots.
+  const again = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
+  assert.equal(again.snapshot.interaction.content.surface.rewards[0].group_id, first.group_id);
+});
+
+test("the exact deck-enchant callback is presented as the native enchant selection", () => {
+  const cards = [
+    { index: 0, native_ref: "card-a", id: "STRIKE_DEFECT", name: "Strike", is_selected: false, is_selectable: true, is_deselectable: false },
+    { index: 1, native_ref: "card-b", id: "DEFEND_DEFECT", name: "Defend", is_selected: false, is_selectable: true, is_deselectable: false }
+  ];
+  const state = (enchantment) => ({
+    type: "decision", decision: "deck_card_select", context: { act: 1, floor: 3, room_type: "Event" }, player: player(),
+    selector_ref: "selector-a", stage: "selecting", origin: "deck_enchant", enchantment,
+    prompt: "Choose a card to enchant.", min_select: 1, max_select: 1,
+    cancelable: false, require_manual_confirmation: true, selected_refs: [],
+    can_cancel_selection: false, can_preview: false, can_cancel_preview: false, can_confirm: false, cards
+  });
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity,
+    state: state({ id: "SOWN", name: "Sown", description: "Gain energy.", amount: 1 }) });
+  assert.equal(projection.snapshot.interaction.kind, "deck_enchant_selection");
+  assert.deepEqual(projection.snapshot.interaction.content.surface.enchantment,
+    { definition_id: "SOWN", name: "Sown", description: "Gain energy.", amount: 1 });
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["select", "select"]);
+  assert.equal(JSON.stringify(projection.snapshot).includes("selector-a"), false);
+  // Without the named enchantment the page is not exact and publishes no action.
+  const unnamed = projectManagedCandidateDecision({ ...projectionIdentity, state: state(null) });
+  assert.equal(unnamed.snapshot.bound_actions.actions.length, 0);
+});
+
+test("multi-select opens an exact preview before confirmation and preserves native cancellation", async () => {
+  const state = (selected = [], preview = false) => ({
+    type: "decision", decision: "deck_card_select", context: { act: 1, floor: 3, room_type: "Event" }, player: player(),
+    selector_ref: "selector-multi", origin: "deck_generic", stage: preview ? "preview" : "selecting",
+    prompt: "Choose one or two cards.", min_select: 1, max_select: 2, cancelable: true,
+    require_manual_confirmation: true, selected_refs: selected,
+    can_cancel_selection: !preview, can_preview: !preview && selected.length >= 1,
+    can_cancel_preview: preview, can_confirm: preview,
+    cards: ["card-a", "card-b"].map((ref, index) => ({ index, native_ref: ref,
+      id: "STRIKE", name: "Strike", is_selected: selected.includes(ref),
+      is_selectable: !preview && !selected.includes(ref) && selected.length < 2,
+      is_deselectable: !preview && selected.includes(ref) }))
+  });
+  const calls = [];
+  const process = { async request(request) {
+    calls.push(request);
+    if (request.cmd === "start_run") return state();
+    if (request.action === "select_deck_card") return state(["card-a"]);
+    if (request.action === "preview_deck_selection") return state(["card-a"], true);
+    if (request.action === "cancel_deck_preview") return state();
+    if (request.action === "confirm_deck_selection") return eventState();
+    throw new Error(`unexpected native request ${request.action}`);
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...projectionIdentity });
+  let snapshot = await session.mount({ seed: "MULTI-STAGED-PREVIEW" });
+  const step = async (verb, id) => {
+    const action = snapshot.bound_actions.actions.find((action) => action.verb === verb);
+    assert.ok(action, verb);
+    const receipt = await session.submit({ requestId: id, expectedSnapshotId: snapshot.snapshot_id,
+      boundActionId: action.bound_action_id });
+    assert.equal(receipt.delivery, "delivered"); snapshot = receipt.successor;
+    decodePlayerSnapshot(snapshot);
+  };
+  assert.equal(snapshot.bound_actions.actions.some((action) => action.verb === "open"), false);
+  await step("select", "select-first");
+  const tentative = snapshot;
+  assert.deepEqual(snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["cancel", "deselect", "open", "select"]);
+  await step("open", "open-preview");
+  assert.equal(snapshot.interaction.stage, "preview");
+  assert.deepEqual(snapshot.bound_actions.actions.map((action) => action.verb), ["cancel", "confirm"]);
+  assert.deepEqual(calls.at(-1), { cmd: "action", action: "preview_deck_selection", args: { selector_ref: "selector-multi" } });
+  const stale = await session.submit({ requestId: "stale-preview", expectedSnapshotId: tentative.snapshot_id,
+    boundActionId: tentative.bound_actions.actions.find((action) => action.verb === "open").bound_action_id });
+  assert.equal(stale.reason_code, "stale_snapshot");
+  assert.equal(calls.length, 3);
+  await step("cancel", "return-preview");
+  assert.equal(snapshot.interaction.stage, "selecting");
+  await step("select", "select-again");
+  await step("open", "preview-again");
+  await step("confirm", "confirm-selected");
+  assert.deepEqual(calls.at(-1), { cmd: "action", action: "confirm_deck_selection",
+    args: { selector_ref: "selector-multi", selected_refs: "card-a" } });
+  assert.equal(snapshot.interaction.kind, "event_option");
+
+  // A producer claiming preview before the native minimum does not gain input.
+  const invalid = state(); invalid.can_preview = true;
+  assert.equal(projectManagedCandidateDecision({ ...projectionIdentity, state: invalid }).snapshot.bound_actions.status, "unavailable");
 });
 
 test("a non-skippable terminal reward set offers claims without proceed", () => {
@@ -671,17 +787,17 @@ test("combat projection fails closed for target types without an exact current b
       bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: []
     },
     encounter_type: "normal", turn_owner: "player", round: 1,
-    is_play_phase: true,
-    exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
+    is_play_phase: true, combat_hud_complete: true, potion_states: [],
+    stars: null, energy: 3, max_energy: 3, draw_pile_count: 0, discard_pile_count: 0, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{
       index: 0, native_ref: "card-a", id: "CARD.STRIKE", name: "Strike", can_play: true,
       target_type: "AnyEnemy", valid_target_refs: ["enemy-a"]
     }],
     enemies: [{
       index: 0, native_ref: "enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
-      name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
+      health_bar_visible: true, hp_display_mode: "normal", hp_numbers_available: true, name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
     }],
-    player: { ...player(), native_ref: "player-a", character_id: "IRONCLAD", max_potion_slots: 3, potions: [] }
+    player: { ...player(), block: 0, native_ref: "player-a", character_id: "IRONCLAD", max_potion_slots: 3, potions: [] }
   };
 
   for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
@@ -996,4 +1112,97 @@ test("native delivery with rejected successor projection preserves delivered Rec
   assert.equal(later.delivery, "not_delivered");
   assert.equal(later.reason_code, "runtime_tainted_after_successor_projection_failure");
   assert.equal(actionCalls, 1);
+});
+
+
+test("complete unopened card reward alternatives preserve actual outcomes and outer abandonment permission", () => {
+  const state = { type: "decision", decision: "reward_set", context: {}, player: player(),
+    can_skip: true, is_terminal: true, can_proceed: true, can_leave_with_unclaimed_rewards: false,
+    room_ref: "room-original", rewards: [{ native_ref: "group-original", kind: "card_choice", name: "Reward",
+      card_options: [], card_alternatives: [{ option_id: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_native_skip: false },
+        { option_id: "SACRIFICE", title: "Sacrifice", after_selected: "end_selection_and_complete_reward", is_native_skip: false }],
+      card_alternatives_complete: true, can_skip_selection: true, can_reroll: false, selection_completes_reward: true,
+      native_relic_refresh_subscription: "attached" }] };
+  const result = projectManagedCandidateDecision({ state, ...projectionIdentity }).snapshot.interaction.content.surface;
+  assert.deepEqual(result.rewards[0].card_alternatives, state.rewards[0].card_alternatives);
+  assert.equal(result.rewards[0].card_alternatives_complete, true);
+  assert.equal(result.rewards[0].native_relic_refresh_subscription, "attached");
+  assert.equal(result.can_leave_with_unclaimed_rewards, false);
+  assert.equal(JSON.stringify(result).includes("group-original"), false);
+  for (const mutate of [reward => { reward.card_alternatives = null; },
+    reward => { reward.card_alternatives[0].after_selected = "unknown"; },
+    reward => { delete reward.selection_completes_reward; },
+    reward => { reward.card_alternatives[1].option_id = "Skip"; }]) {
+    const changed=structuredClone(state); mutate(changed.rewards[0]);
+    const output=projectManagedCandidateDecision({ state: changed, ...projectionIdentity }).snapshot.interaction.content.surface;
+    assert.equal(output.rewards[0].card_alternatives_complete, false);
+  }
+});
+
+
+test("opened reward retains exact parent, set and real card identity while executing original creation result", () => {
+  const aliases = new Map();
+  const card = { native_ref: "real-card", id: "CARD.STRIKE", name: "Strike", type: "Attack", cost: 1,
+    rarity: "Basic", is_upgraded: false, description: "Deal 6 damage.", render_complete: true, keywords: [], card_previews: [] };
+  const common = eventState();
+  const outer = projectManagedCandidateDecision({ ...projectionIdentity, publicEntityAliases: aliases,
+    state: { ...common, decision: "reward_set", reward_set_ref: "native-set", is_terminal: false,
+      rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] } });
+  const opened = { ...common, decision: "card_reward", parent_status: "bound",
+    parent_reward_ref: "native-reward", reward_set_ref: "native-set", selection_completes_reward: true,
+    native_relic_refresh_subscription: "absent",
+    cards: [{ ...card, native_ref: "creation-result", card_entity_ref: "real-card", index: 0 }], alternatives: [] };
+  const project = state => projectManagedCandidateDecision({ ...projectionIdentity, sequence: 2, state,
+    publicEntityAliases: aliases });
+  const inner = project(opened);
+  const outerSurface = outer.snapshot.interaction.content.surface;
+  const innerSurface = inner.snapshot.interaction.content.surface;
+  assert.equal(innerSurface.parent_group_id, outerSurface.rewards[0].group_id);
+  assert.equal(innerSurface.reward_set_id, outerSurface.reward_set_id);
+  assert.equal(innerSurface.cards[0].entity_id, outerSurface.rewards[0].card_options[0].entity_id);
+  assert.equal(innerSurface.selection_completes_reward, true);
+  assert.equal(innerSurface.native_relic_refresh_subscription, "absent");
+  assert.deepEqual([...inner.bindings.values()][0].raw_request.args, { card_ref: "creation-result" });
+  assert.equal(JSON.stringify(inner.snapshot).includes("creation-result"), false);
+  assert.equal(JSON.stringify(inner.snapshot).includes("real-card"), false);
+  for (const key of ["parent_reward_ref", "parent_status", "selection_completes_reward"]) {
+    const missing = structuredClone(opened); delete missing[key];
+    assert.ok(project(missing).snapshot.completeness.missing.includes("exact_card_reward_parent_and_card_identity"), key);
+  }
+  const missingCard = structuredClone(opened); delete missingCard.cards[0].card_entity_ref;
+  assert.ok(project(missingCard).snapshot.completeness.missing.includes("exact_card_reward_parent_and_card_identity"));
+});
+
+test("same raw capture supplies the full map Read off page without creating travel actions", () => {
+  const state = eventState();
+  state.context.current_map = { kind: "map", status: "captured", gap: null, act_index: 0,
+    current_position: null, visited: [], nodes: [
+      { native_ref: "start", col: 0, row: -1, point_type: "ancient", state: "travelable", children: [{ col: 0, row: 0, point_type: "monster" }] },
+      { native_ref: "room", col: 0, row: 0, point_type: "monster", state: "untravelable", children: [{ col: 0, row: 1, point_type: "boss" }] },
+      { native_ref: "boss", col: 0, row: 1, point_type: "boss", state: "untravelable", children: [] }
+    ] };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const read = [...projection.reads.values()].find(value => value.descriptor.kind === "map");
+  assert.equal(read.completeness.status, "complete");
+  assert.equal(read.content.current_position, null);
+  assert.equal(read.content.nodes.length, 3);
+  assert.equal(read.content.nodes[1].state, "untravelable");
+  assert.equal(projection.snapshot.interaction.kind, "event_option");
+  assert.equal([...projection.bindings.values()].some(value => value.raw_request.action === "select_map_node"), false);
+  assert.equal(JSON.stringify(projection.snapshot).includes("current_map"), false);
+  assert.equal(JSON.stringify(projection.snapshot).includes('"native_ref"'), false);
+  for (const mutate of [raw => { raw.nodes[1].col = 0; raw.nodes[1].row = -1; },
+    raw => { raw.nodes[1].native_ref = raw.nodes[0].native_ref; },
+    raw => { raw.nodes[0].children[0].row = 99; }, raw => { raw.status = "unsupported"; }]) {
+    const changed = structuredClone(state); mutate(changed.context.current_map);
+    const partial = projectManagedCandidateDecision({ state: changed, ...projectionIdentity });
+    assert.equal([...partial.reads.values()].find(value => value.descriptor.kind === "map").completeness.status, "partial");
+  }
+  const mapState = { ...state, decision: "map_select", choices: [{ native_ref: "start", col: 0, row: -1, type: "Ancient" }] };
+  const current = projectManagedCandidateDecision({ state: mapState, ...projectionIdentity });
+  assert.equal(current.snapshot.interaction.content.context.current_position, null);
+  const mapRead = [...current.reads.values()].find(value => value.descriptor.kind === "map");
+  assert.deepEqual(mapRead.content, current.snapshot.interaction.content.context);
+  assert.equal(current.bindings.size, 1);
+  assert.equal([...current.bindings.values()][0].raw_request.args.map_point_ref, "start");
 });

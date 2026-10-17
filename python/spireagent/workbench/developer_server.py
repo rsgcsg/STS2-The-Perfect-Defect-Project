@@ -678,7 +678,17 @@ class Application:
         }
         if (
             not isinstance(body, dict)
-            or set(body) != fields
+            or set(body) not in (fields, fields | {"capture_profile_id"})
+            or (
+                "capture_profile_id" in body
+                and (
+                    body.get("kind") != "start_new_session"
+                    or not isinstance(body["capture_profile_id"], str)
+                    or body["capture_profile_id"] not in {
+                        "native-logical-source-v3", "native-logical-source-v4"
+                    }
+                )
+            )
             or not isinstance(body["kind"], str)
             or body["kind"]
             not in {"start_new_session", "pause", "resume", "change_source", "close"}
@@ -753,6 +763,8 @@ class Application:
                     body["kind"],
                     source_declaration=declaration,
                     command_id=body["command_id"],
+                    **({"capture_profile_id": body["capture_profile_id"]}
+                       if "capture_profile_id" in body else {}),
                 )
                 if not value["accepted"]:
                     raise BoundaryError("recording", "native_recording_rejected")
@@ -995,7 +1007,13 @@ class Application:
             )
         return self.local_model_registration.register(model_id, environment_kind=environment_kind)
 
-    def register_builtin_teacher(self, *, variant: str = "continuous") -> dict[str, Any]:
+    def register_builtin_teacher(
+        self,
+        *,
+        variant: str = "continuous",
+        global_program: bool = False,
+        environment_kind: str = "native",
+    ) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_registration", "running_instance_unavailable")
         try:
@@ -1009,6 +1027,10 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_model_registration", "running_configuration_mismatch")
+        if global_program:
+            return self.local_model_registration.register_global_program(
+                environment_kind=environment_kind
+            )
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
@@ -2021,10 +2043,21 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 if self.path not in {"/api/local-model-registrations/register",
                                      "/api/local-model-registrations/register-teacher",
+                                     "/api/local-model-registrations/register-global-program",
                                      "/api/local-model-registrations/register-composition"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
+                    if self.path == "/api/local-model-registrations/register-global-program":
+                        body = self.json_body(maximum=128)
+                        if set(body) not in (set(), {"environment_kind"}):
+                            raise ValueError
+                        value = app.register_builtin_teacher(
+                            global_program=True,
+                            environment_kind=body.get("environment_kind", "native"),
+                        )
+                        self.respond(200, json.dumps(value).encode())
+                        return
                     if self.path == "/api/local-model-registrations/register-teacher":
                         body = self.json_body(maximum=128)
                         if set(body) not in (set(), {"variant"}):

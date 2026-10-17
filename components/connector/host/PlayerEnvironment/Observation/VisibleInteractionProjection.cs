@@ -312,7 +312,7 @@ internal static partial class PlayerEnvironmentService
             }),
             CombatTurnSurface value => ToNode(new
             {
-                value.Kind, value.CanEndTurn, value.PlayableCards, value.UsablePotions
+                value.Kind, value.CanEndTurn, value.PlayableCards, value.UsablePotions, value.DiscardablePotions
             }),
             CombatHandCardSelectionSurface value => ToNode(new
             {
@@ -326,6 +326,8 @@ internal static partial class PlayerEnvironmentService
             CardRewardSelectionSurface value => ToNode(new
             {
                 value.Kind, value.Cards, value.Alternatives,
+                value.ParentGroupId, value.ParentStatus, value.RewardSetId, value.SelectionCompletesReward,
+                value.NativeRelicRefreshSubscription,
                 value.SelectableCardEntityIds
             }),
             CardBundleSelectionSurface value => ToNode(new
@@ -338,7 +340,7 @@ internal static partial class PlayerEnvironmentService
             {
                 value.Kind, value.Rewards, value.PotionSlotsFull,
                 value.DiscardablePotions, value.CanProceed,
-                value.ProceedSkipsRemainingRewards
+                value.ProceedSkipsRemainingRewards, value.CanLeaveWithUnclaimedRewards, value.RewardSetId
             }),
             MapNavigationSurface value => ToNode(new
             {

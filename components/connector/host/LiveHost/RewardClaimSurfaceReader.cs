@@ -137,7 +137,13 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
             potionSlotsFull,
             discardablePotions,
             canProceed,
-            proceedButton.IsSkip);
+            proceedButton.IsSkip)
+        {
+            RewardSetId = NativeRewardDecisionProvider.ObserveOwner(screen) is { } exactOwner
+                ? entities.GetId(exactOwner.RewardsSet, "reward_set") : null,
+            CanLeaveWithUnclaimedRewards = canProceed
+                && NativeRewardDecisionProvider.ObserveOwner(screen)?.RewardsSet.DisallowSkipping == false
+        };
         StateCompleteness completeness = DescribeCompleteness(catalogBoundExactly, hasCurrentCommand);
         string signature = StableIdentityHash.Object(new
         {
@@ -196,12 +202,31 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
                 ConnectorMod.SafeGetText(() => potion.DynamicDescription) ?? label,
             _ => label
         };
+        string rewardId = entities.GetId(reward, "reward");
+        IReadOnlyList<VisibleCard>? cardOptions = reward is CardReward { IsPopulated: true } cardReward
+            ? cardReward.Cards.Select(card => LiveContextReader.BuildRewardCard(card, entities.GetId(card, "card"))).ToArray()
+            : null;
+        NativeCardRewardAlternativePreviewResult? preview = reward is CardReward currentCardReward
+            ? NativeCardRewardAlternativePreview.Capture(currentCardReward) : null;
         return new VisibleReward(
-            entities.GetId(reward, "reward"),
+            rewardId,
             RewardKind(reward),
             label,
             description,
-            button.IsEnabled && claimable);
+            button.IsEnabled && claimable)
+        {
+            GroupId = rewardId,
+            GroupRelation = NativeRewardSetObservation.Relation(reward),
+            CardOptions = cardOptions,
+            CardAlternatives = preview?.Alternatives?.Select(option =>
+                new VisibleRewardCardAlternative(option.OptionId, option.Title, option.AfterSelected) { IsNativeSkip = option.IsNativeSkip }).ToArray(),
+            CardAlternativesComplete = preview?.Complete == true,
+            CanSkipSelection = preview?.CanSkipSelection,
+            CanReroll = preview?.CanReroll,
+            SelectionCompletesReward = preview?.SelectionCompletesReward,
+            NativeRelicRefreshSubscription = reward is CardReward observedReward
+                ? NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(observedReward) : "unavailable"
+        };
     }
 
     private static VisibleCombatPotion BuildDiscardablePotion(

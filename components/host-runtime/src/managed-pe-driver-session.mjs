@@ -1,3 +1,4 @@
+import { captureManagedPublicBasis } from "./managed-public-basis.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
@@ -26,6 +27,7 @@ export class ManagedPeDriverSession {
   #textV2OwnerKey = null;
   #controlGeneration = 0;
   #tail = Promise.resolve();
+  #captureOrdinal = 0;
   #normalShutdown = null;
   #forcedShutdown = null;
 
@@ -213,6 +215,14 @@ export class ManagedPeDriverSession {
         this.#available = true;
         return { type: "reset_result", request_id: requestId, snapshot };
       }
+      case "capture": {
+        if (Object.keys(request).some(key => !["command", "request_id", "expected_runtime_instance_id", "expected_game_continuity_id"].includes(key))) throw new Error("managed_capture_fields_invalid");
+        this.#requireEpisode(); this.#requireExpectedEpisode(request);
+        const full = captureManagedPublicBasis(this.#started.session, {
+          generationId: this.#started.runtime.adapterRuntimeInstanceId,
+          gameContinuityId: this.#gameContinuityId, ordinal: ++this.#captureOrdinal });
+        return { type: "capture_result", request_id: requestId, full };
+      }
       case "observe":
         this.#requireEpisode();
         return { type: "observe_result", request_id: requestId,
@@ -224,6 +234,8 @@ export class ManagedPeDriverSession {
             readId: request.read_id, expectedSnapshotId: request.expected_snapshot_id
           }) };
       case "step":
+        if (Object.keys(request).some(key => !["command", "request_id", "mutation_request_id", "expected_snapshot_id", "bound_action_id", "control_token", "control_epoch", "expected_runtime_instance_id", "expected_game_continuity_id"].includes(key))) throw new Error("managed_step_fields_invalid");
+        this.#requireExpectedEpisode(request);
         this.#requireControlIntent(intent);
         this.#requireEpisode();
         if (this.#started.session.tainted === true) {

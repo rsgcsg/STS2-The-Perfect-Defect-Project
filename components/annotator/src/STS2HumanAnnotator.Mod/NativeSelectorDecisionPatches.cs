@@ -4,6 +4,8 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
@@ -36,6 +38,36 @@ internal static class NativeSelectorInputFacts
         var source = Field(owner, "_selectionCompletionSource") ?? Field(owner, "_completionSource");
         return source?.GetType().GetProperty("Task")?.GetValue(source) as Task;
     }
+    internal static NativeSourceSelectorCompletionReceipt? CompletionReceipt(object owner, MethodBase callback,
+        object? subject, object originalArgument, Task? originalTask)
+    {
+        // Only these fixed native bodies finish the exact task without changing _selectedCards.
+        if (owner is NChooseACardSelectionScreen && callback.DeclaringType == typeof(NChooseACardSelectionScreen)
+            && callback.Name == "SelectHolder" && subject is CardModel card
+            && originalTask is Task<IEnumerable<CardModel>> cards)
+            return NativeSourceSelectorCompletionReceipt.Capture<IEnumerable<CardModel>>(owner, callback, cards,
+                new[] { card }, (actual, expected) => actual.Take(2).ToArray() is { Length: 1 } one
+                    && ReferenceEquals(one[0], expected.Single()));
+        if (owner is not NCardRewardSelectionScreen || callback.DeclaringType != typeof(NCardRewardSelectionScreen)
+            || originalTask is not Task<int?> result || Field(owner, "_options") is not IReadOnlyList<CardCreationResult> options)
+            return null;
+        int? expectedIndex = null;
+        if (callback.Name == "SelectCard" && subject is CardModel selected)
+        {
+            var matches = options.Select((option, index) => (option, index))
+                .Where(pair => ReferenceEquals(pair.option.Card, selected)).Take(2).ToArray();
+            if (matches.Length == 1) expectedIndex = matches[0].index;
+        }
+        else if (callback.Name == "OnAlternateRewardSelected" && originalArgument is int index
+            && Field(owner, "_extraOptions") is IReadOnlyList<CardRewardAlternative> alternatives
+            && index >= 0 && index < alternatives.Count && ReferenceEquals(alternatives[index], subject))
+        {
+            expectedIndex = options.Count + index;
+        }
+        return expectedIndex.HasValue ? NativeSourceSelectorCompletionReceipt.Capture(owner, callback,
+            result, expectedIndex, (actual, expected) => actual == expected) : null;
+    }
+
     private static bool TaskCompleted(object source) =>
         source.GetType().GetProperty("Task")?.GetValue(source) is Task { IsCompletedSuccessfully: true };
 
@@ -120,7 +152,8 @@ internal static class NativeGeneratedDecisionFactoryPatch
 [HarmonyPatch]
 internal static class NativeSelectorCardDecisionPatch
 {
-    internal sealed record State(RecorderRuntime.SelectorInputHandle? Input, object[] Selected, bool Terminal, Task? Completion);
+    internal sealed record State(RecorderRuntime.SelectorInputHandle? Input, object[] Selected, bool Terminal,
+        Task? Completion, MethodBase Callback, NativeSourceSelectorCompletionReceipt? SourceReceipt);
     internal static IEnumerable<MethodBase> TargetMethods()
     {
         foreach (Type type in new[] { typeof(NSimpleCardSelectScreen), typeof(NCombatPileCardSelectScreen),
@@ -152,18 +185,30 @@ internal static class NativeSelectorCardDecisionPatch
             };
             if (__instance is NCardRewardSelectionScreen rewardScreen && __0 is int alternativeIndex)
             {
-                if (!NativeCardRewardAlternativeBindings.TryGetAlternative(rewardScreen, alternativeIndex, out _, out var alternative))
-                    return null;
-                subject = alternative;
+                if (RecorderRuntime.IsPublicBasisSourceProfile)
+                {
+                    if (NativeSelectorInputFacts.Field(rewardScreen, "_extraOptions") is not IReadOnlyList<CardRewardAlternative> alternatives
+                        || alternativeIndex < 0 || alternativeIndex >= alternatives.Count) return null;
+                    subject = alternatives[alternativeIndex];
+                }
+                else
+                {
+                    if (!NativeCardRewardAlternativeBindings.TryGetAlternative(rewardScreen, alternativeIndex, out _, out var alternative))
+                        return null;
+                    subject = alternative;
+                }
             }
             var before = NativeSelectorInputFacts.Selected(__instance);
             bool wasTerminal = NativeSelectorInputFacts.Terminal(__instance);
             var completion = NativeSelectorInputFacts.CompletionTask(__instance);
+            var sourceReceipt = RecorderRuntime.IsPublicBasisSourceProfile
+                ? NativeSelectorInputFacts.CompletionReceipt(__instance, __originalMethod, subject, __0, completion) : null;
             string verb = __originalMethod.Name == "DeselectCard"
                 || before.Any(value => ReferenceEquals(value, subject)) ? "deselect" : "select";
             return new State(RecorderRuntime.BeginSelectorInputWithSourceVerb(__instance,
                 $"{__originalMethod.DeclaringType!.FullName}.{__originalMethod.Name}",
-                subject, verb, NativeSelectorInputFacts.CardOperations(__instance, verb == "deselect")), before, wasTerminal, completion);
+                subject, verb, NativeSelectorInputFacts.CardOperations(__instance, verb == "deselect")), before, wasTerminal,
+                completion, __originalMethod, sourceReceipt);
         }, null);
     }
 
@@ -177,7 +222,8 @@ internal static class NativeSelectorCardDecisionPatch
                     || !__state.Terminal && (__state.Completion?.IsCompletedSuccessfully
                         ?? NativeSelectorInputFacts.Terminal(__instance)),
                 NativeSelectorInputFacts.Terminal(__instance),
-                sourceAcceptanceProven: NativeSelectorInputFacts.Changed(__instance, __state.Selected)));
+                sourceAcceptanceProven: NativeSelectorInputFacts.Changed(__instance, __state.Selected)
+                    || __state.SourceReceipt?.Accepted(__instance, __state.Callback) == true));
     }
 
     private static Exception? Finalizer(State? __state, Exception? __exception) =>

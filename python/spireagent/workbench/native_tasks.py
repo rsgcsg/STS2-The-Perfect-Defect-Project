@@ -88,6 +88,7 @@ class NativeTasks:
             return value["capture_profile_id"] not in {
                 "native-logical-source-v2",
                 "native-logical-source-v3",
+                "native-logical-source-v4",
             }
         source_fields = {
             "epoch_id",
@@ -105,7 +106,7 @@ class NativeTasks:
             isinstance(source, dict)
             and set(source) == source_fields
             and value["capture_profile_id"]
-            in {"native-logical-source-v2", "native-logical-source-v3"}
+            in {"native-logical-source-v2", "native-logical-source-v3", "native-logical-source-v4"}
             and all(cls._recording_identifier(source[key]) for key in ("epoch_id", "segment_id"))
             and cls._source_declaration(source["declaration"])
             and all(
@@ -208,9 +209,20 @@ class NativeTasks:
 
     def recording_command(self, connector_endpoint: object, observed: dict[str, Any], kind: str, *,
                           source_declaration: dict[str, Any] | None = None,
-                          command_id: str | None = None) -> dict[str, Any]:
+                          command_id: str | None = None,
+                          capture_profile_id: str | None = None) -> dict[str, Any]:
         if (
-            not self._recording_status_valid(observed)
+            (
+                capture_profile_id is not None
+                and (
+                    kind != "start_new_session"
+                    or not isinstance(capture_profile_id, str)
+                    or capture_profile_id not in {
+                        "native-logical-source-v3", "native-logical-source-v4"
+                    }
+                )
+            )
+            or not self._recording_status_valid(observed)
             or not isinstance(kind, str)
             or kind not in {"start_new_session", "pause", "resume", "change_source", "close"}
             or (
@@ -242,7 +254,7 @@ class NativeTasks:
                 "schema": "sts2.ai-platform/recording-command-3",
                 "command_id": command_id,
                 "kind": kind,
-                "capture_profile_id": "native-logical-source-v3"
+                "capture_profile_id": (capture_profile_id or "native-logical-source-v3")
                 if kind == "start_new_session"
                 else None,
                 "source_declaration": source_declaration,
@@ -522,6 +534,7 @@ class NativeTasks:
             "native-logical-source-v1",
             "native-logical-source-v2",
             "native-logical-source-v3",
+            "native-logical-source-v4",
         }
         if source_profile != (declaration is not None and value["source_segment_id"] is not None):
             return False
