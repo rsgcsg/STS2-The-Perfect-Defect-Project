@@ -5,6 +5,8 @@ import { completeCombatSurface, completeCombat, completeDeck, completeMap, compl
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
+import { completeSelectorFacts, selectorOperation, selectorIntention, matchesSelectorIntention,
+  type SelectorIntention } from "./selectorForward.js";
 import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
   matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
 import {
@@ -65,7 +67,7 @@ export interface NativeStep {
 
 /** A declared continuation inside one already chosen P1 intention. */
 export interface FollowRule {
-  readonly rule_id: "upgrade_confirm" | "enchant_confirm" | "card_reward_select" | "selector_preview_confirm" | "reward_completion_proceed" | "reward_intention";
+  readonly rule_id: "upgrade_confirm" | "enchant_confirm" | "card_reward_select" | "selector_preview_confirm" | "reward_completion_proceed" | "reward_intention" | "selector_intention";
   readonly expect_native_kind: string;
   readonly expect_verb: string;
   /** Optional folds stop silently (intention completed) when the successor is not the expected stage. */
@@ -90,6 +92,7 @@ export interface Lowering {
   /** Frozen full public card state for an exact stable-instance continuation. */
   readonly option_public: string | null;
   readonly reward_intention?: RewardIntention;
+  readonly selector_intention?: SelectorIntention;
 }
 
 export interface ExcludedNative { readonly bound_action_id: string; readonly verb: string; readonly label: string; readonly rule: string }
@@ -511,15 +514,26 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const candidates: { choice: Omit<P1Choice, "choice_id">; lowering: Lowering; sort: string }[] = [];
   const declined = new Set(reward?.declined ?? []);
   const excluded: ExcludedNative[] = [];
+  const qualifiedSelector = completeSelectorFacts(surface);
+  if (Object.hasOwn(surface, "selector_request") && !qualifiedSelector)
+    missing.push("required:selector:public_facts_incomplete");
   const push = (choice: Omit<P1Choice, "choice_id">, low: Lowering) => candidates.push({ choice, lowering: low,
     sort: `${choice.kind}\u0000${choice.subject ?? ""}\u0000${choice.target ?? ""}\u0000${choice.option ?? ""}\u0000${low.group_key ?? ""}\u0000${low.option_index ?? ""}` });
   for (const action of snapshot.bound_actions.actions as NativeAction[]) {
     const subjectId = action.subject_referent_id ?? null;
     const role = subjectId ? roles.get(subjectId) ?? "" : "";
+    const operation = qualifiedSelector ? selectorOperation(surface, subjectId) : null;
+    const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+    if (qualifiedSelector && (action.verb === "open" && role === "card"
+        || operation === "toggle_upgrade_view")) {
+      excluded.push({ ...first, rule: "forward_profile:complete_selector_public_presentations" }); continue;
+    }
     let kind = KIND_TABLE[`${nativeKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
+    if (operation) kind = operation === "open_preview" ? `${family}.confirm`
+      : operation === "cancel_selection" ? `${family}.cancel`
+      : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;
     const mapped = kind !== undefined;
     kind ??= `native.${nativeKind}.${action.verb}${role ? `.${role}` : ""}`;
-    const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
     // The native result is final: inputs on the game-over page only navigate to the run summary.
     if (terminalScene) { excluded.push({ ...first, rule: "terminal:post_result_navigation" }); continue; }
     if (!mapped) missing.push(`required:action_mapping:${nativeKind}.${action.verb}`);
@@ -576,10 +590,11 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     if (kind === "card_reward.decline" && reward?.open_group) kind = "card_reward.return";
     if (kind === "card_reward.take" && reward?.open_group) { commitment = "consume_open_group"; groupKey = reward.open_group; }
     const follow: FollowRule[] = [];
-    // No current producer certifies unchanged complete preview facts or the exact
-    // owner-exit continuation. Keep preview/confirm/proceed explicit until qualified.
+    const intention = qualifiedSelector ? selectorIntention(surface, basis, action.verb, subjectId) : null;
+    if (intention) follow.push({ rule_id: "selector_intention", expect_native_kind: nativeKind,
+      expect_verb: "confirm", optional: false });
     push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias, label: action.label, mapped },
-      { ...base, first, follow, commitment, group_key: groupKey });
+      { ...base, first, follow, commitment, group_key: groupKey, ...(intention ? { selector_intention: intention } : {}) });
   }
   candidates.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
   if (candidates.length > P1G_LIMITS.catalog_choices) missing.push("catalog_over_limit");
@@ -698,6 +713,19 @@ export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: u
 export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: P1Basis): NativeStep | null {
   const next = reduce(createSession("continuation-check", "reference"), basis);
   if (!next.complete || next.observation.status !== "decision") return null;
+  if (rule.rule_id === "selector_intention" && lowering.selector_intention && !rule.optional
+      && rule.expect_native_kind === lowering.selector_intention.native_kind
+      && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis)) {
+    const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+    const surface = snapshot.interaction.content.surface;
+    const controls = surface.current_controls.filter((c: Record<string, any>) => c.operation === "confirm");
+    if (controls.length !== 1) return null;
+    const actions = snapshot.bound_actions.actions.filter((a: NativeAction) => a.verb === "confirm"
+      && a.subject_referent_id === controls[0].entity_id);
+    if (actions.length !== 1) return null;
+    const action = actions[0];
+    return { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+  }
   if (rule.rule_id !== "reward_intention" || !lowering.reward_intention
       || rule.expect_native_kind !== "card_reward_selection" || rule.optional) return null;
   const plan = lowering.reward_intention;

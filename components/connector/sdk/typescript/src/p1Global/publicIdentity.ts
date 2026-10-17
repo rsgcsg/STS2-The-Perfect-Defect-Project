@@ -31,8 +31,11 @@ export function createPublicIdentityPolicy(nativeKind: string,
   const refs = (fields: readonly string[]) => fields.forEach(field => references.add(surface + field));
   const card = (root: string) => cards.push(surface + root);
   if (SELECTORS.has(nativeKind)) {
-    card("cards[]"); add(["screen_entity_id", "hand_entity_id"]);
-    refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]"]);
+    card("cards[]"); add(["screen_entity_id", "hand_entity_id", "request_entity_id", "current_controls[].entity_id"]);
+    refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]",
+      "selector_request.entity_id", "selector_request.owner_entity_id", "selector_request.selected_entity_ids[]",
+      "preview_options[].subject_entity_id"]);
+    card("preview_options[].before"); card("preview_options[].after");
     if (nativeKind === "deck_upgrade_selection") card("preview_cards[]");
   } else if (nativeKind === "combat_turn") {
     add(["room_entity_id"]);
