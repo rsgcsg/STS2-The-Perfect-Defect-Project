@@ -207,9 +207,9 @@ public sealed class NativeLogicalCapturedGridTests
     }
 
     [Fact]
-    public void PublicBasisLeavesTransformToItsExplicitProducerWhileNativeCaptureRetainsAllSixFamilies()
+    public void PublicBasisAndNativeCaptureRetainAllSixFamiliesWithSeparateTransformQualification()
     {
-        Assert.False(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: true));
+        Assert.True(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: true));
         Assert.True(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: false));
         foreach (Type type in new[] { typeof(NDeckCardSelectScreen), typeof(NDeckUpgradeSelectScreen),
             typeof(NDeckEnchantSelectScreen), typeof(NSimpleCardSelectScreen), typeof(NCombatPileCardSelectScreen) })

@@ -9,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using Godot;
 using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Cards;
@@ -60,16 +61,21 @@ internal static class NativeSelectorPublicFacts
     private static extern ref MegaRichTextLabel CurrentEnchantmentDescription(NDeckEnchantSelectScreen owner);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_cardRows")]
     private static extern ref List<List<NGridCardHolder>> GridRows(NCardGrid grid);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_cardToTransformation")]
+    private static extern ref Func<CardModel, CardTransformation> TransformProjection(NDeckTransformSelectScreen owner);
 
-    internal static NativeSelectorPreviewFacts Capture(NativeLogicalGridState state)
+    internal static NativeSelectorPreviewFacts Capture(NativeLogicalGridState state, bool originalOnlyTransform = false)
     {
         var missing = new List<string>();
-        bool qualified = MechanicsQualified(state.Owner.GetType());
+        bool qualified = MechanicsQualified(state.Owner.GetType(), originalOnlyTransform);
+        bool customTransform = qualified && originalOnlyTransform && state.Owner is NDeckTransformSelectScreen transform
+            && !DefaultTransformProjectionQualified(TransformProjection(transform));
+        qualified &= !customTransform;
         // Preferences getters are native methods too. Read their values only
         // after the fixed source/patch preflight, not as part of testing it.
         if (!qualified)
         {
-            const string gap = "native_selector_mechanics_call_closure_unqualified";
+            string gap = customTransform ? "custom_transform_preview_unqualified" : "native_selector_mechanics_call_closure_unqualified";
             var unknown = new NativeSelectorOccurrenceFacts(state.Owner, state.Completion, Family(state.Owner.GetType()), state.Stage,
                 state.Cards, state.Selected, null, null, null, "unqualified", "unqualified", null, false, false, false, new[] { gap });
             return new(unknown, state.Cards.Select(card => new NativeSelectorCandidatePreview(card, null, false, "unqualified", new[] { gap })).ToArray(), null, null, null, false, new[] { gap });
@@ -159,12 +165,13 @@ internal static class NativeSelectorPublicFacts
         : type == typeof(NDeckTransformSelectScreen) ? "deck_transform" : "unqualified";
 
     internal static string AddTransition(Type type, bool manual) => type == typeof(NDeckCardSelectScreen)
-        || type == typeof(NDeckUpgradeSelectScreen) || type == typeof(NDeckEnchantSelectScreen) ? "native_preview_at_max"
+        || type == typeof(NDeckUpgradeSelectScreen) || type == typeof(NDeckEnchantSelectScreen)
+        || type == typeof(NDeckTransformSelectScreen) ? "native_preview_at_max"
         : type == typeof(NSimpleCardSelectScreen) ? manual ? "native_manual_completion" : "native_completion_at_max"
         : type == typeof(NCombatPileCardSelectScreen) ? manual ? "native_manual_completion_with_dynamic_roster" : "native_completion_with_display_count_clamp"
         : "unqualified";
 
-    internal static bool MechanicsQualified(Type type)
+    internal static bool MechanicsQualified(Type type, bool originalOnlyTransform = false)
     {
         if (typeof(CardModel).Assembly.ManifestModule.ModuleVersionId != NativeCardPreviewReadQualification.AuditedGameMvid
             || !NativeLogicalGridCallbacks.Supported(type)
@@ -178,11 +185,28 @@ internal static class NativeSelectorPublicFacts
             ? new[] { "PreviewSelection", "RefreshConfirmButtonVisibility", "ConfirmSelection", "CheckIfSelectionComplete", "CloseSelection", "CancelSelection" }
             : type == typeof(NSimpleCardSelectScreen) ? new[] { "CheckIfSelectionComplete", "CompleteSelection" }
             : type == typeof(NCombatPileCardSelectScreen) ? new[] { "CheckIfSelectionComplete", "CompleteSelection", "UpdateConfirmButton", "UpdatePileContents" }
+            : type == typeof(NDeckTransformSelectScreen) && originalOnlyTransform
+                ? new[] { "RefreshConfirmButtonVisibility", "ConfirmSelection", "OpenPreviewScreen", "CompleteSelection", "CloseSelection", "CancelSelection" }
             : Array.Empty<string>();
-        // A transform mapping delegate has its own, unclosed information/effect
-        // boundary; a generic set model alone must not qualify its preview.
+        // Source/native capture still requires the complete preview. Only the
+        // public-basis profile excludes the default random preview animation.
         return methods.Length > 0 && MechanicsMethodsQualified(type, methods);
     }
+    internal static MethodInfo? DefaultTransformProjectionMethod => typeof(CardSelectCmd)
+        .GetNestedType("<>c", BindingFlags.NonPublic)?.GetMethod("<FromDeckForTransformation>b__22_1",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+
+    internal static bool DefaultTransformProjectionQualified(Func<CardModel, CardTransformation>? projection)
+    {
+        MethodInfo? expected = DefaultTransformProjectionMethod;
+        // Inspect the fixed delegate identity only. Invoking even the native
+        // default here would pre-run an input's transformation projection.
+        return expected != null && projection != null && projection.GetInvocationList().Length == 1
+            && projection.Method == expected && projection.Target?.GetType() == expected.DeclaringType
+            && NativeCardPreviewReadQualification.IsUnpatched(expected)
+            && NativeCardPreviewReadQualification.IsUnpatched(typeof(CardTransformation).GetConstructor(new[] { typeof(CardModel) }));
+    }
+
     private static bool MechanicsMethodsQualified(Type owner, params string[] names) => names.All(name =>
     {
         MethodInfo[] methods = owner.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)

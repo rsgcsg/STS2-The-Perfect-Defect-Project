@@ -41,14 +41,14 @@ internal static class NativeLogicalGridCapture
             return new(true, null, new[] { "native_logical_grid_current_binding_missing" });
         if (state.Cards.Count > NativeLogicalCapture.MaximumActions)
             return new(true, null, new[] { "native_logical_action_capacity_exceeded" });
-        return new(true, Freeze(state, entities), Array.Empty<string>());
+        return new(true, Freeze(state, entities, publicBasisOnly), Array.Empty<string>());
     }
 
-    internal static bool CapturesOwner(Type type, bool publicBasisOnly) => NativeLogicalGridCallbacks.Supported(type)
-        && (!publicBasisOnly || type != typeof(NDeckTransformSelectScreen));
+    internal static bool CapturesOwner(Type type, bool publicBasisOnly) => NativeLogicalGridCallbacks.Supported(type);
 
-    private static NativeLogicalCapturedGrid Freeze(NativeLogicalGridState state, NativeEntityRegistry entities)
+    private static NativeLogicalCapturedGrid Freeze(NativeLogicalGridState state, NativeEntityRegistry entities, bool publicBasisOnly)
     {
+        bool originalOnlyTransform = publicBasisOnly && state.Owner is NDeckTransformSelectScreen;
         string ownerId = entities.GetId(state.Owner, "screen");
         string requestId = entities.GetId(state.Completion, "native_selector_request");
         string kind = SurfaceKind(state.Owner);
@@ -69,7 +69,7 @@ internal static class NativeLogicalGridCapture
             cache.Add((card, pile, mode, value));
             return value;
         }
-        NativeSelectorPreviewFacts facts = NativeSelectorPublicFacts.Capture(state);
+        NativeSelectorPreviewFacts facts = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform);
         if (!facts.Request.MechanicsQualified) nativeMissing.UnionWith(facts.Request.Missing);
         NativeSelectorPublicProjection.Result projected = NativeSelectorPublicProjection.Project(facts, ownerId, requestId,
             card => entities.GetId(card, "card"), state.DisplayPile, Render);
@@ -147,9 +147,10 @@ internal static class NativeLogicalGridCapture
             ["require_manual_confirmation"] = facts.Request.RequireManualConfirmation,
             ["selected_count"] = state.Selected.Count, ["selected_card_referent_ids"] = Strings(selectedIds),
             ["is_peeking"] = isPeeking, ["showing_upgrade_previews"] = state.UpgradeView,
-            ["ordering_basis"] = "exact_current_native_grid_logical_list", ["native_preview_text"] = CapturePreviewText(state)
+            ["ordering_basis"] = "exact_current_native_grid_logical_list", ["native_preview_text"] = originalOnlyTransform ? new JsonArray() : CapturePreviewText(state)
         };
-        bool previewQualified = PreviewMatchesCurrentWidget(state, facts, projected, Render);
+        bool previewQualified = originalOnlyTransform ? facts.Request.MechanicsQualified
+            : PreviewMatchesCurrentWidget(state, facts, projected, Render);
         var neutralMissing = projected.Missing.ToHashSet(StringComparer.Ordinal);
         if (!previewQualified) neutralMissing.Add("native_selector_actual_preview_projection_unavailable");
         projected.Request["preview_projection_qualified"] = previewQualified;
