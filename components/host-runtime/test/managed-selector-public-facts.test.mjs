@@ -118,3 +118,20 @@ test("transformation exposes exact original choices without evaluating a replace
   const reads = [...projection.reads.values()].filter(read => read.content.display_owner_entity_id === surface.screen_entity_id);
   assert.deepEqual(reads.map(read => read.content.display_context), ["selector_original:deck_transform"]);
 });
+
+test("a custom native transformation keeps original displays but reports its unqualified replacement information", () => {
+  const state = selector({ family: "deck_transform" });
+  const missing = ["custom_transform_preview_unqualified"];
+  Object.assign(state.selector_public.selector_request, { preview_information_complete: false,
+    preview_projection_qualified: false, missing });
+  state.selector_public.missing = missing;
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  const surface = projection.snapshot.interaction.content.surface;
+  assert.equal(projection.snapshot.completeness.status, "partial");
+  assert.deepEqual(surface.selector_request.missing, missing);
+  assert.equal(surface.selector_request.mechanics_qualified, true);
+  assert.equal(surface.selector_request.preview_information_complete, false);
+  assert.equal(surface.selector_request.preview_projection_qualified, false);
+  assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
+  assert.ok(surface.preview_options.every(option => option.after === null));
+});

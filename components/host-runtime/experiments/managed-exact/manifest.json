@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "8dc0dbc5b37343f61259ec42bf1e501edd1b6d368d358427cb7836c87326ccf2",
-    "artifact_sha256": "2c8278b1622ad9c2007b3c448e2fb572581d2c8340e1df188345d4fdebc3a861",
-    "artifact_mvid": "d5bc05e5-1382-4493-a1d7-b0501b304440",
+    "source_patch_sha256": "500585a9ca49afc34d13279d9b3e4360bc2a9172a7c1343c8ff448cb91d9d9e7",
+    "artifact_sha256": "e6f68ebb3e6e2c6a1d3e0c86332014ac6fbb7f0bace2a365ac473fd912db65e5",
+    "artifact_mvid": "12a48a52-aab8-4f37-b42e-994150b48c02",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {

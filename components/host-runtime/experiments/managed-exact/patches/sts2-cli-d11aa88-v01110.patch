@@ -632,10 +632,10 @@ index 0000000..c77ba4d
 +}
 diff --git a/src/Sts2Headless/DeckGenericSelection.cs b/src/Sts2Headless/DeckGenericSelection.cs
 new file mode 100644
-index 0000000..0461ac6
+index 0000000..c9db39d
 --- /dev/null
 +++ b/src/Sts2Headless/DeckGenericSelection.cs
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,109 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -649,13 +649,14 @@ index 0000000..0461ac6
 +internal sealed class DeckGenericSelection
 +{
 +    internal DeckGenericSelection(Player player, CardSelectorPrefs preferences,
-+        Func<CardModel, bool>? filter, List<CardModel> options, string family = "deck_card")
++        Func<CardModel, bool>? filter, List<CardModel> options, string family = "deck_card", bool isDefaultTransformation = false)
 +    {
 +        Player = player;
 +        Preferences = preferences;
 +        Filter = filter;
 +        Options = options;
 +        Family = family;
++        IsDefaultTransformation = isDefaultTransformation;
 +    }
 +
 +    internal DeckGenericSelection(Player player, CardSelectorPrefs preferences,
@@ -668,6 +669,7 @@ index 0000000..0461ac6
 +    }
 +
 +    internal string Family { get; }
++    internal bool IsDefaultTransformation { get; }
 +    internal object Identity { get; } = new();
 +    internal Task? Completion { get; set; }
 +    internal Player Player { get; }
@@ -745,13 +747,14 @@ index 0000000..0461ac6
 +}
 diff --git a/src/Sts2Headless/DeckTransformCallScope.cs b/src/Sts2Headless/DeckTransformCallScope.cs
 new file mode 100644
-index 0000000..7936f42
+index 0000000..1d64e67
 --- /dev/null
 +++ b/src/Sts2Headless/DeckTransformCallScope.cs
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,78 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Commands;
 +using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Models;
 +using MegaCrit.Sts2.Core.TestSupport;
 +
@@ -766,17 +769,19 @@ index 0000000..7936f42
 +    internal sealed class Frame
 +    {
 +        internal Frame(Player player, CardSelectorPrefs preferences,
-+            ICardSelector? selector, Frame? previous)
++            ICardSelector? selector, bool isDefaultTransformation, Frame? previous)
 +        {
 +            Player = player;
 +            Preferences = preferences;
 +            Selector = selector;
++            IsDefaultTransformation = isDefaultTransformation;
 +            Previous = previous;
 +        }
 +        internal Player Player { get; }
 +        internal CardSelectorPrefs Preferences { get; }
 +        internal ICardSelector? Selector { get; }
 +        internal Frame? Previous { get; }
++        internal bool IsDefaultTransformation { get; }
 +        internal bool Consumed { get; set; }
 +        internal bool Closed { get; set; }
 +    }
@@ -784,9 +789,11 @@ index 0000000..7936f42
 +    [ThreadStatic] private static Frame? _current;
 +
 +    public static void Prefix(Player player, CardSelectorPrefs prefs,
-+        out Frame __state)
++        Func<CardModel, CardTransformation>? cardToTransformation, out Frame __state)
 +    {
-+        __state = new Frame(player, prefs, CardSelectCmd.Selector, _current);
++        // The original method assigns its random default after this entry seam.
++        // A custom delegate can expose deterministic after facts; never invoke it to probe.
++        __state = new Frame(player, prefs, CardSelectCmd.Selector, cardToTransformation == null, _current);
 +        _current = __state;
 +    }
 +
@@ -802,10 +809,11 @@ index 0000000..7936f42
 +    }
 +
 +    internal static bool TryTake(ICardSelector selector, int minSelect, int maxSelect,
-+        out Player? player, out CardSelectorPrefs preferences, out bool mismatch)
++        out Player? player, out CardSelectorPrefs preferences, out bool isDefaultTransformation, out bool mismatch)
 +    {
 +        player = null;
 +        preferences = default;
++        isDefaultTransformation = false;
 +        Frame? frame = _current;
 +        mismatch = frame != null;
 +        if (frame == null || frame.Closed || frame.Consumed
@@ -816,6 +824,7 @@ index 0000000..7936f42
 +        frame.Consumed = true;
 +        player = frame.Player;
 +        preferences = frame.Preferences;
++        isDefaultTransformation = frame.IsDefaultTransformation;
 +        mismatch = false;
 +        return true;
 +    }
@@ -1078,10 +1087,10 @@ index 0000000..729294f
 +}
 diff --git a/src/Sts2Headless/ManagedSelectorPublicCapture.cs b/src/Sts2Headless/ManagedSelectorPublicCapture.cs
 new file mode 100644
-index 0000000..eff444c
+index 0000000..180e65c
 --- /dev/null
 +++ b/src/Sts2Headless/ManagedSelectorPublicCapture.cs
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,125 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Models;
@@ -1100,12 +1109,14 @@ index 0000000..eff444c
 +        CardSelectorPrefs prefs, IReadOnlyList<CardModel> options, IReadOnlyList<CardModel> selected,
 +        bool preview, bool mechanicsQualified, bool canPreview, bool canConfirm, bool canCancel,
 +        Func<CardModel, bool> selectable, EnchantmentModel? enchantment = null, int amount = 0,
-+        Dictionary<string, object?>? summary = null)
++        Dictionary<string, object?>? summary = null, bool isDefaultTransformation = false)
 +    {
 +        var missing = new HashSet<string>(StringComparer.Ordinal);
 +        if (completion == null || completion.IsCompleted)
 +            missing.Add("native_selector_original_request_not_pending");
 +        if (!mechanicsQualified) missing.Add("native_selector_mechanics_call_closure_unqualified");
++        if (family == "deck_transform" && !isDefaultTransformation)
++            missing.Add("custom_transform_preview_unqualified");
 +        var previews = new List<Dictionary<string, object?>>();
 +        var cards = new List<Dictionary<string, object?>>();
 +        bool requiresAfter = family == "deck_upgrade" || family == "deck_enchant" && prefs.MaxSelect == 1;
@@ -1558,10 +1569,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..edded40
+index 0000000..dc274c7
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,365 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -1844,8 +1855,10 @@ index 0000000..edded40
 +            // Explicit exact-build method inventory; it contains no costs,
 +            // damage values or other reimplementation of native upgrade rules.
 +            if (card.GetType().GetMethod("OnUpgrade", NativeMembers) is not { } upgrade
-+                || upgrade.DeclaringType != card.GetType() || !NativeUpgradeMethodInventory.Contains(card.GetType().Name)
-+                || !IsUnpatched(upgrade)
++                || !(upgrade.DeclaringType == typeof(CardModel)
++                    || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
++                // Harmony keys inherited methods by their actual declaration.
++                || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
 +                || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
 +                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
@@ -4929,7 +4942,7 @@ index 800f139..d950eec 100644
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..100a687 100644
+index 6b9de4a..bac46b2 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,6 @@
@@ -7072,7 +7085,7 @@ index 6b9de4a..100a687 100644
 +                        : deckGeneric.Enchantment == null ? DeckGenericCallScope.HookReady : DeckEnchantCallScope.HookReady,
 +                    canPreview, deckGeneric.CanConfirm(string.Join(",", deckGeneric.Selected.Select(NativeObjectIdentity.Get))) == null,
 +                    deckGeneric.CanCancelSelection() == null, deckGeneric.CanSelect,
-+                    deckGeneric.Enchantment, deckGeneric.Amount, summary);
++                    deckGeneric.Enchantment, deckGeneric.Amount, summary, deckGeneric.IsDefaultTransformation);
 +                return new Dictionary<string, object?>
 +                {
 +                    ["type"] = "decision",
@@ -8687,7 +8700,7 @@ index 6b9de4a..100a687 100644
              _ => null
          };
      }
-@@ -3263,86 +4171,391 @@ public class RunSimulator
+@@ -3263,86 +4171,392 @@ public class RunSimulator
          }
      }
  
@@ -8943,7 +8956,8 @@ index 6b9de4a..100a687 100644
 +                out Player? genericPlayer, out CardSelectorPrefs genericPrefs,
 +                out Func<CardModel, bool>? genericFilter, out bool mismatchedGenericScope);
 +            bool exactTransform = DeckTransformCallScope.TryTake(this, minSelect, maxSelect,
-+                out Player? transformPlayer, out CardSelectorPrefs transformPrefs, out bool mismatchedTransformScope);
++                out Player? transformPlayer, out CardSelectorPrefs transformPrefs,
++                out bool isDefaultTransformation, out bool mismatchedTransformScope);
 +            bool exactEnchant = DeckEnchantCallScope.TryTake(this, minSelect, maxSelect,
 +                out Player? enchantPlayer, out CardSelectorPrefs enchantPrefs,
 +                out EnchantmentModel? enchantModel, out int enchantAmount, out bool mismatchedEnchantScope);
@@ -8972,7 +8986,7 @@ index 6b9de4a..100a687 100644
 +                    : null;
 +                _deckGeneric = exactTransform
 +                    ? new DeckGenericSelection(transformPlayer!, transformPrefs,
-+                        card => card.Type != CardType.Quest && card.IsTransformable, optList, "deck_transform")
++                        card => card.Type != CardType.Quest && card.IsTransformable, optList, "deck_transform", isDefaultTransformation)
 +                    : exactGeneric
 +                    ? new DeckGenericSelection(genericPlayer!, genericPrefs, genericFilter, optList)
 +                    : exactEnchant
@@ -9133,7 +9147,7 @@ index 6b9de4a..100a687 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4570,36 @@ public class RunSimulator
+@@ -3357,15 +4571,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -9174,7 +9188,7 @@ index 6b9de4a..100a687 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4609,110 @@ public class RunSimulator
+@@ -3375,55 +4610,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -9319,7 +9333,7 @@ index 6b9de4a..100a687 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4736,72 @@ public class RunSimulator
+@@ -3447,178 +4737,72 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -9557,7 +9571,7 @@ index 6b9de4a..100a687 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +4817,6 @@ public class RunSimulator
+@@ -3634,42 +4818,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -9600,7 +9614,7 @@ index 6b9de4a..100a687 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +4824,79 @@ public class RunSimulator
+@@ -3677,85 +4825,79 @@ public class RunSimulator
          }
      }
  
@@ -9749,7 +9763,7 @@ index 6b9de4a..100a687 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3789,16 +4930,12 @@ public class RunSimulator
+@@ -3789,16 +4931,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -9768,7 +9782,7 @@ index 6b9de4a..100a687 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +4963,54 @@ public class RunSimulator
+@@ -3826,36 +4964,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -9842,7 +9856,7 @@ index 6b9de4a..100a687 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3896,15 +5051,118 @@ public class RunSimulator
+@@ -3896,15 +5052,118 @@ public class RunSimulator
      {
          try
          {
