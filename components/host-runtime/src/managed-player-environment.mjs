@@ -1954,7 +1954,18 @@ function currentSurface(state, ctx) {
               name: potion.name ?? null,
               target_entity_ids: targetIdsForPotion(potion)
             }))
-            : []
+            : [],
+          discardable_potions: playWindowOpen ? rawPotions.filter(potion => potion.can_discard === true)
+            .map(potion => ({
+              entity_id: ctx.entityId("potion", potion.native_ref),
+              definition_id: definitionId(potion.id ?? potion.name),
+              name: potion.name ?? null,
+              description: potion.description ?? null,
+              slot: potion.slot,
+              target_type: potion.target_type ?? "Unknown",
+              can_use: false,
+              automatic: potion.usage === "Automatic"
+            })) : []
         },
         context: {
           kind: "combat",

@@ -837,13 +837,17 @@ test("combat projection fails closed for target types without an exact current b
 
   const supportedButUnavailable = projectManagedCandidateDecision({
     state: { ...base, hand: [], player: { ...base.player, potions: [{
-      index: 0, slot: 0, native_ref: "potion-unavailable", id: "POTION.TEST", name: "Test Potion",
+      index: 0, slot: 2, native_ref: "potion-unavailable", id: "POTION.TEST", name: "Test Potion",
       can_use: false, can_discard: true, binding_supported: true, target_type: "Self",
       hover_facts_complete: true, keywords: [], card_previews: []
     }] } }, ...projectionIdentity
   });
   assert.equal(supportedButUnavailable.snapshot.completeness.status, "complete");
   assert.equal(supportedButUnavailable.snapshot.bound_actions.status, "complete");
+  assert.equal(supportedButUnavailable.snapshot.interaction.content.surface.discardable_potions.length, 1);
+  assert.equal(supportedButUnavailable.snapshot.interaction.content.surface.discardable_potions[0].can_use, false);
+  assert.equal(supportedButUnavailable.snapshot.interaction.content.surface.discardable_potions[0].slot, 2);
+  assert.equal(supportedButUnavailable.snapshot.interaction.content.surface.discardable_potions[0].definition_id, "TEST");
   assert.deepEqual(supportedButUnavailable.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "activate"]);
 
   const unavailableUnknownTarget = projectManagedCandidateDecision({

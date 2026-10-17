@@ -129,7 +129,8 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
           if (Array.isArray(leftValue) && Array.isArray(rightValue)) {
             if (leftValue.length !== rightValue.length) fail(currentPath,
               policy.unordered?.(normalized(currentPath), parent) ? "collection_multiplicity_changed" : "sequence_length_changed");
-            if (policy.unordered?.(normalized(currentPath), parent)) state.tasks.push({ kind: "members",
+            // Establish ordered public relationships before branching on duplicate inventories.
+            if (policy.unordered?.(normalized(currentPath), parent)) state.tasks.unshift({ kind: "members",
               a: leftValue, b: rightValue, index: 0, path: currentPath, key, depth });
             else for (let i = leftValue.length - 1; i >= 0; i--)
               state.tasks.push(valueTask(leftValue[i], rightValue[i], `${currentPath}[${i}]`, key, null, depth + 1));
