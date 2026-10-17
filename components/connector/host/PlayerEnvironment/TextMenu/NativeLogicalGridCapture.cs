@@ -28,10 +28,11 @@ namespace STS2Connector.PlayerEnvironment;
 /// exact input specs; it cannot obtain a newer roster or rerender a candidate.</summary>
 internal static class NativeLogicalGridCapture
 {
-    internal static NativeLogicalGridCaptureResult CaptureCurrent(NativeEntityRegistry entities, GameBuildIdentity game)
+    internal static NativeLogicalGridCaptureResult CaptureCurrent(NativeEntityRegistry entities, GameBuildIdentity game,
+        bool publicBasisOnly = false)
     {
         if (NOverlayStack.Instance?.Peek() is not NCardGridSelectionScreen owner
-            || !NativeLogicalGridCallbacks.Supported(owner.GetType()))
+            || !CapturesOwner(owner.GetType(), publicBasisOnly))
             return new(true, null, Array.Empty<string>());
         if (!EnvironmentIdentityRuntime.ExecutionAvailable(game))
             return new(true, null, new[] { "native_logical_grid_execution_identity_unavailable" });
@@ -42,6 +43,9 @@ internal static class NativeLogicalGridCapture
             return new(true, null, new[] { "native_logical_action_capacity_exceeded" });
         return new(true, Freeze(state, entities), Array.Empty<string>());
     }
+
+    internal static bool CapturesOwner(Type type, bool publicBasisOnly) => NativeLogicalGridCallbacks.Supported(type)
+        && (!publicBasisOnly || type != typeof(NDeckTransformSelectScreen));
 
     private static NativeLogicalCapturedGrid Freeze(NativeLogicalGridState state, NativeEntityRegistry entities)
     {
@@ -224,7 +228,7 @@ internal static class NativeLogicalGridCapture
                 root ??= VisibleRoot("%EnchantMultiPreviewContainer")?.GetNodeOrNull<Control>("Cards");
                 break;
             case NDeckCardSelectScreen:
-                root = VisibleRoot("%PreviewContainer");
+                root = VisibleRoot("%PreviewContainer")?.GetNodeOrNull<Control>("%Cards");
                 break;
             default: return false;
         }
@@ -236,7 +240,9 @@ internal static class NativeLogicalGridCapture
             root = preview.GetType().GetField("_after", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(preview) as Control;
         }
         if (root == null) return false;
-        CardModel[] actual = ConnectorMod.FindAll<NPreviewCardHolder>(root)
+        List<NPreviewCardHolder> holders = ConnectorMod.FindAll<NPreviewCardHolder>(root);
+        if (IsQualifiedEmptyDeckCardPreview(facts.Request, cardsContainerPresent: true, holders.Count)) return true;
+        CardModel[] actual = holders
             .Where(holder => ConnectorMod.IsNodeVisible(holder) && holder.CardModel != null)
             .Select(holder => holder.CardModel!).ToArray();
         var expected = new List<JsonObject>();
@@ -262,6 +268,12 @@ internal static class NativeLogicalGridCapture
         Control? VisibleRoot(string path) => state.Owner.GetNodeOrNull<Control>(path) is { } node
             && ConnectorMod.IsNodeVisible(node) ? node : null;
     }
+
+    internal static bool IsQualifiedEmptyDeckCardPreview(NativeSelectorOccurrenceFacts request,
+        bool cardsContainerPresent, int holderCount) => request.Owner is NDeckCardSelectScreen
+        && request.Family == "deck_card" && request.Stage == "preview" && request.MechanicsQualified
+        && !request.Completion.IsCompleted && request.MinSelect == 0 && request.Selected.Count == 0
+        && cardsContainerPresent && holderCount == 0;
 
     internal static bool PreviewRowsMatch(IReadOnlyList<JsonObject> expected, IReadOnlyList<JsonObject> actual)
     {

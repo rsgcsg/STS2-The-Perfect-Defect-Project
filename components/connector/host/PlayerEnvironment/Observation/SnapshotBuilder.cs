@@ -52,7 +52,7 @@ internal static partial class PlayerEnvironmentService
             () => capturedInput?.Game ?? EnvironmentIdentityRuntime.ReadGame());
         NativeLogicalGridCaptureResult? gridCapture = publicBasisProfile
             ? capturedInput?.GridCapture ?? (capturedInput == null
-                ? Measure("native_logical_grid", () => NativeLogicalGridCapture.CaptureCurrent(Entities, game)) : null)
+                ? Measure("native_logical_grid", () => NativeLogicalGridCapture.CaptureCurrent(Entities, game, publicBasisOnly: true)) : null)
             : null;
         LiveObservation draft = Measure("native_surface_state", () =>
             capturedInput?.Observation ?? LiveObservationReader.Build(Entities, game, () =>

@@ -186,4 +186,37 @@ public sealed class NativeLogicalCapturedGridTests
         Assert.Equal("inspect_card", inspect.NativeVerb);
     }
 
+    [Fact]
+    public void EmptyDeckCardPreviewRequiresActualEmptyContainerAndTheSameQualifiedOpenRequest()
+    {
+        var (_, grid) = Captured();
+        var request = new NativeSelectorOccurrenceFacts(grid.State.Owner, grid.State.Completion, "deck_card", "preview",
+            grid.State.Cards, Array.Empty<CardModel>(), 0, 64, true, "native_selected_original_set", "native_preview_at_max",
+            null, true, true, true, Array.Empty<string>());
+        bool Qualified(NativeSelectorOccurrenceFacts value, bool container = true, int holders = 0) =>
+            NativeLogicalGridCapture.IsQualifiedEmptyDeckCardPreview(value, container, holders);
+        Assert.True(Qualified(request));
+        Assert.False(Qualified(request, container: false));
+        Assert.False(Qualified(request, holders: 1));
+        Assert.False(Qualified(request with { Owner = Bare<NDeckTransformSelectScreen>(), Family = "deck_transform" }));
+        Assert.False(Qualified(request with { MinSelect = 1 }));
+        Assert.False(Qualified(request with { Selected = new[] { grid.State.Cards[0] } }));
+        Assert.False(Qualified(request with { Stage = "selecting" }));
+        Assert.False(Qualified(request with { MechanicsQualified = false }));
+        Assert.False(Qualified(request with { Completion = Task.CompletedTask }));
+    }
+
+    [Fact]
+    public void PublicBasisLeavesTransformToItsExplicitProducerWhileNativeCaptureRetainsAllSixFamilies()
+    {
+        Assert.False(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: true));
+        Assert.True(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: false));
+        foreach (Type type in new[] { typeof(NDeckCardSelectScreen), typeof(NDeckUpgradeSelectScreen),
+            typeof(NDeckEnchantSelectScreen), typeof(NSimpleCardSelectScreen), typeof(NCombatPileCardSelectScreen) })
+        {
+            Assert.True(NativeLogicalGridCapture.CapturesOwner(type, publicBasisOnly: true));
+            Assert.True(NativeLogicalGridCapture.CapturesOwner(type, publicBasisOnly: false));
+        }
+    }
+
 }
