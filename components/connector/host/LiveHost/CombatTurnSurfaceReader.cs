@@ -221,17 +221,20 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         };
     }
 
-    private static void AddCardOptions(
+    internal static void AddCardOptions(
         ICollection<VisibleCombatCommandOption> commandOptions,
         NativeCombatDecision decision,
         IReadOnlyList<CardModel> visibleHandCards)
     {
-        foreach (IGrouping<object?, NativeSemanticAction> group in NativeDecisionProjection
-                     .VisibleSubjects(decision, "play", visibleHandCards)
-                     .GroupBy(action => action.NativeSubject, ReferenceEqualityComparer.Instance))
+        var commands = NativeDecisionProjection.VisibleSubjects(decision, "play", visibleHandCards)
+            .GroupBy(action => action.NativeSubject!, ReferenceEqualityComparer.Instance)
+            .ToDictionary(group => group.Key, group => group, ReferenceEqualityComparer.Instance);
+        // Native semantic keys are opaque process identities, not display order.
+        // This command view follows the same captured hand as its card facts.
+        foreach (CardModel card in visibleHandCards)
         {
+            if (!commands.TryGetValue(card, out var group)) continue;
             NativeSemanticAction first = group.First();
-            CardModel card = (CardModel)first.NativeSubject!;
             string cardName = ConnectorMod.SafeGetText(() => card.Title) ?? card.Id.Entry;
             string[] targetIds = group.SelectMany(action => action.Operands)
                 .Where(operand => operand.Role == "target")
