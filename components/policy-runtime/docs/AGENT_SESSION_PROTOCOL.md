@@ -90,7 +90,11 @@ The closed manifest has exactly `schema`, `manifest_id`, `agent`, `adapter`,
   `max_pending_queries`, `max_queries_per_turn`, `max_query_bytes_per_turn`,
   `max_capture_bytes`, `max_catalog_actions`, `max_cancelled_ids`,
   `agent_timeout_ms`. These are consumer resource requirements, not a new native
-  ceiling or permission to truncate input.
+  ceiling or permission to truncate input. Program manifests default to a30,000ms Agent
+  response timeout. An explicit timeout up to300,000ms supports the manual P1
+  chooser; the Runtime's total deadline and Stop still cancel a pending Next.
+  The suite entry selects it with `--agent-timeout-ms`; this adds no native
+  execution authority and does not certify Human provenance.
 - `claims`: `catalog_filtered:false`, `creates_action_authority:false`,
   `creates_native_operands:false`, `human_origin:false`,
   `causal_successor:false`. Runtime evidence never infers scientific qualification

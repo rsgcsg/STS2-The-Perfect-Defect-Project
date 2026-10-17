@@ -43,10 +43,22 @@ Their source tests and retained-basis checks do not qualify another40-run tuple.
 The installed Mod is d2984cfd/MVIDd5ba51b8; Managed DLL e6f68ebb/MVID12a48a52.
 The later Host JS/SDK source is distinct from the full-run tuple.
 
-Deadline2026-10-17 18:30 Australia/Brisbane. Short budget8/8 and full batches3/3
-are consumed. Package1 is incomplete: final-source T1, original T2 choice/Receipt/
-successor, repaired Managed folds and actual Boss coverage remain unqualified.
-Stop for the user's next-window/budget decision; no additional native episode.
+Continuation approved2026-10-18: deadline03:43:38 Australia/Brisbane,
+maximum2.5h. Short attempts have no count cap, but each tests new code or a
+stated new hypothesis; unknown is never retried. Full batches remain <=2 and
+start only after all named seams pass short checks and the tuple is frozen.
+Intermediate reports use counts/unknown/replay; independent full audit belongs
+only to final acceptance batches. A one-page actual P1 manual Boss recording
+guide is part of this window; no training, package2/3 or PR merge is assigned.
+
+Original T1 point0 now crosses with one delivered/completed choice after its
+immutable original raw sources are reprojected through the current r1.2 reducer;
+old r1.1 records are unchanged. Original T2 SCRAPE choice now has two delivered
+native steps, completed Result and successor deck count0->1. Managed enchant
+and inventory-close/same-room-proceed folds have short positives. Reference
+generated chooser map qualification is under short investigation. Additional
+first differences are recorded instead of being hidden by equivalence claims.
+
 Unknown, natural loss, budget stop and product blocks stay separate. No CI/Human/
 Boss/victory/strategy qualification is inferred from source tests or cleanup.
 
