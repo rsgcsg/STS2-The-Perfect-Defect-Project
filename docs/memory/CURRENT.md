@@ -1,45 +1,80 @@
-# Current — bounded PR191 CI integration
+# Current — P1 r1 package 1
 
-模型方案冻结：开。Resolve live GitHub refs; current source and original records
-override this file.
-PR merge/close, research/spending and deployment keep their explicit boundaries.
+Resolve live GitHub refs; current source and original records override this file.
+The research model configuration remains frozen.
 
-## Current delivery
+[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) owns this assignment.
+PR193 targets develop29d889bc after the approved PR189/191 merge commits.
+Old T7 card A is obsolete. No package2/3, training, release freeze or PR merge
+is assigned by this delivery.
 
-[P1-TU](../plans/P1_TERMINAL_UPGRADE_2026-10-17.md), Draft PR191
-`codex/p1-terminal-upgrade`: Root is the sole integrator. Start986e3f95;
-normal merges7b0deb0a/0efccea9 retain task1/8b83a7f1 and task2/93fd596b.
-Before publication parent PR189 advanced toc5fbbd11; reviewed normal merge51c65a2e
-resolves its BOM conflict, retains both worker fixes and its late-chooser fixture
-startup allowance. Product deadlines/assertions stay unchanged; only that case is
-rechecked after the parent increment, then final identity/package/repository gates.
-Task1 uses fileURLToPath for the real diagnostic child, retaining duplicate-instance
-assertions. Task2 drains the started original-response write before capture closure;
-Stop/budget still releases control independently. Combined focused regression45pass;
-typecheck/build/package, repository/identity/BOM and closeout passed. Scoped non-author
-review accepted the combined implementation and original failure/validation evidence.
-Policy Runtime BOM is recalculated from the combined tree, not either worker tree.
+Package1 remains incomplete: B/T6 and the frozen B/C suite counts pass, but
+final closeout found64 Reference reward-intention mechanical interruptions.
+On frozen product source
+e5f64e49, Managed40 and Reference20 each finished entirely in natural loss,
+zero unknown and every original replay verified. Independent final audits bind
+raw native terminals, complete sources, exact current actions, original wire
+Receipts, loaded identities and the fixed SDK/Runtime/Agent bytes. Managed has
+2802 delivered dispatch/Receipt joins and2706 completed Results;
+Reference has1584 dispatch/Receipt joins. These are reliability and
+observed-mechanism results, not strategy or Host-equivalence qualification.
 
-Old986e3f95 CI38925913234 failed on Windows child path, Linux capture-record order,
-and Windows Python AV. Its formal mypy379source files passed; earlier local missing-
-extras diagnostics remain historical. Task3 found no proven AV owner:0xC0000005 after
-60s traceback, CPython/faulthandler strongest hypothesis, native Windows dump absent.
-That crash remains a blocker; investigation completion is not a repair or runner
-waiver. The Windows single-test native-dump proposal is unexecuted, not dispatched.
+Final-source T1 replays the exact original point0 choice after lossless current
+reprojection of its original sealed source. Its next combat difference is retained:
+playable_cards[0].entity_id, opaque_alias_equality_or_bijection_changed. Original
+r1.1 records are not rewritten. T2 now has a legal SCRAPE choice, two delivered
+steps, completed Result and actual successor deck count0->1. Final Managed
+shop close/same-room proceed and enchant select/confirm have actual two-step
+positives; the full batch independently contains6 enchant,4 upgrade and1 shop fold.
 
-Reference history stays bound to333094d4: historical2attempts (88decisions/loss;
-91submissions/toggle then diagnostic fail-closed); separate1of2new attempts completed
-preview→legal choice→required confirm→event_option and visible deck upgrade after
-93submissions.0native unknown/fail-closed in that successful follow-up, replay verified.
-Stop200/released/no pending request; cancelled Next left opaque Agent state uncertain;
-Host close200/exit0. Original records unchanged. This integration changes Runtime
-capture accounting, so those old records are not fresh evidence for the new Runtime.
-No new game, installed Mod, Human, training, spending or deployment in this slice.
+Reference's generated chooser now has a native map entry and its owning single
+choice admission, without invented grid fields. Short10 binds complete map Read,
+legal generated card choice, delivered Receipt and combat successor. The final
+row5 same-seed random path did not encounter that selector; its terminal alone
+is not the short's mechanism proof. Command presentation now follows visible
+hand order, and Managed exposes the native discardable-potion DTO with real slots.
 
-Next: publish one stable candidate, report real selected CI outcome and stop. Keep
-Draft and unresolved Windows AV; no PR merge/close. No T1/T2/T6.
+The pre-reward-owner-fix suite Mod is f0830e97/MVID933e38e4. Managed DLL: e6f68ebb/MVID12a48a52.
+Core r1.2:1fe50249; Runtime code:8e04ba94. Product-head CI39046363552 passed
+the full portable source/test route; Windows was skipped by its current policy.
+Local affected checks: SDK476, NativeLogical179, Runtime609 pass/3 skip,
+exact-game Host908 pass/0 skip, including NativeRewardCardRendererTests.
+
+User-approved scopev0.2 and full-public comparison stay fixed. S uses append-only
+card choice or Finish, selected/remaining capacity, no Back/deselect, default
+transform select-as-commit without rolling preview, and normal forward shop.open.
+Only qualified complete native owner/Task/roster/preview/world/detail facts permit
+mechanical folds. Custom Claws->Maul in Act3 and Draft mandatory reward production
+remain r1-not-encountered under the recorded source investigation; no new section17
+exception is registered.
+
+The continuation used16 short attempts and both authorized final batches within
+the2.5h window ending2026-10-18 03:43:38 Australia/Brisbane. Every short had a new
+implementation or stated hypothesis; no unknown was retried. Previous-window
+failed rows and their original replay errors remain separate historical evidence.
+
+A final classification of all64 interrupted_known Results found53 reward.take_card
+and11 reward.decline_group opens with no folded second input. Frozen SDK review
+shows every card/world/parent/alternative fact equal; only Reference surface_card
+content changed display_context reward_candidate->surface:card_reward_selection
+and dropped display_owner_entity_id to null.50 attached->attached and14 absent->absent
+subscriptions exclude E1 as the explanation. This is a real remaining S bug,
+not new game information. The Reference producer now keeps bound card rewards'
+original reward_candidate/ParentGroupId display ownership; standalone pages keep
+their own context. SDK full-fact guards remain unchanged. The regression and exact-game Host909 tests pass. New Mod d06a9e8b/MVID860493b7
+is installed; targeted shorts15/16 each execute open plus actual take/Skip in
+one completed intention, zero unknown and verified replay. Hologram enters the
+deck on take; decline preserves the deck and explicitly records pending_owner_skip.
+SDK105 and Runtime111 frozen files remain byte-identical. No third full batch
+is authorized; the old f0830e97 suite cannot qualify d06a9e8b Reference20.
+
+No actual Boss positive chain is established. A full terminal P1 human chooser
+and a one-page recording guide are available, but no real user recording is
+claimed. Further full acceptance and Boss gameplay need the user's next budget decision.
 
 ## Remaining Platform non-claims
 
-No new Windows execution, Host equivalence, full-P1, Human, training or strategy
-qualification. Unresolved Windows Python AV stays visible even if a later run passes.
+No full-P1, Windows, Host-equivalence, Human, training or strategy qualification.
+Package2 still owes20 classified cross-Host traces, natural terminal comparison
+and every required mechanism journey on the merged candidate. Source4 and
+cross-act/victory obligations are not qualified by this package.

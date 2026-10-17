@@ -83,6 +83,7 @@ public sealed class NativeDetachedPreviewTests
     [InlineData(typeof(BodySlam))]
     [InlineData(typeof(PerfectedStrike))]
     [InlineData(typeof(Stack))]
+    [InlineData(typeof(Darkness))]
     public void RealNativeUpgradeMatchesNativeCopyWithoutChangingOriginal(Type type)
     {
         CardModel original = Mutable(type);
@@ -100,6 +101,22 @@ public sealed class NativeDetachedPreviewTests
             Assert.Same(result.Display, Field(typeof(DynamicVar), "_owner").GetValue(value));
         });
         Assert.All(original.DynamicVars.Values, value => Assert.Same(original, Field(typeof(DynamicVar), "_owner").GetValue(value)));
+    }
+
+    [Fact]
+    public void DarknessUsesTheNativeBaseNoOpUpgradeAndRefusesItWhenPatched()
+    {
+        CardModel original = Mutable<Darkness>();
+        MethodInfo method = typeof(Darkness).GetMethod("OnUpgrade", Flags)!;
+        Assert.Equal(typeof(CardModel), method.DeclaringType);
+        Assert.Equal(new byte[] { 0x2a }, method.GetMethodBody()!.GetILAsByteArray());
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var preview, out var gap), gap);
+        Assert.Equal(1, preview!.Display.CurrentUpgradeLevel);
+        Assert.Equal(0, original.CurrentUpgradeLevel);
+        using var patch = new Patched(typeof(CardModel).GetMethod("OnUpgrade", Flags | BindingFlags.DeclaredOnly)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out gap));
+        Assert.Equal("native_preview_upgrade_closure_unqualified", gap);
+        Assert.Equal(0, calls);
     }
 
     [Theory]

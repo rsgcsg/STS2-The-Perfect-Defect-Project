@@ -18,6 +18,7 @@ import { stageAssemblyFingerprintProject } from "./assembly-fingerprint-project.
 import { ProcessResourceSampler } from "./process-resource-sampler.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { readSystemIdentity } from "./system-identity.mjs";
+import { extractManagedLocalization, inspectManagedLocalization } from "./managed-localization.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -303,8 +304,10 @@ export async function inspectManagedCandidateBuild({ root, candidateDirectory, m
       `Managed candidate artifact MVID ${moduleMvid} does not match the frozen baseline.`
     );
   }
+  const localization = inspectManagedLocalization({ candidateDirectory: resolvedCandidateDirectory, manifest });
   return {
     ...source,
+    ...localization,
     candidate_directory: resolvedCandidateDirectory,
     artifact,
     artifact_size: statSync(artifact).size,
@@ -369,6 +372,9 @@ export async function prepareManagedCandidate({
     if (!existsSync(source)) throw new Error(`Exact game dependency missing: ${name}`);
     copyFileSync(source, path.join(destination, "lib", name));
   }
+  extractManagedLocalization({ candidateDirectory: destination,
+    packFile: path.join(path.dirname(gameDataDirectory), manifest.native_localization.resource_pack_filename),
+    expectedPackSha256: manifest.native_localization.resource_pack_sha256 });
 
   if (process.platform === "win32") {
     // The admitted patch keeps sts2.dll byte-for-byte exact. All setup.sh does
@@ -601,9 +607,13 @@ export function chooseManagedCandidateAction(state) {
       return (state.cards ?? []).length === 0
         ? { cmd: "action", action: "skip_select" }
         : { cmd: "action", action: "select_cards", args: { indices: "0" } };
-    case "shop":
-      return typeof state.room_ref === "string"
+    case "shop_room":
+      return typeof state.room_ref === "string" && state.can_proceed === true
         ? { cmd: "action", action: "leave_shop", args: { room_ref: state.room_ref } }
+        : null;
+    case "shop":
+      return typeof state.room_ref === "string" && typeof state.inventory_ref === "string"
+        ? { cmd: "action", action: "close_shop_inventory", args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } }
         : null;
     case "game_over":
       return null;

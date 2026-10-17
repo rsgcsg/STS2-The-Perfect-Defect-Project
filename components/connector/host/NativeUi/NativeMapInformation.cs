@@ -15,6 +15,7 @@ using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 
 namespace STS2Connector.NativeUi;
 
@@ -83,39 +84,48 @@ internal static class NativeMapInformation
             && IsExactHotkey(before.LastOrDefault(), button, "OnPressHandler")
             && IsExactHotkey(after.LastOrDefault(), button, "OnReleaseHandler");
     }
+    internal static bool HasUnobstructedTopBarMapEntry(Type? overlayType) => overlayType == null
+        || typeof(NCardRewardSelectionScreen).IsAssignableFrom(overlayType) || typeof(NRewardsScreen).IsAssignableFrom(overlayType)
+        || overlayType == typeof(NChooseACardSelectionScreen)
+        || typeof(NCardGridSelectionScreen).IsAssignableFrom(overlayType);
+
     internal static ReadEntry CaptureReadEntry(RunState state)
     {
         if (NRun.Instance is not { } run || NMapScreen.Instance is not { } map
             || run.GlobalUi.TopBar.Map is not { } button || NHotkeyManager.Instance is not { } hotkeys)
             return new("unsupported", "native_map_information_entry_owner_missing", () => false);
         var capstone = NCapstoneContainer.Instance?.CurrentCapstoneScreen;
-        bool Entry()
+        string? EntryGap()
         {
             if (!ReferenceEquals(RunManager.Instance.DebugOnlyGetState(), state)
                 || !ReferenceEquals(NRun.Instance, run) || !ReferenceEquals(NMapScreen.Instance, map)
                 || !ReferenceEquals(MapOwner?.GetValue(map), state.Map)
                 || !ReferenceEquals(run.GlobalUi.TopBar.Map, button) || !ReferenceEquals(NHotkeyManager.Instance, hotkeys)
-                || !ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, capstone)
-                || !PureCapstone(capstone)
-                || !Unpatched(typeof(NTopBarMapButton), "OnRelease") || !Unpatched(typeof(NTopBarMapButton), "IsOpen")
+                || !ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, capstone))
+                return "native_map_information_entry_owner_changed";
+            if (!PureCapstone(capstone)) return "native_map_information_entry_capstone_unqualified";
+            if (!Unpatched(typeof(NTopBarMapButton), "OnRelease") || !Unpatched(typeof(NTopBarMapButton), "IsOpen")
                 || !Unpatched(typeof(NHotkeyManager), "_UnhandledInput")
-                || !Unpatched(typeof(NMapScreen), "get_IsOpen") || !Unpatched(typeof(NClickableControl), "get_IsEnabled")) return false;
+                || !Unpatched(typeof(NMapScreen), "get_IsOpen") || !Unpatched(typeof(NClickableControl), "get_IsEnabled"))
+                return "native_map_information_entry_call_closure_unqualified";
             // Already displayed information does not depend on travel/Back/FTUE.
-            if (map.IsOpen && ConnectorMod.IsNodeVisible(map)) return true;
+            if (map.IsOpen && ConnectorMod.IsNodeVisible(map)) return null;
             // Exact last registered native press+release handlers prove the
             // hotkey route independently of the mouse's visibility/enabled path.
             // OS focus is deliberately excluded from intrinsic entitlement.
-            if (hotkeys.CanProcess() && CurrentHotkey(hotkeys, button)) return true;
+            if (hotkeys.CanProcess() && CurrentHotkey(hotkeys, button)) return null;
             // The normal topbar remains independently clickable for these
             // exact overlays; arbitrary interception/unknown overlays do not
             // become a false native-unavailable claim.
             IOverlayScreen? overlay = NOverlayStack.Instance?.Peek();
-            bool knownOverlay = overlay == null || overlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen
-                or NRewardsScreen or MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen;
-            return knownOverlay && ControlAvailable(button, run.GlobalUi.TopBar);
+            // The generated-card chooser is also an ordinary overlay: native
+            // Map.Open hides it and Map.Close shows that same pending chooser.
+            // Its selection Task is neither closed nor completed by inspection.
+            return HasUnobstructedTopBarMapEntry(overlay?.GetType()) && ControlAvailable(button, run.GlobalUi.TopBar)
+                ? null : "native_map_information_entry_not_qualified";
         }
-        return Entry() ? new("captured", null, Entry)
-            : new("unsupported", "native_map_information_entry_not_qualified", Entry);
+        string? gap = EntryGap();
+        return new(gap == null ? "captured" : "unsupported", gap, () => EntryGap() == null);
     }
 
     internal static bool CanOpenDeck(bool exactCurrentControl, bool testMode) =>

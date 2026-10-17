@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createSession, reduce, modelView, canonicalJson } from '../src/p1Global/index.js';
+import { selectorForwardPair } from './fixtures/selector-forward.mjs';
 const basis = (): any => JSON.parse(readFileSync(new URL('./fixtures/p1-global/synthetic-complete-combat.json', import.meta.url), 'utf8'));
 const project = (b: any) => reduce(createSession('public-identity', 'managed'), b);
 const input = (r: ReturnType<typeof project>) => canonicalJson(modelView(r.observation));
@@ -13,6 +14,45 @@ const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'str
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
 
 describe('P1 current public identity and HUD projection', () => {
+  it('aliases typed merchant Read identities across card details without rewriting unknown Reads or extensions', () => {
+    const a = selectorForwardPair().outer;
+    const snapshot = a.snapshot; const card = { ...snapshot.interaction.content.surface.cards[0], entity_id: 'native-shop-card' };
+    snapshot.referents.push({ ...snapshot.referents[0], referent_id: card.entity_id, properties: card });
+    snapshot.interaction.kind = 'shop_room'; snapshot.interaction.stage = 'ready';
+    snapshot.interaction.content_schema = 'sts2.player-environment/surface/shop_room-1';
+    snapshot.interaction.content = { context: { kind: 'shop' }, surface: { kind: 'shop_room',
+      shop_session_entity_id: 'native-merchant', can_open_inventory: true, can_proceed: true } };
+    snapshot.bound_actions.actions = [{ ...snapshot.bound_actions.actions[0], verb: 'open', subject_referent_id: null }];
+    snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 1;
+    const catalog = { kind: 'shop_catalog', access_state: 'inventory_closed_open_to_inspect',
+      cards: [{ entity_id: 'native-offer', slot_entity_id: 'native-slot', inventory_index: 0, price: 75,
+        stocked: true, visible: true, affordable: true, can_purchase: false, blocked_reason: 'ui_control_disabled', card }],
+      relics: [], potions: [], card_removal: null, extension: { entity_id: 'native-shop-card' } };
+    const addRead = (kind: string, content: any, target: string | null = null) => {
+      const id = `added-${kind}`; const schema = `sts2.player-environment/read/${kind}-1`;
+      snapshot.reads.push({ ...snapshot.reads[0], read_id: id, kind, content_schema: schema, target_referent_id: target });
+      a.reads.push({ read_id: id, kind, error: null, response: { ...a.reads[0].response,
+        read_id: id, kind, content_schema: schema, target_referent_id: target, content } });
+    };
+    addRead('shop_catalog', catalog);
+    addRead('surface_card', { ...card, display_context: 'shop_catalog', public_details_revision: '1',
+      display_owner_entity_id: 'native-merchant', keywords: [], card_previews: [] }, card.entity_id);
+    addRead('unknown_extension', structuredClone(catalog));
+    let b = structuredClone(a);
+    for (const id of ['native-shop-card', 'native-merchant', 'native-offer', 'native-slot']) b = rename(b, id, `${id}-renamed`);
+    b.reads.find((r: any) => r.kind === 'shop_catalog').response.content.extension = structuredClone(catalog.extension);
+    b.reads.find((r: any) => r.kind === 'unknown_extension').response.content = structuredClone(catalog);
+    const left = project(a), right = project(b);
+    expect(left.complete && right.complete).toBe(true); expect(input(left)).toBe(input(right));
+    const shop = left.observation.extra_reads.find((r: any) => r.kind === 'shop_catalog')!.content as any;
+    const detail = left.observation.extra_reads.find((r: any) => r.kind === 'surface_card')!.content as any;
+    const unknown = left.observation.extra_reads.find((r: any) => r.kind === 'unknown_extension')!.content as any;
+    expect(shop.cards[0].entity_id).not.toBe('native-offer');
+    expect(shop.cards[0].slot_entity_id).not.toBe('native-slot');
+    expect(shop.cards[0].card.entity_id).toBe(detail.entity_id);
+    expect(shop.cards[0].card.entity_id).not.toBe(card.entity_id);
+    expect(shop.extension).toEqual(catalog.extension); expect(unknown).toEqual(catalog);
+  });
   it('projects enriched card display owners as public aliases and drops the parent Read locator', () => {
     const b = basis(), card = hud(b).player.hand[0], id = 'new-public-detail';
     const listed = { ...b.snapshot.reads[0], read_id: id, kind: 'surface_card', target_referent_id: card.entity_id,

@@ -17,7 +17,7 @@ function textSnapshotId(snapshotId) {
 
 const REVIEWED_TEXT_MENU_KINDS = Object.freeze([
   "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
-  "deck_card_selection", "card_selection", "shop_inventory", "combat_turn",
+  "deck_card_selection", "native_deck_card_selection", "deck_transform_selection", "card_selection", "shop_room", "shop_inventory", "combat_turn",
   "treasure_chest", "treasure_relic_selection", "treasure_completion",
   "reward_claim", "card_reward_selection", "reward_completion", "native_boss_relic_selection"
 ]);

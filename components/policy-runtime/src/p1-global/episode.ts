@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import {
-  applyCommitment, canonicalJson, createSession, reduce, resolveFollow, sha256Hex,
+  applyCommitment, canonicalJson, createSession, reduce, resolveFollowBasis, sha256Hex,
   P1G_LIMITS, P1G_RESULT_SCHEMA,
   type Lowering, type P1Basis, type P1Observation, type P1Result, type P1SessionState, type P1StepRecord, type ReadCapture
 } from "@rsgcsg/sts2-connector-client/p1-global";
@@ -192,7 +192,8 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
         const rule = lowering.follow[followIndex];
         if (rule) {
           followIndex += 1;
-          const follow = resolveFollow(rule, lowering, nextSnapshot.snapshot);
+          const successorBasis = await capture(nextSnapshot.snapshot, nextSnapshot.ref);
+          const follow = resolveFollowBasis(rule, lowering, successorBasis.basis);
           if (!follow) { if (!rule.optional) status = "interrupted_known"; break; } // new situation: back to the Agent
           plan.push({ step: follow, origin: "fold" });
         }

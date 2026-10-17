@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { P1G_PROFILE, P1G_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
-import { AGENT_SESSION_PROTOCOL, AGENT_LIMIT_MAXIMA, type AgentManifest, type AgentAdapterIdentity } from "./agent-session-contracts.js";
+import { AGENT_SESSION_PROTOCOL, AGENT_LIMIT_MAXIMA, DEFAULT_AGENT_TIMEOUT_MS, type AgentManifest, type AgentAdapterIdentity } from "./agent-session-contracts.js";
 import type { GlobalIdentity, GlobalExpectedEnvironment } from "./global-transport.js";
 import { globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
@@ -13,7 +13,10 @@ export function globalEnvironmentRequirement(identity: GlobalIdentity): GlobalEx
   return { kind: "global-public-basis", host_kind: identity.kind, producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game) };
 }
 export function createGlobalProgramManifest(input: { episodeId: string; identity: GlobalIdentity; artifactPath: string; artifactBytes: Uint8Array;
-  adapter: AgentAdapterIdentity; manifestId?: string }): AgentManifest {
+  adapter: AgentAdapterIdentity; manifestId?: string; agentTimeoutMs?: number }): AgentManifest {
+  const agentTimeoutMs = input.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0 || agentTimeoutMs > AGENT_LIMIT_MAXIMA.agent_timeout_ms)
+    throw new Error(`agentTimeoutMs must be a positive integer at most ${AGENT_LIMIT_MAXIMA.agent_timeout_ms}`);
   return { schema: "sts2.policy-runtime/agent-manifest-1", manifest_id: input.manifestId ?? `global-${input.episodeId}`,
     agent: { id: "global-public-program", version: "1", provider: "project-program", architecture: "model-less-program" },
     artifact: { id: "global-public-program", path: input.artifactPath, sha256: createHash("sha256").update(input.artifactBytes).digest("hex") }, adapter: input.adapter,
@@ -24,6 +27,6 @@ export function createGlobalProgramManifest(input: { episodeId: string; identity
         { source_seam: "public-basis-1", version: "1", coverage: "complete_at_seam" }], delivery_mode: "full_reference" } },
     requirements: { connector_protocol_version: input.identity.protocol_version, environment: globalEnvironmentRequirement(input.identity), required_methods: ["capabilities", "capture", "submit"] },
     support: { game_versions: [String(input.identity.game.version)], game_commits: [String(input.identity.game.commit)], interaction_kinds: ["*"], action_verbs: ["*"] },
-    limits: { ...AGENT_LIMIT_MAXIMA }, claims: { catalog_filtered: false, creates_action_authority: false, creates_native_operands: false, human_origin: false, causal_successor: false } };
+    limits: { ...AGENT_LIMIT_MAXIMA, agent_timeout_ms: agentTimeoutMs }, claims: { catalog_filtered: false, creates_action_authority: false, creates_native_operands: false, human_origin: false, causal_successor: false } };
 }
 export const GLOBAL_PROGRAM_PROTOCOL = AGENT_SESSION_PROTOCOL;

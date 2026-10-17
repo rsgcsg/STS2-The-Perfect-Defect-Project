@@ -3,6 +3,8 @@ using System.Text.Json.Nodes;
 using Godot;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.TopBar;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.TestSupport;
 using STS2Connector.LiveHost;
 using STS2Connector.LiveHost.Contracts;
@@ -16,6 +18,18 @@ namespace STS2Connector;
 
 public sealed class NativeMapInformationTests
 {
+    [Fact]
+    public void GeneratedChooserUsesTheKnownOverlayMapRouteWhileUnknownOverlayIsNotAssumedSafe()
+    {
+        Assert.True(typeof(IOverlayScreen).IsAssignableFrom(typeof(NChooseACardSelectionScreen)));
+        Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NChooseACardSelectionScreen)));
+        Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NCardRewardSelectionScreen)));
+        Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NDeckUpgradeSelectScreen)));
+        Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(null));
+        Assert.False(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(Control)));
+        Assert.False(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(IOverlayScreen)));
+    }
+
     [Theory]
     [InlineData(true, false, true)]
     [InlineData(true, true, false)]

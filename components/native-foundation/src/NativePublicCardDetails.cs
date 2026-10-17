@@ -59,6 +59,7 @@ public static class NativePublicCardDetails
         var missing = new List<string>();
         bool addedToPath = false;
         CardModel subject = card;
+        string stage = "canonical_copy";
         try
         {
             if (path.Count >= 16 || !(addedToPath = path.Add(card)))
@@ -72,19 +73,28 @@ public static class NativePublicCardDetails
                     || display == null) throw new InvalidOperationException(gap ?? "native_canonical_hover_copy_unavailable");
                 card = display;
             }
+            stage = "preflight";
             NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
+            stage = "card_identity";
             visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
             visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
             visible["name"] = null; visible["description"] = null;
+            stage = "preview_update";
             NativeCardRenderTransaction.Run(card, displayPile, () =>
             {
+                stage = "title";
                 visible["name"] = card.Title;
+                stage = "description";
                 visible["description"] = mode == CardPreviewMode.Upgrade ? card.GetDescriptionForUpgradePreview()
                     : card.GetDescriptionForPile(displayPile, card.CurrentTarget);
+                stage = "energy_cost";
                 visible["cost"] = card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetWithModifiers(CostModifiers.All).ToString();
+                stage = "star_cost";
                 visible["star_cost"] = card.HasStarCostX ? "X"
                     : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
+                stage = "target_type";
                 visible["target_type"] = card.TargetType.ToString();
+                stage = "enchantment";
                 if (card.Enchantment != null)
                 {
                     visible["enchantment_id"] = card.Enchantment.Id.Entry;
@@ -92,6 +102,7 @@ public static class NativePublicCardDetails
                     visible["enchantment_description"] = card.Enchantment.DynamicDescription.GetFormattedText();
                     visible["enchantment_amount"] = card.Enchantment.Amount;
                 }
+                stage = "hover_tips";
                 var keywords = new List<Dictionary<string, object?>>();
                 var previews = new List<Dictionary<string, object?>>();
                 foreach (IHoverTip tip in IHoverTip.RemoveDupes(card.HoverTips))
@@ -110,6 +121,7 @@ public static class NativePublicCardDetails
                 visible["card_previews"] = previews;
                 return true;
             }, mode);
+            stage = "visible_text_projection";
             // Same public text as the Reference surface readers: rich-text tags removed,
             // inline icons as [file.png], description newlines as spaces.
             foreach (string key in new[] { "name", "description", "enchantment", "enchantment_description" })
@@ -139,6 +151,10 @@ public static class NativePublicCardDetails
         }
         catch (Exception error) when (error is not NativeRenderStateViolationException)
         {
+            // Private, opt-in diagnosis of an actual render failure. Type metadata
+            // avoids invoking a model getter after preflight has rejected it.
+            if (Environment.GetEnvironmentVariable("STS2_NATIVE_CARD_RENDER_DIAGNOSTICS") == "1")
+                Console.Error.WriteLine($"[native-card-render] {subject.GetType().FullName} stage={stage}: {error}");
             missing.Add(error is InvalidOperationException && error.Message.StartsWith("native_", StringComparison.Ordinal)
                 ? error.Message : "native_selector_card_render_failed");
             visible["description"] = null;

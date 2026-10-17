@@ -31,8 +31,11 @@ export function createPublicIdentityPolicy(nativeKind: string,
   const refs = (fields: readonly string[]) => fields.forEach(field => references.add(surface + field));
   const card = (root: string) => cards.push(surface + root);
   if (SELECTORS.has(nativeKind)) {
-    card("cards[]"); add(["screen_entity_id", "hand_entity_id"]);
-    refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]"]);
+    card("cards[]"); add(["screen_entity_id", "hand_entity_id", "request_entity_id", "current_controls[].entity_id"]);
+    refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]",
+      "selector_request.entity_id", "selector_request.owner_entity_id", "selector_request.selected_entity_ids[]",
+      "preview_options[].subject_entity_id", "selection_progress.selected_card_entity_ids[]"]);
+    card("preview_options[].before"); card("preview_options[].after");
     if (nativeKind === "deck_upgrade_selection") card("preview_cards[]");
   } else if (nativeKind === "combat_turn") {
     add(["room_entity_id"]);
@@ -54,13 +57,26 @@ export function createPublicIdentityPolicy(nativeKind: string,
   else if (["treasure_room", "treasure_chest", "treasure_relic_selection", "treasure_completion", "relic_choice", "native_boss_relic_selection"].includes(nativeKind)) {
     add(["room_entity_id", "screen_entity_id", "relics[].entity_id"]); refs(["selectable_relic_entity_ids[]"]);
   } else if (nativeKind === "shop_inventory") {
-    add(["screen_entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
-      "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]);
-    card("cards[]");
-  } else if (nativeKind === "shop_room") add(["room_entity_id"]);
+    add(["screen_entity_id", "shop_session_entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
+      "relics[].relic.entity_id", "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]);
+    card("cards[]"); card("cards[].card"); card("relics[].relic.card_previews[]");
+  } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
     && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));
+  const shopDeclarations = new Set<string>();
+  const shopCards = new Set<string>();
+  extraReads.forEach((read, index) => {
+    const content = read.content as Record<string, unknown> | null;
+    if (read.kind !== "shop_catalog" || content?.kind !== "shop_catalog"
+        || ![content.cards, content.relics, content.potions].every(Array.isArray)) return;
+    const root = `extra_reads[${index}].content.`;
+    for (const field of ["cards[].entity_id", "cards[].slot_entity_id", "relics[].entity_id", "relics[].slot_entity_id",
+      "relics[].relic.entity_id", "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"])
+      shopDeclarations.add(root + field);
+    shopCards.add(root + "cards[].card");
+    shopCards.add(root + "relics[].relic.card_previews[]");
+  });
   if (detailCards.size > 0) references.add("extra_reads[].content.display_owner_entity_id");
   const cardIdentity = (path: string, root: string) => path.startsWith(root)
     && /^(?:\.card_previews\[\])*\.entity_id$/u.test(path.slice(root.length));
@@ -69,9 +85,10 @@ export function createPublicIdentityPolicy(nativeKind: string,
       const normalized = normalizePublicPath(path);
       if (references.has(normalized)) return "reference";
       const detailPath = path.replace(/^\$\.observation\./u, "").replace(/^\./u, "")
-        .replace(/\.card_previews\[\d+\]/gu, ".card_previews[]");
+        .replace(/^(extra_reads\[\d+\])(.*)$/u, (_, root: string, tail: string) => root + tail.replace(/\[\d+\]/gu, "[]"));
       if (declared.has(normalized) || cards.some(root => cardIdentity(normalized, root))
-          || [...detailCards].some(root => cardIdentity(detailPath, root))) return "declared";
+          || shopDeclarations.has(detailPath)
+          || [...detailCards, ...shopCards].some(root => cardIdentity(detailPath, root))) return "declared";
       return null;
     }
   };

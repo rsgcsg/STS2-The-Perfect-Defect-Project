@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
@@ -191,4 +192,50 @@ public sealed class NativeSelectorPublicFactsTests
         Assert.Contains("native_required_description_gap", result.Missing);
         Assert.All(result.Options, option => Assert.Equal("unavailable", option!["after_availability"]!.GetValue<string>()));
     }
+    private static Func<CardModel, CardTransformation> NativeDefaultTransformProjection()
+    {
+        MethodInfo? method = NativeSelectorPublicFacts.DefaultTransformProjectionMethod;
+        Assert.NotNull(method);
+        Assert.Equal(typeof(CardSelectCmd).Module, method.Module);
+        Assert.Equal("<FromDeckForTransformation>b__22_1", method.Name);
+        return (Func<CardModel, CardTransformation>)method.CreateDelegate(typeof(Func<CardModel, CardTransformation>),
+            RuntimeHelpers.GetUninitializedObject(method.DeclaringType!));
+    }
+
+    [Fact]
+    public void PublicBasisDefaultTransformCapturesOnlyOriginalsWithoutInvokingProjectionAndDoesNotQualifySourcePreview()
+    {
+        var state = State(typeof(NDeckTransformSelectScreen), count: 3);
+        var projection = NativeDefaultTransformProjection();
+        typeof(NDeckTransformSelectScreen).GetField("_cardToTransformation", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(state.Owner, projection);
+        Assert.True(NativeSelectorPublicFacts.DefaultTransformProjectionQualified(projection));
+        var facts = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform: true);
+        Assert.True(facts.ModelFactsReady); Assert.Empty(facts.Missing);
+        Assert.Equal("deck_transform", facts.Request.Family);
+        Assert.Equal("native_preview_at_max", facts.Request.AddTransition);
+        Assert.False(facts.RequiresAggregateAfterPresentation);
+        Assert.All(facts.Candidates, candidate => Assert.Null(candidate.Detached));
+        Assert.False(NativeSelectorPublicFacts.Capture(state).Request.MechanicsQualified);
+        var result = NativeSelectorPublicProjection.Project(facts, "owner", "task", _ => "original", PileType.Deck, RenderShape);
+        Assert.All(result.Options, option => { Assert.Null(option!["after"]); Assert.Equal("not_applicable", option["after_availability"]!.GetValue<string>()); });
+    }
+
+    [Fact]
+    public void PublicBasisTransformRefusesCustomAndMulticastProjectionsBeforeAnyInvocation()
+    {
+        var state = State(typeof(NDeckTransformSelectScreen));
+        int calls = 0;
+        Func<CardModel, CardTransformation> custom = card => { calls++; return new CardTransformation(card); };
+        typeof(NDeckTransformSelectScreen).GetField("_cardToTransformation", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(state.Owner, custom);
+        var facts = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform: true);
+        Assert.False(facts.Request.MechanicsQualified);
+        Assert.Contains("custom_transform_preview_unqualified", facts.Missing);
+        Assert.Equal(0, calls);
+        var combined = (Func<CardModel, CardTransformation>)Delegate.Combine(NativeDefaultTransformProjection(), custom);
+        Assert.False(NativeSelectorPublicFacts.DefaultTransformProjectionQualified(combined));
+        Assert.Equal(0, calls);
+    }
+
 }

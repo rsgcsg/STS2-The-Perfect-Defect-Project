@@ -4,6 +4,7 @@ function card(nativeRef, overrides = {}) {
   return {
     native_ref: nativeRef, index: 0, id: "CARD.STRIKE", name: "Strike", type: "Attack",
     cost: "1", rarity: "Basic", is_upgraded: false, description: "Deal 6 damage.",
+    public_details: { keywords: [], card_previews: [] }, public_details_complete: true, public_details_missing: [],
     ...overrides
   };
 }

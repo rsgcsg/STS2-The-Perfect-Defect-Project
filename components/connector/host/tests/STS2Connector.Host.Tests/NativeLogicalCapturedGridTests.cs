@@ -116,4 +116,107 @@ public sealed class NativeLogicalCapturedGridTests
         Assert.Contains("persistent_public_context_missing", second.Page.Completeness.Missing);
         Assert.Equal("partial", second.Page.Completeness.Status);
     }
+    [Fact]
+    public void PublicBasisUsesFrozenFullRosterExactInputAndDistinctCardDisplays()
+    {
+        var (source, grid) = Captured();
+        var before = grid.FullCards[63];
+        var after = before with { Description = "Native after description", IsUpgraded = true };
+        grid = grid with { NeutralSurface = grid.NeutralSurface with {
+            CardDisplays = new[] { new NativeLogicalGridCardDisplay(before, "selector_before"),
+                new NativeLogicalGridCardDisplay(after, "selector_after") } } };
+        var input = new SnapshotBuildInput(source.HostObservation.Game, source.HostObservation,
+            new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = new(true, grid, Array.Empty<string>()),
+            Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        var first = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        var again = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        Assert.Equal(first.Snapshot.SnapshotId, again.Snapshot.SnapshotId);
+        Assert.Equal(64, first.Snapshot.Interaction.Content.Surface["cards"]!.AsArray().Count);
+        var action = Assert.Single(first.Snapshot.BoundActions.Actions);
+        Assert.Equal("deselect", action.Verb); Assert.Equal("card-63", action.SubjectReferentId);
+        Assert.Same(grid.Inputs[0], first.Bindings[action.BoundActionId].NativeAction.GridInput);
+        Assert.Equal(2, first.Snapshot.Reads.Count(read => read.Kind == "surface_card" && read.TargetReferentId == "card-63"));
+        Assert.Null(first.Snapshot.Interaction.Content.Surface["native_preview_text"]);
+        var legacy = PlayerEnvironmentService.BuildSnapshot(capturedInput: input);
+        Assert.IsNotType<NativePublicBasisGridSurface>(legacy.HostObservation.Surface);
+    }
+
+    [Fact]
+    public void ActualPreviewComparisonChecksEveryPublicFactAndMultiplicityWithoutInventedIds()
+    {
+        JsonObject Card(string id, string description) => new() { ["entity_id"] = id, ["is_selected"] = true,
+            ["definition_id"] = "NATIVE", ["description"] = description,
+            ["card_previews"] = new JsonArray(new JsonObject { ["description"] = "Nested native text" }) };
+        var expected = new[] { Card("original-1", "After"), Card("original-2", "After") };
+        var actual = new[] { Card("display-only", "After"), Card("display-only", "After") };
+        Assert.True(NativeLogicalGridCapture.PreviewRowsMatch(expected, actual));
+        actual[0]["card_previews"]![0]!["description"] = "New information";
+        Assert.False(NativeLogicalGridCapture.PreviewRowsMatch(expected, actual));
+        Assert.False(NativeLogicalGridCapture.PreviewRowsMatch(expected, actual.Take(1).ToArray()));
+        Assert.False(NativeLogicalGridCapture.PreviewRowsMatch(Array.Empty<JsonObject>(), Array.Empty<JsonObject>()));
+    }
+
+    [Fact]
+    public void NativeSinglePreviewWidgetsExposeTheExactAfterControl()
+    {
+        foreach (Type type in new[] { typeof(NUpgradePreview), typeof(NEnchantPreview) })
+        {
+            FieldInfo? after = type.GetField("_after", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(after);
+            Assert.True(typeof(Godot.Control).IsAssignableFrom(after.FieldType));
+        }
+    }
+
+    [Fact]
+    public void PublicBasisInspectorUsesProtocolOpenWhileRetainingExactNativeInput()
+    {
+        var (source, grid) = Captured();
+        var inspect = grid.Inputs[0] with { Key = "request-original:inspect:card-63", NativeLeafKey = "logical_grid_inspect:card-63",
+            NativeVerb = "inspect_card", PublicVerb = "inspect", Kind = NativeLogicalGridInputKind.Inspect };
+        grid = grid with { NeutralSurface = grid.NeutralSurface with { Inputs = new[] { inspect } } };
+        var input = new SnapshotBuildInput(source.HostObservation.Game, source.HostObservation,
+            new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = new(true, grid, Array.Empty<string>()),
+            Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        var built = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        var action = Assert.Single(built.Snapshot.BoundActions.Actions);
+        Assert.Equal("open", action.Verb);
+        Assert.Same(inspect, built.Bindings[action.BoundActionId].NativeAction.GridInput);
+        Assert.Equal("inspect_card", inspect.NativeVerb);
+    }
+
+    [Fact]
+    public void EmptyDeckCardPreviewRequiresActualEmptyContainerAndTheSameQualifiedOpenRequest()
+    {
+        var (_, grid) = Captured();
+        var request = new NativeSelectorOccurrenceFacts(grid.State.Owner, grid.State.Completion, "deck_card", "preview",
+            grid.State.Cards, Array.Empty<CardModel>(), 0, 64, true, "native_selected_original_set", "native_preview_at_max",
+            null, true, true, true, Array.Empty<string>());
+        bool Qualified(NativeSelectorOccurrenceFacts value, bool container = true, int holders = 0) =>
+            NativeLogicalGridCapture.IsQualifiedEmptyDeckCardPreview(value, container, holders);
+        Assert.True(Qualified(request));
+        Assert.False(Qualified(request, container: false));
+        Assert.False(Qualified(request, holders: 1));
+        Assert.False(Qualified(request with { Owner = Bare<NDeckTransformSelectScreen>(), Family = "deck_transform" }));
+        Assert.False(Qualified(request with { MinSelect = 1 }));
+        Assert.False(Qualified(request with { Selected = new[] { grid.State.Cards[0] } }));
+        Assert.False(Qualified(request with { Stage = "selecting" }));
+        Assert.False(Qualified(request with { MechanicsQualified = false }));
+        Assert.False(Qualified(request with { Completion = Task.CompletedTask }));
+    }
+
+    [Fact]
+    public void PublicBasisAndNativeCaptureRetainAllSixFamiliesWithSeparateTransformQualification()
+    {
+        Assert.True(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: true));
+        Assert.True(NativeLogicalGridCapture.CapturesOwner(typeof(NDeckTransformSelectScreen), publicBasisOnly: false));
+        foreach (Type type in new[] { typeof(NDeckCardSelectScreen), typeof(NDeckUpgradeSelectScreen),
+            typeof(NDeckEnchantSelectScreen), typeof(NSimpleCardSelectScreen), typeof(NCombatPileCardSelectScreen) })
+        {
+            Assert.True(NativeLogicalGridCapture.CapturesOwner(type, publicBasisOnly: true));
+            Assert.True(NativeLogicalGridCapture.CapturesOwner(type, publicBasisOnly: false));
+        }
+    }
+
 }

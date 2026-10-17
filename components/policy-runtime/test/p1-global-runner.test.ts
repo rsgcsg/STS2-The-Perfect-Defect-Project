@@ -23,12 +23,12 @@ function scenario(steps: unknown[], observe: unknown[] = [], withMap = true) {
   return { dir, file, log: join(dir, "requests.jsonl"), combat, over };
 }
 
-async function run(s: ReturnType<typeof scenario>, agent: string[] = [process.execPath, firstAgent], stop = { requested: false }) {
+async function run(s: ReturnType<typeof scenario>, agent: string[] = [process.execPath, firstAgent], stop = { requested: false }, maxDecisions = 50) {
   process.env.P1_FAKE_SCENARIO = s.file; process.env.P1_FAKE_LOG = s.log;
   return runEpisode({ seed: "STPDTEST", episodeId: "test-episode", recordDir: join(s.dir, "records"),
     host: { kind: "managed", hostRuntimeRoot: fakeHostRoot, location: s.dir, character: "Defect" },
     agent: { command: agent[0]!, args: agent.slice(1), replyTimeoutMs: 5000 },
-    maxDecisions: 50, maxEpisodeSeconds: 60, settleTimeoutMs: 2000, stop });
+    maxDecisions, maxEpisodeSeconds: 60, settleTimeoutMs: 2000, stop });
 }
 const steps = (s: ReturnType<typeof scenario>) => existsSync(s.log)
   ? readFileSync(s.log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((r) => r.command === "step") : [];
@@ -111,5 +111,62 @@ for await (const l of readline.createInterface({ input: process.stdin })) { cons
     const basisSeq = (firstObservation.basis_refs as any).snapshot_seq as number;
     expect(basisSeq).toBeLessThan(firstObservation.seq);
     expect(firstObservation.seq).toBeLessThan(firstOut.seq);
+  });
+});
+
+
+describe("direct P1 CLI shop continuation uses a sealed successor basis", () => {
+  function shopScenario(drift: "none" | "owner" | "world") {
+    const s = scenario([]);
+    const inventory = structuredClone(s.combat.snapshot);
+    inventory.reads = inventory.reads.filter((read: any) => read.kind !== "combat_piles");
+    inventory.interaction.kind = "shop_inventory";
+    inventory.interaction.stage = "ready";
+    inventory.interaction.content_schema = "sts2.player-environment/surface/shop_inventory-1";
+    inventory.interaction.content.context = { kind: "shop" };
+    inventory.interaction.content.surface = { kind: "shop_inventory", shop_session_entity_id: "native-merchant-room",
+      cards: [], relics: [], potions: [], card_removal: null, can_close: true };
+    const action = { ...inventory.bound_actions.actions[0], bound_action_id: "close-inventory", verb: "close",
+      subject_referent_id: null, arguments: [], label: "Close inventory" };
+    inventory.bound_actions.actions = [action];
+    inventory.bound_actions.total_count = inventory.bound_actions.materialized_count = 1;
+    const room = structuredClone(inventory);
+    room.snapshot_id += "-closed";
+    room.interaction.kind = "shop_room";
+    room.interaction.content_schema = "sts2.player-environment/surface/shop_room-1";
+    room.interaction.content.surface = { kind: "shop_room", shop_session_entity_id: "native-merchant-room",
+      can_open_inventory: true, can_proceed: true };
+    room.bound_actions.actions = [
+      { ...action, bound_action_id: "reopen", verb: "open", label: "Open inventory" },
+      { ...action, bound_action_id: "proceed-same-room", verb: "activate", label: "Leave shop" }
+    ];
+    room.bound_actions.total_count = room.bound_actions.materialized_count = 2;
+    if (drift === "owner") room.interaction.content.surface.shop_session_entity_id = "different-native-room";
+    if (drift === "world") room.persistent.content.player.gold++;
+    const original = JSON.parse(readFileSync(s.file, "utf8"));
+    writeFileSync(s.file, JSON.stringify({ ...original, reset: inventory,
+      steps: [{ delivery: "delivered", successor: room }, { delivery: "delivered", successor: s.over.snapshot }] }));
+    return s;
+  }
+
+  it.each(["none", "owner", "world"] as const)("handles %s continuation through the real HostDriver interface", async drift => {
+    const s = shopScenario(drift);
+    const row = await run(s, undefined, undefined, 1);
+    const lines = readRecord(row.record!.path);
+    const result = lines.find(line => line.kind === "p1_result")!.result as any;
+    if (drift === "none") {
+      expect(steps(s).map(step => step.bound_action_id)).toEqual(["close-inventory", "proceed-same-room"]);
+      expect(row.fold_steps).toBe(1);
+      expect(result.status).toBe("completed");
+      const requests = readFileSync(s.log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      const close = requests.findIndex(request => request.bound_action_id === "close-inventory");
+      const proceed = requests.findIndex(request => request.bound_action_id === "proceed-same-room");
+      expect(requests.slice(close + 1, proceed).filter(request => request.command === "read").length).toBeGreaterThan(0);
+    } else {
+      expect(steps(s).map(step => step.bound_action_id)).toEqual(["close-inventory"]);
+      expect(row.fold_steps).toBe(0);
+      expect(result.status).toBe("interrupted_known");
+    }
+    expect(row.unknown_delivery).toBe(false);
   });
 });

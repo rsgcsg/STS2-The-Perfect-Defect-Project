@@ -47,6 +47,18 @@ export function completeCombat(value: unknown): boolean {
 
 /** Common typed selector fields; bundle/other shapes need their own contract. */
 export function completeSelector(value: unknown): boolean {
+  if (isObject(value) && value.kind === "native_generated_card_choice") {
+    // This native chooser commits one visible card directly; it is not a
+    // min/max grid with a selected set and a separate confirmation stage.
+    if (!completeCards(value.cards)) return false;
+    const cards = value.cards;
+    return value.stage === "choosing" && value.is_peeking === false
+      && typeof value.can_skip === "boolean" && (value.prompt === null || typeof value.prompt === "string")
+      && Array.isArray(value.selectable_card_entity_ids)
+      && new Set(value.selectable_card_entity_ids).size === value.selectable_card_entity_ids.length
+      && value.selectable_card_entity_ids.every(id => cards.some(card => card.entity_id === id))
+      && cards.every(card => card.is_selected === false);
+  }
   if (!isObject(value) || !completeCards(value.cards) || !Number.isSafeInteger(value.min_select)
       || !Number.isSafeInteger(value.max_select) || Number(value.min_select) < 0 || Number(value.max_select) < Number(value.min_select)
       || !Array.isArray(value.selected_card_entity_ids) || new Set(value.selected_card_entity_ids).size !== value.selected_card_entity_ids.length

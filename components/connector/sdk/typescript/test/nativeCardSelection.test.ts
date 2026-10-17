@@ -23,6 +23,17 @@ describe("marked Managed selector contract", () => {
     legacy.interaction.content.context.combat = null;
     expect(() => decodePlayerSnapshot(legacy)).not.toThrow();
   });
+  it("accepts additional same-snapshot detail targets without adding selector candidates", () => {
+    const value = structuredClone(baseline);
+    value.referents.push({ ...value.referents.find((r: any) => r.role === "card"), referent_id: "deck-detail-card" });
+    expect(nativeCardSelectionProblems(value)).not.toEqual([]);
+    value.reads.push({ read_id: "deck-detail", kind: "surface_card", target_referent_id: "deck-detail-card",
+      content_schema: "sts2.player-environment/read/surface_card-1", visibility_basis: "normal_player_visible_surface_card",
+      snapshot_bound: true, ordering_semantics: "single_entity", hidden_by_policy: [] });
+    expect(() => decodePlayerSnapshot(value)).not.toThrow();
+    value.referents.push(structuredClone(value.referents.find((r: any) => r.referent_id === "deck-detail-card")));
+    expect(nativeCardSelectionProblems(value)).not.toEqual([]);
+  });
 
   it("rejects incomplete cards, HUD, ownership, candidate or empty catalogs", () => {
     const mutations = [

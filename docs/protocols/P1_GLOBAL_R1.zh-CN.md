@@ -1,6 +1,6 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.1，P1 的唯一权威文档**（2026-10-16 起）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
+状态：**r1.2，P1 的唯一权威文档**（2026-10-17 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前进度与下一步见第 16–18 节。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
@@ -63,7 +63,7 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 | `run` / `player` | 幕、层、进阶、Boss、HP、金币、遗物、药水、槽位 | 每份观察 |
 | `deck` | 牌组（规范化多重集） | 游戏端声明了牌组 Read 时为 available |
 | `combat` / `piles` | 战斗上下文（手牌、能量、敌人意图等）；抽牌堆为规范化多重集，弃牌/消耗堆保留原生可见顺序 | 战斗中 available（含战斗中的选牌页：Managed 把战斗 HUD 嵌在 `context.combat`，核心照样取出），否则 not_applicable |
-| `map` | 当前幕地图 | 地图页 available；其他页面 r1 为 unsupported（游戏可看，Host 未取） |
+| `map` | 当前幕地图 | 当前 profile 每个非终局决策点都必需；取不到就不发布完整观察 |
 | `commitments` | 本奖励页已放弃的组（只用公开别名）、是否已离开奖励页 | 每份观察 |
 | `catalog` | 语义动作清单（第 6 节），按 (kind, subject, target) 规范排序 | decision 时非空 |
 | `hidden_by_policy` | 游戏端声明隐藏的信息类别 | 每份观察 |
@@ -80,15 +80,21 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 | map | `map.travel(节点)` | 一对一 |
 | reward | `reward.claim(组)`（金币/药水/遗物）、`reward.take_card(组, 卡)`、`reward.decline_group(组)`、`reward.leave`、`reward.proceed` | take_card = 打开该组 → 核对打开页确实是预览的那张卡 → 选择；decline_group = 打开该组 → 合格原生 Skip → P1 关闭该组；不能把它误述为纯本地承诺 |
 | card_reward（游戏端直接弹出时） | `card_reward.take`、`card_reward.decline` | 一对一 |
-| upgrade / enchant | `upgrade.choose(卡)`、`enchant.choose(卡)` | 选卡 → 出现预览时自动确认 |
-| selector（各类选牌器） | `selector.choose`、`selector.skip`、`selector.confirm` | 单选出现预览时自动确认；多选逐张追加、由 Agent 决定何时确认 |
-| shop | `shop.buy`、`shop.service`、`shop.leave` | 一对一 |
+| upgrade / enchant | `upgrade.choose(卡)`、`enchant.choose(卡)`，`upgrade.finish` / `enchant.finish` | 逐张不可撤回追加；已选意图的合格预览自动确认；结束绑定当前原生可提交输入 |
+| selector（各类选牌器） | `selector.choose(卡)`、`selector.finish` | 逐张追加或结束；不返回、不撤选。空选结束是整页拒绝；选满只留结束，原生自动完成或合格确认可折叠 |
+| shop | `shop.open`、`shop.buy`、`shop.service`、`shop.leave` | 两 Host 一致的单向进入库存、购买/服务；leave = 关闭库存 → 同一商店原生 proceed，不能回到可 reopen 的 Agent 决策；open 是正常前进步骤，不是例外 |
 | event / rest / treasure / relic_choice | `event.choose`、`rest.choose`、`rest.proceed`、`treasure.*`、`relic.choose/skip` | 一对一 |
 | 其他 | 游戏端可交互但未在表内的动作 | 以 `native.<页面>.<动词>` 照样提供（mapped=false），不丢弃 |
 
-**排除（单向规则）**：`upgrade.back`、`enchant.back`、`selector.cancel`、`selector.deselect`、`upgrade.deselect`、`enchant.deselect`、`shop.open`；终局页上的全部原生输入（只是去结算页的导航，规则 `terminal:post_result_navigation`）。有预览时不再提供 `reward.open_card_group`；只有游戏端给不出预览时才保留它。
+**排除（单向规则）**：选牌里的返回、取消预览、撤选不进入清单；已有选择不能用“取消整页”清空。原生合法的空集提交或整页拒绝输入在空选时统一成为 `finish`，不丢掉拒绝机会。观察的 `surface.selection_progress` 给出已选公开牌、剩余名额、还需满足的最低数量及当前是否能结束；本 profile 不制造原生未提供的提交。选满后排除追加，保留完成输入；用户允许唯一结束自动执行，本实现仍可把该唯一输入交给 Agent。纯浏览仅在完整公开信息已汇总后排除，不能通过删信息换取单向。
 
-**强制步骤的当前边界**：共享核心目前返回 `forced_choice_id=null`，并未启用上述chooser旁路。一个按钮或一个动作不足以证明强制；未来若启用，必须逐机制证明没有其他有意义机会、保留context与origin，并按版本记录。已选意图内部的合格机械fold是另一回事。
+**变换**：选择原牌就是决定，不提供返回。滚动展示不进 P1 观察，不能把某个动画帧说成承诺结果；确认能按同一 owner/request 和既选牌资格折叠即折叠，否则只留结束/确认单一选项。确定替换或候选集合必须有真实游戏 producer、公开时点和代码出处后再分型；未提供实例的分支按原生提交后揭示随机结果处理，不预演 delegate/RNG。此要求已由用户决定，当前实现及覆盖仍须验收。
+
+**奖励组**：普通独立完整组继续 `take_card` / `decline_group` 聚合。关联/强制组先列真实 producer 及 Defect/A0/第一幕可达性；范围内未遇不登记例外，不以没有实跑就声称不存在。确实可达的不同语义先报用户决定。本次未批准把 open/return 整体登记为例外。
+
+终局页全部原生输入只去结算页，继续按 `terminal:post_result_navigation` 排除。
+
+**强制步骤的当前边界**：共享核心目前返回 `forced_choice_id=null`，并未启用上述chooser旁路。一个按钮或一个动作不足以证明任意机制强制；用户已允许选满后的唯一结束自动执行，本实现可保留成唯一选择。其他机制若启用，必须逐机制证明没有其他有意义机会、保留context与origin，并按版本记录。已选意图内部的合格机械fold是另一回事。
 
 **两端呈现差异的统一**：奖励页全部领完后，Managed 给单独的"前往地图"页，Reference 停在空奖励页给"继续"——两者都映射为 `reward.proceed`；当前仍由chooser选择，不因单例自行执行。`reward.leave` 之后若出现只有一个"前往地图"输入的完成页，把它作为同一意图的折叠步骤执行。继续类动作（`reward.proceed/leave`、`rest.proceed`）不带主语（原生房间引用不含决策信息）。
 
@@ -118,7 +124,9 @@ Agent → 执行器：choose{occurrence, choice_id} | abstain{reason}
 
 终局同样先发送完整 `observation{requires_choice:false}`，再发送 `episode_end`；不能仅凭结束通知或空choice判定跨Host终局相同。对照须已匹配前缀、Reference最后一点为明确终局、无删失，并比较双方完整公共终局（包含win/loss）。桥接器在返回Runtime close前让子Agent处理完终局并退出，异常退出不伪称完整交付；原Runtime预算仍约束等待。
 
-升级页已有的subjectless原生 `activate`（切换当前/升级预览）映射为 `upgrade.toggle_preview`，保留原bound_action_id并由原生执行时复验，不等同选牌/确认，也不扩成所有activate的兜底。
+合格 selector producer 汇总原牌及完整升级/附魔显示后，纯查看和切换预览从 P1 清单排除，原 BoundAction 仍留在环境字节和排除记录。没有相应事实的页面不能据此宣称完成信息聚合。
+
+当前 `session-bridge.mjs` 给子进程转发 hello / observation / episode_end，不转发 result；真正 Receipt/结果保存在 Runtime 原始记录，不能靠子 Agent 从未收到的 result 宣称验收。
 
 Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`components/policy-runtime/examples/p1/`（随机、首项、人工选择器）。
 
@@ -131,11 +139,13 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 
 ## 11. 两端等价怎样检查
 
-同一种子、同一确定性 Agent，两端各跑一次，再用 `sts2-p1 compare` 比对，报告第一处差异的路径；不一致就保留双方原件，不归一掉。
+本轮按用户批准的 r1 支持范围书 v0.2：固定 test-1000 前20种子、角色/难度/语言和候选 tuple，保留 Reference 真实公开选择，再在 Managed 按完整公开身份/关系重放。不能用两个 Host 各自随机跑到死亡代替配对重放。
 
-- **decision 模式（默认，跨 Host 的正式口径）**：只比 Agent 真正做选择的点和终局（强制步骤是 Host 呈现，不算决策）。每个点化成与语言无关的签名：场景家族、动作清单多重集（按 动作种类 + 主语/目标的公开身份：卡/敌人/药水定义、地图坐标、奖励种类、选项序号）、所选动作、决策相关公开状态（HP、金币、遗物药水、牌组、战斗回合/能量/格挡/手牌/牌堆数/敌人血量）、承诺。
-- semantic / exact 模式比整份观察（semantic 忽略显示文字）。两 Host 的引用结构本来就不同（例如 Managed 地图给"选项+节点"、Reference 只给"节点"；Reference 存档中文），所以这两种模式**不是**跨 Host 的等价口径，只用于同一 Host 的复现。
-- 配对用 `examples/p1/signature_agent.mjs`：按 (种子, 自己的第几次决策) 的哈希在签名分组里选，不依赖别名、文字和强制页数量，所以两端状态一致时做同一个语义选择。
+- 正式比较完整 P1 公开观察、目录、实际选择和不可撤回承诺。一个全局注入双射约束全部卡、重复实例、owner、目录及被选动作；只有合同声明的多重集可换序。
+- 文字逐字段比较，不全局删名称或描述；同候选下编码/运输差异先按原始反例确定适配 owner。当前卡牌详情 Read 库存无时间顺序，可作为多重集比较，但每张牌、显示上下文、owner 关联及重复次数必须保留。
+- 所有真正选择点及完整公开终局（包括 win/loss）均须一致，Reference 必须明确自然终局且无删失。unknown、预算停止、基础设施中断、partial 卡点单独计数。
+- 比较器资源上限返回 incomparable，不能算 equal；改变 loss→win、丢失重复实例、错绑关系或文本不相等必须拒绝 equal。
+- 批准的差异也不算一致，只缩小声明；未实现/未验证机制继续保留全局义务。旧 r1.0 的压缩 decision-signature 统计是历史结果，不代替本标准。r1.2 新语义/观察绑定不能重贴到旧 r1.1 原件上。
 
 ## 12. 限额
 
@@ -195,7 +205,7 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 
 ## 16. r1.1 产品路径实测（2026-10-16，本机，source + runtime，非 hosted CI）
 
-全部经 Policy Runtime 产品路径。外部 Agent 是 `examples/p1/random_agent.py`，经 `session-bridge.mjs` 接入；入口 `tools/p1-suite.mjs`。
+以下是旧 r1.1 的历史结果，不给 r1.2 重新贴资格标签。全部经 Policy Runtime 产品路径。外部 Agent 是 `examples/p1/random_agent.py`，经 `session-bridge.mjs` 接入；入口 `tools/p1-suite.mjs`。
 
 | 运行 | 宿主 | 结果 |
 | --- | --- | --- |
