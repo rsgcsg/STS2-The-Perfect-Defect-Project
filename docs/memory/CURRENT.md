@@ -8,7 +8,9 @@ PR193 targets develop29d889bc after the approved PR189/191 merge commits.
 Old T7 card A is obsolete. No package2/3, training, release freeze or PR merge
 is assigned by this delivery.
 
-The bounded B/C/S/T6 engineering criteria now pass. On frozen product source
+Package1 remains incomplete: B/T6 and the frozen B/C suite counts pass, but
+final closeout found64 Reference reward-intention mechanical interruptions.
+On frozen product source
 e5f64e49, Managed40 and Reference20 each finished entirely in natural loss,
 zero unknown and every original replay verified. Independent final audits bind
 raw native terminals, complete sources, exact current actions, original wire
@@ -32,7 +34,7 @@ row5 same-seed random path did not encounter that selector; its terminal alone
 is not the short's mechanism proof. Command presentation now follows visible
 hand order, and Managed exposes the native discardable-potion DTO with real slots.
 
-Installed final Mod: f0830e97/MVID933e38e4. Managed DLL: e6f68ebb/MVID12a48a52.
+The pre-reward-owner-fix suite Mod is f0830e97/MVID933e38e4. Managed DLL: e6f68ebb/MVID12a48a52.
 Core r1.2:1fe50249; Runtime code:8e04ba94. Product-head CI39046363552 passed
 the full portable source/test route; Windows was skipped by its current policy.
 Local affected checks: SDK476, NativeLogical179, Runtime609 pass/3 skip,
@@ -51,9 +53,21 @@ the2.5h window ending2026-10-18 03:43:38 Australia/Brisbane. Every short had a n
 implementation or stated hypothesis; no unknown was retried. Previous-window
 failed rows and their original replay errors remain separate historical evidence.
 
+A final classification of all64 interrupted_known Results found53 reward.take_card
+and11 reward.decline_group opens with no folded second input. Frozen SDK review
+shows every card/world/parent/alternative fact equal; only Reference surface_card
+content changed display_context reward_candidate->surface:card_reward_selection
+and dropped display_owner_entity_id to null.50 attached->attached and14 absent->absent
+subscriptions exclude E1 as the explanation. This is a real remaining S bug,
+not new game information. The Reference producer now keeps bound card rewards'
+original reward_candidate/ParentGroupId display ownership; standalone pages keep
+their own context. SDK full-fact guards remain unchanged. New native regression,
+Mod build and one new-code short check are in progress; no third full batch is
+authorized and old f0830e97 suites cannot qualify the later Mod.
+
 No actual Boss positive chain is established. A full terminal P1 human chooser
 and a one-page recording guide are available, but no real user recording is
-claimed. Additional Boss gameplay needs the user's next budget decision.
+claimed. Further full acceptance and Boss gameplay need the user's next budget decision.
 
 ## Remaining Platform non-claims
 

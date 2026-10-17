@@ -11,13 +11,15 @@ public sealed class PublicCardDetailCompatibilityTests
 {
     private static VisibleCard Card() => new("card", "NATIVE_CARD", "Native card", "Skill", "1", null,
         "Native description", "Common", false, false, null);
-    private static SnapshotBuildResult Build(VisibleCard card, bool outer = false, bool enriched = false)
+    private static SnapshotBuildResult Build(VisibleCard card, bool outer = false, bool enriched = false, bool bound = false)
     {
         ILiveSurface surface = outer
             ? new RewardClaimSurface("reward_claim", "screen", new[] {
                 new VisibleReward("reward", "card", "Cards", null, true) { CardOptions = new[] { card } }
             }, false, Array.Empty<VisibleCombatPotion>(), true, false)
-            : new CardRewardSelectionSurface("card_reward_selection", "screen", new[] { card }, Array.Empty<VisibleCardRewardAlternative>());
+            : new CardRewardSelectionSurface("card_reward_selection", "screen", new[] { card }, Array.Empty<VisibleCardRewardAlternative>())
+                { ParentStatus = bound ? "bound" : "standalone", ParentGroupId = bound ? "reward" : null,
+                    RewardSetId = bound ? "reward-set" : null };
         var entry = PlayerEnvironmentService.BuildLinkedDetailCatalog(surface, includePublicCardDetails: enriched).Single();
         var read = new PlayerEnvironmentReadOpportunity("read:surface_card:" + (entry.DetailKey ?? entry.EntityId), "surface_card", "card",
             "sts2.player-environment/read/surface_card-1", "normal_player_visible_surface_card", true,
@@ -57,6 +59,24 @@ public sealed class PublicCardDetailCompatibilityTests
         Assert.IsType<JsonArray>(enriched.Content["keywords"]); Assert.IsType<JsonArray>(enriched.Content["card_previews"]);
         Assert.Equal(withMetadata.ContentSchema, enriched.ContentSchema);
         Assert.Equal(DateTimeOffset.UnixEpoch, enriched.ObservedAt);
+    }
+    [Fact]
+    public void BoundRewardCandidatesKeepTheirCompleteDetailAndOwnerWhenThePageOpens()
+    {
+        var card = Card() with { CurrentPublicDetails = new JsonObject {
+            ["keywords"] = new JsonArray(), ["card_previews"] = new JsonArray() } };
+        var offered = Read(Build(card, outer: true, enriched: true), true);
+        var opened = Read(Build(card, enriched: true, bound: true), true);
+        Assert.Equal("complete", offered.Completeness.Status);
+        Assert.Equal("complete", opened.Completeness.Status);
+        Assert.Equal("reward_candidate", opened.Content["display_context"]!.GetValue<string>());
+        Assert.Equal("reward", opened.Content["display_owner_entity_id"]!.GetValue<string>());
+        Assert.Equal(JsonSerializer.Serialize(offered.Content, ConnectorMod._jsonOptions),
+            JsonSerializer.Serialize(opened.Content, ConnectorMod._jsonOptions));
+
+        var standalone = Read(Build(card, enriched: true), true);
+        Assert.Equal("surface:card_reward_selection", standalone.Content["display_context"]!.GetValue<string>());
+        Assert.Null(standalone.Content["display_owner_entity_id"]);
     }
     [Fact]
     public void AnEnrichedDetailCannotClaimCompleteWithoutTheActualCapturedNativeFields()

@@ -229,6 +229,9 @@ internal static partial class PlayerEnvironmentService
                 foreach (VisibleReward reward in rewards.Rewards)
                     Add(reward.CardOptions ?? Array.Empty<VisibleCard>(), "reward_candidate", null, reward.GroupId ?? reward.EntityId);
                 break;
+            case CardRewardSelectionSurface { ParentStatus: "bound" } rewardCards:
+                Add(rewardCards.Cards, "reward_candidate", null, rewardCards.ParentGroupId);
+                break;
             case CardBundleSelectionSurface bundles:
                 foreach (VisibleCardBundle bundle in bundles.Bundles) Add(bundle.Cards, "bundle_preview", null, bundle.EntityId);
                 break;
