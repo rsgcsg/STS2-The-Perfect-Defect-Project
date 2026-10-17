@@ -6,8 +6,8 @@ const project = (basis: P1Basis) => reduce(createSession("admission", "managed")
 const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis.snapshot.bound_actions.materialized_count = basis.snapshot.bound_actions.actions.length; };
 const read = (basis: any, kind: string): any => basis.reads.find((item: any) => item.kind === kind).response;
 
-describe("P1 r1.1 explicit complete-capture admission", () => {
-  it.each([false, true])("maps the native subjectless upgrade-view toggle (showing=%s) without changing its binding", showing => {
+describe("P1 r1.2 explicit complete-capture admission", () => {
+  it.each([false, true])("retains the legacy toggle binding privately but withholds its incomplete presentation (showing=%s)", showing => {
     const b = fixture("managed-deck_upgrade_selection");
     Object.assign(b.snapshot.interaction.content.surface, { showing_upgrade_previews: showing, can_toggle_upgrade_view: true });
     const toggle = { ...b.snapshot.bound_actions.actions[0], bound_action_id: "native_upgrade_view_toggle",
@@ -15,10 +15,10 @@ describe("P1 r1.1 explicit complete-capture admission", () => {
     delete toggle.subject_referent_id;
     b.snapshot.bound_actions.actions.push(toggle); count(b);
     const r = project(b);
-    // This archived selector capture lacks the required map Read. Mapping the
-    // toggle must remove its own gap, without inventing completeness elsewhere.
+    // The archived capture lacks a map and the full presentation producer.
+    // Neither may be invented merely because the native toggle can be mapped.
     expect(r.complete).toBe(false);
-    expect(r.missing).toEqual(["required:map"]);
+    expect(r.missing).toEqual(["required:map", "required:selector:complete_public_presentations"]);
     const choice = r.observation.catalog.find(c => c.kind === "upgrade.toggle_preview")!;
     expect(choice.subject).toBeNull();
     expect(r.lowering[choice.choice_id]!.first!.bound_action_id).toBe(toggle.bound_action_id);

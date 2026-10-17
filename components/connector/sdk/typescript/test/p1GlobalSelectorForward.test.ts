@@ -30,6 +30,32 @@ describe("same-request forward selector intention", () => {
     expect(project(preview).observation.catalog.map(c => c.kind)).toEqual(["selector.finish"]);
     expect((reduced.observation.scene.content as any).surface.preview_options[0].after).toBeNull();
   });
+  it("folds an early transform Finish only when that native control actually opens the preview", () => {
+    const { outer, preview } = pair();
+    for (const basis of [outer, preview]) {
+      const snapshot = basis.snapshot; const s = snapshot.interaction.content.surface;
+      snapshot.interaction.kind = s.kind = "deck_transform_selection";
+      snapshot.interaction.content_schema = "sts2.player-environment/surface/deck_transform_selection-1";
+      s.selector_request.family = "deck_transform";
+      s.preview_options[0].after = null; s.preview_options[0].after_availability = "not_applicable";
+      s.preview_options[0].display_context = "native_original_only";
+      s.require_manual_confirmation = s.selector_request.require_manual_confirmation = true;
+      s.max_select = s.selector_request.max_select = 2;
+    }
+    const s = outer.snapshot.interaction.content.surface;
+    s.cards[0].is_selected = s.preview_options[0].before.is_selected = true;
+    s.selected_card_entity_ids = s.selector_request.selected_entity_ids = [s.cards[0].entity_id];
+    s.selected_count = 1; s.current_controls = [{ entity_id: "confirm", operation: "confirm_selection" }];
+    outer.snapshot.bound_actions.actions = [{ ...outer.snapshot.bound_actions.actions[0],
+      bound_action_id: "early-finish", verb: "confirm", subject_referent_id: "confirm" }];
+    outer.snapshot.bound_actions.total_count = outer.snapshot.bound_actions.materialized_count = 1;
+    const r = project(outer); const low = r.lowering[r.observation.catalog[0]!.choice_id]!;
+    expect(r.observation.catalog[0]!.kind).toBe("selector.finish");
+    expect(resolveFollowBasis(low.follow[0]!, low, preview)?.bound_action_id).toBe("exact-confirm");
+    s.require_manual_confirmation = s.selector_request.require_manual_confirmation = false;
+    const direct = project(outer);
+    expect(direct.lowering[direct.observation.catalog[0]!.choice_id]!.follow).toEqual([]);
+  });
   it("only offers Finish on the selected preview, with no return or deselection", () => {
     const { preview } = pair();
     const reduced = project(preview);
@@ -115,7 +141,7 @@ describe("same-request forward selector intention", () => {
       if (change === "duplicate") { preview.snapshot.bound_actions.actions.push({ ...preview.snapshot.bound_actions.actions[0], bound_action_id: "duplicate" }); preview.snapshot.bound_actions.total_count = preview.snapshot.bound_actions.materialized_count = 3; }
       expect(resolveFollowBasis(low.follow[0]!, low, preview)).toBeNull();
     });
-  it("keeps browsing and confirmation explicit on legacy or incomplete producer facts", () => {
+  it("withholds legacy browsing until a producer supplies complete public presentations", () => {
     const { outer } = pair();
     delete outer.snapshot.interaction.content.surface.selector_request;
     // Legacy producer's original inspection verb is open.
@@ -123,6 +149,8 @@ describe("same-request forward selector intention", () => {
     outer.snapshot.bound_actions.actions[2].verb = "activate";
     delete outer.snapshot.bound_actions.actions[2].subject_referent_id;
     const r = project(outer);
+    expect(r.complete).toBe(false);
+    expect(r.missing).toContain("required:selector:complete_public_presentations");
     expect(r.observation.catalog.map(c => c.kind)).toContain("upgrade.preview");
     expect(plan(outer).follow).toEqual([]);
     const broken = pair().outer; broken.snapshot.interaction.content.surface.preview_options[0].after = null;

@@ -8,7 +8,8 @@ import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js
 import { completeSelectorFacts, selectorOperation, selectorIntention, matchesSelectorIntention,
   type SelectorIntention } from "./selectorForward.js";
 import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, completeCardRewardSurface, rewardIntention,
-  matchesRewardIntention, rewardWorldFacts, type RewardIntention } from "./rewardForward.js";
+  matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
+import { shopWorldFacts } from "./shopForward.js";
 import {
   P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
@@ -560,6 +561,9 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;
     if (selectionFamily && (declineSelection || action.verb === "confirm"
         || ["open_preview", "confirm_selection", "confirm"].includes(operation ?? ""))) kind = `${family}.finish`;
+    if (selectionFamily && !qualifiedSelector && (kind?.endsWith(".preview") || kind?.endsWith(".toggle_preview"))
+        && !missing.includes("required:selector:complete_public_presentations"))
+      missing.push("required:selector:complete_public_presentations");
     const mapped = kind !== undefined;
     kind ??= `native.${nativeKind}.${action.verb}${role ? `.${role}` : ""}`;
     // The native result is final: inputs on the game-over page only navigate to the run summary.
@@ -623,7 +627,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       expect_verb: "confirm", optional: false });
     const shopLeave = nativeKind === "shop_inventory" && kind === "shop.leave"
       && typeof surface.shop_session_entity_id === "string" && surface.shop_session_entity_id.length > 0
-      ? { owner: surface.shop_session_entity_id, world: rewardWorldFacts(basis),
+      ? { owner: surface.shop_session_entity_id, world: shopWorldFacts(basis),
         context: canonicalJson(snapshot.interaction.content.context) } : null;
     if (shopLeave) follow.push({ rule_id: "shop_leave", expect_native_kind: "shop_room",
       expect_verb: "activate", optional: false });
@@ -763,7 +767,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
     const snapshot = basis.snapshot as Record<string, any>;
     const surface = snapshot.interaction.content.surface;
     if (snapshot.interaction.kind !== "shop_room" || surface.shop_session_entity_id !== lowering.shop_leave.owner
-        || surface.can_proceed !== true || rewardWorldFacts(basis) !== lowering.shop_leave.world
+        || surface.can_proceed !== true || shopWorldFacts(basis) !== lowering.shop_leave.world
         || canonicalJson(snapshot.interaction.content.context) !== lowering.shop_leave.context) return null;
     const choices = next.observation.catalog.filter(choice => choice.kind === "shop.leave");
     const first = choices.length === 1 ? next.lowering[choices[0]!.choice_id]?.first : null;

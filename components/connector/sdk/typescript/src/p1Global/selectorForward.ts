@@ -102,7 +102,9 @@ export function selectorIntention(surface: Record<string, any>, basis: P1Basis,
       && !surface.selected_card_entity_ids.includes(subject)) {
     expected = [...surface.selected_card_entity_ids, subject];
     if (expected.length !== surface.max_select) return null;
-  } else if (selectorOperation(surface, subject) === "open_preview") {
+  } else if (selectorOperation(surface, subject) === "open_preview"
+      || surface.selector_request.family === "deck_transform" && surface.require_manual_confirmation === true
+        && selectorOperation(surface, subject) === "confirm_selection") {
     expected = [...surface.selected_card_entity_ids];
   } else return null;
   const snapshot = basis.snapshot as Record<string, any>;
