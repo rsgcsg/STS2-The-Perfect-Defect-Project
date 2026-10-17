@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using HarmonyLib;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
@@ -166,7 +169,7 @@ internal static class NativeSelectorPublicFacts
         if (typeof(CardModel).Assembly.ManifestModule.ModuleVersionId != NativeCardPreviewReadQualification.AuditedGameMvid
             || !NativeLogicalGridCallbacks.Supported(type)
             || !NativeCardPreviewReadQualification.MethodsUnpatched(typeof(CardSelectorPrefs), "get_MinSelect", "get_MaxSelect", "get_RequireManualConfirmation")
-            || !NativeCardPreviewReadQualification.MethodsUnpatched(type, "OnCardClicked")) return false;
+            || !MechanicsMethodsQualified(type, "OnCardClicked")) return false;
         string[] methods = type == typeof(NDeckCardSelectScreen)
             ? new[] { "PreviewSelection", "RefreshConfirmButtonVisibility", "ConfirmSelection", "CheckIfSelectionComplete", "CloseSelection", "CancelSelection" }
             : type == typeof(NDeckUpgradeSelectScreen)
@@ -178,6 +181,44 @@ internal static class NativeSelectorPublicFacts
             : Array.Empty<string>();
         // A transform mapping delegate has its own, unclosed information/effect
         // boundary; a generic set model alone must not qualify its preview.
-        return methods.Length > 0 && NativeCardPreviewReadQualification.MethodsUnpatched(type, methods);
+        return methods.Length > 0 && MechanicsMethodsQualified(type, methods);
     }
+    private static bool MechanicsMethodsQualified(Type owner, params string[] names) => names.All(name =>
+    {
+        MethodInfo[] methods = owner.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(method => method.Name == name).ToArray();
+        return methods.Length > 0 && methods.All(SelectorMethodQualified);
+    });
+
+    // The unified Mod's existing recorder observes these callbacks. It never
+    // changes their selection result or suppresses the original native body.
+    // This permission is local to selector mechanics, never public formatting.
+    internal static bool SelectorMethodQualified(MethodBase original)
+    {
+        if (Harmony.GetPatchInfo(original) is not { } patches) return true;
+        bool Allowed(Patch patch, string role) => patch.PatchMethod.Module == typeof(ConnectorMod).Module
+            && KnownObserverShape(original, patch.PatchMethod.DeclaringType?.FullName, patch.PatchMethod.Name, role, patch.owner);
+        return patches.Transpilers.Count == 0
+            && patches.Prefixes.All(patch => Allowed(patch, "Prefix"))
+            && patches.Postfixes.All(patch => Allowed(patch, "Postfix"))
+            && patches.Finalizers.All(patch => Allowed(patch, "Finalizer"));
+    }
+
+    internal static bool KnownObserverShape(MethodBase original, string? patchType, string patchMethod,
+        string role, string harmonyOwner)
+    {
+        if (harmonyOwner != "rsgcsg.sts2-human-annotator" || patchMethod != role
+            || role is not ("Prefix" or "Postfix" or "Finalizer")
+            || original.DeclaringType is not { } owner || !NativeLogicalGridCallbacks.Supported(owner)) return false;
+        Type[] args = original.GetParameters().Select(parameter => parameter.ParameterType).ToArray();
+        if (original.Name == "OnCardClicked" && args.SequenceEqual(new[] { typeof(CardModel) }))
+            return patchType == "STS2HumanAnnotator.Mod.NativeSelectorCardDecisionPatch";
+        bool simpleCompletion = owner == typeof(NSimpleCardSelectScreen) || owner == typeof(NCombatPileCardSelectScreen);
+        bool accepted = simpleCompletion ? original.Name == "CompleteSelection" && args.Length == 0
+            : args.SequenceEqual(new[] { typeof(NButton) }) && (owner == typeof(NDeckTransformSelectScreen)
+                ? original.Name is "CloseSelection" or "CompleteSelection"
+                : original.Name is "CloseSelection" or "ConfirmSelection");
+        return accepted && patchType == "STS2HumanAnnotator.Mod.NativeNestedSelectorAcceptedPatch";
+    }
+
 }
