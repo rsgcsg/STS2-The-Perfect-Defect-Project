@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve, relative, sep, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { deriveSourceRunScope, classifySourceRunEntry, qualifySourceWholeRun } from './source4-run-scope.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -83,11 +84,13 @@ export async function convertSource4Bundle(options) {
 /** Pure adapter for already verified originals; exported for synthetic semantic regressions only. */
 export function convertOriginals(source, sdk, core, options) {
   const manifest = source.receipt.manifest;
+  const runScope = options.runContinuityId === undefined ? null : deriveSourceRunScope(source, options.runContinuityId);
+  let enteredRun = false;
   const episodeId = `source4:${manifest.session_id}`;
   let state = core.createSession(episodeId, options.hostKind);
-  const report = { schema: 'sts2.p1/source4-conversion-report-2', source_bundle: source.bundle,
+  const report = { schema: `sts2.p1/source4-conversion-report-${runScope ? 3 : 2}`, source_bundle: source.bundle,
     source_content_id: source.receipt.content_id, source_session_id: manifest.session_id,
-    host_kind: options.hostKind, scope: { kind: 'bounded_recorded_prefix',
+    host_kind: options.hostKind, scope: runScope?.report ?? { kind: 'bounded_recorded_prefix',
       end_reason: source.boundaries.at(-1)?.kind ?? 'verified_source_close', natural_terminal_observed: false }, captures: [], actions: [], context_spans: [], native_trace: source.inputs,
     source_boundaries: source.boundaries,
     unresolved_inputs: [], unresolved_contexts: [], missing: [], complete: false,
@@ -97,7 +100,7 @@ export function convertOriginals(source, sdk, core, options) {
   let candidates = []; let publicationsBefore = []; let previousPublication = null;
   for (const entry of orderedSource4Rows(source)) {
     const row = entry.row; const reference = row.captured_parts.public_basis;
-    let basis = null; let reduction = null;
+    let basis = null; let reduction = null; let original;
     const capture = { source_kind: entry.kind, epoch_id: row.epoch_id, segment_id: row.segment_id,
       source_ref: entry.kind === 'source_input' ? row.input_id : row.position.publication_index,
       public_basis: reference, complete: false, missing: [], observation: null,
@@ -107,24 +110,32 @@ export function convertOriginals(source, sdk, core, options) {
       const bytes = source.bytes(reference.payload_ref);
       if (bytes.length !== reference.byte_count || hash(bytes) !== reference.sha256)
         throw new Error('source4_basis_reference_changed');
-      let original;
       try { original = sdk.decodePublicBasis(JSON.parse(bytes.toString('utf8'))); }
       catch { capture.missing.push('p1_public_basis_decoder_refused_original'); }
-      if (original !== undefined) {
-        basis = { snapshot: original.snapshot, reads: original.reads };
-        // Diagnostic reduction is pure. A native UI prefix is not automatically a new P1 decision.
-        reduction = core.reduce(state, basis);
-        capture.complete = reduction.complete; capture.missing = [...reduction.missing];
-        capture.observation = reduction.observation;
-        if (entry.kind === 'source_input' && reduction.complete && reduction.observation.status === 'decision') {
-          // A stable snapshot ID can have a later observed_at. Bind this candidate to the exact original input bytes.
-          const key = [row.epoch_id, row.segment_id, row.input_id, row.input_prefix_ordinal,
-            core.canonicalJson(core.commitmentView(state))].join('|');
-          if (!candidates.some(candidate => candidate.key === key)) candidates.push({ key, before: state, basis,
-            reduction, captureIndex, start: trace.length, epoch: row.epoch_id, segment: row.segment_id });
-        }
-      }
+      if (original !== undefined) basis = { snapshot: original.snapshot, reads: original.reads };
     } else capture.missing.push(row.captured_parts.public_basis_missing_reason);
+    if (runScope) {
+      const { entered, ...classification } = classifySourceRunEntry(runScope, entry, original, enteredRun);
+      enteredRun = entered; capture.scope = classification;
+      if (classification.disposition === 'outside') {
+        Object.assign(capture, { complete: null, classification: 'outside_selected_p1_run',
+          status: 'outside_scope', reason: classification.reason });
+        continue;
+      }
+    }
+    if (basis !== null) {
+      // Diagnostic reduction is pure. A native UI prefix is not automatically a new P1 decision.
+      reduction = core.reduce(state, basis);
+      capture.complete = reduction.complete; capture.missing = [...reduction.missing];
+      capture.observation = reduction.observation;
+      if (entry.kind === 'source_input' && reduction.complete && reduction.observation.status === 'decision') {
+        // A stable snapshot ID can have a later observed_at. Bind this candidate to the exact original input bytes.
+        const key = [row.epoch_id, row.segment_id, row.input_id, row.input_prefix_ordinal,
+          core.canonicalJson(core.commitmentView(state))].join('|');
+        if (!candidates.some(candidate => candidate.key === key)) candidates.push({ key, before: state, basis,
+          reduction, captureIndex, start: trace.length, epoch: row.epoch_id, segment: row.segment_id });
+      }
+    }
     if (entry.kind !== 'source_input') {
       const publication = { ...row, basis };
       // Pending native intentions must be classified by their exact shared span,
@@ -168,7 +179,32 @@ export function convertOriginals(source, sdk, core, options) {
     refusals.set(lastInput.input_id, outcomes.find(value => value.status === 'ambiguous')
       ?? outcomes.find(value => value.status === 'incomplete') ?? outcomes[0]
       ?? { status: 'unmapped', reason: 'no_original_complete_p1_boundary_basis' });
-    const distinct = new Map(matches.map(value => [core.canonicalJson({ status: value.result.status,
+    // A proved selector choose+confirm already contains its last native input.
+    // Do not count that exact declared follow again as an independent Finish.
+    // Different full intentions and different native follows remain ambiguous.
+    const selectorParents = matches.filter(value => {
+      const low = value.candidate.reduction.lowering[value.result.choice_id];
+      return value.result.status === 'matched' && low?.selector_intention && low.follow.length === 1
+        && low.follow[0].rule_id === 'selector_intention' && value.span.length > 1
+        && Array.isArray(value.result.input_ids) && value.result.input_ids.length === value.span.length
+        && value.result.input_ids.every((id, index) => id === value.span[index].input_id && !covered.has(id));
+    });
+    let classifiedMatches = matches;
+    if (selectorParents.length === 1) {
+      const parent = selectorParents[0], last = parent.span.at(-1);
+      const low = parent.candidate.reduction.lowering[parent.result.choice_id];
+      const follow = core.resolveFollowBasis(low.follow[0], low, last.basis);
+      if (follow) classifiedMatches = matches.filter(value => {
+        if (value === parent || value.result.status !== 'matched' || value.span.length !== 1
+            || value.span[0] !== last || value.candidate.basis !== last.basis
+            || value.result.input_ids.length !== 1 || value.result.input_ids[0] !== last.input_id) return true;
+        const suffix = value.candidate.reduction.lowering[value.result.choice_id];
+        const choice = value.candidate.reduction.observation.catalog.find(choice => choice.choice_id === value.result.choice_id);
+        return !(suffix?.first?.bound_action_id === follow.bound_action_id && suffix.follow.length === 0
+          && ['upgrade.finish', 'enchant.finish', 'selector.finish'].includes(choice?.kind));
+      });
+    }
+    const distinct = new Map(classifiedMatches.map(value => [core.canonicalJson({ status: value.result.status,
       choice_id: value.result.choice_id, input_ids: value.result.input_ids,
       source_input: value.span[0].input_id }), value]));
     if (distinct.size > 1) {
@@ -225,6 +261,7 @@ export function convertOriginals(source, sdk, core, options) {
   }
   for (const boundary of source.boundaries) {
     for (const interval of boundary.paused_intervals ?? []) {
+      if (runScope && interval.epoch_id !== runScope.epoch.epoch_id) continue;
       if (BigInt(interval.through_index) > BigInt(interval.after_index)
           || BigInt(interval.through_input_ordinal) > BigInt(interval.after_input_ordinal))
         report.unresolved_contexts.push({ source_kind: 'source_boundary', source_ref: boundary.boundary_id,
@@ -232,19 +269,23 @@ export function convertOriginals(source, sdk, core, options) {
     }
   }
   report.scope.natural_terminal_observed = report.captures.some(capture => capture.classification === 'p1_terminal_boundary');
-  report.complete = report.captures.length > 0 && report.missing.length === 0 && report.unresolved_inputs.length === 0 && report.unresolved_contexts.length === 0;
+  report.complete = (runScope ? report.captures.some(capture => capture.scope.disposition === 'inside')
+    && report.captures.every(capture => capture.scope.disposition !== 'unresolved') : report.captures.length > 0)
+    && report.missing.length === 0 && report.unresolved_inputs.length === 0 && report.unresolved_contexts.length === 0;
+  if (runScope) report.whole_run = qualifySourceWholeRun(runScope, source, report);
   return report;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2); const values = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!['--bundle', '--python', '--host-kind', '--sdk-root', '--output'].includes(args[i]) || !args[i + 1])
-      throw new Error('usage: source4-to-p1.mjs --bundle DIR --python PYTHON --host-kind reference|managed [--sdk-root DIST] [--output FILE]');
+    if (!['--bundle', '--python', '--host-kind', '--sdk-root', '--output', '--run-continuity'].includes(args[i]) || !args[i + 1]
+        || args[i] in values)
+      throw new Error('usage: source4-to-p1.mjs --bundle DIR --python PYTHON --host-kind reference|managed [--sdk-root DIST] [--run-continuity ORIGINAL_ID] [--output FILE]');
     values[args[i]] = args[i + 1];
   }
   const report = await convertSource4Bundle({ bundle: values['--bundle'], python: values['--python'],
-    hostKind: values['--host-kind'], sdkRoot: values['--sdk-root'] });
+    hostKind: values['--host-kind'], sdkRoot: values['--sdk-root'], runContinuityId: values['--run-continuity'] });
   const text = JSON.stringify(report, null, 2) + '\n';
   if (values['--output']) writeFileSync(resolve(values['--output']), text, { flag: 'wx' });
   else process.stdout.write(text);

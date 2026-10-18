@@ -141,7 +141,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
         string? profile = null;
         if (status is NativeAgentRuntimeStatus agent)
         {
-            if (agent.Session is null || agent.Session.Profile != "native-logical-v1"
+            if (agent.Session is null || !PlatformModelContext.IsAgentProfile(agent.Session.Profile)
                 || agent.Session.RecoveryEpoch != binding.RecoveryEpoch.Value)
                 throw new InvalidOperationException("model_context_changed");
             profile = agent.Session.Profile;
@@ -291,7 +291,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
             if (native.Errors is null || native.Invalidations is null
                 || native.AutonomyBudget.ValueKind != JsonValueKind.Object)
                 throw new JsonException("Native Agent operational fields are absent.");
-            if (native.Session is { } session && (session.Profile != "native-logical-v1"
+            if (native.Session is { } session && (!PlatformModelContext.IsAgentProfile(session.Profile)
                 || string.IsNullOrWhiteSpace(session.SessionId) || session.RecoveryEpoch < 0
                 || session.StateVersion < 0 || session.AgentState is not ("known" or "uncertain")))
                 throw new JsonException("Native Agent session binding is invalid.");

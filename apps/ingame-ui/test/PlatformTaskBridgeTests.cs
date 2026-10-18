@@ -174,6 +174,7 @@ namespace STS2PlatformLiveUiTests
         [InlineData("text-menu-v1", "sts2.policy-runtime/status-1", false)]
         [InlineData("text-menu-v2", "sts2.policy-runtime/status-1", false)]
         [InlineData("native-logical-v1", "sts2.policy-runtime/agent-session-status-1", true)]
+        [InlineData("p1-global-r1", "sts2.policy-runtime/agent-session-status-1", false)]
         public async Task ModelContextWireHasOnlyTheFourDeclaredFields(
             string? profile, string schema, bool nativeAgent)
         {

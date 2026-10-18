@@ -97,6 +97,7 @@ def bridge():
                     status["can_preserve_for_native_agent"]
                     and context["runtime_status_schema"]
                     == "sts2.policy-runtime/agent-session-status-1"
+                    and context["input_profile"] == "native-logical-v1"
                 )
                 disposition = (
                     "retained_agent_protocol"
@@ -694,6 +695,38 @@ def test_v2_native_agent_retains_explicit_healthy_protocol_and_exact_original_co
     assert body["model_context"] == native_context()
     assert sum(body is not None for _, body in calls) == 1
     assert all(not route.startswith("/v1") for route, _ in calls)
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_global_context_uses_original_handoff_without_claiming_source3_preservation(
+    bridge, retained
+):
+    client, _, calls, behavior = bridge
+    source_status(behavior, "recording")
+    source = behavior["recording"]["source"]
+    source["declaration"]["source_kind"] = "agent_protocol"
+    metadata = runtime_metadata()
+    metadata["session"]["profile"] = "p1-global-r1"
+    context = NativeTasks.model_context(metadata, "fixture-run", 19)
+    assert context == {**native_context(), "input_profile": "p1-global-r1"}
+    if retained:
+        original_status = task_v2_status(behavior)
+        behavior["v2_mutate_result"] = lambda value: value.update(
+            recording_disposition="retained_agent_protocol", status=original_status
+        )
+        with pytest.raises(BoundaryError, match="native_task_command_unknown"):
+            client.prepare_model(metadata, behavior["connector_endpoint"], model_context=context)
+    else:
+        result = client.prepare_model(
+            metadata, behavior["connector_endpoint"], model_context=context
+        )
+        assert result["recording_disposition"] == "closed_for_model"
+        assert result["status"]["recording_lifecycle"] == "closed"
+        assert result["status"]["source_declaration"] == source["declaration"]
+    submitted = [body for route, body in calls if route == "/v2/tasks/prepare-model"]
+    assert len(submitted) == 1
+    assert submitted[0]["model_context"] == context
+    assert not any(route == "/v1/tasks/recording/command" for route, _ in calls)
 
 
 @pytest.mark.parametrize("kind", ["declared_human", "agent_native_ui", "unknown", "agent_protocol"])

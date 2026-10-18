@@ -4756,6 +4756,29 @@ function modelHandler(url, options) {
     };
   return emptyList();
 }
+
+test("GLOBAL registration offers both environments without loading or taking control", async () => {
+  const env = setup({view:"local-models", handler:async (url, options) => {
+    if (url === "/api/local-model-registrations/register-global-program")
+      return {schema:"spireagent/local-agent-registration-v1", status:"registered",
+        selection_id:"local-global-program-fixture", models:[]};
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  assert.match(text(page), /P1 GLOBAL 程序 Agent/);
+  assert.equal(post(env.calls).length, 0);
+  for (const kind of ["native", "managed"]) {
+    const button = action(page, `register-global-program-${kind}`);
+    assert.equal(button.disabled, false);
+    await button.onclick();
+  }
+  assert.deepEqual(post(env.calls).map(call => [call.url, body(call)]), [
+    ["/api/local-model-registrations/register-global-program", {environment_kind:"native"}],
+    ["/api/local-model-registrations/register-global-program", {environment_kind:"managed"}],
+  ]);
+  assert.match(text(env.notice), /尚未接管游戏/);
+});
+
 test("runtime prepares one trusted selection with optional diagnosis and no implicit start", async () => {
   const env = setup({ view: "local-models", handler: modelHandler });
   let page = await env.render();

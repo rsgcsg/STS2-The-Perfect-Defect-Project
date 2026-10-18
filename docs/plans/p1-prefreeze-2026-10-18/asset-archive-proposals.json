@@ -1,0 +1,56 @@
+{
+  "history_checked": [
+    "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/H1-inventory.json",
+    "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-D1-D4-2026-10-16/evidence/branch-inventory/DISPOSITION.md",
+    "/Users/fire/Documents/Codex/2026-10-16/ban/outputs/worktree-list.md",
+    "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/H1-details-2026-10-17.md"
+  ],
+  "index_only_no_move": true,
+  "assets": [
+    {
+      "path": "/Users/fire/Desktop/SpireAgentProject/claude-review-current",
+      "what": "405ba001旧审查材料包",
+      "unique_result": "03-CURRENT-STATUS记录C1漏洞、CI身份、终止口径与非声明；属于历史快照",
+      "recommendation": "归档建议；保留报告/独立源快照，不提升为当前资格",
+      "evidence": "/Users/fire/Desktop/SpireAgentProject/claude-review-current",
+      "status": "historical_preserve_in_place",
+      "action_executed": false
+    },
+    {
+      "path": "/Users/fire/Desktop/SpireAgentProject/p1-codex-closeout-2026-10-16",
+      "what": "040be11e收口恢复包",
+      "unique_result": "FINAL_STATE及bundle/WIP快照/恢复回执存在；旧验证报告pass，未重新执行",
+      "recommendation": "归档保留；耐久恢复原件，不按副本重计局",
+      "evidence": "/Users/fire/Desktop/SpireAgentProject/p1-codex-closeout-2026-10-16",
+      "status": "historical_preserve_in_place",
+      "action_executed": false
+    },
+    {
+      "path": "/Users/fire/Desktop/SpireAgentProject/p1-global-acceptance-2026-10-16",
+      "what": "P1历史验收材料",
+      "unique_result": "evidence/reviews/source-snapshots存在；独有结论未逐项核实",
+      "recommendation": "归档建议；保留原件及清晰索引",
+      "evidence": "/Users/fire/Desktop/SpireAgentProject/p1-global-acceptance-2026-10-16",
+      "status": "historical_preserve_in_place",
+      "action_executed": false
+    },
+    {
+      "path": "/Users/fire/Desktop/SpireAgentProject/p1-global-delivery-2026-10-16",
+      "what": "旧GLOBAL P1交付/记录索引包",
+      "unique_result": "旧README报告6局5一致，RECORD_INDEX指向原工作树；不得作为当前新局或当前等价",
+      "recommendation": "归档保留；索引来源与当前资格分离",
+      "evidence": "/Users/fire/Desktop/SpireAgentProject/p1-global-delivery-2026-10-16",
+      "status": "historical_preserve_in_place",
+      "action_executed": false
+    },
+    {
+      "path": "/Users/fire/Desktop/SpireAgentProject/p1-global-handoff-2026-10-16",
+      "what": "GLOBAL P1在制工作交接恢复包",
+      "unique_result": "07_ROUND_CLOSEOUT记录161在制源码保存、P1未完成与未知；历史hash/状态不作当前事实",
+      "recommendation": "归档保留；保全WIP与失败结论",
+      "evidence": "/Users/fire/Desktop/SpireAgentProject/p1-global-handoff-2026-10-16",
+      "status": "historical_preserve_in_place",
+      "action_executed": false
+    }
+  ]
+}

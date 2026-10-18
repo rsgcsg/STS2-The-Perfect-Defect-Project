@@ -98,6 +98,56 @@ def _caps() -> dict:
                                 "loaded_mod_ids": []}}}
 
 
+def test_global_program_registration_labels_identify_both_environments(tmp_path, monkeypatch):
+    from test_managed_model_target import target
+
+    from spireagent.workbench.global_program_agent import adapter_identity
+
+    # Only public environment negotiation is synthetic here; exercise the actual
+    # registration writer, descriptor/manifest binding and shared registry.
+    models = SimpleNamespace(
+        root=ROOT, private_root=tmp_path / "private",
+        config=SimpleNamespace(platform_url="http://127.0.0.1:19191"),
+        registry=lambda: {"policies": []}, _public_manifest_contract=lambda _: None,
+        _managed_runtime_target=lambda: target(tmp_path),
+    )
+    service = LocalModelRegistration(models.config, None, models)
+    monkeypatch.setattr(service, "_native_runtime", lambda **_: (tmp_path / "modules", Path(".")))
+    negotiations = []
+
+    def negotiate(args, **_):
+        options = json.loads(args[5])
+        negotiations.append(options)
+        artifact = Path(args[6])
+        manifest = {
+            "adapter": adapter_identity(),
+            "artifact": {
+                "path": str(artifact),
+                "sha256": registration_module.hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            },
+            "input": {"profile": "p1-global-r1", "state_recovery": {"model_bindings": []}},
+            "agent": {"id": "global-public-program", "version": "1",
+                      "provider": "project-program", "architecture": "model-less-program"},
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(manifest))
+
+    monkeypatch.setattr(registration_module.subprocess, "run", negotiate)
+    results = [
+        service.register_global_program(environment_kind=kind) for kind in ("native", "managed")
+    ]
+    entries = service._entries()
+    assert [entry["id"] for entry in entries] == [result["selection_id"] for result in results]
+    assert [entry["label"] for entry in entries] == [
+        "GLOBAL 公共信息程序 · Reference（无学习模型）",
+        "GLOBAL 公共信息程序 · Managed（无学习模型）",
+    ]
+    assert negotiations[0] == {"connector-endpoint": models.config.platform_url}
+    assert negotiations[1]["managed-expected-runtime-instance-id"] == "runtime-one"
+    binding = json.loads(Path(negotiations[1]["managed-binding"]).read_bytes())
+    assert binding["input_profile"] == "public-basis-1"
+    assert all(result["models"] == [] for result in results)
+
+
 def test_v2_capabilities_require_exact_profile_schemas_and_selection_verbs() -> None:
     caps = _caps()
     caps.update(input_profile="text-menu-v2",

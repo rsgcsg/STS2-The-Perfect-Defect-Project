@@ -47,6 +47,7 @@ public sealed class SourceNativeProducerTests
         internal bool PartialNative, MissingNeutral, ThrowCarrierAlias;
         internal Action? OnCapture;
         internal readonly object PhysicalOwner = new();
+        internal object? PhysicalSubject;
         internal int PhysicalMatchCount = 1;
         internal string PhysicalLeafVerb = "confirm";
         internal string? PhysicalSourcePrefixVerb;
@@ -132,10 +133,14 @@ public sealed class SourceNativeProducerTests
                 Array.Empty<PlayerEnvironmentReferent>(), new("sts2.player-environment/bound-actions-1", "complete", 0, 0, 65536, "native", Array.Empty<PlayerEnvironmentBoundAction>()),
                 Array.Empty<PlayerEnvironmentReadOpportunity>(), new(PartialNative ? "partial" : "complete", "public", "complete", Array.Empty<string>(), PartialNative ? new[] { "synthetic_native_relation_missing" } : Array.Empty<string>()),
                 new("runtime-fixture", "environment-fixture"), new("player_visible_v1", "current_page", false, "omit"));
+            string? subjectId = PhysicalSubject == null ? null : "native-object-" + RuntimeHelpers.GetHashCode(PhysicalSubject);
+            if (subjectId != null) page = page with { Referents = new[] {
+                new PlayerEnvironmentReferent(subjectId, "selector_control", "control", "Confirm",
+                    new(true, true, false, false, "native_visible_fact"), null, null) } };
             var leaves = Enumerable.Range(0, Math.Max(1, PhysicalMatchCount)).Select(index => new TextMenuLeaf("binding-" + Surface + "-" + index,
-                "root", PhysicalLeafVerb, "Confirm", null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                "root", PhysicalLeafVerb, "Confirm", subjectId, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
                 () => { Dispatches++; OnDispatch?.Invoke(); return NativeInputResult.Delivered("synthetic_native_callback"); },
-                PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, null, new Dictionary<string, object>(StringComparer.Ordinal))) { NativeSourcePrefixVerb = PhysicalSourcePrefixVerb }).ToArray();
+                PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, PhysicalSubject, new Dictionary<string, object>(StringComparer.Ordinal))) { NativeSourcePrefixVerb = PhysicalSourcePrefixVerb }).ToArray();
             return new(page, Surface, leaves) { GameContinuityId = Continuity };
         }
         internal NativeLogicalService.NativeLogicalSourceCapture SourceFrame()

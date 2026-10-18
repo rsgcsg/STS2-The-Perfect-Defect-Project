@@ -1,3 +1,4 @@
+import { gameOver } from "./fixtures/managed-game-over.mjs";
 import { shopInventory } from "./fixtures/managed-shop.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -134,7 +135,7 @@ test("projects complete map topology and persistent visible state without exposi
 });
 
 test("projects stable player-visible hover facts without leaking native operands", () => {
-  const baseState = {
+  const baseState = gameOver({
     type: "decision",
     decision: "game_over",
     victory: false,
@@ -189,7 +190,7 @@ test("projects stable player-visible hover facts without leaking native operands
         hover_facts_complete: true
       }]
     }
-  };
+  });
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,
     state: baseState

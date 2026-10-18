@@ -50,13 +50,13 @@ internal static partial class PlayerEnvironmentService
         GameBuildIdentity game = Measure(
             "game_identity",
             () => capturedInput?.Game ?? EnvironmentIdentityRuntime.ReadGame());
-        NativeLogicalGridCaptureResult? gridCapture = publicBasisProfile
+        NativeLogicalGridCaptureResult? gridCapture = publicBasisProfile || sourcePublicProjection != null
             ? capturedInput?.GridCapture ?? (capturedInput == null
-                ? Measure("native_logical_grid", () => NativeLogicalGridCapture.CaptureCurrent(Entities, game, publicBasisOnly: true)) : null)
+                ? Measure("native_logical_grid", () => NativeLogicalGridCapture.CaptureCurrent(Entities, game, publicBasisOnly: publicBasisProfile)) : null)
             : null;
-        LiveObservation draft = Measure("native_surface_state", () =>
+        LiveObservation nativeView = Measure("native_surface_state", () =>
             capturedInput?.Observation ?? LiveObservationReader.Build(Entities, game, () =>
-            NativeLogicalGridCapture.PublicBasisObservation(gridCapture, Entities, game)
+            (publicBasisProfile ? NativeLogicalGridCapture.PublicBasisObservation(gridCapture, Entities, game) : null)
                 ?? NativeGeneratedCardChoice.TryBuild(Entities, game)
                 ?? NativeBossRelicSelection.TryBuild(Entities, game)
                 ?? NativeSimpleCardSelection.TryBuild(Entities, game)
@@ -67,34 +67,34 @@ internal static partial class PlayerEnvironmentService
                 ?? NativeRestSite.TryBuild(Entities, game),
                 rewardPageProfile: !ordinaryProjection));
         if (capturedInput != null && publicBasisProfile && gridCapture?.Grid is { } frozenGrid)
-            draft = LiveObservationReader.ApplyRequiredContextCompleteness(
-                NativeLogicalGridCapture.PublicBasisObservation(frozenGrid, draft.Context, game));
-        LiveObservation nativeDraft = draft;
+            nativeView = LiveObservationReader.ApplyRequiredContextCompleteness(
+                NativeLogicalGridCapture.PublicBasisObservation(frozenGrid, nativeView.Context, game));
+        LiveObservation nativeDraft = nativeView;
         // Native lifecycle availability is observed once on the complete base
         // capture, before any profile branch. Rich leaves cannot renew its clock.
         PersistentVisibleStateBuildResult shared = Measure(
             "persistent_visible_state", () => capturedInput?.Persistent ?? (game.Compatibility.StateObservationAllowed
                 ? PersistentVisibleStateReader.Build(Entities)
                 : new PersistentVisibleStateBuildResult(false, null, null)));
-        draft = CombatInputAvailability.Attach(draft, shared.RunActive && shared.State != null && shared.Failure == null,
+        nativeView = CombatInputAvailability.Attach(nativeView, shared.RunActive && shared.State != null && shared.Failure == null,
             Environment.TickCount64);
-        nativeDraft = draft;
+        nativeDraft = nativeView;
         if (suppressNativePageEvidence)
-            draft = NativePageEvidence.SuppressMutation(draft);
+            nativeView = NativePageEvidence.SuppressMutation(nativeView);
         bool rewardPotionProfile = inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile;
         if (rewardPotionProfile)
-            draft = draft with { RewardPotionFacts = RewardPotionProfileReader.Capture(draft, Entities) };
+            nativeView = nativeView with { RewardPotionFacts = RewardPotionProfileReader.Capture(nativeView, Entities) };
         if (!ordinaryProjection && (rewardPotionProfile
-                ? !IsRewardPotionPage(draft)
-                : !IsOrdinaryRewardPage(draft)))
+                ? !IsRewardPotionPage(nativeView)
+                : !IsOrdinaryRewardPage(nativeView)))
         {
-            draft = draft with
+            nativeView = nativeView with
             {
                 Surface = new UnsupportedSurface(
-                    draft.Surface.Kind,
+                    nativeView.Surface.Kind,
                     rewardPotionProfile ? "reward_potion_page_profile" : "ordinary_reward_page_profile",
                     rewardPotionProfile
-                        ? $"This current page is outside the exact reward/potion input profile: {draft.RewardPotionFacts?.Reason}."
+                        ? $"This current page is outside the exact reward/potion input profile: {nativeView.RewardPotionFacts?.Reason}."
                         : "This current page is outside the ordinary reward input profile."),
                 Readiness = "degraded",
                 Completeness = new StateCompleteness(
@@ -104,84 +104,99 @@ internal static partial class PlayerEnvironmentService
                         : "ordinary_reward_page_profile_unsupported" })
             };
         }
-        draft = draft with
-        {
-            InputOwnership = draft.Surface is UnsupportedSurface
-                ? new InputOwnership(
-                    "none_fail_closed",
-                    null,
-                    "An unsupported Surface cannot own Player Environment input.")
-                : new InputOwnership(
-                    "current_ui_owned",
-                    draft.Surface.Kind,
-                    "The exact current native UI owns input.")
-        };
-
         var identity = capturedInput?.Identity ?? RewardPageIdentity;
         long nativeSequence = identity.ObserveNative(
             CommonNativeSignature(game, nativeDraft, shared.State));
-        draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
-        PlayerVisibilityProjection information = Measure("visibility_catalog", () =>
+        bool shopCatalogAvailable = ShopSurfaceFacts.TryGetCurrent(out _, out _, out _);
+        var capturedReads = new Dictionary<string, PlayerReadBuildResult>(StringComparer.Ordinal);
+        PlayerReadBuildResult CaptureRead(string kind)
         {
-            bool shopCatalogAvailable = ShopSurfaceFacts.TryGetCurrent(out _, out _, out _);
-            return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable, aggregateCurrentPublicReads);
-        });
-        IReadOnlyCollection<string>? selectedReadKinds = ordinaryProjection
-            ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
-                ?? (aggregateCurrentPublicReads ? information.ReadCatalog.Select(read => read.Kind).Distinct(StringComparer.Ordinal).ToArray()
-                    : requiredReadKindsForObservation?.Invoke(draft))
-            : null;
-        IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
-            "required_read_builds",
-            () => capturedInput?.Read is { } read
-                ? MaterializeRequiredReads(selectedReadKinds, read)
-                : BuildRequiredReads(selectedReadKinds, draft.Context));
-        IReadOnlyList<PlayerReadCatalogEntry> readCatalog = ordinaryProjection
-            ? information.ReadCatalog
-            : Array.Empty<PlayerReadCatalogEntry>();
-        IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry> linkedDetails =
-            ordinaryProjection
-                ? BuildLinkedDetailCatalog(draft.Surface, draft.Context, readBuilds, includePublicCardDetails: aggregateCurrentPublicReads)
-                : Array.Empty<PlayerEnvironmentLinkedDetailCatalogEntry>();
-        PlayerVisibilityState visibility = information.Visibility with
-        {
-            AvailableReads = readCatalog.Select(entry => entry.Kind).ToArray(),
-            LinkedDetailKinds = linkedDetails.Select(entry => entry.Kind)
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(kind => kind, StringComparer.Ordinal)
-                .ToArray(),
-            Missing = information.Visibility.Missing
-                .Where(value => value != "linked_entity_detail_catalog_not_implemented")
-                .ToArray()
-        };
-        JsonNode rawSurface = Measure(
-            "surface_serialization",
-            () => draft.Surface is NativePublicBasisGridSurface publicGrid ? publicGrid.PublicSurface.DeepClone()
-                : JsonSerializer.SerializeToNode(
-                draft.Surface,
-                draft.Surface.GetType(),
-                ConnectorMod._jsonOptions) ?? new JsonObject());
-        PlayerEnvironmentInteractionContent surfaceContent = Measure(
-            "visible_surface_projection",
-            () => ProjectVisibleFacts(draft.Surface, draft.Context));
-        if (!ordinaryProjection && draft.Surface is CardRewardSelectionSurface
-            && draft.RewardPageFacts is { Qualified: true } profileFacts
-            && surfaceContent.Surface is JsonObject page)
-            ProjectRewardPageFacts(page, profileFacts);
-        if (rewardPotionProfile && draft.RewardPotionFacts is { Qualified: true } potionFacts
-            && surfaceContent.Surface is JsonObject potionPage)
-            ProjectRewardPotionFacts(potionPage, draft.Surface, potionFacts);
+            if (!capturedReads.TryGetValue(kind, out PlayerReadBuildResult? value))
+            {
+                value = capturedInput?.Read is { } read ? read(kind)
+                    : PlayerVisibleReadBuilder.Build(kind, nativeView.Context, Entities);
+                capturedReads.Add(kind, value);
+            }
+            return value;
+        }
         if (sourcePublicProjection != null)
         {
             if (inputProfile != null || !textMenuCapture || !aggregateCurrentPublicReads)
                 throw new InvalidOperationException("source_projection_profile_invalid");
-            sourcePublicProjection(ProjectSnapshot(false, MaxBoundActions, false));
-            return ProjectSnapshot(true, maximumBoundActions, true);
+            LiveObservation? gridView = NativeLogicalGridCapture.PublicBasisObservation(gridCapture, nativeView.Context, game);
+            LiveObservation neutral = gridView == null ? nativeView
+                : LiveObservationReader.ApplyRequiredContextCompleteness(gridView);
+            if (gridView != null && suppressNativePageEvidence)
+                neutral = NativePageEvidence.SuppressMutation(neutral);
+            // The Source4 envelope remains its original untagged revision. Only
+            // this public projection uses the already-frozen neutral grid facts.
+            sourcePublicProjection(ProjectSnapshot(neutral, false, MaxBoundActions, false, gridView != null));
+            return ProjectSnapshot(nativeView, true, maximumBoundActions, true, false);
         }
-        return ProjectSnapshot(textMenuCapture, maximumBoundActions, false);
+        return ProjectSnapshot(nativeView, textMenuCapture, maximumBoundActions, false, publicBasisProfile);
 
-        SnapshotBuildResult ProjectSnapshot(bool asTextMenu, int actionLimit, bool privatePreparation)
+        SnapshotBuildResult ProjectSnapshot(LiveObservation draft, bool asTextMenu, int actionLimit,
+            bool privatePreparation, bool publicBasisProjection)
         {
+            draft = draft with
+            {
+                InputOwnership = draft.Surface is UnsupportedSurface
+                    ? new InputOwnership(
+                        "none_fail_closed",
+                        null,
+                        "An unsupported Surface cannot own Player Environment input.")
+                    : new InputOwnership(
+                        "current_ui_owned",
+                        draft.Surface.Kind,
+                        "The exact current native UI owns input.")
+            };
+
+            draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
+            PlayerVisibilityProjection information = Measure("visibility_catalog", () =>
+                PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable, aggregateCurrentPublicReads));
+            IReadOnlyCollection<string>? selectedReadKinds = ordinaryProjection
+                ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
+                    ?? (aggregateCurrentPublicReads ? information.ReadCatalog.Select(read => read.Kind).Distinct(StringComparer.Ordinal).ToArray()
+                        : requiredReadKindsForObservation?.Invoke(draft))
+                : null;
+            IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
+                "required_read_builds",
+                () => MaterializeRequiredReads(selectedReadKinds, CaptureRead));
+            IReadOnlyList<PlayerReadCatalogEntry> readCatalog = ordinaryProjection
+                ? information.ReadCatalog
+                : Array.Empty<PlayerReadCatalogEntry>();
+            IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry> linkedDetails =
+                ordinaryProjection
+                    ? BuildLinkedDetailCatalog(draft.Surface, draft.Context, readBuilds, includePublicCardDetails: aggregateCurrentPublicReads)
+                    : Array.Empty<PlayerEnvironmentLinkedDetailCatalogEntry>();
+            PlayerVisibilityState visibility = information.Visibility with
+            {
+                AvailableReads = readCatalog.Select(entry => entry.Kind).ToArray(),
+                LinkedDetailKinds = linkedDetails.Select(entry => entry.Kind)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(kind => kind, StringComparer.Ordinal)
+                    .ToArray(),
+                Missing = information.Visibility.Missing
+                    .Where(value => value != "linked_entity_detail_catalog_not_implemented")
+                    .ToArray()
+            };
+            JsonNode rawSurface = Measure(
+                "surface_serialization",
+                () => draft.Surface is NativePublicBasisGridSurface publicGrid ? publicGrid.PublicSurface.DeepClone()
+                    : JsonSerializer.SerializeToNode(
+                    draft.Surface,
+                    draft.Surface.GetType(),
+                    ConnectorMod._jsonOptions) ?? new JsonObject());
+            PlayerEnvironmentInteractionContent surfaceContent = Measure(
+                "visible_surface_projection",
+                () => ProjectVisibleFacts(draft.Surface, draft.Context));
+            if (!ordinaryProjection && draft.Surface is CardRewardSelectionSurface
+                && draft.RewardPageFacts is { Qualified: true } profileFacts
+                && surfaceContent.Surface is JsonObject page)
+                ProjectRewardPageFacts(page, profileFacts);
+            if (rewardPotionProfile && draft.RewardPotionFacts is { Qualified: true } potionFacts
+                && surfaceContent.Surface is JsonObject potionPage)
+                ProjectRewardPotionFacts(potionPage, draft.Surface, potionFacts);
             var projectionContent = new PlayerEnvironmentInteractionContent(
                 surfaceContent.Surface.DeepClone(), surfaceContent.Context.DeepClone());
             IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
@@ -265,7 +280,7 @@ internal static partial class PlayerEnvironmentService
                 signature = RewardPotionViewSignature(signature, exact);
             (string snapshotId, long sequence) = privatePreparation
                 ? identity.ObserveNativePreparation(nativeSequence, signature)
-                : publicBasisProfile
+                : publicBasisProjection
                 ? identity.ObservePublicBasis(nativeSequence, signature)
                 : inputProfile == null
                 ? identity.ObserveLegacy(nativeSequence, signature)
@@ -311,7 +326,7 @@ internal static partial class PlayerEnvironmentService
                 snapshot,
                 draft,
                 projected.Bindings,
-                readBuilds);
+                readBuilds) { CapturedLogicalGrid = gridCapture ?? NativeLogicalGridCaptureResult.NotAttempted };
         }
     }
 

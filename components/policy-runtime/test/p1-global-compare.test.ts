@@ -58,6 +58,26 @@ describe("P1 r1.1 full-public graph comparison", () => {
     expect(compare(same, split).verdict).toBe("different");
   });
 
+  it("keeps terminal control identities in the global bijection and preserves literal controls", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../connector/sdk/typescript/test/fixtures/p1-global/reference-game_over.json", import.meta.url), "utf8"));
+    const a = reduce(createSession("terminal-identity", "reference"), fixture).observation;
+    const surface = content(a.scene).surface;
+    // A graph probe with two distinct schema-owned control instances, not a native lifecycle fixture.
+    surface.other_controls.push({ ...structuredClone(surface.other_controls[0]), entity_id: "second-public-control", semantic_id: "leaderboard" });
+    const b = renamed(a);
+    expect(compare(a, b).verdict).toBe("equal");
+    for (const change of ["text", "collapsed_instances", "unknown_extension"]) {
+      const bad = structuredClone(b), current = content(bad.scene).surface;
+      if (change === "text") current.other_controls[0].label += " changed";
+      if (change === "collapsed_instances") current.other_controls[1].entity_id = current.other_controls[0].entity_id;
+      if (change === "unknown_extension") {
+        content(a.scene).surface.extension = { entity_id: "literal-left" };
+        current.extension = { entity_id: "literal-right" };
+      }
+      expect(compare(a, bad).verdict, change).toBe("different");
+    }
+  });
+
   it("accepts identical full observations with repeated instances", () => {
     const a = observation(); expect(compare(a, structuredClone(a)).verdict).toBe("equal");
   });

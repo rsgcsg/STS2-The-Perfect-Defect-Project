@@ -1242,7 +1242,9 @@ class LocalModelRegistration:
                 self.models._public_manifest_contract(manifest_path)
                 entry = {
                     "id": selection,
-                    "label": "GLOBAL 公共信息程序（无学习模型）",
+                    "label": "GLOBAL 公共信息程序 · "
+                    + ("Reference" if environment_kind == "native" else "Managed")
+                    + "（无学习模型）",
                     "adapter": ADAPTER,
                     "runtime_profile": PROFILE,
                     "manifest": manifest_path.relative_to(private).as_posix(),

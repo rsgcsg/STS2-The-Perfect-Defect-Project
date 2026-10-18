@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using STS2Connector.NativeUi;
+using STS2Connector.PlayerEnvironment;
 using STS2Platform.NativeFoundation;
 
 namespace STS2Connector;
@@ -210,13 +211,18 @@ public sealed class NativeSelectorPublicFactsTests
         typeof(NDeckTransformSelectScreen).GetField("_cardToTransformation", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(state.Owner, projection);
         Assert.True(NativeSelectorPublicFacts.DefaultTransformProjectionQualified(projection));
-        var facts = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform: true);
+        var pair = NativeLogicalGridCapture.CaptureProjectionFacts(state, publicBasisOnly: false);
+        var facts = pair.PublicBasis;
         Assert.True(facts.ModelFactsReady); Assert.Empty(facts.Missing);
         Assert.Equal("deck_transform", facts.Request.Family);
         Assert.Equal("native_preview_at_max", facts.Request.AddTransition);
         Assert.False(facts.RequiresAggregateAfterPresentation);
         Assert.All(facts.Candidates, candidate => Assert.Null(candidate.Detached));
         Assert.False(NativeSelectorPublicFacts.Capture(state).Request.MechanicsQualified);
+        Assert.False(pair.Native.Request.MechanicsQualified);
+        Assert.Same(facts.Request.Owner, pair.Native.Request.Owner);
+        Assert.Same(facts.Request.Completion, pair.Native.Request.Completion);
+        Assert.Equal(state.Cards, pair.Native.Candidates.Select(candidate => candidate.Original));
         var result = NativeSelectorPublicProjection.Project(facts, "owner", "task", _ => "original", PileType.Deck, RenderShape);
         Assert.All(result.Options, option => { Assert.Null(option!["after"]); Assert.Equal("not_applicable", option["after_availability"]!.GetValue<string>()); });
     }

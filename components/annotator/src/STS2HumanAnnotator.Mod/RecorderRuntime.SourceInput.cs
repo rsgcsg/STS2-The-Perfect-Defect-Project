@@ -33,7 +33,10 @@ internal static partial class RecorderRuntime
     {
         NativeSourceInputProvider.BeforeInputPrefix(); result = null;
         if (!IsSourceRecording) return false;
-        var token = IsOrderedSourceProfile ? NativeSourceInputProvider.Begin(new(verb ?? "unknown", owner, subject,
+        // Source4 binds the actual pressed original control to its source-only
+        // native leaf. Other profiles keep their original subject semantics.
+        object? sourceSubject = IsPublicBasisSourceProfile && control != null ? control : subject;
+        var token = IsOrderedSourceProfile ? NativeSourceInputProvider.Begin(new(verb ?? "unknown", owner, sourceSubject,
             new Dictionary<string, object>(StringComparer.Ordinal), mechanism, mechanism)) : null;
         result = new(null, true, token, owner, mechanism, sourceSelectorInput, control, callback);
         sourceSelectorInput = result; return true;

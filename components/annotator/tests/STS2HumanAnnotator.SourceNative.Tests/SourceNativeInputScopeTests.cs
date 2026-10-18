@@ -17,11 +17,13 @@ namespace STS2HumanAnnotator.Mod
     {
         private static string _activeCaptureProfileId = SourceSessionContractV3.ProfileId;
         private static bool IsSourceRecording => _activeCaptureProfileId is
-            SourceSessionContract.ProfileId or SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId;
+            SourceSessionContract.ProfileId or SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;
         internal sealed class SelectorInput { }
         private static IDisposable? StageCardPlay(NHandCardHolder holder) =>
             throw new InvalidOperationException("Human staging was not requested by this Source test");
         internal static void TestProfile(bool source) => _activeCaptureProfileId = source ? SourceSessionContractV3.ProfileId : "human-test";
+        internal static void TestSourceVersion(int version) => _activeCaptureProfileId = version == 4
+            ? SourceSessionContractV4.ProfileId : SourceSessionContractV3.ProfileId;
         internal static SelectorInputHandle TestBegin(object owner, string method, object? control = null, string? callback = null)
         {
             Assert.True(TryBeginSourceSelectorInput(owner, method, null, "confirm", control, callback, out var input));
@@ -57,6 +59,42 @@ namespace STS2HumanAnnotator.SourceNative.Tests
         { var audit = SourceSessionAuditV3.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors)); }
         private static async Task Ready(SourceNativeProducerTests.Fixture f) =>
             Assert.True(await Task.Run(() => SpinWait.SpinUntil(() => f.Worker.Status.Observations >= 1, TimeSpan.FromSeconds(3))));
+
+        [Theory]
+        [InlineData(3)]
+        [InlineData(4)]
+        public async Task Source4SelectorControlPrefixJoinsItsExactOriginalControlAndPreservesSource3(int version)
+        {
+            using var f = new SourceNativeProducerTests.Fixture(version); await Ready(f);
+            object control = new();
+            f.Invoke(() =>
+            {
+                RecorderRuntime.TestSourceVersion(version);
+                f.PhysicalSubject = version == 4 ? control : null;
+                f.PhysicalLeafVerb = version == 4 ? "confirm_selection" : "confirm";
+                f.PhysicalSourcePrefixVerb = "confirm";
+                try
+                {
+                    var original = RecorderRuntime.TestBegin(f.PhysicalOwner, "ExactSelector.Confirm.Released", control);
+                    RecorderRuntime.TestFinish(original, true);
+                }
+                finally { RecorderRuntime.TestSourceVersion(3); }
+            });
+            await f.Close();
+            var row = Assert.Single(f.Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl"));
+            Assert.Equal("delivered", row.Outcome.Delivery);
+            Assert.Equal("exact", row.Outcome.MappingStatus);
+            Assert.Equal("pass", version == 4 ? SourceSessionAuditV4.Audit(f.Store.DirectoryPath).Status
+                : SourceSessionAuditV3.Audit(f.Store.DirectoryPath).Status);
+            if (version == 4)
+            {
+                Assert.Equal("confirm_selection", row.Outcome.SelectedAction!.Verb);
+                Assert.Equal("native-owner-physical", row.Outcome.NativeFacts!.OwnerRef);
+                Assert.Equal("native-object-" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(control), row.Outcome.NativeFacts.SubjectRef);
+                Assert.Equal(row.Outcome.SelectedAction.SubjectReferentId, row.Outcome.NativeFacts.SubjectRef);
+            }
+            else Assert.Null(row.Outcome.SelectedAction!.SubjectReferentId);
+        }
 
         [Fact]
         public async Task ProtocolEndTurnButtonCallbackCannotCreateNativeUiSourceAliasOrHumanStage()

@@ -449,12 +449,12 @@ class NativeTasks:
             session = runtime.get("session")
             if (
                 not isinstance(session, dict)
-                or session.get("profile") != "native-logical-v1"
+                or session.get("profile") not in ("native-logical-v1", "p1-global-r1")
                 or type(session.get("recovery_epoch")) is not int
                 or session.get("recovery_epoch") != recovery_epoch
             ):
                 raise BoundaryError("local_model", "native_task_game_identity_mismatch")
-            profile = "native-logical-v1"
+            profile = session["profile"]
         elif schema != "sts2.policy-runtime/status-1":
             raise BoundaryError("local_model", "native_task_unavailable")
         value = {
@@ -480,7 +480,7 @@ class NativeTasks:
             return False
         return (
             value["runtime_status_schema"] == "sts2.policy-runtime/agent-session-status-1"
-            and value["input_profile"] == "native-logical-v1"
+            and value["input_profile"] in ("native-logical-v1", "p1-global-r1")
         ) or (
             value["runtime_status_schema"] == "sts2.policy-runtime/status-1"
             and (
@@ -655,6 +655,7 @@ class NativeTasks:
             if disposition == "retained_agent_protocol":
                 if (
                     context["runtime_status_schema"] != "sts2.policy-runtime/agent-session-status-1"
+                    or context["input_profile"] != "native-logical-v1"
                     or not status["can_preserve_for_native_agent"]
                     or status["source_segment_id"] != observed["source_segment_id"]
                     or status["source_declaration"] != observed["source_declaration"]

@@ -7,12 +7,14 @@ import { join } from "node:path";
 import { startManagedHostService } from "../../host-runtime/src/managed-host-service.mjs";
 // @ts-expect-error same original Host module.
 import { ManagedPlayerEnvironmentSession } from "../../host-runtime/src/managed-player-environment.mjs";
+// @ts-expect-error Shared synthetic DTO follows the original Host terminal owner.
+import { gameOver } from "../../host-runtime/test/fixtures/managed-game-over.mjs";
 import { ManagedServicePolicyClient } from "../src/managed.js";
 import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 it("runs real Managed service HTTP → original same-actor capture → NDJSON → token/epoch action → release",async()=>{
  let terminal=false, actions=0;
- const decision=()=>terminal?{type:"decision",decision:"game_over",victory:false,context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:1,total_floor:1,ascension:0,bosses:[],modifiers:[]},player:{name:"The Ironclad",character_id:"IRONCLAD",hp:0,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}}:{
+ const decision=()=>terminal?gameOver({type:"decision",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:1,total_floor:1,ascension:0,bosses:[],modifiers:[]},player:{name:"The Ironclad",character_id:"IRONCLAD",hp:0,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}}):{
   type:"decision",decision:"map_select",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:0,total_floor:0,ascension:0,bosses:[],modifiers:[]},
   choices:[{col:3,row:1,type:"Monster",native_ref:"point",children:[]}],visible_map:{type:"map",rows:[[{col:3,row:0,type:"Monster",visited:true,children:[{col:3,row:1}]}]],boss:{col:3,row:16,type:"Boss"},current_coord:{col:3,row:0}},
   player:{name:"The Ironclad",character_id:"IRONCLAD",hp:80,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}};
@@ -32,7 +34,7 @@ it("runs real Managed service HTTP → original same-actor capture → NDJSON �
   const transport=await ManagedServicePolicyClient.attachGlobal(bindingPath,attachmentPath,{serviceInstanceId:service.serviceInstanceId,runtimeInstanceId:"managed-runtime",gameContinuityId:ready.episode.game_continuity_id},"run-00000000-0000-4000-8000-000000000001");
   f=await globalRuntimeFixture({transport});
   const first=await f.runtime.tick();expect(first.type).toBe("delivered");expect(actions).toBe(1);
-  expect((await f.runtime.tick()).type).toBe("closed");expect(service.driver.status().control_held).toBe(false);expect(service.driver.closed).toBe(false);
+  expect((await f.runtime.tick()).type).toBe("closed");expect(actions).toBe(1);expect(service.driver.status().control_held).toBe(false);expect(service.driver.closed).toBe(false);
   expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
  }finally{await f?.close();await service.close();}
 },15000);

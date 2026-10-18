@@ -8,9 +8,12 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 ## Current native learning and application route
 
 Use root [CURRENT](../../docs/memory/CURRENT.md) and the
-[current specification](../../docs/BASELINE_V1_SPEC.zh-CN.md) for the active task
-and selected direction; the [execution matrix](../../docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
-tracks what has actually been implemented/reviewed. Apply `python/AGENTS.md`.
+[P1 project map](../../docs/plans/p1-prefreeze-2026-10-18/README.md) for the active task;
+[P1 r1](../../docs/protocols/P1_GLOBAL_R1.zh-CN.md) owns the selected environment semantics.
+The [earlier baseline](../../docs/BASELINE_V1_SPEC.zh-CN.md) and
+[execution matrix](../../docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md) retain their
+historical requirements/evidence and actual consumers, not a second learning queue.
+Research contracts below keep their own original schemas and qualification. Apply `python/AGENTS.md`.
 
 | Work | Owning guide and boundary |
 | --- | --- |
