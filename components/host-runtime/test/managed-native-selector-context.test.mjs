@@ -243,6 +243,10 @@ test("generated choice uses the existing Reference DTO and keeps all rich facts 
   state.cards[0].public_details={keywords:[{name:"Block",description:"Prevent damage."}],card_previews:[]};
   const p=project(state),surface=p.snapshot.interaction.content.surface;
   assert.equal(p.snapshot.interaction.kind,"native_generated_card_choice");
+  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.combat.player,"hp"),false);
+  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.combat.player,"max_hp"),false);
+  assert.equal(p.snapshot.persistent.content.player.hp,state.player.hp);
+  assert.equal(p.snapshot.persistent.content.player.max_hp,state.player.max_hp);
   assert.deepEqual(p.snapshot.bound_actions.actions.map(action=>action.label),["Choose Strike","Choose Strike","Skip"]);
   assert.deepEqual(surface.selectable_card_entity_ids,surface.cards.map(card=>card.entity_id));
   assert.equal(Object.hasOwn(surface.cards[0],"keywords"),false);

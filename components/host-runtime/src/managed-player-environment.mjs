@@ -1634,7 +1634,8 @@ function currentSurface(state, ctx) {
           hand: hud.hand.map((card) => (choose || plainObject(state.selector_public))
             ? visibleCardBase(card, ctx.entityId("card", card.native_ref)) : publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
-            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !(choose || plainObject(state.selector_public)) || key !== "stars" || hud.stars != null).map((key) => [key, hud[key]])),
+            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !(choose && ["hp", "max_hp"].includes(key))
+              && (!(choose || plainObject(state.selector_public)) || key !== "stars" || hud.stars != null)).map((key) => [key, hud[key]])),
           statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !(choose || plainObject(state.selector_public)))),
           potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
             target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),

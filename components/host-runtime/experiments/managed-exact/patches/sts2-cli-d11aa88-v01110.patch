@@ -5049,7 +5049,7 @@ index 800f139..d950eec 100644
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..162424b 100644
+index 6b9de4a..89d96a0 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,6 @@
@@ -7921,7 +7921,7 @@ index 6b9de4a..162424b 100644
 +                kind = "card_choice";
 +                break;
 +            default:
-+                kind = reward.GetType().Name;
++                kind = "other_visible_reward";
 +                break;
 +        }
 +
