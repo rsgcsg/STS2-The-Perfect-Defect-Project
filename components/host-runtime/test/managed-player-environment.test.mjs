@@ -248,7 +248,7 @@ test("projects game-owned rest option text and native actionability", () => {
       decision: "rest_site",
       context: { act: 1, floor: 5, room_type: "RestSite" },
       options: [
-        { index: 0, native_ref: "rest-option-a", option_id: "REST", name: "Rest", description: "Heal 24 HP.", is_enabled: true },
+        { index: 0, native_ref: "rest-option-a", option_id: "REST", name: "Rest", description: "Heal 24 HP.\n[gold]Regal Pillow[/gold] restores more.", is_enabled: true },
         { index: 1, native_ref: "rest-option-b", option_id: "SMITH", name: "Smith", description: "Upgrade a card.", is_enabled: false }
       ],
       player: player()
@@ -260,7 +260,7 @@ test("projects game-owned rest option text and native actionability", () => {
     description: option.description,
     enabled: option.enabled
   })), [
-    { name: "Rest", description: "Heal 24 HP.", enabled: true },
+    { name: "Rest", description: "Heal 24 HP.\nRegal Pillow restores more.", enabled: true },
     { name: "Smith", description: "Upgrade a card.", enabled: false }
   ]);
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Rest"]);

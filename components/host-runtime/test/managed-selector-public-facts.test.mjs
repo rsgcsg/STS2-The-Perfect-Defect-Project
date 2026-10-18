@@ -198,3 +198,21 @@ test("bounded combat pile projects the current original task and native hand leg
   assert.deepEqual([...projection.bindings.values()][0].raw_request.args,
     { selector_ref: "private-selector-owner", card_ref: "private-card-original" });
 });
+
+test("native selector retains the current semantic parent and canonical combat HUD has one HP owner", () => {
+  const event = selector({ family: "deck_enchant" });
+  event.selector_context = { kind: "event", event_id: "SAPPHIRE_SEED", name: "Sapphire Seed",
+    ancient: false, in_dialogue: false, body: "[gold]Enchant[/gold] a card.", private_owner: "private-do-not-publish" };
+  const projection = projectManagedCandidateDecision({ state: event, ...identity });
+  assert.deepEqual(projection.snapshot.interaction.content.context, { kind: "event", event_id: "SAPPHIRE_SEED",
+    name: "Sapphire Seed", ancient: false, in_dialogue: false, body: "Enchant a card." });
+  assert.equal(JSON.stringify(projection.snapshot).includes("private-do-not-publish"), false);
+  const rest = selector();rest.selector_context = { kind: "rest" };
+  assert.deepEqual(projectManagedCandidateDecision({ state: rest, ...identity }).snapshot.interaction.content.context, { kind: "rest" });
+  const combat = selector({ family: "combat_pile" });
+  const current = projectManagedCandidateDecision({ state: combat, ...identity }).snapshot;
+  assert.equal(Object.hasOwn(current.interaction.content.context.combat.player, "hp"), false);
+  assert.equal(Object.hasOwn(current.interaction.content.context.combat.player, "max_hp"), false);
+  assert.equal(current.persistent.content.player.hp, combat.player.hp);
+  assert.equal(current.persistent.content.player.max_hp, combat.player.max_hp);
+});

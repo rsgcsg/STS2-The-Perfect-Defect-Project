@@ -178,6 +178,7 @@ function createProjectionContext({
     actions,
     bindings,
     detailReads: [],
+    catalogReads: [],
     id: makeId,
     entityId,
     referent,
@@ -524,13 +525,13 @@ function buildVisibleMap(state, ctx) {
   };
 }
 
-function visibleText(value) {
+function visibleText(value, preserveLines = false) {
   return value == null
     ? null
     : String(value)
       // Same inline-icon text as NativeVisibleText.Strip in the Reference Host.
       .replace(/\[img\]([\s\S]*?)\[\/img\]/gu, (_match, asset) => `[${asset.slice(asset.lastIndexOf("/") + 1)}]`)
-      .replace(/\[\/?[a-z_][a-z0-9_=]*\]/giu, "").replace(/\n/gu, " ");
+      .replace(/\[\/?[a-z_][a-z0-9_=]*\]/giu, "").replace(/\n/gu, preserveLines ? "\n" : " ");
 }
 
 function visibleHoverKeywords(keywords) {
@@ -749,19 +750,24 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       cancelable: exact ? state.cancelable : null, current_controls: controls,
       is_peeking: false, showing_upgrade_previews: false,
       ordering_basis: "exact_current_native_grid_logical_list" },
-    context: { ...commonContext, kind: "selection" }, complete, actionComplete: exact,
+    context: plainObject(state.selector_context) && state.selector_context.kind === "event"
+      ? { kind: "event", event_id: state.selector_context.event_id, name: visibleText(state.selector_context.name),
+        ancient: state.selector_context.ancient, in_dialogue: state.selector_context.in_dialogue,
+        ...(state.selector_context.body == null ? {} : { body: visibleText(state.selector_context.body) }) }
+      : plainObject(state.selector_context) && ["rest", "shop"].includes(state.selector_context.kind)
+        ? { kind: state.selector_context.kind } : { ...commonContext, kind: "selection" }, complete, actionComplete: exact,
     visibleInformation: "complete_entered_native_logical_grid_list",
     interactionDiscovery: "registered_native_card_model_callbacks_and_current_controls", missing
   };
 }
 
-function canonicalShopSurface(state, ctx) {
+function canonicalShopSurface(state, ctx, inventoryOpen = true) {
   const arrays = [state.cards, state.relics, state.potions];
   const rawEntries = arrays.flatMap(value => Array.isArray(value) ? value : []);
   if (plainObject(state.card_removal)) rawEntries.push(state.card_removal);
   const owner = state.presentation_owner;
   const refs = rawEntries.map(entry => entry?.native_ref);
-  const exact = state.shop_public === true && plainObject(owner) && owner.kind === "managed_merchant_presentation" && owner.stage === "inventory"
+  const exact = state.shop_public === true && plainObject(owner) && owner.kind === "managed_merchant_presentation" && owner.stage === (inventoryOpen ? "inventory" : "room")
     && owner.room_ref === state.room_ref && state.shop_ref === state.room_ref
     && owner.inventory_ref === state.inventory_ref && owner.player_ref === state.player?.native_ref
     && arrays.every(Array.isArray) && Object.hasOwn(state, "card_removal")
@@ -769,6 +775,7 @@ function canonicalShopSurface(state, ctx) {
     && rawEntries.every((entry, index) => typeof entry.native_ref === "string" && entry.native_ref.length > 0
       && entry.inventory_index === index && Number.isSafeInteger(entry.cost) && entry.cost >= 0
       && ["is_stocked", "visible", "affordable", "can_purchase"].every(key => typeof entry[key] === "boolean")
+      && (inventoryOpen || entry.can_purchase === false)
       && (!entry.can_purchase || entry.is_stocked && entry.visible && entry.affordable));
   const missing = [...(Array.isArray(state.shop_missing) ? state.shop_missing : ["native_shop_capture_missing"]),
     ...(exact ? [] : ["exact_current_native_shop_public_binding"])];
@@ -779,7 +786,7 @@ function canonicalShopSurface(state, ctx) {
     const item = ctx.referent({ role: "shop_entry", id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
       ? ctx.entityId("shop_entry", entry.native_ref) : ctx.id("unbound_shop_entry", kind, entry.inventory_index, ctx.referents.length), label,
       enabled: exact && entry.can_purchase, properties });
-    if (exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
+    if (inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
       raw: { cmd: "action", action, args: { entry_ref: entry.native_ref,
         ...(action === "remove_card" ? { room_ref: state.room_ref } : {}) } } });
     return item.properties;
@@ -792,7 +799,8 @@ function canonicalShopSurface(state, ctx) {
       card = display;
       ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
       ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
-        Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"], "shop", null));
+        Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"], "shop_offer",
+        ctx.entityId("shop_entry", entry.native_ref), inventoryOpen ? null : ctx.id("read", ctx.snapshotId, "shop_catalog")));
     } else if (entry.is_stocked) missing.push("native_shop_stocked_card_display");
     return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, ...(card == null ? {} : { card }) }, card?.name ?? "Sold card", "buy_card");
   });
@@ -809,8 +817,28 @@ function canonicalShopSurface(state, ctx) {
     entry.name ?? "Sold potion", "buy_potion"));
   const removal = state.card_removal == null ? null : bind(state.card_removal, "shop_service",
     { ...base(state.card_removal), next_price_increase: state.card_removal.next_price_increase }, "card removal", "remove_card");
-  if (exact) ctx.action({ verb: "close", label: "Close shop inventory", raw: { cmd: "action", action: "close_shop_inventory",
+  if (inventoryOpen && exact) ctx.action({ verb: "close", label: "Close shop inventory", raw: { cmd: "action", action: "close_shop_inventory",
     args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } } });
+  const catalogReadId = ctx.id("read", ctx.snapshotId, "shop_catalog");
+  const complete = exact && missing.length === 0;
+  ctx.catalogReads.push({
+    descriptor: { read_id: catalogReadId, kind: "shop_catalog", target_referent_id: null,
+      content_schema: "sts2.player-environment/read/shop_catalog-1", visibility_basis: "normal_player_read",
+      snapshot_bound: true, ordering_semantics: "fixed_ui_slots", hidden_by_policy: [] },
+    content: { kind: "shop_catalog", access_state: inventoryOpen ? "inventory_open" : "inventory_closed_open_to_inspect",
+      cards, relics, potions, card_removal: removal },
+    completeness: { status: complete ? "complete" : "partial",
+      visible_information: "complete_for_player_openable_standard_merchant_catalog_without_action_authority",
+      interaction_discovery: "read_only", missing, hidden_by_policy: [] }
+  });
+  // Open inventory has both directly visible offers and their inspectable catalog.
+  if (inventoryOpen) for (const entry of state.cards ?? []) if (plainObject(entry.card)) {
+    const raw = entry.card;
+    const { target_type: _target, can_play: _play, ...card } = visibleCardBase(raw, ctx.entityId("card", raw.native_ref));
+    ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
+      Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"],
+      "shop_offer", ctx.entityId("shop_entry", entry.native_ref), catalogReadId));
+  }
   return { kind: "shop_inventory", stage: "ready", prompt: null,
     surface: { kind: "shop_inventory", shop_session_entity_id: ctx.entityId("shop_session", state.shop_ref),
       cards, relics, potions, card_removal: removal, can_close: exact },
@@ -931,7 +959,7 @@ function currentSurface(state, ctx) {
             index: option.index,
             option_id: option.option_id ?? null,
             name: option.name ?? null,
-            description: visibleText(option.description),
+            description: visibleText(option.description, true),
             enabled
           }
         });
@@ -1637,7 +1665,7 @@ function currentSurface(state, ctx) {
           hand: hud.hand.map((card) => (choose || plainObject(state.selector_public))
             ? visibleCardBase(card, ctx.entityId("card", card.native_ref)) : publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
-            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !(choose && ["hp", "max_hp"].includes(key))
+            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !((choose || plainObject(state.selector_public)) && ["hp", "max_hp"].includes(key))
               && (!(choose || plainObject(state.selector_public)) || key !== "stars" || hud.stars != null)).map((key) => [key, hud[key]])),
           statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !(choose || plainObject(state.selector_public)))),
           potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
@@ -2040,6 +2068,7 @@ function currentSurface(state, ctx) {
         missing: typeof state.victory === "boolean" ? [] : ["native_terminal_victory_fact"]
       };
     case "shop_room": {
+      const catalog = canonicalShopSurface(state, ctx, false);
       const owner = state.presentation_owner;
       const exact = plainObject(owner) && owner.kind === "managed_merchant_presentation" && owner.stage === "room"
         && typeof state.room_ref === "string" && state.room_ref.length > 0
@@ -2060,10 +2089,10 @@ function currentSurface(state, ctx) {
       return { kind: "shop_room", stage: "ready", prompt: null,
         surface: { kind: "shop_room", shop_session_entity_id: ctx.entityId("shop_session", state.shop_ref),
           can_open_inventory: state.can_open_inventory, can_proceed: state.can_proceed },
-        context: { kind: "shop" }, complete: exact,
+        context: { kind: "shop" }, complete: exact && catalog.complete,
         visibleInformation: "contract_complete_for_visible_normal_merchant_room_controls",
         interactionDiscovery: "derived_from_exact_merchant_presentation_owner",
-        missing: exact ? [] : ["exact_current_merchant_presentation_owner"] };
+        missing: [...catalog.missing, ...(exact ? [] : ["exact_current_merchant_presentation_owner"])] };
     }
     case "shop": return canonicalShopSurface(state, ctx);
     default:
@@ -2155,7 +2184,7 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
     if (!Array.isArray(details[field])) gaps.push(`current_native_public_card_${field}_not_captured`);
   return {
     descriptor: {
-      read_id: ctx.id("read", ctx.snapshotId, "surface_card", displayContext, ownerId, visible.entity_id),
+      read_id: ctx.id("read", ctx.snapshotId, "surface_card", displayContext, parentReadId, ownerId, visible.entity_id),
       kind: "surface_card", target_referent_id: visible.entity_id,
       content_schema: "sts2.player-environment/read/surface_card-1",
       visibility_basis: "normal_player_visible_surface_card", snapshot_bound: true,
@@ -2352,6 +2381,7 @@ export function projectManagedCandidateDecision({
     combatPilesRead(ctx, state),
     ...deckCardDetailReads(ctx, state, deckRead),
     ...handCardDetailReads(ctx, state),
+    ...ctx.catalogReads,
     ...ctx.detailReads
   ]
     .filter(Boolean);
