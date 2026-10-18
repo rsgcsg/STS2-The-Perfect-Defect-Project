@@ -16,7 +16,8 @@ It is not the freeze PR. Original env failures/corrections and old a70/1482/S05 
 
 - Installed Modd64e57b0/MVID494e234f was built79ba and strict-loaded04. Rollback
   2026-10-18T12-12-49.442Z preserves6 prior4d Mod/config/provenance hashes.
-  New Source4 producer source47157680 is NOT that installed build; new Mod pending.
+  Producer471 new Mod0f2cef0d/MVID58ae6537 built clean4ab, not installed;
+  compiled-source identity remains separate from later SDK source806cf67d.
 - B04: normal mature unlocks/FTUEoff/instant and actual frozen run UnlockState PASS;
   native seedSWNBPYW69BAC differs from requested menu seed. Map/EndTurn exact,
   close/pack and unforced exit0; conversion FALSE:5 actions/5 unresolved,13 raw gaps,
@@ -30,8 +31,8 @@ It is not the freeze PR. Original env failures/corrections and old a70/1482/S05 
   original runtime UnlockState proof and initial Neow complete P1+12 Reads compare
   equal; normal exit0. This is one initial point, not strict action/full-run proof.
 - Trusted Python profile now carries exact Reference progress privately; manager
-  reset/proof precedes observe/claim/Agent. Source42a3ca47:Workbench70/HostPython31
-  pass. Actual new installed Application load/one_step/Stop/evidence remain pending.
+  reset/proof precedes observe/claim/Agent. Host close/diagnostics source384/merge3561 now retains original receipt;
+  Workbench72/HostPython32 and actual attachment-cleanup-race6 pass. Actual new installed Application load/one_step/Stop/evidence remain pending.
 - Runtime rc38 source8a918d72 fixes real GLOBAL startup null/target mismatch;
   Runtime624pass/3skip,Python175pass. Official package exists; original registry37
   still needs actual38 promotion and new private install. Old rc37 Managed R20 side
@@ -45,7 +46,8 @@ or a P1 action. B04 examined Agent surface excludes pre-run menu/unlock preparat
 P1 stays append-only. User-approved E3 permits only adjacent same-card/same-owner
 select/deselect with complete original basis/Reads, known native acceptance and zero
 net effect as context_only, no choice/label. Missing/unknown/drift/interleaving remain
-unresolved. SDK/converter/negative tests and new preflight pending; old04 stays FAIL.
+unresolved. Source806cf67d SDK/converter187 and CLI22 pass; new native preflight
+remains pending and old04 stays FAIL. Old20k conversion is not a current gate.
 Console sessions/ancestors remain diagnostics only, excluded from3whole/coverage/train.
 Nonconsole save suffix evaluation is not implementation; coverage needs Reference-
 correct+offline+strict-Managed together, never3whole, same parent data split group.
