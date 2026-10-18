@@ -1,6 +1,8 @@
 import { captureManagedPublicBasis } from "./managed-public-basis.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
+import { assertManagedMapReady, ManagedMapContinueUnknown, saveManagedMapContinue,
+  validateManagedMapContinue } from "./managed-map-continue.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
 import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
   MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA, isManagedTextStateOwner }
@@ -30,6 +32,8 @@ export class ManagedPeDriverSession {
   #captureOrdinal = 0;
   #normalShutdown = null;
   #forcedShutdown = null;
+  #mapContinueUnknown = false;
+  #episodeOrigin = null;
 
   constructor(started, { requestTimeoutMs = 10_000 } = {}) {
     if (started?.session == null || started?.runtime == null) {
@@ -191,6 +195,7 @@ export class ManagedPeDriverSession {
     const requestId = request?.request_id ?? null;
     switch (request?.command) {
       case "reset": {
+        if (this.#mapContinueUnknown) throw new Error("managed_map_continue_unknown_replace_process");
         this.#requireControlIntent(intent);
         this.#requireExpectedEpisode(request);
         const seed = canonicalizeEpisodeSeed(request.seed);
@@ -211,9 +216,53 @@ export class ManagedPeDriverSession {
         });
         if (this.#closed) throw new Error("driver_closed_during_reset");
         this.#requestedSeed = seed;
+        this.#episodeOrigin = { kind: "seed" };
         this.#gameContinuityId = `managed_episode_${randomUUID().replaceAll("-", "")}`;
         this.#available = true;
         return { type: "reset_result", request_id: requestId, snapshot };
+      }
+      case "save_map": {
+        if (this.#control != null) throw new Error("managed_control_held");
+        this.#requireControlIntent(intent);
+        this.#requireEpisode(); this.#requireExpectedEpisode(request);
+        try {
+          const save = await saveManagedMapContinue(this.#started, request.path, this.#timeoutMs);
+          return { type: "save_map_result", request_id: requestId, save,
+            game_continuity_id: this.#gameContinuityId };
+        } catch (cause) {
+          if (cause instanceof ManagedMapContinueUnknown) {
+            this.#mapContinueUnknown = true;
+            this.#available = false; this.#gameContinuityId = null;
+            this.#clearTextV2Owner();
+          }
+          throw cause;
+        }
+      }
+      case "load_map": {
+        if (this.#mapContinueUnknown) throw new Error("managed_map_continue_unknown_replace_process");
+        if (this.#control != null) throw new Error("managed_control_held");
+        this.#requireControlIntent(intent); this.#requireExpectedEpisode(request);
+        const save = validateManagedMapContinue(this.#started, request.save);
+        this.#available = false; this.#gameContinuityId = null; this.#requestedSeed = null;
+        this.#clearTextV2Owner(); this.#control = null; this.#controlGeneration += 1;
+        this.#mountAttempted = true;
+        try {
+          const snapshot = await this.#started.session.restoreMapSave({ path: save.path,
+            timeoutMs: this.#timeoutMs });
+          await assertManagedMapReady(this.#started, this.#timeoutMs, save);
+          validateManagedMapContinue(this.#started, save);
+          if (this.#closed) throw new Error("driver_closed_during_map_restore");
+          this.#requestedSeed = save.seed;
+          this.#episodeOrigin = { kind: "map_continue_save", save_sha256: save.sha256,
+            candidate: save.candidate, act: save.act, floor: save.floor };
+          this.#gameContinuityId = `managed_episode_${randomUUID().replaceAll("-", "")}`;
+          this.#available = true;
+          return { type: "load_map_result", request_id: requestId, snapshot,
+            game_continuity_id: this.#gameContinuityId, source: { kind: "map_continue_save", save } };
+        } catch (cause) {
+          this.#mapContinueUnknown = true;
+          throw new ManagedMapContinueUnknown(cause);
+        }
       }
       case "capture": {
         if (Object.keys(request).some(key => !["command", "request_id", "expected_runtime_instance_id", "expected_game_continuity_id"].includes(key))) throw new Error("managed_capture_fields_invalid");
@@ -368,6 +417,7 @@ export class ManagedPeDriverSession {
             adapter_runtime_instance_id: this.#started.runtime.adapterRuntimeInstanceId,
             environment_fingerprint: this.#started.environmentFingerprint,
             episode_provenance: {
+              origin: this.#episodeOrigin,
               verdict: runIdentity?.type === "run_identity"
                 && runIdentity.active === true
                 && runIdentity.seed === this.#requestedSeed

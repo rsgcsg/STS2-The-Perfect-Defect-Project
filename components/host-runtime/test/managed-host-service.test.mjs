@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { startManagedHostService } from "../src/managed-host-service.mjs";
@@ -503,4 +506,48 @@ test("neutral capture works with no Agent or control and materializes one stored
     assert.equal((await command(service, service.clientToken, { command: "capture", expected_runtime_instance_id: "runtime-one",
       expected_game_continuity_id: "stale" })).status, 409);
   } finally { await service.close(); }
+});
+
+test("map save is an explicit unheld manager operation and unknown saves fence the run", async () => {
+  const native = fixture(), directory = mkdtempSync(join(tmpdir(), "managed-service-map-save-"));
+  native.started.runtime.build.runtime_sts2_sha256 = "b".repeat(64);
+  const originalRequest = native.started.runtime.process.request;
+  let saveCalls = 0, unknown = false;
+  native.started.runtime.process.request = async request => {
+    if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED", act: 1, floor: 0,
+      action_executor_running: false, pending_host_operation: false, pending_card_selection: false,
+      pending_card_reward: false, pending_reward_set: false, pending_bundle: false };
+    if (request.cmd === "write_continue_save") {
+      saveCalls += 1; writeFileSync(request.path, "synthetic map save");
+      if (unknown) throw new Error("native write transport lost");
+      return { type: "save_result", success: true, room_type: "MapRoom", path: request.path };
+    }
+    return originalRequest(request);
+  };
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    await reset(service);
+    const ready = (await call(service, service.clientToken, "/v1/ready")).body;
+    const body = { request_id: crypto.randomUUID(), path: join(directory, "map.save"),
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: ready.episode.game_continuity_id };
+    assert.equal((await call(service, service.clientToken, "/v1/admin/save-map", body)).status, 403);
+    const claim = (await command(service, service.clientToken, { command: "claim_control",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: body.expected_game_continuity_id })).body.result;
+    assert.equal((await call(service, service.managerToken, "/v1/admin/save-map", body)).status, 409);
+    assert.equal(saveCalls, 0);
+    await command(service, service.clientToken, { command: "release_control",
+      control_token: claim.control_token, control_epoch: claim.control_epoch });
+    const saved = await call(service, service.managerToken, "/v1/admin/save-map", body);
+    assert.equal(saved.status, 200); assert.equal(saved.body.result.save.floor, 0);
+    assert.equal(saved.body.result.save.path, body.path);
+    unknown = true;
+    const lost = await call(service, service.managerToken, "/v1/admin/save-map", { ...body,
+      request_id: crypto.randomUUID(), path: join(directory, "unknown.save") });
+    assert.equal(lost.status, 409);
+    assert.equal(service.driver.status().episode_available, false);
+    assert.equal((await reset(service)).status, 409);
+    assert.equal(saveCalls, 2);
+    assert.equal((await command(service, service.clientToken, { command: "capture",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: body.expected_game_continuity_id })).status, 409);
+  } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });
