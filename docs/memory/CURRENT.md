@@ -94,5 +94,14 @@ all other fields strict. The protocol register names the exact paths. Human
 presentation orders same-subject target choices by public enemy order and retains
 original IDs/numeric binding. A separate hash-bound r1.3 metadata-only trajectory
 derives from the unchanged r1.2 Human01 record; no Human qualification transfers.
-A new isolated topic based on the Managed repairs owns this revision and replay06;
-no Reference game, installed Mod or frozen external chooser is changed.
+The new isolated topic based on the Managed repairs owns this revision. Replay06
+matched37 choices,0unknown, then stopped at input38: the old Reference had removed
+Thunder from hand before THUNDER_POWER appeared; Managed already had its native
+power. Reference then rejected Zap as stale_snapshot/not_started and published
+Thunder at input39. Offline, the same Managed observation fully matches that next
+Reference input, but no input was skipped and no game resumed. This is an early
+Reference publication counterexample, not permission to hide a Managed power or
+delete an original choice. PR194's ActionExecutor gate addresses that producer
+seam in source/tests; live repair remains unproved after the canary did not reach
+its targets. Full original-Human01 strict replay remains incomplete. No Reference
+game, installed Mod or frozen external chooser is changed.
