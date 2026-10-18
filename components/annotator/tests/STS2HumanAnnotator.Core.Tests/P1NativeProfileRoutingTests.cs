@@ -16,8 +16,10 @@ internal static partial class RecorderRuntime
     { _store = store; _activeCaptureProfileId = profile; }
     internal static bool TestLegacyEntry(bool issue, string reason, object evidence) =>
         TryRouteP1LegacyRecord(issue, reason, "native-callback", evidence);
+    internal static void TestSelectorAccepted(P1SelectorCapture input, object receipt) => AppendP1SelectorAccepted(input, receipt);
 }
 
+[Collection("P1 recorder runtime")]
 public sealed class P1NativeProfileRoutingTests
 {
     [Fact]

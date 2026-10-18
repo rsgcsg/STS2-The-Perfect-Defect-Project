@@ -9,7 +9,11 @@ namespace STS2HumanAnnotator.Mod;
 
 internal static partial class RecorderRuntime
 {
-    private static readonly Dictionary<string, (string Decision, string Run)> P1UiPending = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, (string Decision, string Run, string NativeType)> P1UiPending = new(StringComparer.Ordinal);
+    internal static bool IsP1NativeProfile => IsP1Recording;
+    internal static bool ShouldObserveBossRelicCommit => !IsP1Recording
+        || P1UiPending.Values.Any(value => value.NativeType.StartsWith("NChooseARelicSelection.", StringComparison.Ordinal))
+        || HumanActionScope.Current?.ExpectedNativeActionType.StartsWith("NChooseARelicSelection.", StringComparison.Ordinal) == true;
 
     // Administrative command under Gate; no game action, lifecycle transition or client-selected output path.
     private static RecordingCommandResult ExecuteP1NativePrefixCommand(RecordingCommand command)
@@ -72,6 +76,8 @@ internal static partial class RecorderRuntime
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
             if (error != null) P1Issue(error, type, witness);
+            if (!NativeUiCompletionRootBindings.Remember(action, id))
+                P1Issue("accepted_native_parent_binding_conflict", type, new { action_witness_id = id });
             var subscription = new NativeActionLifecycleSubscription(action, id, 0, decision, match?.BoundActionId,
                 ObserveP1Lifecycle, nativeSemanticSelection: context?.ExpectedAction, semanticNativeActionType: type);
             NativeActionSubscriptions.Add(action, subscription);
@@ -108,7 +114,7 @@ internal static partial class RecorderRuntime
                 ["native_witness"] = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options),
                 ["native_receipt"] = new JsonObject { ["kind"] = "semantic_ui_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = missing });
-            P1UiPending.Add(id, (decision, _currentRunId));
+            P1UiPending.Add(id, (decision, _currentRunId, nativeType));
             if (missing != null) P1Issue(missing, nativeType, witness);
             // A Task-backed choice retains its existing exact completion owner.
             // A proven synchronous accepted callback is its own native completion.

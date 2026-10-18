@@ -570,7 +570,7 @@ internal static class NativeNestedSelectorAcceptedPatch
                     reserved = !NativeNestedSelectorBindings.TryConsume(__instance, binding);
                 return;
             }
-            if (binding.NativeOrigin != null)
+            if (binding.NativeOrigin != null || RecorderRuntime.IsP1NativeProfile)
             {
                 // EndSelectorInput owns the first-class Human decision. There
                 // is no Human parent transition to receive a continuation.
@@ -768,7 +768,7 @@ internal static class NativeNestedSelectorExitPatch
                     out NativeNestedSelectorBindings.Binding? binding)
                 || binding == null)
                 return;
-            if (binding.NativeOrigin != null)
+            if (binding.NativeOrigin != null || RecorderRuntime.IsP1NativeProfile)
             {
                 NativeNestedSelectorBindings.TryConsume(__instance, binding);
                 return;

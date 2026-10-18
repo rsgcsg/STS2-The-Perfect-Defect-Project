@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
 using STS2Platform.NativeFoundation;
@@ -18,6 +20,7 @@ internal static partial class RecorderRuntime
     [ThreadStatic] private static object? _selectorInputOwner;
     [ThreadStatic] private static HumanActionOccurrenceEvidence? _selectorInputAttempt;
     [ThreadStatic] private static string? _selectorInputFailure;
+    [ThreadStatic] private static P1NativeBasisReference? _selectorInputBasis;
     internal static bool SelectorInputOwns(object owner) => _selectorInputStaged && _selectorInputAttempt != null && ReferenceEquals(_selectorInputOwner, owner);
     internal static bool SelectorInputActive => _selectorInputStaged || SourceSelectorActive;
 
@@ -38,6 +41,7 @@ internal static partial class RecorderRuntime
         _selectorInputStaged = true;
         _selectorInputFailure = "selector_pre_capture_failed";
         _selectorInputOwner = owner;
+        _selectorInputBasis = null;
         try
         {
             _selectorInputAttempt = new HumanActionOccurrenceEvidence(
@@ -51,6 +55,8 @@ internal static partial class RecorderRuntime
                 _selectorInputAttempt = null;
                 return null;
             }
+            if (IsP1Recording && frame.PublicBasis is { } prefix)
+                _selectorInputBasis = _store!.PersistP1NativeBasis(prefix.SnapshotId, prefix.Bytes);
             if (!NativeNestedSelectorBindings.TryGet(owner, out var binding) || binding == null)
             { _selectorInputFailure = "selector_binding_missing"; return null; }
             if (binding.RecordingSessionId != SessionId)
@@ -59,6 +65,24 @@ internal static partial class RecorderRuntime
             {
                 _selectorInputFailure = $"{binding.FailureReason ?? "selector_parent_unavailable"};factory={binding.FactoryMechanism};native_owner={NativeWitnessIdentity.Get(binding.ParentOwner, "native_owner")}";
                 return null;
+            }
+            if (IsP1Recording)
+            {
+                var exact = operations.Select(operation => frame.ResolveNativeInput(owner, operation, subject))
+                    .Where(IsExact).DistinctBy(match => match.BoundActionId).ToArray();
+                if (frame.PublicBasis is not { } original || !P1NativeRecordingContract.CompleteBasis(original.Bytes) || exact.Length != 1)
+                { _selectorInputFailure = $"p1_selector_original_basis_or_binding_unavailable;matches={exact.Length}"; return null; }
+                string id = _selectorInputAttempt!.OccurrenceId;
+                var capture = new P1SelectorCapture(id, $"p1-decision-{Guid.NewGuid():N}", mechanism,
+                    _selectorInputBasis!,
+                    JsonSerializer.SerializeToNode(exact[0].BoundAction, EvidenceJson.Options)!,
+                    new JsonObject { ["selector_owner_witness_id"] = NativeWitnessIdentity.Get(owner, "selector_owner"),
+                        ["selected_subject_witness_id"] = subject == null ? null : NativeWitnessIdentity.Get(subject, "selected"),
+                        ["parent_action_witness_id"] = binding.ActionWitnessId,
+                        ["parent_owner_witness_id"] = NativeWitnessIdentity.Get(binding.ParentOwner, "native_owner"),
+                        ["factory_mechanism"] = binding.FactoryMechanism,
+                        ["native_origin"] = JsonSerializer.SerializeToNode(binding.NativeOrigin, EvidenceJson.Options) });
+                return new SelectorInputHandle(null) { P1 = capture };
             }
             DecisionOccurrenceIdentity? parent = binding.ParentDecision
                 ?? BoundaryTracker.DecisionIdentity(binding.ActionWitnessId);
@@ -112,17 +136,39 @@ internal static partial class RecorderRuntime
     internal static void EndSelectorInput(SelectorInputHandle? handle, bool accepted, bool terminal, bool sourceAcceptanceProven = false)
     {
         if (TryFinishSourceSelectorInput(handle, sourceAcceptanceProven)) return;
+        if (handle?.P1 is { } p1)
+        {
+            try
+            {
+                if (!accepted || _store == null) return;
+                AppendP1SelectorAccepted(p1, new { native_callback = p1.Mechanism, terminal,
+                    native_acceptance_proven = sourceAcceptanceProven });
+                P1UiPending.Add(p1.ActionWitnessId, (p1.DecisionId, _currentRunId, p1.Mechanism));
+                CompleteP1Ui(p1.ActionWitnessId, "finished", new { native_callback = p1.Mechanism, terminal });
+            }
+            finally
+            {
+                _selectorInputStaged = false; _selectorInputOwner = null; _selectorInputAttempt = null; _selectorInputBasis = null;
+            }
+            return;
+        }
         var input = handle?.Human;
         if (input == null)
         {
             if (_selectorInputStaged && accepted && _selectorInputAttempt != null)
-                Quarantine("selector_decision_pre_or_lineage_unavailable",
+            {
+                if (IsP1Recording)
+                    P1Issue("selector_decision_pre_or_lineage_unavailable", _selectorInputAttempt.NativeActionType,
+                        new { basis = _selectorInputBasis, human_occurrence = _selectorInputAttempt, missing_reason = _selectorInputFailure });
+                else Quarantine("selector_decision_pre_or_lineage_unavailable",
                     $"The accepted selector input has no exact complete pre-state/catalog/parent binding: {_selectorInputFailure ?? "unavailable"}.",
                     _lastSnapshotId, _selectorInputAttempt?.NativeActionType ?? "native_selector_input",
                     "failed_closed", _selectorInputAttempt);
+            }
             _selectorInputStaged = false;
             _selectorInputOwner = null;
             _selectorInputAttempt = null;
+            _selectorInputBasis = null;
             return;
         }
         bool acceptanceAppended = false;

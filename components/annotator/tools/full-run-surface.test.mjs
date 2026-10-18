@@ -103,6 +103,28 @@ test("P1 native terminal retains its own boundary and exact ready-owner witness 
   assert.ok(ready.indexOf('ObserveP1Boundary("native_decision_owner_ready"') < ready.indexOf("close: () => ExecuteTerminalAutoSeal"));
 });
 
+test("all native selector prefixes route P1 exact H and completion before legacy parent or trace requirements", () => {
+  const selectors = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeSelectorDecisionRuntime.cs"), "utf8");
+  const patches = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeSelectorDecisionPatches.cs"), "utf8");
+  const prefix = section(selectors, "private static SelectorInputHandle? BeginSelectorInputCore(", "internal static void EndSelectorInput(");
+  assert.ok(prefix.indexOf("if (IsP1Recording)") < prefix.indexOf("BoundaryTracker.DecisionIdentity"));
+  assert.match(prefix, /frame.ResolveNativeInput\(owner, operation, subject\)/u);
+  assert.match(prefix, /P1NativeRecordingContract.CompleteBasis\(original.Bytes\)/u);
+  assert.match(prefix, /\["parent_action_witness_id"\] = binding.ActionWitnessId/u);
+  const finish = section(selectors, "internal static void EndSelectorInput(", null);
+  assert.ok(finish.indexOf("AppendP1SelectorAccepted") < finish.indexOf("!_semanticBoundaryTraceHealthy"));
+  assert.match(finish, /CompleteP1Ui\(p1.ActionWitnessId, "finished"/u);
+  assert.match(patches, /IsPublicBasisSourceProfile \|\| RecorderRuntime.IsP1NativeProfile/u);
+  assert.match(patches, /RecorderRuntime.IsP1NativeProfile \? exactAccepted/u);
+  const boss = section(fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeUiPatches.cs"), "utf8"),
+    "internal static class NativeBossRelicCommitPatch", "internal static class NativeCombatHandSelectPatch");
+  assert.ok(boss.indexOf("ShouldObserveBossRelicCommit") < boss.indexOf("TryGetRegisteredCurrentChoiceCarrier"));
+  assert.match(patches, /IsP1NativeProfile && __instance is NCardRewardSelectionScreen\s*&& __originalMethod.Name == "OnAlternateRewardSelected"/u);
+  const p1 = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1.cs"), "utf8");
+  assert.match(p1, /NativeUiCompletionRootBindings.Remember\(action, id\)/u);
+  assert.match(p1, /P1UiPending.Values.Any\(value => value.NativeType.StartsWith\("NChooseARelicSelection\."/u);
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");
