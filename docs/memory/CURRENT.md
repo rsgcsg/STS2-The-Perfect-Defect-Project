@@ -30,6 +30,9 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
   progress is setup, not Human history. Managed now accepts the same native progress
   through manager pre-run reset; JS78/native8 pass,1 external candidate skip. Actual
   new candidate build/live remain pending; old artifacts and failed originals retain identity.
+  Native04 failed: actual baseline/Map/EndTurn positive, Source reward burst/witness gaps
+  reproduced and source-fixed with exact39/SourceNative65/portable179/JS55 pass. New
+  Mod/live validation remains pending; deselect stays outside append-only P1.
 - A: retain old Reference defects without rewriting originals; continue actual
   Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
   separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.
