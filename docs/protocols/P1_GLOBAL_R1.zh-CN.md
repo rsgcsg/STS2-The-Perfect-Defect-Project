@@ -2,7 +2,7 @@
 
 状态：**r1.3，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
-[第16轮入口](../plans/p1-prefreeze-2026-10-18/README.md)与[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
+[当前入口](../plans/p1-prefreeze-2026-10-18/README.md)与[待批冻结定义v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
 第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
@@ -168,6 +168,12 @@ report-v2的 `complete=true`仅指声明的**bounded录制前缀**全部保留ca
 无必需事实缺失或排除pause；`natural_terminal_observed`单列终局。完整分类不是完整一局、
 Human证明或运行验收。当前生产接缝及真实整局门见[采集调查](../plans/p1-prefreeze-2026-10-18/RECORDING_HISTORY.md)
 和[范围书](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)；不因有fixture/旧转换成功而降低门槛。
+
+当前转换工具另有report-v3的显式`--run-continuity`运行域解释，代码owner为
+`tools/source4-run-scope.mjs`。原菜单/域外capture保留并带理由，运行内gap、partial、unknown、
+遗漏输入和终局不靠scope抹除。范围内`complete`与`whole_run.complete`分列；后者另核
+真实new-run/setup/launch、来源连续性及完整native/P1 terminal。源码/fixture已交不表示
+本轮新英文整局已获资格；原report-v1/v2与原件意义保持。
 
 ## 11. 两端等价怎样检查
 

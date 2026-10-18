@@ -16,10 +16,16 @@ connect the existing Architecture, Components and ADR-0016 in this order:
 | Protocols and contracts | [P1 r1](protocols/P1_GLOBAL_R1.zh-CN.md), [ADR-0016](adr/0016-agent-composition-and-execution-request.md); record grammar, environment agreement, Agent program port and Model Input/Target stay distinct |
 | Functions and capabilities | [Feature status table](plans/p1-prefreeze-2026-10-18/FEATURE_STATUS.md): one historical capability per row, owner, evidence and scoped status |
 | Components | [Components](COMPONENTS.md) and the component routes below |
+| Why each part exists for the first training run | [Chain purposes](plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md): online loop, independent recording DAG and research loop; reuse API/library/CLI and thin GUI, leave Hub/team/cloud pages at their existing status |
 | Formats | [Recording history](plans/p1-prefreeze-2026-10-18/RECORDING_HISTORY.md), [format/cost table](plans/p1-prefreeze-2026-10-18/RECORDING_FORMATS_AND_COST.md), [P1 section10](protocols/P1_GLOBAL_R1.zh-CN.md#10-记录与转换); current Agent directories and legacy single-file records are different lanes |
 | Status and gaps | [Scope v0.3 / coverage](plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md), [actual Managed differences](plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md), [P1 exceptions](protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增) |
 | Historical assets/documents | [Asset ledger](plans/p1-prefreeze-2026-10-18/ASSETS.md), [current document routes](plans/p1-prefreeze-2026-10-18/DOCUMENT_INDEX.md), [archive index](plans/p1-prefreeze-2026-10-18/ARCHIVE_INDEX.md); navigation labels and proposed destinations do not mean anything was moved or closed |
 
+The [merged freeze definition](plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
+is pending user approval; its eleven rows separate existing requirements from
+proposed details. [Cloud](plans/p1-prefreeze-2026-10-18/CLOUD_MINIMAL.md) and
+[Workbench](plans/p1-prefreeze-2026-10-18/WORKBENCH_POSITION.md) reuse existing owners;
+uploads/paid work and complex GUI/team expansion are not authorized by the map.
 K3 disposition and K4 acceptance remain open. These are routes into the existing
 owners, not another protocol, identity store, registry or governance checker.
 

@@ -1,14 +1,16 @@
 # P1 训练前收敛：项目地图与当前执行入口
 
-第16轮，2026-10-18。沿用 [Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)、[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) 和 [Document map](../../DOCUMENT_MAP.md)；本页是它们的任务导航，不另建协议、全局registry或治理检查器。**当前还未冻结：K0/K1/K2文档已交付，K3未批准/未执行，K4新人验收发现的问题正在修。** 最终冻结PR仍需用户批准。硬截止2026-10-20 16:30 Brisbane，未完成交剩余清单，不降低门槛。
+第19轮，2026-10-18。沿用 [Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)、[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) 和 [Document map](../../DOCUMENT_MAP.md)；本页是它们的任务导航，不另建协议、全局registry或治理检查器。**当前还未冻结：本批定义已合成、待用户批准；K0/K1/K2/K5/K6材料已交，K3已交24行处置表、用户待批/未执行，K4既有9/10、B实际操作单仍缺。** 最终冻结PR仍需用户批准。硬截止2026-10-20 16:30 Brisbane，未完成交剩余清单，不降低门槛。
 
-历史查过：四份既有框架、设计沿革、旧19项任务、各组件/Python地图、Full-Run data chain、Source3/4、Data/Provenance、PR25 rc4原报告、K0/K1及当前冲刺。复用已有owner、采集链和来源证据；旧green、旧派发和旧资格不转贴当前组合。
+历史查过：四份既有框架、设计沿革、旧19项任务、组件/Python地图、Full-Run data chain、Source3/4、Data/Provenance、PR25 rc4、K0/K1/K5/K6、第19轮原用户来源审计与当前同树源码。复用已有owner、采集链和来源证据；旧green、旧派发和旧资格不转贴当前组合。
 
 ## 目标
 
-长期目标是能打完整局、持续变强的Agent；下一阶段要在固定条件下可复验地优于随机。当前先完成P1技术组合与历史收敛，再做Q1评测、Q2用途/划分、Q3输入适配和训练链。P1是当前环境合同，不是永久唯一格式。详见 [范围书v0.3及三幕覆盖表](SCOPE_v0.3.zh-CN.md)。
+长期目标是能打完整局、持续变强的Agent；下一阶段要在固定条件下可复验地优于随机。当前先完成P1技术组合与历史收敛，再做Q1评测、Q2用途/划分、Q3输入适配和训练链。P1是当前环境合同，不是永久唯一格式。详见唯一[冻结定义v0.3同步页及覆盖索引](SCOPE_v0.3.zh-CN.md)；源canonical精确路径/合并输入SHA见[来源索引](FREEZE_INPUTS.json)，本页不另增门槛。
 
 ## 上层链路
+
+逐个组件/协议/格式的**位置、why、首训价值、实际消费者和状态**见[链路用途表](CHAIN_PURPOSES.md)。在线闭环、独立记录DAG和研究闭环相连但不串成强制服务链；Mod是包装、Host Runtime管进程、P1是环境合同、Agent端口是程序边界、Source4是独立来源。
 
 | 段 | 现有owner | 交付与边界 |
 |---|---|---|
@@ -21,7 +23,7 @@
 | 原件→模型输入/目标 | STPD source-specific admission、Projection/InputSpec/TargetSpec | 声明字段/历史/粒度/损失/监督；不强迫每源都具S-a-S′ |
 | 学习→Model→Agent→运行/评估 | 原TrainingService/engine/worker/provider、注册/Composition/Request、Runtime、Task/result reader | 原Run/attempt/checkpoint/预算与证据身份；Model不等于完整Agent；Task、终局、操作和策略质量分验 |
 
-**冻结线**在“不可变P1记录及校验/比较工具→导入数据集/Input/Target”之间。本次固定协议、游戏DLL、Reference Mod、Managed、SDK/Host驱动/Runtime端口、采集/转换器、校验器、产品路径及范围文档的确切发布身份；以后在线Agent也消费该冻结P1。Q1方案、Q3词表/适配器、数据集、训练配置和Model不在本次冻结。r1.x修复仍需数据影响分析/重新派生，能力或信息变化由r2 owner处理。
+**本次交付阶段线**位于P1发布/可校验原件及解释与Q链研究消费之间；不是统一数据消费合同已经冻结。固定游戏/Mod/Managed、P1/SDK/驱动/Runtime、来源/转换/校验和最小产品路径的实际身份；Projection/Input/Target、admission/use、数据集/划分/门槛、词表、训练/评测配置仍由后续Q链owner决定。版本按实际语义/consumer兼容和数据影响判断；r1.x也可能要新派生/重验，不机械用版本号代替分析。
 
 ## 协议与合同
 
@@ -53,30 +55,29 @@
 | Human原生因果 | manifest2、trace4、canonical3、action-space3、Read2、journal2、close1、bundle3 | PR25 rc4原候选已有两自然败局/524 canonical；不转移到当前Mod/P1 |
 | 兼容/归档Human | record2/bundle2兼容；旧trace1–3/canonical2/ledger1–2/record1/bundle1 reader | 原consumer保留；record2不保全canonical3所有子选择，不升级旧bytes |
 | Source3 | 原输入basis/ordinals、publications/declarations、Source3 bundle | 有序来源事实，非Human证明/因果后继；旧STPD视图原义保留 |
-| Source4 | source-v4/bundle-v4、frozen public-basis/全部Reads/carrier/Task | 独立Evidence reader→共享SDK转换；report-v2逐capture matched/context_only/unresolved |
+| Source4 | source-v4/bundle-v4、frozen public-basis/全部Reads/carrier/Task | 独立Evidence reader→共享SDK转换；保留report-v2，当前report-v3另列显式run-continuity与whole_run，真实整局仍待 |
 | 当前P1 Agent/chooser | **目录** `sts2.policy-runtime/agent-session-run-1`，profile `p1-global-r1`，adapter `p1-session-bridge` | `tools/p1-suite.mjs`→bridge→外部stdio Agent→现有Runtime；events.jsonl、global_source原件、frame/Consume/ACK/Receipt/Result与封存清单；独立于Annotator/Source4 |
 | 旧P1直接记录 | **单文件** `sts2.p1/episode-record-1` | 原converter/reader的独立保留lane，不是当前Agent CLI唯一格式 |
 
 当前CLI按 `sts2-p1 replay --run-directory`验Agent目录，typed证据由 [Evidence Agent-session reader](../../../components/evidence/README.md)独立核验。研究训练从已获来源资格的immutable原件经 [STPD admission](../../../python/docs/DATA_AND_PROVENANCE.md)读入；Source3与direct-Agent样本各走原reader。P1新Q链消费者仍须在冻结后验，不能以目录可验推出训练已可用。
 
-Source4 `complete=true`仅指声明的**bounded前缀**原件全部分类且无必需事实缺失/排除pause，不等于整局；natural_terminal_observed单列。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
+Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式选run-continuity且保留菜单/域外原件；不能排除运行内gap/partial/unknown/遗漏输入。bounded完整分类不等于整局；真实new-run、连续来源及完整natural terminal另核。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
 
 录一整局的门：最终英文tuple预检→约15分钟短段→Close/pack/独立验→转换complete→整局→离线及Managed严格配对重放，最终≥3局来源分开列、第三幕实到、胜利行尽验或交用户定。**B最终可操作预检单与真实整局转换未闭合，不指示用户依据本页立即开录。** 当前步骤/根因/范围见下节与 [范围书](SCOPE_v0.3.zh-CN.md)。
 
 ## 状态与当前任务
 
-已合入基准develop `60dc0a89`，与67adeccb同树；待合入产品候选 [PR202](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/202) head `0affa651` 已通过source CI39108923063和独立复核、Ready，**未合并**。merge自动删除分支与当前禁删分支要求的权限接缝由root处理，不以CI绿写成merged。本次文档分支基于该未合并候选；不改任何BOM或产品源。
-
-Reference当前新A1 Mod为0db06ad7，Managed候选1482de5d，具体source/MVID/patch见 [范围书身份表](SCOPE_v0.3.zh-CN.md)。旧888/7513与旧Human诊断保持原身份。C的Managed S05有界save→父正常close→fresh冷启完整公开恢复相等→新绑定实际前进已通过；Reference存档仍待用户窗口，S03 incomplete/S04 fail保留，不推广为任意checkpoint或整局资格。
+当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree4b796997与已审eafa相同；#202正常merge beca367c，#204正常merge ea7c。#203的808e祖先经#204完整进入develop而自动标MERGED，**不是第三次独立develop merge**。#204源码CI39115695661和最终integration CI39120207920通过。源码/BOM原身份不因本次docs改写；新候选Mod6c已精确安装/加载，回滚备份2026-10-18T10-39-06.814Z。
 
 ## Known differences and next gates
 
-**差异的实际位置/owner/修复与未验状态只从 [A线根因表](MANAGED_DIFFERENCES.md) 查；例外只从 [P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增) 查。** P1第18节与旧Round12仅作历史路由，不能替代这里的当前门。
+**已定/待批的11条状态和覆盖索引只从[合成定义](SCOPE_v0.3.zh-CN.md)查；实际差异/旧Reference缺陷登记见[A线差异](MANAGED_DIFFERENCES.md)；例外仍只有[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)。** 旧T1–T7/旧CURRENT和本目录旧资产基准快照不派发当前任务。
 
-- A：保留完整公开图/选择/承诺/终局比较。旧Human01 occurrence41同typed卡原4/新6，不能改原件；其它description不能推广为同因。药水顺序原事实不改为无序；比较器500000上限返回incomparable不能当equal。selector hidden、shop detail尾部集合等source修复仍需新的真实范围核验；simple-grid父context、完整terminal UI和其它公开差异按表处理。A02 Human02原425 ENOSPC技术停止，未到终局；已有诊断到loss也不是严格重放。
-- B：[K0历史](RECORDING_HISTORY.md)/[成本表](RECORDING_FORMATS_AND_COST.md)确认成熟采集/Close/pack可复用。Source4 legacy selector装配、SDK sourceMapping缺selector-follow需忠实反例后按owner修验，估6–16人时，整局另计；高成本旧转换16–48+人时先保留不做。新Mod+英文+记录器预检、用户短段、自然终局整局complete与严格Managed重放仍缺。
-- C：现有GLOBAL Workbench/UI/Reference profile的窄修正在实施，复用原应用/Runtime owner；实际产品旅程仍待验收，不能将已有接线、短段或S05计作Workbench/R20通过。
-- 最终门：[范围书v0.3](SCOPE_v0.3.zh-CN.md)逐幕列机制和到达办法。最终候选英文≥3Human整局、第三幕/胜利行、完整严格重放、Managed40/Reference20、Workbench短旅程及R20独立包两Host、文档closeout与K均未齐。旧中文Human、Agent预检、locator诊断、恢复片段和旧批次不拼成最终分母。
+- A：A03两局原loss的完整terminal正式比较equal，选择点170/293、236/432，0unknown；中间并非全严格。旧中文Reference原件缺陷登记保留，真实Managed缺陷继续修，新英文整局严格验收仍0/3。A02 H02 ENOSPC及原not_started/unknown保持历史失败；S05只属于1482de5d有界存档，不转到a70d8de1新候选。
+- B：6c已loaded exact、English可见、首战真实native_input EndTurn和同carrier/successor阳性；但initialpublication1失败/gap1涉及受限启动语境合同，root已问用户待答；首mapvote的NativeSourceWitness漏附普通修复独立推进，**预检未PASS，不能告诉用户可以录**。isolated collection-setup status CLI失败与typed API/root/manifest健康是不同接缝，不把CUA错误说成游戏黑屏。
+- C/K6：现GLOBAL源码/接口、K6定位与R20外包/harness已存在；复用[API/库/CLI主入口、GUI薄映射](WORKBENCH_POSITION.md)，最终tuple实际产品短验/R20仍待。复杂GUI/团队系统不做，原信任/确认适配保留。
+- K5：[云最简调查](CLOUD_MINIMAL.md)复用R2 storage库/块hash与push/pull，不强制Hub。新P1→R2完整回读→Modal消费尚未实测，样本/费用/上传与消费操作另批；Hub/团队/云页面仅保留状态/接口。
+- 最终门：同候选英文≥3整局、实际第三幕/胜利行、严格完整轨迹/terminal、稳定候选40/20、原产品/R20与K；42+4行是可检索覆盖索引，不暗增每个共同机制在每幕重复通过的笛卡尔硬门。用户待定项见定义第8节，不能由底稿代批。
 
 问题判层：先最短原始反例→原生事实/生命周期修Native Foundation/Host；公开绑定/Reads/原生投递修Connector；仅表示/运输且语义不变修原SDK/port/Input；Agent取得/等待/选择变动修composition；Input/Target/模型/recipe变动由研究owner；P1合法信息/粒度/失败语义变动修版本化P1。只有真实需求无法表达/重复权威/实测不成比例成本才最小修改上层抽象，详见 [Architecture变更规则](../../ARCHITECTURE.md#selected-convergence-and-change-rules)。
 
@@ -86,7 +87,7 @@ Reference当前新A1 Mod为0db06ad7，Managed候选1482de5d，具体source/MVID/
 
 抽查：[K1远端表](ASSET_REMOTE_REPORT.md)的PR181/J-min建议保留原数值/transport失败/unknown，由Q3定点吸收；PR178建议逻辑归档并定点迁适用决定，语义迁入未核实、仍open；[归档表](asset-archive-proposals.json)中的p1-codex-closeout-2026-10-16恢复包原地保留bundle/WIP，action_executed=false，旧pass未重跑。其他指定资产从CSV查，详情用source index原路径核对。
 
-**K3未批准/未执行；本次仅导航归档标签，无物理移动、关闭PR、删除branch或数据。** K4由未读历史的新agent只读本入口/链接实际回答十问；首轮已发现B操作单、差异旧路由、记录lane混淆，后两项本次修文档，B仍是实际缺口。新人能查建议不等于K3已完成，文档已存不等于整K通过。
+**K3历史资产处置未批准/未执行；本次仅导航归档标签，无历史数据移动或PR关闭。已合topic自动删branch与新Mod先备份安装已有本轮单独授权，不能当作历史未合分支删除许可。** K4由未读历史的新agent只读本入口/链接实际回答十问；既有定向复验Q5/Q9通过，目前9/10，B实际操作单仍缺；本轮定义/why/云/工作台路由还须root/K4复核。新人能查建议不等于K3已完成，文档已存不等于整K通过。
 
 | 新人问题 | 唯一路由 |
 |---|---|

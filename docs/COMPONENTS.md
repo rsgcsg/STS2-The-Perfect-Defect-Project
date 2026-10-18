@@ -6,6 +6,8 @@
 For the selected cross-system direction, read [P1](protocols/P1.zh-CN.md) and
 [ADR-0017](adr/0017-p1-forward-decision-profile.md); the earlier
 [baseline](BASELINE_V1_SPEC.zh-CN.md) retains its historical scope.
+The [chain-purpose map](plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md) explains
+each retained component/protocol/format's position, purpose and first-training value.
 The table below owns component placement and authority; the execution packet and
 STATUS separately track implementation and qualification. Historical proposals
 do not move these boundaries or establish current capability.
@@ -49,6 +51,13 @@ precedes any future SDK-direct driver, under the same execution guarantees.
 | Platform tools | `tools` | composition, component identity, migration/boundary checks | native operands, policy |
 | Project applications | `python/spireagent` | one local/cloud console, members/devices, upload/export, operations and shared artifact infrastructure | legality, recording proof, research labels |
 | STPD | `python/stpd` | ResearchTransition, Dataset Views, representation, Qwen, training/evaluation | Host implementation or legality |
+
+For the current pre-training freeze, internal API/library/CLI calls are the main
+operation surface. Existing browser and native UI remain thin mappings to the same
+application use cases, including their presentation/confirmation/pairing adapters.
+The complete historical in-game/team/cloud UI target is not a requirement to build
+new complex GUI or team systems now. Hub/cloud components retain their current
+interfaces/status under the [minimal cloud proposal](plans/p1-prefreeze-2026-10-18/CLOUD_MINIMAL.md).
 
 Native Foundation is deliberately compiled into the game-side Connector Host
 and unified Mod rather than published as a second runtime service. Its typed
