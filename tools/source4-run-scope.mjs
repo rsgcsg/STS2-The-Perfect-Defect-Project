@@ -69,6 +69,59 @@ export function classifySourceRunEntry(scope, entry, original, entered) {
   return inside('selected_run_state_cannot_be_excluded_from_p1_window');
 }
 
+/** User-approved startup interpretation is scoped to exact native lifecycle
+ * originals. It never completes a partial basis or changes the P1 reducer. */
+export function deriveSourceStartupContext(scope, entries, isCompleteDecision) {
+  const selected = entries.filter(entry => entry.row.epoch_id === scope.epoch.epoch_id);
+  const closingIndex = selected.findIndex(entry => isCompleteDecision(entry)
+    && (entry.kind !== 'source_input' || entry.row.basis_order.status === 'native_prefix_frozen'));
+  const prefix = closingIndex < 0 ? selected : selected.slice(0, closingIndex);
+  const waiting = prefix.filter(entry => {
+    const original = entry.original, snapshot = original?.snapshot;
+    return snapshot?.status === 'settling' && snapshot.interaction.kind === 'no_action'
+      && snapshot.interaction.stage === 'settling' && snapshot.interaction.content.surface.reason === 'settling';
+  });
+  const inputs = waiting.length ? prefix.filter(entry => entry.kind === 'source_input') : [];
+  const closing = closingIndex < 0 ? null : selected[closingIndex];
+  const launch = scope.launches.length === 1 ? scope.launches[0] : null;
+  const first = waiting[0];
+  const lifecycle = !!scope.setup && !!launch && !!first
+    && index(first.position) >= index(scope.epoch.initial_position)
+    && beforeOrAt(first, launch)
+    && (closing === null || !beforeOrAt(closing, launch)
+      || index(closing.position) === index(launch.position));
+  const ref = entry => ({ source_kind: entry.kind,
+    source_ref: entry.kind === 'source_input' ? entry.row.input_id : entry.position.publication_index,
+    position: entry.position, public_basis: entry.row.captured_parts.public_basis });
+  const allowed = entry => entry.kind === 'source_observation' && entry.row.gap_after_index == null
+    && (entry.row.missing_reason == null || entry.row.missing_reason === 'source_capture_incomplete')
+    && entry.original.missing.every(value => value === 'snapshot:partial')
+    && entry.original.snapshot.completeness.missing.every(value => value === 'persistent_visible_state')
+    && entry.original.snapshot.bound_actions.status === 'complete'
+    && entry.original.snapshot.bound_actions.total_count === 0
+    && entry.original.snapshot.bound_actions.actions.length === 0;
+  const contexts = new Set(lifecycle && closing ? waiting.filter(allowed) : []);
+  const frames = waiting.length ? prefix.filter(entry => entry.kind === 'source_observation') : [];
+  const originalStart = frames[0]?.row.captured_parts.public_basis?.captured_at ?? first?.row.captured_parts.public_basis?.captured_at ?? null;
+  const originalEnd = closing?.row.captured_parts.public_basis?.captured_at ?? null;
+  const missing = waiting.length === 0 ? [] : [
+    ...(!lifecycle ? ['startup_native_setup_and_launch_not_proven'] : []),
+    ...(!closing ? ['startup_complete_decision_not_observed'] : []),
+    ...(inputs.length ? ['startup_contains_player_input'] : []),
+    ...(waiting.some(entry => !allowed(entry)) ? ['startup_original_information_error_or_gap'] : []),
+  ];
+  return { contexts, blockedInputs: new Set(inputs),
+    report: { kind: 'native_setup_launch_nondecision_context', required: waiting.length > 0,
+      complete: missing.length === 0, frame_count: frames.length,
+      duration_ms: originalStart && originalEnd ? Date.parse(originalEnd) - Date.parse(originalStart) : waiting.length ? null : 0,
+      started_at: originalStart, ended_at: originalEnd,
+      setup: scope.report.setup, launch: launch ? reference('boundary', launch) : null,
+      frames: frames.map(ref),
+      closing_complete_decision: closing ? ref(closing) : null,
+      input_count: inputs.length, input_ids: inputs.map(entry => entry.row.input_id), missing,
+      decision_count: 0, original_missing_preserved: true } };
+}
+
 export function qualifySourceWholeRun(scope, source, report) {
   const nativeNewStart = scope.setup?.transition.start_provenance === 'new' && scope.launches.length === 1
     && scope.launches[0].transition.start_provenance === 'new';

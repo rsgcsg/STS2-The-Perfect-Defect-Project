@@ -206,6 +206,22 @@ input matcher and publication classifier. Conversion report **v2** classifies
 every original capture with `status` (`matched`, `context_only`, `unresolved`),
 a named `classification` and `reason`. Native originals are never rewritten.
 
+- Selected-run report v3 separately reports the user-approved native startup
+  interval: exact same-run setup/Launch originals through the first complete P1
+  decision basis. Its zero-action `no_action/settling` originals may retain only
+  `persistent_visible_state` / `snapshot:partial` startup omissions; any actual
+  Read error, original gap, other missing cause or later partial stays unresolved.
+  The original failed/missing capture remains retained; the report marks eligible
+  startup frames `context_only`, `complete: null`, with no P1 observation or choice.
+  A complete, native-prefix-frozen input pre-basis can end this interval before
+  that same input is strictly matched. Every earlier original input, including
+  one without a game response or an otherwise inactive pre-Launch menu input,
+  is retained unresolved and prevents bounded/whole-run completeness. Without
+  the complete decision endpoint, startup cannot complete. Each selected-run
+  report includes original frame references, frame count, capture-time duration,
+  setup/Launch witnesses, closing basis and any intervening input IDs/count;
+  startup contributes zero decisions. This does not change the raw Source4
+  contract or the strict default report-v2 mode without an explicit run selector.
 - A complete initial public basis is an observation boundary without a choice.
 - A structurally complete settling basis with no actions is waiting context only
   when the reducer's sole missing cause is its non-decision settling status.
