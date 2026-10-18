@@ -72,7 +72,7 @@ internal sealed partial class NativeLogicalService
         if (recorder.OrderedBasis) sourcePhysicalRegistration = NativeSourceInputProvider.Register(
             CapturePhysicalSourcePrefix, CapturePhysicalSourceTerminal, recorder.PublicBasis ? CapturePhysicalSourceCarrier : null,
             recorder.PublicBasis ? CapturePhysicalSourceStageAnchor : null,
-            recorder.PublicBasis ? CapturePhysicalSourceStage : null, observeOriginalRewardTasks: recorder.PublicBasis);
+            recorder.PublicBasis ? CapturePhysicalSourceStage : null, observeOriginalRewardTasks: recorder.PublicBasis, observeOriginalEventChoices: recorder.PublicBasis);
     }
     private void ExactSource(NativeLogicalSourceRecordingAttachment recorder)
     {
@@ -119,6 +119,20 @@ internal sealed partial class NativeLogicalService
             }
         }
         if (failure is not null) FailSource(recorder, failure);
+    }
+    private IDisposable HoldPreparedSourceBytes(IDisposable scratch, NativeLogicalPublicFrame facts,
+        NativeLogicalSourcePublicBasis? basis)
+    {
+        // Extraction owns the 64 MiB working reservation synchronously. The
+        // detached queue then uses the same 64x copy/parser accounting as the
+        // original Source payload reader, measured without another byte buffer.
+        long charge = checked(16_384 + (NativeLogicalWire.MeasureBounded(facts, Limits.MaxCaptureBytes)
+            + (basis?.Bytes.LongLength ?? 0)) * 64L);
+        lock (sourceGate)
+        {
+            scratch.Dispose();
+            return ReserveSourceBytes(charge);
+        }
     }
     private IDisposable ReserveSourceBytes(long charge)
     {
@@ -359,6 +373,15 @@ internal sealed partial class NativeLogicalService
         try { input.Owner.Sink?.InputTerminal(input.Token, new(delivery, reason, Array.Empty<NativeLogicalInputStage>())); }
         catch { FailSource(input.Owner, "source_physical_terminal_metadata_failed"); }
     }
+    internal static bool MatchesPhysicalSourceLeaf(TextMenuLeaf leaf, NativeSourceInputPrefix prefix, bool publicBasis)
+    {
+        var native = leaf.NativeSourceWitness ?? leaf.NativeWitness;
+        return (publicBasis ? leaf.NativeSourcePrefixVerb ?? leaf.Verb : leaf.Verb) == prefix.Verb
+            && native != null && ReferenceEquals(native.Owner, prefix.Owner) && ReferenceEquals(native.Subject, prefix.Subject)
+            && native.Arguments.Count == prefix.Arguments.Count
+            && native.Arguments.All(argument => prefix.Arguments.TryGetValue(argument.Key, out var operand)
+                && ReferenceEquals(argument.Value, operand));
+    }
     private void CaptureSourceInputBasis(NativeLogicalSourceRecordingAttachment recorder, object token,
         string? protocolActionId, NativeSourceInputPrefix? physicalWitness, long encodingDeadline, SourceNativeFreeze? nativeFreeze)
     {
@@ -374,12 +397,7 @@ internal sealed partial class NativeLogicalService
                     var leaves = currentNative!.Leaves;
                     physicalMatches = leaves.Select((leaf, index) => (leaf, index)).Where(pair =>
                     {
-                        var native = pair.leaf.NativeSourceWitness ?? pair.leaf.NativeWitness;
-                        return (recorder.PublicBasis ? pair.leaf.NativeSourcePrefixVerb ?? pair.leaf.Verb : pair.leaf.Verb) == physicalWitness.Verb && native != null && ReferenceEquals(native.Owner, physicalWitness.Owner)
-                            && ReferenceEquals(native.Subject, physicalWitness.Subject)
-                            && native.Arguments.Count == physicalWitness.Arguments.Count
-                            && native.Arguments.All(argument => physicalWitness.Arguments.TryGetValue(argument.Key, out var operand)
-                                && ReferenceEquals(argument.Value, operand));
+                        return MatchesPhysicalSourceLeaf(pair.leaf, physicalWitness, recorder.PublicBasis);
                     }).Select(pair => pair.index).ToArray();
                 }
                 if (nativeFreeze is null || !nativeFreeze.Proven)
@@ -392,11 +410,13 @@ internal sealed partial class NativeLogicalService
             }
             else lock (basisGate) prepared = new(currentFacts ?? throw new InvalidOperationException("source_input_pre_facts_missing"), runId, DateTimeOffset.UtcNow);
         }
-        catch
+        catch (Exception exception)
         {
             nativeFreeze?.Seal();
             if (recorder.OrderedBasis) sink.InputFrozen(token, new("unproven", SourceOrderUnproven));
-            sink.InputBasis(token, null, null, "source_input_native_capture_failed"); return;
+            string reason = CaptureFailureReason(exception);
+            Console.Error.WriteLine($"[native-source-capture] input_prefix reason={reason}: {exception}");
+            sink.InputBasis(token, null, null, reason); return;
         }
         void Frozen()
         {
@@ -407,7 +427,8 @@ internal sealed partial class NativeLogicalService
         IDisposable scratch;
         try { scratch = prepared.SourceWorkingBudget ?? ReserveSourceBytes(SourceEncodingScratch); }
         catch (NativeLogicalException) { Frozen(); sink.InputBasis(token, null, null, "source_copied_payload_capacity"); return; }
-        if (!encodingAdmission.Wait(0))
+        bool ownsRequestSlot = !recorder.PublicBasis;
+        if (ownsRequestSlot && !encodingAdmission.Wait(0))
         { scratch.Dispose(); Frozen(); sink.InputBasis(token, null, null, "encoding_capacity_exceeded"); return; }
         var originalMatches = physicalMatches; // Detached bounded indices only; no native object survives prefix extraction.
         Enqueue(() =>
@@ -465,7 +486,7 @@ internal sealed partial class NativeLogicalService
                 if (recorder.PublicBasis) sink.InputSourcePayload(token, null, null, reason);
                 else sink.InputBasis(token, null, null, reason);
             }
-        });
+        }, ownsRequestSlot);
         Frozen(); // Immutable facts and their existing serial queue ticket are now sealed.
     }
     private sealed class SourceInputRetention(Action release) : IDisposable

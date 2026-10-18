@@ -41,6 +41,9 @@ internal static class NativeFoundationOwnerPatches
             harmony,
             AccessTools.Method(typeof(NRewardsScreen), nameof(NRewardsScreen.ShowScreen)),
             AccessTools.Method(typeof(NativeRewardOwnerPatch), nameof(NativeRewardOwnerPatch.Postfix)));
+        // Exact ShowScreen assigns these fields before Push invokes _Ready.
+        harmony.Patch(AccessTools.Method(typeof(NRewardsScreen), nameof(NRewardsScreen._Ready)),
+            prefix: new HarmonyMethod(AccessTools.Method(typeof(NativeRewardOwnerPatch), nameof(NativeRewardOwnerPatch.ReadyPrefix))));
         var cardRewardOnSelect = AccessTools.Method(typeof(CardReward), "OnSelect", Type.EmptyTypes);
         var cardRewardPrefix = AccessTools.Method(
             typeof(NativeCardRewardSelectionScopePatch),
@@ -260,6 +263,9 @@ internal static class NativeTreasureRelicCommitPatch
 
 internal static class NativeRewardOwnerPatch
 {
+    internal static void ReadyPrefix(NRewardsScreen __instance, RewardsSet ____rewardsSet, bool ____isTerminal) =>
+        TryRegister(() => NativeRewardDecisionProvider.Register(__instance, ____rewardsSet, ____isTerminal));
+
     internal static void Postfix(
         RewardsSet set,
         bool isTerminal,

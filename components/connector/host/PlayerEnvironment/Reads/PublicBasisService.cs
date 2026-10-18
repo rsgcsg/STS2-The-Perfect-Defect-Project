@@ -40,20 +40,29 @@ internal static partial class PlayerEnvironmentService
 
     internal static NativeLogicalService.NativeLogicalSourceCapture CaptureNativeLogicalSource()
     {
-        using var guard = new P1CaptureGuard();
-        NativeSourceInputProvider.BeforePrefix += P1CaptureGuard.InvalidateActive;
+        string stage = "capture_guard";
         try
         {
-            var before = P1NativeCaptureBoundary.Capture();
-            var pair = BuildSourceSnapshot();
-            string? continuity = before.Run == null ? null : Entities.GetId(before.Run, "run");
-            var captured = AssembleSourceCapture(pair, continuity, () => NativeLogicalCapture.Prepare(
-                NativeTextMenuFrameBuilder.Capture(pair.NativePreparation, Entities,
-                    binding => StartPlayerEnvironmentInput(pair.NativePreparation, binding.NativeAction, binding.ExactOperands), nativeLogical: true), Entities));
-            guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
-            return captured;
+            using var guard = new P1CaptureGuard();
+            NativeSourceInputProvider.BeforePrefix += P1CaptureGuard.InvalidateActive;
+            try
+            {
+                stage = "native_boundary_before";
+                var before = P1NativeCaptureBoundary.Capture();
+                stage = "source_snapshot";
+                var pair = BuildSourceSnapshot();
+                string? continuity = before.Run == null ? null : Entities.GetId(before.Run, "run");
+                stage = "source_assembly";
+                var captured = AssembleSourceCapture(pair, continuity, () => NativeLogicalCapture.Prepare(
+                    NativeTextMenuFrameBuilder.Capture(pair.NativePreparation, Entities,
+                        binding => StartPlayerEnvironmentInput(pair.NativePreparation, binding.NativeAction, binding.ExactOperands), nativeLogical: true), Entities));
+                stage = "native_boundary_after";
+                guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
+                return captured;
+            }
+            finally { NativeSourceInputProvider.BeforePrefix -= P1CaptureGuard.InvalidateActive; }
         }
-        finally { NativeSourceInputProvider.BeforePrefix -= P1CaptureGuard.InvalidateActive; }
+        catch (Exception exception) { throw new NativeLogicalSourceCaptureException(stage, exception); }
     }
 
     internal static NativeLogicalService.NativeLogicalSourceCapture AssembleSourceCapture(
@@ -104,4 +113,9 @@ internal static partial class PlayerEnvironmentService
         SealedObservations.Read(captureId, cursor, maxBytes, SealedObservationProfile.PublicBasis);
     internal static SealedObservationRelease ReleasePublicBasis(string captureId) =>
         SealedObservations.Release(captureId, SealedObservationProfile.PublicBasis);
+}
+
+internal sealed class NativeLogicalSourceCaptureException(string stage, Exception cause) : Exception(cause.Message, cause)
+{
+    internal string Stage { get; } = stage;
 }

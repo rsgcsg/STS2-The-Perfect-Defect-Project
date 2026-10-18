@@ -43,7 +43,7 @@ internal static partial class PlayerEnvironmentService
                 "Input delivery never proves execution, Commit, effects or causal successors.",
                 "Incomplete native sources remain explicit missing positions; Current cannot backfill history.",
                 "Unimplemented native exposure families remain unsupported; no polling completeness is claimed.",
-                "At most four pending or active native capture encodings are admitted; this is not a measured performance qualification." });
+                "At most four pending or active request encodings are admitted; passive Source4 encoding uses the original 128 MiB measured detached-byte budget. This is not performance qualification." });
     }
 }
 
@@ -217,6 +217,8 @@ internal sealed partial class NativeLogicalService : IDisposable
             currentAvailabilityIdentity = availability;
             currentFacts = facts; currentNative = native;
         }
+        if (sourceWorkingBudget != null)
+            sourceWorkingBudget = HoldPreparedSourceBytes(sourceWorkingBudget, facts, source?.PublicBasis);
         return new(facts, native.GameContinuityId, source?.PublicBasis?.CapturedAt ?? DateTimeOffset.UtcNow,
             source?.PublicBasis, wantsPublic ? source?.PublicMissingReason ?? (source?.PublicBasis == null ? "source_public_basis_capture_unavailable" : null) : null, wantsPublic, sourceWorkingBudget);
         }
@@ -225,9 +227,9 @@ internal sealed partial class NativeLogicalService : IDisposable
     // existing projector alone assigns snapshots, catalogs and action handles.
     internal static bool SameFacts(NativeLogicalPublicFrame a, NativeLogicalPublicFrame b)
         => NativeLogicalFactComparison.Compare(a, b) == NativeLogicalFactChange.None;
-    private void Enqueue(Action encode)
+    private void Enqueue(Action encode, bool ownsRequestSlot = true)
     {
-        encodings.Enqueue(() => { try { encode(); } finally { encodingAdmission.Release(); } });
+        encodings.Enqueue(() => { try { encode(); } finally { if (ownsRequestSlot) encodingAdmission.Release(); } });
         if (Interlocked.CompareExchange(ref encodingWorker, 1, 0) != 0) return;
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -357,10 +359,17 @@ internal sealed partial class NativeLogicalService : IDisposable
         if (reservation.Subscriptions.Count == 0 && currentFacts is null)
         { Hub.Complete(reservation, Array.Empty<NativeLogicalProjectionOutcome>()); return; }
         void Missing(string reason) => Hub.Complete(reservation, reservation.Subscriptions.Select(s => new NativeLogicalProjectionOutcome(s.ScopeId, null, reason) { SourceStage = sourceStage }).ToArray());
-        if (!encodingAdmission.Wait(0)) { Missing("encoding_capacity_exceeded"); return; }
+        bool ownsRequestSlot = sourceRecorder is not { PublicBasis: true, Closing: false, Failure: null };
+        if (ownsRequestSlot && !encodingAdmission.Wait(0)) { Missing("encoding_capacity_exceeded"); return; }
         Prepared prepared;
         try { prepared = Prepare(sourceCapture: true); }
-        catch { encodingAdmission.Release(); Missing("native_capture_failed"); return; }
+        catch (Exception exception)
+        {
+            if (ownsRequestSlot) encodingAdmission.Release();
+            string reason = CaptureFailureReason(exception);
+            Console.Error.WriteLine($"[native-source-capture] seam={reservation.SourceSeam} phase={reservation.SourcePhase} publication={reservation.PublicationIndex} reason={reason}: {exception}");
+            Missing(reason); return;
+        }
         bool sourceOrderProven = nativeFreeze?.Proven ?? true;
         var sourceScope = nativeFreeze?.Epoch.Subscription.ScopeId;
         Enqueue(() =>
@@ -405,7 +414,15 @@ internal sealed partial class NativeLogicalService : IDisposable
                     if (outcome.SourcePayload is { } payload) Store.ReleaseSourcePayload(payload.PayloadId);
                 }
             }
-        });
+        }, ownsRequestSlot);
+    }
+    internal static string CaptureFailureReason(Exception exception)
+    {
+        string stage = exception is NativeLogicalSourceCaptureException source ? source.Stage + ":" : "";
+        Exception cause = exception.InnerException ?? exception;
+        string reason = cause is NativeLogicalException native ? native.Code
+            : cause is SealedObservationException neutral ? neutral.Code : cause.GetType().Name;
+        return "native_capture_failed:" + stage + reason;
     }
     private static NativeLogicalRevalidationDiagnostics CreateRevalidationDiagnostics()
     {

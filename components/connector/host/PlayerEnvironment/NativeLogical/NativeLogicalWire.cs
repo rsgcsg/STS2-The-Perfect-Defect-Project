@@ -30,6 +30,12 @@ public static class NativeLogicalWire
         JsonSerializer.Serialize(stream, value, Options);
         return stream.ToArray();
     }
+    internal static int MeasureBounded<T>(T value, int maxBytes)
+    {
+        using var stream = new BoundedWireStream(maxBytes, countOnly: true);
+        JsonSerializer.Serialize(stream, value, Options);
+        return checked((int)stream.Length);
+    }
     public static T Clone<T>(T value) => JsonSerializer.Deserialize<T>(Encode(value), Options)!;
     public static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     internal static string Id(string prefix) => prefix + "-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
@@ -42,10 +48,14 @@ public static class NativeLogicalWire
     internal static string Number(ulong value) => value.ToString(CultureInfo.InvariantCulture);
 }
 
-internal sealed class BoundedWireStream(int limit) : System.IO.MemoryStream
+internal sealed class BoundedWireStream(int limit, bool countOnly = false) : System.IO.MemoryStream
 {
-    public override void Write(byte[] buffer, int offset, int count) { Check(count); base.Write(buffer, offset, count); }
-    public override void Write(ReadOnlySpan<byte> buffer) { Check(buffer.Length); base.Write(buffer); }
+    private long counted;
+    public override long Length => countOnly ? counted : base.Length;
+    public override void Write(byte[] buffer, int offset, int count)
+    { Check(count); if (countOnly) counted += count; else base.Write(buffer, offset, count); }
+    public override void Write(ReadOnlySpan<byte> buffer)
+    { Check(buffer.Length); if (countOnly) counted += buffer.Length; else base.Write(buffer); }
     private void Check(int count)
     { if (count > limit - Length) throw new NativeLogicalException("capacity_exceeded", "Encoding exceeds the announced complete-object byte limit."); }
 }
