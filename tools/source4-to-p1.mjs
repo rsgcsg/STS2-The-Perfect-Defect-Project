@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve, relative, sep, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { deriveSourceRunScope, classifySourceRunEntry, qualifySourceWholeRun } from './source4-run-scope.mjs';
+import { deriveSourceRunScope, classifySourceRunEntry, deriveSourceStartupContext, qualifySourceWholeRun } from './source4-run-scope.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -96,32 +96,60 @@ export function convertOriginals(source, sdk, core, options) {
     unresolved_inputs: [], unresolved_contexts: [], missing: [], complete: false,
     non_claims: ['not_agent_offer_consume_or_choice', 'not_human_origin_verification',
       'not_native_commit_or_causal_successor_proof', 'not_runtime_qualification'] };
-  const trace = []; const covered = new Set(); const refusals = new Map();
-  let candidates = []; let publicationsBefore = []; let previousPublication = null;
-  for (const entry of orderedSource4Rows(source)) {
-    const row = entry.row; const reference = row.captured_parts.public_basis;
-    let basis = null; let reduction = null; let original;
-    const capture = { source_kind: entry.kind, epoch_id: row.epoch_id, segment_id: row.segment_id,
-      source_ref: entry.kind === 'source_input' ? row.input_id : row.position.publication_index,
-      public_basis: reference, complete: false, missing: [], observation: null,
-      classification: 'unresolved_context', status: 'unresolved', reason: 'original_context_not_yet_classified' };
-    const captureIndex = report.captures.push(capture) - 1;
+  // Decode and hash the original bytes once. Startup interpretation can inspect
+  // the first complete prefix basis without obtaining any later live state.
+  const entries = orderedSource4Rows(source).map(entry => {
+    const reference = entry.row.captured_parts.public_basis;
+    let original, missing = [];
     if (reference !== null) {
       const bytes = source.bytes(reference.payload_ref);
       if (bytes.length !== reference.byte_count || hash(bytes) !== reference.sha256)
         throw new Error('source4_basis_reference_changed');
       try { original = sdk.decodePublicBasis(JSON.parse(bytes.toString('utf8'))); }
-      catch { capture.missing.push('p1_public_basis_decoder_refused_original'); }
-      if (original !== undefined) basis = { snapshot: original.snapshot, reads: original.reads };
-    } else capture.missing.push(row.captured_parts.public_basis_missing_reason);
+      catch { missing.push('p1_public_basis_decoder_refused_original'); }
+    } else missing.push(entry.row.captured_parts.public_basis_missing_reason);
+    return { ...entry, original, basisMissing: missing };
+  });
+  const startup = runScope ? deriveSourceStartupContext(runScope, entries, entry => {
+    if (!entry.original || entry.original.capture_status !== 'complete' || entry.original.missing.length
+      || entry.row.gap_after_index != null) return false;
+    const reduction = core.reduce(state, { snapshot: entry.original.snapshot, reads: entry.original.reads });
+    return reduction.complete && reduction.observation.status === 'decision';
+  }) : null;
+  if (startup) report.startup_context = startup.report;
+  const trace = []; const covered = new Set(); const refusals = new Map();
+  let candidates = []; let publicationsBefore = []; let previousPublication = null;
+  for (const entry of entries) {
+    const row = entry.row; const reference = row.captured_parts.public_basis;
+    const original = entry.original;
+    let basis = original ? { snapshot: original.snapshot, reads: original.reads } : null, reduction = null;
+    const capture = { source_kind: entry.kind, epoch_id: row.epoch_id, segment_id: row.segment_id,
+      source_ref: entry.kind === 'source_input' ? row.input_id : row.position.publication_index,
+      public_basis: reference, complete: false, missing: [...entry.basisMissing], observation: null,
+      classification: 'unresolved_context', status: 'unresolved', reason: 'original_context_not_yet_classified' };
+    const captureIndex = report.captures.push(capture) - 1;
     if (runScope) {
       const { entered, ...classification } = classifySourceRunEntry(runScope, entry, original, enteredRun);
       enteredRun = entered; capture.scope = classification;
-      if (classification.disposition === 'outside') {
+      if (classification.disposition === 'outside' && !startup?.blockedInputs.has(entry)) {
         Object.assign(capture, { complete: null, classification: 'outside_selected_p1_run',
           status: 'outside_scope', reason: classification.reason });
         continue;
       }
+    }
+    if (startup?.blockedInputs.has(entry)) {
+      capture.scope = { ...capture.scope, disposition: 'inside', reason: 'startup_player_input_retained' };
+      capture.reason = 'startup_player_input_before_first_complete_decision';
+      report.unresolved_inputs.push({ input_id: row.input_id, status: 'incomplete', reason: capture.reason });
+      continue; // Retained in native_trace and captures; never supplied to a later intention.
+    }
+    if (startup?.contexts.has(entry)) {
+      Object.assign(capture, { complete: null, status: 'context_only', classification: 'native_startup_waiting_context',
+        reason: 'user_approved_native_setup_launch_wait_until_first_complete_decision',
+        original_capture_status: original.capture_status, original_missing: [...original.missing],
+        original_snapshot_completeness: original.snapshot.completeness,
+        original_native_completeness: row.completeness, original_native_missing_reason: row.missing_reason });
+      continue; // No P1 observation, choice, commitment or publication rewrite.
     }
     if (basis !== null) {
       // Diagnostic reduction is pure. A native UI prefix is not automatically a new P1 decision.
@@ -272,6 +300,7 @@ export function convertOriginals(source, sdk, core, options) {
   report.complete = (runScope ? report.captures.some(capture => capture.scope.disposition === 'inside')
     && report.captures.every(capture => capture.scope.disposition !== 'unresolved') : report.captures.length > 0)
     && report.missing.length === 0 && report.unresolved_inputs.length === 0 && report.unresolved_contexts.length === 0;
+  if (startup?.report.required && !startup.report.complete) report.complete = false;
   if (runScope) report.whole_run = qualifySourceWholeRun(runScope, source, report);
   return report;
 }
