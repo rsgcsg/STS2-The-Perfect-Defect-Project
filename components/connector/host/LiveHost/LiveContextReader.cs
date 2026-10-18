@@ -67,13 +67,20 @@ internal static class LiveContextReader
 
     public static EventLiveContext BuildEvent(EventRoom room)
     {
-        EventModel model = room.LocalMutableEvent ?? room.CanonicalEvent;
-        NEventRoom? uiRoom = NEventRoom.Instance;
+        if (!NativeEventRoomBinding.TryCapture(room, NEventRoom.Instance, out var owner))
+            throw new InvalidOperationException("The current event model and mounted UI owner are not aligned.");
+        return BuildEvent(owner);
+    }
+
+    internal static EventLiveContext BuildEvent(NativeEventRoomBinding.Current owner)
+    {
+        EventModel model = owner.Event;
+        NEventRoom uiRoom = owner.UiRoom;
         bool ancient = model is AncientEventModel;
         bool inDialogue = false;
         if (ancient && uiRoom != null)
         {
-            NAncientEventLayout? layout = ConnectorMod.FindFirst<NAncientEventLayout>(uiRoom);
+            NAncientEventLayout? layout = owner.Layout as NAncientEventLayout;
             NClickableControl? hitbox = layout?.GetNodeOrNull<NClickableControl>("%DialogueHitbox");
             inDialogue = hitbox is { IsEnabled: true } && ConnectorMod.IsNodeVisible(hitbox);
         }
