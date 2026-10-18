@@ -1,6 +1,6 @@
 # P1 训练前收敛：项目地图与当前执行入口
 
-第19轮，2026-10-18。沿用 [Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)、[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) 和 [Document map](../../DOCUMENT_MAP.md)；本页是它们的任务导航，不另建协议、全局registry或治理检查器。**当前还未冻结：本批定义已合成、待用户批准；K0/K1/K2/K5/K6材料已交，K3已交24行处置表、用户待批/未执行，K4既有9/10、B实际操作单仍缺。** 最终冻结PR仍需用户批准。硬截止2026-10-20 16:30 Brisbane，未完成交剩余清单，不降低门槛。
+第19轮，2026-10-18。沿用 [Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)、[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) 和 [Document map](../../DOCUMENT_MAP.md)；本页是它们的任务导航，不另建协议、全局registry或治理检查器。**当前还未冻结：本批定义已合成、待用户批准；K0/K1/K2/K5/K6材料已交，K3表24项已exact tag核验后关闭、19条复用已入地图，K4既有9/10、B实际操作单仍缺。** 最终冻结PR仍需用户批准。硬截止2026-10-20 16:30 Brisbane，未完成交剩余清单，不降低门槛。
 
 历史查过：四份既有框架、设计沿革、旧19项任务、组件/Python地图、Full-Run data chain、Source3/4、Data/Provenance、PR25 rc4、K0/K1/K5/K6、第19轮原用户来源审计与当前同树源码。复用已有owner、采集链和来源证据；旧green、旧派发和旧资格不转贴当前组合。
 
@@ -61,7 +61,7 @@
 
 当前CLI按 `sts2-p1 replay --run-directory`验Agent目录，typed证据由 [Evidence Agent-session reader](../../../components/evidence/README.md)独立核验。研究训练从已获来源资格的immutable原件经 [STPD admission](../../../python/docs/DATA_AND_PROVENANCE.md)读入；Source3与direct-Agent样本各走原reader。P1新Q链消费者仍须在冻结后验，不能以目录可验推出训练已可用。
 
-Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式选run-continuity且保留菜单/域外原件；不能排除运行内gap/partial/unknown/遗漏输入。bounded完整分类不等于整局；真实new-run、连续来源及完整natural terminal另核。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
+Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式选run-continuity且保留菜单/域外原件；不能排除运行内gap/partial/unknown/遗漏输入。经用户批准的有界启动waiting仅按[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)单列非决策段，不补原缺失；bounded完整分类不等于整局；真实new-run、连续来源及完整natural terminal另核。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
 
 录一整局的门：最终英文tuple预检→约15分钟短段→Close/pack/独立验→转换complete→整局→离线及Managed严格配对重放，最终≥3局来源分开列、第三幕实到、胜利行尽验或交用户定。**B最终可操作预检单与真实整局转换未闭合，不指示用户依据本页立即开录。** 当前步骤/根因/范围见下节与 [范围书](SCOPE_v0.3.zh-CN.md)。
 
@@ -74,7 +74,7 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 **已定/待批的11条状态和覆盖索引只从[合成定义](SCOPE_v0.3.zh-CN.md)查；实际差异/旧Reference缺陷登记见[A线差异](MANAGED_DIFFERENCES.md)；例外仍只有[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)。** 旧T1–T7/旧CURRENT和本目录旧资产基准快照不派发当前任务。
 
 - A：A03两局原loss的完整terminal正式比较equal，选择点170/293、236/432，0unknown；中间并非全严格。旧中文Reference原件缺陷登记保留，真实Managed缺陷继续修，新英文整局严格验收仍0/3。A02 H02 ENOSPC及原not_started/unknown保持历史失败；S05只属于1482de5d有界存档，不转到a70d8de1新候选。
-- B：6c已loaded exact、English可见、首战真实native_input EndTurn和同carrier/successor阳性；但initialpublication1失败/gap1涉及受限启动语境合同，root已问用户待答；首mapvote的NativeSourceWitness漏附普通修复独立推进，**预检未PASS，不能告诉用户可以录**。isolated collection-setup status CLI失败与typed API/root/manifest健康是不同接缝，不把CUA错误说成游戏黑屏。
+- B：6c已loaded exact、English可见、首战真实native_input EndTurn和同carrier/successor阳性；但initialpublication1失败/gap1的有界启动waiting离线解释条件已获用户批准，见[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)；实现及negative tests待验；首mapvote的NativeSourceWitness漏附普通修复独立推进，**预检未PASS，不能告诉用户可以录**。isolated collection-setup status CLI失败与typed API/root/manifest健康是不同接缝，不把CUA错误说成游戏黑屏。
 - C/K6：现GLOBAL源码/接口、K6定位与R20外包/harness已存在；复用[API/库/CLI主入口、GUI薄映射](WORKBENCH_POSITION.md)，最终tuple实际产品短验/R20仍待。复杂GUI/团队系统不做，原信任/确认适配保留。
 - K5：[云最简调查](CLOUD_MINIMAL.md)复用R2 storage库/块hash与push/pull，不强制Hub。新P1→R2完整回读→Modal消费尚未实测，样本/费用/上传与消费操作另批；Hub/团队/云页面仅保留状态/接口。
 - 最终门：同候选英文≥3整局、实际第三幕/胜利行、严格完整轨迹/terminal、稳定候选40/20、原产品/R20与K；42+4行是可检索覆盖索引，不暗增每个共同机制在每幕重复通过的笛卡尔硬门。用户待定项见定义第8节，不能由底稿代批。
@@ -83,11 +83,11 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 
 ## 资产去向与K门
 
-[K0](RECORDING_HISTORY.md)、[K1](ASSETS.md)、[磁盘表](DISK.md)已交付。K1共2063行资产；[完整CSV](asset-ledger.csv)按identity检索每目录/PR/ref/建议去向；[source hash index](asset-sources.json)固定原完整JSON和详情路径，不重复提交大型JSON。6 dirty、潜在未覆盖refs/缺对象与两大数据根先保留；135其它Codex目录仅metadata，多数功能迁入未核实，非祖先不等于功能独有，无可立即批量关闭结论。
+[K0](RECORDING_HISTORY.md)、[K1](ASSETS.md)、[磁盘表](DISK.md)已交付。K1共2063行资产；[完整CSV](asset-ledger.csv)按identity检索每目录/PR/ref/建议去向；[source hash index](asset-sources.json)固定原完整JSON和详情路径，不重复提交大型JSON。6 dirty、潜在未覆盖refs/缺对象与两大数据根先保留；135其它Codex目录仅metadata，多数功能迁入未核实，非祖先不等于功能独有，不能由此推广为其它资产可批量关闭；本轮24项实际处置另列下段。
 
 抽查：[K1远端表](ASSET_REMOTE_REPORT.md)的PR181/J-min建议保留原数值/transport失败/unknown，由Q3定点吸收；PR178建议逻辑归档并定点迁适用决定，语义迁入未核实、仍open；[归档表](asset-archive-proposals.json)中的p1-codex-closeout-2026-10-16恢复包原地保留bundle/WIP，action_executed=false，旧pass未重跑。其他指定资产从CSV查，详情用source index原路径核对。
 
-**K3历史资产处置未批准/未执行；本次仅导航归档标签，无历史数据移动或PR关闭。已合topic自动删branch与新Mod先备份安装已有本轮单独授权，不能当作历史未合分支删除许可。** K4由未读历史的新agent只读本入口/链接实际回答十问；既有定向复验Q5/Q9通过，目前9/10，B实际操作单仍缺；本轮定义/why/云/工作台路由还须root/K4复核。新人能查建议不等于K3已完成，文档已存不等于整K通过。
+**K3表24项已按批准完成：24/24 exact tag远端核验后关闭，未合并；branch/worktree/data保留。** [逐项执行快照](K3_EXECUTION.json)固定真实head/tag/closed_at。 19项以后复用逐条见[链路用途表](CHAIN_PURPOSES.md#k3历史复用来源按链路逐项定位)；其中#141/#147/#150/#157/#158/#161/#163在Q-CHAIN-0与Q3开工前必查。已合topic自动删branch与新Mod先备份安装的单独授权不扩大到历史资产删除。 K4由未读历史的新agent只读本入口/链接实际回答十问；既有定向复验Q5/Q9通过，目前9/10，B实际操作单仍缺；本轮定义/why/云/工作台路由还须root/K4复核。新人能查建议不等于K3已完成，文档已存不等于整K通过。
 
 | 新人问题 | 唯一路由 |
 |---|---|

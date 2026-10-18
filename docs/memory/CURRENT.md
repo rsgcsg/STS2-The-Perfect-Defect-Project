@@ -24,7 +24,7 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
 ## Critical path and parallel work
 
 - B: actual native_input first-combat EndTurn/carrier/successor is positive, but
-  Source4 startup-context contract decision is awaiting user input (raw failure/gap1);
+  bounded offline startup-waiting E2 is user-approved; converter/negative tests are pending;
   missing map NativeSourceWitness is a separate ordinary fix. Preflight is NOT PASS;
   do not tell the user to start recording. Isolated setup status CLI failure and
   healthy typed API/root/manifest are distinct seams, not proof of a black game window.
@@ -36,7 +36,9 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
 - K5: storage/provider reuse proposal delivered; current P1 R2/Modal seam untested.
   Precise upload objects, costs and consumer probe need their own approval.
 - K: K0/K1/K2 and K5/K6 material delivered; K3 submitted a24-row historical-PR
-  disposition table, awaiting approval, not executed. K4 previously9/10; B operation
+  disposition table completed:24/24 remote exact tags verified then PRs closed, unmerged.
+  No branch/worktree/data deletion. 19 reuse rows with actual tags are in the map;7 training/Modal/
+  checkpoint PRs must be checked before Q-CHAIN-0/Q3. K4 previously9/10; B operation
   sheet is missing. This synthesis still needs root/K4 review and user definition approval.
 
 ## Stop boundary and next action
@@ -46,7 +48,8 @@ full games/strict replay; keep A/K/CLI work parallel. Preserve unknown/no-retry 
 actual candidate/source/parent continuity. The46 coverage rows are an index, not a
 new all-mechanisms-times-all-acts hard gate. Scope tradeoffs remain in definition§8.
 Approved ordinary merged-topic auto-delete/new-Mod install-with-backup differ from
-historical asset deletion/move/PR closure, which still need approval. No cloud upload,
+historical asset deletion/move, which still need approval; K3 closure has the narrow
+exact-tag-first approval above. No cloud upload,
 new paid job/research configuration, or final freeze is authorized by this document.
 Hard deadline: **2026-10-20 16:30 Australia/Brisbane**; report real gaps if incomplete.
 

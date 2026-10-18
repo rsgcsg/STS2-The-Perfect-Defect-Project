@@ -1,0 +1,229 @@
+{
+  "schema": "K3-map-execution-snapshot-v1",
+  "approval_seal": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/execution-24/approval-seal.json",
+  "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/execution-24/execution.json",
+  "source_sha256": "384b3aa99a1224413704010c06453199b62a24250f2d9b3bcb5694ae1a4982b2",
+  "as_of_utc": "2026-10-18T11:06:03.411577+00:00",
+  "approved_count": 24,
+  "remote_exact_tag_verified": 24,
+  "closed_verified": 24,
+  "branch_worktree_data_deleted": false,
+  "rows": [
+    {
+      "number": 26,
+      "head": "4f26d8dfbbc58e3a4a0e546e8bc67f72a9f4c60f",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-26-4f26d8dfbbc5",
+      "tag_object": "f02735a0d9aa11077a55e75a4027647074d835b1",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-26-4f26d8dfbbc5",
+      "closed_at": "2026-10-18T11:03:46Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 30,
+      "head": "b8e7f02db2c868604bbfd2fe682782acb976c568",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-30-b8e7f02db2c8",
+      "tag_object": "900e7cd3a83ffa2ddbd86ec2da9ebf9fc54b61b4",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-30-b8e7f02db2c8",
+      "closed_at": "2026-10-18T11:03:52Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 45,
+      "head": "fbfab632c78dc1640be6e1345dae1bbb2b44d1df",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-45-fbfab632c78d",
+      "tag_object": "784f90ab918fb8613e04c5386c328e5ee565b365",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-45-fbfab632c78d",
+      "closed_at": "2026-10-18T11:03:57Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 140,
+      "head": "bffb01210e5d0800887a893e04159127925cc02f",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-140-bffb01210e5d",
+      "tag_object": "dbbfba0b0fad3457363b46cc6db1aaf5ff5df5c3",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-140-bffb01210e5d",
+      "closed_at": "2026-10-18T11:04:03Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 141,
+      "head": "885e85ec1cf0e8ab66f56e6105e7bfc9e54d3486",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-141-885e85ec1cf0",
+      "tag_object": "81194d3b4b9bc69490414c4fcfcde5628fefa3d4",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-141-885e85ec1cf0",
+      "closed_at": "2026-10-18T11:04:08Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 144,
+      "head": "1d00b60fad2829ec58a0d79e95cc38cd99a64ecc",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-144-1d00b60fad28",
+      "tag_object": "d0e11f741962245e0a867ad93c335582abb4fb90",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-144-1d00b60fad28",
+      "closed_at": "2026-10-18T11:04:15Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 145,
+      "head": "a253194873d0fcfdba3bd19eb431f82122d0c7c9",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-145-a253194873d0",
+      "tag_object": "6db652fd5ba6f2759f90a4db4d00ad09a4771218",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-145-a253194873d0",
+      "closed_at": "2026-10-18T11:04:21Z",
+      "functional_disposition": "现行替代/历史路由归档"
+    },
+    {
+      "number": 146,
+      "head": "697880c06e52ef1e7e3d588627379abd50c28a5b",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-146-697880c06e52",
+      "tag_object": "fa1c8fd92a21b7c5a989a6f4285fb63f24c27e60",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-146-697880c06e52",
+      "closed_at": "2026-10-18T11:04:26Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 147,
+      "head": "71309adfcdfd808a6b99d2bc43abda9079ef1d7a",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-147-71309adfcdfd",
+      "tag_object": "d53d7dface0c71ad570420c4554d9f0387d8d071",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-147-71309adfcdfd",
+      "closed_at": "2026-10-18T11:04:33Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 148,
+      "head": "c8d654b7aa87ad71da7c5f12e0a20815f2c16889",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-148-c8d654b7aa87",
+      "tag_object": "4b9e547dc0298947b916919442f2ea4fedf15cab",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-148-c8d654b7aa87",
+      "closed_at": "2026-10-18T11:04:39Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 149,
+      "head": "abb30dda5ab746aad70da2cf26412812fca31fe2",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-149-abb30dda5ab7",
+      "tag_object": "9adf6a8a30ebf40a0f258faee0e454caa0f87bd1",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-149-abb30dda5ab7",
+      "closed_at": "2026-10-18T11:04:44Z",
+      "functional_disposition": "现行替代/历史路由归档"
+    },
+    {
+      "number": 150,
+      "head": "732a2d67bbd3718da62f87cd51eb3842abc23757",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-150-732a2d67bbd3",
+      "tag_object": "b403e60fd97657d1ec48fa801fa3c36b63f7e7e6",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-150-732a2d67bbd3",
+      "closed_at": "2026-10-18T11:04:50Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 151,
+      "head": "d8b5c9ff277cba39921c533a06a22763818c0141",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-151-d8b5c9ff277c",
+      "tag_object": "24b91046ae4aeb2098c69ecce0cd4f945858c5b5",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-151-d8b5c9ff277c",
+      "closed_at": "2026-10-18T11:04:56Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 152,
+      "head": "9f1177dae8a0bd3e701e947cb860c752b758b390",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-152-9f1177dae8a0",
+      "tag_object": "0106836d215cd2c482c5f383c69bd321f1473fc7",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-152-9f1177dae8a0",
+      "closed_at": "2026-10-18T11:05:03Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 153,
+      "head": "81ad4d1cb14a1d2661ed8f5be8770b03f3edfa1f",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-153-81ad4d1cb14a",
+      "tag_object": "511be1553f8739a2fac9807617a16e3ca5361628",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-153-81ad4d1cb14a",
+      "closed_at": "2026-10-18T11:05:09Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 154,
+      "head": "1fe27bae96ed8219e96f2c75a4b73e8662cd288f",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-154-1fe27bae96ed",
+      "tag_object": "871cb124880bb96aeb16cf32e647ca5399617956",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-154-1fe27bae96ed",
+      "closed_at": "2026-10-18T11:05:15Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 155,
+      "head": "32ac14a08cedc405f237a81c029a7862b107619c",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-155-32ac14a08ced",
+      "tag_object": "0024a358b971acd3ce490be57a9dc531333d97a8",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-155-32ac14a08ced",
+      "closed_at": "2026-10-18T11:05:20Z",
+      "functional_disposition": "现行替代/历史路由归档"
+    },
+    {
+      "number": 157,
+      "head": "96c86a2e03bcb6b0c9f7c64650b0f20d32c89731",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-157-96c86a2e03bc",
+      "tag_object": "d77b4c57c632712949702a4306a7881f05b3dc16",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-157-96c86a2e03bc",
+      "closed_at": "2026-10-18T11:05:26Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 158,
+      "head": "c8714976de1e01beace89fb17d59891c273833fa",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-158-c8714976de1e",
+      "tag_object": "64734fb42e07b54af2021809d9cd0facd9b67663",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-158-c8714976de1e",
+      "closed_at": "2026-10-18T11:05:32Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 160,
+      "head": "fdc3c23de1675196879c0273f50659753f35ed9b",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-160-fdc3c23de167",
+      "tag_object": "475cbd5b7d82e4407126f8b4889b0c796808e2e1",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-160-fdc3c23de167",
+      "closed_at": "2026-10-18T11:05:38Z",
+      "functional_disposition": "现行替代/历史路由归档"
+    },
+    {
+      "number": 161,
+      "head": "41ab5cd17ab7c28be19eb34292c22a65be6a2e51",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-161-41ab5cd17ab7",
+      "tag_object": "2e2cf137d35aab5ec03c7b6427b0c0bd73117e23",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-161-41ab5cd17ab7",
+      "closed_at": "2026-10-18T11:05:44Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 162,
+      "head": "829496cfaf012defd0f169341fef13ee248dc218",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-162-829496cfaf01",
+      "tag_object": "abeb290e0733cd7beead2614d4e6f724b889d2b5",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-162-829496cfaf01",
+      "closed_at": "2026-10-18T11:05:50Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 163,
+      "head": "762907a641f603e1db32155058a70efbf3b11ee5",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-163-762907a641f6",
+      "tag_object": "e05b94dcc8fba21597aebe38672a57f0f7c2cd86",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-163-762907a641f6",
+      "closed_at": "2026-10-18T11:05:55Z",
+      "functional_disposition": "部分承接或未迁入；以后复用"
+    },
+    {
+      "number": 164,
+      "head": "e30247defd859dfc75708fea4612c668e93cdbd2",
+      "archive_ref": "refs/tags/archive/p1-prefreeze-20261018/pr-164-e30247defd85",
+      "tag_object": "c44c30b7182de6925aee6c868d34568ff86a49b7",
+      "archive_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/p1-prefreeze-20261018/pr-164-e30247defd85",
+      "closed_at": "2026-10-18T11:06:02Z",
+      "functional_disposition": "现行替代/历史路由归档"
+    }
+  ]
+}

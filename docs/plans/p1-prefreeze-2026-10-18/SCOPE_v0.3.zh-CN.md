@@ -16,10 +16,10 @@
 | 2 | Managed一致与最终40/20 | **进行中**：A03两loss完整terminal equal；选择点170/293、236/432，整轨不严格；新英文严格0/3，最终候选40/20未跑 | 保证训练/评估环境对照真实游戏；严格到底、最终40/20有直接用户依据 |
 | 3 | 机制覆盖 | **进行中**：保留42+4检索行及到达办法；新候选实际覆盖待填，硬门位置集合待确认 | 把首训环境实际能力和遗漏说清；全幕不自动等于每种共同机制每幕都必须重复验 |
 | 4 | 英文 | **进行中**：新6c Mod已精确load、英文可见；转换预检尚未PASS | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
-| 5 | 采集/转换路径 | **卡住**：native_input首战EndTurn阳性；initialpublication1失败/gap1的启动语境合同待用户选，首mapvote的NativeSourceWitness漏附属普通修复，均未当预检通过 | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
+| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；有界启动waiting离线解释条件已批准，转换/negative tests待验；首mapvote的NativeSourceWitness普通修复与预检仍未闭合 | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
 | 6 | API/库/CLI产品路径、Workbench薄映射、R20 | **进行中**：已有GLOBAL应用源码/接口、K6定位与外包材料；最终tuple实际短验/R20未过 | 训练后完整Agent能从同一入口运行、Stop、查原件；保留原短验要求，不做复杂GUI |
 | 7 | 文档与closeout | **进行中**：本定义待批；CURRENT本轮同步合入/装载/缺口，docs检查与复核待完成 | 消费者能找到准确身份、操作与差异，不再双份范围书 |
-| 8 | K收敛 | **进行中**：K0/K1/K2/磁盘/K5/K6材料已交；K4既有9/10，B操作单仍缺；K3已交24行具体去向表，root已询批、用户待答，未执行 | 入口定位owner/状态/出处/去向；不是承诺全史穷尽或重验所有旧结论 |
+| 8 | K收敛 | **进行中**：K0/K1/K2/磁盘/K5/K6材料已交；K4既有9/10，B操作单仍缺；K3表24项均已exact tag远端核验后关闭；19项以后复用已逐条入地图标实际tag（未迁入源码保留） | 入口定位owner/状态/出处/去向；不是承诺全史穷尽或重验所有旧结论 |
 | 9 | R2+Modal最简云 | **进行中**：已有存储/派发机制与K5方案；新P1→R2回读→Modal消费尚未实测，上传/费用需另批 | 首训能读同一获准数据；用户已定最简方向，具体对象/只读探针与细门待确认 |
 | 10 | Agent公开信息复验 | **没开始**：仍保留复验要求；采样/机制范围与是否全部在冻结前完成的时点待确认 | 防止人看游戏能选而Agent缺必需公开事实；不把“之后再复验”自动升级为无界审查 |
 | 11 | 组件/协议/格式的位置和原因 | **进行中**：已补三路链及逐行用途/首训价值，等root/K4复核 | 避免重复实现、错误依赖和权威混淆；复用已有组件框架 |
@@ -78,7 +78,7 @@
 
 Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target。通用环境采集不限Human或鼠标；直接Agent原件独立于Annotator/Source4。当前Runtime写 `sts2.policy-runtime/agent-session-run-1`目录（global_source、frame/Consume/ACK、Receipt/Result），旧 `sts2.p1/episode-record-1`单文件保留原converter/reader；不能混成一个当前格式。
 
-Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。
+Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。 仅本次附条件批准的有界启动waiting可按§8及P1§17 E2单列非决策段；它不把原NativeLogical缺失变成完整。
 
 正式计数继续用同一最终候选、英文、≥3完整Human局，环境录制/选择器分来源列；自然loss可算完整局，不能当第三幕/胜利覆盖。不同候选/语言、locator诊断、原not_started跳过、Agent预检和save恢复片段不拼成最终三局；存档续玩保留父局/存档SHA/new continuity，数据按同谱系分组。
 
@@ -160,7 +160,7 @@ Hub、Cloudflare登录、Evidence delivery、campaign/团队账号和Workbench�
 
 项目地图应让新人定位owner、状态、出处、适用范围、资产去向和当前操作，不承诺穷尽历史全部知识，也不重验每条旧结论。复用K1的2063资产行、K2的100功能/401文档基准索引；135其它Codex目录仅metadata、语义迁入未核实等限制保留。
 
-K3必须从“尚无立即关闭结论”推进到逐旧PR可批的关闭/保留/以后复用表；关闭前保全exact head及独有成果，用户批准后执行。历史数据/资产迁移/删除不由本定义自动授权。冲刺普通已合topic自动删branch和新Mod安装（先备份）已有本轮单独许可，与历史未合分支/原始记录分开。
+用户2026-10-18已批准K3表24项：逐项先创建exact归档tag并远端核验，再关闭旧Draft；不删branch/worktree/data。K1逐项执行回执现已核24/24 exact tag远端解引用匹配、24/24 CLOSED且未合并，原branch/worktree/data保留；[紧凑执行快照](K3_EXECUTION.json)。19项以后复用已逐条进入K2对应链路并标实际tag；[#141/#147/#150/#157/#158/#161/#163](CHAIN_PURPOSES.md#k3历史复用来源按链路逐项定位)必须在Q-CHAIN-0与Q3开工前先查，不改变已批准训练配置。历史数据/资产迁移/删除不由本定义自动授权。冲刺普通已合topic自动删branch和新Mod安装（先备份）已有本轮单独许可，与历史未合分支/原始记录分开。
 
 发布继续用原版本/组件BOM、游戏/Mod/Managed/模板/工具原件和build/install/load身份；“develop冻结PR+tag、是否推main”的交付形式留用户确认，不先开新发布/registry。最终冻结PR用户亲批；普通source修复依已有冲刺授权推进。源码/CI、已装、真实游戏、Human来源、研究准入和策略强度各据实证。
 
@@ -168,7 +168,7 @@ B是关键路径；新Mod真实预检→用户短段→新英文整局→转换/
 
 ## 8. 提交用户确认的实际取舍
 
-Source4当前合同只承认结构完整的waiting context；本次原生setup→Launch后inputordinal0的首帧明确settling但raw failed/missing造成实际gap。root已向用户提交受限启动语境方案，**尚待答复、未实施**：仅在同run/epoch、native setup→Launch且inputordinal0原证据齐备时保留该失败首帧为非决策启动语境，不发Agent、不用后来事实补全、不称NativeLogical完整前缀；第一决策及以后完整门不变。详情原件：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/source4-startup-context-decision.md`。这不是已批准例外或本定义自行放宽；MapNativeSourceWitness漏附的普通修复独立推进。
+用户2026-10-18已批准**有界启动waiting离线解释例外**，唯一协议登记为[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：从**同run的native setup→Launch原见证**起，到首份完整、可决策公开观察前，可保留明确settling且原始失败/缺失的帧为非决策启动语境；原缺失和失败完整保留，不以后帧补齐，不发Agent，不声称NativeLogical缺失前缀变完整。期间混入任何玩家输入（即使未响应）必须unresolved，整局不得complete；该段必须以完整decision结束，崩溃或等不到都不得complete；每局报告单列帧数和时长，不算决策。first decision起的完整性与full strict门不变。**批准的是这些条件，转换器及negative tests仍待实现/实测，不等于当前预检PASS。** MapNativeSourceWitness漏附普通修复独立推进。
 
 
 1. 本合成冻结定义整体及最终发布形式（原BOM、freeze PR/tag、main另定）；在确认前仍是待批稿。
@@ -176,7 +176,7 @@ Source4当前合同只承认结构完整的waiting context；本次原生setup�
 3. 云最小对象/目的prefix/费用与一次有界Modal读取的授权和细门；40G历史迁移独立表，本地删除另批。
 4. Agent公开信息复验的采样、机制范围和完成时点；必需公开事实缺失照原合同修，不偷换信息范围。
 5. 胜利终局确实取得困难时，由用户决定剩余范围；旧中文缺陷的记录保留，新英文严格口径按最新指令执行。
-6. 上述Source4受限启动语境合同的用户选择；未获答复前不把raw failed改成完整、不实施语义放宽。
+受限启动waiting已按上述条件批准，不再列为待决；实现、反例测试和真实转换验收仍待完成。
 
 首轮训练的数据划分/门槛、P1 Input/Target/词表及实际执行绑定、新费用、Q1固定评测方案仍在冻结后确认；已有Q3第3版模型/配方不因本定义被撤销，若要改变仍先请用户确认，本定义不代批。到截止未齐就交11条实际剩余表，不把待定/未测写成通过。
 
