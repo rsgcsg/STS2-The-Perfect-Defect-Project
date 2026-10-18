@@ -12,15 +12,21 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 /** Pure interpretation seam. `source` is returned by the owning bundle reader;
  * this export also permits production-shaped semantic fixtures without disk IO. */
 export function convertNativeSemanticOriginals(source, sdk, core, options = {}) {
-  const identity = source.manifest.content_identity;
+  const openPrefix = source.manifest.schema === 'sts2.human-annotator/p1-native-prefix-1';
+  if (!openPrefix && source.manifest.schema !== 'sts2.human-annotator/p1-native-session-bundle-1')
+    throw new Error('native_p1_recording_schema_required');
+  const identity = openPrefix ? source.manifest : source.manifest.content_identity;
   const episode = `native-semantic:${identity.session_id}`;
   let state = core.createSession(episode, 'reference');
   const report = { schema: 'sts2.p1/native-semantic-conversion-report-1', source_bundle: source.bundle,
-    source_content_id: source.manifest.bundle_content_id, source_session_id: identity.session_id,
+    source_content_id: openPrefix ? null : source.manifest.bundle_content_id,
+    source_manifest_sha256: source.manifestSha256 ?? null, source_session_id: identity.session_id,
     origin: 'native_semantic_recording', declared_origin: identity.declared_origin,
-    human_origin_attestation: identity.human_origin_attestation,
+    human_origin_attestation: openPrefix ? null : identity.human_origin_attestation,
     scope: { kind: 'bounded_native_semantic_prefix', run_id: options.runId ?? null,
-      natural_terminal_observed: false }, captures: [], actions: [], issues: [], complete: false,
+      natural_terminal_observed: false, recording_status: openPrefix ? 'open' : 'closed',
+      watermark: openPrefix ? source.manifest.watermark : null }, captures: [], actions: [], issues: [],
+    pending_decisions: [], complete: false,
     trajectory: null };
   const active = new Map();
   const bases = new Map();
@@ -111,17 +117,18 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   }
 
   for (const action of report.actions) {
-    if (action.terminal_sequence === null) report.issues.push({ decision_id: action.decision_id,
-      reason: 'accepted_action_without_terminal_disposition' });
-    if (action.successor === null) report.issues.push({ decision_id: action.decision_id,
-      reason: 'accepted_action_without_complete_successor' });
+    if (action.terminal_sequence === null || action.successor === null) {
+      const reason = action.terminal_sequence === null ? 'accepted_action_without_terminal_disposition'
+        : 'accepted_action_without_complete_successor';
+      (openPrefix ? report.pending_decisions : report.issues).push({ decision_id: action.decision_id, reason });
+    }
     if (action.match_status !== 'matched') report.issues.push({ decision_id: action.decision_id, reason: action.reason });
     if (action.result?.status === 'unknown') report.issues.push({ decision_id: action.decision_id,
       reason: 'accepted_action_unknown' });
     delete action.lowering;
     delete action.observation;
   }
-  report.complete = report.actions.length > 0 && report.issues.length === 0;
+  report.complete = report.actions.length > 0 && report.issues.length === 0 && report.pending_decisions.length === 0;
   if (report.complete) {
     const points = report.actions.map((action, index) => ({ index,
       observation: report.captures[action.capture].observation, chosen: action.choice_id }));
@@ -133,8 +140,11 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
 }
 
 export async function convertP1NativeBundle(options) {
-  const { readVerifiedP1NativeBundle } = await import('./p1-native-bundle.mjs');
-  const source = readVerifiedP1NativeBundle(options.bundle);
+  const { readVerifiedP1NativeBundle, readVerifiedP1NativePrefix } = await import('./p1-native-bundle.mjs');
+  if (Boolean(options.prefix) === Boolean(options.bundle)) throw new Error('select_one_native_p1_bundle_or_prefix');
+  const source = options.prefix ? readVerifiedP1NativePrefix(options.prefix) : readVerifiedP1NativeBundle(options.bundle);
+  if (options.prefix && (!/^[a-f0-9]{64}$/.test(options.manifestSha256 ?? '')
+    || source.manifestSha256 !== options.manifestSha256)) throw new Error('native_p1_prefix_command_receipt_digest_required');
   const sdkRoot = resolve(options.sdkRoot ?? resolve(root, 'components/connector/sdk/typescript/dist'));
   const core = await import(pathToFileURL(resolve(sdkRoot, 'p1Global/index.js')).href);
   const sdk = await import(pathToFileURL(resolve(sdkRoot, 'index.js')).href);
@@ -144,11 +154,11 @@ export async function convertP1NativeBundle(options) {
 async function main() {
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 2) {
-    const keys = { '--bundle': 'bundle', '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output' };
-    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH [--sdk-root PATH] [--run-id ID] [--output PATH]');
+    const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
+      '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output' };
+    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH]');
     options[keys[args[i]]] = args[i + 1];
   }
-  if (!options.bundle) throw new Error('native_p1_bundle_required');
   const report = await convertP1NativeBundle(options);
   const serialized = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(options.output, serialized, { flag: 'wx' });

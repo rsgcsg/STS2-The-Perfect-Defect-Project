@@ -65,7 +65,8 @@ function example() {
   row('lifecycle', { decision_id: 'end-turn', action_witness_id: 'witness-end-turn', phase: 'finished',
     successor_basis: settling, successor_missing_reason: null });
   row('observation', { basis: afterTurn, reason: 'native_decision_owner_ready' });
-  const source = { bundle: '/synthetic-native-semantic-bundle', manifest: { bundle_content_id: 'synthetic',
+  const source = { bundle: '/synthetic-native-semantic-bundle', manifest: {
+    schema: 'sts2.human-annotator/p1-native-session-bundle-1', bundle_content_id: 'synthetic',
     content_identity: { session_id: 'test-session', declared_origin: 'agent_native_ui', human_origin_attestation: { attested: false } } }, events,
     journal: [], bytes: path => blobs.get(path) };
   return { source, blobs };
@@ -128,4 +129,18 @@ test('changing retained basis bytes after sealing is refused', () => {
   const path = source.events[0].basis.payload_ref;
   blobs.set(path, Buffer.concat([blobs.get(path), Buffer.from(' ')]));
   assert.throws(() => convertNativeSemanticOriginals(source, sdk, core), /basis_reference_changed/u);
+});
+
+test('an open durable prefix preserves pending acceptance without closing or inventing unknown', () => {
+  const { source } = example();
+  source.events = source.events.slice(0, 2);
+  source.manifest = { ...source.manifest.content_identity, schema: 'sts2.human-annotator/p1-native-prefix-1',
+    status: 'open', scope: 'durable_prefix', watermark: { event_count: 2, accepted_count: 1, pending_count: 1 } };
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.scope.recording_status, 'open');
+  assert.equal(report.human_origin_attestation, null);
+  assert.equal(report.actions[0].result, null);
+  assert.equal(report.pending_decisions.length, 1);
+  assert.deepEqual(report.issues, []);
 });
