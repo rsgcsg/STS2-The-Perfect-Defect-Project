@@ -55,6 +55,31 @@ public sealed class PlatformModelPreparationV2Tests
         Assert.False(PlatformCollectionHandoff.Ready(status));
     }
 
+    [Fact]
+    public void GlobalContextClosesSource3ThroughItsOwnerWithoutClaimingNativeAgentPreservation()
+    {
+        var current = Source();
+        var request = Read(Request("p1-global-r1"));
+        Assert.False(request.ModelContext.NativeAgent);
+        int commands = 0;
+        var result = PlatformCollectionHandoff.PrepareForModel(request, () => "game-1", () => current,
+            (command, session) => {
+                commands++;
+                Assert.Equal(RecordingCommandKind.Close, command.Kind);
+                Assert.Equal("recording-1", session);
+                current = current with {
+                    Lifecycle = current.Lifecycle with { State = RecordingLifecycleState.Closed },
+                    Closeout = new("closed", null, null, null)
+                };
+                return new(true, false, "closed", "owner closed", current.Lifecycle);
+            });
+        Assert.Equal(1, commands);
+        Assert.True(result.ReadyForModel);
+        Assert.Equal("closed_for_model", result.RecordingDisposition);
+        Assert.Equal("agent_protocol", result.Status.SourceDeclaration!.SourceKind);
+        Assert.Equal(request.ModelContext, result.ModelContext);
+    }
+
     [Theory]
     [InlineData("declared_human")]
     [InlineData("agent_native_ui")]
