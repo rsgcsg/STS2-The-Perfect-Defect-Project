@@ -469,7 +469,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       ? part("available", aliasTree(mapRead.content, work, "map.content"), "read:map")
       : part(terminalScene ? "terminal" : mapRead === null ? "unknown" : "unsupported", null, null);
   const combatRequired = family === "combat" || context.kind === "combat" || nestedCombat !== null
-    || ["combat_hand_card_selection", "native_combat_pile_selection", "native_generated_card_choice"].includes(nativeKind);
+    || ["combat_hand_card_selection", "native_combat_pile_selection"].includes(nativeKind);
   if (combatRequired && pilesRead === undefined) pilesPart = part("unsupported", null, null);
   // Absence from the legacy advertised Reads is not evidence of native unavailability.
   if (!terminalScene) {

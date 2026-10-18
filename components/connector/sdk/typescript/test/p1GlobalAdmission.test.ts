@@ -7,7 +7,7 @@ const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis
 const read = (basis: any, kind: string): any => basis.reads.find((item: any) => item.kind === kind).response;
 
 describe("P1 r1.3 explicit complete-capture admission", () => {
-  it("admits the native generated-card chooser without inventing grid preferences or confirmation", () => {
+  it.each(["combat", "Neow"])("admits the native generated-card chooser in %s without inventing grid preferences or confirmation", context => {
     const b = fixture("synthetic-complete-combat");
     const original = b.snapshot.interaction.content.context.player.hand[0];
     const cards = [0, 1, 2].map(index => ({ ...structuredClone(original), entity_id: `generated_${index}`, is_selected: false }));
@@ -15,7 +15,13 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
       cards, selectable_card_entity_ids: cards.map(card => card.entity_id), can_skip: true, is_peeking: false };
     Object.assign(b.snapshot.interaction, { kind: surface.kind, stage: surface.stage,
       content_schema: `sts2.player-environment/surface/${surface.kind}-1` });
-    b.snapshot.interaction.content = { surface, context: { kind: "selection", combat: b.snapshot.interaction.content.context } };
+    b.snapshot.interaction.content = { surface, context: context === "combat"
+      ? { kind: "selection", combat: b.snapshot.interaction.content.context }
+      : { kind: "event", event_id: "NEOW", name: "Neow", ancient: true, in_dialogue: false } };
+    if (context === "Neow") {
+      b.snapshot.reads = b.snapshot.reads.filter((item: any) => item.kind !== "combat_piles");
+      b.reads = b.reads.filter((item: any) => item.kind !== "combat_piles");
+    }
     b.snapshot.referents.push(...cards.map(card => ({ referent_id: card.entity_id, kind: "entity", role: "card", label: card.name,
       state: { visible: true, observation_basis: "native_visible_fact" }, properties_schema: "sts2.player-environment/referent/card-1", properties: card })));
     b.snapshot.bound_actions.actions = cards.map((card, index) => ({ ...b.snapshot.bound_actions.actions[0],
@@ -27,6 +33,15 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
       expect(choice.kind).toBe("selector.choose"); expect(r.lowering[choice.choice_id]!.follow).toEqual([]);
     }
     expect(surface).not.toHaveProperty("min_select"); expect(surface).not.toHaveProperty("selected_card_entity_ids");
+    if (context === "Neow") {
+      expect(r.observation.combat.availability).toBe("not_applicable");
+      expect(r.observation.piles.availability).toBe("not_applicable");
+    } else {
+      const missingPiles = structuredClone(b);
+      missingPiles.snapshot.reads = missingPiles.snapshot.reads.filter((item: any) => item.kind !== "combat_piles");
+      missingPiles.reads = missingPiles.reads.filter((item: any) => item.kind !== "combat_piles");
+      expect(project(missingPiles).missing).toContain("required:piles");
+    }
     for (const broken of [{ ...surface, selectable_card_entity_ids: ["foreign"] },
       { ...surface, selectable_card_entity_ids: [cards[0].entity_id, cards[0].entity_id] },
       { ...surface, is_peeking: true }, { ...surface, can_skip: undefined }]) expect(completeSelector(broken)).toBe(false);
