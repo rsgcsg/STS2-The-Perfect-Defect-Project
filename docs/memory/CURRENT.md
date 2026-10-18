@@ -1,6 +1,6 @@
 # Current — Round19 pre-training P1 freeze
 
-Resolve actual refs/source/original records. This is dated routing, not live or
+Resolve live GitHub refs; source/original records override this file. Dated routing, not live or
 qualification authority. [Project map](../plans/p1-prefreeze-2026-10-18/README.md)
 and [definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) remain
 **pending-user-approval** overall. Deadline:2026-10-20 16:30 Australia/Brisbane.
@@ -42,14 +42,16 @@ It is not the freeze PR. Original env failures/corrections and old a70/1482/S05 
 Agent defaults:normal all-unlocked Standard SP fresh run/seed, tutorial-independent;
 Reference instant. Administrative preparation stays private, never Human history
 or a P1 action. B04 examined Agent surface excludes pre-run menu/unlock preparation.
-P1 remains append-only. Adjacent same-card select/deselect context-only proposal is
-awaiting user approval; no implementation or new exception is authorized by this file.
+P1 remains append-only. User approved adjacent same-card select/deselect context-only
+interpretation under complete original restoration proof; source/registration underway.
 Console sessions/ancestors remain diagnostics only, excluded from3whole/coverage/train.
 Nonconsole save suffix evaluation is not implementation; coverage needs Reference-
 correct+offline+strict-Managed together, never3whole, same parent data split group.
 A0 Act3 empty rewards/Proceed→Architect→victory needs actual three proofs; Boss kill
 alone is not victory. A10 double-Boss is future. Common mechanisms≥1, Act2/3 each
 ordinary/elite/event/Boss/Boss-reward;42 rows record coverage/gaps, gaps go to user.
+## Remaining Platform non-claims
+
 Final40/20,3Human,strict replay,INFO native image/P1 review,Product/R20 remain undone.
 K3 exact24 tags then closed, no old branch/worktree/data deletion;19 reuse rows and
 7 mandatory training/Modal/checkpoint PR lookups before Q-CHAIN-0/Q3 remain. K4 lacks
