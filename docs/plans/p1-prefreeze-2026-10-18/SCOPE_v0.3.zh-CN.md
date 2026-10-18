@@ -15,8 +15,8 @@
 | 1 | 全部幕Reference正确性 | **没开始**：最终候选同条件英文合格整局0/3，真实第三幕/胜利行仍缺 | 新示范公开事实与结局可靠；全幕/英文/Act3目标/尽量赢为直接要求，≥3为采纳计数口径；不是三局都赢/都到Act3 |
 | 2 | Managed一致与最终40/20 | **进行中**：A03两loss完整terminal equal；选择点170/293、236/432，整轨不严格；新英文严格0/3，最终候选40/20未跑 | 保证训练/评估环境对照真实游戏；严格到底、最终40/20有直接用户依据 |
 | 3 | 机制覆盖 | **进行中**：用户已批准共同机制新候选合计至少一次、Act2/3五类幕特有各自实到及三证同时PASS；42+4行逐行填原件，新候选证据待齐 | 把首训环境实际能力和遗漏说清；全幕不自动等于每种共同机制每幕都必须重复验 |
-| 4 | 英文 | **进行中**：旧6c实际加载时英文可见；新4d仅已安装、未冷加载，转换预检尚未PASS | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
-| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；有界启动waiting源码已由root独审、22 focused PASS；真实新候选预检仍未通过，原包地图unmapped保留false | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
+| 4 | 英文 | **进行中**：4d在02/03严格冷加载tuple已PASS、英文可见；02因FTUE转换false，03输入前失败，60分钟预检窗已结束，不能开录 | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
+| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；E2源码22 focused PASS；02 startup/Map/EndTurn实证，但FTUE publication partial使overall false；03 ChangeSource未pause在任何输入前失败并正常闭合 | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
 | 6 | API/库/CLI产品路径、Workbench薄映射、R20 | **进行中**：已有GLOBAL应用源码/接口、K6定位与外包材料；最终tuple实际短验/R20未过 | 训练后完整Agent能从同一入口运行、Stop、查原件；保留原短验要求，不做复杂GUI |
 | 7 | 文档与closeout | **进行中**：本定义待批；CURRENT本轮同步合入/装载/缺口，docs检查与复核待完成 | 消费者能找到准确身份、操作与差异，不再双份范围书 |
 | 8 | K收敛 | **进行中**：K0/K1/K2/磁盘/K5/K6材料已交；K4既有9/10，B操作单仍缺；K3表24项均已exact tag远端核验后关闭；19项以后复用已逐条入地图标实际tag（未迁入源码保留） | 入口定位owner/状态/出处/去向；不是承诺全史穷尽或重验所有旧结论 |
@@ -49,19 +49,19 @@
 
 ## 3. 当前组合、发布身份与变化原则
 
-当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree `4b796997314f63b59557d6d8daa7f3b6ad14e67d`与已审eafa9a7c相同。#202实际merge `beca367cf72516f982031423d3266c9536925dd2`；#204实际merge即ea7c；#203的808e祖先经#204完整进入develop，GitHub标MERGED，不是第三次独立develop merge。#204 source CI39115695661与最终integration CI39120207920均PASS；这些是源码/集成证据，不是新英文整局。 root普通merge B后的未push组合源码为 `904291930cf1429df4fcc616dbfc07d720af10b8`；Mod编译身份仍是8967，不追贴904。root已报fullPython4485 PASS/5skip+93subtests，原sourceGate环境失败及精确纠正记录保留；仍是源码检查，不是当前新Mod加载或预检证明。安装回执：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json`。
+当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree `4b796997314f63b59557d6d8daa7f3b6ad14e67d`与已审eafa9a7c相同。#202实际merge `beca367cf72516f982031423d3266c9536925dd2`；#204实际merge即ea7c；#203的808e祖先经#204完整进入develop，GitHub标MERGED，不是第三次独立develop merge。#204 source CI39115695661与最终integration CI39120207920均PASS；这些是源码/集成证据，不是新英文整局。 root普通PR[#205](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/205)候选为 `cbbea3b1574517ee06c3d282083a249ef7cf8d29`，已含本轮此前文档和当前Runtime pin；普通候选不是冻结PR，CI/合入状态据实际远端另核。Mod编译身份仍是8967，不追贴904/cbbea。root已报fullPython4485 PASS/5skip+93subtests，原sourceGate环境失败及精确纠正记录保留；仍是源码检查，不是当前新Mod加载或预检证明。安装回执：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json`。
 
 | 层 | 当前事实及冻结时要固定的内容 |
 |---|---|
 | 游戏 | 标准单人Defect/A0、正式新记录英文；DLL SHA `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`；最终模式/语言/模板和版本必须对应原件 |
-| Reference Mod | 11:21:56Z快照：新安装 `4d3f8b4bd934de191731f7d6ccd011d12cd9eadd4d243eeb2caf95e1ef592860` / MVID `fb38a130-13eb-4b98-9439-7518362195de`，官方build workspace `8967a72c7533a30a8ba1f803f34b720a708fdc7c`；**尚未冷加载/预检PASS**。回滚 `2026-10-18T11-21-45.822Z` 的6份旧Mod/config/provenance SHA均独立匹配；前次实际loaded 6c6b885f/MVID5b2d62dc、英文/EndTurn仍仅属旧身份 |
+| Reference Mod | 当前安装 `4d3f8b4bd934de191731f7d6ccd011d12cd9eadd4d243eeb2caf95e1ef592860` / MVID `fb38a130-13eb-4b98-9439-7518362195de`，官方build workspace `8967a72c7533a30a8ba1f803f34b720a708fdc7c`；02/03实际严格loaded tuple均已验，**采集预检仍未PASS**。回滚 `2026-10-18T11-21-45.822Z` 的6份旧Mod/config/provenance SHA均独立匹配；前次实际loaded 6c6b885f/MVID5b2d62dc、英文/EndTurn仍仅属旧身份 |
 | Managed | A03实际native `a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66` / MVID `c9acc642-499d-4af2-ba24-2e90db5ef8cb` / patch `54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc`。两局A03执行workspace cd47f09c，不追贴ea7c |
 | P1/SDK/驱动/Runtime | P1 r1.3唯一语义owner；固定共享核心/Host mapping/Agent端口/比较器和实际发布包身份。typed tooltip用原全局双射，仅已声明typed shop detail尾部无序，usable_potions有序，500000工作上限保留 |
 | 采集/转换 | Source4原profile/bundle、capture身份、转换器/core、选择器来源/显示v4与原始记录grammar；report-v3的bounded/whole_run分别核验 |
 | 模板/显示 | Reference eng模板实际payload，Managed en；隔离Reference默认instant，native-ui/headless为独立显示维度。原888六格短验保持旧身份，不给6c转贴资格 |
 | 校验/产品/文档 | 原verifier/replay/comparator、API/库/CLI调用链、外包R20、范围/覆盖/差异和K入口；冻结时填实际成功原件，空格不当ready |
 
-当前源组件元数据如下（ea7c原platform-bom；Runtime6a448仅终局fixture同步，实际A03生产运行仍属原cd47绑定）；最终发布沿现有BOM/组件manifest与安装/加载回执填写，不重建新身份系统。旧Workbench component元数据是退役Platform诊断壳，不代表正式Python Application的产品验收。
+ea7c基准组件元数据快照如下（不是cbbea实际候选BOM；Runtime6a448仅终局fixture同步，实际A03生产运行仍属原cd47绑定）；最终发布沿现有BOM/组件manifest与安装/加载回执填写，不重建新身份系统。旧Workbench component元数据是退役Platform诊断壳，不代表正式Python Application的产品验收。
 
 | 组件 | 版本 | 当前已审source / scoped digest |
 |---|---|---|
@@ -72,6 +72,8 @@
 | Evidence | `0.1.0-rc.31` | `c60c3691fe45590a12eb10ff99a130b2903c6623` / `6418df7cf4f65460b2f619506d379c21c670e8dfaa780dcece757b4c82f6ebb0` |
 | 旧Platform诊断API | `0.1.0-rc.3` | `01debc74ba24c61c5cbfbe9023ac8d4b3a7e9bc3` / `2accc441c50968fc2f8ca0bafba1fb7d9e71eaa47dc24fc60d5a4c1b768f80b4` |
 
+用户最新确定的Agent初始准备默认：**全解锁不依赖教学进度，教学设置独立处理**；等价普通已全解锁进度下的标准单人新游戏/seed，之后正常游戏，Reference默认instant。不在运行中改资源/RNG或跳幕，不把正常开局前progress准备等同console跳转诊断。当前B只读spike在既有Host/profile-template/native unlock/NoTutorials owner内查最小实现，**尚未实施/未验证新默认**；旧eng/windowed/zhs模板实际FTUE=true、unlocks0，不能改称已全解锁。复用成熟Mod/采集工具、内部库/API为主、GUI薄映射，不另建初始化框架。
+
 版本修订按真实公开语义、实际consumer兼容、解释和数据影响决定，不能机械用“r1.x就事实保持/r2才会影响数据”判断。原件/producer身份不改，新解释另记；r1.x也可能须重派生/重验。冻结不永久禁止架构演进；只有当前发布组合受批准的范围约束。
 
 ## 4. 记录、转换、比较与计数
@@ -81,6 +83,10 @@ Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target�
 Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。 仅本次附条件批准的有界启动waiting可按§8及P1§17 E2单列非决策段；它不把原NativeLogical缺失变成完整。
 
 正式计数继续用同一最终候选、英文、≥3完整Human局，环境录制/选择器分来源列；自然loss可算完整局，不能当第三幕/胜利覆盖。不同候选/语言、locator诊断、原not_started跳过、Agent预检和save恢复片段不拼成最终三局；存档续玩保留父局/存档SHA/new continuity，数据按同谱系分组。
+
+**Console批准边界**：仅Reference独立诊断可用；整份console-assisted session排除正式≥3Human、覆盖与训练，保存后续玩也不能洗掉console祖先。当前Managed没有同一Console准备链；跳幕/战斗debug会改变RNG/visited/history，不能凭同seed/一帧相等称严格等价。来源事实和原件保留，不以pause掩盖console操作。
+
+**保存续玩仅批准评估，方案未实施。** 用户同意的资格是：非console真实parent/save起点的suffix，只有该次Reference记录正确、离线校验PASS、Managed严格重放PASS三证实际齐备后，才可补对应覆盖；不能计≥3自然完整Human局/whole_run。parent与suffix按同谱系同组，console-assisted祖先永久排除覆盖/训练。保留parent原件/save SHA、来源候选、两Host loaded tuple及新continuity；旧S05只证1482 Managed，当前a70拒旧descriptor，Reference原生Map保存解码不支持，不能直接宣称跨Host续玩。只读评估 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/saved-continuation-evaluation.md`)已列准确MapRoom接缝与普通Combat/Event边界替代；具体实施/成本尚未获本次批准，不删除pre_finished_room、不改旧descriptor、不用EnterAct代续玩。
 
 严格比较固定tuple/语言/角色/难度/种子/起点，在Managed重放Reference真实选择，核完整公开观察、目录、选择、承诺及完整terminal。原全局实体双射、重复实例、owner/关系和文本保留；只有合同已声明集合可无序；different/incomparable/unknown/预算/技术中断/自然终局分别计。
 
@@ -100,6 +106,8 @@ Hub、Cloudflare登录、Evidence delivery、campaign/团队账号和Workbench�
 
 
 用户2026-10-18已选覆盖方案1并附条件：**共同机制在新候选记录合计至少出现并验过一次**；不要求每个共同机制在每幕重复验。**第2幕、第3幕各自的普通战、精英战、该幕事件、Boss战、Boss奖励五类必须实际验到**，两幕不能互相代替。每次计PASS必须同时具备该次Reference记录正确、离线校验PASS、Managed严格重放PASS三项证据；到达、源码修好或单项PASS都不能填通过。
+
+**A0第三幕BossReward口径已获用户批准**：允许真实自然空奖励/Proceed，再走原生结局（TheArchitect对话/Proceed→WinRun→OnEnded victory）；Boss击败本身不等于终局。该奖励页及实际victory后继同一点的Reference正确原件、离线校验PASS和Managed严格重放PASS可共同支持奖励/胜利行，不制造不存在的有奖奖励。若打不出胜利，第三幕Boss与BossReward两行都保留gap交用户，不能凭打到Boss勾PASS。A10末幕双Boss是未来项目目标，本轮仍A0。
 
 下表保留42个逐幕机制行和4个跨幕/终局行，逐行记录实际候选/来源/位置、三项证据路径和结果。共同机制只须合计一次，别幕对应行可明确引用同一已通过实例，不伪称该幕发生；幕特有必验行必须用对应幕自身原件。当前新候选三证尚未齐，下表不预填PASS。3局未遇共同机制时，先用同种子前缀重放或用户有意路线补验；仍未到达就作为冻结前缺口交用户决定，不算PASS，也不无限卡住冻结。第三幕、胜利及跨幕/终局原要求保留，取得困难的实际剩余范围交用户决定。
 
@@ -150,15 +158,26 @@ Hub、Cloudflare登录、Evidence delivery、campaign/团队账号和Workbench�
 | 第3幕 | 宝箱打开、取遗物、跳过 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 路线选宝箱；不在开箱前揭示未来遗物 |
 | 第3幕 | 单选、多选、生成卡、选堆/包选择 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
 | 第3幕 | 移除/变换及后继牌组 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 使用自然服务/事件；核实体消失或新实体及后继 |
-| 第3幕 | Boss战斗、掉落与Boss遗物选择 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 本幕Boss战、Boss奖励各必验；三证待齐 | 真人目标第三幕，保留Boss战及奖励完整链 |
+| 第3幕 | Boss战斗与Boss奖励（A0可自然空奖励/Proceed） | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | Boss、BossReward分别留行级结果；同点三证及实际victory待齐，不能赢则两行gap交用户 | 自然Boss→空奖励/Proceed→原生结局→实际victory；不以击败Boss代终局 |
 | 1→2 | 跨幕选择、地图与状态连续性 | H1/H2实际进入Act2，旧中文Reference已见；Managed仅诊断执行 | 最终待验 | 完成Act1 Boss奖励后跨幕，核进入新幕前后 |
 | 2→3 | 跨幕与Act3初始化 | H1/H2这组P1原件未到Act3；不作全史无记录结论 | 最终待验 | 真人完成Act2 Boss并进入Act3 |
 | 终局 | 自然loss、完整终局公开图与释放 | H1 Act2/22、H2 Act2/28均真实loss；M1/M2到loss但终局图不同 | 最终待验 | 新英文整局自然终局，核胜负/HP/Receipt/Stop/释放 |
-| 终局 | 胜利 | 未有合格记录 | 必验缺口 | 真人尽量获胜；取得困难时由用户决定，不替换标准 |
+| 终局 | 胜利 | 未有最终候选合格记录 | 必验缺口；可与A0第三幕自然空奖励/Proceed共享同点三证 | 原生结局至实际victory；不能赢则第三幕Boss/BossReward两行一起列gap交用户 |
+
+A0第三幕合并机制行在此拆开记验收结果（不增加机制种类，42行主索引仍保留）：
+
+| 验收行 | 同次实际原件要求 | 当前结果／未胜利时处理 |
+|---|---|---|
+| 第3幕Boss战 | 实到自然Boss并核Reference正确、离线PASS、Managed严格PASS；原生结局仍须继续 | 新候选三证未齐；若不能胜利，Boss行gap交用户 |
+| 第3幕BossReward | 自然空奖励/Proceed及实际victory后继同点三证；可与胜利行共用原件 | 新候选三证未齐；若不能胜利，BossReward行gap一并交用户 |
 
 关联/强制奖励等只有特殊模式证据的机制，先列实际标准局可达实例；不凭fixture宣称标准模式覆盖，也不因暂未遇到而宣称不存在。多人、未知身份与隐藏未来仍为当前不支持范围。
 
 
+
+### 当前真实预检及停止状态
+
+02原件 `native-preflight-02`：4d严格loaded tuple PASS，Map.travel/EndTurn均精确匹配、0unknown；E2 1帧7235ms、0waiting input、complete=true。之后两份publication出现 `native_end_turn_ftue_unseen`/partial，Source4 overall=false；Close/pack和Host正常退出不抵消此失败。实际用户新局seed按原生读回，helper请求seed不当实际seed。03原件 `native-preflight-03`：未pause就ChangeSource，被明确拒绝；任何native输入之前steps0停止，Recorder正常closed/closed、Host正常退出。原 `stdin_closed_without_finish` 与source-change失败原文保留，未重命名成成功。60分钟窗口已于11:40Z结束，**不能告诉用户可以录**；后续先完成原owner准备方案、独审，再另报有界新预检窗口，不暗延长。
 
 ## 7. 收敛、发布与停止边界
 
@@ -168,11 +187,11 @@ Hub、Cloudflare登录、Evidence delivery、campaign/团队账号和Workbench�
 
 发布继续用原版本/组件BOM、游戏/Mod/Managed/模板/工具原件和build/install/load身份；“develop冻结PR+tag、是否推main”的交付形式留用户确认，不先开新发布/registry。最终冻结PR用户亲批；普通source修复依已有冲刺授权推进。源码/CI、已装、真实游戏、Human来源、研究准入和策略强度各据实证。
 
-B是关键路径；新Mod真实预检→用户短段→新英文整局→转换/严格重放。录制闭环未过不告诉用户“可以录”。遇到的producer/转换/工具问题在原owner修，不从GUI黑图或click错误推断游戏黑屏；持续卡住按已定时限报最短反例和可选方案。A、K3/K5/K6/文档并行不挡用户录制。
+B是关键路径；已结束的预检失败保留，新默认准备尚未实施；后续新有界预检PASS→用户短段→新英文整局→转换/严格重放。录制闭环未过不告诉用户“可以录”。遇到的producer/转换/工具问题在原owner修，不从GUI黑图或click错误推断游戏黑屏；持续卡住按已定时限报最短反例和可选方案。A、K3/K5/K6/文档并行不挡用户录制。
 
 ## 8. 提交用户确认的实际取舍
 
-用户2026-10-18已批准**有界启动waiting离线解释例外**，唯一协议登记为[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：从**同run的native setup→Launch原见证**起，到首份完整、可决策公开观察前，可保留明确settling且原始失败/缺失的帧为非决策启动语境；原缺失和失败完整保留，不以后帧补齐，不发Agent，不声称NativeLogical缺失前缀变完整。期间混入任何玩家输入（即使未响应）必须unresolved，整局不得complete；该段必须以完整decision结束，崩溃或等不到都不得complete；每局报告单列帧数和时长，不算决策。first decision起的完整性与full strict门不变。**批准条件已登记；startup源码已root独审、22 focused PASS；原真实包派生仍因地图unmapped为overall false，新候选预检仍未通过。** 旧MapNativeSourceWitness漏附原件不补写；原owner补附源码已入候选，等新录制验。
+用户2026-10-18已批准**有界启动waiting离线解释例外**，唯一协议登记为[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：从**同run的native setup→Launch原见证**起，到首份完整、可决策公开观察前，可保留明确settling且原始失败/缺失的帧为非决策启动语境；原缺失和失败完整保留，不以后帧补齐，不发Agent，不声称NativeLogical缺失前缀变完整。期间混入任何玩家输入（即使未响应）必须unresolved，整局不得complete；该段必须以完整decision结束，崩溃或等不到都不得complete；每局报告单列帧数和时长，不算决策。first decision起的完整性与full strict门不变。**批准条件已登记；startup源码已root独审、22 focused PASS；01原真实包仍地图unmapped；02已Map/EndTurn严格match、E2 1帧7235ms/0input完整，但FTUE使overall false；03 ChangeSource未pause在输入前失败。** 旧MapNativeSourceWitness漏附原件不补写；原owner补附源码已入候选，等新录制验。
 
 
 1. 本合成冻结定义整体及最终发布形式（原BOM、freeze PR/tag、main另定）；在确认前仍是待批稿。
