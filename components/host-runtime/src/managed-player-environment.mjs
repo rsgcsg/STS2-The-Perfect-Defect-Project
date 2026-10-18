@@ -773,10 +773,10 @@ function canonicalShopSurface(state, ctx) {
     visible: entry.visible, affordable: entry.affordable, can_purchase: exact && entry.can_purchase,
     ...(entry.blocked_reason == null ? {} : { blocked_reason: entry.blocked_reason }) });
   const bind = (entry, kind, properties, label, action) => {
-    const item = ctx.referent({ role: kind, id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
+    const item = ctx.referent({ role: "shop_entry", id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
       ? ctx.entityId("shop_entry", entry.native_ref) : ctx.id("unbound_shop_entry", kind, entry.inventory_index, ctx.referents.length), label,
       enabled: exact && entry.can_purchase, properties });
-    if (exact && entry.can_purchase) ctx.action({ verb: "activate", subject: item, label: `Buy ${label} for ${entry.cost} gold`,
+    if (exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
       raw: { cmd: "action", action, args: { entry_ref: entry.native_ref,
         ...(action === "remove_card" ? { room_ref: state.room_ref } : {}) } } });
     return item.properties;
@@ -960,131 +960,49 @@ function currentSurface(state, ctx) {
         ]
       };
     }
-    case "treasure_chest": {
-      const room = ctx.referent({
-        role: "treasure_room",
-        label: "Treasure chest",
-        properties: { stage: "closed" }
-      });
-      ctx.action({
-        verb: "activate",
-        subject: room,
-        label: "Open treasure chest",
-        raw: { cmd: "action", action: "open_treasure", args: { room_ref: state.room_ref } }
-      });
-      const complete = typeof state.room_ref === "string" && state.room_ref.length > 0;
-      return {
-        kind: "treasure_chest",
-        stage: "closed",
-        prompt: null,
-        surface: { kind: "treasure_chest", stage: "closed" },
-        context: { ...commonContext, kind: "treasure" },
-        complete,
-        visibleInformation: "contract_complete_for_current_native_treasure_interaction",
-        interactionDiscovery: "derived_from_same_current_native_treasure_interaction_as_execution",
-        missing: complete ? [] : ["native_treasure_room_identity"]
-      };
-    }
-    case "treasure_relic": {
-      const room = ctx.referent({
-        role: "treasure_room",
-        label: "Opened treasure chest",
-        properties: { stage: "relic_selection" }
-      });
-      const currentRelics = Array.isArray(state.relics) ? state.relics : [];
-      const nativeIdentityComplete = Array.isArray(state.relics)
-        && currentRelics.length > 0 && currentRelics.length <= ACTION_LIMIT
-        && currentRelics.every((relic, index) => relic?.index === index
-          && typeof relic.native_ref === "string" && relic.native_ref.length > 0
-          && typeof relic.id === "string" && relic.id.length > 0
-          && typeof relic.name === "string" && relic.name.length > 0)
-        && new Set(currentRelics.map((relic) => relic.native_ref)).size === currentRelics.length;
-      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
-      const skipFactComplete = typeof state.can_skip === "boolean";
-      const complete = roomIdentityComplete && nativeIdentityComplete && skipFactComplete;
-      const relics = currentRelics.map((relic, index) => {
-        const item = ctx.referent({
-          role: "relic",
-          label: relic?.name ?? `Unavailable relic ${index + 1}`,
-          enabled: complete,
-          occurrence: index,
-          properties: {
-            index: relic?.index ?? index,
-            definition_id: relic == null ? null : definitionId(relic.id ?? relic.name),
-            name: relic?.name ?? null,
-            description: relic?.description ?? null,
-            rarity: relic?.rarity ?? null
-          }
-        });
-        if (complete) ctx.action({
-          verb: "select",
-          subject: item,
-          label: `Take ${relic.name ?? `relic ${index + 1}`}`,
-          raw: {
-            cmd: "action",
-            action: "select_treasure_relic",
-            args: { room_ref: state.room_ref, relic_ref: relic.native_ref }
-          }
-        });
+    case "treasure_chest":
+    case "treasure_relic":
+    case "treasure_complete": {
+      const choosing = state.decision === "treasure_relic";
+      const closed = state.decision === "treasure_chest";
+      const currentRelics = choosing && Array.isArray(state.relics) ? state.relics : [];
+      const refs = currentRelics.map(relic => relic?.native_ref);
+      const roomComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
+      const relicsComplete = !choosing || Array.isArray(state.relics) && currentRelics.length > 0 && currentRelics.length < ACTION_LIMIT
+        && new Set(refs).size === refs.length
+        && currentRelics.every((relic,index) => relic?.index === index && typeof relic.native_ref === "string"
+          && typeof relic.id === "string" && typeof relic.name === "string" && typeof relic.description === "string"
+          && relic.hover_facts_complete === true && Array.isArray(relic.keywords) && Array.isArray(relic.card_previews));
+      const skipComplete = !choosing || typeof state.can_skip === "boolean";
+      const complete = roomComplete && relicsComplete && skipComplete;
+      const stage = closed ? "closed" : choosing ? "relic_choice" : "completed";
+      const relics = currentRelics.map((relic,index) => {
+        const unique = typeof relic?.native_ref === "string" && refs.filter(ref => ref === relic.native_ref).length === 1;
+        const item = ctx.referent({ role: "relic", id: unique ? ctx.entityId("relic",relic.native_ref) : ctx.id("unbound_treasure_relic",index),
+          label: relic?.name ?? "Unavailable relic", enabled: complete, properties: {
+            definition_id: relic == null ? null : definitionId(relic.id), name: relic?.name ?? null,
+            description: visibleText(relic?.description), rarity: relic?.rarity ?? null,
+            keywords: Array.isArray(relic?.keywords) ? visibleHoverKeywords(relic.keywords) : [],
+            card_previews: Array.isArray(relic?.card_previews) ? visibleHoverCards(relic.card_previews,ctx.snapshotId,index,ctx.id) : [] } });
+        if (complete) ctx.action({ verb: "activate", subject: item, label: `Take ${relic.name}`,
+          raw: { cmd: "action", action: "select_treasure_relic", args: { room_ref: state.room_ref,relic_ref: relic.native_ref } } });
         return item.properties;
       });
-      if (complete && state.can_skip === true) {
-        ctx.action({
-          verb: "skip",
-          subject: room,
-          label: "Skip treasure relic",
-          raw: {
-            cmd: "action",
-            action: "skip_treasure_relic",
-            args: { room_ref: state.room_ref }
-          }
-        });
-      }
-      return {
-        kind: "treasure_relic_selection",
-        stage: "choosing",
-        prompt: null,
-        surface: {
-          kind: "treasure_relic_selection",
-          stage: "choosing",
-          relics,
-          can_skip: state.can_skip === true
-        },
-        context: { ...commonContext, kind: "treasure" },
-        complete,
-        visibleInformation: "contract_complete_for_current_native_treasure_interaction",
-        interactionDiscovery: "derived_from_same_current_native_treasure_interaction_as_execution",
-        missing: [
-          ...(roomIdentityComplete ? [] : ["native_treasure_room_identity"]),
-          ...(nativeIdentityComplete ? [] : ["native_treasure_relic_identity"]),
-          ...(skipFactComplete ? [] : ["native_treasure_skip_actionability"])
-        ]
-      };
-    }
-    case "treasure_complete": {
-      const room = ctx.referent({
-        role: "treasure_room",
-        label: "Completed treasure room",
-        properties: { stage: "complete" }
-      });
-      ctx.action({
-        verb: "close",
-        subject: room,
-        label: "Proceed to map",
-        raw: { cmd: "action", action: "leave_room", args: { room_ref: state.room_ref } }
-      });
-      const complete = typeof state.room_ref === "string" && state.room_ref.length > 0;
-      return {
-        kind: "treasure_completion",
-        stage: "ready",
-        prompt: null,
-        surface: { kind: "treasure_completion", stage: "ready" },
-        context: { ...commonContext, kind: "treasure" },
-        complete,
-        visibleInformation: "contract_complete_for_current_native_treasure_interaction",
-        interactionDiscovery: "derived_from_same_current_native_treasure_interaction_as_execution",
-        missing: complete ? [] : ["native_treasure_room_identity"]
-      };
+      if (complete && closed) ctx.action({ verb: "open", label: "Open the treasure chest",
+        raw: { cmd: "action", action: "open_treasure", args: { room_ref: state.room_ref } } });
+      if (complete && choosing && state.can_skip) ctx.action({ verb: "skip", label: "Skip the visible treasure relic",
+        raw: { cmd: "action", action: "skip_treasure_relic", args: { room_ref: state.room_ref } } });
+      if (complete && !choosing && !closed) ctx.action({ verb: "activate", label: "Continue from the treasure room",
+        raw: { cmd: "action", action: "leave_room", args: { room_ref: state.room_ref } } });
+      return { kind: "treasure_room", stage, prompt: null,
+        surface: { kind: "treasure_room",stage,chest_opened: !closed,relics,
+          can_choose: choosing && complete, can_skip: choosing && complete && state.can_skip, can_proceed: !closed && !choosing && complete },
+        context: { kind: "treasure" }, complete,
+        visibleInformation: "current_native_treasure_lifecycle_and_formatted_original_relics",
+        interactionDiscovery: "original_native_treasure_room_controls_and_current_relic_synchronizer",
+        missing: [...(roomComplete ? [] : ["native_treasure_room_identity"]),
+          ...(relicsComplete ? [] : ["complete_current_native_treasure_relic_facts"]),
+          ...(skipComplete ? [] : ["native_treasure_skip_actionability"])] };
     }
     case "reward_set": {
       const potionSlotsFull = state.potion_slots_full === true;

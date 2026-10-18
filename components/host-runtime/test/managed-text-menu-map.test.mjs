@@ -136,18 +136,18 @@ function treasureDecision(stage = "treasure_chest") {
     room_ref: "native-treasure-room", player: mapDecision().player };
   if (stage === "treasure_relic") return { ...common, can_skip: true,
     relics: [
-      { index: 0, native_ref: "native-relic-a", id: "RELIC.A", name: "First relic", rarity: "Common" },
-      { index: 1, native_ref: "native-relic-b", id: "RELIC.B", name: "Second relic", rarity: "Uncommon" }
+      { index: 0, native_ref: "native-relic-a", id: "RELIC.A", name: "First relic", rarity: "Common", description: "Visible effect.", keywords: [], card_previews: [], hover_facts_complete: true },
+      { index: 1, native_ref: "native-relic-b", id: "RELIC.B", name: "Second relic", rarity: "Uncommon", description: "Visible effect.", keywords: [], card_previews: [], hover_facts_complete: true }
     ] };
   return common;
 }
 
 test("treasure text menu preserves the current three-stage native choices", async () => {
   for (const [state, kind, labels] of [
-    [treasureDecision(), "treasure_chest", ["Open treasure chest"]],
-    [treasureDecision("treasure_relic"), "treasure_relic_selection",
-      ["Take First relic", "Take Second relic", "Skip treasure relic"]],
-    [treasureDecision("treasure_complete"), "treasure_completion", ["Proceed to map"]]
+    [treasureDecision(), "treasure_room", ["Open the treasure chest"]],
+    [treasureDecision("treasure_relic"), "treasure_room",
+      ["Take First relic", "Take Second relic", "Skip the visible treasure relic"]],
+    [treasureDecision("treasure_complete"), "treasure_room", ["Continue from the treasure room"]]
   ]) {
     const projected = projectManagedCandidateDecision({ state, ...identity });
     const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
@@ -157,7 +157,7 @@ test("treasure text menu preserves the current three-stage native choices", asyn
     assert.deepEqual(menu.menu_actions.actions.map((action) => action.label), labels);
     assert.equal(JSON.stringify(menu).includes("native-treasure-room"), false);
     const requests = [...projected.bindings.values()].map((binding) => binding.raw_request);
-    if (kind === "treasure_relic_selection") assert.deepEqual(requests, [
+    if (state.decision === "treasure_relic") assert.deepEqual(requests, [
       { cmd: "action", action: "select_treasure_relic",
         args: { room_ref: "native-treasure-room", relic_ref: "native-relic-a" } },
       { cmd: "action", action: "select_treasure_relic",

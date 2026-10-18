@@ -40,9 +40,9 @@ test("managed Player Environment probe policy consumes only canonical actions", 
     { bound_action_id: "take-b", verb: "select", label: "Take Zap" },
     { bound_action_id: "take-a", verb: "select", label: "Take Defend" }
   ])).bound_action_id, "take-a");
-  assert.equal(chooseManagedPlayerEnvironmentAction(snapshot("treasure_relic_selection", [
+  assert.equal(chooseManagedPlayerEnvironmentAction(snapshot("treasure_room", [
     { bound_action_id: "skip-relic", verb: "skip", label: "Skip treasure relic" },
-    { bound_action_id: "take-relic", verb: "select", label: "Take Bag" }
+    { bound_action_id: "take-relic", verb: "activate", label: "Take Bag" }
   ])).bound_action_id, "take-relic");
   assert.equal(chooseManagedPlayerEnvironmentAction(snapshot("shop_inventory", [], "visible_unsupported")), null);
 });

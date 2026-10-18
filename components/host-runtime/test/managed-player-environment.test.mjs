@@ -595,9 +595,12 @@ test("projects treasure stages with explicit native choice and Host-local operan
       player: player()
     }
   });
-  assert.equal(closed.snapshot.interaction.kind, "treasure_chest");
-  assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open treasure chest");
+  assert.equal(closed.snapshot.interaction.kind, "treasure_room");
+  assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open the treasure chest");
   assert.equal(JSON.stringify(closed.snapshot).includes("treasure-room-a"), false);
+  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",stage:"closed",chest_opened:false,
+    relics:[],can_choose:false,can_skip:false,can_proceed:false });
+  assert.equal(closed.snapshot.bound_actions.actions[0].subject_referent_id,null);
 
   const choosing = projectManagedCandidateDecision({
     ...projectionIdentity,
@@ -611,7 +614,7 @@ test("projects treasure stages with explicit native choice and Host-local operan
         native_ref: "relic-a",
         id: "RELIC.BAG_OF_PREPARATION",
         name: "Bag of Preparation",
-        description: "Draw two additional cards.",
+        description: "Draw two additional cards.", keywords: [], card_previews: [], hover_facts_complete: true,
         rarity: "Common"
       }],
       can_skip: true,
@@ -619,8 +622,8 @@ test("projects treasure stages with explicit native choice and Host-local operan
     }
   });
   assert.equal(decodePlayerSnapshot(choosing.snapshot).data.status, "interactive");
-  assert.equal(choosing.snapshot.interaction.kind, "treasure_relic_selection");
-  assert.deepEqual(choosing.snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["select", "skip"]);
+  assert.equal(choosing.snapshot.interaction.kind, "treasure_room");
+  assert.deepEqual(choosing.snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["activate", "skip"]);
   assert.equal(JSON.stringify(choosing.snapshot).includes("relic-a"), false);
   assert.equal(JSON.stringify(choosing.snapshot).includes("treasure-room-a"), false);
   const requests = [...choosing.bindings.values()].map((binding) => binding.raw_request);

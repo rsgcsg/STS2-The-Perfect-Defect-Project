@@ -149,11 +149,11 @@ export function chooseManagedPlayerEnvironmentAction(snapshot) {
       ?? actions.find((action) => action.verb === "skip")
       ?? null;
   }
-  if (kind === "treasure_relic_selection") {
-    return byProperties(actions.filter((action) => action.verb === "select"), (action) => [
+  if (kind === "treasure_room") {
+    return byProperties(actions.filter((action) => action.verb === "activate"), (action) => [
       numeric(subject(action).index)
     ])[0]
-      ?? actions.find((action) => action.verb === "skip")
+      ?? actions.find((action) => action.verb === "skip" || action.verb === "open")
       ?? null;
   }
   return ordered(snapshot, actions)[0] ?? null;

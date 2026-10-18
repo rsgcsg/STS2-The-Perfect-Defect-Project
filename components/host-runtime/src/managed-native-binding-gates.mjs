@@ -183,7 +183,7 @@ export async function runManagedNativeBindingGates({
       sequence: 2
     });
     gates.treasure_relic_canonical_projection_complete = projection.snapshot.status === "interactive"
-      && projection.snapshot.interaction.kind === "treasure_relic_selection";
+      && projection.snapshot.interaction.kind === "treasure_room" && projection.snapshot.interaction.stage === "relic_choice";
     gates.treasure_relic_operand_remained_host_local = !JSON.stringify(projection.snapshot)
       .includes(treasureRelic.native_ref);
     const wrongTreasureRelic = await process.request({
@@ -194,7 +194,7 @@ export async function runManagedNativeBindingGates({
     gates.wrong_treasure_relic_identity_refused = refused(wrongTreasureRelic, /no longer selectable/u);
 
     const selectBinding = [...projection.bindings.values()]
-      .find((binding) => binding.action.verb === "select");
+      .find((binding) => binding.action.verb === "activate");
     if (selectBinding == null) throw new Error("Canonical treasure projection omitted the select action.");
     state = await process.request(selectBinding.raw_request, requestTimeoutMs);
     gates.treasure_native_vote_returned_completion = state?.decision === "treasure_complete";
@@ -207,7 +207,7 @@ export async function runManagedNativeBindingGates({
       sequence: 3
     });
     gates.treasure_completion_canonical_projection_complete = projection.snapshot.status === "interactive"
-      && projection.snapshot.interaction.kind === "treasure_completion";
+      && projection.snapshot.interaction.kind === "treasure_room" && projection.snapshot.interaction.stage === "completed";
     const leaveBinding = [...projection.bindings.values()][0];
     state = await process.request(leaveBinding.raw_request, requestTimeoutMs);
     gates.treasure_proceed_returned_map = state?.decision === "map_select";
