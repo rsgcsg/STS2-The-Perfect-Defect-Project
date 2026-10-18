@@ -20,4 +20,4 @@
 
 **边界**：135 个其他/未明 Codex 工作目录只登记元数据；嵌套未注册 checkout、ignored 原件、活动消费者和逐功能迁入仍可明确未核实。两大数据根 `research/s01-stage1-20260918`、`SpireAgent/Re-SpireAgent/data` 已仅按元数据登记保留 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/large-data-metadata.json`)，不读 Human 正文。未删除、移动、关闭 PR、删分支、fetch/改 refs、改产品源码或启动游戏；K1 是账本交付，不代表 K3/K4 完成。
 
-逐目录/PR/ref去向可从CSV的identity检索；[本地目录/ref说明](ASSET_LOCAL_REPORT.md)、远端表及小归档建议表一并保留。大型原JSON不重复提交，去向仍是建议，未执行处置。
+逐目录/PR/ref去向可从CSV的identity检索；[本地目录/ref说明](ASSET_LOCAL_REPORT.md)、远端表及小归档建议表一并保留。Git将CSV按LF保存，2063行解析内容与原CRLF文件逐行相等；source index分别列原始文件与仓库副本的字节数/SHA。大型原JSON不重复提交，去向仍是建议，未执行处置。
