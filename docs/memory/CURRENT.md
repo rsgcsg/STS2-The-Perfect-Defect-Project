@@ -28,7 +28,7 @@ retain facts/results without becoming player labels. Source4 is retained for fut
 profiles, has no new investment/preflight, and its cancellation-only code was removed
 from I by824847fb; original packets/branches/failures remain preserved.
 
-The integrated native build is e3caa3f2. Official installed artifact a4fef7a2/MVID
+Native05 used build e3caa3f2. Official installed artifact a4fef7a2/MVID
 805dbf4b cold-loaded with the exact tuple in engineering native05; component-only
 identity updates were checked against the unchanged compiled sources. Native05
 closed/packed and exited normally:66 accepted,17 staged card inputs missing H public
@@ -44,7 +44,9 @@ Its originals remain preserved and formal count is0/3. Selector lineage/accepted
 completion is repaired; three native05 reward selections retained exact bindings.
 All17 card gaps use staged H:13 InCardPlay (four also executor-running), four Start
 phase. Native input can precede public delivery readiness. The separate grid selector
-join repair continues. Changing the approved H/P1 derivation definition or adding
+join repair77cbd6ae is integrated and built (Host963/surface38 pass): canonical grid
+callback verbs now join the same frozen exact owner/card/control bindings. It has
+not been installed or exercised natively. Changing the approved H/P1 derivation definition or adding
 queued P1 capability awaits the user's explicit choice; do not alter either silently.
 
 Legacy hooks were audited and profile-routed; Core431, SourceNative66, surface38 and
