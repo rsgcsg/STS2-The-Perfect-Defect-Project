@@ -16,7 +16,7 @@ const [trajectoryPath, reportPath] = process.argv.slice(2);
 const { matchReferenceChoice } = await import(new URL("../../dist/p1-global/trajectory.js", import.meta.url).href);
 const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf8"));
 const log = (value) => appendFileSync(reportPath, JSON.stringify(value) + "\n");
-let index = 0, diverged = false, terminalObservation = null;
+let index = 0, diverged = false, terminalObservation = null, prefixComplete = false;
 const completeView = observation => ({ ...observation,
   envelope: { ...observation.envelope, required_information_complete: true } });
 log({ type: "start", reference: trajectory.run_directory, points: trajectory.points.length });
@@ -32,6 +32,16 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const observation = completeView(msg.observation);
     if (!reference) { diverged = true; log({ type: "divergence", index, reason: "reference_ended_before_replay" }); console.log(JSON.stringify({ type: "abstain", reason: "reference_ended" })); continue; }
     const match = matchReferenceChoice(reference, observation);
+    if (!diverged && match.verdict === "equal" && reference.chosen === null && index === trajectory.points.length - 1
+      && trajectory.scope?.kind === "bounded_native_semantic_prefix" && reference.observation.status === "decision") {
+      // Compare the actual final successor, then stop through the existing
+      // abstain path. This proves a bounded replay prefix, never a whole game.
+      prefixComplete = true;
+      log({ type: "prefix_end", index, reference_points: trajectory.points.length,
+        replay_reached_reference_prefix: true, public_successor_equal: true });
+      console.log(JSON.stringify({ type: "abstain", reason: "recorded_prefix_complete" }));
+      continue;
+    }
     if (match.verdict !== "equal" || match.choice_id === null) {
       diverged = true;
       log({ type: "divergence", index, verdict: match.verdict, difference: match.difference,
@@ -59,6 +69,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       if (comparison.verdict !== "equal") reason = "public_terminal_difference";
     }
     log({ type: "end", index, reference_points: trajectory.points.length,
+      replay_reached_reference_prefix: prefixComplete && !diverged,
       replay_reached_reference_terminal: reason === null && comparison?.verdict === "equal",
       outcome: msg.outcome ?? null, reason, comparison });
     break;

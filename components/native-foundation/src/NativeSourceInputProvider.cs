@@ -30,7 +30,6 @@ public sealed class NativeSourceInputInvocation
     internal readonly Type? AcceptedCarrierType;
     internal bool HasCarrier;
     internal NCardPlay? CreatedCardPlay;
-    internal NativeSourceCardPlayLifetime? CreatedPlayLifetime;
     internal bool CreatedCardPlayConflict;
     internal int Terminal;
     internal int CarrierObservationFailed;
@@ -48,28 +47,18 @@ public sealed class NativeSourceInputInvocation
 public sealed record NativeSourceStageWitness(string Kind, object Owner, object Subject,
     IReadOnlyDictionary<string, object> Arguments, string Evidence, bool? NoSubmission);
 
-// Only a weak-key native UI lifetime and its original registration survive the
-// Start callback. No invocation, Task or GameAction graph is retained here.
-internal sealed class NativeSourceCardPlayLifetime(NativeSourceInputProvider.Registration registration)
-{
-    internal readonly NativeSourceInputProvider.Registration Registration = registration;
-    internal bool KnownStart, StartFinalized, TryEntered;
-}
-
 /// <summary>Transient exact native callback receipt, discarded before its lexical finalizer returns.</summary>
 public sealed class NativeSourceCardPlayCancelScope
 {
     internal NativeSourceCardPlayCancelScope(NativeSourceInputProvider.Registration registration, object anchor,
-        NCardPlay cardPlay, NPlayerHand hand, NHandCardHolder holder, object card, NativeSourceInputInvocation? lexical,
-        NativeSourceCardPlayLifetime? lifetime = null)
-    { Registration = registration; Anchor = anchor; CardPlay = cardPlay; Hand = hand; Holder = holder; Card = card; Lexical = lexical; Lifetime = lifetime; }
+        NCardPlay cardPlay, NPlayerHand hand, NHandCardHolder holder, object card, NativeSourceInputInvocation? lexical)
+    { Registration = registration; Anchor = anchor; CardPlay = cardPlay; Hand = hand; Holder = holder; Card = card; Lexical = lexical; }
     internal readonly NativeSourceInputProvider.Registration Registration;
     internal readonly object Anchor, Card;
     internal readonly NCardPlay CardPlay;
     internal readonly NPlayerHand Hand;
     internal readonly NHandCardHolder Holder;
     internal readonly NativeSourceInputInvocation? Lexical;
-    internal readonly NativeSourceCardPlayLifetime? Lifetime;
     internal int FalseFinished, TrueFinished, Finalized;
     internal void ObserveFinished(bool played) { if (played) TrueFinished++; else FalseFinished++; }
 }
@@ -102,7 +91,7 @@ public static class NativeSourceInputProvider
         {
             lock (Gate)
             {
-                if (ReferenceEquals(current, this)) { current = null; CardPlayLifetimes.Clear(); }
+                if (ReferenceEquals(current, this)) current = null;
                 Prefix = null; Terminal = null; SourceCarrier = null; StageAnchor = null; Stage = null;
             }
         }
@@ -111,7 +100,6 @@ public static class NativeSourceInputProvider
     private static readonly object Gate = new();
     private static Registration? current;
     private static readonly ConditionalWeakTable<GameAction, Carrier> Carriers = new();
-    private static readonly ConditionalWeakTable<NCardPlay, NativeSourceCardPlayLifetime> CardPlayLifetimes = new();
     [ThreadStatic] private static Stack<NativeSourceInputInvocation>? scopes;
     [ThreadStatic] private static Stack<object>? protocolDispatches;
 
@@ -212,31 +200,9 @@ public static class NativeSourceInputProvider
         var original = scopes.Peek();
         if (original.ExpectedType != "NPlayerHand.StartCardPlay") return;
         if (original.CreatedCardPlay != null && !ReferenceEquals(original.CreatedCardPlay, exactCarrier))
-        {
             original.CreatedCardPlayConflict = true;
-            if (original.CreatedPlayLifetime is { } prior) prior.KnownStart = false;
-        }
         else original.CreatedCardPlay = exactCarrier;
-        lock (Gate)
-        {
-            if (original.CreatedCardPlayConflict || !ReferenceEquals(current, original.Registration)
-                || original.Registration.Stage == null) return;
-            if (!CardPlayLifetimes.TryGetValue(exactCarrier, out var lifetime))
-            {
-                lifetime = new(original.Registration);
-                CardPlayLifetimes.Add(exactCarrier, lifetime);
-            }
-            else if (!ReferenceEquals(lifetime, original.CreatedPlayLifetime))
-            { original.CreatedCardPlayConflict = true; lifetime.KnownStart = false; return; }
-            original.CreatedPlayLifetime = lifetime;
-        }
     }
-    // First operation in the existing native Try hook, before recorder admission,
-    // token creation, protocol exclusion or any native getter can fail.
-    public static void ObserveCardPlayTryEntered(NCardPlay exactCardPlay)
-    { lock (Gate) if (CardPlayLifetimes.TryGetValue(exactCardPlay, out var lifetime)) lifetime.TryEntered = true; }
-    public static void ForgetCardPlayLifetime(NCardPlay exactCardPlay)
-    { lock (Gate) CardPlayLifetimes.Remove(exactCardPlay); }
     public static void ObserveCreatedCardPlay(NativeSourceInputInvocation? original, NPlayerHand exactHand, NHandCardHolder originalHolder)
     {
         if (original == null) return;
@@ -257,8 +223,6 @@ public static class NativeSourceInputProvider
         {
             lock (Gate) ObserveCarrierLocked(original, carrier!, CardPlayCreatedKind);
             Accepted(original);
-            if (original.CreatedPlayLifetime is { } lifetime && original.CarrierObservationError == null)
-                lifetime.KnownStart = true;
         }
     }
     /// <summary>One actual SelectLocalReward return inside the exact original button callback, Source4 only.</summary>
@@ -363,9 +327,7 @@ public static class NativeSourceInputProvider
                         || top.ExpectedType == "NPlayerHand.StartCardPlay" && ReferenceEquals(owner, hand)
                             && ReferenceEquals(top.CreatedCardPlay, exactCardPlay))) lexical = top;
             }
-            NativeSourceCardPlayLifetime? lifetime;
-            lock (Gate) CardPlayLifetimes.TryGetValue(exactCardPlay, out lifetime);
-            var state = new NativeSourceCardPlayCancelScope(registration, anchor, exactCardPlay, hand, holder, card, lexical, lifetime);
+            var state = new NativeSourceCardPlayCancelScope(registration, anchor, exactCardPlay, hand, holder, card, lexical);
             exactCardPlay.Finished += state.ObserveFinished;
             return state;
         }
@@ -390,15 +352,7 @@ public static class NativeSourceInputProvider
         if (lexical != null && scopes is { Count: > 0 } && ReferenceEquals(scopes.Peek(), lexical)
             && Volatile.Read(ref lexical.Terminal) == 0 && lexical.PendingCancel == null)
             lexical.PendingCancel = original; // Released by this same synchronous invocation's finalizer.
-        else PublishCancel(original, NoTryCardPlayCancellation(original) ? true : null);
-    }
-    // Called only after the existing exact native false-Finished/normal-finalizer
-    // checks. This does not infer a missing receipt or backfill a sealed input.
-    internal static bool NoTryCardPlayCancellation(NativeSourceCardPlayCancelScope original)
-    {
-        lock (Gate) return ReferenceEquals(current, original.Registration)
-            && original.Lifetime is { KnownStart: true, StartFinalized: true, TryEntered: false } lifetime
-            && ReferenceEquals(lifetime.Registration, original.Registration);
+        else PublishCancel(original, null); // Independent/async callback never backfills a sealed input.
     }
     private static void PublishCancel(NativeSourceCardPlayCancelScope original, bool? noSubmission)
     {
@@ -412,12 +366,6 @@ public static class NativeSourceInputProvider
     public static void Finish(NativeSourceInputInvocation? original, Exception? nativeException = null)
     {
         if (original == null) return;
-        if (original.CreatedPlayLifetime is { } lifetime)
-        {
-            lifetime.StartFinalized = nativeException == null && !original.CreatedCardPlayConflict
-                && lifetime.KnownStart && original.CarrierObservationError == null;
-            original.CreatedPlayLifetime = null;
-        }
         if (original.PendingCancel is { } canceled)
         {
             original.PendingCancel = null;

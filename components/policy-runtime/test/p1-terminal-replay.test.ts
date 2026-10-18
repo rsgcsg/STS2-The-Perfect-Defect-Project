@@ -19,11 +19,11 @@ const terminal = () => {
 const point = (observation: any) => ({ index: 0, observation, chosen: null });
 const hello = { type: "hello", protocol: "sts2.p1/agent-port-1" };
 const inform = (observation: any) => ({ type: "observation", observation, requires_choice: false });
-function scenario(points: any[], messages: any[], throughBridge = false) {
+function scenario(points: any[], messages: any[], throughBridge = false, metadata = {}) {
   const directory = mkdtempSync(join(tmpdir(), "p1-terminal-"));
   try {
     const trajectory = join(directory, "trajectory.json"), report = join(directory, "report.jsonl");
-    writeFileSync(trajectory, JSON.stringify({ schema: "sts2.p1/trajectory-1", run_directory: "fixture", points }));
+    writeFileSync(trajectory, JSON.stringify({ schema: "sts2.p1/trajectory-1", run_directory: "fixture", points, ...metadata }));
     let command = [replay, trajectory, report];
     if (throughBridge) {
       const manifest = join(directory, "agent.json");
@@ -71,6 +71,19 @@ describe("P1 replay compares the actual final public observation", () => {
   it("does not compare missing terminal outcomes as equal", () => {
     const observation: any = terminal(); observation.terminal = null;
     expect(comparePublicPoint(observation, observation, null, null).verdict).toBe("incomparable");
+  });
+  it.each([false, true])("only accepts an explicitly bounded final public successor (changed=%s)", changed => {
+    const capture = JSON.parse(readFileSync(new URL("../../connector/sdk/typescript/test/fixtures/p1-global/synthetic-complete-combat.json", import.meta.url), "utf8"));
+    const reference = reduce(createSession("short-test", "reference"), capture).observation;
+    const actual = structuredClone(reference);
+    if (changed) (actual.player.content as any).gold += 1;
+    const result = scenario([point(reference)], [hello,
+      { type: "observation", observation: actual, requires_choice: true },
+      { type: "episode_end", outcome: null, censor_reason: "agent_abstained" }], false,
+    { scope: { kind: "bounded_native_semantic_prefix" }, origin: "native_semantic_recording" });
+    expect(result.end.replay_reached_reference_prefix).toBe(!changed);
+    expect(result.end.replay_reached_reference_terminal).toBe(false);
+    if (!changed) expect(result.replies.at(-1)).toEqual({ type: "abstain", reason: "recorded_prefix_complete" });
   });
   it("delivers the producer model view through the real session bridge before close", () => {
     const observation = terminal();

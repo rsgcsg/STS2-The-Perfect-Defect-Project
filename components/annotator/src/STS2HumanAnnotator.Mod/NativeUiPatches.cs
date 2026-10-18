@@ -98,11 +98,7 @@ internal static class NativeCardPlayCleanupPatch
 {
     internal static MethodBase TargetMethod() => AccessTools.Method(typeof(NCardPlay), "Cleanup")
         ?? throw new MissingMethodException(typeof(NCardPlay).FullName, "Cleanup");
-    private static void Prefix(NCardPlay __instance)
-    {
-        NativeSourceInputProvider.ForgetCardPlayLifetime(__instance);
-        RecorderRuntime.ForgetStagedCardPlay(__instance);
-    }
+    private static void Prefix(NCardPlay __instance) => RecorderRuntime.ForgetStagedCardPlay(__instance);
 }
 
 [HarmonyPatch]
@@ -117,7 +113,6 @@ internal static class NativeCardPlayPatch
         [HarmonyArgument(0)] Creature? target,
         out NativeUiScopeEntry __state)
     {
-        NativeSourceInputProvider.ObserveCardPlayTryEntered(__instance);
         __state = __instance.Holder.CardModel is { } card
             ? RecorderRuntime.TryEnterCardScope(__instance, card, target)
             : default;

@@ -73,47 +73,6 @@ function canceled() {
 }
 
 describe('Source4 adapter using the actual shared SDK matcher', () => {
-  it.each(['valid', 'following-endpoint', 'settling-only', 'changed-world', 'changed-held-read',
-    'foreign-ui', 'no-submission-unknown', 'paused', 'interleaved-input'])(
-    'settles only a proved original single-Start cancellation and complete restoration: %s', change => {
-      const f = fixture(), { before, held, action } = sourceCardDragPair();
-      const after = renamed(before, '-restored');
-      f.publication(before, 1);
-      f.input(before, 1, selected(action, 'begin_card_play'), { owner_ref: 'original-hand',
-        subject_ref: action.subject_referent_id, arguments: { holder: 'original-holder' },
-        carriers: [{ kind: 'card_play_created', carrier_ref: 'original-created-ui' }] }, 'NPlayerHand.StartCardPlay');
-      if (change === 'changed-held-read') held.reads.find(r => r.kind === 'surface_card').response.content.keywords[0].description += ' changed';
-      if (change === 'changed-world') held.snapshot.persistent.content.player.gold++;
-      f.publication(held, 2);
-      if (change === 'interleaved-input') f.input(held, 2, selected(action, 'begin_card_play'), {
-        owner_ref: 'original-hand', subject_ref: action.subject_referent_id, arguments: { holder: 'other-holder' },
-        carriers: [{ kind: 'card_play_created', carrier_ref: 'other-ui' }] }, 'NPlayerHand.StartCardPlay');
-      const stage = { kind: 'card_play_canceled', owner_ref: change === 'foreign-ui' ? 'other-ui' : 'original-created-ui',
-        subject_ref: action.subject_referent_id, arguments: { hand: 'original-hand' },
-        evidence: 'native_finished_false', no_submission: change === 'no-submission-unknown' ? null : true };
-      f.publication(['following-endpoint', 'settling-only'].includes(change) ? held : after, 3, stage);
-      if (change === 'paused') f.source.boundaries.push({ session_id: 'source-session', timeline_id: 'timeline',
-        paused_intervals: [{ epoch_id: 'epoch', stream_generation: '1', after_index: '1', through_index: '3',
-          after_input_ordinal: '1', through_input_ordinal: '1', reason: 'recording_paused' }] });
-      if (change === 'following-endpoint') {
-        const end = after.snapshot.bound_actions.actions.find(a => a.verb === 'end_turn');
-        const input = f.input(after, 2, selected(end), { owner_ref: 'end-button', subject_ref: null,
-          arguments: {}, carriers: acceptedCarrier() }, 'native_end_turn_ui');
-        input.pre_position.publication_index = '4';
-      }
-      const raw = JSON.stringify(f.source.inputs), report = convert(f.source);
-      if (['valid', 'following-endpoint'].includes(change)) {
-        expect(report.complete, JSON.stringify(report.unresolved_inputs)).toBe(true);
-        expect(report.context_spans).toHaveLength(1);
-        expect(report.context_spans[0].source_input_ids).toEqual(['input-1']);
-        expect(report.actions.map(a => a.choice.kind)).toEqual(change === 'following-endpoint' ? ['combat.end_turn'] : []);
-      } else {
-        expect(report.complete).toBe(false); expect(report.context_spans).toEqual([]); expect(report.actions).toEqual([]);
-        expect(report.unresolved_inputs[0].input_id).toBe('input-1');
-      }
-      expect(JSON.stringify(report.native_trace)).toBe(raw);
-      expect(report.native_trace[0].outcome.delivery).toBe('delivered');
-    });
   it.each(['valid', 'changed-held-read', 'foreign-ui'])(
     'matches the original full pre-Begin Play and consumed physical submission: %s', change => {
       const f = fixture(), { before, held, action } = sourceCardDragPair();

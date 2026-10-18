@@ -144,23 +144,22 @@ function completedPhysicalPlay(row: ObjectValue, action: ObjectValue, basis: P1B
     && hasReferents(snapshot(basis), action.subject_referent_id, operands);
 }
 
-function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: readonly P1Basis[], basis: P1Basis,
-  following: SourceP1TraceInput | null): boolean {
-  if (trace.length !== 1 && trace.length !== 2) return false;
-  const start = trace[0] as ObjectValue, last = trace.at(-1) as ObjectValue;
+function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: readonly P1Basis[], basis: P1Basis): boolean {
+  if (trace.length !== 2) return false;
+  const start = trace[0] as ObjectValue, last = trace[1] as ObjectValue;
   const firstFacts = start.outcome?.native_facts, lastFacts = last.outcome?.native_facts;
   const created = firstFacts?.carriers;
   if (!accepted(start) || start.outcome.native_mechanism !== "NPlayerHand.StartCardPlay"
     || start.outcome.selected_action?.verb !== "begin_card_play"
     || !Array.isArray(created) || created.length !== 1 || created[0].kind !== "card_play_created"
     || !text(created[0].carrier_ref) || !text(firstFacts.owner_ref) || !text(firstFacts.subject_ref)
-    || !Array.isArray(last.publications_after) || !Array.isArray(last.source_boundaries)) return false;
-  if (trace.length === 2 && (last.outcome?.native_mechanism !== "NCardPlay.TryPlayCard"
+    || last.outcome?.native_mechanism !== "NCardPlay.TryPlayCard"
     || last.outcome.delivery !== "unknown" || last.outcome.reason_code !== "native_source_scope_ended_without_acceptance"
     || lastFacts?.origin !== "native_input" || lastFacts.missing_reason !== null
     || lastFacts.owner_ref !== created[0].carrier_ref || lastFacts.subject_ref !== firstFacts.subject_ref
     || !Array.isArray(lastFacts.carriers) || lastFacts.carriers.length !== 1
-    || lastFacts.carriers[0].kind !== "card_play_canceled" || lastFacts.carriers[0].carrier_ref !== created[0].carrier_ref)) return false;
+    || lastFacts.carriers[0].kind !== "card_play_canceled" || lastFacts.carriers[0].carrier_ref !== created[0].carrier_ref
+    || !Array.isArray(last.publications_after) || !Array.isArray(last.source_boundaries)) return false;
   const cancellations = last.publications_after.filter((publication: ObjectValue) => publication.captured_parts?.native_stage !== null
     && publication.captured_parts?.native_stage !== undefined);
   if (cancellations.length !== 1) return false;
@@ -169,42 +168,7 @@ function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: rea
     || stage.owner_ref !== created[0].carrier_ref || stage.subject_ref !== firstFacts.subject_ref
     || !same(stage.arguments, { hand: firstFacts.owner_ref })) return false;
   const world = dragWorld(basis, firstFacts.subject_ref);
-  const all = [...contexts];
-  if (trace.length === 1) {
-    // Independent native Cancel is a publication, not a fabricated Try input.
-    if (cancellations[0].source_seam !== "native_input_callback" || cancellations[0].phase !== "card_play_canceled"
-      || start.outcome.selected_action.subject_referent_id !== firstFacts.subject_ref
-      || !text(firstFacts.arguments?.holder) || Object.keys(firstFacts.arguments).length !== 1) return false;
-    if (following) {
-      const next = following as ObjectValue, tail = last.publications_after.at(-1) as ObjectValue;
-      if (!next.basis || next.session_id !== start.session_id || next.timeline_id !== start.timeline_id
-        || next.epoch_id !== start.epoch_id || next.segment_id !== start.segment_id
-        || next.basis_order?.status !== "native_prefix_frozen" || next.basis_order.reason_code !== null
-        || ordinal(next.input_prefix_ordinal) !== ordinal(start.input_prefix_ordinal) + 1n
-        || ordinal(next.pre_position.publication_index) < ordinal(tail.position.publication_index)
-        || !Array.isArray(next.publications_before)) return false;
-      reference(next, next.basis, start.captured_parts.public_basis);
-      let at = ordinal(start.pre_position.publication_index);
-      for (const publication of next.publications_before) {
-        if (!publication.basis || publication.gap_after_index !== null || publication.session_id !== start.session_id
-          || publication.timeline_id !== start.timeline_id || publication.segment_id !== start.segment_id) return false;
-        reference(publication, publication.basis, start.captured_parts.public_basis);
-        const position = ordinal(publication.position.publication_index);
-        if (position < at || position > ordinal(next.pre_position.publication_index)) return false;
-        at = position; all.push(publication.basis);
-      }
-      if (crossesPausedInterval(last.source_boundaries, start, next, ordinal(next.pre_position.publication_index))) return false;
-      all.push(next.basis);
-    }
-    const endpoint = all.at(-1);
-    if (!endpoint) return false;
-    const initial = snapshot(basis), restored = snapshot(endpoint);
-    const reduction = reduce(createSession("source-cancel-restoration", "reference"), endpoint);
-    if (!reduction.complete || reduction.observation.status !== "decision"
-      || restored.status !== initial.status || restored.interaction.stage !== initial.interaction.stage
-      || !same(restored.interaction.content, initial.interaction.content)) return false;
-  }
-  return all.every(context => dragSurfaceAllowed(basis, context) && dragWorld(context, firstFacts.subject_ref) === world);
+  return contexts.every(context => dragSurfaceAllowed(basis, context) && dragWorld(context, firstFacts.subject_ref) === world);
 }
 
 // E3 is deliberately limited to the observed native deck-card callback before
@@ -424,7 +388,7 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
       return result("incomplete", "source_span_crosses_recording_pause");
     if (selectorReversalContext(trace, contexts, basis, followingInput))
       return result("context_only", "original_adjacent_selector_reversal_restores_public_world", ids);
-    if (cancellationContext(trace, contexts, basis, followingInput))
+    if (cancellationContext(trace, contexts, basis))
       return result("context_only", "original_canceled_drag_without_submission_preserves_public_world", ids);
     const consumedPlayTail = trace.length === 2 && accepted(first)
       && first.outcome.native_mechanism === "NPlayerHand.StartCardPlay" && consumedPhysicalPlay(last);
