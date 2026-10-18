@@ -418,6 +418,14 @@ checks the selected character before Embark, and verifies actual run HUD identit
 A locked or unavailable requested character fails; no fallback character is chosen.
 Omitting `characterId` preserves the historical template-selected behavior.
 
+The same factory defaults to `baselineRecipe: "normal-sp-all-unlocked-v1"`: a
+normal Standard singleplayer profile with all native content unlocked, first-run
+special cases cleared and tutorials disabled. This uses fixed authenticated
+preparation before character selection, native save/reload verification, and
+post-entry actual UnlockState comparison. The recorded administrative progress
+is setup provenance, not Human play history. Low-level launches opt in explicitly;
+see the [baseline contract](docs/ARCHITECTURE.md#normal-singleplayer-baseline).
+
 The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
 driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and

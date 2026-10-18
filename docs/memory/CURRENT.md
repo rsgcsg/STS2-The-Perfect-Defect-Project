@@ -24,10 +24,10 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
 
 ## Critical path and parallel work
 
-- B: actual native_input first-combat EndTurn/carrier/successor is positive, but
-  bounded offline startup-waiting E2 is user-approved; source reviewed;22 focused pass; new preflight pending;
-  old map lacks witness; candidate fix needs new capture. Preflight is NOT PASS;
-  do not tell the user to start recording. Setup CLI status and typed API health differ.
+- B: Reference normal baseline source60d14222 adds fixed all-unlocked/native-save-reload
+  preparation before normal SP menus, independent FTUEfalse and Instant. JS18/exact9
+  focused tests pass; new Mod/install/live preflight remain pending. Administrative
+  progress is setup, not Human history. Old partial recordings remain failed originals.
 - A: retain old Reference defects without rewriting originals; continue actual
   Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
   separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.

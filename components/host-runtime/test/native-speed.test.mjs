@@ -104,8 +104,8 @@ test("preparation requires a separate observed getter match before bootstrap", a
 test("the shipped episode wires speed before bootstrap and checks after bootstrap", () => {
   const source = readFileSync(new URL("../src/shipped-player-environment.mjs", import.meta.url), "utf8");
   assert.match(source, /nativeSpeed[\s\S]*shippedRuntimeLaunch[\s\S]*nativeSpeed/u);
-  assert.ok(source.indexOf("await prepareNativeSpeedBeforeBootstrap(") >= 0);
-  assert.ok(source.indexOf("await prepareNativeSpeedBeforeBootstrap(") < source.indexOf("await controller.register("));
+  assert.ok(source.indexOf("await prepareNativeHostBeforeBootstrap(") >= 0);
+  assert.ok(source.indexOf("await prepareNativeHostBeforeBootstrap(") < source.indexOf("await controller.register("));
   assert.match(source, /const refreshProvenance[\s\S]*requireNativeSpeedProvenance/u);
   assert.match(source, /shippedRuntimeLaunch[\s\S]*displayMode/u);
   assert.match(source, /evaluateShippedCapabilities\(capabilities, displayMode\)/u);

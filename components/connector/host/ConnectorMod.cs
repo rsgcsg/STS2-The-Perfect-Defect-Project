@@ -50,7 +50,8 @@ public static partial class ConnectorMod
         string? NativeSpeed = null,
         string? ProfileRoot = null,
         string? ProfileGeneration = null,
-        string? UserDataRoot = null);
+        string? UserDataRoot = null,
+        string? BaselineRecipe = null);
 
     private static RuntimeConfig LoadRuntimeConfig()
     {
@@ -70,7 +71,8 @@ public static partial class ConnectorMod
             NativeSpeed = HostNativeSpeedSession.ResolveMode(System.Environment.GetEnvironmentVariable(NativeSpeedEnvironmentVariable)),
             ProfileRoot = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_PROFILE_ROOT"),
             ProfileGeneration = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_PROFILE_GENERATION"),
-            UserDataRoot = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_USER_DATA_ROOT")
+            UserDataRoot = System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_USER_DATA_ROOT"),
+            BaselineRecipe = HostProfileControl.ResolveBaselineRecipe(System.Environment.GetEnvironmentVariable("STS2_CONNECTOR_BASELINE"))
         };
     }
 
@@ -186,7 +188,7 @@ public static partial class ConnectorMod
                 config.NativePageEvidenceEnabled);
             HostLifecycleControl.Configure(config.HostControlToken);
             HostRunSeedControl.Configure(config.RunSeed);
-            HostProfileControl.Configure(config.ProfileRoot, config.ProfileGeneration, config.UserDataRoot);
+            HostProfileControl.Configure(config.ProfileRoot, config.ProfileGeneration, config.UserDataRoot, config.BaselineRecipe);
             HostNativeSpeedControl.Configure(config.NativeSpeed);
             int port = config.Port;
 

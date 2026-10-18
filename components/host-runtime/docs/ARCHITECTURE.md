@@ -154,6 +154,43 @@ personal prefs are not edited. A failed configuration blocks the run. If
 qualified Instant still fails measured throughput, resource or save/restore
 needs, alternate Hosts are evaluated later through the existing contracts.
 
+## Normal singleplayer baseline
+
+The Reference episode factory defaults to `baselineRecipe: normal-sp-all-unlocked-v1`
+and native Instant independently of tutorials. The low-level `shippedRuntimeLaunch`
+requires an explicit recipe and clears any ambient baseline request. Preparation
+uses the same isolated profile/process binding and authenticated Host `/prepare`;
+the request still contains only token and exact runtime. The private response
+composes independent `native_speed` and `baseline` results. No player contract or
+P1 source contract changes.
+
+Before character selection, with no active run, multiplayer or native TestMode,
+the Connector invokes the fixed native `unlock all` command, adds every native
+encounter to progress membership, and disables FTUE through the native setter.
+A fresh zero-run profile receives one administrative Defect loss count so native
+first-run room/question/treasure rules no longer apply. This count and the native
+unlock command's administrative discovery statistics are preparation data, never
+Human outcomes. Existing positive run counts remain intact. This represents mature
+content availability, not a person's achievements, victory history or save lineage.
+
+The native owner saves then reloads progress through `InitProgressData`; failure or
+unequal normalized native serialization blocks readiness without retrying an
+uncertain write. Readback verifies epochs, encounters, positive run count, FTUE
+and Ascension unlocks, then records the actual native serialized progress/SHA,
+derived UnlockState and singleplayer pools. Normal Standard run creation still
+owns seed, RNG and initial resources. Read-only provenance after bootstrap checks
+that the actual run froze that same UnlockState. Baseline metadata is private
+Host provenance, never fair-player input. Managed requires the same prepared
+progress at its native pre-run owner before cross-host equivalence can be claimed.
+
+For Human collection, an operator may explicitly prepare this baseline, verify
+readback, then start Source4 before the Human uses normal native new-run menus.
+That setup does not require changing source declarations during a recording.
+Immutable templates and personal profiles remain untouched; a prepared working
+profile can be captured through the existing profile-template tooling under a new
+explicit template ID. Build, installed identity and live readback remain separate
+acceptance evidence.
+
 ## Component Boundary
 
 The root Platform owns these components:
