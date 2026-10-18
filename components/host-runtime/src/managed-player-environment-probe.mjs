@@ -81,7 +81,8 @@ function ordered(snapshot, actions) {
 
 export function managedTerminalOutcome(snapshot) {
   if (snapshot?.interaction?.kind !== "game_over") return null;
-  const victory = snapshot.interaction.content?.surface?.victory;
+  const result = snapshot.interaction.content?.context?.result;
+  const victory = result === "win" ? true : result === "loss" ? false : null;
   return {
     victory: typeof victory === "boolean" ? victory : null,
     act: snapshot.persistent?.content?.run?.act ?? null,
@@ -93,6 +94,7 @@ export function chooseManagedPlayerEnvironmentAction(snapshot) {
   if (snapshot?.status !== "interactive" || snapshot?.bound_actions?.status !== "complete") return null;
   const actions = snapshot.bound_actions.actions;
   const kind = snapshot.interaction.kind;
+  if (kind === "game_over") return null; // Episode outcome precedes optional summary navigation.
   const referents = new Map((snapshot.referents ?? []).map((referent) => [referent.referent_id, referent]));
   const subject = (action) => referents.get(action.subject_referent_id)?.properties ?? {};
   const numeric = (value) => Number.isFinite(Number(value)) ? Number(value) : Number.MAX_SAFE_INTEGER;

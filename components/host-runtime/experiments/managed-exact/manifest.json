@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "889b336a45df3d485300632df6297adef227f52508f9056c722eb072e8517160",
-    "artifact_sha256": "7b853c14508489095805209b3efa516396c306cc19ebbe7f5f82872f6e11f23e",
-    "artifact_mvid": "0c6de752-e15e-48d6-bf31-e86f64206870",
+    "source_patch_sha256": "54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc",
+    "artifact_sha256": "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66",
+    "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -199,6 +199,12 @@
       "kind": "host_presentation_adapter",
       "risk": "medium",
       "effect": "Retain the actual generated combat RewardsSet as the displayed reward page after Offer completes, until native Proceed/map vote; preserve native room identity, skip restriction and ShouldProceed hook without advancing the game during observation."
+    },
+    {
+      "id": "native_standard_game_over_presentation",
+      "kind": "host_lifecycle_and_presentation_adapter",
+      "risk": "high",
+      "effect": "Bind the original standard single-player run to its isolated native MockGodotFileIo profile with upload opt-out. Capture existing native victory OnEnded or complete the TestMode-omitted loss OnEnded once; scope original ShouldSave and original synchronous final map stats, preserving native progress/history composition. A real headless Continue commits native-computed badges through the exact nonvisual mutation bridge, native score/epoch primitives, and original discovery facts. Summary remains incomplete until real return/timeline navigation exists; no Godot input owner is invented."
     }
   ],
   "admission": {

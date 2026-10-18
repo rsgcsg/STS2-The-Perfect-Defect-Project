@@ -109,7 +109,7 @@ test("managed probe records native terminal outcome without treating generic ter
   assert.deepEqual(managedTerminalOutcome({
     interaction: {
       kind: "game_over",
-      content: { surface: { victory: false } }
+      content: { surface: {}, context: { kind: "game_over", result: "loss" } }
     },
     persistent: { content: { run: { act: 1, floor: 11 } } }
   }), { victory: false, act: 1, floor: 11 });

@@ -855,6 +855,57 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
     interactionDiscovery: "same_original_native_inventory_entries_and_pending_presentation_owner", missing };
 }
 
+function gameOverSurface(state, ctx) {
+  const value = state.terminal_public;
+  const ref = (x) => typeof x === "string" && x.length > 0;
+  const missing = [];
+  const owner = plainObject(value) && value.kind === "managed_game_over_presentation"
+    && [value.owner_ref, value.run_ref, value.player_ref, value.ended_run_ref,
+      value.history_ref, value.continue_control_ref].every(ref)
+    && value.player_ref === state.player?.native_ref && value.game_mode === "standard"
+    && ["loss", "win"].includes(value.result) && ["intro", "summary"].includes(value.stage);
+  if (!owner) missing.push("native_game_over_original_end_and_presentation_owner");
+  const controls = [];
+  if (!Array.isArray(value?.other_controls)) missing.push("native_game_over_visible_controls");
+  else for (const control of value.other_controls) {
+    if (!plainObject(control) || !ref(control.control_ref) || !ref(control.semantic_id)
+      || typeof control.label !== "string" || typeof control.enabled !== "boolean"
+      || control.action_support !== "visible_unsupported" || typeof control.blocked_reason !== "string") {
+      missing.push("native_game_over_visible_control_facts");
+      continue;
+    }
+    const entityId = ctx.entityId("game_over_control", control.control_ref);
+    const fact = { entity_id: entityId, semantic_id: control.semantic_id, label: control.label,
+      enabled: control.enabled, action_support: control.action_support, blocked_reason: control.blocked_reason };
+    controls.push(fact);
+    ctx.referent({ id: entityId, role: "other_control", label: control.label,
+      enabled: control.enabled, properties: fact, includeEntityId: false });
+  }
+  if (Array.isArray(value?.missing)) missing.push(...value.missing);
+  else missing.push("native_game_over_completion_facts");
+  const complete = owner && value.complete === true && value.stage === "intro"
+    && value.can_advance_summary === true && value.can_return === false && missing.length === 0;
+  if (complete) ctx.action({ verb: "activate", label: "Continue to the run summary", raw: {
+    cmd: "action", action: "advance_game_over_summary", args: { owner_ref: value.owner_ref, control_ref: value.continue_control_ref }
+  } });
+  const context = { kind: "game_over",
+    ...(owner ? { result: value.result, game_mode: value.game_mode } : {}) };
+  if (owner && value.stage === "summary") {
+    for (const key of ["score", "floors_climbed", "ascension"]) {
+      if (Number.isSafeInteger(value[key])) context[key] = value[key];
+      else missing.push(`native_game_over_${key}`);
+    }
+  }
+  return { kind: "game_over", stage: value?.stage ?? "unavailable", prompt: null,
+    surface: { kind: "game_over", stage: value?.stage ?? "unavailable",
+      can_advance_summary: complete, can_return: false, other_controls: controls }, context,
+    complete, actionComplete: complete || owner && value.stage === "summary",
+    missing: [...new Set(missing)],
+    visibleInformation: "contract_complete_for_current_game_over_intro_and_executable_summary_advance",
+    interactionDiscovery: "derived_from_original_native_end_and_current_headless_presentation_owner"
+  };
+}
+
 function currentSurface(state, ctx) {
   const commonContext = {
     kind: "run",
@@ -2065,17 +2116,7 @@ function currentSurface(state, ctx) {
       };
     }
     case "game_over":
-      return {
-        kind: "game_over",
-        stage: "complete",
-        prompt: null,
-        surface: { kind: "game_over", stage: "complete",
-          victory: typeof state.victory === "boolean" ? state.victory : null },
-        context: { ...commonContext, kind: "terminal" },
-        ...supported,
-        complete: typeof state.victory === "boolean",
-        missing: typeof state.victory === "boolean" ? [] : ["native_terminal_victory_fact"]
-      };
+      return gameOverSurface(state, ctx);
     case "shop_room": {
       const catalog = canonicalShopSurface(state, ctx, false);
       const owner = state.presentation_owner;

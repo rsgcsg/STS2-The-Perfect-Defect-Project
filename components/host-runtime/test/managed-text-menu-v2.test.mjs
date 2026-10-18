@@ -1,3 +1,4 @@
+import { gameOver } from "./fixtures/managed-game-over.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
@@ -488,17 +489,18 @@ test("unknown confirmation is not retried and closes Managed mutation authority"
   assert.equal(session.tainted, true);
 });
 
-test("terminal v2 page stays observed with no manufactured action", () => {
+test("terminal v2 intro exposes the real native summary advance", () => {
   const source = projectManagedCandidateDecision({
-    state: { ...combatDecision(), decision: "game_over", victory: false }, ...identity
+    state: gameOver(combatDecision()), ...identity
   }).snapshot;
   const page = new ManagedTextMenuV2SessionAdapter({ observe: () => source,
     async submit() { throw new Error("terminal must not submit"); } }).observe();
   assertContractPage(page);
   assert.equal(page.schema, "sts2.player-environment/text-menu-snapshot-2");
-  assert.equal(page.status, "observed");
+  assert.equal(page.status, "interactive");
   assert.equal(page.interaction.kind, "game_over");
   assert.deepEqual(page.menu.selection, []);
   assert.equal(page.menu_actions.status, "complete");
-  assert.deepEqual(page.menu_actions.actions, []);
+  assert.equal(page.menu_actions.actions.length, 1);
+  assert.equal(page.menu_actions.actions[0].verb, "activate");
 });

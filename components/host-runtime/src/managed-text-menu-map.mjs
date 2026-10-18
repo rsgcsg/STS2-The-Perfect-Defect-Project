@@ -18,7 +18,7 @@ function textSnapshotId(snapshotId) {
 const REVIEWED_TEXT_MENU_KINDS = Object.freeze([
   "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
   "deck_card_selection", "native_deck_card_selection", "native_simple_card_selection", "native_combat_pile_selection", "native_generated_card_choice", "deck_transform_selection", "card_selection", "shop_room", "shop_inventory", "combat_turn",
-  "treasure_room",
+  "treasure_room", "game_over",
   "reward_claim", "card_reward_selection", "reward_completion", "native_boss_relic_selection"
 ]);
 const REVIEWED_TEXT_MENU_SURFACES = new Set(REVIEWED_TEXT_MENU_KINDS);
@@ -35,7 +35,7 @@ export function managedTextMenuV1Contract() {
     input_profile: MANAGED_TEXT_MENU_PROFILE,
     snapshot_schema: MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA,
     receipt_schema: MANAGED_TEXT_MENU_RESULT_SCHEMA,
-    interaction_kinds: [...REVIEWED_TEXT_MENU_KINDS, "game_over"],
+    interaction_kinds: [...REVIEWED_TEXT_MENU_KINDS],
     observed_terminal_kinds: ["game_over"],
     action_verbs: [...CURRENT_NATIVE_VERBS]
   };
@@ -46,6 +46,13 @@ export function currentManagedNativeVerbs() {
 }
 
 function completeCurrentLeaf(snapshot) {
+  if (snapshot?.interaction?.kind === "game_over") {
+    const surface = snapshot.interaction.content?.surface;
+    const context = snapshot.interaction.content?.context;
+    if (snapshot.interaction.stage !== "intro" || surface?.kind !== "game_over" || surface.stage !== "intro"
+      || surface.can_advance_summary !== true || surface.can_return !== false
+      || context?.kind !== "game_over" || !["loss", "win"].includes(context.result)) return false;
+  }
   if (snapshot?.interaction?.kind === "card_selection" && (snapshot.interaction?.content?.surface?.selector_profile !== "managed-command-selector-1"
     || nativeCardSelectionProblems(snapshot).length > 0)) return false;
   const interactionId = snapshot?.interaction?.interaction_id;
@@ -87,28 +94,9 @@ function completeCurrentLeaf(snapshot) {
   });
 }
 
-function completeObservedTerminal(snapshot) {
-  const surface = snapshot?.interaction?.content?.surface;
-  const bound = snapshot?.bound_actions;
-  return snapshot?.status === "observed"
-    && snapshot?.interaction?.kind === "game_over"
-    && snapshot.interaction.stage === "complete"
-    && typeof snapshot.interaction.interaction_id === "string"
-    && snapshot.interaction.interaction_id.length > 0
-    && Array.isArray(snapshot.interaction.capabilities)
-    && snapshot.interaction.capabilities.length === 0
-    && surface?.kind === "game_over" && surface.stage === "complete"
-    && typeof surface.victory === "boolean"
-    && snapshot.completeness?.status === "complete"
-    && Array.isArray(snapshot.referents)
-    && bound?.status === "complete"
-    && bound.materialized_count === 0 && bound.total_count === 0
-    && Array.isArray(bound.actions) && bound.actions.length === 0;
-}
 
 function project(snapshot, allowActions = true) {
   const supported = allowActions && completeCurrentLeaf(snapshot);
-  const terminal = completeObservedTerminal(snapshot);
   const actions = supported ? snapshot.bound_actions.actions.map((bound) => ({
     action_id: stableActionId(snapshot.snapshot_id, bound.bound_action_id),
     kind: "native_input",
@@ -125,14 +113,14 @@ function project(snapshot, allowActions = true) {
     schema: MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA,
     input_profile: MANAGED_TEXT_MENU_PROFILE,
     status: supported && actions.length > 0 ? "interactive"
-      : terminal ? "observed" : "visible_unsupported",
+      : "visible_unsupported",
     interaction: { ...snapshot.interaction, capabilities: [] },
     menu: { cursor: "root", revision: 0, native_snapshot_id: snapshot.snapshot_id },
     menu_actions: {
-      status: supported || terminal ? "complete" : "unavailable",
+      status: supported ? "complete" : "unavailable",
       materialized_count: actions.length,
       total_count: supported ? actions.length : 0,
-      ordering_semantics: supported || terminal
+      ordering_semantics: supported
         ? snapshot.bound_actions.ordering_semantics : "unavailable",
       actions
     }
