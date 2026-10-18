@@ -1,85 +1,29 @@
-# SpireAgent — STS2 Project
+# SpireAgent：先从这里看
 
-Build an STS2 Agent that can play through the real game with reproducible results.
-The environment and data pipeline support that goal; neither is an unlimited
-platform project. Current work focuses on a usable P1 interaction/recording/Agent
-chain. Long term, environment implementations, protocols, data formats, Agents,
-models and training methods should be replaceable without rebuilding control,
-storage or the user product. Exact progress is in [CURRENT](docs/memory/CURRENT.md).
+目标是做出最强、能真实使用的《杀戮尖塔2》Agent，靠采集、数据管理、训练、接入、评估和迭代持续提高能力。环境与平台服务这个目标；P1是当前选定的交互协议，以后可以替换。
 
-## Start here
+## 一张图，两个状态位置
 
-1. [CURRENT](docs/memory/CURRENT.md): current assignment, status and one next action.
-2. [Working rules](docs/WORKING_RULES.zh-CN.md): shared rules for every engineer,
-   architect, manager and Agent: purpose, deliverable, cost and stop boundary.
-3. Follow CURRENT's active task, then its relevant component/specification.
-   Old plans and completed reports are background, not a second work queue.
+看[唯一链路图和连接表](docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19)：在线连接游戏、Host、公开环境、交互协议和完整Agent；记录连接不可变原件与派生；研究连接用途、输入/目标、训练、模型和新运行。图和requires/provides只在该处维护。
 
-The root [AGENTS](AGENTS.md) gives hard boundaries and task-based reading.
-[AI collaboration](docs/AI_COLLABORATION.md) adds delegation/context recovery;
-[project system](docs/PROJECT_SYSTEM.md) owns document placement and maintenance.
-[Repository Skills](.agents/skills/README.md) provide specialized workflows when relevant.
-Do not read the whole design history before a local repair.
+- **项目现在做到哪、卡在哪、下一步是什么**：[CURRENT](docs/memory/CURRENT.md)。当前在打通原生记录、P1派生和实际验收；正式计数、预检和安装状态都从这里查，不能从设计或旧报告推断通过。
+- **执行中的本地细节**：负责人只维护一个固定的 `work/P1-SEMANTIC-ACTIVE-20261019.md`（本地工作目录中的root ACTIVE，不在Git checkout内）。它补充工作现场，不替代仓库合同；其它worker快照或旧CURRENT不能派发总任务。
+- **先前怎么解决过**：[已有解法与适用边界](docs/RESOLVED_ISSUES.zh-CN.md)。遇到同类问题，先读相关行及其原件，再决定复用还是修改；不是重读全部历史。
 
-## One product, distinct responsibilities
+## 按要做的事找
 
-```text
-STS2 → Host/Connector → selected environment protocol (currently P1)
-     → controlled Runtime → complete Agent → native execution
+| 要找什么 | 去哪里 |
+|---|---|
+| 新成员先了解如何工作 | [AGENTS](AGENTS.md) → [共同工作规则](docs/WORKING_RULES.zh-CN.md)；只读当前任务相关owner，不整本通读历史 |
+| 目标、范围、当前验收与录制操作 | [CURRENT](docs/memory/CURRENT.md)链接本轮任务与实际操作单；[P1计划目录](docs/plans/p1-prefreeze-2026-10-18/README.md)是专题资料，不是另一份“现在” |
+| 新增来源、换profile、定位哪个组件负责 | [链路连接表](docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19) → [Architecture](docs/ARCHITECTURE.md)、[Components](docs/COMPONENTS.md)、[P1合同](docs/protocols/P1_GLOBAL_R1.zh-CN.md) |
+| 采集、封包、验证与数据用途 | [Annotator](components/annotator/README.md)、[Evidence](components/evidence/README.md)、[Data/Provenance](python/docs/DATA_AND_PROVENANCE.md)；可校验不等于Human来源或训练准入 |
+| Agent运行、工作台与模型接入 | [Policy Runtime](components/policy-runtime/README.md)、[应用/研究地图](python/docs/DOCUMENT_MAP.md)、[Workbench用例](python/docs/PROJECT_CONSOLE.md)；Model只是完整Agent的一部分 |
+| 开发、检查、发布与具体目录 | [开发流程](docs/DEVELOPMENT_WORKFLOW.md)、[测试](docs/TESTING.md)、[版本](docs/VERSIONING.md)、[文档地图](docs/DOCUMENT_MAP.md)；按改动选必要检查 |
+| 已有结果、旧方案或资产去向 | [问题索引](docs/RESOLVED_ISSUES.zh-CN.md) → 对应证据；其它资料从[文档地图](docs/DOCUMENT_MAP.md)按需找，保留原版本/适用范围 |
 
-independent native records → Evidence/verified projection → research data
-     → training/model artifact → same Agent/product path → evaluation
-```
+STS2决定规则和原生执行；Connector决定公开信息、动作绑定和执行时复验；Host Runtime管进程与隔离；Annotator/Evidence管原件；Policy Runtime管受控执行；应用管用户入口；研究管模型、训练与评估。Mod是装载包装，GUI映射同一应用用例，不再造一套控制或数据链。
 
-A Model is an optional part of an Agent; JSON is a format, not an interaction
-contract. Native rules, public information/actions, execution control, original
-records and research labels have separate owners. See [Architecture](docs/ARCHITECTURE.md)
-and [Components](docs/COMPONENTS.md) when changing a boundary. Source/test, actual
-runtime, Human origin and strategy quality are different evidence levels.
+源码/测试、实际构建安装、真实运行、Human来源与策略质量分别有证据。旧失败和原件保留；合入、正常退出或一个检查通过都不能替其它层授予资格。
 
-One Workbench is the user console. The game Mod is its default entry; a browser
-opens the same application service, which can run without the game. Local and
-team resources retain existing identity/consent/data-use authority. Logging in
-must not upload old data, start training or take control automatically. Team
-coordination may run on cloud, LAN or a designated computer; a universal scheduler
-and fully integrated remote game Host are not established capabilities.
-
-## Workspace and targeted references
-
-- `components/`: Native Foundation, Connector, Host Runtime, Annotator, Evidence,
-  Policy Runtime. `apps/game-mod`: one production Mod; `apps/ingame-ui`: native UI.
-- `python/spireagent`: Workbench/Hub and shared application infrastructure.
-  `python/stpd`: research projections, models, training and evaluation.
-  `apps/workbench`: retained diagnostic APIs, not a second user console.
-- [P1 contract](docs/protocols/P1_GLOBAL_R1.zh-CN.md) and
-  [project map / current pre-freeze plan](docs/plans/p1-prefreeze-2026-10-18/README.md):
-  product work only when assigned; implementation, current acceptance and training
-  readiness are separate. Earlier P1 plans retain their historical scope.
-- [Workflow](docs/DEVELOPMENT_WORKFLOW.md), [Testing](docs/TESTING.md),
-  [Governance](docs/ENGINEERING_GOVERNANCE.md), [Versioning](docs/VERSIONING.md).
-- [Stage1a product](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
-  [console](python/docs/PROJECT_CONSOLE.md), [in-run delivery](docs/plans/TEXT_STS2_IN_RUN.md):
-  established product requirements and bounded implementation.
-- [Document map](docs/DOCUMENT_MAP.md), [status/evidence](docs/STATUS.md),
-  [design history](docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md): consult as needed.
-
-## Development
-
-Node 20+, uv and the required .NET SDK are used. Reuse installed dependencies;
-run setup only when missing or changed:
-
-```sh
-npm ci
-npm ci --prefix python
-npm run setup:python
-```
-
-Use `npm run project:context -- --component <name>` for routing. Develop with
-relevant checks, then `npm run check:plan -- --base origin/develop --run` on a stable
-candidate; `npm run check` is the full portable suite, not an every-edit default.
-`npm run project:closeout` checks handoff impact. Game build/install/load, Human
-recording and training remain separately scoped operations.
-
-Original Platform/STPD histories remain in Git; `migration/project-import.json`
-records the import. Old recordings and models retain their actual producer and
-contract identities. A new branch or version never rewrites old evidence.
+开发环境沿用Node20+、uv和项目所需.NET；初始化/命令按[新工程师指南](docs/NEW_ENGINEER_GUIDE.md)与[开发流程](docs/DEVELOPMENT_WORKFLOW.md)，已有依赖不重复安装。可用 `npm run project:context -- --component <name>` 查局部入口。历史仓库导入由 `migration/project-import.json` 保留，不因新版本重写旧记录。
