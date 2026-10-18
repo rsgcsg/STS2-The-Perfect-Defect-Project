@@ -20,7 +20,16 @@ function closedEntityRelations(observation: P1Observation): boolean {
   visit(modelView(observation), "");
   return referenced.every(value => declared.has(value));
 }
-function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
+function shopCardDetailSuffix(observation: P1Observation): boolean {
+  const [catalog, ...cards] = observation.extra_reads;
+  const content = catalog?.content as Record<string, unknown> | null;
+  return catalog?.kind === "shop_catalog" && catalog.availability === "available"
+    && content?.kind === "shop_catalog"
+    && ["inventory_open", "inventory_closed_open_to_inspect"].includes(String(content.access_state))
+    && [content.cards, content.relics, content.potions].every(Array.isArray)
+    && cards.every(read => read.kind === "surface_card" && read.availability === "available" && completeCards([read.content]));
+}
+function graphPolicy(identicalFacts: boolean, observation: P1Observation, shopCardSuffix: boolean) {
   const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads, observation.scene.content);
   // This declared inventory is entirely current-card DTOs. Unknown extra Read
   // schemas retain their literal order and identity policy.
@@ -30,6 +39,11 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
       const p = normalizePublicPath(path);
       if (p === "$.chosen" || p === "catalog[].choice_id") return { kind: "action", id: value };
       return policy.relation(path) ? { kind: "entity", id: value } : null;
+    },
+    unorderedSuffix(path) {
+      // The unique catalog remains fixed at index 0. Only the current typed
+      // card-detail tail has the already declared multiset semantics.
+      return !identicalFacts && shopCardSuffix && path === "$.observation.extra_reads" ? 1 : null;
     },
     unordered(path, parent) {
       // r1.3: only these schema-owned legal target domains are sets. All
@@ -107,7 +121,8 @@ function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: str
   try {
     // Inventory order is transport metadata. Repeated cards/Reads must be solved
     // jointly with their catalog and chosen edges, under one global bijection.
-    const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
+    const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left,
+      shopCardDetailSuffix(left) && shopCardDetailSuffix(right));
     graph.compareWhole(a, b);
     return { verdict: "equal", difference: null };
   } catch (error) {

@@ -22,7 +22,7 @@ function unambiguousObservation(): P1Observation {
 function renamed(o: P1Observation): P1Observation {
   const names = new Map<string, string>();
   const collect = (value: any, key = "") => {
-    if (typeof value === "string" && /^(?:entity_id|group_id|player_entity_id|combat_id|choice_id|subject|target|target_entity_ids|selected_card_entity_ids)$/u.test(key)) names.set(value, `renamed_${value}`);
+    if (typeof value === "string" && /^(?:entity_id|group_id|player_entity_id|combat_id|choice_id|subject|target|target_entity_ids|selected_card_entity_ids|display_owner_entity_id|slot_entity_id)$/u.test(key)) names.set(value, `renamed_${value}`);
     else if (Array.isArray(value)) value.forEach(child => collect(child, key));
     else if (value && typeof value === "object") Object.entries(value).forEach(([k, v]) => collect(v, k));
   };
@@ -163,6 +163,36 @@ describe("P1 r1.1 full-public graph comparison", () => {
     expect(compare(a, changed).verdict).not.toBe("equal");
     const lost = structuredClone(b); (lost.extra_reads as any[]).pop();
     expect(compare(a, lost).verdict).not.toBe("equal");
+  });
+  it("keeps the current shop catalog ordered and preserves every detail fact and owner", () => {
+    const a = unambiguousObservation();
+    const cards = content(a.deck).cards.slice(0, 2);
+    const offers = cards.map((card: any, i: number) => ({ entity_id: `offer-${i}`, slot_entity_id: `slot-${i}`,
+      inventory_index: i, price: 50 + i, stocked: true, can_purchase: false, card: structuredClone(card) }));
+    (a as any).extra_reads = [{ kind: "shop_catalog", availability: "available", content: {
+      kind: "shop_catalog", access_state: "inventory_closed_open_to_inspect", cards: offers, relics: [], potions: [], card_removal: null } },
+      ...cards.map((card: any, i: number) => ({ kind: "surface_card", availability: "available", content: {
+        ...structuredClone(card), public_details_revision: "1", display_context: "shop_offer",
+        display_owner_entity_id: offers[i].entity_id, keywords: [], card_previews: [] } }))];
+    const b = renamed(a); (b.extra_reads as any[]).splice(1, 2, b.extra_reads[2], b.extra_reads[1]);
+    expect(compare(a, b).verdict).toBe("equal");
+    for (const change of ["catalog_position", "catalog_price", "catalog_card", "detail_text", "missing", "duplicate", "wrong_owner"]) {
+      const bad = structuredClone(b), reads = bad.extra_reads as any[];
+      if (change === "catalog_position") reads.reverse();
+      if (change === "catalog_price") reads[0].content.cards[0].price++;
+      if (change === "catalog_card") reads[0].content.cards[0].card.description += " changed";
+      if (change === "detail_text") reads[1].content.description += " changed";
+      if (change === "missing") reads.pop();
+      if (change === "duplicate") reads[2] = structuredClone(reads[1]);
+      if (change === "wrong_owner") reads[1].content.display_owner_entity_id = reads[0].content.cards[0].entity_id;
+      expect(compare(a, bad).verdict, change).not.toBe("equal");
+    }
+    const unknownLeft = structuredClone(a), unknownRight = structuredClone(a);
+    for (const o of [unknownLeft, unknownRight]) (o.extra_reads as any[]).push(
+      { kind: "future_read", availability: "available", content: { text: "first" } },
+      { kind: "future_read", availability: "available", content: { text: "second" } });
+    (unknownRight.extra_reads as any[]).splice(3, 2, unknownRight.extra_reads[4], unknownRight.extra_reads[3]);
+    expect(compare(unknownLeft, unknownRight).verdict).toBe("different");
   });
   it("never normalizes future literal entity_id fields or localized display fields globally", () => {
     const a = unambiguousObservation(); const b = structuredClone(a);

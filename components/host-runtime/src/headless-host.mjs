@@ -25,7 +25,7 @@ import { readDiskIdentity } from "./game-installation.mjs";
 import { requireSupportedRuntime } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
-import { validateNativeSpeed, prepareNativeSpeedBeforeBootstrap } from "./native-speed.mjs";
+import { validateNativeSpeed, resolveNativeSpeed, prepareNativeSpeedBeforeBootstrap } from "./native-speed.mjs";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:15526";
 
@@ -208,6 +208,7 @@ export async function runHeadlessHost({
     isolatedProfileId,
     sharedProfileAcknowledged
   });
+  nativeSpeed = resolveNativeSpeed(nativeSpeed, launchProfile);
   const files = hostFiles(localRoot);
   const diskIdentity = readDiskIdentity(installation);
   const compatibility = requireSupportedRuntime(diskIdentity);

@@ -37,7 +37,7 @@ export class HostDriver {
     const tool = this.launch.kind === "managed" ? "managed-pe-driver.mjs" : "reference-pe-driver.mjs";
     const args = [join(this.launch.hostRuntimeRoot, "tools", tool)];
     if (this.launch.kind === "managed") args.push("--candidate", this.launch.location, "--character", this.launch.character, "--quiet-diagnostics");
-    else args.push("--local-root", this.launch.location, "--character", this.launch.character.toUpperCase(), "--native-speed", "instant");
+    else args.push("--local-root", this.launch.location, "--character", this.launch.character.toUpperCase());
     args.push(...(this.launch.extraArgs ?? []));
     this.recorder.append("env_request", { command: "launch", host_kind: this.launch.kind, argv: args.slice(1) });
     this.process = new LineProcess(process.execPath, args, { cwd: this.launch.hostRuntimeRoot });

@@ -5,6 +5,8 @@ import { canonicalJson, isObject } from "./canonical.js";
 export interface PublicGraphPolicy {
   alias(value: string, key: string, path: string): { kind: string; id: string } | null;
   unordered?(path: string, parent: Record<string, unknown> | null): boolean;
+  /** Keep the prefix ordered; only this suffix is a declared multiset. */
+  unorderedSuffix?(path: string, parent: Record<string, unknown> | null): number | null;
   selectUnorderedMember?(value: unknown, path: string): unknown;
 }
 export class PublicGraphDifference extends Error {
@@ -17,6 +19,8 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
   };
   const safeKey = (key: string) => /^[A-Za-z0-9_:-]{1,80}$/u.test(key) ? key : "<field>";
   const normalized = (path: string) => path.replace(/\[\d+\]/gu, "[]");
+  const unorderedStart = (path: string, parent: Record<string, unknown> | null): number | null =>
+    policy.unordered?.(path, parent) ? 0 : policy.unorderedSuffix?.(path, parent) ?? null;
   function bind(kind: string, a: string, b: string, path: string) {
     const ka = `${kind}:${a}`; const kb = `${kind}:${b}`;
     if ((forward.has(ka) && forward.get(ka) !== b) || (reverse.has(kb) && reverse.get(kb) !== a))
@@ -34,25 +38,26 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
     }
     if (Array.isArray(value)) {
       const children = value.map((child, index) => selector(child, side, key, `${path}[${index}]`, depth + 1, mapping));
-      return policy.unordered?.(normalized(path), null)
-        ? children.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b))) : children;
+      const start = unorderedStart(normalized(path), null);
+      return start === null ? children : [...children.slice(0, start),
+        ...children.slice(start).sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)))];
     }
     if (!isObject(value)) return value;
     return Object.fromEntries(Object.keys(value).sort().map(child => [child,
       selector(value[child], side, child, `${path}.${safeKey(child)}`, depth + 1, mapping)]));
   }
-  function unordered(a: readonly unknown[], b: readonly unknown[], path: string, key = "") {
+  function unordered(a: readonly unknown[], b: readonly unknown[], path: string, key = "", offset = 0) {
     if (a.length !== b.length) fail(path, "collection_multiplicity_changed");
     const groups = new Map<string, unknown[]>();
     const mapping = { forward: new Map(forward), reverse: new Map(reverse) };
     const signature = (value: unknown, side: "left" | "right") => canonicalJson(selector(
-      policy.selectUnorderedMember?.(value, path) ?? value, side, key, `${path}[0]`, 0, mapping));
+      policy.selectUnorderedMember?.(value, path) ?? value, side, key, `${path}[${offset}]`, 0, mapping));
     for (const value of b) { const sig = signature(value, "right"); const group = groups.get(sig) ?? []; group.push(value); groups.set(sig, group); }
     for (let index = 0; index < a.length; index++) {
       const group = groups.get(signature(a[index], "left"));
-      if (!group?.length) fail(`${path}[${index}]`, "collection_member_or_relation_changed");
-      if (group!.length !== 1) fail(`${path}[${index}]`, "ambiguous_unordered_alias_mapping", true);
-      compare(a[index], group!.pop(), `${path}[${index}]`, key);
+      if (!group?.length) fail(`${path}[${index + offset}]`, "collection_member_or_relation_changed");
+      if (group!.length !== 1) fail(`${path}[${index + offset}]`, "ambiguous_unordered_alias_mapping", true);
+      compare(a[index], group!.pop(), `${path}[${index + offset}]`, key);
     }
   }
   let comparedNodes = 0;
@@ -64,9 +69,10 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
       if (left || right) fail(path, "alias_domain_changed");
     }
     if (Array.isArray(a) && Array.isArray(b)) {
-      if (policy.unordered?.(normalized(path), parent)) return unordered(a, b, path, key);
-      if (a.length !== b.length) fail(path, "sequence_length_changed");
-      for (let i = 0; i < a.length; i++) compare(a[i], b[i], `${path}[${i}]`, key, null, depth + 1);
+      const start = unorderedStart(normalized(path), parent);
+      if (a.length !== b.length) fail(path, start === null ? "sequence_length_changed" : "collection_multiplicity_changed");
+      for (let i = 0; i < (start ?? a.length); i++) compare(a[i], b[i], `${path}[${i}]`, key, null, depth + 1);
+      if (start !== null) unordered(a.slice(start), b.slice(start), path, key, start);
       return;
     }
     if (isObject(a) && isObject(b)) {
@@ -84,7 +90,7 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
   function compareWhole(a: unknown, b: unknown, path = "$"): void {
     type Task = { kind: "value"; a: unknown; b: unknown; path: string; key: string;
       parent: Record<string, unknown> | null; depth: number }
-      | { kind: "members"; a: readonly unknown[]; b: readonly unknown[]; index: number; path: string; key: string; depth: number };
+      | { kind: "members"; a: readonly unknown[]; b: readonly unknown[]; index: number; offset: number; path: string; key: string; depth: number };
     type State = { tasks: Task[]; forward: Map<string, string>; reverse: Map<string, string> };
     const valueTask = (a: unknown, b: unknown, path: string, key: string, parent: Record<string, unknown> | null, depth: number): Task =>
       ({ kind: "value", a, b, path, key, parent, depth });
@@ -98,10 +104,10 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
           if (++comparedNodes > 500_000 || task.depth > 64) fail("$", "comparison_work_bound", true);
           if (task.kind === "members") {
             if (task.index === task.a.length) continue;
-            const currentPath = `${task.path}[${task.index}]`;
+            const currentPath = `${task.path}[${task.index + task.offset}]`;
             const signature = (value: unknown, side: "left" | "right") => canonicalJson(selector(
               policy.selectUnorderedMember?.(value, task.path) ?? value, side, task.key,
-              `${task.path}[0]`, task.depth, state));
+              `${task.path}[${task.offset}]`, task.depth, state));
             const expected = signature(task.a[task.index], "left");
             const candidates = task.b.flatMap((item, index) => signature(item, "right") === expected ? [index] : []);
             if (candidates.length === 0) fail(currentPath, "collection_member_or_relation_changed");
@@ -127,12 +133,14 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
             if (left || right) fail(currentPath, "alias_domain_changed");
           }
           if (Array.isArray(leftValue) && Array.isArray(rightValue)) {
+            const start = unorderedStart(normalized(currentPath), parent);
             if (leftValue.length !== rightValue.length) fail(currentPath,
-              policy.unordered?.(normalized(currentPath), parent) ? "collection_multiplicity_changed" : "sequence_length_changed");
-            // Establish ordered public relationships before branching on duplicate inventories.
-            if (policy.unordered?.(normalized(currentPath), parent)) state.tasks.unshift({ kind: "members",
-              a: leftValue, b: rightValue, index: 0, path: currentPath, key, depth });
-            else for (let i = leftValue.length - 1; i >= 0; i--)
+              start === null ? "sequence_length_changed" : "collection_multiplicity_changed");
+            // The fixed prefix and all other ordered public relationships bind
+            // before branching on the multiset suffix. Every branch retains them.
+            if (start !== null) state.tasks.unshift({ kind: "members",
+              a: leftValue.slice(start), b: rightValue.slice(start), index: 0, offset: start, path: currentPath, key, depth });
+            for (let i = (start ?? leftValue.length) - 1; i >= 0; i--)
               state.tasks.push(valueTask(leftValue[i], rightValue[i], `${currentPath}[${i}]`, key, null, depth + 1));
             continue;
           }

@@ -15,7 +15,7 @@ import { chooseBoundAction } from "./journey-probe.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { resolveLaunchProfile } from "./profile-isolation.mjs";
 import { instantiateProfileTemplate } from "./profile-template.mjs";
-import { validateNativeSpeed, prepareNativeSpeedBeforeBootstrap, requireNativeSpeedProvenance } from "./native-speed.mjs";
+import { validateNativeSpeed, resolveNativeSpeed, prepareNativeSpeedBeforeBootstrap, requireNativeSpeedProvenance } from "./native-speed.mjs";
 import { validateExpectedNativeTuple, requireExpectedNativeInstallation, requireExpectedNativeLoadedTuple } from "./native-episode-tuple.mjs";
 import {
   listGameProcesses,
@@ -252,6 +252,7 @@ export async function startShippedPlayerEnvironmentEpisode({
     expectedGameIdentity: diskIdentity
   });
   const launchProfile = resolveLaunchProfile({ localRoot, isolatedProfileId: profileId });
+  nativeSpeed = resolveNativeSpeed(nativeSpeed, launchProfile);
   signal?.throwIfAborted();
   const connectorCanary = resolveExperimentalConnectorCanary({
     installation,
