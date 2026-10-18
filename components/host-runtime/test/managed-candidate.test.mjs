@@ -33,16 +33,16 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("managed candidate source and measured build identity match the manifest", () => {
+test("pending managed source and retained measured build identities remain explicit", () => {
   const { manifest } = loadManagedCandidateManifest(ROOT);
-  assert.equal(manifest.status, "candidate_built_unqualified");
+  assert.equal(manifest.status, "candidate_source_pending_build");
   assert.deepEqual(Object.keys(manifest.expected_build), [
     "source_patch_sha256", "artifact_sha256", "artifact_mvid", "localization_sha256"
   ]);
   const sourcePatch = readFileSync(path.join(ROOT, "experiments", "managed-exact", manifest.source_patch));
   assert.equal(
     createHash("sha256").update(sourcePatch).digest("hex"),
-    manifest.expected_build.source_patch_sha256
+    manifest.pending_source_patch_sha256
   );
   assert.equal(manifest.expected_build.artifact_sha256, "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66");
   assert.equal(manifest.expected_build.artifact_mvid, "c9acc642-499d-4af2-ba24-2e90db5ef8cb");
@@ -104,6 +104,8 @@ test("fresh candidate preparation admits added source files into the audited dif
     "utf8"
   );
   assert.deepEqual(addedPatchPaths(patch), [
+    "initial-progress-tests/InitialProgressTests.csproj",
+    "initial-progress-tests/Program.cs",
     "native-tests/NativeMechanisms.csproj",
     "native-tests/Program.cs",
     "src/Sts2Headless/DeckEnchantCallScope.cs",
@@ -115,6 +117,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/FairPileProjection.cs",
     "src/Sts2Headless/ManagedEventPresentation.cs",
     "src/Sts2Headless/ManagedGameOverPresentation.cs",
+    "src/Sts2Headless/ManagedInitialProgress.cs",
     "src/Sts2Headless/ManagedMerchantPresentation.cs",
     "src/Sts2Headless/ManagedSelectorPublicCapture.cs",
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",

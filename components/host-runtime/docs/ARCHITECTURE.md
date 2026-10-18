@@ -180,8 +180,16 @@ and Ascension unlocks, then records the actual native serialized progress/SHA,
 derived UnlockState and singleplayer pools. Normal Standard run creation still
 owns seed, RNG and initial resources. Read-only provenance after bootstrap checks
 that the actual run froze that same UnlockState. Baseline metadata is private
-Host provenance, never fair-player input. Managed requires the same prepared
-progress at its native pre-run owner before cross-host equivalence can be claimed.
+Host provenance, never fair-player input. Managed accepts that exact prepared progress JSON/SHA only through manager reset
+(or the private stdio operator). Before creating a player/run, its native owner
+writes only the current profile progress path in the existing native memory
+store, reloads through `InitProgressData`, verifies normalization and the fixed
+baseline, then preserves the existing Standard initializer. It keeps Managed
+presentation TestMode. Mount separately reads actual run identity and refuses
+a missing/mismatched progress SHA or frozen UnlockState. Failed/unknown preparation
+requires process replacement. Private manager identity retains the proof; attached
+clients and P1 never receive the initial profile. Cross-host equivalence still
+requires the same actual input and final-candidate live verification.
 
 For Human collection, an operator may explicitly prepare this baseline, verify
 readback, then start Source4 before the Human uses normal native new-run menus.

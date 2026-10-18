@@ -14,8 +14,8 @@ CI39124068850 passed. Earlier202/204 and203 ancestry keep their actual merge ide
 This integration preserves Reference source60d14222/meta8eec9c5 plus docs d5e84a0.
 It is NOT the freeze PR or a new installed/live qualification.
 FullPython4485pass/5skip+93subtests is source evidence; original env fail/correction retained.
-Mod4d3f8b4b/MVIDfb38a130 installed and strict-loaded in02/03; build stays8967.
-Rollback2026-10-18T11-21-45.822Z preserves6 old Mod/config/provenance hashes.
+Modd64e57b0/MVID494e234f built79ba, installed and strict-loaded in04.
+Rollback2026-10-18T12-12-49.442Z preserves6 previous4d Mod/config/provenance hashes.
 Old6c English/EndTurn, A03 a70d8de1/cd47 diagnostics and1482/S05 keep their identities.
 A03 loss terminals equal; choices170/293,236/432,0unknown are not strict full games.
 
@@ -31,7 +31,11 @@ A03 loss terminals equal; choices170/293,236/432,0unknown are not strict full ga
   normal fully-unlocked standard singleplayer new-game/seed, Reference instant.
   Reference source60d14222 implements fixed native preparation/save-reload and
   post-entry UnlockState binding; JS18/exact9 passed. Managed same native progress
-  snapshot seam is being implemented. New Mod/build/install/live remain pending.
+  snapshot seam source a24e7796/meta48b946dd passes JS78/native8; full new candidate
+  build and same-state Managed live consumer remain pending. Reference04 preparation
+  and run UnlockState readback passed, but conversion failed with publication gaps
+  and one unmapped input; 5 mapped actions,5 unresolved,2 original unknown inputs.
+  Close/pack and normal exit0 do not make the recording complete.
   Administrative prior-run count is setup provenance, never a Human loss.
 - Console: Reference independent diagnostic only; whole console-assisted session
   and console ancestors' suffixes excluded from formal3 Human/coverage/training.

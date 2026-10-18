@@ -340,3 +340,20 @@ When changing the candidate:
 
 Never transfer evidence across a platform baseline, changed patch, artifact, game assembly,
 runtime instance, or canonical adapter source.
+
+
+## Prepared initial profile
+
+Manager reset/start may carry one `initial_progress` snapshot from the fixed
+Reference `normal-sp-all-unlocked-v1` preparation. `ManagedInitialProgress` loads
+that exact JSON/SHA through the native memory save store and `InitProgressData`
+before the original Standard player/run initializer. Native run identity records
+its input SHA and actual frozen UnlockState comparison. There is no arbitrary
+save path or in-run import command. Managed presentation TestMode is retained.
+`initial-progress-tests` exercises the native owner without Launch or game input.
+
+The current source patch is pending a new actual candidate build. The manifest's
+`pending_source_patch_sha256` identifies it; `expected_build` still identifies the
+previous a70d artifact. Existing build admission rejects that old artifact for
+this changed source. New build/install/live qualification must be recorded from
+actual results before selecting it.

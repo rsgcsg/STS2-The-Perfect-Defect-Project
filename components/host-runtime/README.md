@@ -425,6 +425,12 @@ preparation before character selection, native save/reload verification, and
 post-entry actual UnlockState comparison. The recorded administrative progress
 is setup provenance, not Human play history. Low-level launches opt in explicitly;
 see the [baseline contract](docs/ARCHITECTURE.md#normal-singleplayer-baseline).
+Managed manager `/v1/admin/reset` optionally accepts `initial_progress` containing
+exactly `{recipe, progress_json, progress_sha256}` from that Reference preparation.
+It reloads the native in-memory profile before the existing Standard initializer
+and verifies actual run identity. This setup is unavailable to attached clients;
+manager `episode_identity` includes its private proof. Client commands retain the
+64 KiB body limit; manager reset allows 1 MiB for the native progress snapshot.
 
 The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
