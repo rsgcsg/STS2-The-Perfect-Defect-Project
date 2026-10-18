@@ -33,7 +33,8 @@ internal static partial class RecorderRuntime
         long Generation,
         IReadOnlyList<string> Blockers,
         IReadOnlyList<string> SemanticBlockers,
-        string NativeReadiness);
+        string NativeReadiness,
+        JsonObject? P1CaptureDiagnostics);
 
     private sealed record ArmedPotionUse(
         long Generation,
@@ -835,7 +836,8 @@ internal static partial class RecorderRuntime
                 new ExactDecisionFrame(frame, environment), holder, Volatile.Read(ref _cardStageGeneration),
                 EligibilityBlockers(frame, environment, requireReads: true),
                 SemanticStateBlockers(frame, environment),
-                DescribeNativeCardReadiness(holder.CardModel));
+                DescribeNativeCardReadiness(holder.CardModel),
+                IsP1Recording ? CaptureP1CardReadiness(frame, holder, "StartCardPlay.prefix") : null);
             // The native factory below runs inside this StartCardPlay invocation.
             return StagedCardPlays.Enter(staged);
         }
@@ -1175,6 +1177,8 @@ internal static partial class RecorderRuntime
         {
             ProcessLocalNativeWitnessFrame? selected = null;
             ProcessLocalNativeWitnessFrame? current = null;
+            JsonObject? selectedCaptureDiagnostics = null;
+            JsonObject? currentCaptureDiagnostics = null;
             List<string> currentBlockers = new();
             string stagedDisposition = "not_applicable";
 
@@ -1191,7 +1195,10 @@ internal static partial class RecorderRuntime
                 if (staged != null && sameGeneration && staged.Blockers.Count == 0
                     && ReferenceEquals(staged.Holder.CardModel, stagedCard)
                     && IsExact(staged.Decision.Frame.Resolve(expectedAction)))
+                {
                     selected = staged.Decision.Frame;
+                    selectedCaptureDiagnostics = staged.P1CaptureDiagnostics;
+                }
                 else if (staged != null && sameGeneration
                     && ReferenceEquals(staged.Holder.CardModel, stagedCard)
                     && staged.Decision.Frame.Snapshot.Interaction.Kind == "combat_turn"
@@ -1203,6 +1210,7 @@ internal static partial class RecorderRuntime
                     // supply S + A(S), and a queued cancellation supplies no S'.
                     HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction,
                         staged.Decision.Frame, occurrence: occurrence, nativeInputBinding: true);
+                    BindP1CardCaptureDiagnostics(staged.P1CaptureDiagnostics, "staged", stagedDisposition);
                     return new NativeUiScopeEntry(true, false);
                 }
             }
@@ -1210,6 +1218,8 @@ internal static partial class RecorderRuntime
             if (selected == null)
             {
                 current = CaptureReadRichFrame();
+                if (IsP1Recording && stagedCard != null)
+                    currentCaptureDiagnostics = CaptureP1CardReadiness(current, stagedOwner?.Holder, "TryPlayCard.prefix.current_capture");
                 RecorderEnvironmentIdentity currentEnvironment = BuildEnvironment(current);
                 currentBlockers = EligibilityBlockers(
                     current,
@@ -1219,6 +1229,7 @@ internal static partial class RecorderRuntime
                     && (expectedAction == null || IsExact(current.Resolve(expectedAction))))
                 {
                     selected = current;
+                    selectedCaptureDiagnostics = currentCaptureDiagnostics;
                 }
             }
 
@@ -1233,6 +1244,7 @@ internal static partial class RecorderRuntime
                 // OnEnqueued may admit it, and execution must prove A(S).
                 HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction,
                     current, occurrence: occurrence, nativeInputBinding: true);
+                BindP1CardCaptureDiagnostics(currentCaptureDiagnostics, "current", stagedDisposition);
                 return new NativeUiScopeEntry(true, false);
             }
 
@@ -1270,6 +1282,7 @@ internal static partial class RecorderRuntime
                     selected,
                     semanticDecision,
                     occurrence: occurrence);
+                BindP1CardCaptureDiagnostics(selectedCaptureDiagnostics, ReferenceEquals(selected, current) ? "current" : "staged", stagedDisposition);
             }
             return new NativeUiScopeEntry(true, false);
         }

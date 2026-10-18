@@ -19,6 +19,7 @@ namespace STS2HumanAnnotator.Mod
         private static bool IsSourceRecording => _activeCaptureProfileId is
             SourceSessionContract.ProfileId or SourceSessionContractV2.ProfileId or SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;
         internal sealed class SelectorInput { }
+        internal sealed class P1SelectorCapture { }
         private static IDisposable? StageCardPlay(NHandCardHolder holder) =>
             throw new InvalidOperationException("Human staging was not requested by this Source test");
         internal static void TestProfile(bool source) => _activeCaptureProfileId = source ? SourceSessionContractV3.ProfileId : "human-test";

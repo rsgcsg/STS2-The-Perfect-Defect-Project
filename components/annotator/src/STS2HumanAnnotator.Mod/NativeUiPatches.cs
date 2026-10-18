@@ -621,6 +621,7 @@ internal static class NativeBossRelicCommitPatch
 
     private static void Postfix(PlayerChoiceSynchronizer __instance)
     {
+        if (!RecorderRuntime.ShouldObserveBossRelicCommit) return;
         try
         {
             if (!NativeBossRelicDecisionProvider.TryGetRegisteredCurrentChoiceCarrier(
