@@ -9,6 +9,7 @@ import { resolveLaunchProfile } from "../src/profile-isolation.mjs";
 import { evaluateShippedCapabilities } from "../src/headless-host.mjs";
 import {
   validateNativeSpeed,
+  resolveNativeSpeed,
   nativeSpeedLaunchEnvironment,
   requireNativeSpeedProvenance,
   prepareNativeSpeedBeforeBootstrap
@@ -33,11 +34,15 @@ function provenance(mode, overrides = {}) {
   } } };
 }
 
-test("all three speeds are one closed optional run configuration", () => {
+test("isolated runs default to Instant and explicit modes preserve shared-profile protection", () => {
   assert.equal(validateNativeSpeed(null), null);
   for (const mode of ["normal", "fast", "instant"]) assert.equal(validateNativeSpeed(mode), mode);
   for (const mode of ["None", "Normal", "turbo", "", 3]) assert.throws(() => validateNativeSpeed(mode));
   assert.deepEqual(nativeSpeedLaunchEnvironment(null, null), {});
+  assert.equal(resolveNativeSpeed(null, profile), "instant");
+  assert.equal(resolveNativeSpeed(undefined, profile), "instant");
+  assert.equal(resolveNativeSpeed(null, { mode: "shared_steam_profile" }), null);
+  for (const mode of ["normal", "fast", "instant"]) assert.equal(resolveNativeSpeed(mode, profile), mode);
   assert.throws(() => nativeSpeedLaunchEnvironment("instant", { mode: "shared_steam_profile" }));
   assert.throws(() => nativeSpeedLaunchEnvironment("instant", { ...profile, generation_id: null }));
   assert.equal(nativeSpeedLaunchEnvironment("instant", profile).STS2_CONNECTOR_NATIVE_SPEED, "instant");

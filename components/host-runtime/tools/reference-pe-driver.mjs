@@ -73,7 +73,7 @@ export function referenceDriverOptions(args, { packageRoot = ROOT } = {}) {
     templateId: option(args, "--template", "vanilla-clean"),
     characterId: option(args, "--character", null),
     ascension: Number(option(args, "--ascension", "0")),
-    nativeSpeed: option(args, "--native-speed", null),
+    nativeSpeed: option(args, "--native-speed", "instant"),
     displayMode: option(args, "--display-mode", "headless"),
     expectedInstalledTuple: expectedTupleJson == null ? null : JSON.parse(expectedTupleJson),
     endpoint: option(args, "--endpoint"),

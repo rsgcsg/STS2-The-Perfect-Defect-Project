@@ -66,11 +66,12 @@ for the fixed Defect A0 owned start, and the existing closed presentation/speed
 choices. They cannot select a URL, executable, module, env, PID, token or path.
 An operator-owned `native-host-profile-v1.json` under the existing state root
 pins the installed public Host package, game installation/template/endpoint,
-exact loaded game/Mod tuple and finite preparation/cleanup limits. This first
-packet rejects `default` as `qualified_default_unavailable`; explicit
-Normal/Fast/Instant share the same native Host and public contracts. No accepted
-mode/presentation/package/tuple default basis is available here, and this
-configuration does not perform or prove six-cell qualification.
+exact loaded game/Mod tuple and finite preparation/cleanup limits. Owned
+`speed: default` resolves to the user-selected Instant project default; explicit
+Normal/Fast/Instant share the same native Host and public contracts. The binding
+records `{mode: instant, basis: project_default}` alongside the actual typed native
+readback. A default choice is not mode/presentation/package/tuple qualification;
+final-candidate live mode verification remains pending until separately recorded.
 Owned preparation derives the external Host state directory as
 `<ProjectConfig.state_dir>/native-host`; the request body and trusted profile do
 not add another caller-supplied path. The operator stages the existing template
@@ -88,10 +89,10 @@ separately for game and Connector; only this trusted configuration can forward
 the existing process opt-ins. Its `installed_tuple` is checked by the Host before
 native spawn and against loaded capabilities before bootstrap. The profile pins
 game version/commit/assembly SHA, Host source/artifact SHA/MVID and Modset
-fingerprint. `default_speed` remains null and is not accepted as an authority
-declaration. A later default must consume the actual existing owner's accepted
-mode/presentation/package/tuple basis; no new qualification resolver/registry is
-introduced by this packet.
+fingerprint. The profile's retained `default_speed` field does not supply
+qualification authority or override the code-owned project default. Attached
+preparation never writes speed or creates a Host, profile or seed; personal game
+preferences remain untouched.
 
 `POST /api/local-environment/native/prepare`, `GET /api/local-environment/native`
 and `POST /api/local-environment/native/finish` expose that one lifecycle.

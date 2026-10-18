@@ -1098,8 +1098,6 @@ class LocalEnvironmentService:
             existing = self._native_existing_intent(body)
             if existing is not None:
                 return existing
-        if body["ownership"] == "owned" and body["speed"] == "default":
-            raise BoundaryError("native_episode", "qualified_default_unavailable")
         configuration = self._native_configuration()
         profile, profile_sha = (
             self._read_native_profile() if body["ownership"] == "owned" else (None, None)
@@ -1112,9 +1110,7 @@ class LocalEnvironmentService:
             if seed != body["seed"]:
                 raise BoundaryError("native_episode", "canonical_seed_required")
             if body["speed"] == "default":
-                # No accepted mode+presentation+tuple basis exists in this first
-                # slice. Syntax or an operator boolean cannot manufacture it.
-                raise BoundaryError("native_episode", "qualified_default_unavailable")
+                effective_speed = native_binding.DEFAULT_NATIVE_SPEED
             else:
                 effective_speed = body["speed"]
         else:
@@ -1151,7 +1147,9 @@ class LocalEnvironmentService:
                 if profile is not None
                 else 30,
                 "world_mutation_offered": False,
-                "default_basis": None,
+                "default_basis": {"mode": effective_speed, "basis": "project_default"}
+                if body["ownership"] == "owned" and body["speed"] == "default"
+                else None,
             }
             self.native_client = None
             try:
@@ -1353,15 +1351,7 @@ class LocalEnvironmentService:
                     },
                     handoff=handoff,
                 )
-                binding["speed"]["configured_default"] = (
-                    None
-                    if record["default_basis"] is None
-                    else {
-                        "mode": speed,
-                        "qualification_ref": record["default_basis"]["qualification_ref"],
-                        "basis": "operator_accepted_exact_package_and_tuple",
-                    }
-                )
+                binding["speed"]["configured_default"] = record["default_basis"]
             context = native_binding.checked_context(
                 {
                     "schema": native_binding.ADMISSION_SCHEMA,

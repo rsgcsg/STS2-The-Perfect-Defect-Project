@@ -204,10 +204,36 @@ def test_owned_public_pipe_release_and_same_intent_do_not_reset_again(native_app
     )
 
 
+@pytest.mark.parametrize("requested", ["default", "normal", "fast", "instant"])
+def test_owned_default_resolves_instant_and_explicit_modes_keep_native_readback(
+    native_app, monkeypatch, requested
+):
+    app, _profile, fixture, _log = native_app
+    effective = "instant" if requested == "default" else requested
+    value = json.loads(fixture.read_text())
+    value["identity"]["native_speed"].update(requested=effective, effective=effective)
+    atomic_json(fixture, value)
+    original_client = app.local_environment.native_client_factory
+
+    def client(command, *args, **kwargs):
+        assert command.count("--native-speed") == 1
+        assert command[command.index("--native-speed") + 1] == effective
+        return original_client(command, *args, **kwargs)
+
+    monkeypatch.setattr(app.local_environment, "native_client_factory", client)
+    binding = prepared(app, prepare_body(speed=requested))["admission_context"]["binding"]
+    assert binding["speed"]["requested"] == effective
+    assert binding["speed"]["effective"] == effective
+    assert binding["speed"]["basis"] == "native_typed_readback"
+    assert binding["speed"]["configured_default"] == (
+        {"mode": "instant", "basis": "project_default"} if requested == "default" else None
+    )
+    assert "qualification_ref" not in json.dumps(binding["speed"])
+
+
 @pytest.mark.parametrize(
     "changes",
     [
-        {"speed": "default"},
         {"speed": "None"},
         {"display_mode": "editor"},
         {"endpoint": "http://foreign"},

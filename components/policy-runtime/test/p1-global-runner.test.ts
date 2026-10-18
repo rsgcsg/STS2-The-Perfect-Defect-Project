@@ -1,11 +1,12 @@
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runEpisode } from "../src/p1-global/episode.js";
 import { convertRecord } from "../src/p1-global/convert.js";
-import { readRecord } from "../src/p1-global/recorder.js";
+import { EpisodeRecorder, readRecord } from "../src/p1-global/recorder.js";
+import { HostDriver } from "../src/p1-global/host-driver.js";
 
 const sdkFixture = (name: string) => JSON.parse(readFileSync(new URL(
   `../../connector/sdk/typescript/test/fixtures/p1-global/${name}.json`, import.meta.url), "utf8")) as { snapshot: any; reads: any[] };
@@ -34,6 +35,26 @@ const steps = (s: ReturnType<typeof scenario>) => existsSync(s.log)
   ? readFileSync(s.log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((r) => r.command === "step") : [];
 
 describe("P1 runner lifecycle against a scripted Host", () => {
+  it.each([undefined, "normal", "fast", "instant"])("forwards the explicit Reference speed %s exactly once", async mode => {
+    const root = mkdtempSync(join(tmpdir(), "p1-reference-argv-"));
+    mkdirSync(join(root, "tools"));
+    writeFileSync(join(root, "tools/reference-pe-driver.mjs"), `
+      import readline from 'node:readline';
+      console.log(JSON.stringify({type:'ready',argv:process.argv.slice(2)}));
+      for await (const line of readline.createInterface({input:process.stdin})) {
+        const request=JSON.parse(line);
+        if(request.command==='close') { console.log(JSON.stringify({type:'close_result',request_id:request.request_id,exit:{code:0}})); process.exit(0); }
+      }
+    `);
+    const recorder = new EpisodeRecorder(join(root, "record.jsonl"), {});
+    const driver = new HostDriver({ kind: "reference", hostRuntimeRoot: root, location: root,
+      character: "Defect", extraArgs: mode === undefined ? [] : ["--native-speed", mode] }, recorder);
+    try {
+      const ready = await driver.start(), argv = ready.argv as string[];
+      expect(argv.filter(arg => arg === "--native-speed")).toHaveLength(mode === undefined ? 0 : 1);
+      if (mode !== undefined) expect(argv[argv.indexOf("--native-speed") + 1]).toBe(mode);
+    } finally { await driver.close(); recorder.close({}); }
+  });
   it("refuses missing unadvertised required map before any gameplay step", async () => {
     const s = scenario([{ delivery: "delivered", successor: null }], [], false);
     const row = await run(s);
