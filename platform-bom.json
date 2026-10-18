@@ -10,9 +10,9 @@
     },
     "connector": {
       "version": "1.3.0-rc.25",
-      "source_revision": "806cf67d8ac41957b848a1545268f64aff4456c6",
-      "component_tree_revision": "3317cc79bd229e61f91e9488b39b4c92f83f4b33",
-      "component_source_digest_sha256": "4291e8d53b0b9e523425dfc323370ab48ef38324363be97470b01df11c3391a9"
+      "source_revision": "f3493840111fd86812fd4dc06a77a5e4fa0a0644",
+      "component_tree_revision": "523f06b6f701d5aa0c81804b71dc4b65c85a77f8",
+      "component_source_digest_sha256": "ca842fc4ee7989095ae557a7d7d3cccd038fb10f97e0e3aecb9f69157b6c33f4"
     },
     "host_runtime": {
       "version": "1.1.0-rc.32",
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "806cf67d8ac41957b848a1545268f64aff4456c6",
-      "current_component_source_digest_sha256": "4291e8d53b0b9e523425dfc323370ab48ef38324363be97470b01df11c3391a9",
+      "current_component_source_revision": "f3493840111fd86812fd4dc06a77a5e4fa0a0644",
+      "current_component_source_digest_sha256": "ca842fc4ee7989095ae557a7d7d3cccd038fb10f97e0e3aecb9f69157b6c33f4",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "806cf67d8ac41957b848a1545268f64aff4456c6",
-      "current_component_source_digest_sha256": "4291e8d53b0b9e523425dfc323370ab48ef38324363be97470b01df11c3391a9",
+      "current_component_source_revision": "f3493840111fd86812fd4dc06a77a5e4fa0a0644",
+      "current_component_source_digest_sha256": "ca842fc4ee7989095ae557a7d7d3cccd038fb10f97e0e3aecb9f69157b6c33f4",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
