@@ -76,7 +76,8 @@ export async function convertSource4Bundle(options) {
   const sdkRoot = resolve(options.sdkRoot ?? resolve(root, 'components/connector/sdk/typescript/dist'));
   const core = await import(pathToFileURL(resolve(sdkRoot, 'p1Global/index.js')).href);
   const sdk = await import(pathToFileURL(resolve(sdkRoot, 'index.js')).href);
-  if (typeof core.matchSourceP1Choice !== 'function') throw new Error('source4_shared_source_action_matcher_required');
+  if (typeof core.matchSourceP1Choice !== 'function' || typeof core.isSourceP1ReversibleSelect !== 'function')
+    throw new Error('source4_shared_source_action_matcher_required');
   if (!['reference', 'managed'].includes(options.hostKind)) throw new Error('source4_host_kind_required');
   return convertOriginals(source, sdk, core, options);
 }
@@ -151,6 +152,10 @@ export function convertOriginals(source, sdk, core, options) {
         original_native_completeness: row.completeness, original_native_missing_reason: row.missing_reason });
       continue; // No P1 observation, choice, commitment or publication rewrite.
     }
+    // Before reducing the next input, settle a held select/reversal against its
+    // original pre-basis. This endpoint is context, never a consumed third input.
+    if (entry.kind === 'source_input' && trace.length > 0 && !covered.has(trace.at(-1).wrapper.input_id))
+      settle(trace.at(-1).captureIndex, { ...row, basis, publications_before: publicationsBefore });
     if (basis !== null) {
       // Diagnostic reduction is pure. A native UI prefix is not automatically a new P1 decision.
       reduction = core.reduce(state, basis);
@@ -192,16 +197,22 @@ export function convertOriginals(source, sdk, core, options) {
     candidates = candidates.filter(candidate => candidate.epoch === row.epoch_id && candidate.segment === row.segment_id);
     settle(captureIndex);
   }
-  function settle(captureIndex) {
+  function settle(captureIndex, followingInput = null, closed = false) {
     if (trace.length === 0) return;
     const lastInput = trace.at(-1).wrapper;
     const matches = []; const outcomes = [];
     for (const candidate of candidates) {
       const span = trace.slice(candidate.start).map(value => value.wrapper);
       if (span.length === 0) continue;
-      const result = core.matchSourceP1Choice(candidate.before, candidate.basis, span);
+      const result = core.matchSourceP1Choice(candidate.before, candidate.basis, span, followingInput);
       outcomes.push({ status: result.status, reason: result.reason });
-      if (result.status === 'matched' || result.status === 'context_only') matches.push({ candidate, result, span });
+      // A reversible singleton select remains tentative until the next original
+      // input is known. A following deselect keeps the whole pair unresolved
+      // until the shared matcher proves the complete return span.
+      const tentative = result.status === 'matched' && span.length === 1
+        && core.isSourceP1ReversibleSelect(span[0])
+        && (!followingInput && !closed || followingInput?.outcome?.selected_action?.verb === 'deselect');
+      if (!tentative && (result.status === 'matched' || result.status === 'context_only')) matches.push({ candidate, result, span });
     }
     report.captures[captureIndex].source_matching = outcomes;
     refusals.set(lastInput.input_id, outcomes.find(value => value.status === 'ambiguous')
@@ -272,6 +283,8 @@ export function convertOriginals(source, sdk, core, options) {
     }
     candidates = [];
   }
+  if (trace.length > 0 && !covered.has(trace.at(-1).wrapper.input_id))
+    settle(trace.at(-1).captureIndex, null, true);
   report.unresolved_inputs.push(...trace.filter(value => !covered.has(value.wrapper.input_id)
     && !report.unresolved_inputs.some(item => item.input_id === value.wrapper.input_id)).map(value => ({ input_id: value.wrapper.input_id,
       status: refusals.get(value.wrapper.input_id)?.status ?? 'unmapped',

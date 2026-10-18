@@ -206,6 +206,20 @@ input matcher and publication classifier. Conversion report **v2** classifies
 every original capture with `status` (`matched`, `context_only`, `unresolved`),
 a named `classification` and `reason`. Native originals are never rewritten.
 
+Approved E3 interpretation is narrow: two adjacent exact/delivered original
+`NDeckCardSelectScreen.OnCardClicked` inputs selecting then deselecting the same
+original card under the same qualified request/owner, below the preview maximum,
+may become one `context_only` span. Every original basis and advertised Read in
+the span must be complete. The original next input pre-basis or post-publication
+must prove the complete public world and selection set returned to their initial
+state; only that card's declared selection decoration may differ in between.
+Native carriers/effects, drift, gaps, unknowns, preview cancellation and interleaved
+reversals are not covered. The converter holds the tentative first select until
+this span can be classified, never emits then removes a label. A non-canceled
+select remains its ordinary forward choice. P1's Agent catalog/reducer stays
+append-only. Originals and prior failed reports remain unchanged; no missing
+original is filled from a later basis.
+
 - Selected-run report v3 separately reports the user-approved native startup
   interval: exact same-run setup/Launch originals through the first complete P1
   decision basis. Its zero-action `no_action/settling` originals may retain only
