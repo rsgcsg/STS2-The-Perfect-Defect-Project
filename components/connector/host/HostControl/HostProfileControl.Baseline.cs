@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Ftue;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.TestSupport;
@@ -136,6 +137,14 @@ internal static partial class HostProfileControl
         Ids(unlocks.Characters), Ids(unlocks.CardPools.SelectMany(pool => pool.GetUnlockedCards(unlocks, CardMultiplayerConstraint.SingleplayerOnly))),
         Ids(unlocks.Relics), Ids(unlocks.Potions), Ids(ModelDb.Acts.Where(act => act.IsUnlocked(unlocks))));
 
+    internal static void PrepareNormalBaselineTutorials(ProgressState progress)
+    {
+        progress.EnableFtues = false;
+        // The native Standard lobby uses SeenPopup for this unlock notification;
+        // unlike SeenFtue, that owner deliberately ignores EnableFtues.
+        progress.MarkFtueAsComplete(NAscensionSingleplayerFtue.id);
+    }
+
     // Fixed administrative preparation, never an arbitrary console or in-run edit.
     private static HostBaselineSnapshot ApplyNormalBaseline()
     {
@@ -146,7 +155,7 @@ internal static partial class HostProfileControl
         foreach (var encounter in ModelDb.AllEncounters) save.Progress.GetOrCreateEncounterStats(encounter.Id);
         bool added = save.Progress.NumberOfRuns == 0;
         if (added) save.Progress.GetOrCreateCharacterStats(ModelDb.GetId<Defect>()).TotalLosses = 1;
-        save.SetFtuesEnabled(false);
+        PrepareNormalBaselineTutorials(save.Progress);
         string expected = SaveManager.ToJson(save.Progress.ToSerializable());
         save.SaveProgressFile();
         var loaded = save.InitProgressData();
@@ -155,7 +164,8 @@ internal static partial class HostProfileControl
         var unlocks = save.GenerateUnlockStateFromProgress(); var native = unlocks.ToSerializable();
         if (!native.UnlockedEpochs.ToHashSet(StringComparer.Ordinal).SetEquals(EpochModel.AllEpochIds)
             || ModelDb.AllEncounters.Any(encounter => !unlocks.HasSeenEncounter(encounter)) || unlocks.NumberOfRuns <= 0
-            || save.Progress.EnableFtues || ModelDb.AllCharacters.Any(character => save.Progress.GetStatsForCharacter(character.Id)?.MaxAscension != 10))
+            || save.Progress.EnableFtues || !save.Progress.FtueCompleted.Contains(NAscensionSingleplayerFtue.id)
+            || ModelDb.AllCharacters.Any(character => save.Progress.GetStatsForCharacter(character.Id)?.MaxAscension != 10))
             throw new InvalidOperationException("native_baseline_readback_incomplete");
         string progress = SaveManager.ToJson(loaded.SaveData);
         return new(before, Sha(progress), progress, DescribeUnlockState(unlocks), DescribePools(unlocks), true, added);
