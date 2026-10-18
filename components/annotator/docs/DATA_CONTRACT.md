@@ -11,6 +11,36 @@ optional and may be absent for canonical-only runs; the journal and semantic
 streams retain run identity. The current store does not create a native-action
 ledger.
 
+## P1 native semantic profile
+
+`P1NativeRecordingContract` owns the additive `human-p1-native-decisions-1` profile.
+Its manifest declares `p1_native_schema_version: 1` and the actual declared origin;
+old canonical and Source4 formats retain their own meaning. Its append-only
+`p1-native-events.jsonl` records accepted player decisions, native lifecycle,
+independent public observations and issues. Each decision's basis references exact
+`public-basis-1` bytes captured with the original Human-time snapshot and exact
+native bindings. Read instances are preserved by `read_id`, including repeated kinds.
+Accepted is not finished. Close retains unfinished accepted actions as unknown;
+unsubmitted card staging/cancellation does not create a decision or pending action.
+
+Use `sts2.ai-platform/recording-command-1` within the existing Platform recording
+request. Start sets `capture_profile_id` to this profile and `p1_native_origin` to
+`declared_human`, `agent_native_ui` or `unknown`. Other commands carry null values
+for those two fields. The original runtime/session preconditions remain required.
+`audit-p1-native <session>` and `pack-p1-native <session> <worker> <campaign>
+<output> <exact-packer-source>` use the actual Tool. Positive Human attestation is
+an explicit optional argument and is rejected for engineering-origin records.
+
+`export_p1_native_prefix` is an administrative recording command. Under the Store
+write lock it flushes and copies committed original bytes, then atomically publishes
+an immutable `sts2.human-annotator/p1-native-prefix-1` manifest and watermark.
+The original recording stays open, with pending actions unchanged. The returned
+manifest SHA binds the offline reader to that export; it is not a closed bundle
+or a whole-run claim. `tools/p1-native-to-p1.mjs --prefix PATH --manifest-sha256 SHA`
+uses the explicit prefix reader, while `--bundle PATH` requires actual closed originals.
+Derived trajectories retain recording origin and never invent Agent Consume/ACK.
+Missing information, unsupported intentions and native unknown remain explicit.
+
 ## Human text-menu input observations
 
 New recordings declare `text_input_schema_version: 2` and retain a separate

@@ -3,9 +3,27 @@
 Annotator observes real native Human decisions without changing gameplay.
 STS2 owns rules, legality and Commit; Connector owns fair-player state, Reads
 and action bindings; Annotator owns exact process-local mapping, immutable
-Human evidence and one causal tracker. STPD owns research admission/training.
+Human evidence and native correlation. STPD owns research admission/training.
 
-## Current data path
+## P1 native semantic recording
+
+The `human-p1-native-decisions-1` profile reuses native Human staging, exact owners,
+accepted actions and completion callbacks. The same Connector snapshot build freezes
+the Human-time `public-basis-1` and every advertised Read instance. Accepted choices,
+native lifecycle, later public boundaries and recording issues are stored separately;
+an unsubmitted pickup/cancel creates no accepted decision. It does not require
+Source4 raw-input classification or the legacy canonical tracker.
+
+Start this profile through the existing recording command API with an explicit
+`p1_native_origin`. Closed originals use `audit-p1-native` / `pack-p1-native` in the
+Annotator Tool; `tools/p1-native-to-p1.mjs --bundle PATH` calls the shared P1 core.
+Engineering origin is retained and default packing does not attest Human origin.
+While recording, `export_p1_native_prefix` produces a durable open prefix without
+Close or changing pending actions. Its consumer requires the returned manifest hash.
+See the [data contract](docs/DATA_CONTRACT.md#p1-native-semantic-profile).
+Actual native recording and replay qualification remain separate from source support.
+
+## Canonical profile and existing consumers
 
 Human observation **H** is separate from execution **S + A(S)**. Native
 acceptance, execution, Commit and successor proof are separate facts. Nested
