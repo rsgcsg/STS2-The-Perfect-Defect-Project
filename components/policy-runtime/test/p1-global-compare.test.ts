@@ -34,6 +34,30 @@ function renamed(o: P1Observation): P1Observation {
 }
 
 describe("P1 r1.1 full-public graph comparison", () => {
+  it("uses one global bijection for schema-qualified event tooltip cards and keeps extensions strict", () => {
+    const a = unambiguousObservation();
+    const card = { ...structuredClone(content(a.combat).player.hand[0]), entity_id: "event-tooltip-card" };
+    (a as any).scene = { family: "event", native_kind: "event_option", stage: "choosing", prompt: null,
+      content_schema: "sts2.player-environment/surface/event_option-1", content: {
+        surface: { kind: "event_option", options: [{ entity_id: "event-option", index: 0,
+          title: "Take the egg", description: "Gain the shown card", tooltips: [{ kind: "card", card }] }] },
+        context: { kind: "event", event_id: "SYNTHETIC_EVENT" } } };
+    const b = renamed(a);
+    expect(compare(a, b).verdict).toBe("equal");
+    content(b.scene).surface.options[0].tooltips[0].card.description = "Different card effect";
+    expect(compare(a, b).verdict).toBe("different");
+    const extension = renamed(a);
+    content(a.scene).surface.options[0].tooltips.push({ kind: "future_tip", card: { ...card, entity_id: "literal-a" } });
+    content(extension.scene).surface.options[0].tooltips.push({ kind: "future_tip", card: { ...card, entity_id: "literal-b" } });
+    expect(compare(a, extension).verdict).toBe("different");
+    const same = unambiguousObservation();
+    (same as any).scene = structuredClone(a.scene);
+    content(same.scene).surface.options[0].tooltips = [{ kind: "card", card }, { kind: "card", card: structuredClone(card) }];
+    const split = renamed(same);
+    content(split.scene).surface.options[0].tooltips[1].card.entity_id = "different-second-instance";
+    expect(compare(same, split).verdict).toBe("different");
+  });
+
   it("accepts identical full observations with repeated instances", () => {
     const a = observation(); expect(compare(a, structuredClone(a)).verdict).toBe("equal");
   });

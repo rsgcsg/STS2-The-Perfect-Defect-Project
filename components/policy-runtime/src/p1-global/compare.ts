@@ -7,7 +7,7 @@ import { canonicalJson, completeCards, completeCombatSurface, completeCombat, co
 export interface FirstDifference { path: string; left: unknown; right: unknown; reason?: string }
 type Verdict = "equal" | "different" | "incomparable";
 function closedEntityRelations(observation: P1Observation): boolean {
-  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads);
+  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads, observation.scene.content);
   const declared = new Set<string>(); const referenced: string[] = [];
   const visit = (value: unknown, path: string): void => {
     const relation = policy.relation(path);
@@ -21,7 +21,7 @@ function closedEntityRelations(observation: P1Observation): boolean {
   return referenced.every(value => declared.has(value));
 }
 function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
-  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads);
+  const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads, observation.scene.content);
   // This declared inventory is entirely current-card DTOs. Unknown extra Read
   // schemas retain their literal order and identity policy.
   const cardInventory = observation.extra_reads.every(read => read.kind === "surface_card" && completeCards([read.content]));

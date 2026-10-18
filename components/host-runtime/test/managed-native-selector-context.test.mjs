@@ -30,9 +30,10 @@ test("choose and combat publish every original occurrence, current HUD and stric
     assert.deepEqual(nativeCardSelectionProblems(s), []);
     const currentCardIds = s.interaction.content.surface.cards.map(card => card.entity_id);
     assert.equal(s.referents.filter(r => r.role === "card" && currentCardIds.includes(r.referent_id)).length, 2);
-    assert.equal(s.interaction.content.context.combat.player.block, 3);
-    assert.equal(s.interaction.content.context.combat.enemies[0].hp, 7);
-    assert.deepEqual(s.interaction.content.context.combat.player.hand.map((card) => card.definition_id), ["STRIKE", "DEFEND"]);
+    const context = state.origin === "choose_card" ? s.interaction.content.context : s.interaction.content.context.combat;
+    assert.equal(context.player.block, 3);
+    assert.equal(context.enemies[0].hp, 7);
+    assert.deepEqual(context.player.hand.map((card) => card.definition_id), ["STRIKE", "DEFEND"]);
     const piles = [...p.reads.values()].find((read) => read.descriptor.kind === "combat_piles");
     assert.deepEqual(piles.content.zones.map((zone) => [zone.zone, zone.ordering_semantics, zone.cards.length]), [
       ["draw", "unordered_multiset", 2], ["discard", "native_visible_order", 2], ["exhaust", "native_visible_order", 0]
@@ -243,8 +244,8 @@ test("generated choice uses the existing Reference DTO and keeps all rich facts 
   state.cards[0].public_details={keywords:[{name:"Block",description:"Prevent damage."}],card_previews:[]};
   const p=project(state),surface=p.snapshot.interaction.content.surface;
   assert.equal(p.snapshot.interaction.kind,"native_generated_card_choice");
-  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.combat.player,"hp"),false);
-  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.combat.player,"max_hp"),false);
+  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.player,"hp"),false);
+  assert.equal(Object.hasOwn(p.snapshot.interaction.content.context.player,"max_hp"),false);
   assert.equal(p.snapshot.persistent.content.player.hp,state.player.hp);
   assert.equal(p.snapshot.persistent.content.player.max_hp,state.player.max_hp);
   assert.deepEqual(p.snapshot.bound_actions.actions.map(action=>action.label),["Choose Strike","Choose Strike","Skip"]);

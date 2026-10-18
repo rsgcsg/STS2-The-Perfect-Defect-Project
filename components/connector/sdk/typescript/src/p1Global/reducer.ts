@@ -375,7 +375,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   const extraReadSources = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
     .map(({ listed, read }) => ({ kind: String(listed.kind), availability: (read ? "available" : "unknown") as Availability,
       content: publicDetailContent(String(listed.kind), read?.content ?? null) }));
-  const policy = createPublicIdentityPolicy(nativeKind, extraReadSources);
+  const policy = createPublicIdentityPolicy(nativeKind, extraReadSources, { surface, context: sceneContext });
   const rawFacts = {
     player: { content: persistent?.player }, run: { content: persistent?.run },
     scene: { content: { surface, context: sceneContext } }, combat: { content: publicCombat?.content },

@@ -502,8 +502,8 @@ internal static class LiveObservationReader
         GameBuildIdentity game)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
-        bool eventRoomNodePresent = NEventRoom.Instance is { } uiRoom
-                                    && ConnectorMod.IsLiveNode(uiRoom);
+        bool eventRoomNodePresent = runState?.CurrentRoom is EventRoom eventRoom
+            && NativeEventRoomBinding.TryCapture(eventRoom, NEventRoom.Instance, out _);
         if (!ClassifyEventRoomMountNoInputTransition(
                 RunManager.Instance.IsInProgress,
                 runState?.CurrentRoom is EventRoom,
@@ -521,14 +521,15 @@ internal static class LiveObservationReader
         var surface = new NoActionSurface(
             "no_action",
             "settling",
-            "The native event room model is current, but its player-visible room node has not mounted yet.");
+            "The native event room is mounting or its current model and player-visible UI owner are not aligned yet.");
         var completeness = new StateCompleteness(
             "complete_for_event_room_mount_transition",
             "none_no_input_owner",
             new[]
             {
                 "RunState.CurrentRoom exact EventRoom",
-                "NEventRoom lifecycle",
+                "EventSynchronizer canonical+local event and NEventRoom exact model/layout binding",
+                "NMapScreen.IsTraveling",
                 "ActiveInputResolver"
             },
             Array.Empty<string>());
@@ -586,12 +587,12 @@ internal static class LiveObservationReader
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         if (runState?.CurrentRoom is not EventRoom eventRoom
             || NEventRoom.Instance is not { } uiRoom
-            || !ConnectorMod.IsLiveNode(uiRoom))
+            || !NativeEventRoomBinding.TryCapture(eventRoom, uiRoom, out var owner))
         {
             return null;
         }
 
-        EventLiveContext context = LiveContextReader.BuildEvent(eventRoom);
+        EventLiveContext context = LiveContextReader.BuildEvent(owner);
         if (!ClassifyEventNoInputTransition(
                 RunManager.Instance.IsInProgress,
                 currentRoomIsEvent: true,

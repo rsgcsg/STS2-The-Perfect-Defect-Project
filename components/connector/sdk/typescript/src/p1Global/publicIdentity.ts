@@ -1,4 +1,5 @@
 import { visibleCardSchema } from "../visibleState.js";
+import { isObject } from "./canonical.js";
 
 /** Paths are relative to the P1 model view. Unknown extension properties are
  * literal facts, even when their names look like native identity fields. */
@@ -24,7 +25,8 @@ const SELECTORS = new Set(["card_selection", "combat_hand_card_selection", "nati
   "deck_card_selection", "deck_upgrade_selection", "deck_enchant_selection"]);
 
 export function createPublicIdentityPolicy(nativeKind: string,
-  extraReads: readonly { readonly kind: string; readonly content: unknown }[] = []) {
+  extraReads: readonly { readonly kind: string; readonly content: unknown }[] = [],
+  sceneContent?: unknown) {
   const declared = new Set(BASE_PATHS); const references = new Set(REFERENCES); const cards = [...CARD_ROOTS];
   const surface = "scene.content.surface.";
   const add = (fields: readonly string[]) => fields.forEach(field => declared.add(surface + field));
@@ -61,6 +63,16 @@ export function createPublicIdentityPolicy(nativeKind: string,
       "relics[].relic.entity_id", "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]);
     card("cards[]"); card("cards[].card"); card("relics[].relic.card_previews[]");
   } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
+  const eventCards = new Set<string>();
+  const eventSurface = isObject(sceneContent) && isObject(sceneContent.surface) ? sceneContent.surface : null;
+  if (["event_option", "event_dialogue"].includes(nativeKind) && Array.isArray(eventSurface?.options))
+    eventSurface.options.forEach((option, optionIndex) => {
+      if (!isObject(option) || !Array.isArray(option.tooltips)) return;
+      option.tooltips.forEach((tip, tipIndex) => {
+        if (isObject(tip) && tip.kind === "card" && visibleCardSchema.safeParse(tip.card).success)
+          eventCards.add(`scene.content.surface.options[${optionIndex}].tooltips[${tipIndex}].card`);
+      });
+    });
   // These Reads are the owning typed current card DTO, not arbitrary detail blobs.
   const detailCards = new Set(extraReads.flatMap((read, index) => read.kind === "surface_card"
     && visibleCardSchema.safeParse(read.content).success ? [`extra_reads[${index}].content`] : []));
@@ -79,14 +91,16 @@ export function createPublicIdentityPolicy(nativeKind: string,
   });
   if (detailCards.size > 0) references.add("extra_reads[].content.display_owner_entity_id");
   const cardIdentity = (path: string, root: string) => path.startsWith(root)
-    && /^(?:\.card_previews\[\])*\.entity_id$/u.test(path.slice(root.length));
+    && /^(?:\.card_previews\[\])*\.entity_id$/u.test(path.slice(root.length).replace(/\[\d+\]/gu, "[]"));
   return {
     relation(path: string): PublicEntityRelation | null {
       const normalized = normalizePublicPath(path);
       if (references.has(normalized)) return "reference";
-      const detailPath = path.replace(/^\$\.observation\./u, "").replace(/^\./u, "")
+      const literalPath = path.replace(/^\$\.observation\./u, "").replace(/^\./u, "");
+      const detailPath = literalPath
         .replace(/^(extra_reads\[\d+\])(.*)$/u, (_, root: string, tail: string) => root + tail.replace(/\[\d+\]/gu, "[]"));
       if (declared.has(normalized) || cards.some(root => cardIdentity(normalized, root))
+          || [...eventCards].some(root => cardIdentity(literalPath, root))
           || shopDeclarations.has(detailPath)
           || [...detailCards, ...shopCards].some(root => cardIdentity(detailPath, root))) return "declared";
       return null;
