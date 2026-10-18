@@ -384,20 +384,25 @@ checks the selected character before Embark, and verifies actual run HUD identit
 A locked or unavailable requested character fails; no fallback character is chosen.
 Omitting `characterId` preserves the historical template-selected behavior.
 
-The same factory accepts `nativeSpeed: "normal"|"fast"|"instant"`; the existing
-`start` and reference driver CLIs accept `--native-speed normal|fast|instant`.
-An explicit mode requires an isolated Host-owned profile and authenticated
+The same factory defaults to native Instant and accepts explicit
+`nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
+driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and
+Reference driver launches share that Instant default; explicit Normal or Fast
+is forwarded once and remains effective. A mode requires an isolated Host-owned profile and authenticated
 post-boot preparation. The Host verifies the native typed getter before
 bootstrap and after run entry; a mismatch or unknown preparation outcome
-closes the episode without bootstrap retry. Omitting the option preserves
-native prefs and overrides no shared personal game. Both native UI and
+closes the episode without bootstrap retry. Attached/shared personal games
+keep their native prefs. Both native UI and
 headless presentations use the same speed configuration and public contracts.
 The same episode factory accepts `displayMode: "headless"|"native-ui"`, also
 available as the reference driver's `--display-mode`. Seed preparation for
 native UI requires the same verified isolated Host profile even with no speed
 override. An unmanaged native UI game receives no seed override.
-Instant is the required project-managed default after exact all-three-mode
-qualification; this source candidate keeps opt-in pending that gate. See the
+Instant is the user-selected project default. Workbench owned `speed: default`
+resolves to Instant with `project_default` provenance, alongside the actual typed
+native readback; that configuration choice is not qualification evidence.
+Final-candidate live verification of all three modes remains required before
+claiming three-mode runtime qualification. See the
 [owning configuration contract](docs/ARCHITECTURE.md#native-speed-run-configuration).
 
 A caller transferring the bootstrapped episode to another controller first calls

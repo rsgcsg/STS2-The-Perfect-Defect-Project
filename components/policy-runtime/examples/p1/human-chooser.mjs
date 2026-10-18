@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Ordinary P1 Agent over stdin/stdout; the person reads and chooses through /dev/tty.
+// Ordinary P1 Agent over stdin/stdout; the person chooses through /dev/tty
+// while consulting the real game screen and optional public-observation commands.
 // A recorded manual protocol choice is not independently verified Human provenance.
 import { openSync, closeSync, readSync, writeSync } from "node:fs";
 import readline from "node:readline";
@@ -9,7 +10,7 @@ const pretty = value => JSON.stringify(value, null, 2);
 const content = part => part?.content ?? null;
 const card = c => c ? `${c.name ?? c.definition_id ?? "?"}(${c.cost ?? "?"})${c.is_upgraded ? "〔已升级〕" : ""} [${c.entity_id ?? "preview"}]` : "?";
 const SECTIONS = ["scene", "run", "player", "deck", "map", "combat", "piles", "extra_reads", "commitments", "catalog", "terminal", "envelope"];
-export const HELP = "输入编号或 choice_id 选择；help 帮助；catalog 完整动作目录；choice 编号 查看动作和关联实体；map 地图；scene 场景全文；player/run/deck/combat/piles/extra_reads/commitments 分区全文；detail 实体ID 所有同实体公开详情；find 文字 搜索公开事实；all 完整原始观察；q 停止。浏览不会提交动作。";
+export const HELP = "输入编号或 choice_id 选择；help 帮助；overview 原详细首页；catalog 完整动作目录；choice 编号 查看动作和关联实体；map 地图；scene 场景全文；player/run/deck/combat/piles/extra_reads/commitments 分区全文；detail 实体ID 所有同实体公开详情；find 文字 搜索公开事实；all 完整原始观察；q 停止。浏览不会提交动作。";
 
 const displayLabel = choice => ({
   "reward.decline_group": "跳过本组牌奖（仍留在奖励页）",
@@ -121,6 +122,9 @@ export function overview(obs, { width = Math.max(40, Number(process.env.COLUMNS)
   lines.push(catalogText(obs), HELP);
   return wrapLines(lines.join("\n"), width);
 }
+export function actionsHome(obs) {
+  return `${catalogText(obs)}\n输入编号或 choice_id 选择；help 浏览命令；overview 详细首页；q 停止。`;
+}
 
 function matchingFacts(value, predicate, path = "$", found = []) {
   if (value && typeof value === "object") {
@@ -132,6 +136,7 @@ function matchingFacts(value, predicate, path = "$", found = []) {
 export function inspectCommand(obs, answer) {
   const [command, ...rest] = answer.trim().split(/\s+/u), query = rest.join(" ");
   if (command === "help" || command === "?") return HELP;
+  if (command === "overview") return overview(obs);
   if (command === "all") return pretty(obs);
   if (command === "catalog") return pretty(obs.catalog);
   if (SECTIONS.includes(command)) return pretty(obs[command] ?? null);
@@ -157,15 +162,15 @@ export async function runHumanChooser({ input, send, say, ask }) {
     if (!line.trim()) continue;
     const msg = JSON.parse(line);
     if (msg.type === "hello") {
-      say(`人工 P1 选择器：episode ${msg.episode_id}。${HELP}\n本次等待选择上限 ${Number(process.env.P1_AGENT_TIMEOUT_MS ?? 30000) / 1000} 秒（浏览也计时；总预算或 Stop 可更早结束），超时会停止；没有自动代选。\n会话桥不转发 Receipt/result；屏幕只确认你提交的意图。实际交付与后继请查 Runtime 原始记录。`);
-      send({ type: "ready", protocol: msg.protocol, agent_id: "human-p1-chooser", agent_version: "3" });
+      say(`人工 P1 选择器：episode ${msg.episode_id}。默认列出全部动作，请对照真实游戏画面选择；help 查看浏览命令。\n本次人工选择使用游戏画面及可选的 P1 浏览信息，记录不能声称人工只看了 P1 观察。\n本次等待选择上限 ${Number(process.env.P1_AGENT_TIMEOUT_MS ?? 30000) / 1000} 秒（浏览也计时；总预算或 Stop 可更早结束），超时会停止；没有自动代选。\n会话桥不转发 Receipt/result；屏幕只确认你提交的意图。实际交付与后继请查 Runtime 原始记录。`);
+      send({ type: "ready", protocol: msg.protocol, agent_id: "human-p1-chooser", agent_version: "4" });
     } else if (msg.type === "observation") {
       if (!msg.requires_choice) {
-        say(msg.observation.status === "terminal" ? `终局：${msg.observation.terminal?.outcome}` : overview(msg.observation));
+        say(msg.observation.status === "terminal" ? `终局：${msg.observation.terminal?.outcome}` : actionsHome(msg.observation));
         continue;
       }
       const obs = msg.observation;
-      say(overview(obs));
+      say(actionsHome(obs));
       for (;;) {
         const answer = ask("浏览命令 / 动作编号 > ");
         if (answer === null || answer.trim() === "q") { send({ type: "abstain", reason: answer === null ? "human_terminal_closed" : "human_stopped" }); return; }

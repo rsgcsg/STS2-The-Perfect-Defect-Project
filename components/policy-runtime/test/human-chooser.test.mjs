@@ -5,7 +5,7 @@ import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { catalogText, inspectCommand, overview, runHumanChooser } from "../examples/p1/human-chooser.mjs";
+import { actionsHome, catalogText, inspectCommand, overview, runHumanChooser } from "../examples/p1/human-chooser.mjs";
 const script = fileURLToPath(new URL("../examples/p1/human-chooser.mjs", import.meta.url));
 const observation = () => ({ status: "decision", envelope: { occurrence: 17 },
   scene: { native_kind: "card_reward_selection", content: { surface: { cards: [{ entity_id: "card-one", name: "压缩", description: "完整描述", card_previews: [{ definition_id: "FUEL", description: "燃料完整描述" }] }] } } },
@@ -64,9 +64,25 @@ describe("manual P1 chooser", () => {
     const o = observation(), sent = [], terminal = [], answers = ["map", "detail card-one", "choice 1", "all", "", "1.1", "c999", "c7"];
     async function* input() { yield JSON.stringify({ type: "hello", protocol: "sts2.p1/agent-port-1", episode_id: "manual-test" }); yield JSON.stringify({ type: "observation", requires_choice: true, observation: o }); yield JSON.stringify({ type: "episode_end", outcome: "loss" }); }
     await runHumanChooser({ input: input(), send: value => sent.push(value), say: value => terminal.push(value), ask: () => answers.shift() });
-    expect(sent).toEqual([{ type: "ready", protocol: "sts2.p1/agent-port-1", agent_id: "human-p1-chooser", agent_version: "3" }, { type: "choose", occurrence: 17, choice_id: "c7" }]);
+    expect(sent).toEqual([{ type: "ready", protocol: "sts2.p1/agent-port-1", agent_id: "human-p1-chooser", agent_version: "4" }, { type: "choose", occurrence: 17, choice_id: "c7" }]);
     expect(terminal.join("\n")).toContain("此处没有 Receipt");
     expect(terminal.join("\n")).not.toContain("Runtime Result（仅实际收到时显示）");
+  });
+  it("defaults to every offered action, with rich observation available through browsing", async () => {
+    const o = observation(), before = JSON.stringify(o), shown = [], sent = [];
+    o.catalog.push({ choice_id: "skip", label: "跳过", kind: "card_reward.skip", subject: null, target: null });
+    const answers = ["overview", "2"];
+    async function* input() { yield JSON.stringify({ type: "observation", requires_choice: true, observation: o }); }
+    await runHumanChooser({ input: input(), send: value => sent.push(value), say: value => shown.push(value), ask: () => answers.shift() });
+    expect(shown[0]).toBe(actionsHome(o));
+    expect(shown[0]).toContain(catalogText(o));
+    expect(shown[0]).not.toContain("完整描述");
+    expect(shown[0]).not.toContain("HP ");
+    expect(shown[1]).toBe(overview(o));
+    expect(shown[1]).toContain("完整描述");
+    expect(sent).toEqual([{ type: "choose", occurrence: 17, choice_id: "skip" }]);
+    o.catalog.pop();
+    expect(JSON.stringify(o)).toBe(before);
   });
   it("displays card and potion targets in enemy order while keeping numeric input bound to the original catalog", async () => {
     const o = observation(); o.scene.native_kind = "combat_turn";

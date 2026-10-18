@@ -11,6 +11,11 @@ export function validateNativeSpeed(mode) {
   return mode;
 }
 
+export function resolveNativeSpeed(mode, launchProfile) {
+  return validateNativeSpeed(mode)
+    ?? (launchProfile?.mode === "isolated_local_profile" ? "instant" : null);
+}
+
 export function nativeSpeedLaunchEnvironment(nativeSpeed, profile) {
   const mode = validateNativeSpeed(nativeSpeed);
   if (mode == null && profile?.mode !== "isolated_local_profile") return {};
