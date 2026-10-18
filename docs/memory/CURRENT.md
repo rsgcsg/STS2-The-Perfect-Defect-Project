@@ -88,5 +88,11 @@ Replays02–05 each followed one owning repair and used the unchanged Human01 tr
 all stopped known,0unknown. Latest05 matched18 choices and stopped at input19:
 Reference sorts the legal target IDs by random per-process native opaque IDs,
 whereas Managed uses its target list order. Current P1 comparison is ordered here.
-A full target-set/identity comparison rule would require an explicit protocol
-choice; no comparator or Reference mutation is included in this topic.
+The user subsequently approved r1.3 only for the two combat card/potion legal
+target domains as complete unordered sets, with full member/entity relations and
+all other fields strict. The protocol register names the exact paths. Human
+presentation orders same-subject target choices by public enemy order and retains
+original IDs/numeric binding. A separate hash-bound r1.3 metadata-only trajectory
+derives from the unchanged r1.2 Human01 record; no Human qualification transfers.
+A new isolated topic based on the Managed repairs owns this revision and replay06;
+no Reference game, installed Mod or frozen external chooser is changed.
