@@ -193,6 +193,12 @@
       "kind": "host_lifecycle_adapter",
       "risk": "high",
       "effect": "drains pending selections and the prior ActionExecutor around game-owned RunManager cleanup before mounting the next run"
+    },
+    {
+      "id": "native_completed_combat_reward_page",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "Retain the actual generated combat RewardsSet as the displayed reward page after Offer completes, until native Proceed/map vote; preserve native room identity, skip restriction and ShouldProceed hook without advancing the game during observation."
     }
   ],
   "admission": {
