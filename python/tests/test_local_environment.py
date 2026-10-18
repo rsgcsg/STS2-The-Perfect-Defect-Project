@@ -2076,6 +2076,7 @@ def test_managed_runtime_target_is_read_only_and_returns_private_attach_contract
     assert transport.calls == []
 
 
+@pytest.mark.parametrize("owner_removes_attachments", [False, True])
 @pytest.mark.parametrize("native_exit", [
     {"code": 0, "signal": None, "error": None},
     {"code": 7, "signal": None, "error": "native_failure"},
@@ -2083,7 +2084,7 @@ def test_managed_runtime_target_is_read_only_and_returns_private_attach_contract
 ])
 def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch, native_exit,
+    monkeypatch: pytest.MonkeyPatch, native_exit, owner_removes_attachments,
 ) -> None:
     config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
     service = LocalEnvironmentService(config)
@@ -2100,6 +2101,9 @@ def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
             return {"status": {"control_held": False, "control": None}}
 
         def close_host(self) -> dict[str, Any]:
+            if owner_removes_attachments:
+                client_file.unlink()
+                manager_file.unlink()
             return {"result": {"type": "close_result", "exit": native_exit}}
 
     manager = ManagerFixture()

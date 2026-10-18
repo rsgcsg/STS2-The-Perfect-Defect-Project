@@ -1911,7 +1911,7 @@ class LocalEnvironmentService:
         if not isinstance(result, Mapping) or result.get("type") != "close_result":
             raise BoundaryError("local_environment", "managed_host_close_unconfirmed")
         for filename in ("client.json", "manager.json"):
-            (directory / filename).unlink()
+            (directory / filename).unlink(missing_ok=True)
         with self.lock:
             self.client = None
             self.record["host_service_closed"] = True
