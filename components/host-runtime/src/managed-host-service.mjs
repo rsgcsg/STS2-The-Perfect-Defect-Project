@@ -26,7 +26,14 @@ const PUBLIC_ERRORS = new Set([
   "managed_service_body_too_large", "managed_service_body_required",
   "managed_service_body_must_be_object", "managed_service_request_id_required",
   "managed_service_episode_precondition_required",
-  "managed_service_recovery_precondition_required", "managed_service_close_body_invalid"
+  "managed_service_recovery_precondition_required", "managed_service_close_body_invalid",
+  "managed_map_continue_unknown_replace_process", "managed_map_continue_candidate_identity_required",
+  "managed_map_continue_absolute_path_required", "managed_map_continue_invalid_file",
+  "managed_map_continue_quiescent_map_required", "managed_map_continue_identity_required",
+  "managed_map_continue_candidate_changed", "managed_map_continue_file_changed",
+  "managed_map_continue_fresh_process_required", "managed_map_continue_native_save_failed",
+  "managed_map_continue_saved_unverified", "managed_map_continue_restored_unverified",
+  "managed_map_continue_native_load_failed"
 ]);
 
 function fields(value, keys) {
@@ -263,7 +270,8 @@ export async function startManagedHostService(started, {
         return;
       }
       if (request.method !== "POST" || ![
-        "/v1/command", "/v1/admin/reset", "/v1/admin/recover-control", "/v1/admin/close"
+        "/v1/command", "/v1/admin/reset", "/v1/admin/save-map", "/v1/admin/load-map",
+        "/v1/admin/recover-control", "/v1/admin/close"
       ].includes(request.url)) {
         request.resume(); error(response, 404, "managed_service_not_found"); return;
       }
@@ -320,6 +328,19 @@ export async function startManagedHostService(started, {
         return;
       }
 
+      if (request.url === "/v1/admin/save-map" || request.url === "/v1/admin/load-map") {
+        const saving = request.url === "/v1/admin/save-map";
+        if (!exactKeys(body, ["request_id", saving ? "path" : "save",
+          "expected_runtime_instance_id", "expected_game_continuity_id"])
+          || !nonempty(body.expected_runtime_instance_id)
+          || !(body.expected_game_continuity_id === null || nonempty(body.expected_game_continuity_id))) {
+          throw new Error("managed_service_episode_precondition_required");
+        }
+        const value = await driver.handle({ ...body, command: saving ? "save_map" : "load_map" },
+          { principal: role, sharedService: true });
+        json(response, 200, result(value));
+        return;
+      }
       if (request.url === "/v1/admin/reset") {
         if (!exactKeys(body, ["request_id", "seed", "expected_runtime_instance_id",
           "expected_game_continuity_id"]) || !nonempty(body.expected_runtime_instance_id)

@@ -6,7 +6,7 @@ import {shopRoom} from "./fixtures/managed-shop.mjs";
 function inventory() {
   const state=shopRoom();state.decision="shop";state.shop_public=true;state.shop_missing=[];
   state.presentation_owner.stage="inventory";
-  const offer=(index)=>({native_ref:`private-entry-${index}`,inventory_index:index,cost:52+index,is_stocked:true,
+  const offer=(index)=>({native_ref:`private-entry-${index}`,slot_ref:`private-slot-${index}`,inventory_index:index,cost:52+index,is_stocked:true,
     visible:true,affordable:true,can_purchase:true,blocked_reason:null});
   state.cards=[{...offer(0),on_sale:true,card:{native_ref:"private-card",id:"REBOOT",name:"Reboot",type:"Skill",cost:"0",
     rarity:"Rare",description:"Draw 4 cards. Exhaust.",is_upgraded:false,public_details:{keywords:[],card_previews:[]},public_details_missing:[]}}];
@@ -27,7 +27,7 @@ test("shop keeps original product instances and exact entry prices while publish
   const binding=[...projected.bindings.values()].find(value=>value.raw_request.action==="buy_card");
   assert.deepEqual(binding.raw_request.args,{entry_ref:"private-entry-0"});
   assert.equal(JSON.stringify(projected.snapshot).includes("private-"),false);
-  assert.equal([...projected.reads.values()].filter(read=>read.descriptor.kind==="surface_card"&&read.content.display_context==="shop").length,1);
+  assert.equal([...projected.reads.values()].filter(read=>read.descriptor.kind==="surface_card"&&read.content.display_context==="shop_offer").length,2);
 });
 test("a changed merchant owner or incomplete native product render does not admit a complete shop basis",()=>{
   const owner=inventory();owner.presentation_owner.inventory_ref="foreign";
@@ -38,4 +38,36 @@ test("a changed merchant owner or incomplete native product render does not admi
   assert.equal(unavailable.snapshot.completeness.status,"partial");assert.equal(unavailable.bindings.size,0);
   const partial=inventory();partial.shop_missing=["native_card_render_failed"];
   assert.equal(projectManagedCandidateDecision({state:partial,...identity}).snapshot.completeness.status,"partial");
+});
+
+test("closed shop exposes snapshot-bound inspectable catalog without purchase authority",()=>{
+  const state=inventory();state.decision="shop_room";state.presentation_owner.stage="room";
+  for(const entry of [...state.cards,...state.relics,...state.potions,state.card_removal]) {
+    entry.can_purchase=false;entry.blocked_reason="ui_control_disabled";
+  }
+  const projected=projectManagedCandidateDecision({state,...identity});
+  const catalog=[...projected.reads.values()].find(read=>read.descriptor.kind==="shop_catalog");
+  assert.equal(projected.snapshot.completeness.status,"complete");
+  assert.equal(catalog.content.access_state,"inventory_closed_open_to_inspect");
+  assert.equal(catalog.descriptor.ordering_semantics,"fixed_ui_slots");
+  assert.equal([...projected.reads.values()].filter(read=>!["run_deck","map","combat_piles"].includes(read.descriptor.kind))[0].descriptor.kind,"shop_catalog");
+  assert.deepEqual(catalog.content.cards.map(offer=>[offer.inventory_index,offer.price,offer.can_purchase,offer.blocked_reason]),[[0,52,false,"ui_control_disabled"]]);
+  assert.deepEqual([...projected.bindings.values()].map(value=>value.raw_request.action),["open_shop_inventory","leave_shop"]);
+  const details=[...projected.reads.values()].filter(read=>read.descriptor.kind==="surface_card"&&read.content.display_context==="shop_offer");
+  assert.equal(details.length,1);assert.equal(details[0].content.parent_read_id,catalog.descriptor.read_id);
+  assert.equal(details[0].content.display_owner_entity_id,catalog.content.cards[0].entity_id);
+  assert.equal(JSON.stringify(projected.snapshot).includes("private-"),false);
+  const bad=structuredClone(state);bad.cards[0].can_purchase=true;
+  assert.equal(projectManagedCandidateDecision({state:bad,...identity}).snapshot.completeness.status,"partial");
+});
+
+test("catalog slot bindings are stable original presentation objects and duplicate slots are not admitted",()=>{
+  const state=inventory(), aliases=new Map();
+  const first=projectManagedCandidateDecision({state,...identity,publicEntityAliases:aliases});
+  const next=projectManagedCandidateDecision({state,...identity,sequence:2,publicEntityAliases:aliases});
+  const catalog=p=>[...p.reads.values()].find(read=>read.descriptor.kind==="shop_catalog").content;
+  assert.equal(catalog(first).cards[0].slot_entity_id,catalog(next).cards[0].slot_entity_id);
+  assert.notEqual(catalog(first).cards[0].slot_entity_id,catalog(first).relics[0].slot_entity_id);
+  const bad=structuredClone(state);bad.relics[0].slot_ref=bad.cards[0].slot_ref;
+  assert.equal(projectManagedCandidateDecision({state:bad,...identity}).snapshot.completeness.status,"partial");
 });

@@ -4,7 +4,8 @@ export function shopRoom() {
   const state = combatState();
   delete state.hand; delete state.combat_piles;
   return { ...state, decision: "shop_room", room_ref: "private-original-room", shop_ref: "private-original-room", inventory_ref: "private-original-inventory",
-    can_open_inventory: true, can_proceed: true,
+    can_open_inventory: true, can_proceed: true, shop_public: true, shop_missing: [],
+    cards: [], relics: [], potions: [], card_removal: null,
     presentation_owner: { kind: "managed_merchant_presentation", stage: "room", room_ref: "private-original-room",
       inventory_ref: "private-original-inventory", player_ref: state.player.native_ref } };
 }
@@ -13,7 +14,7 @@ export function shopRoom() {
 // Current pinned native DTO shape; no legacy flattened shop fallback.
 export function shopInventory() {
   const state=shopRoom();
-  const offer=(native_ref,inventory_index,cost,can_purchase=true)=>({ native_ref,inventory_index,cost,
+  const offer=(native_ref,inventory_index,cost,can_purchase=true)=>({ native_ref,slot_ref:`private-slot-${inventory_index}`,inventory_index,cost,
     is_stocked:true,visible:true,affordable:can_purchase,can_purchase,blocked_reason:can_purchase?null:"insufficient_gold" });
   return { ...state,decision:"shop",shop_public:true,shop_missing:[],
     presentation_owner:{...state.presentation_owner,stage:"inventory"},

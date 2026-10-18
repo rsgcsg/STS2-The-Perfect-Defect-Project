@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { startManagedHostService } from "../src/managed-host-service.mjs";
+import { canonicalDecisionDigest } from "../src/semantic-decision.mjs";
 import { managedTextMenuV1Contract } from "../src/managed-text-menu-map.mjs";
 import { managedTextMenuV2Contract } from "../src/managed-text-menu-v2.mjs";
 
@@ -24,7 +28,7 @@ function decision(floor = 0) {
   };
 }
 
-function fixture() {
+function fixture(runtimeInstanceId = "runtime-one") {
   let floor = 0;
   let pendingAction = null;
   let actionEntered = null;
@@ -64,11 +68,11 @@ function fixture() {
       candidate_directory: "/private/secret/candidate",
       artifact: "/private/secret/candidate/host.dll" },
     runtimeIdentity: { kind: "synthetic", private_path: "/private/secret/runtime" },
-    adapterRuntimeInstanceId: "runtime-one"
+    adapterRuntimeInstanceId: runtimeInstanceId
   };
   return {
     started: { session: new ManagedPlayerEnvironmentSession({ process,
-      runtimeInstanceId: "runtime-one", environmentFingerprint: "environment-one" }),
+      runtimeInstanceId, environmentFingerprint: "environment-one" }),
     runtime, environmentFingerprint: "environment-one" },
     calls, get stopCount() { return stopCount; },
     holdAction(promise, entered) { pendingAction = promise; actionEntered = entered; },
@@ -503,4 +507,130 @@ test("neutral capture works with no Agent or control and materializes one stored
     assert.equal((await command(service, service.clientToken, { command: "capture", expected_runtime_instance_id: "runtime-one",
       expected_game_continuity_id: "stale" })).status, 409);
   } finally { await service.close(); }
+});
+
+test("map save is an explicit unheld manager operation and unknown saves fence the run", async () => {
+  const native = fixture(), directory = mkdtempSync(join(tmpdir(), "managed-service-map-save-"));
+  native.started.runtime.build.runtime_sts2_sha256 = "b".repeat(64);
+  const originalRequest = native.started.runtime.process.request;
+  let saveCalls = 0, unknown = false;
+  native.started.runtime.process.request = async request => {
+    if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED", act: 1, floor: 0,
+      action_executor_running: false, pending_host_operation: false, pending_card_selection: false, pending_relic_selection: false,
+      pending_card_reward: false, pending_reward_set: false, pending_bundle: false };
+    if (request.cmd === "write_continue_save") {
+      saveCalls += 1; writeFileSync(request.path, "synthetic map save");
+      if (unknown) throw new Error("native write transport lost");
+      return { type: "save_result", success: true, room_type: "MapRoom", path: request.path };
+    }
+    return originalRequest(request);
+  };
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    await reset(service);
+    const ready = (await call(service, service.clientToken, "/v1/ready")).body;
+    const body = { request_id: crypto.randomUUID(), path: join(directory, "map.save"),
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: ready.episode.game_continuity_id };
+    assert.equal((await call(service, service.clientToken, "/v1/admin/save-map", body)).status, 403);
+    const claim = (await command(service, service.clientToken, { command: "claim_control",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: body.expected_game_continuity_id })).body.result;
+    assert.equal((await call(service, service.managerToken, "/v1/admin/save-map", body)).status, 409);
+    assert.equal(saveCalls, 0);
+    await command(service, service.clientToken, { command: "release_control",
+      control_token: claim.control_token, control_epoch: claim.control_epoch });
+    const saved = await call(service, service.managerToken, "/v1/admin/save-map", body);
+    assert.equal(saved.status, 200); assert.equal(saved.body.result.save.floor, 0);
+    assert.equal(saved.body.result.save.path, body.path);
+    unknown = true;
+    const lost = await call(service, service.managerToken, "/v1/admin/save-map", { ...body,
+      request_id: crypto.randomUUID(), path: join(directory, "unknown.save") });
+    assert.equal(lost.status, 409);
+    assert.equal(service.driver.status().episode_available, false);
+    assert.equal((await reset(service)).status, 409);
+    assert.equal(saveCalls, 2);
+    assert.equal((await command(service, service.clientToken, { command: "capture",
+      expected_runtime_instance_id: "runtime-one", expected_game_continuity_id: body.expected_game_continuity_id })).status, 409);
+  } finally { await service.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("saved map resumes in a new service with a fresh continuity and original handles are rejected", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "managed-service-map-restore-"));
+  const services = [], natives = [];
+  async function start() {
+    const native = fixture(`runtime-restore-${natives.length + 1}`), original = native.started.runtime.process.request;
+    natives.push(native);
+    native.started.runtime.build.runtime_sts2_sha256 = "b".repeat(64);
+    native.started.runtime.process.request = async request => {
+      if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED", act: 1, floor: 0,
+        action_executor_running: false, pending_host_operation: false, pending_card_selection: false,
+        pending_relic_selection: false, pending_card_reward: false, pending_reward_set: false, pending_bundle: false };
+      if (request.cmd === "write_continue_save") {
+        native.calls.push(request); writeFileSync(request.path, JSON.stringify(decision()));
+        return { type: "save_result", success: true, room_type: "MapRoom", path: request.path };
+      }
+      if (request.cmd === "load_save") {
+        native.calls.push(request); return JSON.parse(readFileSync(request.path, "utf8"));
+      }
+      return original(request);
+    };
+    const service = await startManagedHostService(native.started, { hostIdentity });
+    services.push(service);
+    return service;
+  }
+  try {
+    const first = await start();
+    await call(first, first.managerToken, "/v1/admin/reset", { request_id: "start-map",
+      seed: "SEED", expected_runtime_instance_id: "runtime-restore-1", expected_game_continuity_id: null });
+    const before = (await command(first, first.clientToken, { command: "observe" })).body.result.snapshot;
+    const continuity = first.driver.status().game_continuity_id;
+    const saved = await call(first, first.managerToken, "/v1/admin/save-map", { request_id: "save-map",
+      path: join(directory, "map.save"), expected_runtime_instance_id: "runtime-restore-1",
+      expected_game_continuity_id: continuity });
+    assert.equal(saved.status, 200);
+    const save = saved.body.result.save;
+    assert.equal(save.parent_runtime_instance_id, "runtime-restore-1");
+    assert.equal(save.parent_game_continuity_id, continuity);
+    await first.close();
+    const next = await start();
+    const restored = await call(next, next.managerToken, "/v1/admin/load-map", { request_id: "load-map",
+      save, expected_runtime_instance_id: "runtime-restore-2", expected_game_continuity_id: null });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.notEqual(restored.body.result.game_continuity_id, continuity);
+    assert.equal(canonicalDecisionDigest(restored.body.result.snapshot), canonicalDecisionDigest(before));
+    const current = (await command(next, next.clientToken, { command: "episode_identity" })).body.result;
+    assert.equal(current.identity.episode_provenance.origin.kind, "map_continue_save");
+    assert.equal(current.identity.episode_provenance.origin.save_sha256, save.sha256);
+    assert.equal(current.identity.episode_provenance.origin.parent_runtime_instance_id, "runtime-restore-1");
+    assert.equal(current.identity.episode_provenance.origin.parent_game_continuity_id, continuity);
+    assert.equal(JSON.stringify(current).includes(directory), false);
+    const claim = (await command(next, next.clientToken, { command: "claim_control",
+      expected_runtime_instance_id: "runtime-restore-2",
+      expected_game_continuity_id: restored.body.result.game_continuity_id })).body.result;
+    const stale = await command(next, next.clientToken, { command: "step", mutation_request_id: "old-map-action",
+      expected_runtime_instance_id: "runtime-restore-2", expected_game_continuity_id: restored.body.result.game_continuity_id,
+      expected_snapshot_id: before.snapshot_id, bound_action_id: before.bound_actions.actions[0].bound_action_id,
+      control_token: claim.control_token, control_epoch: claim.control_epoch });
+    assert.equal(stale.body.result.receipt.delivery, "not_delivered");
+    assert.equal(natives[1].calls.some(request => request.cmd === "action"), false);
+    const snapshot = restored.body.result.snapshot;
+    const continued = await command(next, next.clientToken, { command: "step", mutation_request_id: "current-map-action",
+      expected_runtime_instance_id: "runtime-restore-2", expected_game_continuity_id: restored.body.result.game_continuity_id,
+      expected_snapshot_id: snapshot.snapshot_id, bound_action_id: snapshot.bound_actions.actions[0].bound_action_id,
+      control_token: claim.control_token, control_epoch: claim.control_epoch });
+    assert.equal(continued.body.result.receipt.delivery, "delivered");
+    assert.equal(natives[1].calls.filter(request => request.cmd === "action").length, 1);
+
+    const broken = await start(), brokenNative = natives[2];
+    const original = brokenNative.started.runtime.process.request;
+    let loadCalls = 0;
+    brokenNative.started.runtime.process.request = request => {
+      if (request.cmd === "load_save") { loadCalls += 1; throw new Error("native load outcome unknown"); }
+      return original(request);
+    };
+    const load = { request_id: "unknown-load", save, expected_runtime_instance_id: "runtime-restore-3",
+      expected_game_continuity_id: null };
+    assert.equal((await call(broken, broken.managerToken, "/v1/admin/load-map", load)).status, 409);
+    assert.equal((await call(broken, broken.managerToken, "/v1/admin/load-map", load)).status, 409);
+    assert.equal(loadCalls, 1); assert.equal(broken.driver.status().episode_available, false);
+  } finally { for (const service of services) await service.close(); rmSync(directory, { recursive: true, force: true }); }
 });

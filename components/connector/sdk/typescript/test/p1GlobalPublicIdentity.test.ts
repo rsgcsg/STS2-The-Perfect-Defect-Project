@@ -14,6 +14,33 @@ const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'str
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
 
 describe('P1 current public identity and HUD projection', () => {
+  it('aliases only schema-qualified event tooltip cards while preserving other tooltip payloads literally', () => {
+    const a = basis();
+    const card = { ...structuredClone(hud(a).player.hand[0]), entity_id: 'event-tooltip-card' };
+    const option = { entity_id: 'event-option', index: 0, title: 'Take the egg', description: 'Gain the shown card.',
+      tooltips: [{ kind: 'card', card }] };
+    Object.assign(a.snapshot.interaction, { kind: 'event_option', stage: 'choosing',
+      content_schema: 'sts2.player-environment/surface/event_option-1',
+      content: { context: { kind: 'event', event_id: 'SYNTHETIC_EVENT' },
+        surface: { kind: 'event_option', options: [option] } } });
+    a.snapshot.referents.push({ ...a.snapshot.referents[0], referent_id: option.entity_id, role: 'option',
+      label: option.title, properties: option });
+    a.snapshot.bound_actions.actions = [{ ...a.snapshot.bound_actions.actions[0], verb: 'activate',
+      subject_referent_id: option.entity_id, arguments: [], label: 'Take the egg' }];
+    a.snapshot.bound_actions.total_count = a.snapshot.bound_actions.materialized_count = 1;
+    const b = rename(a, card.entity_id, 'different-native-tooltip-card');
+    const left = project(a), right = project(b);
+    expect(left.complete && right.complete).toBe(true);
+    expect(input(left)).toBe(input(right));
+    const projected = (left.observation.scene.content as any).surface.options[0].tooltips[0].card;
+    expect(projected.entity_id).not.toBe(card.entity_id);
+    const untyped = { kind: 'future_tip', card: { ...card, entity_id: 'literal-left' } };
+    a.snapshot.interaction.content.surface.options[0].tooltips.push(untyped);
+    b.snapshot.interaction.content.surface.options[0].tooltips.push({ ...untyped,
+      card: { ...untyped.card, entity_id: 'literal-right' } });
+    expect(input(project(a))).not.toBe(input(project(b)));
+  });
+
   it('aliases typed merchant Read identities across card details without rewriting unknown Reads or extensions', () => {
     const a = selectorForwardPair().outer;
     const snapshot = a.snapshot; const card = { ...snapshot.interaction.content.surface.cards[0], entity_id: 'native-shop-card' };
