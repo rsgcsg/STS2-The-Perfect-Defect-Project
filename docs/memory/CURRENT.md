@@ -67,3 +67,26 @@ own enchantments, selected progress/after previews, and public map edges. Previe
 contexts remain separate, choices/order/IDs and the Agent input are unchanged.
 Next P1 consumer is the reward Read representation difference, under the original
 full-public comparison; do not qualify cross-Host equivalence from14 matches.
+
+## Human01 Managed alignment and conditional PR194 (2026-10-18)
+
+User approved one new-Mod short and per-fix Managed-only Human01 replay until
+terminal or a protocol decision, deadline19:20 Brisbane. The short installed537d,
+completed101 choices/0unknown, then the guided test Agent failed at a shop before
+the chest/Reboot targets. Target coverage did not pass; the sole attempt is closed.
+The installation was rolled back and verified d06. Human02/03 may use that old Mod
+with the separately pinned display overlay. PR194 stays Draft: its required new-Mod
+canary condition is unmet, regardless of its passing CI. No merge is authorized
+under that failed acceptance branch.
+
+Managed repairs separately added the actual reward_candidate detail Reads,
+aligned reward entity/group relations and base DTOs, and retained the real native
+RewardsSet page through completion until Proceed. No extra_reads or comparison
+facts were dropped. The old e6 candidate/first replay are preserved. New a459ee47 /
+MVID7e00b8aa has exact source audit and unchanged game/localization assemblies.
+Replays02–05 each followed one owning repair and used the unchanged Human01 trace;
+all stopped known,0unknown. Latest05 matched18 choices and stopped at input19:
+Reference sorts the legal target IDs by random per-process native opaque IDs,
+whereas Managed uses its target list order. Current P1 comparison is ordered here.
+A full target-set/identity comparison rule would require an explicit protocol
+choice; no comparator or Reference mutation is included in this topic.
