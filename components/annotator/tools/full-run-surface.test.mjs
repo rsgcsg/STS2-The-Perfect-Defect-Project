@@ -102,6 +102,7 @@ test("all native selector prefixes route P1 exact H and completion before legacy
   const prefix = section(selectors, "private static SelectorInputHandle? BeginSelectorInputCore(", "internal static void EndSelectorInput(");
   assert.ok(prefix.indexOf("if (IsP1Recording)") < prefix.indexOf("BoundaryTracker.DecisionIdentity"));
   assert.match(prefix, /frame.ResolveNativeInput\(owner, operation, subject\)/u);
+  assert.match(prefix, /frame.ResolveNativeInput\(owner, sourceVerb, sourceControl \?\? subject\)/u);
   assert.match(prefix, /P1NativeRecordingContract.CompleteBasis\(original.Bytes\)/u);
   assert.match(prefix, /\["parent_action_witness_id"\] = binding.ActionWitnessId/u);
   const finish = section(selectors, "internal static void EndSelectorInput(", null);

@@ -3,6 +3,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2Platform.NativeFoundation;
 using System.Text.Json.Nodes;
+using STS2Connector.PlayerEnvironment;
+using STS2Connector.LiveHost.Contracts;
 
 namespace STS2Connector.Host.Tests;
 
@@ -212,6 +214,68 @@ public sealed class ProcessLocalNativeWitnessTests
         var incomplete = Frame(entities, actions, "interactive", "partial", bindings);
         Assert.Null(incomplete.ResolveNativeInput(owner, "confirm").BoundActionId);
         Assert.False(incomplete.HasNativeInputOwner(owner));
+    }
+
+    [Theory]
+    [InlineData("select_native_combat_pile_card", "select")]
+    [InlineData("deselect_native_combat_pile_card", "deselect")]
+    [InlineData("select_simple_card", "select")]
+    [InlineData("select_native_deck_card", "select")]
+    [InlineData("select_deck_upgrade_card", "select")]
+    [InlineData("toggle_deck_transform_card", "select")]
+    [InlineData("toggle_card", "deselect")]
+    public void FullLogicalGridProvidesCanonicalNativeCallbackJoinWithoutLosingExactCardIdentity(string legacyOperation, string verb)
+    {
+        object owner = new(), first = new(), second = new();
+        var entities = new NativeEntityRegistry();
+        string ownerId = entities.GetId(owner, "screen"), firstId = entities.GetId(first, "card"), secondId = entities.GetId(second, "card");
+        var action = Action("full-grid-first", verb, firstId);
+        var other = Action("full-grid-second", verb, secondId);
+        var inputs = new Dictionary<string, PlayerEnvironmentNativeBinding> {
+            [action.BoundActionId] = GridBinding(verb, ownerId, firstId, NativeLogicalGridInputKind.Toggle),
+            [other.BoundActionId] = GridBinding(verb, ownerId, secondId, NativeLogicalGridInputKind.Toggle) };
+        var frozen = PlayerEnvironmentNativeWitness.CaptureNativeInputBindings(inputs,
+            new Dictionary<string, object> { [ownerId] = owner, [firstId] = first, [secondId] = second });
+        var frame = Frame(entities, new[] { action, other }, "interactive", "complete", frozen);
+        Assert.Equal("zero", frame.ResolveNativeInput(owner, legacyOperation, first).Status); // The proved pre-fix faultline.
+        Assert.Equal(action.BoundActionId, frame.ResolveNativeInput(owner, verb, first).BoundActionId);
+        Assert.Equal(other.BoundActionId, frame.ResolveNativeInput(owner, verb, second).BoundActionId);
+        Assert.Equal("zero", frame.ResolveNativeInput(new object(), verb, first).Status);
+        Assert.Equal("zero", frame.ResolveNativeInput(owner, verb, new object()).Status);
+    }
+
+    [Theory]
+    [InlineData("open_preview", "confirm")]
+    [InlineData("confirm_selection", "confirm")]
+    [InlineData("confirm", "confirm")]
+    [InlineData("cancel_preview", "cancel")]
+    [InlineData("cancel_selection", "cancel")]
+    public void GridControlCallbackJoinRequiresTheExactPressedOriginalControl(string nativeVerb, string callbackVerb)
+    {
+        object owner = new(), control = new(), otherControl = new();
+        var entities = new NativeEntityRegistry();
+        string ownerId = entities.GetId(owner, "screen"), controlId = entities.GetId(control, "control");
+        var action = Action("exact-control", "confirm", controlId);
+        var bindings = new Dictionary<string, PlayerEnvironmentNativeBinding> {
+            [action.BoundActionId] = GridBinding(nativeVerb, ownerId, controlId, NativeLogicalGridInputKind.Control) };
+        var frozen = PlayerEnvironmentNativeWitness.CaptureNativeInputBindings(bindings,
+            new Dictionary<string, object> { [ownerId] = owner, [controlId] = control });
+        var frame = Frame(entities, new[] { action }, "interactive", "complete", frozen);
+        Assert.Equal(action.BoundActionId, frame.ResolveNativeInput(owner, callbackVerb, control).BoundActionId);
+        Assert.Equal(action.BoundActionId, frame.ResolveNativeInput(owner, nativeVerb, control).BoundActionId);
+        Assert.Null(frame.ResolveNativeInput(owner, callbackVerb, otherControl).BoundActionId);
+        Assert.Null(frame.ResolveNativeInput(new object(), callbackVerb, control).BoundActionId);
+    }
+
+    private static PlayerEnvironmentNativeBinding GridBinding(string verb, string ownerId, string subjectId, NativeLogicalGridInputKind kind)
+    {
+        var candidate = new NativeUiActionCandidate("grid-fixture", "native_logical_grid_input", verb, "Same visible label",
+            new Dictionary<string, string>(), new Dictionary<string, NativeUiOperandDomain>(),
+            new[] { new ActionEntityBinding("screen", ownerId), new ActionEntityBinding(kind == NativeLogicalGridInputKind.Control ? "control" : "card", subjectId) }, "exact_native_logical_grid_input");
+        // NativeCallbackVerb uses only this already frozen input's kind/verb, never State/current UI.
+        var spec = new NativeLogicalGridInputSpec("grid-fixture", "leaf", "request", verb, verb, "selecting", "Same visible label",
+            subjectId, kind, null!);
+        return new(new NativeUiBoundAction(candidate) { GridInput = spec }, new Dictionary<string, string>());
     }
 
     private static PlayerEnvironmentBoundAction Action(

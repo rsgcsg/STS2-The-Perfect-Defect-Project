@@ -31,6 +31,13 @@ internal sealed record NativeLogicalGridInputSpec(
     [property: JsonIgnore] bool? ExpectedSelected = null,
     [property: JsonIgnore] NButton? Control = null)
 {
+    internal string NativeCallbackVerb => Kind != NativeLogicalGridInputKind.Control ? NativeVerb : NativeVerb switch
+    {
+        "open_preview" or "confirm" or "confirm_selection" => "confirm",
+        "cancel_preview" or "cancel_selection" => "cancel",
+        "toggle_upgrade_view" => "open",
+        _ => throw new InvalidOperationException("Unregistered native selector control.")
+    };
     internal NativeInputResult Dispatch() => Kind switch
     {
         NativeLogicalGridInputKind.Toggle when Card != null && ExpectedSelected is bool selected => State.Toggle(Card, selected),
