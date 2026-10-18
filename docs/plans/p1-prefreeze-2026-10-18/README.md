@@ -75,6 +75,7 @@ Reference当前新A1 Mod为0db06ad7，Managed候选1482de5d，具体source/MVID/
 
 - A：保留完整公开图/选择/承诺/终局比较。旧Human01 occurrence41同typed卡原4/新6，不能改原件；其它description不能推广为同因。药水顺序原事实不改为无序；比较器500000上限返回incomparable不能当equal。selector hidden、shop detail尾部集合等source修复仍需新的真实范围核验；simple-grid父context、完整terminal UI和其它公开差异按表处理。A02 Human02原425 ENOSPC技术停止，未到终局；已有诊断到loss也不是严格重放。
 - B：[K0历史](RECORDING_HISTORY.md)/[成本表](RECORDING_FORMATS_AND_COST.md)确认成熟采集/Close/pack可复用。Source4 legacy selector装配、SDK sourceMapping缺selector-follow需忠实反例后按owner修验，估6–16人时，整局另计；高成本旧转换16–48+人时先保留不做。新Mod+英文+记录器预检、用户短段、自然终局整局complete与严格Managed重放仍缺。
+- C：现有GLOBAL Workbench/UI/Reference profile的窄修正在实施，复用原应用/Runtime owner；实际产品旅程仍待验收，不能将已有接线、短段或S05计作Workbench/R20通过。
 - 最终门：[范围书v0.3](SCOPE_v0.3.zh-CN.md)逐幕列机制和到达办法。最终候选英文≥3Human整局、第三幕/胜利行、完整严格重放、Managed40/Reference20、Workbench短旅程及R20独立包两Host、文档closeout与K均未齐。旧中文Human、Agent预检、locator诊断、恢复片段和旧批次不拼成最终分母。
 
 问题判层：先最短原始反例→原生事实/生命周期修Native Foundation/Host；公开绑定/Reads/原生投递修Connector；仅表示/运输且语义不变修原SDK/port/Input；Agent取得/等待/选择变动修composition；Input/Target/模型/recipe变动由研究owner；P1合法信息/粒度/失败语义变动修版本化P1。只有真实需求无法表达/重复权威/实测不成比例成本才最小修改上层抽象，详见 [Architecture变更规则](../../ARCHITECTURE.md#selected-convergence-and-change-rules)。

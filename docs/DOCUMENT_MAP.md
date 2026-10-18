@@ -11,7 +11,7 @@ connect the existing Architecture, Components and ADR-0016 in this order:
 
 | Read for | Existing owner / route |
 | --- | --- |
-| Goal | A useful full-game Agent that can improve; current work is the training-before-freeze P1 combination, then Q1–Q3 |
+| Goal | A useful full-game Agent that can improve; current work is the pre-training P1 freeze, then Q1–Q3 |
 | Upper chain | [Architecture](ARCHITECTURE.md): world/Host → environment → complete Agent, and immutable sources → projection → learning → Model/Agent → execution/evaluation |
 | Protocols and contracts | [P1 r1](protocols/P1_GLOBAL_R1.zh-CN.md), [ADR-0016](adr/0016-agent-composition-and-execution-request.md); record grammar, environment agreement, Agent program port and Model Input/Target stay distinct |
 | Functions and capabilities | [Feature status table](plans/p1-prefreeze-2026-10-18/FEATURE_STATUS.md): one historical capability per row, owner, evidence and scoped status |

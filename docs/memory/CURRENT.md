@@ -4,7 +4,7 @@ Resolve live GitHub refs; current source and original records override this file
 This is dated routing, not live service or qualification authority. Verify exact
 artifacts before operations. [Project map and active plan](../plans/p1-prefreeze-2026-10-18/README.md)
 own the current routes; [scope v0.3 and coverage](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
-own the final training-before-freeze gates. P1 is the current main line; Q1–Q3 follow.
+own the final pre-training P1 freeze gates. P1 is the current main line; Q1–Q3 follow.
 
 ## Source and candidate
 
@@ -30,6 +30,8 @@ full public equality and one actual new-node advance; Reference continue is unqu
 - B: new-Mod/English/Recorder preflight, user short segment, Source4 conversion,
   then natural-terminal full games and strict Managed replay. Final usable preflight
   sheet remains missing; K0 found selector-assembly/sourceMapping seams, not a passed run.
+- C: existing GLOBAL Workbench/UI/Reference-profile narrow repairs are in progress;
+  actual product-path acceptance remains pending.
 - Final candidate: English >=3 Human full games, actual Act3 and victory row,
   strict complete-terminal comparison, fresh Managed40/Reference20, Workbench/R20,
   source/records/coverage/closeout and K. None is inferred from old green or S05.
@@ -43,7 +45,7 @@ The old Round12 CURRENT and P1 r1.1 T1–T7 list are historical, not a second qu
 
 ## Stop boundary and next action
 
-Continue ordinary A/B repairs and this scoped documentation integration/review.
+Continue ordinary A/B/C repairs and this scoped documentation integration/review.
 Unknown requests are never retried; new runs retain new identities and original facts.
 Do not start training, alter research configuration, close historical PRs, delete
 branches/data or declare freeze. Final freeze PR still needs the user's approval
