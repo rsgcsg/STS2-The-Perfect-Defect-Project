@@ -51,10 +51,11 @@ function eventState() {
     room_ref: "event-room-a",
     event_ref: "event-a",
     event_name: "Neow",
+    event_id: "NEOW", ancient: true, in_dialogue: false, event_public_complete: true,
     description: "Choose.",
     options: [
-      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false },
-      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true }
+      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true, is_enabled: false, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] }
     ],
     player: player()
   };
@@ -1373,4 +1374,37 @@ test("reward group identity is the visible reward entity for every reward kind",
     assert.equal(reward.native_relic_refresh_subscription, "unavailable");
   }
   assert.equal(new Set(rewards.map(reward => reward.group_id)).size, rewards.length);
+});
+
+
+test("projects native resolved event options, flags and card tooltips without template substitution", () => {
+  const state = eventState();
+  Object.assign(state, { event_id: "BYRDONIS_NEST", event_name: "多尼斯异鸟巢", ancient: false,
+    description: "第一段。\n\n第二段。" });
+  state.options[0].title = "吃掉这颗蛋";
+  state.options[0].description = "获得7点最大生命值。";
+  state.options[1] = { ...state.options[0], index: 1, native_ref: "native-take-egg", title: "带走这颗蛋",
+    description: "将一张多尼斯异鸟蛋加入你的牌组。", tooltips: [
+      { kind: "card", card: { id: "BYRDONIS_EGG", name: "多尼斯异鸟蛋", type: "Quest", rarity: "Quest",
+        cost: "-1", description: "不能被打出。 能在休息处被孵化。", is_upgraded: false, keywords: [], card_previews: [] } },
+      { kind: "text", name: "不能被打出", description: "不能被打出的牌无法被打出。" }
+    ] };
+  const projected = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const interaction = projected.snapshot.interaction;
+  assert.equal(interaction.stage, "ready"); assert.equal(interaction.prompt, null);
+  assert.equal(interaction.content.context.event_id, "BYRDONIS_NEST");
+  assert.equal(interaction.content.context.body, "第一段。  第二段。");
+  const options = interaction.content.surface.options;
+  assert.equal(options[0].description, "获得7点最大生命值。");
+  assert.equal(options[0].is_enabled, true); assert.equal(options[0].will_kill_player, false);
+  assert.equal(options[1].tooltips[0].card.definition_id, "BYRDONIS_EGG");
+  assert.equal(options[1].tooltips[0].card.target_type, undefined);
+  assert.equal(options[1].tooltips[0].card.keywords, undefined);
+  assert.equal(options[1].tooltips[1].description, "不能被打出的牌无法被打出。");
+  assert.equal(Object.hasOwn(options[0], "variables"), false);
+  assert.equal(Object.hasOwn(options[0], "text_key"), false);
+  const binding = [...projected.bindings.values()].find(b => b.raw_request.args.option_ref === "native-take-egg");
+  assert.equal(binding.raw_request.action, "choose_option");
+  assert.equal(binding.raw_request.args.event_ref, state.event_ref);
+  assert.equal(JSON.stringify(projected.snapshot).includes("native-take-egg"), false);
 });

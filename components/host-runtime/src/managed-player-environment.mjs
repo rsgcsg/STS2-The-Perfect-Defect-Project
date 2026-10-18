@@ -787,58 +787,53 @@ function currentSurface(state, ctx) {
     case "event_choice": {
       const currentOptions = Array.isArray(state.options) ? state.options : [];
       const optionRefs = new Set();
-      const complete = typeof state.room_ref === "string" && state.room_ref.length > 0
+      const complete = state.event_public_complete === true
+        && typeof state.room_ref === "string" && state.room_ref.length > 0
         && typeof state.event_ref === "string" && state.event_ref.length > 0
+        && typeof state.event_id === "string" && typeof state.event_name === "string"
+        && typeof state.ancient === "boolean" && typeof state.in_dialogue === "boolean"
         && currentOptions.length > 0 && currentOptions.length <= ACTION_LIMIT
         && currentOptions.every((option, index) => option?.index === index
           && typeof option.native_ref === "string" && option.native_ref.length > 0
           && !optionRefs.has(option.native_ref) && optionRefs.add(option.native_ref)
-          && typeof option.is_locked === "boolean"
-          && typeof option.title === "string" && option.title.length > 0);
+          && ["is_locked", "is_enabled", "is_proceed", "was_chosen", "will_kill_player"].every(key => typeof option[key] === "boolean")
+          && Array.isArray(option.tooltips) && typeof option.title === "string" && option.title.length > 0);
       const options = currentOptions.map((option, index) => {
-        const unlocked = option?.is_locked === false;
-        const item = ctx.referent({
-          role: "option",
+        const unlocked = option?.is_locked === false && option?.is_enabled === true;
+        const optionId = ctx.entityId("option", option.native_ref);
+        let cardOrdinal = 0;
+        const tooltips = (option.tooltips ?? []).map(tip => {
+          if (tip.kind === "text") return { kind: "text", name: visibleText(tip.name), description: visibleText(tip.description) };
+          if (tip.kind !== "card" || !tip.card) throw new Error("unsupported_managed_event_tooltip");
+          const card = visibleCardBase(tip.card, ctx.id("tooltip_card", optionId, tip.card.id, cardOrdinal++));
+          delete card.can_play; delete card.target_type;
+          return { kind: "card", card };
+        });
+        const item = ctx.referent({ role: "option", id: optionId,
           label: option?.title ?? `Unavailable option ${index + 1}`,
-          enabled: unlocked && complete,
-          occurrence: index,
+          enabled: unlocked && complete, occurrence: index,
           properties: {
-            index: option?.index ?? index,
-            title: option?.title ?? null,
-            description: option?.description ?? null,
-            text_key: option?.text_key ?? null,
-            is_locked: option?.is_locked ?? null,
-            variables: option?.vars ?? null
+            index: option?.index ?? index, title: visibleText(option?.title), description: visibleText(option?.description),
+            is_enabled: option?.is_enabled ?? null, is_locked: option?.is_locked ?? null,
+            is_proceed: option?.is_proceed ?? null, was_chosen: option?.was_chosen ?? null,
+            will_kill_player: option?.will_kill_player ?? null,
+            ...(option?.relic_name == null ? {} : { relic_name: visibleText(option.relic_name) }),
+            ...(option?.relic_description == null ? {} : { relic_description: visibleText(option.relic_description) }),
+            tooltips
           }
         });
-        if (unlocked && complete) {
-          ctx.action({
-            verb: "activate",
-            subject: item,
-            label: String(option.title ?? `Choose option ${index + 1}`),
-            raw: { cmd: "action", action: "choose_option", args: {
-              option_index: option.index, room_ref: state.room_ref,
-              event_ref: state.event_ref, option_ref: option.native_ref
-            } }
-          });
-        }
+        if (unlocked && complete) ctx.action({ verb: "activate", subject: item, label: String(option.title),
+          raw: { cmd: "action", action: "choose_option", args: {
+            option_index: option.index, room_ref: state.room_ref, event_ref: state.event_ref, option_ref: option.native_ref } } });
         return item.properties;
       });
       return {
-        kind: "event_option",
-        stage: "choosing",
-        prompt: state.description ?? null,
-        surface: {
-          kind: "event_option",
-          stage: "choosing",
-          title: state.event_name ?? null,
-          description: state.description ?? null,
-          options
-        },
-        context: { ...commonContext, kind: "event" },
-        ...supported,
-        complete,
-        missing: complete ? [] : ["exact_current_event_option_binding"]
+        kind: "event_option", stage: "ready", prompt: null,
+        surface: { kind: "event_option", options },
+        context: { kind: "event", event_id: state.event_id ?? null, name: visibleText(state.event_name),
+          ancient: state.ancient ?? null, in_dialogue: state.in_dialogue ?? null, body: visibleText(state.description) },
+        ...supported, complete,
+        missing: complete ? [] : ["exact_current_event_public_facts"]
       };
     }
     case "rest_site": {
