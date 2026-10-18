@@ -4,10 +4,11 @@ import { isAbsolute } from "node:path";
 
 const SHA256 = /^[a-f0-9]{64}$/u;
 const PENDING = ["action_executor_running", "pending_host_operation", "pending_card_selection",
-  "pending_card_reward", "pending_reward_set", "pending_bundle"];
+  "pending_relic_selection", "pending_card_reward", "pending_reward_set", "pending_bundle"];
 const SCHEMA = "sts2.host-runtime/managed-map-continue-1";
 
-export class ManagedMapContinueUnknown extends Error {
+export class ManagedMapContinueFailure extends Error {}
+export class ManagedMapContinueUnknown extends ManagedMapContinueFailure {
   constructor(cause) { super("managed_map_continue_unknown_replace_process", { cause }); }
 }
 
@@ -61,15 +62,17 @@ export async function saveManagedMapContinue(started, path, timeoutMs) {
   // Reserve only the operator's requested output; a failed native write remains
   // preserved at this path for diagnosis and is never automatically retried.
   closeSync(openSync(path, "wx", 0o600));
+  let result;
+  try { result = await started.runtime.process.request({ cmd: "write_continue_save", path }, timeoutMs); }
+  catch (cause) { throw new ManagedMapContinueUnknown(cause); }
+  if (result?.type !== "save_result" || result.success !== true
+    || result.room_type !== "MapRoom" || result.path !== path) {
+    throw new ManagedMapContinueFailure("managed_map_continue_native_save_failed");
+  }
   try {
-    const result = await started.runtime.process.request({ cmd: "write_continue_save", path }, timeoutMs);
-    if (result?.type !== "save_result" || result.success !== true
-      || result.room_type !== "MapRoom" || result.path !== path) {
-      throw new Error("native_map_save_not_confirmed");
-    }
     await assertManagedMapReady(started, timeoutMs, position);
     return { schema: SCHEMA, path, ...fileIdentity(path), candidate: native, ...position };
-  } catch (cause) { throw new ManagedMapContinueUnknown(cause); }
+  } catch (cause) { throw new ManagedMapContinueFailure("managed_map_continue_saved_unverified", { cause }); }
 }
 
 /** Validate immutable operator-provided save identity before touching a run. */

@@ -327,6 +327,33 @@ checks Host, Origin and bearer, and bounds request body size and time. It is a
 Host session attachment surface, not a Connector HTTP lease or a gameplay
 legality authority.
 
+Manager-only map continuation uses the same service ID, expected runtime and
+expected continuity as reset. Stop and release the controller first. At a complete,
+quiescent native MapRoom, `POST /v1/admin/save-map` takes `request_id`, an absolute
+new output `path`, `expected_runtime_instance_id` and `expected_game_continuity_id`.
+Its `result.save` descriptor contains the file SHA-256/size, exact native Host/game
+artifact hashes, seed, act and floor. Retain that descriptor privately beside the
+save. Existing files are refused. Close the service normally after saving.
+
+Next time, start the same exact native candidate in a new service without resetting
+or mounting a run. `POST /v1/admin/load-map` takes `request_id`, that complete `save`
+descriptor, the new `expected_runtime_instance_id` and
+`expected_game_continuity_id: null`. It validates the original file and native
+candidate, loads through the existing native `load_save`, checks the actual map
+position, and issues a fresh game continuity. Claim control again and use only the
+new observation's bindings. `episode_identity` records
+`episode_provenance.origin.kind: map_continue_save` with the original save digest;
+this is a resumed segment, not a new continuous run from the seed. Paths are
+returned only to the manager and are not included in client episode provenance.
+
+An unknown save/load outcome fences this process and is never resent. A known
+native failure or unverified restored position remains explicitly distinct from
+unknown and also requires replacing the process. Original saves and failed output
+files remain available for diagnosis. This minimal operator path supports only a
+quiescent MapRoom and a fresh-process restore; it provides no combat checkpoint,
+save catalog, branch library or Reference save qualification. Portable fixtures
+exercise these boundaries but do not establish actual-game save equivalence.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks

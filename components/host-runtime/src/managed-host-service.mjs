@@ -30,7 +30,10 @@ const PUBLIC_ERRORS = new Set([
   "managed_map_continue_unknown_replace_process", "managed_map_continue_candidate_identity_required",
   "managed_map_continue_absolute_path_required", "managed_map_continue_invalid_file",
   "managed_map_continue_quiescent_map_required", "managed_map_continue_identity_required",
-  "managed_map_continue_candidate_changed", "managed_map_continue_file_changed"
+  "managed_map_continue_candidate_changed", "managed_map_continue_file_changed",
+  "managed_map_continue_fresh_process_required", "managed_map_continue_native_save_failed",
+  "managed_map_continue_saved_unverified", "managed_map_continue_restored_unverified",
+  "managed_map_continue_native_load_failed"
 ]);
 
 function fields(value, keys) {

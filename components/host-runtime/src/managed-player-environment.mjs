@@ -2540,6 +2540,24 @@ export class ManagedPlayerEnvironmentSession {
     return this.#setState(state, timeoutMs);
   }
 
+  async restoreMapSave({ path, timeoutMs = 10_000 }) {
+    if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot restore a run.");
+    this.#projection = null;
+    this.#ledger.clear();
+    this.#publicEntityAliases.clear();
+    try {
+      const state = await this.#process.request({ cmd: "load_save", path, lang: this.#language }, timeoutMs);
+      if (state?.type !== "decision" || state.decision !== "map_select") {
+        throw new Error("managed_map_restore_not_map");
+      }
+      return await this.#setState(state, timeoutMs);
+    } catch (cause) {
+      this.#tainted = true;
+      this.#taintReason = "map_restore_failed";
+      throw cause;
+    }
+  }
+
   async close({ force = false, timeoutMs = 5_000 } = {}) {
     return this.#process.stop({ request: force ? null : { cmd: "quit" }, timeoutMs, force });
   }

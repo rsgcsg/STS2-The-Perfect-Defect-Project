@@ -18,7 +18,7 @@ function fixture() {
         calls.push(request);
         if (request.cmd === "run_identity") return { type: "run_identity", active: true,
           seed: "TEST", act: 1, floor: 3, action_executor_running: pending,
-          pending_host_operation: false, pending_card_selection: false, pending_card_reward: false,
+          pending_host_operation: false, pending_card_selection: false, pending_relic_selection: false, pending_card_reward: false,
           pending_reward_set: false, pending_bundle: false };
         if (request.cmd === "write_continue_save") {
           writeFileSync(request.path, "synthetic native map save");

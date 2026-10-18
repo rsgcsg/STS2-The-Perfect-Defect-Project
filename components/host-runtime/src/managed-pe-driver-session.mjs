@@ -1,7 +1,7 @@
 import { captureManagedPublicBasis } from "./managed-public-basis.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
-import { assertManagedMapReady, ManagedMapContinueUnknown, saveManagedMapContinue,
+import { assertManagedMapReady, ManagedMapContinueFailure, ManagedMapContinueUnknown, saveManagedMapContinue,
   validateManagedMapContinue } from "./managed-map-continue.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
 import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
@@ -32,7 +32,7 @@ export class ManagedPeDriverSession {
   #captureOrdinal = 0;
   #normalShutdown = null;
   #forcedShutdown = null;
-  #mapContinueUnknown = false;
+  #mapContinueFailure = null;
   #episodeOrigin = null;
 
   constructor(started, { requestTimeoutMs = 10_000 } = {}) {
@@ -59,7 +59,8 @@ export class ManagedPeDriverSession {
         game_continuity_id: this.#control.gameContinuityId
       },
       tainted: this.#started.session.tainted === true,
-      taint_reason: this.#started.session.taintReason ?? null
+      taint_reason: this.#started.session.taintReason ?? null,
+      map_continue_failure: this.#mapContinueFailure
     };
   }
 
@@ -195,7 +196,7 @@ export class ManagedPeDriverSession {
     const requestId = request?.request_id ?? null;
     switch (request?.command) {
       case "reset": {
-        if (this.#mapContinueUnknown) throw new Error("managed_map_continue_unknown_replace_process");
+        if (this.#mapContinueFailure) throw new Error(this.#mapContinueFailure);
         this.#requireControlIntent(intent);
         this.#requireExpectedEpisode(request);
         const seed = canonicalizeEpisodeSeed(request.seed);
@@ -230,8 +231,8 @@ export class ManagedPeDriverSession {
           return { type: "save_map_result", request_id: requestId, save,
             game_continuity_id: this.#gameContinuityId };
         } catch (cause) {
-          if (cause instanceof ManagedMapContinueUnknown) {
-            this.#mapContinueUnknown = true;
+          if (cause instanceof ManagedMapContinueFailure) {
+            this.#mapContinueFailure = cause.message;
             this.#available = false; this.#gameContinuityId = null;
             this.#clearTextV2Owner();
           }
@@ -239,16 +240,19 @@ export class ManagedPeDriverSession {
         }
       }
       case "load_map": {
-        if (this.#mapContinueUnknown) throw new Error("managed_map_continue_unknown_replace_process");
+        if (this.#mapContinueFailure) throw new Error(this.#mapContinueFailure);
+        if (this.#mountAttempted) throw new Error("managed_map_continue_fresh_process_required");
         if (this.#control != null) throw new Error("managed_control_held");
         this.#requireControlIntent(intent); this.#requireExpectedEpisode(request);
         const save = validateManagedMapContinue(this.#started, request.save);
         this.#available = false; this.#gameContinuityId = null; this.#requestedSeed = null;
         this.#clearTextV2Owner(); this.#control = null; this.#controlGeneration += 1;
         this.#mountAttempted = true;
+        let loaded = false;
         try {
           const snapshot = await this.#started.session.restoreMapSave({ path: save.path,
             timeoutMs: this.#timeoutMs });
+          loaded = true;
           await assertManagedMapReady(this.#started, this.#timeoutMs, save);
           validateManagedMapContinue(this.#started, save);
           if (this.#closed) throw new Error("driver_closed_during_map_restore");
@@ -260,8 +264,11 @@ export class ManagedPeDriverSession {
           return { type: "load_map_result", request_id: requestId, snapshot,
             game_continuity_id: this.#gameContinuityId, source: { kind: "map_continue_save", save } };
         } catch (cause) {
-          this.#mapContinueUnknown = true;
-          throw new ManagedMapContinueUnknown(cause);
+          const failure = loaded ? new ManagedMapContinueFailure("managed_map_continue_restored_unverified", { cause })
+            : cause?.message === "managed_map_restore_not_map" ? new ManagedMapContinueFailure("managed_map_continue_native_load_failed", { cause })
+            : new ManagedMapContinueUnknown(cause);
+          this.#mapContinueFailure = failure.message;
+          throw failure;
         }
       }
       case "capture": {
