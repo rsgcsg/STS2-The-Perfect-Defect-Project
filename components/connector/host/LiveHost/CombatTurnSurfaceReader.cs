@@ -255,17 +255,28 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         NativeCombatDecision decision,
         Player player)
     {
-        object[] deliverablePotions = Enumerable.Range(0, player.PotionSlots.Count)
+        PotionModel[] deliverablePotions = Enumerable.Range(0, player.PotionSlots.Count)
             .Select(index => player.GetPotionAtSlotIndex(index))
             .Where(potion => CanUsePotion(player, potion))
-            .Cast<object>()
+            .Cast<PotionModel>()
             .ToArray();
-        foreach (IGrouping<object?, NativeSemanticAction> group in NativeDecisionProjection
-                     .VisibleSubjects(decision, "use", deliverablePotions)
-                     .GroupBy(action => action.NativeSubject, ReferenceEqualityComparer.Instance))
+        AddPotionOptions(commandOptions, decision, deliverablePotions);
+    }
+
+    internal static void AddPotionOptions(
+        ICollection<VisibleCombatCommandOption> commandOptions,
+        NativeCombatDecision decision,
+        IReadOnlyList<PotionModel> deliverablePotions)
+    {
+        var commands = NativeDecisionProjection.VisibleSubjects(decision, "use", deliverablePotions)
+            .GroupBy(action => action.NativeSubject!, ReferenceEqualityComparer.Instance)
+            .ToDictionary(group => group.Key, group => group, ReferenceEqualityComparer.Instance);
+        // This public list follows the same native potion-slot order as the
+        // persistent inventory, independently of opaque semantic action keys.
+        foreach (PotionModel potion in deliverablePotions)
         {
+            if (!commands.TryGetValue(potion, out var group)) continue;
             NativeSemanticAction first = group.First();
-            PotionModel potion = (PotionModel)first.NativeSubject!;
             string potionName = ConnectorMod.SafeGetText(() => potion.Title) ?? potion.Id.Entry;
             string[] targetIds = group.SelectMany(action => action.Operands)
                 .Where(operand => operand.Role == "target")

@@ -89,6 +89,20 @@ public sealed class NativeRewardCardRendererTests
             typeof(CardModel).GetField("_pool",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(card,ModelDb.CardPool<IroncladCardPool>());
             Assert.True(NativeCardPreviewReadQualification.TryPreflightRender(card,CardPreviewMode.Normal,PileType.None,out string? gap),gap+"|"+FormatterDiagnostic());
             var outer=LiveContextReader.BuildRewardCard(card,"card");
+            var damage=card.DynamicVars["Damage"];
+            decimal originalPreview=damage.PreviewValue;
+            try
+            {
+                // Original Human01 occurrence41 retained an old hand preview4
+                // on an actual discard Strike whose native fresh display is6.
+                damage.PreviewValue=4;
+                Assert.Contains("4",card.GetDescriptionForPile(PileType.Discard));
+                var discard=LiveContextReader.BuildCard(card,"discard-card",
+                    displayPile:PileType.Discard,strictRendering:true);
+                Assert.Equal("Deal 6 damage.",discard.Description);
+                Assert.Equal(4,damage.PreviewValue);
+            }
+            finally { damage.PreviewValue=originalPreview; }
             // These native overrides and calculated multipliers were rejected
             // by the old per-class/constant-IL admission. Preflight reads only
             // their callable identities; it does not load their hover assets.

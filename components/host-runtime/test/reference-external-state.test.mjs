@@ -73,6 +73,11 @@ test("actual reference options and factory instantiate the real external templat
     "--local-root", stateRoot, "--template", "defect-a0-s0"], { packageRoot });
   assert.equal(configuration.stateRootReadback.local_root, stateRoot);
   assert.equal(configuration.sessionOptions.evidenceRoot, path.join(stateRoot, "evidence"));
+  assert.equal(configuration.sessionOptions.nativeSpeed, "instant");
+  for (const mode of ["normal", "fast", "instant"]) {
+    assert.equal(referenceDriverOptions(["--game-dir", path.join(root, "synthetic-game"),
+      "--local-root", stateRoot, "--native-speed", mode], { packageRoot }).sessionOptions.nativeSpeed, mode);
+  }
   const generations = [];
   for (const suffix of ["first", "second"]) {
     const session = new ShippedPlayerEnvironmentSession(configuration.sessionOptions, {
