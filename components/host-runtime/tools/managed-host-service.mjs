@@ -48,6 +48,7 @@ const args = process.argv.slice(2);
 const candidateDirectory = option(args, "--candidate");
 const clientAttachment = option(args, "--client-attachment");
 const managerAttachment = option(args, "--manager-attachment");
+const diagnosticsFile = option(args, "--diagnostics-file");
 if (!candidateDirectory || !clientAttachment || !managerAttachment
   || path.resolve(clientAttachment) === path.resolve(managerAttachment)) {
   throw new Error("Managed service requires --candidate and distinct --client-attachment/--manager-attachment paths.");
@@ -96,6 +97,13 @@ service.server.once("close", () => {
     process.stderr.write("Managed service native close unconfirmed.\n");
     process.exitCode = 1;
   }
+  const saveDiagnostics = () => { if (diagnosticsFile) {
+    try { writeFileSync(diagnosticsFile, `${JSON.stringify(started.runtime.process.diagnostics, null, 2)}\n`, { mode: 0o600, flag: "wx" }); }
+    catch (error) { process.stderr.write(`Managed candidate diagnostics write failed: ${error.message}\n`); process.exitCode = 1; }
+  } };
+  // HTTP sockets can close while the same native shutdown is still running.
+  // close() joins that existing shutdown before persisting its diagnostics.
+  void service.close({ force: true }).then(saveDiagnostics, saveDiagnostics);
 });
 process.stdout.write(`${JSON.stringify({
   ...service.ready(), endpoint: service.endpoint
@@ -103,7 +111,7 @@ process.stdout.write(`${JSON.stringify({
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     void service.close({ force: true }).then(
-      () => { process.exitCode = 0; },
+      () => {},
       () => { process.stderr.write("Managed service cleanup unconfirmed.\n"); process.exitCode = 1; }
     );
   });

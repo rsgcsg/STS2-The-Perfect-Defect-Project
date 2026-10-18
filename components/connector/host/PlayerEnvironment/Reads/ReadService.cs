@@ -221,9 +221,16 @@ internal static partial class PlayerEnvironmentService
         { values.AddRange(cards.Select(card => new CapturedCardDetail(card, display, parent, owner))); }
         switch (surface)
         {
+            case NativePublicBasisGridSurface grid:
+                foreach (NativeLogicalGridCardDisplay display in grid.CardDisplays)
+                    Add(new[] { display.Card }, display.DisplayContext, null, grid.ScreenEntityId);
+                break;
             case RewardClaimSurface rewards:
                 foreach (VisibleReward reward in rewards.Rewards)
                     Add(reward.CardOptions ?? Array.Empty<VisibleCard>(), "reward_candidate", null, reward.GroupId ?? reward.EntityId);
+                break;
+            case CardRewardSelectionSurface { ParentStatus: "bound" } rewardCards:
+                Add(rewardCards.Cards, "reward_candidate", null, rewardCards.ParentGroupId);
                 break;
             case CardBundleSelectionSurface bundles:
                 foreach (VisibleCardBundle bundle in bundles.Bundles) Add(bundle.Cards, "bundle_preview", null, bundle.EntityId);
@@ -280,6 +287,7 @@ internal static partial class PlayerEnvironmentService
     private static IEnumerable<VisibleCard> VisibleSurfaceCards(ILiveSurface surface) =>
         surface switch
         {
+            NativePublicBasisGridSurface value => value.Cards,
             NativeDeckUpgradeSelectionSurface value => value.Cards.Concat(value.PreviewCards),
             NativeDeckCardSelectionSurface value => value.Cards,
             NativeCombatPileSelectionSurface value => value.Cards,

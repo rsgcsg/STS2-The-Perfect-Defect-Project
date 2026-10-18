@@ -1,45 +1,48 @@
-# Current — bounded PR191 CI integration
+# Current — P1 r1 package 1 closeout
 
-模型方案冻结：开。Resolve live GitHub refs; current source and original records
-override this file.
-PR merge/close, research/spending and deployment keep their explicit boundaries.
+Resolve live GitHub refs; current source and original records override this file.
+[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) records the implementation,
+acceptance and original failed windows. PR193 targets develop29d889bc and remains
+Draft/open for user review; no merge is authorized. Old T7 card A is obsolete.
 
-## Current delivery
+The approved package1 B/C/S/T6 engineering closeout passed. In the final bounded
+window, Reference20 on Mod d06a9e8b finished 20/20 in native natural loss,
+zero unknown and20 original replays verified. The original e5f64e49 Managed40
+is reused under its unchanged dependency closure, not relabeled as a new run.
+It retains40/40 natural losses,2802 delivered dispatch/Receipt/wire joins and2706
+completed P1 Results. This is not full-P1, strategy or Host-equivalence qualification.
 
-[P1-TU](../plans/P1_TERMINAL_UPGRADE_2026-10-17.md), Draft PR191
-`codex/p1-terminal-upgrade`: Root is the sole integrator. Start986e3f95;
-normal merges7b0deb0a/0efccea9 retain task1/8b83a7f1 and task2/93fd596b.
-Before publication parent PR189 advanced toc5fbbd11; reviewed normal merge51c65a2e
-resolves its BOM conflict, retains both worker fixes and its late-chooser fixture
-startup allowance. Product deadlines/assertions stay unchanged; only that case is
-rechecked after the parent increment, then final identity/package/repository gates.
-Task1 uses fileURLToPath for the real diagnostic child, retaining duplicate-instance
-assertions. Task2 drains the started original-response write before capture closure;
-Stop/budget still releases control independently. Combined focused regression45pass;
-typecheck/build/package, repository/identity/BOM and closeout passed. Scoped non-author
-review accepted the combined implementation and original failure/validation evidence.
-Policy Runtime BOM is recalculated from the combined tree, not either worker tree.
+New Reference: 1570 exact dispatch/Receipt/wire joins, 1558 delivered,
+12 known not-delivered; Results {"completed": 1499, "not_started": 12}.
+Every reward intention now executes the chosen forward mechanical continuation:
+37 take-card and12 decline chains, all two-step completed with original
+owner, full details, actual offered actions, original wire Receipt and sealed
+successor. All37 takes increase the chosen definition count by one; all12
+declines preserve the full original card multiset. No old reward-owner metadata failure or interrupted_known Result remains.
+The final batch also contains generated-card choice with complete map Read,
+actual native select and complete combat successor. Native stderr is retained;
+terminal/replay evidence does not establish native-clean shutdown.
 
-Old986e3f95 CI38925913234 failed on Windows child path, Linux capture-record order,
-and Windows Python AV. Its formal mypy379source files passed; earlier local missing-
-extras diagnostics remain historical. Task3 found no proven AV owner:0xC0000005 after
-60s traceback, CPython/faulthandler strongest hypothesis, native Windows dump absent.
-That crash remains a blocker; investigation completion is not a repair or runner
-waiver. The Windows single-test native-dump proposal is unexecuted, not dispatched.
+Source engine remains8d12afe7; Mod was built/deployed from clean057626f1 with
+Connector a908c3a9. Mod SHA d06a9e8b/MVID860493b7; Managed DLL e6f68ebb/MVID12a48a52;
+P1 r1.2 core1fe50249; Runtime8e04ba94; Agent44899b3c. Actual SDK105 and Runtime111
+files and installed artifacts stayed frozen through the batch. The tested product
+head CI39049525449 passed; local producer repair has909 exact-game Host tests.
+Later documentation does not rebuild or relabel native artifacts.
 
-Reference history stays bound to333094d4: historical2attempts (88decisions/loss;
-91submissions/toggle then diagnostic fail-closed); separate1of2new attempts completed
-preview→legal choice→required confirm→event_option and visible deck upgrade after
-93submissions.0native unknown/fail-closed in that successful follow-up, replay verified.
-Stop200/released/no pending request; cancelled Next left opaque Agent state uncertain;
-Host close200/exit0. Original records unchanged. This integration changes Runtime
-capture accounting, so those old records are not fresh evidence for the new Runtime.
-No new game, installed Mod, Human, training, spending or deployment in this slice.
+T1 original point0, T2 actual SCRAPE receipt/deck successor, forward selector,
+shop departure and generated-selector map seams retain their scoped evidence.
+T1's next combat alias/bijection difference remains open for package2. The old
+f0830e97 Reference20's64 reward interruptions remain historical failed semantics,
+resolved by producer ownership repair and the new full batch, not rewritten.
 
-Next: publish one stable candidate, report real selected CI outcome and stop. Keep
-Draft and unresolved Windows AV; no PR merge/close. No T1/T2/T6.
+This closeout used1/1 authorized Reference20 batch and0/2 short attempts,
+with original e5 Managed40 reused; unknown was never retried. No new game budget
+is implicit. The Boss human R21 guide is delivered; Boss gameplay awaits its own
+user approval.
 
 ## Remaining Platform non-claims
 
-No new Windows execution, Host equivalence, full-P1, Human, training or strategy
-qualification. Unresolved Windows Python AV stays visible even if a later run passes.
+Package2/3, Source4/Human, full equivalence, cross-act/victory,
+Windows and training qualification remain open. Q3-M0 non-game measurements were
+completed from existing records only; research configuration remains frozen.

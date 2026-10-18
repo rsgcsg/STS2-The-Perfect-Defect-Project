@@ -30,7 +30,7 @@ function selector(stage = "selecting", chosen = null) {
 }
 function shop() {
   return { type: "decision", decision: "shop", context, player,
-    room_ref: "shop-room", cards: [], relics: [], potions: [],
+    room_ref: "shop-room", shop_ref: "shop-room", inventory_ref: "shop-inventory", cards: [], relics: [], potions: [],
     card_removal: { native_ref: "removal-entry", cost: 75, is_stocked: true, can_purchase: true } };
 }
 function menu(state) {
@@ -79,7 +79,7 @@ test("exact deck selector is one sequential card choice, preview return, and con
   });
   let page = adapter.observe();
   assert.equal(page.interaction.kind, "shop_inventory");
-  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Buy card removal", "Leave shop"]);
+  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Buy card removal", "Close shop inventory"]);
   page = (await submit(page, 0, "buy-removal")).successor;
   assert.equal(page.interaction.kind, "deck_card_selection");
   assert.deepEqual(page.menu_actions.actions.map(x => x.verb), ["select", "select", "cancel"]);

@@ -208,6 +208,11 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyDictionary<string, string> parameters)
     {
         P1CaptureGuard.InvalidateActive();
+        if (binding.GridInput is { } gridInput)
+            return snapshot.HostObservation.Surface is NativePublicBasisGridSurface grid
+                && grid.Inputs.Any(spec => ReferenceEquals(spec, gridInput))
+                ? gridInput.Dispatch()
+                : NativeInputResult.Rejected("native_logical_grid_binding_changed", "The captured native grid input no longer belongs to this observation.");
         string operation = binding.Candidate.Operation;
         if (operation == NativeGeneratedCardChoice.SelectOperation
             && parameters.TryGetValue("card_id", out string? cardId)

@@ -48,13 +48,14 @@ export type ConsumptionMode = "once_per_occurrence" | "incremental_view";
 export type AgentHistoryMode = "full_reference" | "scoped_query" | "sampled_current";
 export interface AgentInputSpec { id: string; version: string; sha256: string }
 export interface AgentAdapterIdentity { id: string; version: string; protocol: typeof AGENT_SESSION_PROTOCOL; code_sha256: string }
+export const DEFAULT_AGENT_TIMEOUT_MS = 30_000;
 export const AGENT_LIMIT_MAXIMA = Object.freeze({
   max_message_bytes: 96 * 1024 * 1024, max_acquisitions: 256,
   max_retained_acquisition_bytes: 256 * 1024 * 1024,
   max_pending_queries: 8, max_queries_per_turn: 64,
   max_query_bytes_per_turn: 128 * 1024 * 1024,
   max_capture_bytes: 64 * 1024 * 1024, max_catalog_actions: 65_536,
-  max_cancelled_ids: 256, agent_timeout_ms: 30_000
+  max_cancelled_ids: 256, agent_timeout_ms: 300_000
 });
 export type AgentLimits = { -readonly [K in keyof typeof AGENT_LIMIT_MAXIMA]: number };
 export interface AgentManifest {

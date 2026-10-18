@@ -3,6 +3,7 @@ import { cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { globalRuntimeFixture, GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { rewardForwardPair } from "../../connector/sdk/typescript/test/fixtures/reward-forward.mjs";
+import { selectorForwardPair } from "../../connector/sdk/typescript/test/fixtures/selector-forward.mjs";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 
 function gate() { let release!: () => void; return { promise: new Promise<void>(r => { release = r; }), get release() { return release; } }; }
@@ -15,6 +16,21 @@ function rewardSource() {
   return source;
 }
 describe("forward intention through actual HTTP, NDJSON and original replay", () => {
+  it("executes a qualified original-card selection and exact preview confirm as one recorded Agent intention", async () => {
+    const source = new GlobalHttpFixture(), pair = selectorForwardPair();
+    source.basis = pair.outer; source.nextBases = [pair.preview];
+    const f = await globalRuntimeFixture({ source, behavior: "choose:upgrade.choose" });
+    try {
+      expect((await f.runtime.tick()).type).toBe("delivered");
+      expect(source.steps).toBe(2);
+      const rows = await f.events(), result = rows.find(e => e.kind === "global_result").payload.result;
+      expect(result.status).toBe("completed");
+      expect(result.steps.map((s: any) => [s.native_verb, s.origin])).toEqual([["select", "agent_choice"], ["confirm", "fold"]]);
+      expect(rows.filter(e => e.kind === "global_choice")).toHaveLength(1);
+      expect((await f.runtime.tick()).type).toBe("closed");
+      expect((await replayGlobalAgentRun(f.evidence.directory)).results).toBe(1);
+    } finally { await f.close(); }
+  });
   it("executes the chosen exact card as two steps with one Agent choice and proves the complete prefix", async () => {
     const f = await globalRuntimeFixture({ source: rewardSource(), behavior: "choose:reward.take_card" });
     try {

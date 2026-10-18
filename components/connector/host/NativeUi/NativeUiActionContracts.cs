@@ -33,7 +33,10 @@ public sealed record NativeUiActionCandidate(
     IReadOnlyList<ActionEntityBinding> EntityBindings,
     string BindingKind);
 
-internal sealed record NativeUiBoundAction(NativeUiActionCandidate Candidate);
+internal sealed record NativeUiBoundAction(NativeUiActionCandidate Candidate)
+{
+    internal NativeLogicalGridInputSpec? GridInput { get; init; }
+}
 
 internal sealed record NativeUiInput(
     string? Command,

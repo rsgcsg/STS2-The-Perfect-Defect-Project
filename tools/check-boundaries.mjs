@@ -29,6 +29,7 @@ export function textBoundaryErrors(relative, contents) {
     // These exact shared read qualifiers inspect patches; they never install them.
     const readQualificationFiles = new Set([
       "NativeRunHookReadQualification.cs",
+      "NativeSelectorReadQualification.cs",
       "NativeCardPreviewReadQualification.cs",
       "NativeCardRewardAlternativePreview.cs"
     ].map(name => `components/native-foundation/src/${name}`));
@@ -39,6 +40,7 @@ export function textBoundaryErrors(relative, contents) {
     for (const prose of [
       "/// callback. No Harmony callback is installed here and no successor is",
       "/// implementations and Harmony state; no runtime type/IL discovery is used.</summary>",
+      "// Harmony keys inherited methods by their actual declaration.",
       "// Harmony initialization or an idempotent command callback"
     ]) ownershipText = ownershipText.replaceAll(prose, "");
     if (readQualificationFiles.has(normalized)) {

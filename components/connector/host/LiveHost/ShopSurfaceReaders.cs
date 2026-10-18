@@ -113,7 +113,7 @@ internal sealed class ShopInventorySurfaceReader : ILiveSurfaceReader
             relics,
             potions,
             removal,
-            canClose);
+            canClose) { ShopSessionEntityId = entities.GetId(merchantRoom, "shop_session") };
         bool hasActionableControl = canClose
             || cards.Any(offer => offer.CanPurchase)
             || relics.Any(offer => offer.CanPurchase)
@@ -608,7 +608,8 @@ internal sealed class ShopRoomSurfaceReader : ILiveSurfaceReader
         string roomId = entities.GetId(room, "room");
         bool canOpen = room.MerchantButton.IsEnabled && ConnectorMod.IsNodeVisible(room.MerchantButton);
         bool canProceed = room.ProceedButton.IsEnabled && ConnectorMod.IsNodeVisible(room.ProceedButton);
-        var surface = new ShopRoomSurface(SurfaceKind, roomId, canOpen, canProceed);
+        var surface = new ShopRoomSurface(SurfaceKind, roomId, canOpen, canProceed)
+            { ShopSessionEntityId = entities.GetId(merchantRoom, "shop_session") };
         bool hasActionableControl = canOpen || canProceed;
         string readiness = hasActionableControl ? "ready" : "settling";
         var completeness = new StateCompleteness(

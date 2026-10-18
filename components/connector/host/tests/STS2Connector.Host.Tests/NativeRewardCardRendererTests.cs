@@ -89,6 +89,19 @@ public sealed class NativeRewardCardRendererTests
             typeof(CardModel).GetField("_pool",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(card,ModelDb.CardPool<IroncladCardPool>());
             Assert.True(NativeCardPreviewReadQualification.TryPreflightRender(card,CardPreviewMode.Normal,PileType.None,out string? gap),gap+"|"+FormatterDiagnostic());
             var outer=LiveContextReader.BuildRewardCard(card,"card");
+            // These native overrides and calculated multipliers were rejected
+            // by the old per-class/constant-IL admission. Preflight reads only
+            // their callable identities; it does not load their hover assets.
+            foreach (Type type in new[] { typeof(Barrage), typeof(BodySlam), typeof(Compact), typeof(Fuel) })
+            {
+                if (!ModelDb.Contains(type)) ModelDb.Inject(type);
+                CardModel ordinary = ModelDb.GetById<CardModel>(ModelDb.GetId(type)).ToMutable();
+                typeof(CardModel).GetField("_pool", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(ordinary, ModelDb.CardPool<IroncladCardPool>());
+                Assert.True(NativeCardPreviewReadQualification.TryPreflightRender(ordinary,
+                    CardPreviewMode.Normal, PileType.None, out string? ordinaryGap), type.Name + ":" + ordinaryGap);
+            }
+
             var guard = new Harmony("sts2-test-public-card-render-preflight");
             var update = typeof(CardModel).GetMethod(nameof(CardModel.UpdateDynamicVarPreview))!;
             RenderCallbacks = 0;
@@ -130,9 +143,7 @@ public sealed class NativeRewardCardRendererTests
             var cache=MegaCrit.Sts2.Core.Assets.PreloadManager.Cache;
             int missed=cache.MissedCacheAssetCount;
             string[] cached=cache.GetCacheKeys().ToArray();
-            Assert.False(NativeCardPreviewReadQualification.TryPreflightRender(zap,CardPreviewMode.Normal,PileType.None,out string? iconGap));
-            Assert.Equal("native_card_render_hover_asset_hit_unqualified",iconGap);
-            Assert.False(NativePublicCardDetails.Capture(zap,PileType.None).Complete);
+            Assert.True(NativeCardPreviewReadQualification.TryPreflightRender(zap,CardPreviewMode.Normal,PileType.None,out string? iconGap), iconGap);
             Assert.Equal(missed,cache.MissedCacheAssetCount);Assert.Equal(cached,cache.GetCacheKeys());
             var formatter=typeof(LocManager).GetField("_smartFormatter",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
             var sourcesProperty=formatter.GetType().GetProperty("SourceExtensions",BindingFlags.Instance|BindingFlags.NonPublic)!;

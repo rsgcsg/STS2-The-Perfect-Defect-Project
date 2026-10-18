@@ -79,9 +79,9 @@ internal static class PlayerVisibleReadBuilder
         if (run == null || LocalContext.GetMe(run) == null)
             return PlayerReadBuildResult.Failure("read_not_applicable", "There is no current local run map.");
         var entry = NativeMapInformation.CaptureReadEntry(run);
-        if (entry.Status != "captured") return PlayerReadBuildResult.Failure(entry.Status, entry.Gap!);
+        if (entry.Status != "captured") return MapReadFailure(entry.Status, entry.Gap!);
         NativeMapReadResult captured = NativeMapReadProjection.Capture(run);
-        if (captured.Status != "captured") return PlayerReadBuildResult.Failure(captured.Status, captured.Gap!);
+        if (captured.Status != "captured") return MapReadFailure(captured.Status, captured.Gap!);
         var types = captured.Nodes.ToDictionary(node => (node.Coordinate.col, node.Coordinate.row), node => node.PointType);
         VisibleMapCoordinate Coordinate(MegaCrit.Sts2.Core.Map.MapCoord coord) => new(coord.col, coord.row,
             types.TryGetValue((coord.col, coord.row), out string? type) ? type : null);
@@ -95,6 +95,15 @@ internal static class PlayerVisibleReadBuilder
             new PlayerReadCompleteness("complete_for_current_player_openable_generated_map_without_action_authority",
                 new[] { "RunState.Map+VisitedMapCoords", "ActMap.Grid+StartingMapPoint+BossMapPoint+SecondBossMapPoint",
                     "NativeMapDecisionProvider.GetDestinations", "NTopBarMapButton current native entry" }, Array.Empty<string>())));
+    }
+
+    private static PlayerReadBuildResult MapReadFailure(string status, string gap)
+    {
+        // Sealed Reads retain the public error code; opt-in diagnostics preserve
+        // the actual owner failure for a short live investigation.
+        if (Environment.GetEnvironmentVariable("STS2_NATIVE_MAP_READ_DIAGNOSTICS") == "1")
+            Console.Error.WriteLine($"[native-map-read] status={status} gap={gap}");
+        return PlayerReadBuildResult.Failure(status, gap);
     }
 
     private static PlayerReadBuildResult BuildRunDeck(NativeEntityRegistry entities)

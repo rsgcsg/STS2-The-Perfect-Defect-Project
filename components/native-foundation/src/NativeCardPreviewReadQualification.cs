@@ -280,8 +280,10 @@ public static partial class NativeCardPreviewReadQualification
             // Explicit exact-build method inventory; it contains no costs,
             // damage values or other reimplementation of native upgrade rules.
             if (card.GetType().GetMethod("OnUpgrade", NativeMembers) is not { } upgrade
-                || upgrade.DeclaringType != card.GetType() || !NativeUpgradeMethodInventory.Contains(card.GetType().Name)
-                || !IsUnpatched(upgrade)
+                || !(upgrade.DeclaringType == typeof(CardModel)
+                    || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
+                // Harmony keys inherited methods by their actual declaration.
+                || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
                 || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
                     "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
