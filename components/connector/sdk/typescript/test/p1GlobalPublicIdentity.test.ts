@@ -14,6 +14,22 @@ const rename = (v: any, oldId: string, nextId: string): any => typeof v === 'str
     ? Object.fromEntries(Object.entries(v).map(([key, item]) => [key, rename(item, oldId, nextId)])) : v;
 
 describe('P1 current public identity and HUD projection', () => {
+  it('aliases current terminal VisibleMenuOption tokens while keeping text and extensions literal', () => {
+    const a = JSON.parse(readFileSync(new URL('./fixtures/p1-global/reference-game_over.json', import.meta.url), 'utf8'));
+    const nativeControl = a.snapshot.interaction.content.surface.other_controls[0].entity_id;
+    const b = rename(a, nativeControl, 'different-original-terminal-control');
+    const left = project(a), right = project(b);
+    expect(left.complete && right.complete).toBe(true);
+    expect(input(left)).toBe(input(right));
+    expect((left.observation.scene.content as any).surface.other_controls[0].entity_id).not.toBe(nativeControl);
+    b.snapshot.interaction.content.surface.other_controls[0].label = 'Changed visible label';
+    expect(input(left)).not.toBe(input(project(b)));
+    const extension = rename(a, nativeControl, 'another-terminal-control');
+    a.snapshot.interaction.content.surface.extension = { entity_id: 'literal-left' };
+    extension.snapshot.interaction.content.surface.extension = { entity_id: 'literal-right' };
+    expect(input(project(a))).not.toBe(input(project(extension)));
+  });
+
   it('aliases only schema-qualified event tooltip cards while preserving other tooltip payloads literally', () => {
     const a = basis();
     const card = { ...structuredClone(hud(a).player.hand[0]), entity_id: 'event-tooltip-card' };

@@ -208,6 +208,18 @@ test("native selector retains the current semantic parent and canonical combat H
   assert.deepEqual(projection.snapshot.interaction.content.context, { kind: "event", event_id: "SAPPHIRE_SEED",
     name: "Sapphire Seed", ancient: false, in_dialogue: false, body: "Enchant a card." });
   assert.equal(JSON.stringify(projection.snapshot).includes("private-do-not-publish"), false);
+  const simple = selector({ family: "simple" });
+  simple.selector_context = { kind: "event", event_id: "ROOM_FULL_OF_CHEESE", name: "Room Full of Cheese",
+    ancient: false, in_dialogue: false, body: "Current event remains open while its original grid callback awaits.",
+    private_owner: "private-simple-parent" };
+  const simpleProjection = projectManagedCandidateDecision({ state: simple, ...identity });
+  assert.equal(simpleProjection.snapshot.interaction.kind, "native_simple_card_selection");
+  assert.deepEqual(simpleProjection.snapshot.interaction.content.context, { kind: "event", event_id: "ROOM_FULL_OF_CHEESE",
+    name: "Room Full of Cheese", ancient: false, in_dialogue: false,
+    body: "Current event remains open while its original grid callback awaits." });
+  assert.equal(JSON.stringify(simpleProjection.snapshot).includes("private-simple-parent"), false);
+  const simpleSelect = [...simpleProjection.bindings.values()].find(binding => binding.action.verb === "select");
+  assert.deepEqual(simpleSelect.raw_request.args, { selector_ref: "private-selector-owner", card_ref: "private-card-original" });
   const rest = selector();rest.selector_context = { kind: "rest" };
   assert.deepEqual(projectManagedCandidateDecision({ state: rest, ...identity }).snapshot.interaction.content.context, { kind: "rest" });
   const combat = selector({ family: "combat_pile" });

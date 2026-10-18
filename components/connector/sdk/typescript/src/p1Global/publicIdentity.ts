@@ -63,6 +63,7 @@ export function createPublicIdentityPolicy(nativeKind: string,
       "relics[].relic.entity_id", "potions[].entity_id", "potions[].slot_entity_id", "card_removal.entity_id", "card_removal.slot_entity_id"]);
     card("cards[]"); card("cards[].card"); card("relics[].relic.card_previews[]");
   } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
+  else if (nativeKind === "game_over") add(["other_controls[].entity_id"]);
   const eventCards = new Set<string>();
   const eventSurface = isObject(sceneContent) && isObject(sceneContent.surface) ? sceneContent.surface : null;
   if (["event_option", "event_dialogue"].includes(nativeKind) && Array.isArray(eventSurface?.options))
