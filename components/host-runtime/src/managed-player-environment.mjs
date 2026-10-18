@@ -1078,6 +1078,9 @@ function currentSurface(state, ctx) {
             }
           });
         }
+        if (kind === "card" && Array.isArray(reward.card_options))
+          for (const card of reward.card_options) ctx.detailReads.push(rewardCandidateDetailRead(
+            ctx, card, ctx.entityId("card", card.native_ref), item.properties.group_id));
         return item.properties;
       });
       const rawPotions = Array.isArray(state.player?.potions)
@@ -1235,6 +1238,8 @@ function currentSurface(state, ctx) {
           occurrence: index,
           properties: { index: card?.index ?? index, ...visibleCombatCard(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index)) }
         });
+        if (parentComplete) ctx.detailReads.push(rewardCandidateDetailRead(ctx, card,
+          item.referent_id, ctx.entityId("reward_group", state.parent_reward_ref)));
         ctx.action({
           verb: "select", subject: item, label: `Take ${card.name ?? `card ${index + 1}`}`,
           raw: { cmd: "action", action: "select_card_reward", args: { card_ref: card.native_ref } }
@@ -2295,6 +2300,20 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
   };
+}
+
+// The populated outer reward and its opened child expose the same captured
+// native card instance and hover facts; Reference publishes both as reward_candidate.
+function rewardCandidateDetailRead(ctx, raw, entityId, ownerId) {
+  const { keywords, card_previews: cardPreviews, ...base } = visibleCombatCard(raw, entityId);
+  if (!ctx.referents.some(referent => referent.referent_id === entityId))
+    ctx.referent({ role: "card", id: entityId, label: base.name, properties: base });
+  const missing = Array.isArray(raw.render_missing) ? [...raw.render_missing] : [];
+  if (raw.render_complete !== true && missing.length === 0)
+    missing.push("current_native_reward_card_render_incomplete");
+  return publicCardDetailRead(ctx,
+    Object.fromEntries(Object.entries(base).filter(([, value]) => value !== null)),
+    { keywords, card_previews: cardPreviews }, missing, "reward_candidate", ownerId);
 }
 
 function deckCardDetailReads(ctx, state, deckRead) {

@@ -1294,3 +1294,36 @@ test("same raw capture supplies the full map Read off page without creating trav
   assert.equal(current.bindings.size, 1);
   assert.equal([...current.bindings.values()][0].raw_request.args.map_point_ref, "start");
 });
+
+
+test("populated reward candidate Reads retain each actual native card, group and hover facts across open", () => {
+  const card = { native_ref: "card-real", id: "COLD_SNAP", name: "寒流", cost: 1,
+    type: "Attack", rarity: "Common", target_type: "AnyEnemy", is_upgraded: false,
+    description: "造成6点伤害。生成1个冰霜充能球。", render_complete: true, render_missing: [],
+    keywords: [{ name: "冰霜", description: "获得格挡。" }], card_previews: [] };
+  const aliases = new Map(), common = eventState();
+  const project = state => projectManagedCandidateDecision({ ...projectionIdentity, state,
+    publicEntityAliases: aliases });
+  const state = { ...common, decision: "reward_set", reward_set_ref: "set-real", is_terminal: false,
+    rewards: [{ native_ref: "reward-real", kind: "card_choice", name: "Add card", card_options: [card] },
+      { native_ref: "reward-unpopulated", kind: "card_choice", name: "Unpopulated" }] };
+  const outer = project(state), group = outer.snapshot.interaction.content.surface.rewards[0];
+  const reads = [...outer.reads.values()].filter(read => read.content.display_context === "reward_candidate");
+  assert.equal(reads.length, 1); // Unpopulated groups create no made-up details.
+  const read = reads[0];
+  assert.equal(read.completeness.status, "complete");
+  assert.equal(read.descriptor.target_referent_id, group.card_options[0].entity_id);
+  assert.equal(read.content.display_owner_entity_id, group.group_id);
+  assert.equal(read.content.parent_read_id, null);
+  assert.deepEqual(read.content.keywords, card.keywords);
+  const inner = project({ ...common, decision: "card_reward", parent_status: "bound",
+    parent_reward_ref: "reward-real", reward_set_ref: "set-real", selection_completes_reward: true,
+    cards: [{ ...card, index: 0, native_ref: "creation-real", card_entity_ref: "card-real" }], alternatives: [] });
+  assert.deepEqual([...inner.reads.values()].find(read => read.content.display_context === "reward_candidate").content,
+    read.content);
+  const incomplete = structuredClone(state); incomplete.rewards[0].card_options[0].render_complete = false;
+  incomplete.rewards[0].card_options[0].render_missing = ["native_tooltip_unavailable"];
+  const changed = [...project(incomplete).reads.values()].find(read => read.content.display_context === "reward_candidate");
+  assert.equal(changed.completeness.status, "partial");
+  assert.deepEqual(changed.completeness.missing, ["native_tooltip_unavailable"]);
+});
