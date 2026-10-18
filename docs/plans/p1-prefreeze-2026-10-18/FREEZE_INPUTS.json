@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 46453,
-      "sha256": "a90186913bea15dc560bc0865dd7ea3537cbcbe3902aaee3341086ba281167db",
+      "bytes": 46849,
+      "sha256": "8971e670e4e70b5dabce21ea87002ab36c0e1163de0b35f6f5d64938827e15cb",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "cdcf3e92aec590c87c94a6f1242e5333a6399f63c2f986a6961bc6f6e8ad6859"
+      "repository_sha256": "d0b87a525f381f8d3a8b1e4486600c118cccf476a52a83514ed829ee58830ae3"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",

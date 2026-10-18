@@ -26,7 +26,7 @@ Mod是装载包装；Host Runtime是进程管理；P1是环境合同；AgentProg
 
 P1记录到研究数据集之间是**阶段边界**：这次固定环境、采集/解释和可核对原件，让后续能构造第一轮数据。没有因此声明统一数据消费合同、dataset split、Input/Target或P1训练reader已经冻结；这些仍由Q链owner按实际用途确定。
 
-当前P1复用旧Human拿牌前H、exact异步owner和真实accepted动作接缝，补同次完整PB1；不是把旧H两项Reads直接称成当前完整P1。原件完整和派生完整分验、adapter可从不可变完整原件重派生、开录短段与E2/E3适用定义由[唯一冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)待批，不在本表重设。未提交拿牌取消不生accepted决策/label；真实accepted选择、效果或unknown不丢。
+当前P1复用旧Human拿牌前H、exact异步owner和真实accepted动作接缝，补同次完整PB1；不是把旧H两项Reads直接称成当前完整P1。原件/派生整局完整及E2/E3新路线适用定义由[唯一冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)待用户批准；方向和开录门已确定，adapter可从完整原件重派生，不在本表重设。未提交拿牌取消不生accepted决策/label；真实accepted选择、效果或unknown不丢。
 
 ## 组件：位置、原因与首训价值
 
@@ -72,7 +72,7 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 格式族 | 链中用途/消费者 | 对首训的价值及去向 |
 |---|---|---|
 | Snapshot/Reads/BoundAction/Receipt原字节 | 环境→P1/Runtime/Recorder | 来源事实及选择绑定，离线复验可追溯；不直接当所有Model Input |
-| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 当前P1方向已批准，核心/短段仍在做；具体完整性及开录定义待批 |
+| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 当前P1方向已批准，核心/短段仍在做；新完整性定义待批，开录门已确定 |
 | Source4 profile/bundle-v4/public-basis1 | 保留的原始输入/publication→P2/后续消费者 | 原report-v3和旧FAIL保持，不承担当前P1强制raw取消全分类门 |
 | P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；模型投影、词表和学习目标后定 |
 | agent-session-run-1目录/events/引用原件 | Runtime→typed verifier/replay/样本admission | 保存实际offer、Consume/ACK、Receipt/Result；直接Agent lane独立于Source4 |

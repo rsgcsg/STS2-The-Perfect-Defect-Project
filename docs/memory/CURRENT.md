@@ -4,14 +4,17 @@ Resolve live GitHub refs; actual source and original records override this file.
 This is dated routing, not live or qualification authority. The
 [project map](../plans/p1-prefreeze-2026-10-18/README.md) and
 [freeze definition](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) remain
-pending user approval overall. The method direction is approved; new originals/derived
-completeness, recording gate and new-route E2/E3 applicability are not yet approved.
+pending user approval overall. The direction and recording gate are set by the latest user instruction. New P1
+originals/derived whole-run completeness, new-route E2/E3 applicability and the
+overall freeze definition still await user approval.
 The final deadline remains 2026-10-20 16:30 Australia/Brisbane.
 
 ## Current route and ownership
 
 The current P1 route reuses mature Human accepted-action and exact asynchronous-owner
-recording, with a complete decision-time public-basis-1 and all advertised Reads.
+recording for actual player semantic decisions, with complete decision-time PB1 and
+all advertised Reads. Internal enemy/effect GameActions retain original lifecycle
+facts and results but do not become player labels.
 Source4 mainly serves P2/future and is no longer a mandatory P1 path. No further
 Source4 cancellation preflight or investment is scheduled. Its packets, branches
 and failed originals remain preserved; root will remove cancellation-only local
@@ -32,11 +35,12 @@ work and time estimate for the user to decide. Two preflight failures with diffe
 causes trigger a route review before more patches/runs. Review is proportionate to
 actual merge/freeze needs, not a new independent gate for every SHA or step.
 
-The proposed recording gate requires Play, an unsubmitted pickup cancel with zero
+The user-set recording gate requires Play, an unsubmitted pickup cancel with zero
 labels, EndTurn and another non-card-play decision, plus complete originals, offline
 verification and strict Managed short replay. Only the user operates formal whole
-games. Wait if the user cannot locate the entry; continue other parallel work and do
-not record a formal game on their behalf. Engineering records keep their true origin.
+games. When the user is unavailable, wait for formal recording/decisions; continue
+independent work. Also wait if the user cannot locate the entry; do not record a
+formal game on their behalf. Engineering records keep their true origin.
 
 ## Preserved source and evidence
 

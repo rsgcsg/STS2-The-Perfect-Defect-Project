@@ -6,7 +6,7 @@
 
 历史调查、审计和收敛与开发同属本轮任务，最高优先级是首批训练前P1冻结及最相关工作。按需结合现行仓库文档、已有账本/地图、审计索引、旧仓库、PR与交接入口查证；Claude各卡片、目标和方法是参考，可能过时或可延后，不自行增加验收或授权。按用户直接决定与实际证据取舍，不要求先重建全部历史。
 
-当前方法已转为**成熟Human真实accepted动作关联＋同次完整PB1原件＋共享核离线派生**；Source4主要服务P2/后续，退出P1强制主线，新取消包/旧FAIL及分支保留，不为其再开预检。新原件整局完整、派生完整、开录门及E2/E3适用性见唯一[冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)，**具体定义待用户批准**，方向批准不等于开录PASS。2026-10-19 09:00 Brisbane硬检查点报告核心＋自测短段，未过报卡点/剩余时间交用户定。
+当前方法已转为**成熟Human真实accepted动作关联＋同次完整PB1原件＋共享核离线派生**；Source4主要服务P2/后续，退出P1强制主线，新取消包/旧FAIL及分支保留，不为其再开预检。方向和开录门已按用户最新指令确定；新原件/派生整局完整及E2/E3新路线适用性见唯一[冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)，**这些具体定义及整份冻结定义仍待用户批准**，开录门已定不等于实际开录PASS。2026-10-19 09:00 Brisbane硬检查点报告核心＋自测短段，未过报卡点/剩余时间交用户定。
 
 ## 目标
 
@@ -59,7 +59,7 @@
 | Human原生因果 | manifest2、trace4、canonical3、action-space3、Read2、journal2、close1、bundle3 | PR25 rc4原候选已有两自然败局/524 canonical；不转移到当前Mod/P1 |
 | 兼容/归档Human | record2/bundle2兼容；旧trace1–3/canonical2/ledger1–2/record1/bundle1 reader | 原consumer保留；record2不保全canonical3所有子选择，不升级旧bytes |
 | Source3 | 原输入basis/ordinals、publications/declarations、Source3 bundle | 有序来源事实，非Human证明/因果后继；旧STPD视图原义保留 |
-| 当前P1-native方向 | 真实accepted动作/同次完整PB1、run journal、Close/pack及内容身份 | 复用Human owner，B/root核心与短段在做；原件整局完整/派生完整/开录门定义待批，尚未取得开录PASS |
+| 当前P1-native方向 | 真实accepted动作/同次完整PB1、run journal、Close/pack及内容身份 | 复用Human owner，B/root核心与短段在做；新原件/派生完整定义待批，开录门已确定但尚未取得开录PASS |
 | Source4（P2/后续） | source-v4/bundle-v4、frozen public-basis/全部Reads/carrier/Task | 原格式/report-v3与失败保留，退出P1强制主线；不再以raw取消全分类阻断P1 |
 | 当前P1 Agent/chooser | **目录** `sts2.policy-runtime/agent-session-run-1`，profile `p1-global-r1`，adapter `p1-session-bridge` | `tools/p1-suite.mjs`→bridge→外部stdio Agent→现有Runtime；events.jsonl、global_source原件、frame/Consume/ACK/Receipt/Result与封存清单；独立于Annotator/Source4 |
 | 旧P1直接记录 | **单文件** `sts2.p1/episode-record-1` | 原converter/reader的独立保留lane，不是当前Agent CLI唯一格式 |
@@ -68,7 +68,7 @@
 
 Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式选run-continuity且保留菜单/域外原件；不能排除运行内gap/partial/unknown/遗漏输入。经用户批准的有界启动waiting仅按[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)单列非决策段，不补原缺失；bounded完整分类不等于整局；真实new-run、连续来源及完整natural terminal另核。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
 
-拟定开录门见定义4.1：新短段须有Play、未提交取消0label、EndTurn和至少一种其它非出牌，且原件完整/离线/Managed严格短重放均过；此具体定义待用户批准。正式整局只由用户操作；用户找不到入口则等，其它工作并行继续。原3English/全幕/INFO/final40+20/R20等结果全部保留。
+用户已确定的开录门见定义4.1：新短段须有Play、未提交取消0label、EndTurn和至少一种其它非出牌，且原件完整/离线/Managed严格短重放均过；开录门已经确定，实际尚未通过。正式整局只由用户操作；联系不到用户、用户不方便或找不到入口时，正式录制及必需决定都等用户，其它独立工作并行继续。原3English/全幕/INFO/final40+20/R20等结果全部保留。
 
 ## 状态与当前任务
 
