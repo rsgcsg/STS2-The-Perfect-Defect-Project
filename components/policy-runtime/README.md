@@ -5,6 +5,14 @@ lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
 
+The manual P1 chooser (`examples/p1/human-chooser.mjs`, Agent version 4) starts
+each choice with the complete action list. The person consults the real game
+screen; `help` lists the retained public-observation browsing commands and
+`overview` opens the former detailed home view. Action order, numeric bindings,
+IDs, Agent observations and submission semantics are unchanged. Recordings made
+this way use the game screen and optional P1 browsing information; they do not
+establish that the person saw only P1 observations or independent Human origin.
+
 An explicit `sts2.policy-runtime/agent-manifest-1` selects the additive
 `native-logical-v1` Agent branch through the same `--manifest` CLI and HTTP service.
 It uses the actual Connector SDK, atomic Attach/source Events, complete catalog
