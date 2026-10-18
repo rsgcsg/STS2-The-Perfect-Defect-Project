@@ -12,7 +12,8 @@
           ↕ P1共享语义（SDK）
           ↕ Policy Runtime的受控执行 ↔ Agent程序端口 ↔ 完整Agent（可含Model）
 
-独立记录：原生/程序输入与公开事实 ─→ Annotator Source4 ─→ Evidence ─→ 离线P1解释
+独立记录：真实accepted原生动作/原生UI决策＋同次完整PB1 ─→ Annotator P1-native ─→ Evidence ─→ 共享核离线P1解释
+          Source4原生输入/publication ─→ 保留的P2/后续来源消费者
           Runtime实际offer/Consume/Receipt/Result ─→ AgentRunEvidence
           旧Human因果lane ─→ canonical3/bundle3及原版本consumer
 
@@ -21,9 +22,11 @@
           → AgentComposition/ExecutionRequest → 在线新运行 → 固定评估
 ```
 
-Mod是装载包装；Host Runtime是进程管理；P1是环境合同；AgentProgramPort是程序边界；Source4是独立录制来源。它们不是依次经过的五层服务。SDK/传输格式也不定义另一套交互语义。
+Mod是装载包装；Host Runtime是进程管理；P1是环境合同；AgentProgramPort是程序边界；Source4是保留给P2/后续的独立录制来源，不是当前P1必经层。它们不是依次经过的五层服务。SDK/传输格式也不定义另一套交互语义。
 
 P1记录到研究数据集之间是**阶段边界**：这次固定环境、采集/解释和可核对原件，让后续能构造第一轮数据。没有因此声明统一数据消费合同、dataset split、Input/Target或P1训练reader已经冻结；这些仍由Q链owner按实际用途确定。
+
+当前P1复用旧Human拿牌前H、exact异步owner和真实accepted动作接缝，补同次完整PB1；不是把旧H两项Reads直接称成当前完整P1。原件完整和派生完整分验、adapter可从不可变完整原件重派生、开录短段与E2/E3适用定义由[唯一冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)待批，不在本表重设。未提交拿牌取消不生accepted决策/label；真实accepted选择、效果或unknown不丢。
 
 ## 组件：位置、原因与首训价值
 
@@ -45,7 +48,7 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 浏览器/Mod GUI | 同一用例的人类薄映射 | 方便显示/确认、配对和恢复，业务权威仍在原服务；不要求GUI全无代码 | 保留现成面板，不新建复杂GUI/团队页；[UI scope](../../UI_INTERACTION_SPEC.md) |
 | apps/workbench旧诊断API | 旧诊断/兼容入口 | 仅保留实际依赖/历史诊断，不作为又一完整工作台来做 | 已无HTML；[README](../../../apps/workbench/README.md) |
 | Store/Curation | 不可变原件→用途/划分 | 复用来源、去重、同seed/save谱系、Gold/use，后续dataset可追溯 | Q2/P1准入细则后定；[Data](../../../python/docs/DATA_AND_PROVENANCE.md) |
-| STPD projector/Input/Target | 研究输入构造 | 明确模型看到什么、记忆怎样推进、训练监督来自哪，防把未来标签放当前输入 | Q3适配器/词表/配方待确认；[research map](../../../python/docs/DOCUMENT_MAP.md) |
+| STPD projector/Input/Target | 研究输入构造 | 明确模型看到什么、记忆怎样推进、训练监督来自哪，防把未来标签放当前输入 | P1来源/适配/词表及实际绑定待验，已批Q3模型/配方不改；[research map](../../../python/docs/DOCUMENT_MAP.md) |
 | TrainingService/engine/worker | 研究学习 | 复用Run/attempt/checkpoint/更新数/预算与导出，不为新P1另写训练manager | 首轮配置/费用仍另批；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) |
 | R2存储adapter | 原件/派生包↔存储 | 最简内容寻址存取给远程首训用，可复用原库而不强制Hub | 路径/核验提案和授权见[K5](CLOUD_MINIMAL.md)；当前无新上传 |
 | Modal/provider adapter | 资源执行/只读数据入口 | 复用远程资源机制；必须证明首轮所需数据真实可读，不能借旧job名冒充新P1接好 | 当前P1消费与费用未验/另批；[K5](CLOUD_MINIMAL.md) |
@@ -69,11 +72,12 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 格式族 | 链中用途/消费者 | 对首训的价值及去向 |
 |---|---|---|
 | Snapshot/Reads/BoundAction/Receipt原字节 | 环境→P1/Runtime/Recorder | 来源事实及选择绑定，离线复验可追溯；不直接当所有Model Input |
-| Source4 profile/bundle-v4/public-basis1 | Annotator→Evidence→source4-to-p1 | 新完整公开basis/Read及输入供P1解释；[report-v3当前scope](SCOPE_v0.3.zh-CN.md)区分bounded/whole_run，真实整局仍待 |
+| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 当前P1方向已批准，核心/短段仍在做；具体完整性及开录定义待批 |
+| Source4 profile/bundle-v4/public-basis1 | 保留的原始输入/publication→P2/后续消费者 | 原report-v3和旧FAIL保持，不承担当前P1强制raw取消全分类门 |
 | P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；模型投影、词表和学习目标后定 |
 | agent-session-run-1目录/events/引用原件 | Runtime→typed verifier/replay/样本admission | 保存实际offer、Consume/ACK、Receipt/Result；直接Agent lane独立于Source4 |
 | legacy episode-record-1单文件 | 原直接记录converter/reader | 有限复用原P1来源，保留原版本，不与当前目录格式混同 |
-| Human manifest2/trace4/canonical3/action-space3/Read2/journal2/close1/bundle3 | 原生因果lane→Evidence/对应研究consumer | 成熟原件/经验可复用；旧数据转新P1高成本且缺失事实不补造 |
+| Human manifest2/trace4/canonical3/action-space3/Read2/journal2/close1/bundle3 | 原生因果lane→Evidence/对应研究consumer | 成熟动作owner、H关联、原件和封存可复用；旧H缺当前P1事实不补造，不在未测下断言必须重建全部hooks或高迁移成本 |
 | record2/bundle2兼容及trace1–3/canonical2/ledger1–2/record1/bundle1 | 真实旧consumer/归档reader/fixture | 原用途保留，不转贴新candidate资格；[格式链](../../FULL_RUN_DATA_CHAIN.md) |
 | Source1/2/3及bundle | 原声明/epoch/有序basis研究lane | Source3默认及旧专用view继续；不回填Source4新事实 |
 | ResearchTransition/Parquet/dataset/use/split manifests | 来源admission→固定研究样本/用途/划分 | 复用现有数据管理；不是所有源都强制S-a-S′或同一Parquet语义 |
