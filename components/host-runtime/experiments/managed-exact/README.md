@@ -352,24 +352,20 @@ its input SHA and actual frozen UnlockState comparison. There is no arbitrary
 save path or in-run import command. Managed presentation TestMode is retained.
 `initial-progress-tests` exercises the native owner without Launch or game input.
 
-The full candidate built from integration e9d88 uses patch aa3df815 and artifact
-8397f7be / MVID85ec5c2e. The manifest retains the previous a70 build in history;
-source/build inspection accepts only the new measured identity. Actual installed
-product and cross-Host replay qualification must be recorded separately.
-
-For fresh P1 suite comparisons the Managed manager reset receives the exact
-Reference prepared `initial_progress` object (`recipe`, `progress_json`,
-`progress_sha256`) through `tools/p1-suite.mjs --initial-progress FILE`.
-The suite requires this preparation, records recipe/SHA separately from Agent
-observations, and retains the native run-identity verification before publishing
-an episode. The file is private setup data; it is never a P1 action or label.
-The current full candidate is built with patch aa3df815 and artifact8397f7be;
-old a70 measurements remain historical. Build admission is not live comparison.
+Fresh P1 suites require the exact Reference prepared `initial_progress` object
+(`recipe`, `progress_json`, `progress_sha256`) through
+`tools/p1-suite.mjs --initial-progress FILE`. Recipe/SHA stay in suite provenance;
+progress JSON is private setup data, never a P1 action or label. The native mount
+verifies input SHA and actual run UnlockState before publishing the episode.
 
 The same prepared progress exposed a real initial-scene divergence: seed
 SWNBPYW69BAC starts Underdocks in the native lobby, while the old Managed
-initializer forced the default Overgrowth act list. StartRun now calls the native
+initializer forced the default Overgrowth act list. StartRun now calls native
 ActModel.GetRandomList with the lobby's seeded `act_selection` RNG and the actual
-UnlockState. This preserves the Standard lobby default random-act choice rather
-than overriding game facts. The previous8397 build remains measured history;
-the changed patch is pending a new candidate build and live comparison.
+UnlockState. This preserves the Standard lobby default random-act selection.
+
+The current full candidate built from integration f434 uses patch 43e223e5 and artifact
+0426384c / MVID1115859e-f311-4e2e-b103-0b3c91168250. The manifest retains the
+previous8397 and a70 builds in history. Source/build inspection accepts only the
+new measured identity. Installed product, Reads and strict cross-Host gameplay
+qualification remain separate actual gates.
