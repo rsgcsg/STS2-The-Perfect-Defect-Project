@@ -191,7 +191,8 @@ def _loopback(url: str) -> str:
     return str(result)
 
 
-def _startup_identity(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+def _startup_identity(manifest: dict[str, Any], package: dict[str, Any], *,
+                      managed_environment: dict[str, str] | None = None) -> dict[str, Any]:
     native = manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
     prefix = "agent" if native else "policy"
     return {
@@ -202,7 +203,8 @@ def _startup_identity(manifest: dict[str, Any], package: dict[str, Any]) -> dict
         "runtime_version": package["version"],
         "runtime_code_sha256": package["code_sha256"],
         "address": "http://127.0.0.1:15527",
-        **({"adapter": manifest["adapter"], "managed_environment": None} if native else {}),
+        **({"adapter": manifest["adapter"], "managed_environment": managed_environment}
+           if native else {}),
     }
 
 
@@ -1874,7 +1876,7 @@ class LocalModelService:
         if request_ref is not None:
             from .agent_run_request import original
 
-            expected = _startup_identity(manifest, package)
+            expected = _startup_identity(manifest, package, managed_environment=selected_target)
             admitted = original(self.directory, request_ref, expected)
             if self.composition(identity)["composition_id"] != admitted["composition_id"]:
                 raise BoundaryError(
@@ -1966,7 +1968,8 @@ class LocalModelService:
             startup = decode_json(raw)
             if not isinstance(startup, dict) or len(raw) > JSON_LIMIT:
                 raise ValueError
-            expected = {**_startup_identity(manifest, package), "mode": "human"}
+            expected = {**_startup_identity(manifest, package, managed_environment=selected_target),
+                        "mode": "human"}
             if any(
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
@@ -2351,7 +2354,13 @@ class LocalModelService:
         entry = self.selection(previous.get("selection_id", ""))
         manifest = _object_file(self.entry_path(entry, "manifest"))
         package = self._runtime_package(entry["id"])
-        expected_startup = _startup_identity(manifest, package)
+        managed_environment = (previous.get("managed_environment")
+                               if managed_manifest(manifest) else None)
+        if (manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
+                and managed_manifest(manifest) and not isinstance(managed_environment, dict)):
+            raise BoundaryError("local_model", "recovery_identity_drift")
+        expected_startup = _startup_identity(
+            manifest, package, managed_environment=managed_environment)
         if manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1":
             # Preserve the established legacy recovery identity contract.
             # Native startup provenance always requires its explicit namespace.
@@ -2372,8 +2381,6 @@ class LocalModelService:
         # Older sessions did not persist their Connector endpoint. Their exact
         # Runtime can still be returned to Human or stopped, but cannot safely be
         # retargeted from today's project config. Stop then load again to bind it.
-        managed_environment = (previous.get("managed_environment")
-                               if managed_manifest(manifest) else None)
         if managed_manifest(manifest):
             connector_endpoint = None
             if not isinstance(managed_environment, dict) or (

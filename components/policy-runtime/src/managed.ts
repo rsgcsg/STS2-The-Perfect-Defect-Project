@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { decodePlayerReceipt, verifyPublicBasis, type FullPublicBasis, type PlayerEnvironmentReceipt, type PublicTransportOptions, decodeTextMenuV2ActionResult, decodeTextMenuV2ObservationContext, type TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import { type GlobalIdentity, type GlobalTransport } from "./global-transport.js";
 import { canonicalJson } from "./evidence.js";
+import type { ManagedStartupEnvironment } from "./agent-runtime-contracts.js";
 import { validateManagedEnvironmentBinding, type AnyDecisionBundle, type ManagedCapabilities, type ManagedControlConfirmation, type ManagedEnvironmentBinding, type ManagedEnvironmentStatus, type PolicyConnector, type TextInputProfile } from "./contracts.js";
 
 const ATTACHMENT_SCHEMA = "sts2.host-runtime/managed-service-attachment-1";
@@ -15,6 +16,7 @@ const MAX_JSON_BYTES = 8 * 1024 * 1024;
 type Json = Record<string, unknown>;
 type Attachment = { endpoint: string; service_instance_id: string; host_identity: Json; token: string };
 export type ManagedTarget = { serviceInstanceId: string; runtimeInstanceId: string; gameContinuityId: string };
+export type ManagedGlobalTransport = GlobalTransport & { readonly startupEnvironment: ManagedStartupEnvironment };
 type PrivateControl = { token: string; epoch: string; runtimeId: string; continuityId: string };
 
 function object(value: unknown, label: string): Json {
@@ -331,11 +333,16 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     runtime_instance_id: this.target.runtimeInstanceId, game_continuity_id: this.target.gameContinuityId } : null; }
 
   /** Same service, client bearer and actual opaque control epoch; no synthetic TTL lease. */
-  static async attachGlobal(bindingPath: string, attachmentPath: string, target: ManagedTarget, runId: string): Promise<GlobalTransport> {
+  static async attachGlobal(bindingPath: string, attachmentPath: string, target: ManagedTarget, runId: string): Promise<ManagedGlobalTransport> {
     const verified = await loadManagedAttachment(bindingPath, attachmentPath, "public-basis-1");
     if (verified.attachment.service_instance_id !== target.serviceInstanceId) throw new Error("Managed service target drift");
     const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target, runId);
     return { kind: "managed", negotiate: signal => client.negotiateGlobal(signal), capture: options => client.captureGlobal(options),
+      get startupEnvironment() {
+        const admitted = client.globalTarget();
+        if (!admitted) throw new Error("global_source_not_admitted");
+        return { binding_sha256: client.bindingSha256, ...admitted };
+      },
       step: (input, options) => client.stepGlobal(input, options),
       // Control is claimed once and held across consecutive choices (Reference credentials are likewise reused).
       acquire: async signal => { signal.throwIfAborted(); if (!client.control) await client.acquireController({ signal }); signal.throwIfAborted(); },
