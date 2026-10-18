@@ -58,10 +58,12 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             return null;
         NativeCombatDecision semanticDecision = NativeCombatDecisionProvider.Capture(entities);
         var visibleHolders = hand.ActiveHolders;
-        CardModel[] visibleHandCards = visibleHolders
-            .Select(holder => holder.CardModel)
-            .Where(card => card != null)
-            .Cast<CardModel>()
+        // Native StartCardPlay reparents the visible held/awaiting holder out
+        // of CardHolderContainer while its model remains in backend Hand.
+        // GetCardHolder includes that exact native holder; preserve real model
+        // order and current full Card Reads without making it actionable again.
+        CardModel[] visibleHandCards = playerCombat.Hand.Cards
+            .Where(card => hand.GetCardHolder(card) is { } holder && ConnectorMod.IsNodeVisible(holder))
             .ToArray();
         context = context with
         {
@@ -161,7 +163,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
                 "PlayerCombatState.Pets+MonsterModel.IsHealthBarVisible",
                 "NativeCombatDecisionProvider logical action catalog",
                 "CombatState.HittableEnemies",
-                "NPlayerHand.ActiveHolders+AreCardActionsAllowed-equivalent guards",
+                "PlayerCombatState.Hand native order + NPlayerHand.GetCardHolder visible holders; ActiveHolders action guards",
                 "NCardPlayQueue exclusion"
             },
             discardBindingsComplete ? Array.Empty<string>() : new[] { "native_combat_potion_holder_binding" });
