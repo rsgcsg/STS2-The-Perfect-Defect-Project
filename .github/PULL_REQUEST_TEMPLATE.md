@@ -4,6 +4,7 @@
 - Base branch / exact base SHA; head branch / latest head SHA:
 - Workstream / primary owner; stable task ID / design version:
 - Change class (`G0`-`G6`) and why; Owning fact / layer:
+- Chain position (node/edge in CHAIN_PURPOSES); architecture change: representation/transport, capability/interaction meaning, implementation substitution, or abstraction review; requires/provides and actual gap:
 
 ## Problem, change and consumer
 

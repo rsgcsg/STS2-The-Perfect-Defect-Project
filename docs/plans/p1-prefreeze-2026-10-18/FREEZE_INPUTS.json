@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "c931292e3e59d2d9a791da764b7f2a51f3dcb820",
-  "source_tree": "f4eba921945c7b23ed7fa83d9737fd45638f95d8",
+  "source_baseline": "4b489108238d1a17bef1dae421d289b29c5883dc",
+  "source_tree": "429b6f6673014408a9f94e66e477472e23842d5c",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 47994,
-      "sha256": "458ce8e19b6f1784421c0597ea59044fa8f8afb1d6b618d9c886a02633d74997",
+      "bytes": 48802,
+      "sha256": "e3b8fb14b6a8e40e4294b9c56c7de4c9cd304c450aa932e13a4f1264f39dcd52",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "d189cefb7ee23b21d05c0b6134b86651b02afa88d4b15b07bd2ee1b768f029e4"
+      "repository_sha256": "60345aa7d9dbb99facbb519da24a79cd9e5299312219468a340efb798802b8f9"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -199,6 +199,12 @@
       "role": "semantic-route context and actual owner/consumer audit; no runtime qualification transfer",
       "bytes": 5523,
       "sha256": "73a2dc6b0cac061c26415bca5edfc9774d7f95f9bce441024c0519552a915fcd"
+    },
+    {
+      "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/UPPER_CHAIN_REVIEW_2026-10-19.zh-CN.md",
+      "role": "review input; its pending4.1 wording is historical, direct user approval now recorded in P1/canonical",
+      "bytes": 12310,
+      "sha256": "a6616f64f08b38d64a2b3c7692a5a35d84052abc4602af4d2ec21fcb84b1d934"
     }
   ]
 }
