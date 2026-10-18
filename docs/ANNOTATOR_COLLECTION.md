@@ -73,6 +73,51 @@ The version-pinned STPD bundle3 adapter, dataset eligibility policy and training
 checks belong to STPD. Their independent release and admission checks never change the
 original recording or turn receiver verification into research qualification.
 
+## Source4 P1 conversion of one recorded run
+
+Source4 is an explicit recording format, separate from the Human bundle3 lane
+above; its [capture/packer owner](../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md#source4-originals-and-offline-p1-interpretation)
+retains menus, native lifecycle boundaries and all recorded inputs. Start Source4
+before starting a new native game when a fresh-run witness is required. Close and
+verify/pack the full source directory; preserve the resulting raw bundle.
+
+The default converter still interprets every original capture as a **bounded
+recorded prefix** (report v2). A menu that is outside P1's active-run contract
+therefore remains unresolved in that mode. To interpret one original run, copy
+its exact `context.game_continuity_id` from the bundle's
+`raw/source-attachment-epochs.jsonl` and select it explicitly:
+
+```bash
+node tools/source4-to-p1.mjs --bundle /absolute/source4-bundle \
+  --python /absolute/python-3.11-or-newer --host-kind reference \
+  --run-continuity ORIGINAL_GAME_CONTINUITY_ID --output /absolute/new-report.json
+```
+
+This produces report v3. Every original capture stays in `captures`, annotated
+with `scope.disposition` (`inside`, `outside`, `unresolved`), reason and original
+epoch/basis/boundary references; all original inputs stay in `native_trace`.
+`outside_scope` is not a P1 observation or choice, and its `complete` is null.
+Other native runs are outside the selected scope. Within the selected epoch,
+only a complete public **no-active-run** fact before the exact native Launch
+watermark/input ordinal can establish a prelude; a scene name or failed P1
+reduction cannot. Early active-run callbacks before the Launch postfix remain
+inside. Missing/partial facts, unknown inputs and every continuation after run
+entry, including terminal/summary publications, remain inside or unresolved.
+The converter does not truncate at the native terminal watermark.
+
+For multiple runs, invoke the converter once per explicit original continuity;
+there is no automatic last-run selection. An absent or non-unique continuity is
+an error. The original v2 mode remains available by omitting the option.
+
+Report `complete` concerns only the declared bounded P1 window. The separate
+`whole_run.complete` also requires exact new setup plus the same continuity's
+native Launch, a later native terminal and complete P1 terminal information,
+without a recording pause, original gap or unknown delivery. Its conditions and
+missing causes remain explicit. Saved/unknown origins, mid-run attachment and a
+complete short prefix never acquire a whole-run claim. These fields do not
+qualify Human origin, gameplay coverage, third-act/win requirements or runtime
+equivalence; those gates still require their own actual evidence.
+
 ## Reports and privacy
 
 A bug report includes package/component/game identities, runtime/session IDs,
