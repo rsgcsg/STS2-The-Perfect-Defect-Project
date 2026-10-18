@@ -14,6 +14,8 @@ test("actual Byrdpip hover cards retain an owner-bound identity across captures 
   const capture=(value,sequence)=>projectManagedCandidateDecision({state:value,sequence,runtimeInstanceId:"hover-id",environmentFingerprint:"test",publicEntityAliases:aliases});
   const hover=value=>value.snapshot.persistent.content.player.relics.at(-1).card_previews[0];
   const first=capture(state,1),second=capture(state,2);
+  for (const key of ["can_play", "target_type", "unplayable_reason"])
+    assert.equal(Object.hasOwn(hover(first), key), false);
   assert.deepEqual(first.snapshot.persistent,second.snapshot.persistent);
   assert.notEqual(first.snapshot.persistent.content.run.modifiers[0].card_previews[0].entity_id,hover(first).entity_id);
   assert.equal(JSON.stringify(first.snapshot).includes("private-"),false);
