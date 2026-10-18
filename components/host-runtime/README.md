@@ -441,6 +441,13 @@ manager-only episode proof before any observation/control claim; public session
 identity omits the private progress and proof. Existing six-field profiles retain
 their original reset behavior. The browser cannot supply this configuration.
 
+Python Host launch accepts optional `diagnostics_file` for the existing CLI.
+Workbench initial-progress profiles choose a fixed private launch-scoped diagnostic
+file; older profiles omit that option. Explicit environment close retains the
+original `close_result` in the private journal and returns it with the existing
+closed response. Its `exit` remains the original native result, including failure
+or unknown; closure alone does not establish a normal native exit.
+
 The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
 driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and

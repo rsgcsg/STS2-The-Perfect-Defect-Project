@@ -209,6 +209,7 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
                                 client_attachment: Path | str,
                                 manager_attachment: Path | str,
                                 log_file: Path | str,
+                                diagnostics_file: Path | str | None = None,
                                 port: int = 0,
                                 character: str = "Ironclad",
                                 timeout_ms: int = 10_000,
@@ -237,6 +238,8 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
             "--timeout-ms", str(timeout_ms), "--quiet-diagnostics"]
     if game_dir is not None:
         args.extend(["--game-dir", str(Path(game_dir).resolve())])
+    if diagnostics_file is not None:
+        args.extend(["--diagnostics-file", str(Path(diagnostics_file).resolve())])
     log_descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(log_descriptor, "wb") as log:

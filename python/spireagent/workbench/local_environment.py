@@ -1753,6 +1753,8 @@ class LocalEnvironmentService:
                 host_package_dir=host_root, candidate_dir=candidate,
                 client_attachment=client_file, manager_attachment=manager_file,
                 log_file=log_file, character=SCENARIO["character"],
+                **({"diagnostics_file": log_file.with_suffix(".native-diagnostics.json")}
+                   if "initial_progress" in _read_profile(self.config) else {}),
             )
             client = client_type.from_attachment(client_file)
             manager = manager_type.from_attachment(manager_file)
@@ -1913,8 +1915,10 @@ class LocalEnvironmentService:
         with self.lock:
             self.client = None
             self.record["host_service_closed"] = True
+            self.record["host_close_result"] = decode_json(json_bytes(result))
             self._save()
-        return {"status": "closed", "service_instance_id": ready["service_instance_id"]}
+        return {"status": "closed", "service_instance_id": ready["service_instance_id"],
+                "close_result": dict(result)}
 
     def recover_control(self, *, expected_session_id: str | None = None,
                         expected_service_instance_id: str | None = None,
@@ -2272,7 +2276,8 @@ class LocalEnvironmentService:
         public = {key: value for key, value in self.record.items()
                   if key not in {"producer", "pending_request_id", "stop_requested",
                                  "pending_control_claim_request_id",
-                                 "uncertain_claim_request_id", "uncertain_control_epoch"}}
+                                 "uncertain_claim_request_id", "uncertain_control_epoch",
+                                 "host_close_result"}}
         if self.record.get("service_binding") is not None:
             public.update(
                 session_semantics="workbench-segment-v2-host-owned-service",
@@ -2307,7 +2312,8 @@ class LocalEnvironmentService:
             record = {key: value for key, value in self.record.items()
                       if key not in {"producer", "pending_request_id", "stop_requested",
                                      "pending_control_claim_request_id",
-                                     "uncertain_claim_request_id", "uncertain_control_epoch"}}
+                                     "uncertain_claim_request_id", "uncertain_control_epoch",
+                                     "host_close_result"}}
             record = decode_json(json_bytes(record))
             try:
                 profile = _read_profile(self.config)
