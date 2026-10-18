@@ -6,7 +6,7 @@ import {shopRoom} from "./fixtures/managed-shop.mjs";
 function inventory() {
   const state=shopRoom();state.decision="shop";state.shop_public=true;state.shop_missing=[];
   state.presentation_owner.stage="inventory";
-  const offer=(index)=>({native_ref:`private-entry-${index}`,inventory_index:index,cost:52+index,is_stocked:true,
+  const offer=(index)=>({native_ref:`private-entry-${index}`,slot_ref:`private-slot-${index}`,inventory_index:index,cost:52+index,is_stocked:true,
     visible:true,affordable:true,can_purchase:true,blocked_reason:null});
   state.cards=[{...offer(0),on_sale:true,card:{native_ref:"private-card",id:"REBOOT",name:"Reboot",type:"Skill",cost:"0",
     rarity:"Rare",description:"Draw 4 cards. Exhaust.",is_upgraded:false,public_details:{keywords:[],card_previews:[]},public_details_missing:[]}}];
@@ -57,5 +57,16 @@ test("closed shop exposes snapshot-bound inspectable catalog without purchase au
   assert.equal(details[0].content.display_owner_entity_id,catalog.content.cards[0].entity_id);
   assert.equal(JSON.stringify(projected.snapshot).includes("private-"),false);
   const bad=structuredClone(state);bad.cards[0].can_purchase=true;
+  assert.equal(projectManagedCandidateDecision({state:bad,...identity}).snapshot.completeness.status,"partial");
+});
+
+test("catalog slot bindings are stable original presentation objects and duplicate slots are not admitted",()=>{
+  const state=inventory(), aliases=new Map();
+  const first=projectManagedCandidateDecision({state,...identity,publicEntityAliases:aliases});
+  const next=projectManagedCandidateDecision({state,...identity,sequence:2,publicEntityAliases:aliases});
+  const catalog=p=>[...p.reads.values()].find(read=>read.descriptor.kind==="shop_catalog").content;
+  assert.equal(catalog(first).cards[0].slot_entity_id,catalog(next).cards[0].slot_entity_id);
+  assert.notEqual(catalog(first).cards[0].slot_entity_id,catalog(first).relics[0].slot_entity_id);
+  const bad=structuredClone(state);bad.relics[0].slot_ref=bad.cards[0].slot_ref;
   assert.equal(projectManagedCandidateDecision({state:bad,...identity}).snapshot.completeness.status,"partial");
 });

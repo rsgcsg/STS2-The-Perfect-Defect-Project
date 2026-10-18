@@ -669,6 +669,7 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     && Number.isSafeInteger(state.max_select) && state.max_select >= state.min_select
     && request.min_select === state.min_select && request.max_select === state.max_select
     && request.require_manual_confirmation === state.require_manual_confirmation
+    && (!["deck_upgrade", "deck_transform"].includes(request.family) || typeof state.showing_upgrade_previews === "boolean")
     && rawCards.length === options.length && rawCards.length <= ACTION_LIMIT - 4
     && cardRefs.every(text) && new Set(cardRefs).size === cardRefs.length
     && selectedRefs.every(ref => cardRefs.includes(ref)) && new Set(selectedRefs).size === selectedRefs.length
@@ -711,6 +712,7 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     : state.decision === "deck_upgrade_select" ? "confirm_upgrade_selection" : "confirm_deck_selection";
   const operations = {
     open_preview: ["open", "preview_deck_selection"],
+    toggle_upgrade_view: ["open", state.decision === "deck_upgrade_select" ? "toggle_upgrade_view" : "toggle_deck_upgrade_view"],
     confirm: ["confirm", confirmAction],
     confirm_selection: ["confirm", confirmAction],
     cancel_preview: ["cancel", state.decision === "deck_upgrade_select" ? "cancel_upgrade_preview" : "cancel_deck_preview"],
@@ -721,10 +723,11 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     if (!operations[operation]) { missing.push("unregistered_native_selector_control"); continue; }
     const [verb, action] = operations[operation];
     const id = ctx.entityId("selector_control", `${state.selector_ref}:${operation}`);
-    const subject = ctx.referent({ role: "selector_control", id, label: operation,
+    const label = operation === "toggle_upgrade_view" ? "Toggle upgrade view" : operation;
+    const subject = ctx.referent({ role: "selector_control", id, label,
       enabled: true, kind: "control", properties: null });
     controls.push({ entity_id: id, operation });
-    ctx.action({ verb, subject, label: operation, raw: { cmd: "action", action,
+    ctx.action({ verb, subject, label, raw: { cmd: "action", action,
       args: { selector_ref: state.selector_ref,
         ...(verb === "confirm" ? { selected_refs: selectedRefs.join(",") } : {}) } } });
   }
@@ -732,6 +735,9 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     : request?.family === "deck_enchant" ? "deck_enchant_selection"
       : request?.family === "deck_transform" ? "deck_transform_selection" : "native_deck_card_selection";
   const selectedIds = selectedRefs.map(ref => ctx.entityId("card", ref));
+  const parentCatalog = plainObject(state.shop_catalog)
+    ? canonicalShopSurface(state.shop_catalog, ctx, state.shop_catalog.decision === "shop", false) : null;
+  if (parentCatalog) missing.push(...parentCatalog.missing);
   const complete = exact && missing.length === 0 && request.preview_information_complete === true
     && request.preview_projection_qualified === true;
   return {
@@ -748,7 +754,7 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       deselectable_card_entity_ids: rawCards.filter(card => exact && card.is_deselectable).map(card => ctx.entityId("card", card.native_ref)),
       can_confirm: controls.some(control => ["confirm", "confirm_selection"].includes(control.operation)),
       cancelable: exact ? state.cancelable : null, current_controls: controls,
-      is_peeking: false, showing_upgrade_previews: false,
+      is_peeking: false, showing_upgrade_previews: state.showing_upgrade_previews === true,
       ordering_basis: "exact_current_native_grid_logical_list" },
     context: plainObject(state.selector_context) && state.selector_context.kind === "event"
       ? { kind: "event", event_id: state.selector_context.event_id, name: visibleText(state.selector_context.name),
@@ -761,17 +767,19 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
   };
 }
 
-function canonicalShopSurface(state, ctx, inventoryOpen = true) {
+function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = true) {
   const arrays = [state.cards, state.relics, state.potions];
   const rawEntries = arrays.flatMap(value => Array.isArray(value) ? value : []);
   if (plainObject(state.card_removal)) rawEntries.push(state.card_removal);
   const owner = state.presentation_owner;
   const refs = rawEntries.map(entry => entry?.native_ref);
+  const slotRefs = rawEntries.map(entry => entry?.slot_ref);
   const exact = state.shop_public === true && plainObject(owner) && owner.kind === "managed_merchant_presentation" && owner.stage === (inventoryOpen ? "inventory" : "room")
     && owner.room_ref === state.room_ref && state.shop_ref === state.room_ref
     && owner.inventory_ref === state.inventory_ref && owner.player_ref === state.player?.native_ref
     && arrays.every(Array.isArray) && Object.hasOwn(state, "card_removal")
     && rawEntries.length + 1 <= ACTION_LIMIT && new Set(refs).size === refs.length
+    && slotRefs.every(ref => typeof ref === "string" && ref.length > 0) && new Set(slotRefs).size === slotRefs.length
     && rawEntries.every((entry, index) => typeof entry.native_ref === "string" && entry.native_ref.length > 0
       && entry.inventory_index === index && Number.isSafeInteger(entry.cost) && entry.cost >= 0
       && ["is_stocked", "visible", "affordable", "can_purchase"].every(key => typeof entry[key] === "boolean")
@@ -779,14 +787,14 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true) {
       && (!entry.can_purchase || entry.is_stocked && entry.visible && entry.affordable));
   const missing = [...(Array.isArray(state.shop_missing) ? state.shop_missing : ["native_shop_capture_missing"]),
     ...(exact ? [] : ["exact_current_native_shop_public_binding"])];
-  const base = entry => ({ inventory_index: entry.inventory_index, price: entry.cost, stocked: entry.is_stocked,
+  const base = entry => ({ slot_entity_id: ctx.entityId("shop_slot", entry.slot_ref), inventory_index: entry.inventory_index, price: entry.cost, stocked: entry.is_stocked,
     visible: entry.visible, affordable: entry.affordable, can_purchase: exact && entry.can_purchase,
     ...(entry.blocked_reason == null ? {} : { blocked_reason: entry.blocked_reason }) });
   const bind = (entry, kind, properties, label, action) => {
     const item = ctx.referent({ role: "shop_entry", id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
       ? ctx.entityId("shop_entry", entry.native_ref) : ctx.id("unbound_shop_entry", kind, entry.inventory_index, ctx.referents.length), label,
       enabled: exact && entry.can_purchase, properties });
-    if (inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
+    if (surfaceActive && inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
       raw: { cmd: "action", action, args: { entry_ref: entry.native_ref,
         ...(action === "remove_card" ? { room_ref: state.room_ref } : {}) } } });
     return item.properties;
@@ -800,7 +808,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true) {
       ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
       ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
         Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"], "shop_offer",
-        ctx.entityId("shop_entry", entry.native_ref), inventoryOpen ? null : ctx.id("read", ctx.snapshotId, "shop_catalog")));
+        ctx.entityId("shop_entry", entry.native_ref), surfaceActive && inventoryOpen ? null : ctx.id("read", ctx.snapshotId, "shop_catalog")));
     } else if (entry.is_stocked) missing.push("native_shop_stocked_card_display");
     return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, ...(card == null ? {} : { card }) }, card?.name ?? "Sold card", "buy_card");
   });
@@ -817,7 +825,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true) {
     entry.name ?? "Sold potion", "buy_potion"));
   const removal = state.card_removal == null ? null : bind(state.card_removal, "shop_service",
     { ...base(state.card_removal), next_price_increase: state.card_removal.next_price_increase }, "card removal", "remove_card");
-  if (inventoryOpen && exact) ctx.action({ verb: "close", label: "Close shop inventory", raw: { cmd: "action", action: "close_shop_inventory",
+  if (surfaceActive && inventoryOpen && exact) ctx.action({ verb: "close", label: "Close shop inventory", raw: { cmd: "action", action: "close_shop_inventory",
     args: { room_ref: state.room_ref, inventory_ref: state.inventory_ref } } });
   const catalogReadId = ctx.id("read", ctx.snapshotId, "shop_catalog");
   const complete = exact && missing.length === 0;
@@ -832,7 +840,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true) {
       interaction_discovery: "read_only", missing, hidden_by_policy: [] }
   });
   // Open inventory has both directly visible offers and their inspectable catalog.
-  if (inventoryOpen) for (const entry of state.cards ?? []) if (plainObject(entry.card)) {
+  if (surfaceActive && inventoryOpen) for (const entry of state.cards ?? []) if (plainObject(entry.card)) {
     const raw = entry.card;
     const { target_type: _target, can_play: _play, ...card } = visibleCardBase(raw, ctx.entityId("card", raw.native_ref));
     ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
@@ -1677,7 +1685,7 @@ function currentSurface(state, ctx) {
       } : null;
       if (plainObject(state.selector_public)) {
         const canonical = canonicalSelectorSurface(state, ctx, commonContext);
-        return { ...canonical, context: { kind: "selection", combat: publicHud },
+        return { ...canonical, context: publicHud,
           complete: canonical.complete && hudComplete,
           missing: [...canonical.missing, ...(hudComplete ? [] : ["complete_current_post_prefix_combat_hud"])] };
       }
@@ -1703,7 +1711,7 @@ function currentSurface(state, ctx) {
           surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
             cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
             is_peeking: false,can_skip: complete && state.can_skip },
-          context: { kind: "selection",combat: publicHud },complete,
+          context: publicHud,complete,
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
@@ -2190,7 +2198,11 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       visibility_basis: "normal_player_visible_surface_card", snapshot_bound: true,
       ordering_semantics: "single_entity", hidden_by_policy: []
     },
-    content: { ...visible, public_details_revision: "1", display_context: displayContext,
+    content: { ...visible,
+      ...(plainObject(visible.existing_enchantment) && Object.hasOwn(visible.existing_enchantment, "visibility_basis")
+        ? { existing_enchantment: Object.fromEntries(Object.entries(visible.existing_enchantment)
+          .map(([key, value]) => [key === "visibility_basis" ? "observation_source" : key, value])) } : {}),
+      public_details_revision: "1", display_context: displayContext,
       parent_read_id: parentReadId, display_owner_entity_id: ownerId,
       ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
       ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}) },

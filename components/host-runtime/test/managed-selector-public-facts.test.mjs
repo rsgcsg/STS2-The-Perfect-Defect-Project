@@ -3,6 +3,7 @@ import test from "node:test";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
 import { projectManagedTextMenuV1 } from "../src/managed-text-menu-map.mjs";
 import { publicSelector as selector } from "./fixtures/managed-selector-public.mjs";
+import { shopInventory } from "./fixtures/managed-shop.mjs";
 
 const identity = { runtimeInstanceId: "selector-public", environmentFingerprint: "test", sequence: 1 };
 
@@ -192,8 +193,8 @@ test("bounded combat pile projects the current original task and native hand leg
   assert.equal(surface.selector_request.family, "combat_pile");
   assert.equal(surface.selector_request.displayed_holder_count, null);
   assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
-  assert.deepEqual(projection.snapshot.interaction.content.context.combat.player.hand.map(card => card.can_play), [true, false]);
-  assert.equal(projection.snapshot.interaction.content.context.combat.player.hand[1].unplayable_reason, "NotEnoughEnergy");
+  assert.deepEqual(projection.snapshot.interaction.content.context.player.hand.map(card => card.can_play), [true, false]);
+  assert.equal(projection.snapshot.interaction.content.context.player.hand[1].unplayable_reason, "NotEnoughEnergy");
   assert.equal([...projection.bindings.values()][0].raw_request.action, "select_native_card");
   assert.deepEqual([...projection.bindings.values()][0].raw_request.args,
     { selector_ref: "private-selector-owner", card_ref: "private-card-original" });
@@ -211,8 +212,62 @@ test("native selector retains the current semantic parent and canonical combat H
   assert.deepEqual(projectManagedCandidateDecision({ state: rest, ...identity }).snapshot.interaction.content.context, { kind: "rest" });
   const combat = selector({ family: "combat_pile" });
   const current = projectManagedCandidateDecision({ state: combat, ...identity }).snapshot;
-  assert.equal(Object.hasOwn(current.interaction.content.context.combat.player, "hp"), false);
-  assert.equal(Object.hasOwn(current.interaction.content.context.combat.player, "max_hp"), false);
+  assert.equal(Object.hasOwn(current.interaction.content.context.player, "hp"), false);
+  assert.equal(Object.hasOwn(current.interaction.content.context.player, "max_hp"), false);
   assert.equal(current.persistent.content.player.hp, combat.player.hp);
   assert.equal(current.persistent.content.player.max_hp, combat.player.max_hp);
+});
+
+test("linked selector card Read uses the VisibleCard enchantment DTO while original public before/after facts stay intact", () => {
+  const state = selector({ family: "deck_enchant" });
+  state.selector_public.preview_options[0].after.existing_enchantment = { definition_id: "SOWN", name: "Sown",
+    description: "Gain energy the first time this card is played.", amount: 1, visibility_basis: "card_hover_semantics" };
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  const option = projection.snapshot.interaction.content.surface.preview_options[0];
+  assert.equal(option.after.existing_enchantment.visibility_basis, "card_hover_semantics");
+  const read = [...projection.reads.values()].find(read => read.content.display_context === "native_single_enchantment_after");
+  assert.deepEqual(read.content.existing_enchantment, { definition_id: "SOWN", name: "Sown",
+    description: "Gain energy the first time this card is played.", amount: 1, observation_source: "card_hover_semantics" });
+});
+
+test("a shop-owned selector preserves its openable parent catalog without exposing purchase or close input", () => {
+  const state = selector({ family: "deck_card" });
+  state.selector_context = { kind: "shop" };state.shop_catalog = shopInventory();
+  for (const entry of [...state.shop_catalog.cards, ...state.shop_catalog.relics, ...state.shop_catalog.potions, state.shop_catalog.card_removal]) {
+    entry.can_purchase = false;
+    entry.blocked_reason = entry.affordable ? "ui_control_disabled" : "insufficient_gold";
+  }
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  assert.equal(projection.snapshot.completeness.status, "complete");
+  assert.equal(projection.snapshot.interaction.kind, "native_deck_card_selection");
+  assert.deepEqual(projection.snapshot.interaction.content.context, { kind: "shop" });
+  assert.deepEqual([...projection.bindings.values()].map(binding => binding.raw_request.action), ["select_deck_card"]);
+  const catalog = [...projection.reads.values()].find(read => read.descriptor.kind === "shop_catalog");
+  assert.equal(catalog.content.access_state, "inventory_open");
+  assert.equal(catalog.content.cards[0].can_purchase, false);
+  assert.equal(typeof catalog.content.cards[0].slot_entity_id, "string");
+  const offers = [...projection.reads.values()].filter(read => read.content.display_context === "shop_offer");
+  assert.equal(offers.length, 1);assert.equal(offers[0].content.parent_read_id, catalog.descriptor.read_id);
+});
+
+test("upgrade and transform view controls dispatch only to the same pending Managed presentation owner", async () => {
+  for (const family of ["deck_upgrade", "deck_transform"]) {
+    const state = selector({ family });const submitted = [];
+    const session = new ManagedPlayerEnvironmentSession({ ...identity, process: { async request(request) {
+      if (request.cmd === "start_run") return state;
+      submitted.push(request);
+      assert.equal(request.action, family === "deck_upgrade" ? "toggle_upgrade_view" : "toggle_deck_upgrade_view");
+      assert.deepEqual(request.args, { selector_ref: state.selector_ref });
+      return { ...structuredClone(state), showing_upgrade_previews: true };
+    } } });
+    const initial = await session.mount({ seed: "synthetic-upgrade-view-binding" });
+    const action = initial.bound_actions.actions.find(action => action.label === "Toggle upgrade view");
+    assert.equal(action.verb, "open");
+    const receipt = await session.submit({ requestId: family, expectedSnapshotId: initial.snapshot_id, boundActionId: action.bound_action_id });
+    assert.equal(receipt.delivery, "delivered");assert.equal(submitted.length, 1);
+    const before = initial.interaction.content.surface, after = receipt.successor.interaction.content.surface;
+    assert.equal(after.showing_upgrade_previews, true);assert.equal(after.request_entity_id, before.request_entity_id);
+    assert.deepEqual(after.selected_card_entity_ids, before.selected_card_entity_ids);
+    assert.deepEqual(after.preview_options, before.preview_options);
+  }
 });

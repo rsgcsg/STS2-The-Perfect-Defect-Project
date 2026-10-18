@@ -24,7 +24,7 @@ export function publicSelector({ preview = false, family = "deck_upgrade" } = {}
     preview_projection_qualified: true, capability_revision: "sts2.native-selector-public-facts/1", missing: [] };
   return { ...state, decision: family === "combat_pile" ? "native_card_select" : family === "simple" ? "simple_card_select" : family === "deck_upgrade" ? "deck_upgrade_select" : "deck_card_select",
     selector_ref: request.owner_entity_id, origin: family === "combat_pile" ? "combat_pile" : family === "deck_enchant" || family === "deck_transform" ? family : "deck_generic",
-    stage: request.stage, prompt: "Choose a card.",
+    stage: request.stage, prompt: "Choose a card.", showing_upgrade_previews: false,
     cards: [{ ...before, index: 0, native_ref: before.entity_id, is_selectable: !preview, is_deselectable: false }],
     selected_refs: request.selected_entity_ids, min_select: 1, max_select: 1,
     require_manual_confirmation: false, cancelable: false,
@@ -34,5 +34,5 @@ export function publicSelector({ preview = false, family = "deck_upgrade" } = {}
       after_availability: after === null ? "not_applicable" : "available", before_missing: [], after_missing: [], missing: [] }],
     enchantment_summary: family === "deck_enchant" ? { title: "Sharp", description: "Deal 2 more damage.", amount: 2 } : null,
     current_controls: preview ? [{ operation: family === "deck_upgrade" ? "confirm" : "confirm_selection" },
-      { operation: "cancel_preview" }] : [] } };
+      { operation: "cancel_preview" }] : ["deck_upgrade", "deck_transform"].includes(family) ? [{ operation: "toggle_upgrade_view" }] : [] } };
 }

@@ -14,7 +14,7 @@ export function shopRoom() {
 // Current pinned native DTO shape; no legacy flattened shop fallback.
 export function shopInventory() {
   const state=shopRoom();
-  const offer=(native_ref,inventory_index,cost,can_purchase=true)=>({ native_ref,inventory_index,cost,
+  const offer=(native_ref,inventory_index,cost,can_purchase=true)=>({ native_ref,slot_ref:`private-slot-${inventory_index}`,inventory_index,cost,
     is_stocked:true,visible:true,affordable:can_purchase,can_purchase,blocked_reason:can_purchase?null:"insufficient_gold" });
   return { ...state,decision:"shop",shop_public:true,shop_missing:[],
     presentation_owner:{...state.presentation_owner,stage:"inventory"},
