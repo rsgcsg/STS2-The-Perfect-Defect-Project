@@ -98,6 +98,17 @@ in their own scope. This is a versioned owning-profile change under ADR-0017, no
 consumer-side filtering or a new legality engine. Original microsteps, partial
 execution and unknown remain observable in the operation evidence.
 
+Every interaction profile declares both its online requires (environment-to-profile
+and profile-to-Agent) and its originals-to-profile requires: observation fields and
+source time/public basis, accepted choices, ordering/results/continuity, completeness
+and rejection, and the declared projection. A recording source supports that profile
+only when its provides, through that projection, cover those requires. The current
+[P1 originals contract](protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)
+and [numbered working diagram](plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)
+instantiate the existing logical roles; adding a source or replacing a profile does
+not create another application/control/data chain. An implementation cannot define
+downstream semantic requirements on its own.
+
 Every current, historical and future implementation follows the same change rules:
 
 | Change | Owning treatment |

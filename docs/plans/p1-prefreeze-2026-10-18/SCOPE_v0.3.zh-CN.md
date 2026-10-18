@@ -3,7 +3,7 @@
 本页同步唯一共享待批定义；canonical精确路径为 `/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md`，其SHA见输入索引 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/FREEZE_INPUTS.json`)。两处按同一次文档集成同步，不独立派生要求。它不是冻结批准，也不批准训练、上传、云费用、历史资产处置或新的协议取舍。用户已定的要求继续执行；尚待决定的范围在第8节明确列出，不能把Claude建议或本次文档合并当成用户已定。
 
 
-**2026-10-19当前方法方向已获用户批准**：以合适粒度和开发速度完整服务P1，复用成熟Human真实原生动作入口、拿牌前H及exact owner关联，补决策时完整public-basis-1；Source4主要服务P2/后续，退出P1当前强制主线。**方向和开录门已按用户最新指令确定；新P1原件/派生整局完整定义、E2/E3新路线适用性及整份冻结定义仍待用户批准**，不把方法/开录门批准或文档合入写成整份冻结定义已获批准。英文≥3真实完整局、全幕/第三幕与胜利、独立信息复验、最终40+20、产品/R20、历史收敛及经授权的最简云等既定结果均保留。
+**2026-10-19当前方法方向已获用户批准**：以合适粒度和开发速度完整服务P1，复用成熟Human真实原生动作入口、拿牌前H及exact owner关联，补决策时完整public-basis-1；Source4主要服务P2/后续，退出P1当前强制主线。**方向、开录门及本定义§4.1–4.2（原件/派生整局完整与新路线E2/E3适用性）已由用户明确批准；整份冻结定义与最终冻结PR仍待用户批准**，不把方法/开录门批准或文档合入写成整份冻结定义已获批准。英文≥3真实完整局、全幕/第三幕与胜利、独立信息复验、最终40+20、产品/R20、历史收敛及经授权的最简云等既定结果均保留。
 
 **目的**：给第一轮训练一个确定、可复验的P1环境、采集/解释、独立Agent接入和可定位的项目全貌；快速复用已有成果，不扩建复杂GUI/团队平台。硬截止仍为2026-10-20 16:30 Brisbane；未完成交实际剩余清单，不暗改标准或延期。
 
@@ -53,7 +53,7 @@
 
 ## 3. 源码锚点、保留身份与发布原则
 
-develop已由普通PR205正常合入至 `733782b119967828160f893893aaf5bff3b540e4`（tree `2669e97f0fd292a0e8269747c836672653f32762`），full CI39124068850 PASS；父结点ea7c/cbbea和202/204/203原合入身份均保留，不是冻结发布。本次文档从rootI committed `c931292e3e59d2d9a791da764b7f2a51f3dcb820`独立派生；该点之后的P1-native核心尚在B/root各自owner中实现，不以本页推断已编译、安装或通过真实短段。旧Source4专项取消包与分支原样保留，退出P1新增预检/投入；此前rootI本地合入的取消相关改动由root单独剥离，不作为本批待推develop的默认内容，本文不改源码或refs。旧fullPython4485 PASS/5skip+93subtests仍绑定原8967生产者，原环境失败/纠正保留，不追贴当前组合。
+develop已由普通PR205正常合入至 `733782b119967828160f893893aaf5bff3b540e4`（tree `2669e97f0fd292a0e8269747c836672653f32762`），full CI39124068850 PASS；父结点ea7c/cbbea和202/204/203原合入身份均保留，不是冻结发布。此前语义定义文档从rootI committed `c931292e3e59d2d9a791da764b7f2a51f3dcb820`派生；本次上层连接文档基于 `4b489108238d1a17bef1dae421d289b29c5883dc`，核心已实现但工程开录门仍未通过；最新实际源码/装载/原件从CURRENT与root当前回执核对。旧Source4专项取消包与分支原样保留，退出P1新增预检/投入；此前rootI本地合入的Source4取消专项已由root以824847fb反向剥离，不作为本批待推develop内容，本文不改源码或refs。旧fullPython4485 PASS/5skip+93subtests仍绑定原8967生产者，原环境失败/纠正保留，不追贴当前组合。
 
 以下身份表保留此前核验范围，不作为最新安装清单或当前预检派发入口；新P1-native核心尚未取得新编译/装载/短段资格。旧d64/04及其后0f2/05–06失败均保持原件，当前路线只按4.1与CURRENT推进。
 
@@ -63,7 +63,7 @@ develop已由普通PR205正常合入至 `733782b119967828160f893893aaf5bff3b540e
 | 旧Reference Mod证据 | native04实际installed/loaded `d64e57b0b872c2ecbfb6db8cfdc61409ae9fb252dfe91750c5b4cecdb7d7c273` / MVID `494e234f-d6f9-4aaa-9624-a8211066b682`，build79ba、Connector source60d14222；rollback `2026-10-18T12-12-49.442Z` 保留6份旧4d文件。producer471源码交付时未实装；其后0f2候选实际loaded05–06但整体Source4仍FAIL；不向d64或新P1-native转贴资格 |
 | Managed | 新实测native `0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b` / MVID `1115859e-f311-4e2e-b103-0b3c91168250` / patch `43e223e567c1a8610bbc80b377033e9579b72e1ece7081d5f9b27b36c211a3c8`，buildf434；同04原progress/actual seed的初始Neow完整P1+12Reads严格equal，只有单点，不是选择/整轨/整局。A03 a70/cd47及1482/S05保持旧身份 |
 | P1/SDK/驱动/Runtime | P1 r1.3唯一语义owner；固定共享核心/Host mapping/Agent端口/比较器和实际发布包身份。typed tooltip用原全局双射，仅已声明typed shop detail尾部无序，usable_potions有序，500000工作上限保留 |
-| 采集/转换 | 当前P1-native沿成熟Human accepted动作/同次完整PB1、run journal、Close/pack与共享核派生；格式由原owner实现，本文完整性定义待用户批准/实际验收。旧Source4 profile/bundle/report-v3保留原范围，不作当前P1强制门 |
+| 采集/转换 | 当前P1-native沿成熟Human accepted动作/同次完整PB1、run journal、Close/pack与共享核派生；格式由原owner实现，本文4.1–4.2完整性定义已批准，实际验收仍待。旧Source4 profile/bundle/report-v3保留原范围，不作当前P1强制门 |
 | 模板/显示 | Reference normal mature全解锁/FTUEoff/instant已在04 prepare与run UnlockState原生读回PASS；actual seed `SWNBPYW69BAC` 与menu请求值不同，严格比较用实际原件。准备数据私有，不进Agent/P1/训练标签；旧模板不改称成熟profile |
 | 校验/产品/文档 | 原verifier/replay/comparator、API/库/CLI调用链、外包R20、范围/覆盖/差异和K入口；冻结时填实际成功原件，空格不当ready |
 
@@ -86,9 +86,9 @@ develop已由普通PR205正常合入至 `733782b119967828160f893893aaf5bff3b540e
 
 Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target。通用环境采集不限Human或鼠标；直接Agent原件独立于Annotator/Source4。当前Runtime写 `sts2.policy-runtime/agent-session-run-1`目录（global_source、frame/Consume/ACK、Receipt/Result），旧 `sts2.p1/episode-record-1`单文件保留原converter/reader；不能混成一个当前格式。
 
-### 4.1 新P1-native完整性定义（待批）与已确定的开录门
+### 4.1 新P1-native完整性定义（用户已批准）与已确定的开录门
 
-方向和开录门已按用户最新指令确定，不是已经通过的运行结果；下列新P1原件/派生整局完整定义及整份冻结定义仍待用户批准。
+用户2026-10-19已明确批准本节与4.2；方向和开录门也已确定。批准定义不代表实际短段或整局已通过，整份冻结定义与最终冻结PR仍待批准。
 
 **原件整局完整**：从真实原生新局起点到自然终局，所选run的全部实际玩家语义决策，以及它们真实accepted的原生动作/UI选择，均保留决策时的完整`public-basis-1`（PB1）、其全部advertised Reads及同状态身份绑定，并保留原始顺序、选择对象/目标/owner、真实接受证明、结果/后继、原生起终、run/parent/save/continuity以及Close/pack/内容校验。未提交拿牌取消没有accepted决策，不凭空生成label。真实accepted动作发生而必需PB/Read、结果或顺序缺失，必须显式报缺口；真实效果与unknown不得消失，不能凭Close/pack成功把缺口叫完整。敌人/效果等内部自动GameAction不因此生成玩家label，其内生生命周期/效果仍作为原始事实和结果保留。行政菜单/进度准备保留私有provenance，不作训练标签。
 
@@ -98,7 +98,9 @@ Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target�
 
 **开录短段门**：邀请用户正式录整局之前，新候选必须有一段实际短记录，覆盖真实Play、一次未提交拿牌取消且0label、EndTurn，以及至少一项其它非出牌决策（如地图/事件/奖励）。该段的原件完整、共享核离线校验/派生、Managed严格短重放都通过，保留同一tuple/实际seed/原件/报告链接；仅源码fixture、取消0label或单侧动作成功不够。工程自测短段按真实操作者/工程来源标注，不能冒充正式Human局。root工程自测短段实际通过开录门后，用户直接开始正式英文整局，**不再单独要求真人短段**。第一局开始后优先对开头已经保存的一段原件做转换核对，作为真人验证；不要求用户另开一局或为核对中断正式局，开头段通过也不冒称该整局完整。**正式整局仅由用户操作**；联系不到用户、用户不方便或找不到入口/记录器时，正式录制及必需的用户决定都等待用户，不代录正式局，可独立的其它工作并行继续。
 
-### 4.2 E2/E3适用范围（新路线适用性待用户批准）
+**逐局处理（用户2026-10-19明确）**：每局约30分钟，不需录制中途实时盯；每局结束立即转换核对，首局优先核已经保存的开头段。发现原件缺口立刻报告缺什么、在哪一步，由用户决定继续或重开；同时修录制器出新candidate。缺口原件完整保留，不计至少3整局；缺口前片段只有同次Reference正确记录、离线验证与Managed严格重放三证同时通过才可计机制覆盖。用户指定的四项完整性检测必须逐项说明已实现/缺失，静默漏录抓不到时列known risk，不能用完整性目标冒充实现保证；详见[P1协议§4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)的源码状态表。
+
+### 4.2 E2/E3适用范围（新路线适用性用户已批准）
 
 - E2保留原Source4无输入启动waiting的原合同和旧报告解释。新路线行政准备不产label，也不要求它先满足Source4 raw前缀分类；但真实决策时缺完整PB1/Read仍不合格，不能借“启动”排掉真实决策。
 - E3保留原Source4同owner/card相邻select→deselect的原合同。新路线未提交拿牌取消本来就没有accepted决策，不产生label，不再要求Source4 raw净零分类作为P1前置。已经真实accepted的选择、效果、取消/中断和unknown仍按原始事实保留，不能把它们混成“只是拿牌”丢掉。
@@ -108,7 +110,7 @@ Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target�
 
 Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。 仅本次附条件批准的有界启动waiting可按§8及P1§17 E2单列非决策段；它不把原NativeLogical缺失变成完整。
 
-在保留的Source4 lane中，用户已批准限定selector reversal离线解释，唯一语义登记为[P1§17 E3](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：同owner/同原始card相邻select→deselect，全部complete before/after、all Reads及known原生接受证明恢复原状且无任何效果，才可context_only、不产生P1 choice/训练label；首select暂缓至pair分类，不能先发标签后删。Agent仍append-only、不加deselect；missing/unknown/换owner/复杂交错仍unresolved，不回填old04FAIL。**批准不等于旧报告或整局通过**；该旧lane不再派发P1新预检，新路线适用性以4.2待批定义为准。
+在保留的Source4 lane中，用户已批准限定selector reversal离线解释，唯一语义登记为[P1§17 E3](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：同owner/同原始card相邻select→deselect，全部complete before/after、all Reads及known原生接受证明恢复原状且无任何效果，才可context_only、不产生P1 choice/训练label；首select暂缓至pair分类，不能先发标签后删。Agent仍append-only、不加deselect；missing/unknown/换owner/复杂交错仍unresolved，不回填old04FAIL。**批准不等于旧报告或整局通过**；该旧lane不再派发P1新预检，新路线适用性以4.2已批准定义为准。
 
 正式计数继续用同一最终候选、英文、≥3完整Human局，环境录制/选择器分来源列；自然loss可算完整局，不能当第三幕/胜利覆盖。不同候选/语言、locator诊断、原not_started跳过、Agent预检和save恢复片段不拼成最终三局；存档续玩保留父局/存档SHA/new continuity，数据按同谱系分组。
 
@@ -230,12 +232,12 @@ B/root当前关键路径是P1-native核心、同次完整PB1/accepted动作原�
 保留的Source4格式中，用户2026-10-18已批准**有界启动waiting离线解释例外**，唯一协议登记为[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：从**同run的native setup→Launch原见证**起，到首份完整、可决策公开观察前，可保留明确settling且原始失败/缺失的帧为非决策启动语境；原缺失和失败完整保留，不以后帧补齐，不发Agent，不声称NativeLogical缺失前缀变完整。期间混入任何玩家输入（即使未响应）必须unresolved，整局不得complete；该段必须以完整decision结束，崩溃或等不到都不得complete；每局报告单列帧数和时长，不算决策。first decision起的完整性与full strict门不变。**批准条件已登记；startup源码已root独审、22 focused PASS；01原真实包仍地图unmapped；02已Map/EndTurn严格match、E2 1帧7235ms/0input完整，但FTUE使overall false；03 ChangeSource未pause在输入前失败。** 旧MapNativeSourceWitness漏附原件不补写；原owner补附源码已入候选，等新录制验。
 
 
-1. 本合成冻结定义整体、新4.1原件整局完整/派生完整与4.2新路线E2/E3适用性，以及最终发布形式（原BOM、freeze PR/tag、main另定）；方向和开录门已按用户最新指令确定，其余具体定义在确认前仍是待批稿。
+1. 本合成冻结定义整体及最终发布形式（原BOM、freeze PR/tag、main另定）；方向、开录门以及§4.1–4.2原件/派生完整与新路线E2/E3适用性已经用户批准，不再列待批。
 2. 覆盖口径已按第6节批准；补验后仍未到达的具体机制，冻结前列缺口交用户决定，不预填PASS。
 3. 云最小对象/目的prefix/费用与一次有界Modal读取的授权和细门；40G历史迁移独立表，本地删除另批。
 4. 冻结前独立信息复验范围/时点已按第6节批准；截图具体方法已按第6节定位原native提示/预览+CUA，live前缀复现与rendering待小验，不提前称取证已通过。扩信息范围/改协议仍交用户决定。
 5. 胜利终局确实取得困难时，由用户决定剩余范围；旧中文缺陷的记录保留，新英文严格口径按最新指令执行。
-E2/E3原Source4规则、已定覆盖与冻结前独立信息复验继续保留；新路线原件/派生整局完整及E2/E3适用定义单列待批；开录门已确定。Source4退出当前关键路径不取消其余11项结果、42行覆盖和终局口径，也不宣布任何运行已过。
+E2/E3原Source4规则、已定覆盖与冻结前独立信息复验继续保留；新路线原件/派生整局完整及E2/E3适用定义已批准；开录门已确定。Source4退出当前关键路径不取消其余11项结果、42行覆盖和终局口径，也不宣布任何运行已过。
 
 首轮训练的数据划分/门槛、P1 Input/Target/词表及实际执行绑定、新费用、Q1固定评测方案仍在冻结后确认；已有Q3第3版模型/配方不因本定义被撤销，若要改变仍先请用户确认，本定义不代批。到截止未齐就交11条实际剩余表，不把待定/未测写成通过。
 

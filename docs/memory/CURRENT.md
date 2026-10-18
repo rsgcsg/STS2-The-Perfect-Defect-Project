@@ -1,84 +1,86 @@
-# Current — P1 semantic recording and pre-training freeze
+# Current — P1 upper-chain implementation and semantic recording
 
-Resolve live GitHub refs; actual source and original records override this file.
-This is dated routing, not live or qualification authority. The
-[project map](../plans/p1-prefreeze-2026-10-18/README.md) and
-[freeze definition](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) remain
-pending user approval overall. The direction and recording gate are set by the latest user instruction. New P1
-originals/derived whole-run completeness, new-route E2/E3 applicability and the
-overall freeze definition still await user approval.
-The final deadline remains 2026-10-20 16:30 Australia/Brisbane.
+Current docs topic: 2026-10-19, `codex/p1-upper-chain-docs-20261019`, based on
+root I `4b489108238d1a17bef1dae421d289b29c5883dc`. The old 3aac docs are already
+integrated; do not restore that task. Resolve live GitHub refs; actual source and
+original records override this file. This is dated routing, not live authority.
 
-## Current route and ownership
+Start with the single [chain diagram and requires/provides table](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md),
+then [P1 section4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准).
+Every profile declares originals-to-profile requires; a new source supports it only
+when declared projection of its provides covers those requires. P1 is today's choice.
+Reports/PRs identify chain position and one of the four Architecture change classes.
+Two different-cause preflight failures trigger a review of the failed connection:
+implementation fails requires, or requires are unclear/wrong. Semantic/upper-level
+changes remain user decisions. Q connections7/8 and a non-blocking closeout hint wait
+until after freeze; this task adds no checker, service, registry, schema or freeze gate.
 
-The current P1 route reuses mature Human accepted-action and exact asynchronous-owner
-recording for actual player semantic decisions, with complete decision-time PB1 and
-all advertised Reads. Internal enemy/effect GameActions retain original lifecycle
-facts and results but do not become player labels.
-Source4 mainly serves P2/future and is no longer a mandatory P1 path. No further
-Source4 cancellation preflight or investment is scheduled. Its packets, branches
-and failed originals remain preserved; root will remove cancellation-only local
-integration from the candidate before any develop push. This document changes no refs.
+## Approved definitions and current engineering
 
-B owns the Connector same-BuildSnapshot PB1 seam and Annotator profile/store/Close/pack.
-Root owns the thin shared-core native-semantic adapter and bundle/offline converter.
-They are implementing the P1-native core and engineering short segment. No new native
-short recording has yet passed originals, offline and strict Managed replay together.
-The original complete basis cannot be filled from a later state. A missing adapter
-can be implemented while complete originals are recorded, then derive a new output
-without altering those originals; derived PASS is withheld until every real P1
-choice/result is supported. The proposed exact definitions are in section4.1.
+The user has approved freeze-definition sections4.1–4.2: original whole-run completeness,
+derived completeness and new-route E2/E3 applicability. Direction and recording gate
+are also set. The overall [freeze definition](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
+and final freeze PR are separate pending approval. Deadline remains Oct20 16:30 Brisbane.
 
-The hard checkpoint is 2026-10-19 09:00 Brisbane (2026-10-18 23:00 UTC). Report actual
-core/self-test short results then. If incomplete, give the concrete blocker, remaining
-work and time estimate, then continue authorized ordinary repairs without waiting
-for approval or claiming PASS. Plan/scope changes remain the user's decision.
-Two preflight failures with different
-causes trigger a route review before more patches/runs. Review is proportionate to
-actual merge/freeze needs, not a new independent gate for every SHA or step.
+P1 reuses mature Human accepted native-action/exact-owner capture plus same-time
+complete PB1/all Reads and shared-core derivation. Internal automatic GameActions
+retain facts/results without becoming player labels. Source4 is retained for future
+profiles, has no new investment/preflight, and its cancellation-only code was removed
+from I by824847fb; original packets/branches/failures remain preserved.
 
-Checkpoint automation stops after its final trigger at2026-10-20 09:00 Brisbane.
-Only the deadline automation sends the16:30 deadline report. Pausing scheduled
-triggers does not pause engineering work; root already updated the automations.
-If a game or its conversion is ongoing at16:30, preserve originals and finish normal
-Close/pack without interruption. Report pending at the deadline, then add actual
-results after safe completion; do not call pending PASS.
+Root I is4b489108; official installed f0f050eb/MVIDfa40acad used a strictly checked
+cold-load tuple in native03. This is a dated source/install snapshot, not a recording
+PASS. Native02 saved16 events/5 accepted/5 terminal/0 pending/0 issue and complete
+Reads, but legacy text-input wrote an undeclared stream: Close failed and no pack.
+Its immutable prefix later derived5 actions/6 points and strictly matched Managed,
+including final successor, with0 unknown/taint/budget. This valid prefix does not
+repair failed Close. Native03 ended normally at the menu with zero player actions,
+for the old-hook audit; zero-action Close/pack does not pass the recording gate.
+B audits all reachable old hooks (Quarantine, nested continuation, act-entered,
+carrier failure included); root integrates/builds/backs up/deploys then runs a new session.
 
-The user-set recording gate requires Play, an unsubmitted pickup cancel with zero
-labels, EndTurn and another non-card-play decision, plus complete originals, offline
-verification and strict Managed short replay. After root's self-test passes, the
-user directly starts formal English whole games, with no separate Human short run.
-Convert/check the first saved opening segment as Human validation without interrupting
-the formal game; it does not establish whole-run completeness. Only the user operates formal whole
-games. When the user is unavailable, wait for formal recording/decisions; continue
-independent work. Also wait if the user cannot locate the entry; do not record a
-formal game on their behalf. Engineering records keep their true origin.
+## Four requested gap detectors: actual status and known risk
 
-## Preserved source and evidence
+(a) Seen unsupported actions: existing captured accepted-action/PB/match failures emit
+issue; missing or bypassed hooks are still under B audit. (b) Every player-wait boundary
+followed by accepted decision or explicit end: not fully implemented; accepted-to-terminal
+accounting does not count all waiting boundaries. (c) Every inter-decision change explained
+by recorded choices and automatic effects: partial lifecycle/successor/sequence checks,
+no exhaustive independent effect-accounting proof. (d) Strict Managed mismatch: implemented
+for derived trajectories and tested on native02's bounded prefix, not a formal whole run.
+A choice never observed by any capture hook can evade(a);(b)/(c) do not currently close
+that hole. Managed(d) may expose changed state but cannot prove every omitted choice
+was detected. Silent omission remains a known risk, not a complete guarantee. Exact
+source anchors and limits are in P1 section4.1.
 
-This docs topic starts from committed c931292e3e59d2d9a791da764b7f2a51f3dcb820.
-PR205 normally merged as 733782b1 with full CI39124068850 passing. Earlier installed
-0f2cef0d/producer471 and Source4 native01–06 remain bound to their actual artifacts
-and failed reports. Managed0426384c initial Neow with 12 Reads was equal at one point,
-not a strict trajectory. The installed rc38/Host32 Application bounded action and
-its evidence checks were real bounded product progress, not gameplay qualification.
-Old rc37 Managed R20, A03 and 1482/S05 evidence retain their original scope.
+## User recording and follow-up
 
-E2 retains the old Source4 no-input startup rule. New administrative preparation
-is not a label, but a real decision without its complete PB1/Reads is unqualified.
-E3 retains old Source4 adjacent select/deselect interpretation. New unsubmitted
-pickup cancellation creates no accepted decision; raw net-zero classification is
-not a P1 prerequisite. Real accepted selections, effects and unknowns remain recorded.
-These new-route applicability details remain proposed in definition4.2.
+Before inviting formal recording, a real engineering short segment must cover Play,
+unsubmitted pickup cancel with zero labels, EndTurn and another non-card decision,
+with complete originals, offline derivation/verification and strict Managed replay.
+No actual segment has passed this complete gate yet. After it passes, the user directly
+starts formal English whole games, with no separate Human short run. Check the first
+saved opening segment as Human validation without interrupting the game.
+
+A game takes about30 minutes; no need to monitor midway in real time. Convert/check
+immediately after each game. On an original gap, report exactly what and at which step;
+the user decides continue/restart while engineers repair the recorder and make a new
+candidate. Preserve gap originals; they do not count toward at least3 whole games.
+A pre-gap segment may count mechanism coverage only if Reference correctness, offline
+verification and strict Managed replay all pass on that same occurrence.
+Only the user plays formal games. If unavailable or unable to find the entry, wait for
+formal play/required decisions while independent work continues.
+
+Oct19 09:00 Brisbane is the core/self-test checkpoint. If missed, report blockers,
+remaining work/time, then continue ordinary authorized repairs; plan changes go to user.
+Checkpoint scheduling ends after Oct20 09:00; only the deadline automation reports16:30.
+A scheduling pause does not stop engineering. At deadline protect any ongoing game or
+conversion and complete normal Close/pack; report pending, then actual results afterward.
 
 ## Remaining Platform non-claims
 
-The three English whole Human games, all-act/Act3/victory coverage, independent
-image/P1 review, final40+20, strict replay, product/final two-Host R20 and user-approved
-freeze are not waived or complete. Console sessions/ancestors remain excluded from
-formal games, coverage and training. Non-console save suffixes require the existing
-three proofs, never count as whole games, and stay in the parent data group.
-K3's 24 exact archived/closed items, 19 reuse rows and 7 mandatory research lookups
-remain. Historical audit/convergence is still part of the task; existing results are
-reused. Minimal cloud proceeds only within actual data-use/spending authority.
-Tests/builds/Close/process exit do not establish Human origin or training readiness.
+English>=3 whole games, all-act/Act3/victory, INFO independent review, final40+20,
+product/final two-HostR20, historical convergence and authorized minimal cloud remain.
+Console ancestry is excluded from formal games/coverage/training. K3 exact24 archives
+and19 reuse rows remain; Q3v3/model/training settings are unchanged. Source/tests,
+install/load, gameplay, Human origin and training readiness remain separate claims.
