@@ -96,6 +96,20 @@ test('accepted alone never becomes completed and does not yield an eligible traj
   assert.ok(report.issues.some(issue => issue.reason === 'accepted_action_without_terminal_disposition'));
 });
 
+test('a mechanical diagnostic with explicit absent basis creates no decision or successor', () => {
+  const { source } = example();
+  source.events.push({ ...source.events.at(-1), sequence: 8, event_id: 'diagnostic-8',
+    basis: null, reason: 'native_automatic_transition',
+    basis_missing_reason: 'native_diagnostic_not_decision_boundary' });
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.equal(report.actions.length, 2);
+  assert.equal(report.trajectory.points.length, 3);
+  assert.equal(report.captures.at(-1).observation, null);
+  assert.deepEqual(report.captures.at(-1).missing, ['native_diagnostic_not_decision_boundary']);
+  assert.equal(report.actions[1].successor.origin, 'native_decision_owner_ready');
+});
+
 test('a finished callback with only settling original still needs a later complete successor', () => {
   const { source } = example();
   source.events.pop();
