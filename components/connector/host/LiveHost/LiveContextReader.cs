@@ -151,15 +151,14 @@ internal static class LiveContextReader
         string? starCost = card.HasStarCostX
             ? "X"
             : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
-        string? description;
-        try
-        {
-            description = ConnectorMod.StripRichTextTags(card.GetDescriptionForPile(displayPile)).Replace("\n", " ");
-        }
-        catch when (!strictRendering)
-        {
-            description = ConnectorMod.SafeGetText(() => card.Description)?.Replace("\n", " ");
-        }
+        var publicDetails = NativePublicCardDetails.Capture(card, displayPile);
+        // The native render transaction clears and updates previews for this
+        // exact pile, then restores the prior preview state. The base Read must
+        // use its captured description, not format that restored cache again.
+        string? description = publicDetails.Card.GetValueOrDefault("description") as string;
+        if (description == null && strictRendering)
+            throw new InvalidOperationException("Current native card description is unavailable: "
+                + string.Join(",", publicDetails.Missing));
 
         VisibleEnchantment? existing = card.Enchantment == null
             ? null
@@ -179,7 +178,6 @@ internal static class LiveContextReader
             unplayableReason = reason == UnplayableReason.None ? null : reason.ToString();
         }
 
-        var publicDetails = NativePublicCardDetails.Capture(card, displayPile);
         return new VisibleCard(
             entityId,
             card.Id.Entry,

@@ -541,10 +541,13 @@ function visibleHoverKeywords(keywords) {
 }
 
 function visibleHoverCards(cards, ownerKind, ownerRef, entityId) {
-  return cards.map((card, index) => visibleCombatCard(
-    card,
-    entityId("tooltip_card", JSON.stringify([ownerKind, ownerRef, index, card?.id, card?.is_upgraded]))
-  ));
+  return cards.map((card, index) => {
+    const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...visible } = visibleCombatCard(
+      card,
+      entityId("tooltip_card", JSON.stringify([ownerKind, ownerRef, index, card?.id, card?.is_upgraded]))
+    );
+    return visible;
+  });
 }
 
 function visibleCombatCard(card, entityId, depth = 0) {
@@ -565,7 +568,7 @@ function visibleCombatCard(card, entityId, depth = 0) {
         name: card.enchantment,
         description: card.enchantment_description ?? null,
         amount: card.enchantment_amount ?? 0,
-        visibility_basis: "card_hover_semantics"
+        observation_source: "card_hover_semantics"
       }
     }),
     target_type: card?.target_type ?? null,

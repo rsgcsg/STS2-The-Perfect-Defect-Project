@@ -1,5 +1,6 @@
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Potions;
 using STS2Connector.LiveHost;
 using STS2Connector.LiveHost.Contracts;
 using STS2Platform.NativeFoundation;
@@ -8,6 +9,36 @@ namespace STS2Connector.Host.Tests;
 
 public sealed class CombatCommandPresentationTests
 {
+    [Fact]
+    public void UsablePotionCommandsFollowCapturedInventorySlotsAcrossOpaqueKeyChanges()
+    {
+        PotionModel first = new EnergyPotion(), second = new SkillPotion(), unavailable = new EnergyPotion();
+        PotionModel hidden = new SkillPotion();
+        object player = new();
+        NativeSemanticAction Action(string key, PotionModel potion, string id) =>
+            new(key, "use", id, potion, new[] { new NativeSemanticOperand("target", "player", player) },
+                "actual_native_catalog_fixture");
+        foreach (bool reverseKeys in new[] { false, true })
+        {
+            NativeSemanticAction[] actions =
+            [
+                Action(reverseKeys ? "a" : "z", first, "energy-slot0"),
+                Action(reverseKeys ? "z" : "a", second, "skill-slot1"),
+                Action("0-hidden", hidden, "hidden")
+            ];
+            var decision = new NativeCombatDecision("captured", "combat_play_phase", true,
+                actions, Array.Empty<string>(), null);
+            var options = new List<VisibleCombatCommandOption>();
+            CombatTurnSurfaceReader.AddPotionOptions(options, decision, new[] { first, unavailable, second });
+            Assert.Equal(new[] { "energy-slot0", "skill-slot1" }, options.Select(option => option.EntityId));
+            Assert.All(options, option => Assert.Equal(new[] { "player" }, option.TargetEntityIds));
+            Assert.Same(first, decision.Actions[0].NativeSubject);
+            Assert.Same(second, decision.Actions[1].NativeSubject);
+            Assert.Same(player, decision.Actions[0].Operands[0].NativeValue);
+            Assert.Equal(actions, decision.Actions);
+        }
+    }
+
     [Fact]
     public void PlayableCommandOrderFollowsCapturedHandAcrossOpaqueKeyChangesWithoutLosingTargetsOrRepeatedCards()
     {
