@@ -1,4 +1,7 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using System.Text.Json.Nodes;
 using Godot;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -83,16 +86,16 @@ public sealed class NativeMapInformationTests
         Array.Empty<PlayerEnvironmentReadOpportunity>(), new("complete", "visible", "exact", Array.Empty<string>(), Array.Empty<string>()),
         new("runtime", "environment"), new("player_visible_v1", "current_page", false, "omit"));
 
-    private static SnapshotBuildResult NativeMap(bool annotation)
+    private static SnapshotBuildResult NativeMap(bool annotation, string screenId = "map", string pointId = "node")
     {
-        var map = new MapNavigationSurface("map_navigation", "map", true, false, annotation ? "drawing" : "none",
-            new[] { new VisibleMapChoice("node", 0, 1, "Monster") })
+        var map = new MapNavigationSurface("map_navigation", screenId, true, false, annotation ? "drawing" : "none",
+            new[] { new VisibleMapChoice(pointId, 0, 1, "Monster") })
         { CanExitAnnotation = annotation, AnnotationInputEntityId = annotation ? "annotation" : null };
         var context = new MapLiveContext("map", 0, null, Array.Empty<VisibleMapCoordinate>(), Array.Empty<VisibleMapNode>());
         var observation = new LiveObservation("map-source", "ready", context, map,
             new("contract_complete_for_visible_singleplayer_map_navigation", "exact", Array.Empty<string>(), Array.Empty<string>()),
             new("v", "commit", null, null, new("test", true, true, false, "fixture")), Array.Empty<string>());
-        var refs = new[] { Ref("node", "map_node"), Ref("annotation", "map_annotation_input") };
+        var refs = new[] { Ref(pointId, "map_node"), Ref("annotation", "map_annotation_input") };
         var native = NativeUiActionRuntime.DescribeMapCommands(map)
             .Select(value => NativeUiActionRuntime.BindActionToCurrentObservation(observation, value)!).ToArray();
         var projection = PlayerEnvironmentService.ProjectBoundActions(native, "map",
@@ -100,6 +103,35 @@ public sealed class NativeMapInformationTests
         Assert.Equal("complete", projection.Projection.Status);
         return new(Page() with { Referents = refs, BoundActions = projection.Projection },
             observation, projection.Bindings, new Dictionary<string, PlayerReadBuildResult>());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void MapSourcePrefixBindsOnlyTheOriginalRegisteredScreenAndPoint(bool registered)
+    {
+        var entities = new NativeEntityRegistry();
+        var screen = (NMapScreen)RuntimeHelpers.GetUninitializedObject(typeof(NMapScreen));
+        var point = (MapPoint)RuntimeHelpers.GetUninitializedObject(typeof(MapPoint));
+        string screenId = entities.GetId(screen, "map_screen"), pointId = entities.GetId(point, "map_point");
+        var source = NativeMap(false, screenId, pointId);
+        var frame = new TextMenuFrame(Page(), "exact-map", Array.Empty<TextMenuLeaf>());
+        var original = NativeTextMenuFrameBuilder.AppendMapActions(frame, source,
+            _ => NativeInputResult.Delivered("native_map"));
+        var captured = NativeTextMenuFrameBuilder.AppendMapActions(frame, source,
+            _ => NativeInputResult.Delivered("native_map"), sourceEntities: registered ? entities : new NativeEntityRegistry());
+        var leaf = Assert.Single(captured.Leaves);
+        Assert.Equal(Assert.Single(original.Leaves).Verb, leaf.Verb);
+        Assert.Equal("activate", leaf.Verb);
+        Assert.Equal(pointId, leaf.SubjectReferentId);
+        Assert.Null(leaf.NativeWitness);
+        if (registered)
+        {
+            Assert.Same(screen, leaf.NativeSourceWitness!.Owner);
+            Assert.Same(point, leaf.NativeSourceWitness.Subject);
+            Assert.Empty(leaf.NativeSourceWitness.Arguments);
+        }
+        else Assert.Null(leaf.NativeSourceWitness);
     }
 
     [Theory]

@@ -193,6 +193,11 @@ and bundle `source-session-bundle-v4`. It additionally preserves independently
 frozen `public-basis-1` bytes, all advertised Read instances and original native
 carrier/Task facts. The Workbench format selector defaults to Source3; Source4
 is explicit. Neither format changes the source declaration into Human proof.
+
+Native map input matches the original `NMapScreen.OnMapPointSelectedLocally` prefix
+against the same registered screen and `MapPoint` in the current native leaf.
+These process-local Source bindings never change the public action or infer a
+destination from coordinates; absent or different objects remain unmapped.
 Source3 import/training readers keep their existing profile admission.
 
 `tools/source4-to-p1.mjs` verifies with the independent Evidence v4 reader,

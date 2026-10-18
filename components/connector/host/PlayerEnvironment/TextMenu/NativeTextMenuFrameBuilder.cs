@@ -9,6 +9,8 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -115,7 +117,8 @@ internal static class NativeTextMenuFrameBuilder
         {
             var map = nativeLogical ? MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance : null;
             return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy,
-                map == null ? null : transition => NativeTextMenuInformation.ExecuteMapTransition(map, transition));
+                map == null ? null : transition => NativeTextMenuInformation.ExecuteMapTransition(map, transition),
+                nativeLogical ? entities : null);
         }
 
         if (page.Interaction.Stage == "native_information_page"
@@ -405,9 +408,10 @@ internal static class NativeTextMenuFrameBuilder
 
     internal static TextMenuFrame AppendMapActions(TextMenuFrame frame, SnapshotBuildResult source,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
-        Func<Func<NativeInputResult>, NativeInputResult>? mapDeparture = null)
+        Func<Func<NativeInputResult>, NativeInputResult>? mapDeparture = null,
+        NativeEntityRegistry? sourceEntities = null)
     {
-        if (source.HostObservation.Surface is not MapNavigationSurface
+        if (source.HostObservation.Surface is not MapNavigationSurface map
             || source.Snapshot.BoundActions.Status != "complete") return frame;
         var leaves = frame.Leaves.ToList();
         var referents = frame.Page.Referents.ToList();
@@ -416,6 +420,15 @@ internal static class NativeTextMenuFrameBuilder
             if (source.Bindings.TryGetValue(action.BoundActionId, out PlayerEnvironmentNativeBinding? binding))
             {
                 TextMenuLeaf leaf = FromLegacy(action, binding, executeLegacy);
+                // The native map callback carries the screen and MapPoint, not
+                // coordinates. Retain those same registered objects for the
+                // independent Source prefix match; public actions stay unchanged.
+                if (sourceEntities != null && binding.NativeAction.Candidate.Operation == "choose_map_node"
+                    && sourceEntities.TryResolve<NMapScreen>(map.ScreenEntityId, out var screen)
+                    && action.SubjectReferentId is { } pointId
+                    && sourceEntities.TryResolve<MapPoint>(pointId, out var point))
+                    leaf = leaf with { NativeSourceWitness = new(screen!, point,
+                        new Dictionary<string, object>(StringComparer.Ordinal)) };
                 leaves.Add(mapDeparture != null && binding.NativeAction.Candidate.Operation == "choose_map_node"
                     ? leaf with { Dispatch = () => mapDeparture(leaf.Dispatch) } : leaf);
                 foreach (string id in action.Arguments.Select(value => value.ReferentId)
