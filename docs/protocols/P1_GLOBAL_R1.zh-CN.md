@@ -2,7 +2,7 @@
 
 状态：**r1.3，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
-[第16轮入口](../plans/p1-prefreeze-2026-10-18/README.md)与[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
+[当前入口](../plans/p1-prefreeze-2026-10-18/README.md)与[待批冻结定义v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
 第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
@@ -169,6 +169,13 @@ report-v2的 `complete=true`仅指声明的**bounded录制前缀**全部保留ca
 Human证明或运行验收。当前生产接缝及真实整局门见[采集调查](../plans/p1-prefreeze-2026-10-18/RECORDING_HISTORY.md)
 和[范围书](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)；不因有fixture/旧转换成功而降低门槛。
 
+当前转换工具另有report-v3的显式`--run-continuity`运行域解释，代码owner为
+`tools/source4-run-scope.mjs`。原菜单/域外capture保留并带理由，运行内gap、partial、unknown、
+遗漏输入和终局不靠scope抹除。范围内`complete`与`whole_run.complete`分列；后者另核
+真实new-run/setup/launch、来源连续性及完整native/P1 terminal。源码/fixture已交不表示
+本轮新英文整局已获资格；原report-v1/v2与原件意义保持。
+启动waiting的唯一有界离线解释例外见[第17节E2](#17-登记的协议例外必须经用户审核才能新增)；原缺失仍保留，批准/登记不证明真实预检已通过。
+
 ## 11. 两端等价怎样检查
 
 正式比较固定角色/难度/语言、种子与候选tuple，保留Reference真实公开选择，再在Managed
@@ -286,6 +293,16 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 | 编号 | 例外 | 原因 | 批准 |
 | --- | --- | --- | --- |
 | E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
+| E2 | Source4离线解释可将同run原生setup→Launch见证起、首份完整可决策观察前的有界settling段列为非决策启动waiting；不是Agent观察。 | 原始失败/缺失保留且不补齐；不称NativeLogical前缀完整；first decision起严格完整门不变。源码已root独审、22 focused PASS；真实新预检未通过。 | 用户，2026-10-18，附下列条件 |
+
+E2的全部条件：
+
+- 起点必须有同run的native setup→Launch原见证，终点必须是首份完整、可决策公开观察；不扩大到任意中间缺口。
+- 原缺失/失败原样保留，不用后来事实补全，不向Agent投递该段，不宣称NativeLogical缺失前缀完整。
+- 期间只要混入任何玩家输入，即使未响应，也必须unresolved，整局不得complete。
+- waiting必须以完整decision结束；崩溃或等不到该decision，整局不得complete。
+- 每局报告单列该段帧数与时长，不计入决策数；first decision起的完整性及full strict要求不变。
+- 转换规则由原Source4→P1 owner实现并用上述反例验收；源码已root独审、22 focused PASS，仍不代表真实新预检通过。
 
 对照范围与判据：
 - STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。

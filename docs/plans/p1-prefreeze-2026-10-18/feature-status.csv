@@ -12,12 +12,12 @@ layer,function,status,owner,evidence,scope
 合同,Goal/witness与Task outcome,现行,python/docs/AGENT_EXECUTION_CONTRACT.md,docs/plans/AGENT_RUN_COMPLETION_2026-10-11.md,Task、terminal、operation、strategy分轴；旧缺证据仍unknown
 合同,通用Host core/extensions匹配,未完成,docs/ARCHITECTURE.md,docs/COMPONENTS.md,职责已定，合同分布在原owner；无已完成万能Host API
 环境,Native Foundation决策/生命周期,现行,components/native-foundation/README.md,docs/NATIVE_SEAM_MATRIX.md,只读原生事实/lineage；不新增合法性权威
-环境,Reference真实游戏Mod,现行,components/connector/docs/ARCHITECTURE.md,docs/memory/CURRENT.md,当前新A1 Mod 0db06ad7身份见范围书；旧888短测资格不转贴；新Source4预检未完成
-环境,Managed无界面Host,现行,components/host-runtime/docs/ARCHITECTURE.md,docs/memory/CURRENT.md,当前1482de5d候选有S05有界证据；旧7513诊断与新A02均非严格等价，完整范围见A差异表
+环境,Reference真实游戏Mod,现行,components/connector/docs/ARCHITECTURE.md,docs/memory/CURRENT.md,第19轮6c6b已装/loaded exact、English/native EndTurn阳性；Source4转换预检未PASS；旧888/0db保持各自资格
+环境,Managed无界面Host,现行,components/host-runtime/docs/ARCHITECTURE.md,docs/memory/CURRENT.md,当前a70d8de1，A03两loss完整terminal equal、170/293和236/432选择相等；整轨非严格；新英文严格0/3
 环境,Host发现/隔离/launch/reset/stop,现行,components/host-runtime/docs/OPERATIONS.md,components/host-runtime/docs/COMPATIBILITY.md,进程与环境owner，非游戏规则owner
 环境,Headless/Native UI显示选择,现行,docs/ARCHITECTURE.md,components/host-runtime/docs/COMPATIBILITY.md,是Host配置，不是独立规则实现的移植证明
 环境,原生地图存档/恢复机制,现行,components/host-runtime/docs/OPERATIONS.md,docs/evidence/MANAGED_MAP_SAVE_ROUNDTRIP_2026-09-30.md,已有旧候选roundtrip，P1 checkpoint新闭包不能继承资格
-环境,P1地图checkpoint/续玩,未完成,components/host-runtime/README.md,/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md,0affa651+1482de5d S05 Managed有界保存/冷启继续/前进PASS；root整合PR202及当前CI，Reference待用户窗口，不是全局冻结通过
+环境,P1地图checkpoint/续玩,未完成,components/host-runtime/README.md,/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md,#202已合入；S05只属于0affa651/1482的有界save/restore/前进，Reference仍未验，不向a70d新候选转贴
 环境,Managed性能/并行容量,归档,components/host-runtime/docs/MEASUREMENT.md,components/host-runtime/docs/evidence/MANAGED_HOST_PERFORMANCE_ROUTE_SELECTION_2026-08-21.md,保留原机器/候选/计量条件，非当前吞吐保证
 环境,Windows支持/资格,未完成,docs/TESTING.md,components/host-runtime/docs/evidence/WINDOWS_MANAGED_EXACT_BUILD_ADMISSION_2026-08-22.md,旧Windows候选历史有效；本次P1全幕Windows无新资格
 P1能力,公平完整公开事实/别名/隐藏牌序,现行,docs/protocols/P1_GLOBAL_R1.zh-CN.md,components/connector/sdk/typescript/src/p1Global,规范已定，覆盖逐行验收
@@ -44,8 +44,8 @@ P1能力,英文整局/第三幕/胜利终局覆盖,未完成,docs/protocols/P1_G
 采集,历史native-action-ledger运行权威,废弃,docs/ARCHITECTURE.md,docs/FULL_RUN_DATA_CHAIN.md,不再是当前admission/causal状态机；原件reader保留
 采集,Source1/Source2声明/attachment epoch,归档,components/annotator/docs/SOURCE_SESSION_PROFILE.md,components/annotator/docs/SOURCE_SESSION_PROFILE_V2.md,历史格式保留原义；不自动补Source3/4证明
 采集,Source3有序public输入/原始basis,现行,components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md,python/docs/NATIVE_SOURCE3_COLLECTION.md,原始捕获顺序，非canonical3因果证明；Workbench默认
-采集,Source4完整public-basis/Reads/carrier,现行,components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md,tools/source4-to-p1.mjs,显式选择Source4；B线实录资格待K0/B确认
-采集,Source4→P1离线分类/转换,未完成,components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md,tools/source4-to-p1.mjs,有report-v2生产fixture；Source4 legacy selector装配与sourceMapping selector-follow接缝未闭合；bounded complete不等于整局
+采集,Source4完整public-basis/Reads/carrier,现行,components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md,tools/source4-to-p1.mjs,显式Source4复用原引擎；public-basis/all-Read原件合同保留；真实producer/转换闭环见当前B状态，不因有字段宣称通过
+采集,Source4→P1离线分类/转换,未完成,components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md,tools/source4-to-p1.mjs,report-v3显式run-continuity与whole_run源码已交；真实initialpublication1失败/gap1/首mapvote unmatched待定位，完整新英文整局未过
 采集,AgentRunEvidence/直接sample原件,现行,components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md,python/docs/NATIVE_AGENT_SAMPLED_ADMISSION.md,与Source3可独立；真实offer/input/ACK/directive joins
 采集,旧P1 episode-record-1单文件记录,归档,docs/protocols/P1_GLOBAL_R1.zh-CN.md,components/policy-runtime/README.md,独立保留的旧记录/convert lane，不是当前Agent CLI唯一NDJSON格式
 采集,当前P1 Runtime Agent-session目录记录,现行,components/policy-runtime/README.md,components/evidence/README.md,agent-session-run-1/profile p1-global-r1/adapter p1-session-bridge；global_source原件+frame Consume ACK Receipt Result，独立Annotator/Source4
@@ -59,9 +59,9 @@ P1能力,英文整局/第三幕/胜利终局覆盖,未完成,docs/protocols/P1_G
 应用,本地record导入/验证/上传/download,现行,python/docs/PROJECT_CONSOLE.md,python/docs/CLOUD_PIPELINE_B.md,共享artifact/operation，不复制账本
 应用,数据集固定选择/union/export/Gold,现行,python/docs/research/DATA_MANAGEMENT.zh-CN.md,python/docs/INTERFACES.md,数据资格/use/partition归Curation；P1后Q2门另验
 应用,只读DuckDB/静态dashboard,现行,python/docs/LOCAL_WORKBENCH.md,python/docs/PROJECT_CONSOLE.md,保留诊断入口；普通project open到共享console
-应用,Mod内完整统一Workbench所有页,未完成,docs/UI_INTERACTION_SPEC.md,docs/COMPONENTS.md,明确产品目标；外部链接不构成已完成in-game workspace
+应用,Mod内完整统一Workbench所有页,归档,docs/UI_INTERACTION_SPEC.md,docs/COMPONENTS.md,保留历史完整GUI目标，当前用户明确API/库/CLI主、GUI薄映射、复杂GUI/团队不做；不是本次冻结实现门
 应用,Mod Recorder/Runtime诊断控制页,现行,docs/UI_INTERACTION_SPEC.md,apps/ingame-ui/README.md,typed应用命令；无直接合法性/录制写权限
-应用,R20外部独立Agent包两Host,未完成,docs/protocols/P1_GLOBAL_R1.zh-CN.md,docs/memory/CURRENT.md,冻结提案要求新候选实证
+应用,R20外部独立Agent包两Host,未完成,docs/protocols/P1_GLOBAL_R1.zh-CN.md,docs/memory/CURRENT.md,2684B外包及harness已备；K6定位已交，现API/库/CLI路径可复用，最终tuple实际R20仍待，不要求新增复杂GUI
 应用,R21选择器简洁首页,现行,docs/plans/P1_TERMINAL_UPGRADE_2026-10-17.md,/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-selector-2026-10-18.md,PR199显示代码已在60dc基准；旧commands保留；不因此声称新真人整局资格
 执行,Human/Shadow/One-Step/Auto有限控制,现行,components/policy-runtime/README.md,docs/COMPONENTS.md,公共同controller，推理/策略仍归Agent
 执行,Stop/expiry/budget/unknown fence,现行,components/policy-runtime/README.md,docs/ARCHITECTURE.md,进程退出、Task、cleanup分别验；unknown非自动retry

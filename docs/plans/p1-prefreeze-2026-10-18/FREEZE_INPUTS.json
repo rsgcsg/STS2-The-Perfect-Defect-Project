@@ -1,0 +1,53 @@
+{
+  "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
+  "source_baseline": "ea7c14e8969006fa0e470678198ef94aca471f90",
+  "source_tree": "4b796997314f63b59557d6d8daa7f3b6ad14e67d",
+  "files": [
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
+      "bytes": 7703,
+      "sha256": "9a0900cd67486a41c3a2196c390d343d9087121281f55fcae3c98cb83f943db3",
+      "repository_snapshot": "WORKBENCH_POSITION.md",
+      "repository_sha256": "77c5fae41ec82933f24b0a18bf8315531ccbe3075ccdb80ca8d3ae3b8889b908"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K5-20261018/K5-cloud-minimal.md",
+      "bytes": 19131,
+      "sha256": "a0db9a37cdce0598994ef515423ca6147c6a584b4cc739bedad41b62bea20805",
+      "repository_snapshot": "CLOUD_MINIMAL.md",
+      "repository_sha256": "1c215bb818fca3a536645d6f47c20c0ddc4c3be7320498089ed36f2666799c15"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-audit-20261018/audit.md",
+      "bytes": 16972,
+      "sha256": "eeccd2a7809597f4d5ba4742c5a309b895cd29834f6a49d2df9a01cec2b2ad90",
+      "repository_snapshot": "FREEZE_AUDIT.md",
+      "repository_sha256": "eeccd2a7809597f4d5ba4742c5a309b895cd29834f6a49d2df9a01cec2b2ad90"
+    },
+    {
+      "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
+      "bytes": 35936,
+      "sha256": "f19cc100fb4bc8d9f47c7633b504d91cb6663f65417b1ab39ea9564006e8ee75",
+      "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
+      "repository_sha256": "3d4928cb7c245fd0f970389204516da0da1bab5a54f49b9d7ab61323ce5b914e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
+      "bytes": 28292,
+      "sha256": "122fd05da6ad67dc5835e163f07fb99b6631402715ad34461963efb9e9df9d00",
+      "role": "preserved merge input"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-root-before-merge.md",
+      "bytes": 23060,
+      "sha256": "8791a1eb604245cfce1dee442f1d6d52f0d6ce67d3e80c4f46b05cc6c198cdd8",
+      "role": "preserved merge input"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json",
+      "role": "4d installation snapshot; not cold-load/preflight evidence",
+      "bytes": 3860,
+      "sha256": "fbdbb29b457b8518c4b54a7c5ae6635be246470b1b4f8179342bc152026eb307"
+    }
+  ]
+}

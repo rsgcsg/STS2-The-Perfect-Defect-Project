@@ -1,4 +1,16 @@
-# 第15轮 A线：实际位置与根因表
+# A03当前状态与旧差异索引（第19轮）
+
+历史查过：复用两局A03实际报告/独立terminal比较和旧A02根因表；保留原件/locator/not_started/ENOSPC边界，不把旧Reference缺陷修成新事实。
+
+当前A03两局都到原loss，0unknown；Human01 293 completed/311 delivered、170选择全图相等/123 locator、23原not_started；Human02 432/449、236全图相等/196 locator、1原not_started。完整terminal经root正式比较器复算equal，6656文件bytes/SHA和旧保护原件核对通过。实际执行workspace cd47f09c/native a70d8de1；后eafa/ea7c文档/测试元数据不改其运行身份。具体回执：`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round16-A-new-identity-Managed-diagnostics-2026-10-18.md`。
+
+**整条轨迹仍非严格；新同候选英文合格严格0/3。** 最新root转交用户指令下，旧中文Reference缺陷登记，新英文承担严格验收，真实Managed缺陷继续修。原occ41同typed卡4→新6已证范围保留，不能推广所有description都来自旧缓存。原有序药水事实不改为无序，incomparable不当equal。A03终局相等已取代旧“当前terminal仍不同”的状态句，但下表作为A01/A02位置和归因索引不改写为新结果。
+
+当前11条状态、旧记录处理与待用户确定项见[合成定义](SCOPE_v0.3.zh-CN.md)；例外仍由[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)拥有。终局后Return/timeline是另列产品限制，不新增为P1必须执行结算后导航门。
+
+## 以下保留A01/A02/G5历史位置索引
+
+### 第15轮 A线：实际位置与根因表
 
 历史查过：复用A线已核原始差异位置、producer/比较器owner和G5/S05限定结论；未重读raw Human或把source修复当新等价资格。
 
