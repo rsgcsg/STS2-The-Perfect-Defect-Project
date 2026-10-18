@@ -34,6 +34,8 @@ if (host !== "managed" && initialProgressPath != null)
   throw new Error("initial-progress is a Managed manager preparation input");
 const initialProgress = initialProgressPath == null ? null
   : validateInitialProgress(JSON.parse(readFileSync(resolve(initialProgressPath), "utf8")));
+if (host === "managed" && initialProgress == null)
+  throw new Error("Managed suite initial-progress must contain the prepared native progress object");
 const initialProgressIdentity = initialProgress == null ? null
   : { recipe: initialProgress.recipe, progress_sha256: initialProgress.progress_sha256 };
 
