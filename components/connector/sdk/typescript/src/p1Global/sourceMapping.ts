@@ -126,6 +126,24 @@ function acceptedAction(row: ObjectValue): boolean {
     && carriers[0].kind === "game_action_submitted" && carriers[1].kind === "game_action_accepted"
     && text(carriers[0].carrier_ref) && carriers[0].carrier_ref === carriers[1].carrier_ref;
 }
+// TryPlayCard is reached after its mouse confirmation was consumed. Its
+// current catalog may correctly offer only Cancel. The original actual call
+// and submitted/accepted carrier still bind to the earlier complete Play.
+function consumedPhysicalPlay(row: ObjectValue): boolean {
+  return row.outcome?.mapping_status === "unmapped" && row.outcome.match_count === 0
+    && row.outcome.selected_action === null && row.outcome.delivery === "delivered" && row.outcome.reason_code === null
+    && row.outcome.native_mechanism === "NCardPlay.TryPlayCard"
+    && row.outcome.native_facts?.origin === "native_input" && row.outcome.native_facts.missing_reason === null
+    && acceptedAction(row);
+}
+function completedPhysicalPlay(row: ObjectValue, action: ObjectValue, basis: P1Basis): boolean {
+  if (!consumedPhysicalPlay(row)) return acceptedAction(row) && originalActionMatches(row, action, basis, true);
+  const operands = args(action.arguments), facts = row.outcome.native_facts;
+  return action.verb === "play" && operands !== null && isObject(facts.arguments)
+    && action.subject_referent_id === facts.subject_ref && same(operands, facts.arguments)
+    && hasReferents(snapshot(basis), action.subject_referent_id, operands);
+}
+
 function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: readonly P1Basis[], basis: P1Basis): boolean {
   if (trace.length !== 2) return false;
   const start = trace[0] as ObjectValue, last = trace[1] as ObjectValue;
@@ -372,7 +390,10 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
       return result("context_only", "original_adjacent_selector_reversal_restores_public_world", ids);
     if (cancellationContext(trace, contexts, basis))
       return result("context_only", "original_canceled_drag_without_submission_preserves_public_world", ids);
-    if (trace.some(row => !accepted(row))) return result("incomplete", "source_original_delivery_or_native_binding_unproven");
+    const consumedPlayTail = trace.length === 2 && accepted(first)
+      && first.outcome.native_mechanism === "NPlayerHand.StartCardPlay" && consumedPhysicalPlay(last);
+    if (trace.some(row => !accepted(row)) && !consumedPlayTail)
+      return result("incomplete", "source_original_delivery_or_native_binding_unproven");
 
     const matches: string[] = [];
     const originalActions = initial.bound_actions.actions as ObjectValue[];
@@ -398,7 +419,7 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
           || !text(carriers[0].carrier_ref) || last.outcome.native_facts.owner_ref !== carriers[0].carrier_ref
           || facts.subject_ref !== last.outcome.native_facts.subject_ref || !text(facts.owner_ref)
           || !text(facts.arguments?.holder) || Object.keys(facts.arguments).length !== 1
-          || !acceptedAction(last) || !originalActionMatches(last, action, basis, true)) continue;
+          || !completedPhysicalPlay(last, action, basis)) continue;
         const world = dragWorld(basis, facts.subject_ref);
         if (contexts.some(value => !dragSurfaceAllowed(basis, value) || dragWorld(value, facts.subject_ref) !== world)) continue;
         matches.push(choice); continue;

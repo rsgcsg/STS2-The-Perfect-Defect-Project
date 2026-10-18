@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createSession, matchSourceP1Choice, reduce, type P1Basis } from "../src/p1Global/index.js";
 import { rewardForwardPair } from "./fixtures/reward-forward.mjs";
 import { selectorForwardPair, selectorReversalPair } from "./fixtures/selector-forward.mjs";
+import { sourceCardDragPair } from "./fixtures/source-card-drag.mjs";
 
 // Synthetic complete public facts, with explicit original-invocation relations.
 // This is a semantic mapping regression, not a native capture/origin witness.
@@ -27,9 +28,10 @@ function row(basis: any, ordinal: string, selected: any, facts: any, mechanism: 
 }
 const accepted = (carrier = "exact-action") => [
   { kind: "game_action_submitted", carrier_ref: carrier }, { kind: "game_action_accepted", carrier_ref: carrier }];
-function play() {
-  const basis = original(), next = rename(basis, "-held");
-  const action = basis.snapshot.bound_actions.actions.find((value: any) => value.verb === "play" && value.arguments.length);
+function play(targeted = true) {
+  const pair = targeted ? null : sourceCardDragPair();
+  const basis = pair?.before ?? original(), next = pair?.held ?? rename(basis, "-held");
+  const action = pair?.action ?? basis.snapshot.bound_actions.actions.find((value: any) => value.verb === "play" && value.arguments.length);
   const facts = { owner_ref: "exact-play", subject_ref: action.subject_referent_id,
     arguments: Object.fromEntries(action.arguments.map((value: any) => [value.role, value.referent_id])), carriers: accepted() };
   const start = row(basis, "1", { action_id: "native-begin-not-pe-id", verb: "begin_card_play",
@@ -91,6 +93,33 @@ describe("Source4 original-input to P1 intention mapping", () => {
       else expect(match.status).not.toBe("context_only");
       expect(JSON.stringify([first, last, next])).toBe(raw);
       expect(reduce(session(), selected).observation.catalog.some(choice => choice.kind.includes("deselect"))).toBe(false);
+    });
+  it.each(["valid", "owner", "card", "target", "unknown", "ambiguous", "energy", "hp", "enemy", "card-details", "hand-card-detail", "missing-read"])(
+    "uses the original pre-Begin Play and actual consumed mouse submission: %s", change => {
+      const { basis, trace } = play(false); const last: any = trace[1];
+      // New producer retains the still-visible held card in the real model Hand
+      // and therefore advertises its current full Read. Only input is settling.
+      last.basis.snapshot.status = "settling"; last.basis.snapshot.interaction.stage = "settling";
+      last.basis.snapshot.bound_actions.actions = [];
+      last.basis.snapshot.bound_actions.total_count = last.basis.snapshot.bound_actions.materialized_count = 0;
+      last.basis.snapshot.interaction.content.surface.can_end_turn = false;
+      last.outcome.mapping_status = "unmapped"; last.outcome.match_count = 0; last.outcome.selected_action = null;
+      if (change === "owner") last.outcome.native_facts.owner_ref = "different-created-ui";
+      if (change === "card") last.outcome.native_facts.subject_ref = "different-card";
+      if (change === "target") last.outcome.native_facts.arguments = { target: "wrong-target" };
+      if (change === "unknown") last.outcome.delivery = "unknown";
+      if (change === "ambiguous") { last.outcome.mapping_status = "ambiguous"; last.outcome.match_count = 2; }
+      if (change === "energy") last.basis.snapshot.interaction.content.context.player.energy--;
+      if (change === "hp") last.basis.snapshot.persistent.content.player.hp--;
+      if (change === "enemy") last.basis.snapshot.interaction.content.context.enemies[0].hp--;
+      if (change === "card-details") last.basis.reads.find((r: any) => r.kind === "surface_card").response.content.keywords[0].description += " changed";
+      if (change === "hand-card-detail") last.basis.snapshot.interaction.content.context.player.hand
+        .find((card: any) => card.entity_id === last.outcome.native_facts.subject_ref).description += " changed";
+      if (change === "missing-read") last.basis.reads.pop();
+      const raw = JSON.stringify(trace), matched = matchSourceP1Choice(session(), basis, trace);
+      if (change === "valid") expect(matched).toMatchObject({ status: "matched", input_ids: ["input-1", "input-2"] });
+      else expect(matched.status).not.toBe("matched");
+      expect(JSON.stringify(trace)).toBe(raw); expect(last.outcome.mapping_status).toBe(change === "ambiguous" ? "ambiguous" : "unmapped");
     });
   it("matches one original select and its same-request exact native preview confirmation", () => {
     const { basis, trace } = selector(); const originalBytes = JSON.stringify(trace);
