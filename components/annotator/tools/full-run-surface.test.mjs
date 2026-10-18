@@ -8,6 +8,13 @@ const patches = fs.readFileSync(
   path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeUiPatches.cs"),
   "utf8"
 );
+
+test("native Try invalidates the exact created lifetime before source admission or native getters", () => {
+  const play = section(patches, "internal static class NativeCardPlayPatch", "internal static class NativePotionUseStartPatch");
+  assert.match(play, /\{\s*NativeSourceInputProvider\.ObserveCardPlayTryEntered\(__instance\);\s*__state = __instance\.Holder/u);
+  const cleanup = section(patches, "internal static class NativeCardPlayCleanupPatch", "internal static class NativeCardPlayPatch");
+  assert.match(cleanup, /ForgetCardPlayLifetime\(__instance\)/u);
+});
 const runtime = fs.readFileSync(
   path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.cs"),
   "utf8"

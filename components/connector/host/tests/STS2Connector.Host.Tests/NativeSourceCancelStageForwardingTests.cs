@@ -17,6 +17,56 @@ public sealed class NativeSourceCancelStageForwardingTests
         "NCardPlay.TryPlayCard", "PlayCardAction", typeof(PlayCardAction));
 
     [Theory]
+    [InlineData("known", true)]
+    [InlineData("unconfirmed", false)]
+    [InlineData("unfinalized", false)]
+    [InlineData("start_threw", false)]
+    [InlineData("conflict", false)]
+    [InlineData("try_before_confirmation", false)]
+    [InlineData("try_without_admission", false)]
+    [InlineData("protocol_try", false)]
+    [InlineData("disposed", false)]
+    public void OriginalCreatedUiLifetimeProvesOnlyAnUntriedNormallyFinishedStart(string change, bool expected)
+    {
+        bool admitting = true;
+        using var registration = NativeSourceInputProvider.Register(_ => admitting ? new() : null, (_, _, _) => { },
+            stageAnchor: () => new(), stage: (_, _) => { });
+        var original = NativeSourceInputProvider.Begin(new("begin_card_play", new(), new(), new Dictionary<string, object>(),
+            "NPlayerHand.StartCardPlay", "NPlayerHand.StartCardPlay"))!;
+        var play = Bare<NMouseCardPlay>();
+        NativeSourceInputProvider.BindCreatedCardPlay(play);
+        var lifetime = Assert.IsType<NativeSourceCardPlayLifetime>(original.CreatedPlayLifetime);
+        // This detached seam represents the existing exact SceneTree creation
+        // proof. It does not qualify that native proof or a Finished signal.
+        if (change == "try_before_confirmation") NativeSourceInputProvider.ObserveCardPlayTryEntered(play);
+        lifetime.KnownStart = change != "unconfirmed";
+        NativeSourceInputProvider.Accepted(original);
+        if (change == "conflict") NativeSourceInputProvider.BindCreatedCardPlay(Bare<NMouseCardPlay>());
+        if (change != "unfinalized") NativeSourceInputProvider.Finish(original,
+            change == "start_threw" ? new InvalidOperationException("original Start") : null);
+        if (change == "try_without_admission")
+        {
+            admitting = false;
+            NativeSourceInputProvider.ObserveCardPlayTryEntered(play);
+            Assert.Null(NativeSourceInputProvider.Begin(Prefix()));
+        }
+        if (change == "protocol_try")
+        {
+            using var protocol = NativeSourceInputProvider.ProtocolDispatch(new());
+            NativeSourceInputProvider.ObserveCardPlayTryEntered(play);
+            Assert.Null(NativeSourceInputProvider.Begin(Prefix()));
+        }
+        // Try on a different actual UI cannot poison this original one.
+        NativeSourceInputProvider.ObserveCardPlayTryEntered(Bare<NMouseCardPlay>());
+        var stage = new NativeSourceCardPlayCancelScope(original.Registration, new(), play, Bare<NPlayerHand>(),
+            Bare<NHandCardHolder>(), new(), null, lifetime);
+        NativeSourceInputProvider.ForgetCardPlayLifetime(play); // Cleanup removes the weak-key entry before Finished returns.
+        if (change == "disposed") registration.Dispose();
+        Assert.Equal(expected, NativeSourceInputProvider.NoTryCardPlayCancellation(stage));
+        NativeSourceInputProvider.Finish(original);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void OriginalFinishCarriesCancelFactAndPreservesUnknownWithoutClaimingNativeCommit(bool threw)

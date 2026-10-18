@@ -155,7 +155,7 @@ export function convertOriginals(source, sdk, core, options) {
     // Before reducing the next input, settle a held select/reversal against its
     // original pre-basis. This endpoint is context, never a consumed third input.
     if (entry.kind === 'source_input' && trace.length > 0 && !covered.has(trace.at(-1).wrapper.input_id))
-      settle(trace.at(-1).captureIndex, { ...row, basis, publications_before: publicationsBefore });
+      settle(captureIndex - 1, { ...row, basis, publications_before: publicationsBefore });
     if (basis !== null) {
       // Diagnostic reduction is pure. A native UI prefix is not automatically a new P1 decision.
       reduction = core.reduce(state, basis);
